@@ -100,14 +100,10 @@ type Deps struct {
 	Clock func() time.Time
 }
 
-// ProjectLookup resolves the registered working directory used for model
-// discovery. The SQLite store satisfies this narrow read boundary.
+// ProjectLookup is retained for constructor compatibility. Model catalogs are
+// global and never read project paths or environment.
 type ProjectLookup interface {
 	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
-}
-
-type projectListLookup interface {
-	ListProjects(ctx context.Context) ([]domain.ProjectRecord, error)
 }
 
 // SessionUsageLookup provides durable session facts used to rank agent choices.
@@ -214,30 +210,23 @@ func (s *Service) prefetchModelCatalogs(ctx context.Context, force bool) {
 			installed[item.ID] = struct{}{}
 		}
 	}
-	// Include every active project scope for installed adapters. This makes
-	// the first startup after the cache migration populate model choices without
-	// waiting for the user to open each agent's model picker.
-	if projects, listable := s.projects.(projectListLookup); listable {
-		projectRows, listErr := projects.ListProjects(ctx)
-		if listErr == nil {
-			known := make(map[string]struct{}, len(records))
-			for _, record := range records {
-				known[record.AgentID+"\x00"+record.ProjectID] = struct{}{}
-			}
-			for _, project := range projectRows {
-				if !project.ArchivedAt.IsZero() {
-					continue
-				}
-				for agentID := range installed {
-					key := agentID + "\x00" + project.ID
-					if _, exists := known[key]; exists {
-						continue
-					}
-					known[key] = struct{}{}
-					records = append(records, ports.CachedAgentModelCatalog{AgentID: agentID, ProjectID: project.ID})
-				}
-			}
+	// Model catalogs belong to installed agents, not projects. Seed one global
+	// job for every installed adapter, including on a completely fresh database.
+	latest := make(map[string]ports.CachedAgentModelCatalog, len(installed))
+	for _, record := range records {
+		if record.ProjectID != "" {
+			continue
 		}
+		current, exists := latest[record.AgentID]
+		if !exists || record.FetchedAt.After(current.FetchedAt) {
+			latest[record.AgentID] = record
+		}
+	}
+	records = records[:0]
+	for agentID := range installed {
+		record := latest[agentID]
+		record.AgentID = agentID
+		records = append(records, record)
 	}
 	sort.SliceStable(records, func(i, j int) bool { return records[i].AgentID < records[j].AgentID })
 	jobs := make(chan ports.CachedAgentModelCatalog, len(records))
@@ -262,7 +251,7 @@ func (s *Service) prefetchModelCatalogs(ctx context.Context, force bool) {
 				if ctx.Err() != nil {
 					return
 				}
-				_, _ = s.RevalidateModels(ctx, record.AgentID, record.ProjectID)
+				_, _ = s.RevalidateModels(ctx, record.AgentID, "")
 			}
 		}()
 	}
@@ -273,24 +262,22 @@ func (s *Service) prefetchModelCatalogs(ctx context.Context, force bool) {
 // original static-catalog warmer. Production uses the generalized scheduler.
 func (s *Service) warmModelCatalogs(ctx context.Context) {
 	for _, agentID := range []string{"claude-code", "muse"} {
-		records, err := s.cache.ListAgentModelCatalogsByAgent(ctx, agentID)
-		if err != nil {
+		record, ok, err := s.cache.GetAgentModelCatalog(ctx, agentID, "")
+		if err != nil || !ok {
 			continue
 		}
-		for _, record := range records {
-			var cached ports.AgentModelCatalog
-			if json.Unmarshal([]byte(record.CatalogJSON), &cached) != nil {
-				continue
-			}
-			lastSuccess := record.LastSuccessAt
-			if lastSuccess.IsZero() {
-				lastSuccess = cached.ValidatedAt
-			}
-			if !cached.Stale && !catalogNeedsRevalidation(lastSuccess, s.now()) {
-				continue
-			}
-			_, _ = s.RevalidateModels(ctx, agentID, record.ProjectID)
+		var cached ports.AgentModelCatalog
+		if json.Unmarshal([]byte(record.CatalogJSON), &cached) != nil {
+			continue
 		}
+		lastSuccess := record.LastSuccessAt
+		if lastSuccess.IsZero() {
+			lastSuccess = cached.ValidatedAt
+		}
+		if !cached.Stale && !catalogNeedsRevalidation(lastSuccess, s.now()) {
+			continue
+		}
+		_, _ = s.RevalidateModels(ctx, agentID, "")
 	}
 }
 
@@ -317,7 +304,7 @@ func (s *Service) monitorModelCatalogFreshness(ctx context.Context) {
 // Models returns one normalized model catalog. Cached values survive daemon
 // restarts; refresh forces a new documented CLI discovery attempt. Discovery
 // failures degrade to the last cached catalog or a custom model input.
-func (s *Service) Models(ctx context.Context, agentID, projectID string, refresh bool) (ports.AgentModelCatalog, error) {
+func (s *Service) Models(ctx context.Context, agentID, _ string, refresh bool) (ports.AgentModelCatalog, error) {
 	if s.discoverer == nil {
 		return ports.AgentModelCatalog{}, apierr.Internal("MODEL_DISCOVERY_UNAVAILABLE", "Model discovery is unavailable")
 	}
@@ -325,7 +312,7 @@ func (s *Service) Models(ctx context.Context, agentID, projectID string, refresh
 		if _, ok := s.agent(agentID); !ok {
 			return ports.AgentModelCatalog{}, apierr.NotFound("AGENT_NOT_FOUND", "Unknown agent adapter")
 		}
-		cached, ok, err := s.cachedCatalog(ctx, agentID, projectID)
+		cached, ok, err := s.cachedCatalog(ctx, agentID)
 		if err != nil {
 			return ports.AgentModelCatalog{}, err
 		}
@@ -335,9 +322,9 @@ func (s *Service) Models(ctx context.Context, agentID, projectID string, refresh
 			retriesExhausted := modelCatalogRetriesExhausted(cached)
 			cached.Catalog.RefreshRecommended = !retriesExhausted && (due || cached.RefreshState == "error" || cached.RefreshState == "queued")
 			if !retriesExhausted && due && (cached.RetryAt.IsZero() || !s.now().Before(cached.RetryAt)) {
-				go func() { _, _ = s.RevalidateModels(s.ctx, agentID, projectID) }()
+				go func() { _, _ = s.RevalidateModels(s.ctx, agentID, "") }()
 			} else if !due || retriesExhausted {
-				go s.revalidateChangedInputs(agentID, projectID, cached.BinaryVersion)
+				go s.revalidateChangedInputs(agentID, cached.BinaryVersion)
 			}
 			return cached.Catalog, nil
 		}
@@ -346,10 +333,10 @@ func (s *Service) Models(ctx context.Context, agentID, projectID string, refresh
 	if refresh {
 		mode = modelLoadRefresh
 	}
-	return s.coalesceModelLoad(ctx, agentID, projectID, mode)
+	return s.coalesceModelLoad(ctx, agentID, mode)
 }
 
-func (s *Service) revalidateChangedInputs(agentID, projectID, cachedFingerprint string) {
+func (s *Service) revalidateChangedInputs(agentID, cachedFingerprint string) {
 	if s.ctx.Err() != nil {
 		return
 	}
@@ -357,30 +344,27 @@ func (s *Service) revalidateChangedInputs(agentID, projectID, cachedFingerprint 
 	if !ok {
 		return
 	}
-	discovery, err := s.projectDiscoveryContext(s.ctx, projectID)
-	if err != nil {
-		return
-	}
 	var binary string
 	if resolver, ok := item.Agent.(ports.AgentBinaryResolver); ok {
 		lock := s.resolverMu[agentID]
 		lock.Lock()
-		binary, err = resolver.ResolveBinary(s.ctx)
+		resolved, err := resolver.ResolveBinary(s.ctx)
 		lock.Unlock()
 		if err != nil {
 			return
 		}
+		binary = resolved
 	}
-	request := ports.AgentModelDiscoveryRequest{AgentID: agentID, Binary: binary, WorkingDir: discovery.workingDir, Env: discovery.env}
+	request := ports.AgentModelDiscoveryRequest{AgentID: agentID, Binary: binary}
 	if s.discoverer.CatalogFingerprint(s.ctx, request) != cachedFingerprint {
-		_, _ = s.RevalidateModels(s.ctx, agentID, projectID)
+		_, _ = s.RevalidateModels(s.ctx, agentID, "")
 	}
 }
 
 // RevalidateModels rediscovers a cache-first catalog after the normal read path
 // marks it old enough to refresh in the background.
-func (s *Service) RevalidateModels(ctx context.Context, agentID, projectID string) (ports.AgentModelCatalog, error) {
-	return s.coalesceModelLoad(ctx, agentID, projectID, modelLoadRevalidate)
+func (s *Service) RevalidateModels(ctx context.Context, agentID, _ string) (ports.AgentModelCatalog, error) {
+	return s.coalesceModelLoad(ctx, agentID, modelLoadRevalidate)
 }
 
 // InvalidateModelCatalogs marks existing scopes due and schedules cache-first
@@ -390,52 +374,37 @@ func (s *Service) InvalidateModelCatalogs(agentID string) {
 		return
 	}
 	go func() {
-		records, err := s.cache.ListAgentModelCatalogsByAgent(s.ctx, agentID)
-		if err != nil {
+		record, ok, err := s.cache.GetAgentModelCatalog(s.ctx, agentID, "")
+		if err != nil || !ok {
 			return
 		}
-		for _, record := range records {
-			if s.ctx.Err() != nil {
-				return
-			}
-			var catalog ports.AgentModelCatalog
-			if json.Unmarshal([]byte(record.CatalogJSON), &catalog) == nil {
-				catalog.RefreshRecommended = true
-				catalog.RefreshState = "queued"
-				catalog.RefreshError = ""
-				catalog.LastSuccessAt = nil
-				catalog.RetryAt = nil
-				_ = s.saveCatalog(s.ctx, record.ProjectID, catalog, time.Now().UTC().UnixNano(), 0)
-			}
-			go func(projectID string) { _, _ = s.RevalidateModels(s.ctx, agentID, projectID) }(record.ProjectID)
+		if s.ctx.Err() != nil {
+			return
 		}
+		var catalog ports.AgentModelCatalog
+		if json.Unmarshal([]byte(record.CatalogJSON), &catalog) == nil {
+			catalog.RefreshRecommended = true
+			catalog.RefreshState = "queued"
+			catalog.RefreshError = ""
+			catalog.LastSuccessAt = nil
+			catalog.RetryAt = nil
+			_ = s.saveCatalog(s.ctx, catalog, time.Now().UTC().UnixNano(), 0)
+		}
+		_, _ = s.RevalidateModels(s.ctx, agentID, "")
 	}()
 }
 
-// InvalidateProjectModelCatalogs is called after project creation/config
-// changes. New scopes are prefetched for every installed/authorized adapter;
-// existing scopes retain their choices while being revalidated.
-func (s *Service) InvalidateProjectModelCatalogs(projectID string) {
-	go func() {
-		readiness, err := s.EnsureReadiness(s.ctx, nil, domain.AgentReadinessPurposeDisplay)
-		if err != nil {
-			return
-		}
-		for _, item := range readiness.Agents {
-			if item.Installation.State != domain.AgentInstallationInstalled && item.Authentication.State != domain.AgentAuthenticationAuthorized && item.Authentication.State != domain.AgentAuthenticationNotApplicable {
-				continue
-			}
-			go func(agentID string) { _, _ = s.RevalidateModels(s.ctx, agentID, projectID) }(item.ID)
-		}
-	}()
+// InvalidateProjectModelCatalogs is retained as a project-service callback.
+// Global agent catalogs are deliberately unaffected by project changes.
+func (s *Service) InvalidateProjectModelCatalogs(_ string) {
 }
 
 func (s *Service) coalesceModelLoad(
 	ctx context.Context,
-	agentID, projectID string,
+	agentID string,
 	mode modelLoadMode,
 ) (ports.AgentModelCatalog, error) {
-	key := agentID + "\x00" + projectID
+	key := agentID
 	s.modelCallMu.Lock()
 	if active := s.modelCalls[key]; active != nil {
 		s.modelCallMu.Unlock()
@@ -474,7 +443,7 @@ func (s *Service) coalesceModelLoad(
 		}
 		loadCtx, cancel := context.WithTimeout(baseCtx, modelCatalogLoadTimeout)
 		defer cancel()
-		call.catalog, call.err = s.loadModels(loadCtx, agentID, projectID, mode, call.generation)
+		call.catalog, call.err = s.loadModels(loadCtx, agentID, mode, call.generation)
 		s.modelCallMu.Lock()
 		delete(s.modelCalls, key)
 		close(call.done)
@@ -489,7 +458,7 @@ func (s *Service) coalesceModelLoad(
 	}
 }
 
-func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mode modelLoadMode, generation int64) (ports.AgentModelCatalog, error) {
+func (s *Service) loadModels(ctx context.Context, agentID string, mode modelLoadMode, generation int64) (ports.AgentModelCatalog, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.AgentModelCatalog{}, err
 	}
@@ -500,11 +469,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 	if s.discoverer == nil {
 		return ports.AgentModelCatalog{}, apierr.Internal("MODEL_DISCOVERY_UNAVAILABLE", "Model discovery is unavailable")
 	}
-	discovery, err := s.projectDiscoveryContext(ctx, projectID)
-	if err != nil {
-		return ports.AgentModelCatalog{}, err
-	}
-	cached, hasCached, err := s.cachedCatalog(ctx, agentID, projectID)
+	cached, hasCached, err := s.cachedCatalog(ctx, agentID)
 	if err != nil {
 		return ports.AgentModelCatalog{}, err
 	}
@@ -523,7 +488,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		}
 	}
 	request := ports.AgentModelDiscoveryRequest{
-		AgentID: agentID, Binary: binary, WorkingDir: discovery.workingDir, Env: discovery.env,
+		AgentID: agentID, Binary: binary,
 	}
 	// Fingerprints the same inputs the discovery run would read, so a change to
 	// either the executable or the configuration behind it invalidates the cache.
@@ -561,7 +526,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 	// wake, and input-change revalidation keeps the last-known-good catalog
 	// visible without causing cache subscribers to show a loader.
 	if mode == modelLoadRefresh {
-		_ = s.persistCatalogState(ctx, projectID, cached, hasCached, "refreshing", "", time.Time{}, generation)
+		_ = s.persistCatalogState(ctx, cached, hasCached, "refreshing", "", time.Time{}, generation)
 	}
 	discovered, discoverErr := s.discoverer.Discover(ctx, request)
 	discovered = applyCustomModelEntryPolicy(discovered, policy)
@@ -571,9 +536,9 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 			cached.Catalog.Stale = true
 			cached.Catalog.Warning = discoverErr.Error()
 			cached.Catalog.RefreshRecommended = true
-			if err := s.saveFailedCatalog(ctx, projectID, cached, cached.Catalog, generation); err != nil {
+			if err := s.saveFailedCatalog(ctx, cached, cached.Catalog, generation); err != nil {
 				cached.Catalog.Warning = appendCacheWarning(cached.Catalog.Warning)
-			} else if updated, ok, _ := s.cachedCatalog(ctx, agentID, projectID); ok {
+			} else if updated, ok, _ := s.cachedCatalog(ctx, agentID); ok {
 				return updated.Catalog, nil
 			}
 			return cached.Catalog, nil
@@ -582,33 +547,20 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 			discovered.Stale = true
 			discovered.Warning = discoverErr.Error()
 			discovered.RefreshRecommended = true
-			if err := s.saveFailedCatalog(ctx, projectID, cached, discovered, generation); err != nil {
+			if err := s.saveFailedCatalog(ctx, cached, discovered, generation); err != nil {
 				discovered.Warning = appendCacheWarning(discovered.Warning)
-			} else if updated, ok, _ := s.cachedCatalog(ctx, agentID, projectID); ok {
+			} else if updated, ok, _ := s.cachedCatalog(ctx, agentID); ok {
 				return updated.Catalog, nil
 			}
 			return discovered, nil
-		}
-		if shared, ok := s.latestAgentCatalog(ctx, agentID, projectID); ok {
-			shared = applyCustomModelEntryPolicy(shared, policy)
-			shared.Stale = true
-			shared.Warning = discoverErr.Error()
-			shared.RefreshRecommended = true
-			previous := decodedCatalog{Catalog: shared, RetryCount: 0}
-			if err := s.saveFailedCatalog(ctx, projectID, previous, shared, generation); err == nil {
-				if updated, found, _ := s.cachedCatalog(ctx, agentID, projectID); found {
-					return updated.Catalog, nil
-				}
-			}
-			return shared, nil
 		}
 		fallback := policy
 		fallback.BinaryVersion = version
 		fallback.Stale = true
 		fallback.Warning = discoverErr.Error()
 		fallback.RefreshRecommended = true
-		if err := s.saveFailedCatalog(ctx, projectID, decodedCatalog{Catalog: fallback}, fallback, generation); err == nil {
-			if updated, found, _ := s.cachedCatalog(ctx, agentID, projectID); found {
+		if err := s.saveFailedCatalog(ctx, decodedCatalog{Catalog: fallback}, fallback, generation); err == nil {
+			if updated, found, _ := s.cachedCatalog(ctx, agentID); found {
 				return updated.Catalog, nil
 			}
 		}
@@ -623,43 +575,10 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 	discovered.RefreshError = ""
 	discovered.RetryAt = nil
 	discovered.RefreshRecommended = false
-	if err := s.saveCatalog(ctx, projectID, discovered, generation, 0); err != nil {
+	if err := s.saveCatalog(ctx, discovered, generation, 0); err != nil {
 		discovered.Warning = appendCacheWarning(discovered.Warning)
 	}
 	return discovered, nil
-}
-
-// latestAgentCatalog returns a last-known-good catalog from another project as
-// a display-only fallback. Discovery remains project-scoped and this result is
-// deliberately not persisted under the requested project key.
-func (s *Service) latestAgentCatalog(ctx context.Context, agentID, projectID string) (ports.AgentModelCatalog, bool) {
-	if s.cache == nil {
-		return ports.AgentModelCatalog{}, false
-	}
-	records, err := s.cache.ListAgentModelCatalogsByAgent(ctx, agentID)
-	if err != nil {
-		return ports.AgentModelCatalog{}, false
-	}
-	var best ports.AgentModelCatalog
-	var bestAt time.Time
-	for _, record := range records {
-		if record.ProjectID == projectID {
-			continue
-		}
-		var candidate ports.AgentModelCatalog
-		if err := json.Unmarshal([]byte(record.CatalogJSON), &candidate); err != nil || len(candidate.Models) == 0 {
-			continue
-		}
-		at := record.FetchedAt
-		if at.IsZero() {
-			at = candidate.FetchedAt
-		}
-		if best.Models == nil || at.After(bestAt) {
-			best = candidate
-			bestAt = at
-		}
-	}
-	return best, best.Models != nil
 }
 
 func applyCustomModelEntryPolicy(catalog, policy ports.AgentModelCatalog) ports.AgentModelCatalog {
@@ -684,25 +603,6 @@ func appendCacheWarning(current string) string {
 	return current + " " + next
 }
 
-type projectDiscovery struct {
-	workingDir string
-	env        map[string]string
-}
-
-func (s *Service) projectDiscoveryContext(ctx context.Context, projectID string) (projectDiscovery, error) {
-	if projectID == "" || s.projects == nil {
-		return projectDiscovery{}, nil
-	}
-	project, ok, err := s.projects.GetProject(ctx, projectID)
-	if err != nil {
-		return projectDiscovery{}, apierr.Internal("PROJECT_LOAD_FAILED", "Failed to load project")
-	}
-	if !ok || !project.ArchivedAt.IsZero() {
-		return projectDiscovery{}, apierr.NotFound("PROJECT_NOT_FOUND", "Unknown project")
-	}
-	return projectDiscovery{workingDir: project.Path, env: project.Config.Env}, nil
-}
-
 type decodedCatalog struct {
 	Catalog       ports.AgentModelCatalog
 	BinaryVersion string
@@ -714,11 +614,11 @@ type decodedCatalog struct {
 	Generation    int64
 }
 
-func (s *Service) cachedCatalog(ctx context.Context, agentID, projectID string) (decodedCatalog, bool, error) {
+func (s *Service) cachedCatalog(ctx context.Context, agentID string) (decodedCatalog, bool, error) {
 	if s.cache == nil {
 		return decodedCatalog{}, false, nil
 	}
-	record, ok, err := s.cache.GetAgentModelCatalog(ctx, agentID, projectID)
+	record, ok, err := s.cache.GetAgentModelCatalog(ctx, agentID, "")
 	if err != nil || !ok {
 		return decodedCatalog{}, ok, err
 	}
@@ -751,7 +651,7 @@ func catalogLastSuccess(catalog ports.AgentModelCatalog) time.Time {
 	return *catalog.LastSuccessAt
 }
 
-func (s *Service) saveCatalog(ctx context.Context, projectID string, catalog ports.AgentModelCatalog, generation, retryCount int64) error {
+func (s *Service) saveCatalog(ctx context.Context, catalog ports.AgentModelCatalog, generation, retryCount int64) error {
 	if s.cache == nil {
 		return nil
 	}
@@ -762,7 +662,7 @@ func (s *Service) saveCatalog(ctx context.Context, projectID string, catalog por
 	metadata, _ := json.Marshal(catalog.Metadata)
 	return s.cache.UpsertAgentModelCatalog(ctx, ports.CachedAgentModelCatalog{
 		AgentID:          catalog.AgentID,
-		ProjectID:        projectID,
+		ProjectID:        "",
 		BinaryVersion:    catalog.BinaryVersion,
 		CatalogJSON:      string(data),
 		Source:           catalog.Source,
@@ -789,7 +689,7 @@ func catalogMetadata(request ports.AgentModelDiscoveryRequest) map[string]string
 	return metadata
 }
 
-func (s *Service) persistCatalogState(ctx context.Context, projectID string, cached decodedCatalog, hasCached bool, state, message string, retryAt time.Time, generation int64) error {
+func (s *Service) persistCatalogState(ctx context.Context, cached decodedCatalog, hasCached bool, state, message string, retryAt time.Time, generation int64) error {
 	if !hasCached {
 		return nil
 	}
@@ -797,10 +697,10 @@ func (s *Service) persistCatalogState(ctx context.Context, projectID string, cac
 	catalog.RefreshState = state
 	catalog.RefreshError = message
 	catalog.RetryAt = modelCatalogRetryAt(retryAt)
-	return s.saveCatalog(ctx, projectID, catalog, generation, cached.RetryCount)
+	return s.saveCatalog(ctx, catalog, generation, cached.RetryCount)
 }
 
-func (s *Service) saveFailedCatalog(ctx context.Context, projectID string, previous decodedCatalog, catalog ports.AgentModelCatalog, generation int64) error {
+func (s *Service) saveFailedCatalog(ctx context.Context, previous decodedCatalog, catalog ports.AgentModelCatalog, generation int64) error {
 	retryCount := previous.RetryCount + 1
 	catalog.LastSuccessAt = previous.Catalog.LastSuccessAt
 	catalog.RefreshState = "error"
@@ -815,7 +715,7 @@ func (s *Service) saveFailedCatalog(ctx context.Context, projectID string, previ
 		retryAt := s.now().Add(retryDelay).UTC()
 		catalog.RetryAt = &retryAt
 	}
-	if err := s.saveCatalog(ctx, projectID, catalog, generation, retryCount); err != nil {
+	if err := s.saveCatalog(ctx, catalog, generation, retryCount); err != nil {
 		return err
 	}
 	if catalog.RetryAt != nil && s.cache != nil {
@@ -824,11 +724,11 @@ func (s *Service) saveFailedCatalog(ctx context.Context, projectID string, previ
 			if s.ctx.Err() != nil {
 				return
 			}
-			record, ok, err := s.cache.GetAgentModelCatalog(s.ctx, catalog.AgentID, projectID)
+			record, ok, err := s.cache.GetAgentModelCatalog(s.ctx, catalog.AgentID, "")
 			if err != nil || !ok || record.Generation != generation || record.RefreshState != "error" || !record.RetryAt.Equal(retryAt) {
 				return
 			}
-			_, _ = s.RevalidateModels(s.ctx, catalog.AgentID, projectID)
+			_, _ = s.RevalidateModels(s.ctx, catalog.AgentID, "")
 		})
 	}
 	return nil

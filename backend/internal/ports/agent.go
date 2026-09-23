@@ -235,7 +235,8 @@ type CachedAgentModelCatalog struct {
 }
 
 // AgentModelCatalogCache persists normalized model catalogs across daemon
-// restarts. Implementations must treat agent+project as the logical key.
+// restarts. Global catalogs use the empty project scope; BinaryVersion tracks
+// the installed agent/config fingerprint used for invalidation.
 type AgentModelCatalogCache interface {
 	GetAgentModelCatalog(ctx context.Context, agentID, projectID string) (CachedAgentModelCatalog, bool, error)
 	ListAgentModelCatalogsByAgent(ctx context.Context, agentID string) ([]CachedAgentModelCatalog, error)
