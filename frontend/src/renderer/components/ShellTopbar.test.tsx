@@ -219,6 +219,16 @@ beforeEach(() => {
 });
 
 describe("ShellTopbar status pill", () => {
+	it("offers saved-edit reapply only after the session is terminated", () => {
+		renderTopbar(sessionWith({ hasPreservedEdits: true, isTerminated: false }));
+		expect(screen.queryByRole("button", { name: "Put saved edits back for do the thing" })).toBeNull();
+	});
+
+	it("shows the saved-edit reapply action on a terminated session", () => {
+		renderTopbar(sessionWith({ hasPreservedEdits: true, isTerminated: true }));
+		expect(screen.getByRole("button", { name: "Put saved edits back for do the thing" })).toBeInTheDocument();
+	});
+
 	it("matches the session action edge inset to the toolbar spacing", () => {
 		renderTopbar(sessionWith());
 

@@ -786,6 +786,8 @@ func (w *Workspace) ForceDestroy(ctx context.Context, info ports.WorkspaceInfo) 
 //
 // Returns the full ref name (e.g. "refs/ao/preserved/sess-1"). Returns an
 // empty string (and no error) if the worktree is clean.
+// If that preserve ref already exists, it is left intact and the capture fails;
+// callers must keep the current worktree rather than replace saved edits.
 func (w *Workspace) StashUncommitted(ctx context.Context, info ports.WorkspaceInfo) (string, error) {
 	if info.Path == "" {
 		return "", fmt.Errorf("%w: empty path", ErrUnsafePath)
@@ -839,75 +841,71 @@ func (w *Workspace) StashUncommitted(ctx context.Context, info ports.WorkspaceIn
 		)
 	}
 
-	// Reserve a unique path for the temp index in the system temp dir (not ~/.ao).
-	// We must NOT pre-create the file: git requires GIT_INDEX_FILE to either not
-	// exist (it creates it) or be a valid git index. os.CreateTemp gives us a
-	// unique name; we close and remove it immediately so git gets an absent path.
+	commitSHA, err := w.captureWorktreeCommit(ctx, path, "ao preserved "+preserveKey)
+	if err != nil {
+		return "", err
+	}
+	if commitSHA == "" {
+		return "", nil
+	}
+
+	// Create the preserve ref only if absent. The zero old-value makes this an
+	// atomic create, so a second archive cannot replace an earlier snapshot.
+	ref := "refs/ao/preserved/" + preserveKey
+	if _, err := w.run(ctx, w.binary, createRefArgs(path, ref, commitSHA)...); err != nil {
+		return "", fmt.Errorf("gitworktree: create preserved ref %q (an earlier snapshot may already exist): %w", ref, err)
+	}
+	return ref, nil
+}
+
+// captureWorktreeCommit snapshots tracked and non-ignored untracked edits using
+// a temporary index. It never changes the real index, worktree, or stash stack.
+// An empty SHA means the worktree matches HEAD (apart from ignored files).
+func (w *Workspace) captureWorktreeCommit(ctx context.Context, path, message string) (string, error) {
+	// Reserve a unique path for the temp index. Git requires GIT_INDEX_FILE to
+	// either be absent or contain a valid index, so remove the empty reservation.
 	tmpIdx, err := os.CreateTemp("", "ao-preserve-idx-*")
 	if err != nil {
 		return "", fmt.Errorf("gitworktree: reserve temp index path: %w", err)
 	}
 	tmpIdxPath := tmpIdx.Name()
 	_ = tmpIdx.Close()
-	// Remove now so git sees an absent path (not a 0-byte corrupt index).
 	_ = os.Remove(tmpIdxPath)
-	// Deferred remove is a best-effort cleanup in case git leaves the file.
 	defer func() { _ = os.Remove(tmpIdxPath) }()
 
-	// Stage all tracked and non-ignored untracked files into the temp index.
-	// GIT_INDEX_FILE overrides the index so the real index is never touched.
-	addCmd := aoprocess.CommandContext(ctx, w.binary, addAllTempIndexArgs(path)...)
+	addArgs := addAllTempIndexArgs(path)
+	addCmd := aoprocess.CommandContext(ctx, w.binary, addArgs...)
 	addCmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+tmpIdxPath)
 	if out, err := addCmd.CombinedOutput(); err != nil {
-		return "", commandError{args: append([]string{w.binary}, addAllTempIndexArgs(path)...), output: string(out), err: err}
+		return "", commandError{args: append([]string{w.binary}, addArgs...), output: string(out), err: err}
 	}
 
-	// Write the staged tree to get a tree SHA.
-	writeTreeCmd := aoprocess.CommandContext(ctx, w.binary, writeTreeArgs(path)...)
+	writeArgs := writeTreeArgs(path)
+	writeTreeCmd := aoprocess.CommandContext(ctx, w.binary, writeArgs...)
 	writeTreeCmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+tmpIdxPath)
 	treeOut, err := writeTreeCmd.CombinedOutput()
 	if err != nil {
-		return "", commandError{args: append([]string{w.binary}, writeTreeArgs(path)...), output: string(treeOut), err: err}
+		return "", commandError{args: append([]string{w.binary}, writeArgs...), output: string(treeOut), err: err}
 	}
 	treeSHA := strings.TrimSpace(string(treeOut))
 
-	// Resolve HEAD. An unborn HEAD (no commits yet) means we omit the -p flag
-	// from commit-tree so the preserve commit has no parent.
 	headOut, headErr := w.run(ctx, w.binary, revParseHeadArgs(path)...)
 	headSHA := ""
 	if headErr == nil {
 		headSHA = strings.TrimSpace(string(headOut))
 	}
-	// headErr != nil means unborn HEAD: headSHA stays empty, commit-tree gets no -p.
-
-	// If the preserve tree SHA equals HEAD's tree SHA the working tree is
-	// effectively clean from git's perspective (only ignored files differ).
 	if headSHA != "" {
 		headTreeOut, err := w.run(ctx, w.binary, "-C", path, "rev-parse", headSHA+"^{tree}")
-		if err == nil {
-			headTreeSHA := strings.TrimSpace(string(headTreeOut))
-			if headTreeSHA == treeSHA {
-				// Nothing to preserve beyond ignored files.
-				return "", nil
-			}
+		if err == nil && strings.TrimSpace(string(headTreeOut)) == treeSHA {
+			return "", nil
 		}
 	}
 
-	// Create a commit object that wraps the preserve tree.
-	msg := "ao preserved " + preserveKey
-	commitOut, err := w.run(ctx, w.binary, commitTreeArgs(path, treeSHA, headSHA, msg)...)
+	commitOut, err := w.run(ctx, w.binary, commitTreeArgs(path, treeSHA, headSHA, message)...)
 	if err != nil {
 		return "", fmt.Errorf("gitworktree: commit-tree: %w", err)
 	}
-	commitSHA := strings.TrimSpace(string(commitOut))
-
-	// Point the preserve ref at the commit. update-ref runs only after the
-	// commit object exists, so a failed capture does not replace a previous ref.
-	ref := "refs/ao/preserved/" + preserveKey
-	if _, err := w.run(ctx, w.binary, updateRefArgs(path, ref, commitSHA)...); err != nil {
-		return "", fmt.Errorf("gitworktree: update-ref %q: %w", ref, err)
-	}
-	return ref, nil
+	return strings.TrimSpace(string(commitOut)), nil
 }
 
 func isNotGitRepositoryError(err error) bool {
@@ -1140,12 +1138,13 @@ func parseObservedWorkspaceCommits(output string) []ports.WorkspaceCommit {
 }
 
 // applyPreservedOntoDirty merges commitSHA onto a worktree whose unstaged
-// edits made cherry-pick refuse to start. The local edits are captured with
-// stash create, which writes a commit object and does not touch refs/stash.
+// edits made cherry-pick refuse to start. Local edits are captured in a
+// temporary index, including non-ignored untracked files, without touching
+// refs/stash or the real index.
 // A clean merge replaces the index and worktree with the result. A conflict
 // leaves both sides in the file and keeps the caller from deleting the ref.
 func (w *Workspace) applyPreservedOntoDirty(ctx context.Context, worktree, commitSHA string) error {
-	oursOut, err := w.gitCombined(ctx, stashCreateUntrackedArgs(worktree))
+	oursOut, err := w.captureWorktreeCommit(ctx, worktree, "ao reapply local edits")
 	if err != nil {
 		return fmt.Errorf("%w: capture local edits: %w", ErrPreservedConflict, err)
 	}

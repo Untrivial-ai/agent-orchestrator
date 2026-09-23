@@ -93,8 +93,16 @@ type sessionResponse struct {
 }
 
 type killSessionResponse struct {
+	SessionID  string `json:"sessionId"`
+	Freed      bool   `json:"freed"`
+	Preserved  bool   `json:"preserved"`
+	SaveFailed bool   `json:"saveFailed"`
+}
+
+type reapplyEditsResponse struct {
+	OK        bool   `json:"ok"`
 	SessionID string `json:"sessionId"`
-	Freed     bool   `json:"freed"`
+	Conflicts bool   `json:"conflicts"`
 }
 
 type restoreSessionResponse struct {
@@ -195,6 +203,7 @@ func newSessionCommand(ctx *commandContext) *cobra.Command {
 	cmd.AddCommand(newSessionGetCommand(ctx))
 	cmd.AddCommand(newSessionKillCommand(ctx))
 	cmd.AddCommand(newSessionRestoreCommand(ctx))
+	cmd.AddCommand(newSessionReapplyEditsCommand(ctx))
 	cmd.AddCommand(newSessionExitAgentCommand(ctx))
 	cmd.AddCommand(newSessionResumeAgentCommand(ctx))
 	cmd.AddCommand(newSessionRenameCommand(ctx))
@@ -277,6 +286,25 @@ func newSessionRestoreCommand(ctx *commandContext) *cobra.Command {
 		},
 	}
 	addSessionProjectFlag(cmd.Flags(), &opts.project, "Project id to scope the lookup")
+	return cmd
+}
+
+func newSessionReapplyEditsCommand(ctx *commandContext) *cobra.Command {
+	var opts sessionOptions
+	cmd := &cobra.Command{
+		Use:   "reapply-edits <id>",
+		Short: "Put saved edits back into a terminated session worktree",
+		Args:  oneSessionIDArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := normalizeSessionID(args[0])
+			if err != nil {
+				return err
+			}
+			return ctx.reapplySessionEdits(cmd.Context(), cmd, id, opts)
+		},
+	}
+	addSessionProjectFlag(cmd.Flags(), &opts.project, "Project id to scope the lookup")
+	cmd.Flags().BoolVar(&opts.json, "json", false, "Output as JSON")
 	return cmd
 }
 
@@ -612,6 +640,18 @@ func (c *commandContext) killSession(ctx context.Context, cmd *cobra.Command, id
 	if err := c.postJSON(ctx, "sessions/"+url.PathEscape(id)+"/kill", struct{}{}, &res); err != nil {
 		return err
 	}
+	if res.Preserved && res.SaveFailed {
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "session %s killed (some edits saved; a workspace was kept because other edits could not be saved; run `ao session reapply-edits %s` to put saved edits back)\n", res.SessionID, res.SessionID)
+		return err
+	}
+	if res.Preserved {
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "session %s killed (edits saved; run `ao session reapply-edits %s` to put them back)\n", res.SessionID, res.SessionID)
+		return err
+	}
+	if res.SaveFailed {
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "session %s killed (workspace preserved; edits could not be saved)\n", res.SessionID)
+		return err
+	}
 	if res.Freed {
 		_, err := fmt.Fprintf(cmd.OutOrStdout(), "session %s killed\n", res.SessionID)
 		return err
@@ -619,6 +659,27 @@ func (c *commandContext) killSession(ctx context.Context, cmd *cobra.Command, id
 	// freed=false: the workspace was preserved (e.g. uncommitted changes) — the
 	// session is terminated either way, but the worktree is left for inspection.
 	_, err := fmt.Fprintf(cmd.OutOrStdout(), "session %s killed (workspace preserved)\n", res.SessionID)
+	return err
+}
+
+func (c *commandContext) reapplySessionEdits(ctx context.Context, cmd *cobra.Command, id string, opts sessionOptions) error {
+	if opts.project != "" {
+		if _, err := c.fetchScopedSession(ctx, id, opts.project); err != nil {
+			return err
+		}
+	}
+	var res reapplyEditsResponse
+	if err := c.postJSON(ctx, "sessions/"+url.PathEscape(id)+"/reapply-edits", struct{}{}, &res); err != nil {
+		return err
+	}
+	if opts.json {
+		return writeJSON(cmd.OutOrStdout(), res)
+	}
+	if res.Conflicts {
+		_, err := fmt.Fprintf(cmd.OutOrStdout(), "saved edits put back for session %s with conflicts; review the worktree\n", res.SessionID)
+		return err
+	}
+	_, err := fmt.Fprintf(cmd.OutOrStdout(), "saved edits put back for session %s\n", res.SessionID)
 	return err
 }
 

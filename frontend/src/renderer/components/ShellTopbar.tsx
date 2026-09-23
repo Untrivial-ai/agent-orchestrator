@@ -269,7 +269,7 @@ export function ShellTopbar({
 						) : null}
 						{/* Local worker actions share one tight control group. Navigation
 						    remains a separate visual target in the outer top-bar row. */}
-						{session?.hasPreservedEdits && project?.kind !== CLOUD_PROJECT_KIND ? (
+						{session?.hasPreservedEdits && session.isTerminated === true && project?.kind !== CLOUD_PROJECT_KIND ? (
 							<PutEditsBackButton sessionId={session.id} title={session.title} />
 						) : null}
 						{!isOrchestrator && session && (sessionAction || sessionIsActive(session)) ? (

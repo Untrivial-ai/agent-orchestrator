@@ -3875,10 +3875,32 @@ func TestReapply_AppliesWithoutRelaunchOrCommit(t *testing.T) {
 	}
 }
 
+func TestReapply_RejectsNonTerminatedSession(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.sessions["mer-1"] = mkLive("mer-1")
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{{
+		SessionID:    "mer-1",
+		RepoName:     domain.RootWorkspaceRepoName,
+		Branch:       "ao/mer-1",
+		WorktreePath: "/ws/mer-1",
+		PreservedRef: "refs/ao/preserved/mer-1",
+		State:        "active",
+	}}
+
+	_, err := m.ReapplyPreservedEdits(ctx, "mer-1")
+	if !errors.Is(err, ErrSessionNotTerminated) {
+		t.Fatalf("reapply error = %v, want ErrSessionNotTerminated", err)
+	}
+	if len(ws.calls) != 0 {
+		t.Fatalf("workspace calls = %v, want no worktree restore or apply", ws.calls)
+	}
+}
+
 func TestReapply_ConflictLeavesMarkersAndKeepsSnapshot(t *testing.T) {
 	m, st, rt, ws := newManager()
 	rec := mkLive("mer-1")
 	rec.Metadata.Branch = "ao/mer-1"
+	rec.IsTerminated = true
 	st.sessions["mer-1"] = rec
 	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{{
 		SessionID:    "mer-1",
@@ -3909,6 +3931,7 @@ func TestReapply_MissingBranchLeavesSnapshot(t *testing.T) {
 	m, st, rt, ws := newManager()
 	rec := mkLive("mer-1")
 	rec.Metadata.Branch = "ao/mer-1"
+	rec.IsTerminated = true
 	st.sessions["mer-1"] = rec
 	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{{
 		SessionID:    "mer-1",

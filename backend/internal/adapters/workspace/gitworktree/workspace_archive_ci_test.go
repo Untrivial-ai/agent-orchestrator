@@ -118,6 +118,157 @@ func TestArchiveDropsIgnoredCheckout(t *testing.T) {
 	}
 }
 
+func TestStashUncommittedDoesNotReplaceAnExistingSnapshot(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, tmp)
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ctx := context.Background()
+	cfg := ports.WorkspaceConfig{ProjectID: "proj", SessionID: "sess-rearchive", Branch: "feature/rearchive"}
+	info, err := ws.Create(ctx, cfg)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("first saved edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := ws.StashUncommitted(ctx, info)
+	if err != nil || ref == "" {
+		t.Fatalf("first capture ref=%q err=%v", ref, err)
+	}
+	firstSHA := gitOutput(t, git, repo, "rev-parse", ref)
+	if err := ws.ForceDestroy(ctx, info); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := ws.Restore(ctx, cfg)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(restored.Path, "notes.txt"), []byte("second edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.StashUncommitted(ctx, restored); err == nil {
+		t.Fatal("second capture succeeded over the existing snapshot")
+	}
+	if got := gitOutput(t, git, repo, "rev-parse", ref); got != firstSHA {
+		t.Fatalf("preserved ref moved from %s to %s", firstSHA, got)
+	}
+	if got := gitOutput(t, git, repo, "show", ref+":README.md"); got != "first saved edit" {
+		t.Fatalf("earlier saved edit = %q", got)
+	}
+	if _, err := ws.run(ctx, git, "-C", repo, "show", ref+":notes.txt"); err == nil {
+		t.Fatal("second edit was written into the earlier snapshot")
+	}
+}
+
+func TestApplyPreservedCapturesCollidingUntrackedLocalFile(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, tmp)
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ctx := context.Background()
+	cfg := ports.WorkspaceConfig{ProjectID: "proj", SessionID: "sess-untracked-collision", Branch: "feature/untracked-collision"}
+	info, err := ws.Create(ctx, cfg)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	localPath := filepath.Join(info.Path, "shared-new.txt")
+	if err := os.WriteFile(localPath, []byte("saved side\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := ws.StashUncommitted(ctx, info)
+	if err != nil || ref == "" {
+		t.Fatalf("capture ref=%q err=%v", ref, err)
+	}
+	if err := ws.ForceDestroy(ctx, info); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := ws.Restore(ctx, cfg)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	localPath = filepath.Join(restored.Path, "shared-new.txt")
+	if err := os.WriteFile(localPath, []byte("local side\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head := gitOutput(t, git, restored.Path, "rev-parse", "HEAD")
+	applyErr := ws.ApplyPreserved(ctx, restored, ref)
+	if !errors.Is(applyErr, ErrPreservedConflict) {
+		t.Fatalf("apply = %v, want ErrPreservedConflict", applyErr)
+	}
+	if got := gitOutput(t, git, restored.Path, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("HEAD after apply = %s, want %s", got, head)
+	}
+	got, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "local side") || !strings.Contains(string(got), "saved side") || !strings.Contains(string(got), "<<<<<<<") {
+		t.Fatalf("merged untracked file = %q, want both sides and conflict markers", got)
+	}
+	if _, err := ws.run(ctx, git, revParseVerifyArgs(repo, ref)...); err != nil {
+		t.Fatalf("snapshot ref deleted after conflict: %v", err)
+	}
+}
+
+func TestApplyPreservedMergesNonOverlappingDirtyWorktree(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, tmp)
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ctx := context.Background()
+	cfg := ports.WorkspaceConfig{ProjectID: "proj", SessionID: "sess-dirty-merge", Branch: "feature/dirty-merge"}
+	info, err := ws.Create(ctx, cfg)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(info.Path, "saved.txt"), []byte("saved edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := ws.StashUncommitted(ctx, info)
+	if err != nil || ref == "" {
+		t.Fatalf("capture ref=%q err=%v", ref, err)
+	}
+	if err := ws.ForceDestroy(ctx, info); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := ws.Restore(ctx, cfg)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(restored.Path, "README.md"), []byte("independent local edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head := gitOutput(t, git, restored.Path, "rev-parse", "HEAD")
+	if err := ws.ApplyPreserved(ctx, restored, ref); err != nil {
+		t.Fatalf("apply non-overlapping edits: %v", err)
+	}
+	if got := gitOutput(t, git, restored.Path, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("HEAD after apply = %s, want %s", got, head)
+	}
+	for path, want := range map[string]string{
+		"README.md": "independent local edit\n",
+		"saved.txt": "saved edit\n",
+	} {
+		got, err := os.ReadFile(filepath.Join(restored.Path, path))
+		if err != nil || string(got) != want {
+			t.Fatalf("%s = %q, err=%v; want %q", path, got, err, want)
+		}
+	}
+	if _, err := ws.run(ctx, git, revParseVerifyArgs(repo, ref)...); err == nil {
+		t.Fatal("successful apply left the snapshot ref")
+	}
+}
+
 func writePayload(path string, n int) error {
 	f, err := os.Create(path)
 	if err != nil {

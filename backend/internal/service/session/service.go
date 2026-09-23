@@ -47,6 +47,7 @@ type Store interface {
 	ListCurrentHeadReviewRunsForSessions(ctx context.Context, ids []domain.SessionID) (map[domain.SessionID][]domain.CurrentHeadReviewRun, error)
 	ListPRsBySession(ctx context.Context, sessionID domain.SessionID) ([]domain.PullRequest, error)
 	ListSessionWorktrees(ctx context.Context, id domain.SessionID) ([]domain.SessionWorktreeRecord, error)
+	ListSessionsWithPreservedWorktrees(ctx context.Context, ids []domain.SessionID) ([]domain.SessionID, error)
 	ListChecks(ctx context.Context, prURL string) ([]domain.PullRequestCheck, error)
 	ListPRReviews(ctx context.Context, prURL string) ([]domain.PullRequestReview, error)
 	ListPRReviewThreads(ctx context.Context, prURL string) ([]domain.PullRequestReviewThread, error)
@@ -1050,6 +1051,14 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Session
 	if err != nil {
 		return nil, fmt.Errorf("list review runs: %w", err)
 	}
+	preservedIDs, err := s.store.ListSessionsWithPreservedWorktrees(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("list preserved edits: %w", err)
+	}
+	preservedBySession := make(map[domain.SessionID]struct{}, len(preservedIDs))
+	for _, id := range preservedIDs {
+		preservedBySession[id] = struct{}{}
+	}
 	out := make([]domain.Session, 0, len(filtered))
 	for _, rec := range filtered {
 		sess, err := s.toSessionWithFacts(rec, prsBySession[rec.ID], runsBySession[rec.ID])
@@ -1059,7 +1068,7 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Session
 		if agentSwitch, ok := activeBySession[rec.ID]; ok {
 			sess.ActiveAgentSwitch = &agentSwitch
 		}
-		s.markPreservedEdits(ctx, &sess)
+		_, sess.HasPreservedEdits = preservedBySession[rec.ID]
 		out = append(out, sess)
 	}
 	if s.statusRecoveryRevision() != recoveryRevision {
@@ -1190,6 +1199,8 @@ func mapSessionError(err error) error {
 		return apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	case errors.Is(err, sessionmanager.ErrNoPreservedEdits):
 		return apierr.Conflict("NO_PRESERVED_EDITS", "This session has no saved edits to put back.", nil)
+	case errors.Is(err, sessionmanager.ErrSessionNotTerminated):
+		return apierr.Conflict("SESSION_NOT_TERMINATED", "Session must be terminated before putting saved edits back.", nil)
 	case errors.Is(err, ports.ErrSessionBranchMissing):
 		return apierr.Conflict("SESSION_BRANCH_MISSING", "The branch for this session is gone, so the saved edits stay saved until that branch exists again.", nil)
 	case errors.Is(err, sessionmanager.ErrNotRestorable):

@@ -104,9 +104,10 @@ func commitTreeArgs(worktree, treeSHA, parent, message string) []string {
 	return args
 }
 
-// updateRefArgs creates or moves a ref to point at a commit SHA.
-func updateRefArgs(worktree, ref, commitSHA string) []string {
-	return []string{"-C", worktree, "update-ref", ref, commitSHA}
+// createRefArgs creates a ref only when it does not already exist. The all-zero
+// old value makes update-ref an atomic create rather than an overwrite.
+func createRefArgs(worktree, ref, commitSHA string) []string {
+	return []string{"-C", worktree, "update-ref", ref, commitSHA, strings.Repeat("0", len(commitSHA))}
 }
 
 // deleteRefArgs deletes a ref unconditionally.
@@ -129,12 +130,6 @@ func revParseHeadArgs(worktree string) []string {
 // no sequencer state is left that would require a cherry-pick --quit afterward.
 func cherryPickNoCommitArgs(worktree, commitSHA string) []string {
 	return []string{"-C", worktree, "cherry-pick", "--no-commit", commitSHA}
-}
-
-// stashCreateUntrackedArgs writes the dirty worktree, including untracked
-// files, to a commit object and prints its SHA. It does not update refs/stash.
-func stashCreateUntrackedArgs(worktree string) []string {
-	return []string{"-C", worktree, "stash", "create", "--include-untracked"}
 }
 
 // mergeTreeWriteArgs merges ours and theirs and prints the result tree. Exit 1

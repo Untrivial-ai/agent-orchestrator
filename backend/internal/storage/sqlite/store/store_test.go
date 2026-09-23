@@ -1847,6 +1847,13 @@ func TestSessionWorktreesRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(got, rows) {
 		t.Fatalf("worktrees = %#v, want %#v", got, rows)
 	}
+	preservedIDs, err := s.ListSessionsWithPreservedWorktrees(ctx, []domain.SessionID{rec.ID, "not-preserved"})
+	if err != nil || !reflect.DeepEqual(preservedIDs, []domain.SessionID{rec.ID}) {
+		t.Fatalf("sessions with preserved worktrees = %v, err=%v; want [%s]", preservedIDs, err, rec.ID)
+	}
+	if empty, err := s.ListSessionsWithPreservedWorktrees(ctx, nil); err != nil || len(empty) != 0 {
+		t.Fatalf("empty batch = %v, err=%v; want empty result", empty, err)
+	}
 	one, ok, err := s.GetSessionWorktree(ctx, rec.ID, "api")
 	if err != nil || !ok || one.PreservedRef != "refs/ao/preserved/ws-1" {
 		t.Fatalf("get api = %#v ok=%v err=%v", one, ok, err)

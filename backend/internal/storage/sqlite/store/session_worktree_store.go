@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -59,6 +60,23 @@ func (s *Store) ListSessionWorktrees(ctx context.Context, sessionID domain.Sessi
 		out = append(out, sessionWorktreeFromGen(row))
 	}
 	return out, nil
+}
+
+// ListSessionsWithPreservedWorktrees returns the requested sessions that have
+// at least one saved-edit ref, in one query for session-list reads.
+func (s *Store) ListSessionsWithPreservedWorktrees(ctx context.Context, ids []domain.SessionID) ([]domain.SessionID, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("marshal session ids: %w", err)
+	}
+	rows, err := s.qr.ListSessionsWithPreservedWorktrees(ctx, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("list sessions with preserved worktrees: %w", err)
+	}
+	return rows, nil
 }
 
 // DeleteSessionWorktrees deletes the per-repo worktree rows for a session.

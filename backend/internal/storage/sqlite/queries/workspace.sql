@@ -39,5 +39,11 @@ FROM session_worktrees
 WHERE session_id = ?
 ORDER BY CASE WHEN repo_name = '__root__' THEN 0 ELSE 1 END, repo_name;
 
+-- name: ListSessionsWithPreservedWorktrees :many
+SELECT DISTINCT session_worktrees.session_id
+FROM session_worktrees
+JOIN json_each(?) AS wanted ON session_worktrees.session_id = CAST(wanted.value AS TEXT)
+WHERE session_worktrees.preserved_ref != '';
+
 -- name: DeleteSessionWorktrees :exec
 DELETE FROM session_worktrees WHERE session_id = ?;

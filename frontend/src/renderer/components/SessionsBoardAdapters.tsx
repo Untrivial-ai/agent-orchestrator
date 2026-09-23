@@ -37,6 +37,7 @@ import { cn } from "../lib/utils";
 import { AgentAvatar } from "./AgentAvatar";
 import { ProductExternalLink } from "./ProductExternalLink";
 import { SessionTerminationPopover } from "./SessionTerminationPopover";
+import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 export function toBoardSessionPresentation(
@@ -118,7 +119,7 @@ export function ArchivedSessionCardAdapter({
 	const branch = session.branch ?? "";
 	const putEditsBack = (event: MouseEvent<HTMLButtonElement>) => {
 		event.stopPropagation();
-		if (puttingBack || isRestoreDisabled) return;
+		if (puttingBack || isRestoreDisabled || session.isTerminated !== true) return;
 		setPuttingBack(true);
 		void reapply(session.id).finally(() => setPuttingBack(false));
 	};
@@ -126,16 +127,18 @@ export function ArchivedSessionCardAdapter({
 		<DesktopSessionCard
 			action={
 				<span className="inline-flex items-center gap-1">
-					{session.hasPreservedEdits ? (
-						<button
+					{session.hasPreservedEdits && session.isTerminated === true ? (
+						<Button
 							aria-label={t("shell.putEditsBackNamed", { title: session.title })}
-							className="inline-flex h-control-board-sm items-center rounded-md px-2 text-2xs text-passive transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:cursor-not-allowed disabled:opacity-35"
+							className="h-control-board-sm px-2 text-2xs text-passive hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:cursor-not-allowed disabled:opacity-35"
 							disabled={puttingBack || isRestoreDisabled}
 							onClick={putEditsBack}
+						size="none"
 							type="button"
+							variant="ghost"
 						>
 							{puttingBack ? t("shell.puttingEditsBack") : t("shell.putEditsBack")}
-						</button>
+						</Button>
 					) : null}
 					<ArchiveRestoreButton
 						isDisabled={isRestoreDisabled || puttingBack}

@@ -8,9 +8,19 @@ export function useReapplyPreservedEdits() {
 	const queryClient = useQueryClient();
 	return useCallback(
 		async (sessionId: string) => {
-			const { data, error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/reapply-edits", {
-				params: { path: { sessionId } },
-			});
+			const request = () =>
+				apiClient.POST("/api/v1/sessions/{sessionId}/reapply-edits", {
+					params: { path: { sessionId } },
+				});
+			let result: Awaited<ReturnType<typeof request>>;
+			try {
+				result = await request();
+			} catch (requestError) {
+				const message = apiErrorMessage(requestError, "Could not put saved edits back");
+				useUiStore.getState().showGlobalToast(message, undefined, "error");
+				return { ok: false as const, message };
+			}
+			const { data, error, response } = result;
 			if (error) {
 				const fallback = response
 					? `Could not put saved edits back (${response.status})`

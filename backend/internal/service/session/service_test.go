@@ -80,6 +80,7 @@ type fakeStore struct {
 	reviewRuns          map[domain.SessionID][]domain.CurrentHeadReviewRun
 	listPRFactsCalls    int
 	listReviewRunsCalls int
+	listPreservedCalls  int
 	num                 int
 }
 
@@ -110,6 +111,7 @@ func TestListBatchesKanbanReads(t *testing.T) {
 	st.sessions["mer-2"] = domain.SessionRecord{ID: "mer-2", ProjectID: "mer"}
 	st.pr["mer-1"] = domain.PRFacts{URL: "pr-1", HeadSHA: "head-1"}
 	st.pr["mer-2"] = domain.PRFacts{URL: "pr-2", HeadSHA: "head-2"}
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{{PreservedRef: "refs/ao/preserved/mer-1"}}
 	st.reviewRuns["mer-1"] = []domain.CurrentHeadReviewRun{{SessionID: "mer-1", PRURL: "pr-1", Status: domain.ReviewRunRunning, ID: "run-1", CreatedAt: time.Now().UTC()}}
 	st.reviewRuns["mer-2"] = []domain.CurrentHeadReviewRun{{SessionID: "mer-2", PRURL: "pr-2", Status: domain.ReviewRunRunning, ID: "run-2", CreatedAt: time.Now().UTC()}}
 
@@ -120,11 +122,31 @@ func TestListBatchesKanbanReads(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("len(list) = %d, want 2", len(list))
 	}
+	for _, sess := range list {
+		want := sess.ID == "mer-1"
+		if sess.HasPreservedEdits != want {
+			t.Errorf("session %s HasPreservedEdits = %v, want %v", sess.ID, sess.HasPreservedEdits, want)
+		}
+	}
 	if st.listPRFactsCalls != 1 {
 		t.Fatalf("ListPRFacts calls = %d, want 1 batched call", st.listPRFactsCalls)
 	}
 	if st.listReviewRunsCalls != 1 {
 		t.Fatalf("ListCurrentHeadReviewRuns calls = %d, want 1 batched call", st.listReviewRunsCalls)
+	}
+	if st.listPreservedCalls != 1 {
+		t.Fatalf("ListSessionsWithPreservedWorktrees calls = %d, want 1 batched call", st.listPreservedCalls)
+	}
+}
+
+func TestReapplyRejectsNonTerminatedSessionAsConflict(t *testing.T) {
+	got := mapSessionError(sessionmanager.ErrSessionNotTerminated)
+	var apiError *apierr.Error
+	if !errors.As(got, &apiError) {
+		t.Fatalf("mapped error = %T %v, want *apierr.Error", got, got)
+	}
+	if apiError.Kind != apierr.KindConflict || apiError.Code != "SESSION_NOT_TERMINATED" {
+		t.Fatalf("mapped error = %+v, want conflict SESSION_NOT_TERMINATED", apiError)
 	}
 }
 
@@ -419,6 +441,20 @@ func (f *fakeStore) GetProject(_ context.Context, id string) (domain.ProjectReco
 
 func (f *fakeStore) ListSessionWorktrees(_ context.Context, id domain.SessionID) ([]domain.SessionWorktreeRecord, error) {
 	return append([]domain.SessionWorktreeRecord(nil), f.worktrees[id]...), nil
+}
+
+func (f *fakeStore) ListSessionsWithPreservedWorktrees(_ context.Context, ids []domain.SessionID) ([]domain.SessionID, error) {
+	f.listPreservedCalls++
+	var out []domain.SessionID
+	for _, id := range ids {
+		for _, row := range f.worktrees[id] {
+			if row.PreservedRef != "" {
+				out = append(out, id)
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 func TestSessionListAppliesActivityBeforePRFacts(t *testing.T) {

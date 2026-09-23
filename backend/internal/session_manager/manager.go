@@ -31,13 +31,14 @@ import (
 // Sentinel errors returned by the Session Manager; callers match them with
 // errors.Is.
 var (
-	ErrNotFound            = errors.New("session: not found")
-	ErrNotRestorable       = errors.New("session: not restorable (not terminal)")
-	ErrTerminated          = errors.New("session: terminated")
-	ErrAgentExited         = errors.New("session: agent exited")
-	ErrAgentNotExited      = errors.New("session: agent has not exited")
-	ErrAgentExitInProgress = errors.New("session: agent exit is already in progress")
-	ErrIncompleteHandle    = errors.New("session: incomplete teardown handle")
+	ErrNotFound             = errors.New("session: not found")
+	ErrNotRestorable        = errors.New("session: not restorable (not terminal)")
+	ErrSessionNotTerminated = errors.New("session: must be terminated before reapplying preserved edits")
+	ErrTerminated           = errors.New("session: terminated")
+	ErrAgentExited          = errors.New("session: agent exited")
+	ErrAgentNotExited       = errors.New("session: agent has not exited")
+	ErrAgentExitInProgress  = errors.New("session: agent exit is already in progress")
+	ErrIncompleteHandle     = errors.New("session: incomplete teardown handle")
 	// ErrProjectNotResolvable means the spawn's project has no usable repo
 	// (unregistered, archived, or missing a path). The API maps it to a 400.
 	ErrProjectNotResolvable = errors.New("session: project repo not resolvable")
@@ -2181,6 +2182,9 @@ func (m *Manager) ReapplyPreservedEdits(ctx context.Context, id domain.SessionID
 	}
 	if !ok {
 		return ReapplyResult{}, fmt.Errorf("reapply %s: %w", id, ErrNotFound)
+	}
+	if !rec.IsTerminated {
+		return ReapplyResult{}, fmt.Errorf("reapply %s: %w", id, ErrSessionNotTerminated)
 	}
 	rows, err := m.store.ListSessionWorktrees(ctx, id)
 	if err != nil {
