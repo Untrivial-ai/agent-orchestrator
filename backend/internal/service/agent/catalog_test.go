@@ -195,7 +195,7 @@ func TestCatalogFreshnessUsesMachineLocalDateAndTimezone(t *testing.T) {
 	}
 }
 
-func TestStartupPrefetchCreatesEveryAuthorizedAgentProjectScope(t *testing.T) {
+func TestStartupPrefetchCreatesEveryInstalledAgentProjectScopeWithoutAuthentication(t *testing.T) {
 	discoverer := successfulModelDiscoverer()
 	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
 		"one": {ID: "one", Path: t.TempDir()},
@@ -203,8 +203,8 @@ func TestStartupPrefetchCreatesEveryAuthorizedAgentProjectScope(t *testing.T) {
 	}}
 	cache := &fakeModelCache{}
 	svc := newService([]agentregistry.HarnessAgent{
-		harnessAuthAgent("codex", "Codex", ports.AgentAuthStatusAuthorized, nil),
-		harnessAuthAgent("gemini", "Gemini", ports.AgentAuthStatusUnauthorized, nil),
+		harnessAuthAgent("codex", "Codex", ports.AgentAuthStatusUnauthorized, nil),
+		harnessAgent("gemini", "Gemini", ports.ErrAgentBinaryNotFound),
 	}, cache, projects, discoverer)
 	svc.prefetchModelCatalogs(context.Background(), false)
 	deadline := time.Now().Add(time.Second)
@@ -212,14 +212,14 @@ func TestStartupPrefetchCreatesEveryAuthorizedAgentProjectScope(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	if got := discoverer.discoverCalls.Load(); got != 2 {
-		t.Fatalf("discoveries = %d, want authorized agent across two active projects", got)
+		t.Fatalf("discoveries = %d, want installed agent across two active projects", got)
 	}
 	for _, projectID := range []string{"one", "two"} {
 		if _, ok, err := cache.GetAgentModelCatalog(context.Background(), "codex", projectID); err != nil || !ok {
 			t.Fatalf("cached codex scope %q = (%v, %v), want persisted", projectID, ok, err)
 		}
 		if _, ok, err := cache.GetAgentModelCatalog(context.Background(), "gemini", projectID); err != nil || ok {
-			t.Fatalf("cached unauthorized gemini scope %q = (%v, %v), want absent", projectID, ok, err)
+			t.Fatalf("cached uninstalled gemini scope %q = (%v, %v), want absent", projectID, ok, err)
 		}
 	}
 }

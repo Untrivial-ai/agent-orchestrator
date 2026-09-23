@@ -204,18 +204,17 @@ func (s *Service) prefetchModelCatalogs(ctx context.Context, force bool) {
 	if err != nil || ctx.Err() != nil {
 		return
 	}
-	readiness, _ := s.EnsureReadiness(ctx, nil, domain.AgentReadinessPurposeDisplay)
-	priority := make(map[string]int, len(readiness.Agents))
-	for _, item := range readiness.Agents {
-		if item.Authentication.State == domain.AgentAuthenticationAuthorized || item.Authentication.State == domain.AgentAuthenticationNotApplicable {
-			priority[item.ID] = 0
+	readiness, err := s.readiness.EnsureInstallation(ctx, nil, domain.AgentReadinessPurposeDisplay)
+	if err != nil {
+		return
+	}
+	installed := make(map[string]struct{}, len(readiness))
+	for _, item := range readiness {
+		if item.Installation.State == domain.AgentInstallationInstalled {
+			installed[item.ID] = struct{}{}
 		}
 	}
-	// Preserve and validate previously cached static catalogs even if their
-	// executable is temporarily unavailable.
-	priority["claude-code"] = 0
-	priority["muse"] = 0
-	// Include every active project scope for authenticated adapters. This makes
+	// Include every active project scope for installed adapters. This makes
 	// the first startup after the cache migration populate model choices without
 	// waiting for the user to open each agent's model picker.
 	if projects, listable := s.projects.(projectListLookup); listable {
@@ -229,7 +228,7 @@ func (s *Service) prefetchModelCatalogs(ctx context.Context, force bool) {
 				if !project.ArchivedAt.IsZero() {
 					continue
 				}
-				for agentID := range priority {
+				for agentID := range installed {
 					key := agentID + "\x00" + project.ID
 					if _, exists := known[key]; exists {
 						continue
@@ -240,10 +239,10 @@ func (s *Service) prefetchModelCatalogs(ctx context.Context, force bool) {
 			}
 		}
 	}
-	sort.SliceStable(records, func(i, j int) bool { return priority[records[i].AgentID] < priority[records[j].AgentID] })
+	sort.SliceStable(records, func(i, j int) bool { return records[i].AgentID < records[j].AgentID })
 	jobs := make(chan ports.CachedAgentModelCatalog, len(records))
 	for _, record := range records {
-		if _, eligible := priority[record.AgentID]; !eligible {
+		if _, eligible := installed[record.AgentID]; !eligible {
 			continue
 		}
 		if ctx.Err() != nil {
