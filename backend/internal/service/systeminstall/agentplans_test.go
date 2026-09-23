@@ -572,7 +572,7 @@ func TestAgentTargetsAreValidButPrerequisitesAreNotHarnessRows(t *testing.T) {
 			t.Fatalf("agent target %q is not accepted by both allowlists", target)
 		}
 	}
-	for _, target := range []Target{TargetTmux, TargetGH, TargetClaude} {
+	for _, target := range []Target{TargetGH, TargetClaude} {
 		if !Valid(target) || IsAgentTarget(target) {
 			t.Fatalf("prerequisite target %q was classified incorrectly", target)
 		}

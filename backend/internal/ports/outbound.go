@@ -459,9 +459,6 @@ var (
 	// conflict markers for manual resolution. Adapters wrap this sentinel via
 	// fmt.Errorf so callers can match it with errors.Is.
 	ErrPreservedConflict = errors.New("workspace: preserved apply produced conflicts")
-	// ErrRuntimePrerequisite reports a missing host prerequisite for the selected
-	// runtime before a session can be created.
-	ErrRuntimePrerequisite = errors.New("runtime: prerequisite missing")
 	// ErrRuntimeCommandLineTooLong reports that the fully escaped command line
 	// exceeds the host operating system's process-creation limit.
 	ErrRuntimeCommandLineTooLong = errors.New("runtime: command line too long")

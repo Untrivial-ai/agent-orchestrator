@@ -14,7 +14,7 @@ The desktop app is the canonical install path. It owns the local daemon, require
 | Git | Always | Creates and manages isolated worktrees and branches. |
 | GitHub CLI `gh` | GitHub projects | Uses your existing authentication for repository and pull-request operations. |
 | An agent harness | Always | The coding agent AO launches, such as Claude Code, Codex, Cursor, Aider, or OpenCode. |
-| tmux | Terminal UI on macOS/Linux | Keeps native TUI sessions attachable. Chat does not require an agent tmux pane. |
+| tmux | Legacy Terminal UI sessions on macOS/Linux | New sessions run on AO's native terminal host and do not need it. Install it only to reopen sessions created before that host existed, or as a fallback runtime. |
 
 AO uses the agent binaries and sign-ins already installed on your machine. It does not bundle Claude Code, Codex, or other provider CLIs.
 
@@ -99,7 +99,7 @@ All AO application state lives under `~/.ao` by default, including the daemon da
 		Run `gh auth status`. Confirm the active account can access the repository and its pull requests.
 	</Accordion>
 	<Accordion title="Terminal UI cannot start on macOS or Linux">
-		Install `tmux`, or choose Chat when the selected harness supports it.
+		New sessions run on AO's native terminal host and do not need tmux. Check the agent harness first, and choose Chat when the selected harness supports it. Install `tmux` only to reopen a session created before that host existed.
 	</Accordion>
 	<Accordion title="The legacy `ao` command is not found">
 		The desktop app does not require it. Only troubleshoot the package manager's global bin path if you intentionally use the frozen legacy CLI.

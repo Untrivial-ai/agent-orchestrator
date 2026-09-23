@@ -1244,8 +1244,6 @@ func mapSessionError(err error) error {
 		return apierr.Invalid("INVALID_BRANCH", err.Error(), nil)
 	case errors.Is(err, ports.ErrAgentBinaryNotFound):
 		return apierr.Invalid("AGENT_BINARY_NOT_FOUND", err.Error(), nil)
-	case errors.Is(err, ports.ErrRuntimePrerequisite):
-		return apierr.Invalid("RUNTIME_PREREQUISITE_MISSING", err.Error(), nil)
 	case errors.Is(err, ports.ErrRuntimeCommandLineTooLong):
 		return apierr.Invalid("WINDOWS_COMMAND_LINE_TOO_LONG",
 			"The agent launch command exceeds the Windows size limit. Shorten the task or project instructions.", nil)

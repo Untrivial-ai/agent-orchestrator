@@ -2,17 +2,25 @@ package tmux
 
 import "fmt"
 
+// launcherShellPath is the interpreter for AO's own launch prelude. It is
+// always POSIX sh: the prelude is generated POSIX (see buildLaunchCommand),
+// while $SHELL may be a non-POSIX interactive shell (fish, nushell, tcsh) that
+// rejects `export VAR=VAL` and kills the pane at creation (#3788). The user's
+// interactive shell is still restored by the prelude's trailing
+// `exec "${SHELL:-/bin/sh}" -i`.
+const launcherShellPath = "/bin/sh"
+
 // newSessionArgs builds args for `tmux new-session -d -s <id> -x 220 -y 50
 // -c <cwd> <shell> -c <launchCmd>`. The shell -c form runs the launch command
-// inside the configured shell so exported env vars and quoting work correctly.
-func newSessionArgs(id, cwd, shellPath, launchCmd string) []string {
+// inside a POSIX shell so exported env vars and quoting work correctly.
+func newSessionArgs(id, cwd, launchCmd string) []string {
 	return []string{
 		"new-session", "-d",
 		"-s", id,
 		"-x", "220",
 		"-y", "50",
 		"-c", cwd,
-		shellPath, "-c", launchCmd,
+		launcherShellPath, "-c", launchCmd,
 	}
 }
 
@@ -20,12 +28,12 @@ func newSessionArgs(id, cwd, shellPath, launchCmd string) []string {
 // the tmux session and terminal handle intact. The bare session target resolves
 // to the active window/pane regardless of the user's base-index /
 // pane-base-index (a hardcoded :0.0 misses when either is 1, see #4656).
-func respawnPaneArgs(id, cwd, shellPath, launchCmd string) []string {
+func respawnPaneArgs(id, cwd, launchCmd string) []string {
 	return []string{
 		"respawn-pane", "-k",
 		"-t", id,
 		"-c", cwd,
-		shellPath, "-c", launchCmd,
+		launcherShellPath, "-c", launchCmd,
 	}
 }
 

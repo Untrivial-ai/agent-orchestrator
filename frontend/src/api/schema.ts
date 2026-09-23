@@ -2635,7 +2635,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Check local machine readiness (git, tmux, agent harness, gh) */
+        /** Check local machine readiness (git, agent harness, gh) */
         get: operations["getSystemRequirements"];
         put?: never;
         post?: never;
@@ -3681,7 +3681,7 @@ export interface components {
             path: string;
         };
         InstallJob: {
-            /** @description Human-readable install command, e.g. "brew install tmux", for display even before/without output. */
+            /** @description Human-readable install command, e.g. "brew install gh", for display even before/without output. */
             command?: string;
             /** @description Set on failure or when the target is unsupported on this machine: the exec error, the Unsupported reason, or a timeout message. */
             error?: string;
@@ -3707,7 +3707,7 @@ export interface components {
              * @description Fixed install target this job ran (or is running) for.
              * @enum {string}
              */
-            target: "tmux" | "gh" | "claude" | "claude-code" | "codex" | "cursor" | "opencode" | "aider" | "copilot" | "grok" | "kimi" | "pi" | "amp" | "auggie" | "droid" | "crush" | "cline" | "goose" | "qwen" | "continue" | "devin" | "kiro" | "kilocode" | "vibe" | "muse" | "agy" | "autohand" | "kimchi" | "prime-agent" | "omp" | "cloudflared";
+            target: "gh" | "claude" | "claude-code" | "codex" | "cursor" | "opencode" | "aider" | "copilot" | "grok" | "kimi" | "pi" | "amp" | "auggie" | "droid" | "crush" | "cline" | "goose" | "qwen" | "continue" | "devin" | "kiro" | "kilocode" | "vibe" | "muse" | "agy" | "autohand" | "kimchi" | "prime-agent" | "omp" | "cloudflared";
             /** Format: date-time */
             updatedAt?: null | string;
         };
@@ -14448,8 +14448,8 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Install target identifier: tmux, gh, claude, codex, opencode, copilot, or cloudflared. */
-                target: "tmux" | "gh" | "claude" | "codex" | "opencode" | "copilot" | "cloudflared";
+                /** @description Install target identifier: gh, claude, codex, opencode, copilot, or cloudflared. */
+                target: "gh" | "claude" | "codex" | "opencode" | "copilot" | "cloudflared";
             };
             cookie?: never;
         };
@@ -14498,8 +14498,8 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description Install target identifier: tmux, gh, claude, codex, opencode, copilot, or cloudflared. */
-                target: "tmux" | "gh" | "claude" | "codex" | "opencode" | "copilot" | "cloudflared";
+                /** @description Install target identifier: gh, claude, codex, opencode, copilot, or cloudflared. */
+                target: "gh" | "claude" | "codex" | "opencode" | "copilot" | "cloudflared";
             };
             cookie?: never;
         };

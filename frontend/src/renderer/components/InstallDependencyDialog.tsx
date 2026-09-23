@@ -21,8 +21,8 @@ import {
 } from "./ui/dialog";
 
 type InstallJob = components["schemas"]["InstallJob"];
-type InstallTarget = "tmux" | "gh" | "claude" | "codex" | "opencode" | "copilot";
-type AgentInstallTarget = Exclude<InstallTarget, "tmux" | "gh">;
+type InstallTarget = "gh" | "claude" | "codex" | "opencode" | "copilot";
+type AgentInstallTarget = Exclude<InstallTarget, "gh">;
 
 // Labels are the CLIs' own product names — not translated, same treatment as
 // "Agent Orchestrator" itself. Descriptions are ordinary UI copy and go
@@ -159,17 +159,11 @@ export function InstallDependencyDialog({
 
 	const byId = new Map(requirements.map((requirement) => [requirement.id, requirement]));
 	const git = byId.get("git");
-	const tmux = byId.get("tmux");
 	const harness = byId.get("harness");
 	const gh = byId.get("gh");
 	const gitBlocking = Boolean(git && git.required && !git.satisfied);
-	const tmuxBlocking = Boolean(tmux && tmux.required && !tmux.satisfied);
 	const harnessBlocking = Boolean(harness && harness.required && !harness.satisfied);
 	const ghAdvisory = Boolean(gh && !gh.satisfied);
-
-	useEffect(() => {
-		if (tmuxBlocking) void install.inspect("tmux");
-	}, [install.inspect, tmuxBlocking]);
 
 	useEffect(() => {
 		if (ghAdvisory) void install.inspect("gh");
@@ -214,20 +208,6 @@ export function InstallDependencyDialog({
 					{gitBlocking && git ? (
 						<IssueSection label={requirementDisplayLabel(git, t)} detail={requirementDetailText(git, t)}>
 							<p className="text-caption leading-snug text-settings-muted">{t("startup.installGitInstructions")}</p>
-						</IssueSection>
-					) : null}
-
-					{tmuxBlocking && tmux ? (
-						<IssueSection label={requirementDisplayLabel(tmux, t)} detail={requirementDetailText(tmux, t)}>
-							<InstallAction
-								primaryLabel={t("startup.installTmux")}
-								disabled={install.running && install.target !== "tmux"}
-								job={install.jobFor("tmux")}
-								planChecked={install.inspectionFinished("tmux")}
-								error={install.target === "tmux" ? install.startError : undefined}
-								onInstall={() => void install.start("tmux")}
-								t={t}
-							/>
 						</IssueSection>
 					) : null}
 

@@ -648,7 +648,7 @@ func systemOperations() []operation {
 	return []operation{
 		{
 			method: http.MethodGet, path: "/api/v1/system/requirements", id: "getSystemRequirements", tag: "system",
-			summary: "Check local machine readiness (git, tmux, agent harness, gh)",
+			summary: "Check local machine readiness (git, agent harness, gh)",
 			resps: []respUnit{
 				{http.StatusOK, controllers.SystemRequirementsResponse{}},
 				{http.StatusInternalServerError, envelope.APIError{}},

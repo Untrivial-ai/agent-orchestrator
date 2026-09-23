@@ -93,7 +93,7 @@ func TestCheck_AllSatisfied(t *testing.T) {
 		t.Fatalf("len(Requirements) = %d, want 5", len(report.Requirements))
 	}
 	wantOrder := []string{"git", "tmux", "harness", "gh", "github-auth"}
-	wantRequired := map[string]bool{"git": true, "tmux": true, "harness": true, "gh": false, "github-auth": false}
+	wantRequired := map[string]bool{"git": true, "tmux": false, "harness": true, "gh": false, "github-auth": false}
 	for i, id := range wantOrder {
 		if report.Requirements[i].ID != id {
 			t.Fatalf("Requirements[%d].ID = %q, want %q", i, report.Requirements[i].ID, id)
@@ -203,12 +203,16 @@ func TestCheck_TmuxMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Check() error = %v", err)
 	}
-	if report.Ready {
-		t.Fatalf("Ready = true, want false")
+	// tmux is advisory now: a missing legacy runtime must not block readiness.
+	if !report.Ready {
+		t.Fatalf("Ready = false, want true; requirements=%+v", report.Requirements)
 	}
 	tmux := requirementByID(t, report, "tmux")
 	if tmux.Satisfied {
 		t.Fatalf("tmux.Satisfied = true, want false")
+	}
+	if tmux.Required {
+		t.Fatalf("tmux.Required = true, want false")
 	}
 	if tmux.Detail == "" {
 		t.Fatalf("tmux.Detail is empty, want a not-found message")

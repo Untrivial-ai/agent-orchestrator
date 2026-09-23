@@ -109,9 +109,10 @@ func TestDoctorPrefersAndReportsConfiguredTmux(t *testing.T) {
 	}
 }
 
-// TestDoctorChecksTmuxVersionFailsOnError covers the case where tmux is found
-// but the version command fails.
-func TestDoctorChecksTmuxVersionFailsOnError(t *testing.T) {
+// TestDoctorChecksTmuxVersionWarnsOnError covers the case where tmux is found
+// but the version command fails. tmux is only the legacy/fallback runtime, so
+// a broken binary must not fail the doctor run.
+func TestDoctorChecksTmuxVersionWarnsOnError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("ao doctor emits a conpty check on Windows, not tmux")
 	}
@@ -124,8 +125,8 @@ func TestDoctorChecksTmuxVersionFailsOnError(t *testing.T) {
 	})
 
 	check := findDoctorCheck(t, c.runDoctor(context.Background()), "tmux")
-	if check.Level != doctorFail {
-		t.Fatalf("tmux check = %+v, want FAIL on version error", check)
+	if check.Level != doctorWarn {
+		t.Fatalf("tmux check = %+v, want WARN on version error", check)
 	}
 }
 
