@@ -23,6 +23,7 @@ import { NotificationTypeIcon } from "../lib/notification-type-icon";
 import {
 	notificationSections,
 	notificationAction,
+	notificationTarget,
 	notificationVisual,
 	relativeTime,
 } from "../lib/notificationView";
@@ -117,6 +118,7 @@ export default function NotificationsScreen() {
 		// decides: a terminated agent waiting on input is restored, not opened.
 		const action = notificationAction(notification, sessionState(notification.sessionId));
 		if (action.kind === "open") router.navigate(`/session/${action.sessionId}`);
+		else if (action.kind === "review") router.navigate(notificationTarget(notification));
 		else if (action.kind === "prs") router.navigate("/prs");
 		else if (action.kind === "restore") {
 			haptics.warning();
@@ -283,7 +285,7 @@ function NotificationSectionHeader({ title, count }: { title: string; count: num
 function NotificationRow({ item, now, action, restoring, onPress, onRestore }: {
 	item: NotificationRecord;
 	now: number;
-	action: "open" | "restore" | "prs" | "none";
+	action: "open" | "review" | "restore" | "prs" | "none";
 	restoring: boolean;
 	onPress: () => void;
 	onRestore: () => void;

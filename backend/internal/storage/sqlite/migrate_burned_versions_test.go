@@ -152,6 +152,7 @@ var shippedMigrations = map[int64]string{
 	147: "0147_native_history_provenance.sql",
 	148: "0148_notification_dismissal.sql",
 	149: "0149_reviewer_chat_conversations.sql",
+	150: "0150_review_result_notifications.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

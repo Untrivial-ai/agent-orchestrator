@@ -118,10 +118,12 @@ export function PushManager(): null {
 
 	function route(data: PushData, coldStart = false) {
 		// Reuse the one routing rule so the reported target can't disagree with
-		// where the tap actually lands: notificationTarget returns /session/:id
-		// only for a needs_input with a sessionId, and /prs for everything else.
-		const destination = notificationTarget({ type: data.type ?? "", sessionId: data.sessionId });
-		const target = destination.startsWith("/session") ? "session" : "prs";
+		// where the tap actually lands: review outcomes deep-link to their PR,
+		// needs_input opens its session, and incomplete/unknown payloads use /prs.
+		const destination = notificationTarget({ type: data.type ?? "", sessionId: data.sessionId, prUrl: data.prUrl });
+		const target = destination.startsWith("/review")
+			? "review"
+			: destination.startsWith("/session") ? "session" : "prs";
 		mobileTelemetry()?.capture(MOBILE_EVENTS.notificationOpened, { target, cold_start: coldStart });
 		// Best-effort mark-read so unread counts stay consistent with the dashboard.
 		if (config && data.notificationId) {

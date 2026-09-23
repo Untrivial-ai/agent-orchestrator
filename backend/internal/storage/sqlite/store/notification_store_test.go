@@ -50,6 +50,39 @@ func TestNotificationStore_InsertListAndDedupe(t *testing.T) {
 	}
 }
 
+func TestNotificationStore_SourceKeyDedupesTerminalReviewResult(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	sess, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	rec := domain.NotificationRecord{
+		ID: "ntf_1", SessionID: sess.ID, ProjectID: sess.ProjectID,
+		PRURL: "https://github.com/acme/app/pull/42", Type: domain.NotificationReviewCompleted,
+		Title: "Review complete", Status: domain.NotificationUnread,
+		CreatedAt: time.Now().UTC().Truncate(time.Second), SourceKey: "review_run:run-1",
+	}
+	if _, inserted, err := s.CreateNotification(ctx, rec); err != nil || !inserted {
+		t.Fatalf("first result inserted=%v err=%v", inserted, err)
+	}
+	if _, ok, err := s.MarkNotificationRead(ctx, rec.ID); err != nil || !ok {
+		t.Fatalf("mark read ok=%v err=%v", ok, err)
+	}
+	dup := rec
+	dup.ID = "ntf_retry"
+	if got, inserted, err := s.CreateNotification(ctx, dup); err != nil || inserted || got.ID != rec.ID {
+		t.Fatalf("retry result = %+v inserted=%v err=%v", got, inserted, err)
+	}
+	next := rec
+	next.ID = "ntf_2"
+	next.SourceKey = "review_run:run-2"
+	if _, inserted, err := s.CreateNotification(ctx, next); err != nil || !inserted {
+		t.Fatalf("distinct review result inserted=%v err=%v", inserted, err)
+	}
+}
+
 // Seeing a notification is not the same as fixing what it reported. Dedupe is
 // keyed on the issue being open, so the same session cannot be re-notified
 // about a pause it is still sitting in — only resolving it reopens dedupe.

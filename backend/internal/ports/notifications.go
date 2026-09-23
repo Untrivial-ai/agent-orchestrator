@@ -15,6 +15,8 @@ type NotificationIntent struct {
 	ProjectID domain.ProjectID
 	PRURL     string
 	CreatedAt time.Time
+	// SourceKey makes one terminal fact idempotent across retries and restarts.
+	SourceKey string
 
 	// Enrichment hints. These avoid storage reads on the hot path.
 	SessionDisplayName string
