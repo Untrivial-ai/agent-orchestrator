@@ -12,6 +12,7 @@ package interfacehandoff
 type Policy string
 
 const (
+	// The supported handoff admission policies.
 	PolicyDrain     Policy = "drain"
 	PolicyInterrupt Policy = "interrupt"
 )
@@ -25,6 +26,7 @@ func (p Policy) Valid() bool {
 type Phase string
 
 const (
+	// The durable handoff checkpoints.
 	PhaseRequested      Phase = "requested"
 	PhasePreflighting   Phase = "preflighting"
 	PhaseDraining       Phase = "draining"

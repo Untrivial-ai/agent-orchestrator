@@ -49,6 +49,7 @@ func (i SessionInterface) Opposite() SessionInterface {
 type SessionInterfaceTransitionPolicy = interfacehandoff.Policy
 
 const (
+	// The Cloud handoff admission policies.
 	SessionInterfaceTransitionDrain     = interfacehandoff.PolicyDrain
 	SessionInterfaceTransitionInterrupt = interfacehandoff.PolicyInterrupt
 )
@@ -59,6 +60,7 @@ const (
 type SessionInterfaceTransitionPhase = interfacehandoff.Phase
 
 const (
+	// The Cloud handoff durable checkpoints.
 	SessionInterfaceTransitionRequested      = interfacehandoff.PhaseRequested
 	SessionInterfaceTransitionPreflighting   = interfacehandoff.PhasePreflighting
 	SessionInterfaceTransitionDraining       = interfacehandoff.PhaseDraining

@@ -11,6 +11,7 @@ import (
 type SessionInterfaceTransitionPolicy = interfacehandoff.Policy
 
 const (
+	// The local handoff admission policies.
 	SessionInterfaceTransitionDrain     = interfacehandoff.PolicyDrain
 	SessionInterfaceTransitionInterrupt = interfacehandoff.PolicyInterrupt
 )
@@ -39,6 +40,7 @@ func (p SessionInterfaceTransitionHistoryPolicy) Valid() bool {
 type SessionInterfaceTransitionPhase = interfacehandoff.Phase
 
 const (
+	// The local handoff durable checkpoints.
 	SessionInterfaceTransitionRequested      = interfacehandoff.PhaseRequested
 	SessionInterfaceTransitionPreflighting   = interfacehandoff.PhasePreflighting
 	SessionInterfaceTransitionDraining       = interfacehandoff.PhaseDraining
