@@ -12,8 +12,9 @@ package interfacehandoff
 type Policy string
 
 const (
-	// The supported handoff admission policies.
-	PolicyDrain     Policy = "drain"
+	// PolicyDrain waits for in-flight source work to finish.
+	PolicyDrain Policy = "drain"
+	// PolicyInterrupt stops in-flight source work immediately.
 	PolicyInterrupt Policy = "interrupt"
 )
 
@@ -26,18 +27,28 @@ func (p Policy) Valid() bool {
 type Phase string
 
 const (
-	// The durable handoff checkpoints.
-	PhaseRequested      Phase = "requested"
-	PhasePreflighting   Phase = "preflighting"
-	PhaseDraining       Phase = "draining"
+	// PhaseRequested is the durable checkpoint before work starts.
+	PhaseRequested Phase = "requested"
+	// PhasePreflighting validates the source and target controllers.
+	PhasePreflighting Phase = "preflighting"
+	// PhaseDraining waits for source-side work to quiesce.
+	PhaseDraining Phase = "draining"
+	// PhaseSourceStopping records that the source is being stopped.
 	PhaseSourceStopping Phase = "source_stopping"
-	PhaseSourceStopped  Phase = "source_stopped"
+	// PhaseSourceStopped records that the source has stopped.
+	PhaseSourceStopped Phase = "source_stopped"
+	// PhaseTargetStarting records that the target is being started.
 	PhaseTargetStarting Phase = "target_starting"
-	PhaseActivating     Phase = "activating"
-	PhaseCompleted      Phase = "completed"
-	PhaseFailed         Phase = "failed"
-	PhaseCancelled      Phase = "cancelled"
-	PhaseRecovery       Phase = "recovery_required"
+	// PhaseActivating records that the target is ready to become active.
+	PhaseActivating Phase = "activating"
+	// PhaseCompleted is the successful terminal checkpoint.
+	PhaseCompleted Phase = "completed"
+	// PhaseFailed is the terminal checkpoint for a safely restored failure.
+	PhaseFailed Phase = "failed"
+	// PhaseCancelled is the terminal checkpoint for an early cancellation.
+	PhaseCancelled Phase = "cancelled"
+	// PhaseRecovery records that adapter recovery is required.
+	PhaseRecovery Phase = "recovery_required"
 )
 
 // Valid reports whether p is a known handoff checkpoint.

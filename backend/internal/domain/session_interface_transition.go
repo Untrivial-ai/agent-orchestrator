@@ -11,8 +11,9 @@ import (
 type SessionInterfaceTransitionPolicy = interfacehandoff.Policy
 
 const (
-	// The local handoff admission policies.
-	SessionInterfaceTransitionDrain     = interfacehandoff.PolicyDrain
+	// SessionInterfaceTransitionDrain waits for in-flight source work to finish.
+	SessionInterfaceTransitionDrain = interfacehandoff.PolicyDrain
+	// SessionInterfaceTransitionInterrupt stops in-flight source work immediately.
 	SessionInterfaceTransitionInterrupt = interfacehandoff.PolicyInterrupt
 )
 
@@ -40,18 +41,28 @@ func (p SessionInterfaceTransitionHistoryPolicy) Valid() bool {
 type SessionInterfaceTransitionPhase = interfacehandoff.Phase
 
 const (
-	// The local handoff durable checkpoints.
-	SessionInterfaceTransitionRequested      = interfacehandoff.PhaseRequested
-	SessionInterfaceTransitionPreflighting   = interfacehandoff.PhasePreflighting
-	SessionInterfaceTransitionDraining       = interfacehandoff.PhaseDraining
+	// SessionInterfaceTransitionRequested is the checkpoint before work starts.
+	SessionInterfaceTransitionRequested = interfacehandoff.PhaseRequested
+	// SessionInterfaceTransitionPreflighting validates the controllers.
+	SessionInterfaceTransitionPreflighting = interfacehandoff.PhasePreflighting
+	// SessionInterfaceTransitionDraining waits for source work to quiesce.
+	SessionInterfaceTransitionDraining = interfacehandoff.PhaseDraining
+	// SessionInterfaceTransitionSourceStopping records source teardown.
 	SessionInterfaceTransitionSourceStopping = interfacehandoff.PhaseSourceStopping
-	SessionInterfaceTransitionSourceStopped  = interfacehandoff.PhaseSourceStopped
+	// SessionInterfaceTransitionSourceStopped records completed source teardown.
+	SessionInterfaceTransitionSourceStopped = interfacehandoff.PhaseSourceStopped
+	// SessionInterfaceTransitionTargetStarting records target startup.
 	SessionInterfaceTransitionTargetStarting = interfacehandoff.PhaseTargetStarting
-	SessionInterfaceTransitionActivating     = interfacehandoff.PhaseActivating
-	SessionInterfaceTransitionCompleted      = interfacehandoff.PhaseCompleted
-	SessionInterfaceTransitionFailed         = interfacehandoff.PhaseFailed
-	SessionInterfaceTransitionCancelled      = interfacehandoff.PhaseCancelled
-	SessionInterfaceTransitionRecovery       = interfacehandoff.PhaseRecovery
+	// SessionInterfaceTransitionActivating records target activation.
+	SessionInterfaceTransitionActivating = interfacehandoff.PhaseActivating
+	// SessionInterfaceTransitionCompleted records successful activation.
+	SessionInterfaceTransitionCompleted = interfacehandoff.PhaseCompleted
+	// SessionInterfaceTransitionFailed records a safely restored failure.
+	SessionInterfaceTransitionFailed = interfacehandoff.PhaseFailed
+	// SessionInterfaceTransitionCancelled records an early cancellation.
+	SessionInterfaceTransitionCancelled = interfacehandoff.PhaseCancelled
+	// SessionInterfaceTransitionRecovery records required adapter recovery.
+	SessionInterfaceTransitionRecovery = interfacehandoff.PhaseRecovery
 )
 
 // SessionInterfaceTransition is the durable controller-handoff record. The
