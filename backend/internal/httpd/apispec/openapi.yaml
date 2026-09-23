@@ -9995,6 +9995,10 @@ components:
       properties:
         handleId:
           type: string
+        output:
+          description: Current bounded terminal output snapshot, retained after command
+            exit.
+          type: string
         state:
           enum:
           - running
@@ -10004,6 +10008,7 @@ components:
       required:
       - handleId
       - state
+      - output
       type: object
     CueDefinitionRequest:
       properties:

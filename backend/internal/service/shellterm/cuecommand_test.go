@@ -6,11 +6,24 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+type styledCueRuntime struct {
+	*fakeShellRuntime
+	styledOutput string
+	styledErr    error
+}
+
+func (r *styledCueRuntime) GetStyledOutput(_ context.Context, _ ports.RuntimeHandle, _ int) (string, error) {
+	return r.styledOutput, r.styledErr
+}
 
 func TestBuildCueCommandArgv(t *testing.T) {
 	command := `printf "héllo world" | tee output.txt`
@@ -89,8 +102,13 @@ func TestCueCommandTerminalStatusAndStopRetainTerminal(t *testing.T) {
 	if err != nil || status.State != "running" {
 		t.Fatalf("running status=%+v err=%v", status, err)
 	}
+	rt.setOutput("\x1b[2J\r\n\r\nbuilding\r\n\x1b[32mfinished\x1b[0m\r\n")
+	status, err = svc.CueCommandTerminalStatus(context.Background(), term.HandleID)
+	if err != nil || status.Output != "building\nfinished" {
+		t.Fatalf("running output status=%+v err=%v", status, err)
+	}
 	status, err = svc.StopCueCommandTerminal(context.Background(), term.HandleID)
-	if err != nil || status.State != "stopped" || !slices.Equal(rt.interrupted, []string{term.HandleID}) {
+	if err != nil || status.State != "stopped" || status.Output != "building\nfinished" || !slices.Equal(rt.interrupted, []string{term.HandleID}) {
 		t.Fatalf("stop status=%+v err=%v interrupts=%v", status, err, rt.interrupted)
 	}
 	listed, err := svc.ListShellTerminalsForCurrentAppRun(context.Background())
@@ -100,6 +118,27 @@ func TestCueCommandTerminalStatusAndStopRetainTerminal(t *testing.T) {
 	status, err = svc.StopCueCommandTerminal(context.Background(), term.HandleID)
 	if err != nil || status.State != "stopped" || len(rt.interrupted) != 1 {
 		t.Fatalf("idempotent stop status=%+v err=%v interrupts=%v", status, err, rt.interrupted)
+	}
+}
+
+func TestCueCommandTerminalStatusUsesRenderedPaneInsteadOfOverwrittenRawOutput(t *testing.T) {
+	root := t.TempDir()
+	raw := newFakeShellRuntime()
+	runtime := &styledCueRuntime{fakeShellRuntime: raw, styledOutput: "\x1b[32mDownloaded 100%\x1b[0m\n"}
+	svc := newTestService(raw, &fakeShellTerminalStore{}, &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"portfolio": root}})
+	svc.runtime = runtime
+	term, err := svc.OpenCueCommandTerminal(context.Background(), OpenCueCommandTerminalInput{
+		ProjectID: "portfolio", Shell: cueTestShell(t), Command: "download", Title: "Download",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw.setOutput("Downloaded 1%\rDownloaded 10%\rDownloaded 100%\n")
+	for i := 0; i < 2; i++ {
+		status, statusErr := svc.CueCommandTerminalStatus(context.Background(), term.HandleID)
+		if statusErr != nil || status.Output != "Downloaded 100%" {
+			t.Fatalf("poll %d status=%+v err=%v", i, status, statusErr)
+		}
 	}
 }
 
@@ -122,6 +161,23 @@ func TestCueCommandTerminalStatusReportsExitAndRejectsOtherShells(t *testing.T) 
 	var apiErr *apierr.Error
 	if !errors.As(err, &apiErr) || apiErr.Kind != apierr.KindNotFound {
 		t.Fatalf("other status error=%v", err)
+	}
+}
+
+func TestCueCommandTerminalStatusBoundsOutputAndPreservesUTF8(t *testing.T) {
+	root := t.TempDir()
+	rt := newFakeShellRuntime()
+	svc := newTestService(rt, &fakeShellTerminalStore{}, &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"portfolio": root}})
+	term, err := svc.OpenCueCommandTerminal(context.Background(), OpenCueCommandTerminalInput{
+		ProjectID: "portfolio", Shell: cueTestShell(t), Command: "echo done", Title: "Done",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.setOutput(strings.Repeat("é", cueCommandOutputBytes) + " finished")
+	status, err := svc.CueCommandTerminalStatus(context.Background(), term.HandleID)
+	if err != nil || len(status.Output) > cueCommandOutputBytes || !utf8.ValidString(status.Output) || !strings.HasSuffix(status.Output, " finished") {
+		t.Fatalf("bounded output bytes=%d utf8=%v suffix=%v err=%v", len(status.Output), utf8.ValidString(status.Output), strings.HasSuffix(status.Output, " finished"), err)
 	}
 }
 

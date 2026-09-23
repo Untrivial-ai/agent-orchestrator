@@ -388,7 +388,7 @@
 	"createProject.workspaceRootIsProject": "Este é um único repositório, não uma coleção de repositórios. Importe-o como projeto.",
 	"cues.agentLabel": "Agent instruction",
 	"cues.cancel": "Cancel",
-	"cues.commandHelp": "Peça ao agente para executar este comando na árvore de trabalho da sessão.",
+	"cues.commandHelp": "Execute este comando diretamente em um terminal, sem usar o agente.",
 	"cues.commandLabel": "Command",
 	"cues.commandPlaceholder": "e.g. /status or npm test",
 	"cues.create": "Create",
@@ -2160,7 +2160,7 @@
 	"executionContext.title": "contexto de execução",
 	"executionContext.loading": "carregando o contexto do projeto…",
 	"cues.viewTerminal": "View terminal",
-	"cues.enableInput": "Enable input",
+	"cues.enableInput": "Enable editing",
 	"cues.stop": "Stop",
 	"cues.stopTitle": "Stop this command?",
 	"cues.stopBody": "The terminal and its output will remain available.",
@@ -2170,5 +2170,6 @@
 	"cues.commandState.exited": "Exited",
 	"cues.commandState.stopped": "Stopped",
 	"cues.commandState.failed": "Failed",
+	"cues.commandState.closed": "Terminal closed",
 	"cues.inputLocked": "Input is locked for command Cue terminals."
 }

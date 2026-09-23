@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
@@ -385,6 +387,9 @@ type shellRuntimeInterrupter interface {
 	Interrupt(context.Context, ports.RuntimeHandle) error
 }
 
+const cueCommandOutputLines = 200
+const cueCommandOutputBytes = 32 << 10
+
 // CueCommandTerminalStatus derives command state from child liveness while
 // retaining the terminal host and its scrollback after exit.
 func (s *Service) CueCommandTerminalStatus(ctx context.Context, handleID string) (CueCommandTerminalStatus, error) {
@@ -395,8 +400,29 @@ func (s *Service) CueCommandTerminalStatus(ctx context.Context, handleID string)
 	if !ok {
 		return CueCommandTerminalStatus{}, apierr.NotFound("CUE_COMMAND_TERMINAL_NOT_FOUND", "No such command Cue terminal: "+handleID)
 	}
+	handle := ports.RuntimeHandle{ID: handleID}
+	// Raw PTY history contains carriage returns, backspaces, and cursor moves.
+	// Removing their escape bytes turns overwritten progress into duplicate or
+	// stray text. Read the rendered pane when the runtime supports it.
+	var output string
+	var err error
+	if rendered, ok := s.runtime.(ports.StyledTerminalOutputReader); ok {
+		output, err = rendered.GetStyledOutput(ctx, handle, cueCommandOutputLines)
+		if errors.Is(err, ports.ErrStyledTerminalOutputUnavailable) {
+			output, err = s.runtime.GetOutput(ctx, handle, cueCommandOutputLines)
+		}
+	} else {
+		output, err = s.runtime.GetOutput(ctx, handle, cueCommandOutputLines)
+	}
+	if err != nil {
+		return CueCommandTerminalStatus{}, fmt.Errorf("command Cue terminal output %s: %w", handleID, err)
+	}
+	output = strings.TrimSpace(domain.SanitizeControlChars(strings.ReplaceAll(strings.ReplaceAll(ansi.Strip(output), "\r\n", "\n"), "\r", "\n")))
+	if len(output) > cueCommandOutputBytes {
+		output = strings.ToValidUTF8(output[len(output)-cueCommandOutputBytes:], "")
+	}
 	if stopped {
-		return CueCommandTerminalStatus{HandleID: handleID, State: "stopped"}, nil
+		return CueCommandTerminalStatus{HandleID: handleID, State: "stopped", Output: output}, nil
 	}
 	alive, err := s.runtime.IsChildAlive(ctx, ports.RuntimeHandle{ID: handleID})
 	if err != nil {
@@ -406,7 +432,7 @@ func (s *Service) CueCommandTerminalStatus(ctx context.Context, handleID string)
 	if alive {
 		state = "running"
 	}
-	return CueCommandTerminalStatus{HandleID: handleID, State: state}, nil
+	return CueCommandTerminalStatus{HandleID: handleID, State: state, Output: output}, nil
 }
 
 // StopCueCommandTerminal deliberately interrupts a live command without
@@ -429,7 +455,7 @@ func (s *Service) StopCueCommandTerminal(ctx context.Context, handleID string) (
 	s.cueMu.Lock()
 	s.cueHandles[handleID] = true
 	s.cueMu.Unlock()
-	return CueCommandTerminalStatus{HandleID: handleID, State: "stopped"}, nil
+	return s.CueCommandTerminalStatus(ctx, handleID)
 }
 
 func (s *Service) resolveCueCommandWorkingDir(ctx context.Context, projectID domain.ProjectID, sessionID domain.SessionID) (string, domain.ProjectID, error) {

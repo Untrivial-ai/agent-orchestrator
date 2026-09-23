@@ -1695,6 +1695,7 @@ type ShellTerminalEnvelope struct {
 type CueCommandTerminalStatusResponse struct {
 	HandleID string `json:"handleId"`
 	State    string `json:"state" enum:"running,exited,stopped"`
+	Output   string `json:"output" description:"Current bounded terminal output snapshot, retained after command exit."`
 }
 
 // CueIDParam is the {cueId} path parameter of the /cues/{cueId} routes.

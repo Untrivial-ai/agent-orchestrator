@@ -89,4 +89,5 @@ type CueCommandSessionTarget struct {
 type CueCommandTerminalStatus struct {
 	HandleID string
 	State    string
+	Output   string
 }

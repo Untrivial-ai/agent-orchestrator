@@ -11,6 +11,7 @@ import { mockShellTerminals } from "../lib/mock-data";
 import { isWindowsPlatform } from "../lib/platform";
 import { terminalShellRequestValue, useTerminalShellStore } from "../stores/terminal-shell-store";
 import { useCloudCp } from "./useCloudCp";
+import { useCommandCueStore } from "../stores/command-cue-store";
 
 export type ShellTerminal = {
 	/** Runtime handle the terminal mux attaches to, exactly like a session pane's. */
@@ -322,6 +323,7 @@ export function useCloseShellTerminal() {
 		onSettled: (_data, _error, _handleId, context) => {
 			if (!context?.isCloud) void queryClient.invalidateQueries({ queryKey: shellTerminalsQueryKey });
 		},
+		onSuccess: (_data, handleId) => useCommandCueStore.getState().close(handleId),
 	});
 }
 

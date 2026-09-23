@@ -17,6 +17,7 @@ import { appI18n } from "../../i18n";
 import type { ConversationMessage, ConversationSnapshot } from "../../types/conversation";
 import { setApiBaseUrl } from "../../lib/api-client";
 import { useUiStore } from "../../stores/ui-store";
+import { resetCommandCueStore, useCommandCueStore } from "../../stores/command-cue-store";
 import type { WorkspaceSession } from "../../types/workspace";
 import {
 	getChatComposerMutation,
@@ -155,6 +156,7 @@ function stubGeometry(
 }
 
 beforeEach(() => {
+	resetCommandCueStore();
 	writeText.mockClear();
 	menuAction.mockClear();
 	previousTabListeners.clear();
@@ -168,7 +170,71 @@ beforeEach(() => {
 	useUiStore.setState({ isSidebarOpen: true, inspectorSessions: {} });
 });
 
+describe("Command Cue placement in chat", () => {
+	const projectId = "cue-project";
+	const context = { projectId, onViewTerminal: vi.fn() };
+	const at = (second: number) => `2026-09-23T00:00:${String(second).padStart(2, "0")}Z`;
+	const message = (id: string, turnId: string, text: string, second: number, sequence: number): ConversationMessage => ({
+		kind: "message", id, turnId, sequence, revision: 0, role: "user", origin: "human", text,
+		streaming: false, createdAt: at(second),
+	});
+	const register = (handleId: string, name: string, second: number, invocationOrder: number, sessionId = chatFixtureEmpty.sessionId, targetProject = projectId) => {
+		useCommandCueStore.getState().register({
+			projectId: targetProject, sessionId, handleId, name, command: `echo ${name}`,
+			state: "exited", invokedAt: Date.parse(at(second)), invocationOrder,
+		});
+	};
+	const order = () => screen.getByRole("log").textContent ?? "";
+
+	it("keeps a delayed command result between the turn active at invocation and later turns", () => {
+		const first = message("first", "turn-first", "First prompt", 0, 1);
+		const second = message("second", "turn-second", "Later prompt", 4, 2);
+		const snapshot: ConversationSnapshot = {
+			...chatFixtureEmpty, latestSequence: 2, items: [first, second],
+			turns: [
+				{ id: "turn-first", state: "completed", requestedAt: at(0), completedAt: at(3) },
+				{ id: "turn-second", state: "completed", requestedAt: at(4), completedAt: at(5) },
+			],
+		};
+		const view = render(<ChatWorkspace snapshot={snapshot} commandCueContext={context} />);
+		// The terminal response arrives after the next chat turn was already rendered.
+		act(() => register("cue-first", "First command", 1, 1));
+		expect(order().indexOf("First prompt")).toBeLessThan(order().indexOf("First command"));
+		expect(order().indexOf("First command")).toBeLessThan(order().indexOf("Later prompt"));
+		view.rerender(<ChatWorkspace snapshot={{ ...snapshot, items: [first, message("reply", "turn-first", "Late agent output", 3, 2), second] }} commandCueContext={context} />);
+		expect(order().indexOf("Late agent output")).toBeLessThan(order().indexOf("First command"));
+		expect(order().indexOf("First command")).toBeLessThan(order().indexOf("Later prompt"));
+	});
+
+	it("places a command after an active turn with no messages and keeps invocation order", () => {
+		const snapshot: ConversationSnapshot = {
+			...chatFixtureEmpty,
+			turns: [{ id: "running", state: "running", requestedAt: at(0) }],
+		};
+		register("cue-second", "Second command", 1, 2);
+		register("cue-first", "First command", 1, 1);
+		const view = render(<ChatWorkspace snapshot={snapshot} commandCueContext={context} />);
+		expect(order().indexOf("Working")).toBeLessThan(order().indexOf("First command"));
+		expect(order().indexOf("First command")).toBeLessThan(order().indexOf("Second command"));
+		view.rerender(<ChatWorkspace snapshot={{ ...snapshot, latestSequence: 1, items: [message("reply", "running", "Agent reply", 2, 1)] }} commandCueContext={context} />);
+		expect(order().indexOf("Agent reply")).toBeLessThan(order().indexOf("First command"));
+	});
+
+	it("keeps cards in their own project and session and docks an otherwise empty chat", () => {
+		register("wrong-project", "Wrong project", 1, 1, chatFixtureEmpty.sessionId, "another-project");
+		register("wrong-session", "Wrong session", 1, 2, "another-session");
+		register("right", "Right command", 1, 3);
+		render(<ChatWorkspace snapshot={chatFixtureEmpty} commandCueContext={context} />);
+		expect(screen.getByText("Right command")).toBeInTheDocument();
+		expect(screen.queryByText("Wrong project")).toBeNull();
+		expect(screen.queryByText("Wrong session")).toBeNull();
+		expect(screen.getByTestId("chat-timeline")).toBeInTheDocument();
+		expect(document.querySelector("[data-composer-placement]")).toHaveAttribute("data-composer-placement", "dock");
+	});
+});
+
 afterEach(async () => {
+	resetCommandCueStore();
 	setApiBaseUrl(null);
 	await appI18n.changeLanguage("en");
 });

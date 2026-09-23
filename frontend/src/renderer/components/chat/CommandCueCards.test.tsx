@@ -23,8 +23,8 @@ function register(handleId = "shellterm-cue") {
 beforeEach(() => {
 	resetCommandCueStore();
 	vi.resetAllMocks();
-	vi.mocked(getCommandCueTerminalStatus).mockResolvedValue({ handleId: "shellterm-cue", state: "running" });
-	vi.mocked(stopCommandCueTerminal).mockResolvedValue({ handleId: "shellterm-cue", state: "stopped" });
+	vi.mocked(getCommandCueTerminalStatus).mockResolvedValue({ handleId: "shellterm-cue", state: "running", output: "" });
+	vi.mocked(stopCommandCueTerminal).mockResolvedValue({ handleId: "shellterm-cue", state: "stopped", output: "" });
 });
 
 afterEach(() => {
@@ -42,7 +42,7 @@ test("shows only this session's command cards and tracks terminal exit", async (
 		command: "echo other",
 		state: "running",
 	});
-	vi.mocked(getCommandCueTerminalStatus).mockResolvedValue({ handleId: "shellterm-cue", state: "exited" });
+	vi.mocked(getCommandCueTerminalStatus).mockResolvedValue({ handleId: "shellterm-cue", state: "exited", output: "test passed\n" });
 
 	useCommandCueStore.getState().register({
 		projectId: "other-project",
@@ -57,6 +57,9 @@ test("shows only this session's command cards and tracks terminal exit", async (
 	expect(screen.queryByText("Other command")).toBeNull();
 	expect(screen.queryByText("Other project command")).toBeNull();
 	await screen.findByText("Exited");
+	expect(screen.getByTestId("command-cue-output")).toHaveTextContent("test passed");
+	expect(screen.getByTestId("command-cue-output")).toHaveClass("bg-terminal", "text-terminal-foreground");
+	expect(screen.getByText("Command")).toBeInTheDocument();
 	expect(getCommandCueTerminalStatus).toHaveBeenCalledTimes(1);
 });
 
@@ -67,7 +70,7 @@ test("opens the terminal and explicitly unlocks input", async () => {
 
 	fireEvent.click(screen.getByRole("button", { name: "View terminal" }));
 	expect(onView).toHaveBeenCalledWith("shellterm-cue");
-	fireEvent.click(screen.getByRole("button", { name: "Enable input" }));
+	fireEvent.click(screen.getByRole("button", { name: "Enable editing" }));
 	expect(useCommandCueStore.getState().cards["shellterm-cue"].inputEnabled).toBe(true);
 });
 
@@ -101,4 +104,37 @@ test("marks a card failed when status polling fails and stops polling", async ()
 	await screen.findByText("Failed");
 	expect(screen.getByRole("alert")).toHaveTextContent("daemon offline");
 	expect(getCommandCueTerminalStatus).toHaveBeenCalledTimes(1);
+});
+
+test("retains output but disables terminal controls after close", async () => {
+	register();
+	vi.mocked(getCommandCueTerminalStatus).mockResolvedValue({ handleId: "shellterm-cue", state: "exited", output: "finished\n" });
+	render(<CommandCueCards projectId="project" sessionId="session" onViewTerminal={vi.fn()} />);
+	await screen.findByText("finished");
+	act(() => useCommandCueStore.getState().close("shellterm-cue"));
+	expect(screen.getByText("Terminal closed")).toBeInTheDocument();
+	expect(screen.getByRole("button", { name: "View terminal" })).toBeDisabled();
+	expect(screen.getByRole("button", { name: "Enable editing" })).toBeDisabled();
+	expect(screen.getByTestId("command-cue-output")).toHaveTextContent("finished");
+});
+
+test("waits for each status response before polling again and replaces output", async () => {
+	vi.useFakeTimers();
+	register();
+	let resolveFirst!: (value: { handleId: string; state: "running"; output: string }) => void;
+	vi.mocked(getCommandCueTerminalStatus)
+		.mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve; }))
+		.mockResolvedValueOnce({ handleId: "shellterm-cue", state: "exited", output: "Downloaded 100%" });
+	render(<CommandCueCards projectId="project" sessionId="session" onViewTerminal={vi.fn()} />);
+	expect(getCommandCueTerminalStatus).toHaveBeenCalledTimes(1);
+	await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+	expect(getCommandCueTerminalStatus).toHaveBeenCalledTimes(1);
+	await act(async () => resolveFirst({ handleId: "shellterm-cue", state: "running", output: "Downloading 10%" }));
+	expect(screen.getByTestId("command-cue-output")).toHaveTextContent("Downloading 10%");
+	await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+	expect(getCommandCueTerminalStatus).toHaveBeenCalledTimes(2);
+	expect(screen.getByTestId("command-cue-output")).toHaveTextContent("Downloaded 100%");
+	expect(screen.getByTestId("command-cue-output")).not.toHaveTextContent("Downloading 10%");
+	await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+	expect(getCommandCueTerminalStatus).toHaveBeenCalledTimes(2);
 });

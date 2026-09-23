@@ -10,7 +10,7 @@ import { fetchProjectCues, projectCuesQueryKey, type CueDTO } from "../../lib/cu
 import { shellTerminalsQueryKey, toShellTerminal, type ShellTerminal } from "../../hooks/useShellTerminals";
 import { markTerminalHandleFresh } from "../../lib/fresh-terminal-handles";
 import { terminalShellRequestValue, useTerminalShellStore } from "../../stores/terminal-shell-store";
-import { useCommandCueStore } from "../../stores/command-cue-store";
+import { commandCueInvocation, useCommandCueStore } from "../../stores/command-cue-store";
 import { TopbarButton } from "../TopbarButton";
 import {
 	DropdownMenu,
@@ -134,13 +134,13 @@ function CueRunMenuTrigger({
 	const handleInvoke = async (cue: CueDTO) => {
 		if (pending.current) return;
 		pending.current = true;
+		const invocation = cue.type === "command" && sessionId ? commandCueInvocation() : undefined;
 		const origin = generation.current;
 		setInvokingId(cue.id);
 		try {
 			await useTerminalShellStore.getState().load();
 			const shell = terminalShellRequestValue(useTerminalShellStore.getState().preference);
 			const result = await invokeMutation.mutateAsync({ cueId: cue.id, sessionId, shell });
-			if (origin !== generation.current) return;
 			if (result.kind === "command") {
 				if (!result.shellTerminal) throw new Error(t("cues.invokeFailed"));
 				const terminal = toShellTerminal(result.shellTerminal);
@@ -149,8 +149,8 @@ function CueRunMenuTrigger({
 					terminal,
 					...current.filter((item) => item.handleId !== terminal.handleId),
 				]);
-				setActiveShellTerminal(terminal.handleId);
 				registerCommandCue({
+					...invocation,
 					projectId,
 					sessionId,
 					handleId: terminal.handleId,
@@ -158,10 +158,15 @@ function CueRunMenuTrigger({
 					command: cue.command ?? "",
 					state: "starting",
 				});
+				// The command may finish launching after navigation. Keep its card in
+				// the originating session without changing the newly selected view.
+				if (origin !== generation.current) return;
+				setActiveShellTerminal(terminal.handleId);
 				showGlobalToast(t("cues.invokeCommandStarted"), t("cues.invokeCommandStartedBody", { name: cue.name }));
 				if (!sessionId) navigateToTerminals();
 				return;
 			}
+			if (origin !== generation.current) return;
 			showGlobalToast(t("cues.invokeSent"), t("cues.invokeSentBody", { name: cue.name }));
 			if (!sessionId && result.sessionId) navigateToSession(projectId, result.sessionId);
 		} catch (error) {

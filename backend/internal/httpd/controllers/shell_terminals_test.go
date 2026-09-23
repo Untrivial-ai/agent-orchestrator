@@ -52,7 +52,7 @@ func (f *fakeShellTerminalService) CloseShellTerminal(_ context.Context, handleI
 
 func (f *fakeShellTerminalService) CueCommandTerminalStatus(_ context.Context, handleID string) (shelltermsvc.CueCommandTerminalStatus, error) {
 	f.gotStatusID = handleID
-	return shelltermsvc.CueCommandTerminalStatus{HandleID: handleID, State: "running"}, f.err
+	return shelltermsvc.CueCommandTerminalStatus{HandleID: handleID, State: "running", Output: "héllo\n"}, f.err
 }
 
 func (f *fakeShellTerminalService) StopCueCommandTerminal(_ context.Context, handleID string) (shelltermsvc.CueCommandTerminalStatus, error) {
@@ -265,9 +265,10 @@ func TestShellTerminalsAPI_CommandStatusAndStop(t *testing.T) {
 	var running struct {
 		HandleID string `json:"handleId"`
 		State    string `json:"state"`
+		Output   string `json:"output"`
 	}
 	mustJSON(t, body, &running)
-	if running.State != "running" || running.HandleID != "ptyhost-v1:shellterm-abc123" {
+	if running.State != "running" || running.HandleID != "ptyhost-v1:shellterm-abc123" || running.Output != "héllo\n" {
 		t.Fatalf("status response = %+v", running)
 	}
 
@@ -287,15 +288,20 @@ func TestShellTerminalsAPI_CommandStatusPreservesErrorEnvelope(t *testing.T) {
 	}
 }
 
-func TestShellTerminalsAPI_LANCannotStopCommand(t *testing.T) {
+func TestShellTerminalsAPI_LANCannotReadOrStopCommand(t *testing.T) {
 	svc := &fakeShellTerminalService{}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	router := httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{ShellTerminals: svc}, httpd.ControlDeps{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/shell-terminals/shellterm-abc123/stop-command", nil)
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, req.WithContext(requestscope.WithLAN(req.Context())))
-	if recorder.Code != http.StatusForbidden || svc.gotStopID != "" {
-		t.Fatalf("status = %d, stop id = %q, body=%s", recorder.Code, svc.gotStopID, recorder.Body.String())
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/shell-terminals/shellterm-abc123/command-status"},
+		{http.MethodPost, "/api/v1/shell-terminals/shellterm-abc123/stop-command"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req.WithContext(requestscope.WithLAN(req.Context())))
+		if recorder.Code != http.StatusForbidden || svc.gotStatusID != "" || svc.gotStopID != "" {
+			t.Fatalf("%s status = %d, status id = %q, stop id = %q, body=%s", tc.method, recorder.Code, svc.gotStatusID, svc.gotStopID, recorder.Body.String())
+		}
 	}
 }
 

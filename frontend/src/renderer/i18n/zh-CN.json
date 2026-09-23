@@ -385,7 +385,7 @@
 	"createProject.workspaceRootIsProject": "这是单个仓库，而不是仓库集合。请改为将其作为项目导入。",
 	"cues.agentLabel": "Agent instruction",
 	"cues.cancel": "Cancel",
-	"cues.commandHelp": "请求代理在会话工作树中运行此命令。",
+	"cues.commandHelp": "直接在终端中运行此命令，不使用代理。",
 	"cues.commandLabel": "Command",
 	"cues.commandPlaceholder": "e.g. /status or npm test",
 	"cues.create": "Create",
@@ -2112,7 +2112,7 @@
 	"executionContext.title": "执行上下文",
 	"executionContext.loading": "正在加载项目上下文…",
 	"cues.viewTerminal": "View terminal",
-	"cues.enableInput": "Enable input",
+	"cues.enableInput": "Enable editing",
 	"cues.stop": "Stop",
 	"cues.stopTitle": "Stop this command?",
 	"cues.stopBody": "The terminal and its output will remain available.",
@@ -2122,5 +2122,6 @@
 	"cues.commandState.exited": "Exited",
 	"cues.commandState.stopped": "Stopped",
 	"cues.commandState.failed": "Failed",
+	"cues.commandState.closed": "Terminal closed",
 	"cues.inputLocked": "Input is locked for command Cue terminals."
 }

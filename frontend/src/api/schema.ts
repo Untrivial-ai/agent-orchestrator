@@ -3457,6 +3457,8 @@ export interface components {
         };
         CueCommandTerminalStatusResponse: {
             handleId: string;
+            /** @description Current bounded terminal output snapshot, retained after command exit. */
+            output: string;
             /** @enum {string} */
             state: "running" | "exited" | "stopped";
         };

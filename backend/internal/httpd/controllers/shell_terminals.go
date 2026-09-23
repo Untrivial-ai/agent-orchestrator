@@ -57,6 +57,10 @@ func (c *ShellTerminalsController) stopCommand(w http.ResponseWriter, r *http.Re
 }
 
 func (c *ShellTerminalsController) commandAction(w http.ResponseWriter, r *http.Request, stop bool) {
+	if requestscope.IsLAN(r.Context()) {
+		envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "CUE_COMMAND_LOOPBACK_REQUIRED", "Command Cues can only be controlled through the local daemon", nil)
+		return
+	}
 	if c.Svc == nil {
 		method := http.MethodGet
 		path := "/api/v1/shell-terminals/{handleId}/command-status"
@@ -81,7 +85,7 @@ func (c *ShellTerminalsController) commandAction(w http.ResponseWriter, r *http.
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, CueCommandTerminalStatusResponse{HandleID: status.HandleID, State: status.State})
+	envelope.WriteJSON(w, http.StatusOK, CueCommandTerminalStatusResponse{HandleID: status.HandleID, State: status.State, Output: status.Output})
 }
 
 func (c *ShellTerminalsController) list(w http.ResponseWriter, r *http.Request) {

@@ -116,7 +116,8 @@ import { TurnPlan } from "./TurnPlan";
 import { TurnSettingsBar } from "./TurnSettingsBar";
 import { ElicitationDock } from "./ElicitationDock";
 import { McpServerBanner, ReauthBanner, ThreadStateBanner } from "./ChatStatusBanners";
-import { useCommandCueStore } from "../../stores/command-cue-store";
+import { useCommandCueStore, type CommandCueCard } from "../../stores/command-cue-store";
+import { CommandCueCardView } from "./CommandCueCards";
 import {
 	activeTurn,
 	activityPlan,
@@ -444,8 +445,8 @@ export interface ChatWorkspaceProps {
 	onReloadMcpServers?: () => void;
 	reloadingMcpServers?: boolean;
 	mcpReloadError?: string;
-	/** Renderer-lifetime command Cue cards shown above the composer. */
-	commandCueCards?: ReactNode;
+	/** Renderer-lifetime command Cue cards for this project's session. */
+	commandCueContext?: { projectId: string; onViewTerminal: (handleId: string) => void };
 }
 
 type ChatWorkspaceActivation =
@@ -617,7 +618,7 @@ function ChatWorkspaceContent({
 	onReloadMcpServers,
 	reloadingMcpServers,
 	mcpReloadError,
-	commandCueCards,
+	commandCueContext,
 	draftScope,
 }: ChatWorkspaceProps & { draftScope: ChatDraftScope }) {
 	const draftScopeKey = chatDraftScopeKey(draftScope);
@@ -1219,7 +1220,11 @@ function ChatWorkspaceContent({
 	);
 	// Empty chats center the prompt; once a turn or item exists the composer docks
 	// at the bottom and stays there for the rest of the session.
-	const conversationEmpty = snapshot.items.length === 0 && !turn && (localEchos?.length ?? 0) === 0;
+	const hasCommandCueCards = useCommandCueStore((state) =>
+		Boolean(commandCueContext && Object.values(state.cards).some((card) =>
+			card.projectId === commandCueContext.projectId && card.sessionId === snapshot.sessionId)),
+	);
+	const conversationEmpty = snapshot.items.length === 0 && !turn && (localEchos?.length ?? 0) === 0 && !hasCommandCueCards;
 	const composerDockRef = useRef<HTMLDivElement>(null);
 	const composerCenteredTopRef = useRef<number | null>(null);
 	const composerFlipDyRef = useRef<number | null>(null);
@@ -1430,6 +1435,7 @@ function ChatWorkspaceContent({
 									activateBranchError={activateBranchError}
 									newWorkDisabled={newWorkDisabled}
 									localEchos={localEchos}
+									commandCueContext={commandCueContext}
 								/>
 							</ChatImageSourceProvider>
 						</ChatLinkProvider>
@@ -1440,7 +1446,6 @@ function ChatWorkspaceContent({
 								data-empty={conversationEmpty || undefined}
 								className="mx-auto flex w-full max-w-3xl flex-col gap-2 transition-[max-width] duration-500 ease-out data-[empty]:max-w-2xl"
 							>
-								{commandCueCards}
 								{discarded > 0 ? <RolledBackNotice count={discarded} /> : null}
 								<ChatComposer
 									key={`${draftScopeKey}:${queueEdit ? `${queueEdit.turnId}:${queueEdit.ownerId ?? queueEdit.expectedRevision ?? "legacy"}` : "composer"}`}
@@ -1985,6 +1990,7 @@ function Timeline({
 	activateBranchError,
 	newWorkDisabled,
 	localEchos = [],
+	commandCueContext,
 }: {
 	snapshot: ConversationSnapshot;
 	draftScope: ChatDraftScope;
@@ -2006,7 +2012,15 @@ function Timeline({
 	activateBranchError?: string;
 	newWorkDisabled?: boolean;
 	localEchos?: ConversationLocalEcho[];
+	commandCueContext?: { projectId: string; onViewTerminal: (handleId: string) => void };
 }) {
+	const cardsByHandle = useCommandCueStore((state) => state.cards);
+	const commandCueCards = useMemo(() =>
+		Object.values(cardsByHandle).filter((card) =>
+			commandCueContext && card.projectId === commandCueContext.projectId && card.sessionId === snapshot.sessionId),
+		[cardsByHandle, commandCueContext, snapshot.sessionId],
+	);
+	const hasCommandCueCards = commandCueCards.length > 0;
 	const translateDraft = useChatDraftTranslation();
 	const scroller = useRef<HTMLDivElement>(null);
 	const scrollContent = useRef<HTMLDivElement>(null);
@@ -2575,6 +2589,10 @@ function Timeline({
 		);
 	}, [snapshot, timelineItems]);
 	const groups = useStableList(grouped, groupKey, sameGroup);
+	const timelineEntries = useMemo(
+		() => interleaveCommandCues(groups, snapshot, commandCueCards, turn),
+		[groups, snapshot, commandCueCards, turn],
+	);
 	const navigableGroups = useMemo(() => groups.filter(groupHasHumanPrompt), [groups]);
 	const previews = useMemo(() => navigableGroups.map(groupPreview), [navigableGroups]);
 
@@ -2830,7 +2848,7 @@ function Timeline({
 		updateScrollbar();
 	}
 
-	if (timelineItems.length === 0 && !messageEdit && !turn) {
+	if (timelineItems.length === 0 && !messageEdit && !turn && !hasCommandCueCards) {
 		return null;
 	}
 
@@ -2869,7 +2887,12 @@ function Timeline({
 							</Button>
 						</div>
 					) : null}
-					{groups.map((group) => {
+					{timelineEntries.map((entry) => {
+						if (entry.kind === "command") return (
+							<CommandCueCardView key={`cue:${entry.card.handleId}`} card={entry.card} onViewTerminal={commandCueContext!.onViewTerminal} />
+						);
+						if (entry.kind === "live") return <TurnLiveStatus key={`live:${entry.turnId}`} startedAt={entry.startedAt} />;
+						const group = entry.group;
 						const retrySelected = !retryControl?.turnId || retryControl.turnId === group.turnId;
 						const retry =
 							group.turnId &&
@@ -2937,9 +2960,6 @@ function Timeline({
 							</div>
 						);
 					})}
-					{turn && !groups.some((group) => group.turnId === turn.id) ? (
-						<TurnLiveStatus startedAt={turn.startedAt ?? turn.requestedAt} />
-					) : null}
 					{messageEdit && !editedMessageVisible ? (
 						<div className="flex justify-end" data-chat-scroll-anchor="">
 							<HumanMessageEditor
@@ -3576,6 +3596,37 @@ type TimelineGroup = {
 	/** The provider accepted this turn, so there is history it can be asked to drop. */
 	rollbackable?: boolean;
 };
+
+type TimelineEntry =
+	| { kind: "group"; group: TimelineGroup; startedAt: number }
+	| { kind: "live"; turnId: string; startedAt: string; position: number }
+	| { kind: "command"; card: CommandCueCard; startedAt: number };
+
+function interleaveCommandCues(
+	groups: TimelineGroup[],
+	snapshot: ConversationSnapshot,
+	cards: CommandCueCard[],
+	active: ConversationSnapshot["turns"][number] | undefined,
+): TimelineEntry[] {
+	const turns = new Map(snapshot.turns.map((turn) => [turn.id, turn]));
+	const entries: TimelineEntry[] = groups.map((group) => ({
+		kind: "group",
+		group,
+		// A turn stays together even when its later output arrives after a Cue run.
+		startedAt: Date.parse((group.turnId && turns.get(group.turnId)?.requestedAt) || group.items[0].createdAt),
+	}));
+	if (active && !groups.some((group) => group.turnId === active.id)) {
+		entries.push({ kind: "live", turnId: active.id, startedAt: active.startedAt ?? active.requestedAt, position: Date.parse(active.requestedAt) });
+	}
+	for (const card of [...cards].sort((a, b) => a.invokedAt - b.invokedAt || a.invocationOrder - b.invocationOrder)) {
+		const entry: TimelineEntry = { kind: "command", card, startedAt: card.invokedAt };
+		const position = entries.findIndex((candidate) =>
+			(candidate.kind === "live" ? candidate.position : candidate.startedAt) > card.invokedAt,
+		);
+		entries.splice(position < 0 ? entries.length : position, 0, entry);
+	}
+	return entries;
+}
 
 type GroupPreview = { title: string; detail?: string };
 

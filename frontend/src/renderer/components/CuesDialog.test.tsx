@@ -307,6 +307,28 @@ test("session-targeted runner ignores late responses after switching sessions an
 	expect(cues.invokeCue).toHaveBeenCalledTimes(1);
 });
 
+test("a delayed command result stays in its originating session at click time", async () => {
+	const invocation = deferred<cues.CueInvokeResult>();
+	vi.mocked(cues.invokeCue).mockReturnValueOnce(invocation.promise);
+	const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+	try {
+		const view = setup(<CueRunMenu projectId="project" sessionId="session" />);
+		openMenu();
+		fireEvent.click(await screen.findByRole("menuitem", { name: "Tests" }));
+		await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledTimes(1));
+		clock.mockReturnValue(2000);
+		view.rerender(<CueRunMenu projectId="project" sessionId="other" />);
+		await act(async () => invocation.resolve(commandResult));
+		expect(useCommandCueStore.getState().cards["shellterm-cue"]).toMatchObject({
+			projectId: "project", sessionId: "session", invokedAt: 1000,
+		});
+		expect(setActiveShellTerminal).not.toHaveBeenCalled();
+		expect(toast).not.toHaveBeenCalled();
+	} finally {
+		clock.mockRestore();
+	}
+});
+
 test("unmounting the project menu isolates an earlier invocation response", async () => {
 	const invocation = deferred<cues.CueInvokeResult>();
 	vi.mocked(cues.invokeCue).mockReturnValue(invocation.promise);
