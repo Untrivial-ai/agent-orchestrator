@@ -234,6 +234,9 @@ export class AgentBrowserRuntime {
 			}
 			return { annotations: parsed.annotations, boundary: parsed._boundary };
 		} catch (error) {
+			// agent-browser reporting its own failure is the caller's error, not a
+			// missing extra; only unreadable output degrades to "no annotations".
+			if ((error as { code?: string }).code !== "AGENT_BROWSER_INVALID_OUTPUT") throw error;
 			this.log(`agent-browser screenshot annotations were unreadable: ${(error as Error).message}`);
 			return undefined;
 		}
@@ -259,12 +262,15 @@ export class AgentBrowserRuntime {
 		try {
 			const command = ["screenshot", target, "--json", ...(options.annotate === true ? ["--annotate"] : [])];
 			const result = await this.run(sessionId, command, provider, signal);
+			// Read the envelope before the file: a native capture that failed with a
+			// reason reports it here, and its message beats the ENOENT that reading a
+			// PNG it never wrote would raise.
+			const annotated = options.annotate === true ? this.nativeAnnotations(result.stdout) : undefined;
 			const image = await readFile(target);
 			if (image.length > MAX_SCREENSHOT_BYTES) {
 				throw runtimeError("AGENT_BROWSER_OUTPUT_TOO_LARGE", "Browser screenshot exceeded AO's size limit");
 			}
 			const { width, height } = pngDimensions(image);
-			const annotated = options.annotate === true ? this.nativeAnnotations(result.stdout) : undefined;
 			return {
 				data: image.toString("base64"),
 				width,

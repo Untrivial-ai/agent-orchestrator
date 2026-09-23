@@ -207,11 +207,19 @@ describe("agent-browser runtime lifecycle", () => {
 		const annotations = [{ number: 1, ref: "e1", role: "button", name: "Save", box: { x: 1, y: 2, width: 3, height: 4 } }];
 		const commands: string[][] = [];
 		let unreadableAnnotations = false;
+		let failAnnotations = false;
 		const { dataDir, runtime } = await fixture({
 			processRunner: async (...args) => {
 				const command = args[1] as string[];
 				commands.push(command);
 				if (command[0] !== "screenshot") return { stdout: "", stderr: "", exitCode: 0 };
+				if (failAnnotations) {
+					return {
+						stdout: JSON.stringify({ success: false, error: "annotation overlay injection failed" }),
+						stderr: "",
+						exitCode: 0,
+					};
+				}
 				await writeFile(command[1], png);
 				if (unreadableAnnotations) return { stdout: "not json", stderr: "", exitCode: 0 };
 				return {
@@ -238,6 +246,12 @@ describe("agent-browser runtime lifecycle", () => {
 				annotations,
 				_boundary: { nonce: "n1", origin: "http://localhost:3000/" },
 			});
+
+			failAnnotations = true;
+			await expect(runtime.screenshot("session-1", provider, undefined, { annotate: true })).rejects.toThrow(
+				"annotation overlay injection failed",
+			);
+			failAnnotations = false;
 
 			unreadableAnnotations = true;
 			const unreadable = await runtime.screenshot("session-1", provider, undefined, { annotate: true });

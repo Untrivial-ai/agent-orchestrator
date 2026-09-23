@@ -2332,8 +2332,11 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 						if (full && response.delta.kind !== "full") {
 							throw browserError("BROWSER_AUTOMATION_INVALID_OUTPUT", "Browser snapshot delta output was invalid");
 						}
+						// Anything that invalidated the baseline while this snapshot was in
+						// flight (a background tab closing, a profile switch) must win over
+						// a response captured before it.
 						session.snapshotDeltaBaseline =
-							session.activeTabId === tabId
+							session.activeTabId === tabId && session.snapshotDeltaBaseline === baseline
 								? { tabId, interactive, revision: response.delta.revision }
 								: undefined;
 						return {
@@ -2373,13 +2376,18 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 						}
 						return { text: result.snapshot, refs: result.refs };
 					};
-					const unresolved = (outcome: "ambiguous" | "no-match", candidates: unknown, snapshot: string) => ({
-						outcome,
-						instruction,
-						...(outcome === "ambiguous" ? { candidates } : {}),
-						snapshot,
-						untrustedExternalContent: true as const,
-					});
+					const unresolved = (outcome: "ambiguous" | "no-match", candidates: unknown, snapshot: string) => {
+						// These outcomes hand the agent a tree of their own, so a later
+						// delta must not be measured against the one it replaced.
+						session.snapshotDeltaBaseline = undefined;
+						return {
+							outcome,
+							instruction,
+							...(outcome === "ambiguous" ? { candidates } : {}),
+							snapshot,
+							untrustedExternalContent: true as const,
+						};
+					};
 
 					const snapshot1 = await snapshotOnce();
 					const match1 = matchInstruction(instruction, snapshot1.refs, { nth });
@@ -2425,6 +2433,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 					}
 				}
 				case "click":
+					if (args.human === true) assertPanelPainted(session);
 					return runNative(action, {
 						ref: stringArg(args, "ref", "REFERENCE_REQUIRED", "ref is required"),
 						...(args.human === true ? { human: true } : {}),
@@ -2446,6 +2455,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				case "press":
 					return runNative(action, { key: stringArg(args, "key", "INVALID_ARGUMENT", "key is required") });
 				case "drag":
+					if (args.human === true) assertPanelPainted(session);
 					return runNative(action, {
 						ref: stringArg(args, "ref", "REFERENCE_REQUIRED", "ref is required"),
 						targetRef: stringArg(args, "targetRef", "REFERENCE_REQUIRED", "target ref is required"),
@@ -2763,6 +2773,17 @@ type SnapshotDelta =
 	| { kind: "full"; revision: number; text: string; refs: unknown }
 	| { kind: "unchanged"; revision: number; baseRevision: number }
 	| { kind: "delta"; revision: number; baseRevision: number; changes: unknown[]; treeChange: unknown };
+
+// Curved pointer movement needs painted frames: an offscreen panel would take
+// the command to the request deadline instead of failing with something the
+// agent can act on.
+function assertPanelPainted(session: BrowserSessionEntry): void {
+	if (session.visible) return;
+	throw browserError(
+		"BROWSER_PANEL_HIDDEN",
+		"Human pointer movement needs the Browser panel visible on screen. Ask the user to open it, or retry without --human.",
+	);
+}
 
 function parseSnapshotDelta(value: unknown): SnapshotDelta {
 	const invalid = () =>

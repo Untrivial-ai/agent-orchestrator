@@ -497,7 +497,7 @@ func newBrowserCommand(ctx *commandContext) *cobra.Command {
 			if len(args) == 1 {
 				path = args[0]
 			}
-			return writeBrowserScreenshot(cmd, resp.Result, path, jsonOutput)
+			return writeBrowserScreenshot(cmd, resp.Result, path, jsonOutput, screenshotAnnotate)
 		},
 	}
 	screenshot.Flags().BoolVar(&screenshotBase64, "base64", false, "include inline base64 image data in JSON output (cannot be used with a path)")
@@ -929,7 +929,7 @@ func writeBrowserNetworkResult(cmd *cobra.Command, action string, result map[str
 	return err
 }
 
-func writeBrowserScreenshot(cmd *cobra.Command, result map[string]any, target string, jsonOutput bool) error {
+func writeBrowserScreenshot(cmd *cobra.Command, result map[string]any, target string, jsonOutput, annotate bool) error {
 	encoded, _ := result["data"].(string)
 	if encoded == "" {
 		return errors.New("browser returned an empty screenshot")
@@ -961,7 +961,7 @@ func writeBrowserScreenshot(cmd *cobra.Command, result map[string]any, target st
 	height := numberInt(result["height"])
 	if jsonOutput {
 		annotations, _ := result["annotations"].([]any)
-		unavailable, _ := result["annotationsUnavailable"].(bool)
+		unavailable := annotationsMissing(result, annotate)
 		return writeJSON(cmd.OutOrStdout(), browserScreenshotFileResult{
 			Path:                   abs,
 			Size:                   int64(written),
@@ -978,11 +978,21 @@ func writeBrowserScreenshot(cmd *cobra.Command, result map[string]any, target st
 	if _, err = fmt.Fprintf(cmd.OutOrStdout(), "Saved %s%s\n", abs, size); err != nil {
 		return err
 	}
-	return writeBrowserAnnotations(cmd, result)
+	return writeBrowserAnnotations(cmd, result, annotate)
 }
 
-func writeBrowserAnnotations(cmd *cobra.Command, result map[string]any) error {
+// An older desktop host ignores an argument it does not know, so a capture that
+// came back without annotations is reported rather than passed off as annotated.
+func annotationsMissing(result map[string]any, annotate bool) bool {
 	if unavailable, _ := result["annotationsUnavailable"].(bool); unavailable {
+		return true
+	}
+	annotations, _ := result["annotations"].([]any)
+	return annotate && len(annotations) == 0
+}
+
+func writeBrowserAnnotations(cmd *cobra.Command, result map[string]any, annotate bool) error {
+	if annotationsMissing(result, annotate) {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(),
 			"The browser returned no annotations for this capture, so the image may carry no labels.")
 		return err

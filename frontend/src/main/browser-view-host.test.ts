@@ -3520,7 +3520,13 @@ describe("browser snapshot deltas", () => {
 	function setupDeltaHost(respond: (args: Record<string, unknown>) => NativeSnapshot) {
 		const runtime = {
 			runAction: vi.fn(async (_sessionId: string, action: string, args: Record<string, unknown>) =>
-				action === "snapshot" ? { snapshot: respond(args), _boundary: { nonce: "n1", origin: "http://localhost:3000/" } } : {},
+				action === "snapshot"
+					? {
+							snapshot: respond(args),
+							refs: { e1: { role: "button", name: "Save" } },
+							_boundary: { nonce: "n1", origin: "http://localhost:3000/" },
+						}
+					: {},
 			),
 			closeSession: vi.fn(async () => undefined),
 			dispose: vi.fn(async () => undefined),
@@ -3666,7 +3672,7 @@ describe("browser snapshot deltas", () => {
 		);
 
 		await host.execute("sess-1", "snapshot", { delta: true });
-		await host.execute("sess-1", "act", { instruction: "nothing matches this" });
+		await host.execute("sess-1", "act", { instruction: "the Save button" });
 		await host.execute("sess-1", "snapshot", { delta: true });
 		await host.execute("sess-1", "snapshot", {});
 		await host.execute("sess-1", "snapshot", { delta: true });
@@ -3677,6 +3683,19 @@ describe("browser snapshot deltas", () => {
 			{ interactive: false, delta: true },
 			{ interactive: false, delta: true, full: true },
 		]);
+	});
+
+	it("drops the delta baseline when an unresolved act hands the agent a snapshot", async () => {
+		const { host, snapshotCalls } = setupDeltaHost((args) =>
+			args.delta ? full(1) : ('- button "Save" [ref=e1]' as unknown as NativeSnapshot),
+		);
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		await host.execute("sess-1", "act", { instruction: "nothing matches this instruction" });
+		await host.execute("sess-1", "snapshot", { delta: true });
+
+		const deltaCalls = snapshotCalls().filter((call) => (call as { delta?: boolean }).delta);
+		expect(deltaCalls.at(-1)).toEqual({ interactive: false, delta: true, full: true });
 	});
 
 	it("rejects delta output it cannot interpret", async () => {
@@ -3726,7 +3745,9 @@ describe("browser human pointer and annotated screenshots", () => {
 	}
 
 	it("forwards the human pointer option for clicks and drags only when asked", async () => {
-		const { host, runtime } = setupPointerHost();
+		const { host, runtime, invoke, emit } = setupPointerHost();
+		const ensure = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
+		emit("browser:setBounds", 1, { viewId: ensure.viewId, rect: { x: 0, y: 0, width: 10, height: 10 }, visible: true });
 		const nativeArgs = () =>
 			(runtime.runAction as unknown as ReturnType<typeof vi.fn>).mock.calls.map((call: unknown[]) => call[2]);
 
@@ -3741,6 +3762,17 @@ describe("browser human pointer and annotated screenshots", () => {
 			{ ref: "e1", targetRef: "e2", human: true },
 			{ ref: "e1" },
 		]);
+	});
+
+	it("fails fast for a human pointer action while the Browser panel is hidden", async () => {
+		const { host, invoke, emit } = setupPointerHost();
+		const ensure = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
+		emit("browser:setBounds", 1, { viewId: ensure.viewId, rect: { x: 0, y: 0, width: 10, height: 10 }, visible: false });
+
+		await expect(host.execute("sess-1", "click", { ref: "e1", human: true })).rejects.toMatchObject({
+			code: "BROWSER_PANEL_HIDDEN",
+		});
+		await expect(host.execute("sess-1", "click", { ref: "e1" })).resolves.toBeDefined();
 	});
 
 	it("passes the annotate option to the screenshot runtime and returns its annotations", async () => {

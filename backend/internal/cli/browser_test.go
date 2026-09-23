@@ -19,6 +19,7 @@ type browserRequestCapture struct {
 	capability             string
 	body                   browserCommandRequestDTO
 	annotationsUnavailable bool
+	annotationsIgnored     bool
 }
 
 func browserCLIServer(t *testing.T, capture *browserRequestCapture) *httptest.Server {
@@ -50,6 +51,9 @@ func browserCLIServer(t *testing.T, capture *browserRequestCapture) *httptest.Se
 				result = `{"data":"cG5n","width":10,"height":20,"annotations":[{"number":1,"ref":"e1","role":"button","name":"Save"}]}`
 				if capture.annotationsUnavailable {
 					result = `{"data":"cG5n","width":10,"height":20,"annotationsUnavailable":true}`
+				}
+				if capture.annotationsIgnored {
+					result = `{"data":"cG5n","width":10,"height":20}`
 				}
 			}
 		case "tabs":
@@ -210,6 +214,27 @@ func TestBrowserHumanPointerAndAnnotateFlags(t *testing.T) {
 	}
 	if !decoded.AnnotationsUnavailable {
 		t.Fatalf("json screenshot hid the missing annotations: %q", out)
+	}
+
+	capture.annotationsIgnored = true
+	ignoredPath := filepath.Join(t.TempDir(), "ignored.png")
+	out, _, err = executeCLI(t, deps, "browser", "screenshot", ignoredPath, "--annotate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "no annotations") {
+		t.Fatalf("a host that ignored --annotate was not reported: %q", out)
+	}
+	ignoredJSON := filepath.Join(t.TempDir(), "ignored-json.png")
+	out, _, err = executeCLI(t, deps, "browser", "screenshot", ignoredJSON, "--annotate", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("decode json screenshot: %v (%q)", err, out)
+	}
+	if !decoded.AnnotationsUnavailable {
+		t.Fatalf("json screenshot hid a host that ignored --annotate: %q", out)
 	}
 }
 
