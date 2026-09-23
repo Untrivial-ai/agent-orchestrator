@@ -7511,6 +7511,7 @@ export interface operations {
     removeProject: {
         parameters: {
             query?: {
+                /** @description When true, force-remove protected AO-managed session workspaces after an explicit user confirmation, preserving uncommitted work under refs/ao/preserved/<session-id> before each workspace is removed. Never applies to the source repository. */
                 force?: boolean;
             };
             header?: never;
@@ -7542,6 +7543,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

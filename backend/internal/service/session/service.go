@@ -110,10 +110,12 @@ type CleanupOutcome struct {
 }
 
 // CleanupSkipped is one terminal session whose workspace was preserved by
-// cleanup (never force-deleted), with the user-facing reason.
+// cleanup (never force-deleted), with the user-facing reason and a stable
+// machine-readable class token (workspace_dirty, shell_terminal_open, …).
 type CleanupSkipped struct {
 	SessionID domain.SessionID `json:"sessionId"`
 	Reason    string           `json:"reason"`
+	Class     string           `json:"class,omitempty"`
 }
 
 // RestoreModeView is the API-facing restore-mode enum.
@@ -134,10 +136,25 @@ type RestoreOutcome struct {
 	Mode    RestoreModeView `json:"restoreMode"`
 }
 
+// ProjectTeardownBlocker is one reason normal project removal refused to
+// reclaim a session workspace. Class is the stable token callers branch on;
+// Reason is the short user-facing text (never a raw error, which can embed
+// internal filesystem paths). WorkspacePath is best-effort context for the
+// confirmation UI.
+type ProjectTeardownBlocker struct {
+	SessionID     domain.SessionID `json:"sessionId,omitempty"`
+	Class         string           `json:"class"`
+	Reason        string           `json:"reason"`
+	WorkspacePath string           `json:"workspacePath,omitempty"`
+}
+
 // ProjectTeardownOutcome reports whether normal project removal left an
-// AO-managed workspace protected. The caller must obtain explicit consent
-// before invoking ForceTeardownProject.
-type ProjectTeardownOutcome struct{ Blocked bool }
+// AO-managed workspace protected, and which blockers caused the refusal.
+// The caller must obtain explicit consent before invoking ForceTeardownProject.
+type ProjectTeardownOutcome struct {
+	Blocked  bool                     `json:"blocked"`
+	Blockers []ProjectTeardownBlocker `json:"blockers,omitempty"`
+}
 
 // ResumeAgentOutcome reports the resumed read model and how AO relaunched it.
 type ResumeAgentOutcome struct {
@@ -933,7 +950,7 @@ func (s *Service) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 		out.AlreadyGone = []domain.SessionID{}
 	}
 	for _, skip := range res.Skipped {
-		out.Skipped = append(out.Skipped, CleanupSkipped{SessionID: skip.SessionID, Reason: skip.Reason})
+		out.Skipped = append(out.Skipped, CleanupSkipped{SessionID: skip.SessionID, Reason: skip.Reason, Class: skip.Class})
 	}
 	return out, nil
 }
@@ -944,9 +961,12 @@ func (s *Service) Cleanup(ctx context.Context, project domain.ProjectID) (Cleanu
 // the kills in parallel is what makes removing a many-session project fast;
 // sessions of the same project that reach the shared repository are serialized
 // by the workspace adapter's per-repo teardown lock. Dirty worktrees are
-// preserved by Kill and Cleanup; callers only see hard teardown failures.
+// preserved by Kill and Cleanup; callers see structured blockers (session
+// kill failures, dirty worktrees, shell terminals still open, …) so the
+// confirmation UI can distinguish risk classes. Kill errors are logged and
+// emitted as telemetry at their raw cause, never collapsed to a single bool.
 func (s *Service) TeardownProject(ctx context.Context, project domain.ProjectID) (ProjectTeardownOutcome, error) {
-	out := ProjectTeardownOutcome{}
+	out := ProjectTeardownOutcome{Blockers: []ProjectTeardownBlocker{}}
 	recs, err := s.listRecords(ctx, project)
 	if err != nil {
 		return out, err
@@ -966,19 +986,90 @@ func (s *Service) TeardownProject(ctx context.Context, project domain.ProjectID)
 		}(i)
 	}
 	wg.Wait()
-	for _, err := range errs {
-		if err != nil {
-			out.Blocked = true
+	for i, err := range errs {
+		if err == nil {
+			continue
 		}
+		// Keep the raw cause in logs/telemetry (paths, wrap chains); the
+		// public blocker only carries a fixed class+reason so internal
+		// filesystem paths never reach the API response.
+		if s.logger != nil {
+			s.logger.Error("project teardown: kill failed",
+				"projectID", project, "sessionID", recs[i].ID, "error", err)
+		}
+		s.emitTeardownBlocker(ctx, project, recs[i], ProjectTeardownBlocker{
+			SessionID:     recs[i].ID,
+			Class:         "session_kill_failed",
+			Reason:        "session teardown failed; the process may still be running",
+			WorkspacePath: recs[i].Metadata.WorkspacePath,
+		}, err)
+		out.Blockers = append(out.Blockers, ProjectTeardownBlocker{
+			SessionID:     recs[i].ID,
+			Class:         "session_kill_failed",
+			Reason:        "session teardown failed; the process may still be running",
+			WorkspacePath: recs[i].Metadata.WorkspacePath,
+		})
+	}
+	pathBySession := make(map[domain.SessionID]string, len(recs))
+	for _, rec := range recs {
+		pathBySession[rec.ID] = rec.Metadata.WorkspacePath
 	}
 	cleanup, err := s.Cleanup(ctx, project)
 	if err != nil {
 		return out, err
 	}
-	if len(cleanup.Skipped) > 0 {
+	for _, skip := range cleanup.Skipped {
+		class := skip.Class
+		if class == "" {
+			class = "workspace_teardown_failed"
+		}
+		blocker := ProjectTeardownBlocker{
+			SessionID:     skip.SessionID,
+			Class:         class,
+			Reason:        skip.Reason,
+			WorkspacePath: pathBySession[skip.SessionID],
+		}
+		out.Blockers = append(out.Blockers, blocker)
+	}
+	out.Blocked = false
+	for _, b := range out.Blockers {
+		// A missing source repository alone must not keep a stale project
+		// registered: there is no AO-managed workspace left to protect, and
+		// force cannot restore a repo the user already deleted from disk.
+		if b.Class == "repository_missing" || b.Class == "project_unregistered" {
+			continue
+		}
 		out.Blocked = true
 	}
 	return out, nil
+}
+
+// emitTeardownBlocker records one structured refusal with its raw cause so
+// operators can diagnose kill/cleanup faults from telemetry even though the
+// API-facing blocker only carries a fixed reason string.
+func (s *Service) emitTeardownBlocker(ctx context.Context, project domain.ProjectID, rec domain.SessionRecord, blocker ProjectTeardownBlocker, cause error) {
+	if s.telemetry == nil {
+		return
+	}
+	projectID := project
+	sessionID := rec.ID
+	payload := map[string]any{
+		"class":          blocker.Class,
+		"reason":         blocker.Reason,
+		"error":          cause.Error(),
+		"workspace_path": blocker.WorkspacePath,
+		"is_terminated":  rec.IsTerminated,
+	}
+	s.telemetry.Emit(context.Background(), ports.TelemetryEvent{
+		Name:       "ao.session.project_teardown_blocked",
+		Source:     "session_service",
+		OccurredAt: s.now(),
+		Level:      ports.TelemetryLevelWarn,
+		ProjectID:  &projectID,
+		SessionID:  &sessionID,
+		RequestID:  reqid.FromContext(ctx),
+		Payload:    payload,
+	})
 }
 
 type forceProjectCommander interface {

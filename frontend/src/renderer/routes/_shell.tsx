@@ -703,8 +703,12 @@ function ShellLayout() {
 				params: { path: { id: projectId }, query: force ? { force: true } : undefined },
 			});
 			if (error) {
-				const failure = new Error(apiErrorMessage(error)) as Error & { code?: string };
+				const failure = new Error(apiErrorMessage(error)) as Error & {
+					code?: string;
+					details?: Record<string, unknown>;
+				};
 				failure.code = apiErrorCode(error);
+				failure.details = apiErrorDetails(error);
 				void captureRendererException(failure, {
 					source: "project-remove",
 					operation: "project_remove",

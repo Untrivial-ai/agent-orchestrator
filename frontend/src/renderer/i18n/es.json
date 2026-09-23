@@ -1293,7 +1293,7 @@
 	"shell.removeProjectTitle": "Eliminar proyecto",
 	"shell.forceRemoveProjectTitle": "Delete protected workspace?",
 	"shell.forceRemoveProjectLead": "AO could not safely remove a session workspace.",
-	"shell.forceRemoveProjectBody": "Deleting will permanently remove that AO-managed workspace and any uncommitted changes. Your original project folder will not be deleted.",
+	"shell.forceRemoveProjectBody": "Confirming will preserve uncommitted changes under refs/ao/preserved/<session> in your repository, then remove the protected AO-managed workspace. Your original project folder will not be deleted.",
 	"shell.forceRemoveProjectConfirm": "Delete project and workspace",
 	"shell.removingNamed": "Eliminando {{name}}…",
 	"shell.renameSession": "Renombrar {{title}}",

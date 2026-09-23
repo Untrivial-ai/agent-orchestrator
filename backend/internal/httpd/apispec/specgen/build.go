@@ -1883,6 +1883,7 @@ func projectOperations() []operation {
 			resps: []respUnit{
 				{http.StatusOK, projectsvc.RemoveResult{}},
 				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 			},

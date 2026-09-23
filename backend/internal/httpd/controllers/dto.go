@@ -163,9 +163,10 @@ type ListSessionsQuery struct {
 }
 
 // RemoveProjectQuery requires an explicit second user confirmation before AO
-// discards protected AO-managed workspaces. It never applies to the source repo.
+// discards protected AO-managed workspaces. It never applies to the source repo;
+// uncommitted work is stashed under refs/ao/preserved/<session-id> first.
 type RemoveProjectQuery struct {
-	Force bool `query:"force,omitempty"`
+	Force bool `query:"force,omitempty" description:"When true, force-remove protected AO-managed session workspaces after an explicit user confirmation, preserving uncommitted work under refs/ao/preserved/<session-id> before each workspace is removed. Never applies to the source repository."`
 }
 
 // CleanupSessionsQuery is the query string accepted by POST /api/v1/sessions/cleanup.

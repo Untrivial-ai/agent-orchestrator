@@ -233,7 +233,7 @@ type CloneProjectHandler = (input: {
 	signal?: AbortSignal;
 }) => Promise<void>;
 type InitializeProjectHandler = (path: string) => Promise<void>;
-type RemoveProjectHandler = (projectId: string) => Promise<void>;
+type RemoveProjectHandler = (projectId: string, force?: boolean) => Promise<void>;
 type ImportValidationResult = components["schemas"]["ImportValidationResult"];
 type RepoGitStatus = components["schemas"]["RepoGitStatus"];
 
@@ -650,6 +650,46 @@ describe("Sidebar", () => {
 		expect(await screen.findByText("Failed to remove project")).toBeInTheDocument();
 		expect(screen.queryByRole("dialog", { name: "Remove project" })).not.toBeInTheDocument();
 		expect(navigateMock).toHaveBeenCalledWith({ to: "/" });
+	});
+
+	it("opens the force confirmation with blockers and retries onRemoveProject(id, true)", async () => {
+		const user = userEvent.setup();
+		const blocked = new Error("AO could not safely remove one or more session workspaces.") as Error & {
+			code?: string;
+			details?: Record<string, unknown>;
+		};
+		blocked.code = "PROJECT_REMOVE_BLOCKED";
+		blocked.details = {
+			blockers: [
+				{ class: "workspace_dirty", reason: "workspace has uncommitted changes" },
+				{ class: "session_kill_failed", reason: "session teardown failed; the process may still be running" },
+			],
+		};
+		const onRemoveProject = vi.fn().mockRejectedValueOnce(blocked).mockResolvedValueOnce(undefined) as RemoveProjectHandler;
+		renderSidebar({ onRemoveProject });
+
+		await user.click(screen.getByLabelText("Project actions for Project One"));
+		await user.click(await screen.findByRole("menuitem", { name: "Remove project" }));
+		await screen.findByRole("dialog", { name: "Remove project" });
+		await user.click(screen.getByRole("button", { name: "Remove" }));
+
+		const forceDialog = await screen.findByRole("dialog", { name: "Delete protected workspace?" });
+		expect(forceDialog).toBeInTheDocument();
+		expect(within(forceDialog).getByTestId("force-remove-blockers")).toHaveTextContent(
+			"workspace has uncommitted changes",
+		);
+		expect(within(forceDialog).getByTestId("force-remove-blockers")).toHaveTextContent(
+			"session teardown failed; the process may still be running",
+		);
+		expect(onRemoveProject).toHaveBeenCalledTimes(1);
+		expect(onRemoveProject).toHaveBeenCalledWith("proj-1");
+
+		await user.click(within(forceDialog).getByRole("button", { name: "Delete project and workspace" }));
+		await waitFor(() => expect(onRemoveProject).toHaveBeenCalledTimes(2));
+		expect(onRemoveProject).toHaveBeenNthCalledWith(2, "proj-1", true);
+		await waitFor(() =>
+			expect(screen.queryByRole("dialog", { name: "Delete protected workspace?" })).not.toBeInTheDocument(),
+		);
 	});
 
 	it("requests a new task for the project from the kebab menu", async () => {
