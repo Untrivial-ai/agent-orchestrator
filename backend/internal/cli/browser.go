@@ -43,6 +43,9 @@ type browserScreenshotFileResult struct {
 	Width       int    `json:"width"`
 	Height      int    `json:"height"`
 	Annotations []any  `json:"annotations,omitempty"`
+	// True when --annotate was requested but the browser returned no usable
+	// annotations, so the image may carry no labels.
+	AnnotationsUnavailable bool `json:"annotationsUnavailable,omitempty"`
 }
 
 const browserCapabilityHeader = "X-AO-Browser-Capability"
@@ -958,12 +961,14 @@ func writeBrowserScreenshot(cmd *cobra.Command, result map[string]any, target st
 	height := numberInt(result["height"])
 	if jsonOutput {
 		annotations, _ := result["annotations"].([]any)
+		unavailable, _ := result["annotationsUnavailable"].(bool)
 		return writeJSON(cmd.OutOrStdout(), browserScreenshotFileResult{
-			Path:        abs,
-			Size:        int64(written),
-			Width:       width,
-			Height:      height,
-			Annotations: annotations,
+			Path:                   abs,
+			Size:                   int64(written),
+			Width:                  width,
+			Height:                 height,
+			Annotations:            annotations,
+			AnnotationsUnavailable: unavailable,
 		})
 	}
 	size := ""
@@ -977,6 +982,11 @@ func writeBrowserScreenshot(cmd *cobra.Command, result map[string]any, target st
 }
 
 func writeBrowserAnnotations(cmd *cobra.Command, result map[string]any) error {
+	if unavailable, _ := result["annotationsUnavailable"].(bool); unavailable {
+		_, err := fmt.Fprintln(cmd.OutOrStdout(),
+			"The browser returned no annotations for this capture, so the image may carry no labels.")
+		return err
+	}
 	annotations, _ := result["annotations"].([]any)
 	if len(annotations) == 0 {
 		return nil

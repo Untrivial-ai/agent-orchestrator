@@ -249,6 +249,7 @@ export class AgentBrowserRuntime {
 		width: number;
 		height: number;
 		annotations?: unknown[];
+		annotationsUnavailable?: true;
 		untrustedExternalContent: true;
 	}> {
 		const runtime = await this.ensureSession(sessionId, provider);
@@ -270,6 +271,7 @@ export class AgentBrowserRuntime {
 				height,
 				...(annotated?.annotations ? { annotations: annotated.annotations } : {}),
 				...(annotated?.boundary ? { _boundary: annotated.boundary } : {}),
+				...(options.annotate === true && !annotated?.annotations ? { annotationsUnavailable: true as const } : {}),
 				untrustedExternalContent: true,
 			};
 		} finally {

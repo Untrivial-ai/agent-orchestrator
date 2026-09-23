@@ -15,9 +15,10 @@ import (
 )
 
 type browserRequestCapture struct {
-	path       string
-	capability string
-	body       browserCommandRequestDTO
+	path                   string
+	capability             string
+	body                   browserCommandRequestDTO
+	annotationsUnavailable bool
 }
 
 func browserCLIServer(t *testing.T, capture *browserRequestCapture) *httptest.Server {
@@ -47,6 +48,9 @@ func browserCLIServer(t *testing.T, capture *browserRequestCapture) *httptest.Se
 			result = `{"data":"cG5n","width":10,"height":20}`
 			if capture.body.Args["annotate"] == true {
 				result = `{"data":"cG5n","width":10,"height":20,"annotations":[{"number":1,"ref":"e1","role":"button","name":"Save"}]}`
+				if capture.annotationsUnavailable {
+					result = `{"data":"cG5n","width":10,"height":20,"annotationsUnavailable":true}`
+				}
 			}
 		case "tabs":
 			result = `{"activeTabId":"t2","tabs":[{"id":"t1","title":"First","url":"http://localhost:3000/","active":false},{"id":"t2","title":"Second","url":"http://localhost:4173/","active":true}]}`
@@ -185,6 +189,27 @@ func TestBrowserHumanPointerAndAnnotateFlags(t *testing.T) {
 	}
 	if len(decoded.Annotations) != 1 {
 		t.Fatalf("json screenshot dropped the annotations: %q", out)
+	}
+
+	capture.annotationsUnavailable = true
+	missingPath := filepath.Join(t.TempDir(), "missing.png")
+	out, _, err = executeCLI(t, deps, "browser", "screenshot", missingPath, "--annotate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "no annotations") {
+		t.Fatalf("unavailable annotations were not reported: %q", out)
+	}
+	missingJSON := filepath.Join(t.TempDir(), "missing-json.png")
+	out, _, err = executeCLI(t, deps, "browser", "screenshot", missingJSON, "--annotate", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("decode json screenshot: %v (%q)", err, out)
+	}
+	if !decoded.AnnotationsUnavailable {
+		t.Fatalf("json screenshot hid the missing annotations: %q", out)
 	}
 }
 
