@@ -17,6 +17,8 @@ For a phone, the desktop app creates a separate listener through **Connect Mobil
 
 The listener normally uses port `3011` and can fall back to another available port. Always use the actually displayed port. Disabling Connect Mobile closes the listener; regenerating the password disconnects existing clients.
 
+The same listener is what another desktop connects to as a remote host. See [Remote sessions](/docs/configuration/remote-sessions) for that flow and for the trust boundary it assumes.
+
 ## Tailscale
 
 For access away from the same Wi-Fi, install Tailscale on both devices and sign in to the same tailnet. Enable Connect Mobile, find the desktop's `100.x` address with `tailscale ip -4`, then enter that address, the displayed mobile port, and the connection password in the mobile app. Leave TLS disabled.
