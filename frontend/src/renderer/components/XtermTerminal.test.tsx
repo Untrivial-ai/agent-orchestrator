@@ -1224,6 +1224,32 @@ describe("XtermTerminal", () => {
 		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith("hellowo\nnext");
 	});
 
+	it("joins Windows CRLF rows without changing preserved row breaks", () => {
+		setNavigatorPlatform("Win32");
+		render(<XtermTerminal theme="dark" />);
+		const terminal = state.lastTerminal!;
+		terminal.cols = 5;
+		terminal.bufferLines = [
+			{ isWrapped: false, translateToString: (t) => (t ? "hello" : "hello") },
+			{ isWrapped: false, translateToString: (t) => (t ? "wo" : "wo   ") },
+			{ isWrapped: false, translateToString: (t) => (t ? "next" : "next") },
+		];
+		terminal.selectionRange = { start: { x: 0, y: 0 }, end: { x: 3, y: 2 } };
+		terminal.selection = "hello\r\nwo\r\nnext";
+
+		terminal.keyHandler!({
+			key: "c",
+			metaKey: false,
+			ctrlKey: true,
+			shiftKey: false,
+			altKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent);
+
+		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith("hellowo\r\nnext");
+	});
+
 	it("joins full-width rows of wide characters by cell coverage, not string length", () => {
 		render(<XtermTerminal theme="dark" />);
 		const terminal = state.lastTerminal!;

@@ -162,7 +162,8 @@ function bracketPastedText(text: string, bracketedPasteMode: boolean): string {
 function joinVisuallyContinuousLines(term: Terminal, selection: string): string {
 	const range = term.getSelectionPosition();
 	if (!range) return selection;
-	const lines = selection.split("\n");
+	const lineBreak = selection.includes("\r\n") ? "\r\n" : "\n";
+	const lines = selection.split(lineBreak);
 	const buffer = term.buffer.active;
 	let joined = lines[0] ?? "";
 	let index = 0;
@@ -177,7 +178,7 @@ function joinVisuallyContinuousLines(term: Terminal, selection: string): string 
 		// UTF-16 length: a row packed with wide (CJK) characters is full while its
 		// string stays shorter than the grid.
 		const continuous = !!previous && !/\s$/.test(previous.translateToString(false));
-		joined += `${continuous ? "" : "\n"}${text}`;
+		joined += `${continuous ? "" : lineBreak}${text}`;
 	}
 	return joined;
 }
