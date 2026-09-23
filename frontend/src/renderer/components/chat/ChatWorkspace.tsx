@@ -201,6 +201,7 @@ type ShellTerminalTarget = Extract<TerminalTarget, { kind: "shell" }>;
 type WorkspaceTab = { key: string; content: ReactNode; onSelect: () => void; onClose?: () => void };
 type ChatAuxiliaryTab =
 	| { key: string; kind: "reviewer"; terminal: { handleId: string; harness: string } }
+	| { key: string; kind: "reviewer-chat"; terminal: { reviewId: string; harness: string } }
 	| { key: string; kind: "shell"; terminal: ShellTerminal }
 	| { key: string; kind: "workspace"; tab: WorkspaceTab };
 
@@ -304,6 +305,12 @@ export interface ChatWorkspaceProps {
 	newWorkDisabled?: boolean;
 	reviewerTerminal?: { handleId: string; harness: string };
 	onOpenReviewerTerminal?: (target: { handleId: string; harness: string }) => void;
+	reviewerChat?: { reviewId: string; harness: string };
+	onOpenReviewerChat?: (target: { reviewId: string; harness: string }) => void;
+	/** A typed reviewer owns the body while this worker surface remains mounted. */
+	reviewerChatSelected?: boolean;
+	/** The parent surface owns the shared session tab strip. */
+	hideHeader?: boolean;
 	/** Older durable history is available but not loaded into the DOM yet. */
 	hasOlder?: boolean;
 	loadingOlder?: boolean;
@@ -542,6 +549,10 @@ function ChatWorkspaceContent({
 	newWorkDisabled = false,
 	reviewerTerminal,
 	onOpenReviewerTerminal,
+	reviewerChat,
+	onOpenReviewerChat,
+	reviewerChatSelected = false,
+	hideHeader = false,
 	session,
 	onSessionRenamed,
 	reviewerTarget,
@@ -666,17 +677,20 @@ function ChatWorkspaceContent({
 	// Selection is durable UI state; availability only controls whether the tab is
 	// offered. Keeping these separate preserves a selected reviewer while an active
 	// session temporarily becomes terminated and later returns.
-	const reviewerActive = Boolean(reviewerTarget && session);
+	const reviewerActive = reviewerChatSelected || Boolean(reviewerTarget && session);
 	const shellActive = Boolean(shellTarget && session);
 	const auxiliaryTabs = useMemo<ChatAuxiliaryTab[]>(
 		() => [
 			...(reviewerTerminal
 				? [{ key: `reviewer:${reviewerTerminal.handleId}`, kind: "reviewer" as const, terminal: reviewerTerminal }]
 				: []),
+			...(!reviewerTerminal && reviewerChat
+				? [{ key: `reviewer-chat:${reviewerChat.reviewId}`, kind: "reviewer-chat" as const, terminal: reviewerChat }]
+				: []),
 			...(shellTerminals ?? []).map((terminal) => ({ key: terminal.handleId, kind: "shell" as const, terminal })),
 			...(workspaceTabs ?? []).map((tab) => ({ key: tab.key, kind: "workspace" as const, tab })),
 		],
-		[reviewerTerminal, shellTerminals, workspaceTabs],
+		[reviewerChat, reviewerTerminal, shellTerminals, workspaceTabs],
 	);
 	const availableTabKeys = useMemo(() => auxiliaryTabs.map((tab) => tab.key), [auxiliaryTabs]);
 	const [tabOrderBySession, setTabOrderBySession] = useState<Record<string, string[]>>({});
@@ -1012,7 +1026,11 @@ function ChatWorkspaceContent({
 			const activeKey = workspaceActiveTabKey ?? (shellActive
 				? shellTarget?.handleId
 				: reviewerActive
-					? `reviewer:${reviewerTerminal?.handleId}`
+					? reviewerTerminal
+						? `reviewer:${reviewerTerminal.handleId}`
+						: reviewerChat
+							? `reviewer-chat:${reviewerChat.reviewId}`
+							: "chat"
 					: "chat");
 			const activeIndex = tabs.findIndex((tab) => tab.key === activeKey);
 			const currentIndex = activeIndex >= 0 ? activeIndex : 0;
@@ -1026,6 +1044,10 @@ function ChatWorkspaceContent({
 				onOpenReviewerTerminal?.(next.terminal);
 				return;
 			}
+			if (next.kind === "reviewer-chat") {
+				onOpenReviewerChat?.(next.terminal);
+				return;
+			}
 			if (next.kind === "shell") {
 				onSelectShellTerminal?.(next.terminal.handleId);
 				return;
@@ -1034,9 +1056,11 @@ function ChatWorkspaceContent({
 		},
 		[
 			onOpenReviewerTerminal,
+			onOpenReviewerChat,
 			onSelectChat,
 			onSelectShellTerminal,
 			reviewerActive,
+			reviewerChat,
 			reviewerTerminal,
 			orderedAuxiliaryTabs,
 			shellActive,
@@ -1289,11 +1313,12 @@ function ChatWorkspaceContent({
 				} as CSSProperties
 			}
 		>
-			<ChatHeader
+			{hideHeader ? null : <ChatHeader
 				snapshot={snapshot}
 				sessionTitle={sessionTitle}
 				sessionRole={sessionRole}
 				onOpenReviewerTerminal={onOpenReviewerTerminal}
+				onOpenReviewerChat={onOpenReviewerChat}
 				reviewerActive={reviewerActive}
 				onSelectChat={onSelectChat}
 				shellActiveHandleId={shellActive ? shellTarget?.handleId : undefined}
@@ -1313,7 +1338,7 @@ function ChatWorkspaceContent({
 				onReorderAuxiliaryTabs={reorderAuxiliaryTabs}
 				inline={isFullscreen}
 				topbarBounds={topbarBounds}
-			/>
+			/>}
 			<div className="relative flex min-h-0 flex-1 flex-col">
 				{reviewerTarget && session ? (
 					<div
@@ -1635,6 +1660,7 @@ function ChatHeader({
 	sessionTitle,
 	sessionRole,
 	onOpenReviewerTerminal,
+	onOpenReviewerChat,
 	reviewerActive,
 	onSelectChat,
 	shellActiveHandleId,
@@ -1659,6 +1685,7 @@ function ChatHeader({
 	sessionTitle?: string;
 	sessionRole: SessionKind;
 	onOpenReviewerTerminal?: (target: { handleId: string; harness: string }) => void;
+	onOpenReviewerChat?: (target: { reviewId: string; harness: string }) => void;
 	/** The reviewer tab is selected; the chat tab is the clickable alternative. */
 	reviewerActive?: boolean;
 	/** Return the tab strip to the chat tab. */
@@ -1776,7 +1803,7 @@ function ChatHeader({
 								>
 									{orderedAuxiliaryTabs.map((tab) => (
 										<DraggableChatTab key={tab.key} value={tab.key}>
-											{tab.kind === "reviewer" ? (
+											{tab.kind === "reviewer" || tab.kind === "reviewer-chat" ? (
 												<button
 													aria-current={reviewerActive && !workspaceActiveTabKey ? true : undefined}
 													aria-label="Reviewer"
@@ -1787,7 +1814,7 @@ function ChatHeader({
 															? "bg-overlay text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground/80"
 															: "text-muted-foreground hover:bg-raised hover:text-foreground",
 													)}
-													onClick={() => onOpenReviewerTerminal?.(tab.terminal)}
+													onClick={() => tab.kind === "reviewer" ? onOpenReviewerTerminal?.(tab.terminal) : onOpenReviewerChat?.(tab.terminal)}
 													role="tab"
 													tabIndex={reviewerActive && !workspaceActiveTabKey ? 0 : -1}
 													title={tab.terminal.harness}

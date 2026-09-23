@@ -1482,6 +1482,32 @@ func TestManager_AddAllocatesUniqueIDForCollidingDerivedIDs(t *testing.T) {
 	})
 }
 
+func TestManager_InvalidatesModelScopeAfterProjectAndConfigWrites(t *testing.T) {
+	configureCommitter(t)
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var changed []string
+	m := project.NewWithDeps(project.Deps{
+		Store: store,
+		OnModelScopeChanged: func(projectID string) {
+			changed = append(changed, projectID)
+		},
+	})
+	created, err := m.Add(context.Background(), project.AddInput{Path: gitRepo(t), ProjectID: ptr("catalog-scope")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SetConfig(context.Background(), created.ID, project.SetConfigInput{Config: domain.ProjectConfig{Env: map[string]string{"MODEL_PROFILE": "new"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"catalog-scope", "catalog-scope"}; !reflect.DeepEqual(changed, want) {
+		t.Fatalf("changed scopes = %v, want %v", changed, want)
+	}
+}
+
 // gitRepoWithOrigin creates a real git repo with an `origin` remote pointing
 // at `originURL`. Used to assert project.Add captures the origin at add time.
 func gitRepoWithOrigin(t *testing.T, originURL string) string {

@@ -50,6 +50,7 @@ type Store interface {
 	AcceptOrgInvitation(context.Context, domain.Principal, string, string) (domain.Membership, error)
 	DeclineOrgInvitation(context.Context, domain.Principal, string, string) error
 	CreateProject(context.Context, domain.Principal, string, string, domain.CreateProject) (domain.Project, error)
+	GetProject(context.Context, domain.Principal, string, string) (domain.Project, error)
 	ListProjects(context.Context, domain.Principal, string, *domain.Cursor, int) ([]domain.Project, bool, error)
 	UpdateProject(context.Context, domain.Principal, string, string, domain.UpdateProject) (domain.Project, error)
 	ArchiveProject(context.Context, domain.Principal, string, string) error
@@ -146,8 +147,11 @@ type Server struct {
 	// capabilityGatedProviders is the set of providers that additionally require
 	// a matching organization capability. Empty by default (no gating).
 	capabilityGatedProviders map[string]bool
-	provisioning             sandbox.ProvisioningDefaults
-	workerTokens             WorkerTokens
+	// coderTemplates lists the Coder templates a client may pick from. Nil when
+	// the deployment does not offer the coder provider.
+	coderTemplates CoderTemplateLister
+	provisioning   sandbox.ProvisioningDefaults
+	workerTokens   WorkerTokens
 	// workerTokenLifetime is zero when the deployment does not override the
 	// protocol default; workerTokenTTL() resolves that.
 	workerTokenLifetime     time.Duration
@@ -187,27 +191,30 @@ type Options struct {
 	SandboxProvider           string
 	AvailableSandboxProviders []string
 	CapabilityGatedProviders  []string
-	Provisioning              sandbox.ProvisioningDefaults
-	WorkerTokens              WorkerTokens
-	WorkerTokenTTL            time.Duration
-	WorkerBinary              []byte
-	WorkerHelperBinary        []byte
-	WorkerRequestTimeout      time.Duration
-	MaxSandboxes              int
-	Environment               string
-	Release                   string
-	Logger                    *slog.Logger
-	GitHub                    *githubapp.Service
-	CheckoutBroker            CheckoutBroker
-	PATWrites                 *githubapp.PATWriteService
-	BrokerAuthToken           string
-	EnvironmentControlToken   string
-	SecretCipher              *secrets.Cipher
-	CredentialValidator       credentialValidator
-	RepositoryProbeClient     *http.Client
-	WebhookMaxBody            int64
-	TerminalStreamEnabled     bool
-	TerminalRelayEnabled      bool
+	// CoderTemplates lists the Coder templates a client may pick from. Nil when
+	// the deployment does not offer the coder provider.
+	CoderTemplates          CoderTemplateLister
+	Provisioning            sandbox.ProvisioningDefaults
+	WorkerTokens            WorkerTokens
+	WorkerTokenTTL          time.Duration
+	WorkerBinary            []byte
+	WorkerHelperBinary      []byte
+	WorkerRequestTimeout    time.Duration
+	MaxSandboxes            int
+	Environment             string
+	Release                 string
+	Logger                  *slog.Logger
+	GitHub                  *githubapp.Service
+	CheckoutBroker          CheckoutBroker
+	PATWrites               *githubapp.PATWriteService
+	BrokerAuthToken         string
+	EnvironmentControlToken string
+	SecretCipher            *secrets.Cipher
+	CredentialValidator     credentialValidator
+	RepositoryProbeClient   *http.Client
+	WebhookMaxBody          int64
+	TerminalStreamEnabled   bool
+	TerminalRelayEnabled    bool
 }
 
 func New(options Options) *Server {
@@ -267,6 +274,7 @@ func New(options Options) *Server {
 		sandboxProvider:           sandboxProvider,
 		availableSandboxProviders: availableSandboxProviders,
 		capabilityGatedProviders:  capabilityGatedProviders,
+		coderTemplates:            options.CoderTemplates,
 		provisioning:              options.Provisioning,
 		workerTokens:              options.WorkerTokens,
 		workerTokenLifetime:       options.WorkerTokenTTL,
@@ -428,6 +436,7 @@ func New(options Options) *Server {
 			router.Post("/provider-connections/agents/{agent}/promote", server.promoteAgentConnection)
 			router.Get("/sessions", server.listSessions)
 			router.Post("/sessions", server.createSession)
+			router.Get("/sandbox/coder/templates", server.listCoderTemplates)
 			router.Get("/sessions/{sessionId}", server.getSession)
 			router.Post("/sessions/wake", server.wakePausedSessions)
 			router.Post("/sessions/{sessionId}/resume", server.resumeSession)

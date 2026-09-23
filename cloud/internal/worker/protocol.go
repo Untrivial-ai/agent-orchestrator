@@ -26,9 +26,19 @@ type LaunchContext struct {
 	DeniedCommands  []string `json:"deniedCommands"`
 	RepositoryURL   string   `json:"repositoryUrl"`
 	DefaultBranch   string   `json:"defaultBranch"`
+	// ExtraRepos are additional repositories the worker clones alongside the
+	// primary repo (multi-repo dev kit). Empty for a single-repo session.
+	ExtraRepos []RepoRef `json:"extraRepos,omitempty"`
 	// SystemPrompt carries control-plane-authored project context and rules. It
 	// remains separate from Prompt, which is the user's visible task input.
 	SystemPrompt string `json:"systemPrompt"`
+}
+
+// RepoRef is one additional repository the worker clones beside the primary
+// repo, optionally at a specific branch.
+type RepoRef struct {
+	URL    string `json:"url"`
+	Branch string `json:"branch,omitempty"`
 }
 
 // BootstrapResponse is the control plane's answer to a valid bootstrap ticket.

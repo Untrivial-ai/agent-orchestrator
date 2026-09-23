@@ -938,7 +938,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start a worker task and ask the orchestrator to title it */
+        /** Start a worker task and refine its title in the background */
         post: operations["delegateTask"];
         delete?: never;
         options?: never;
@@ -1165,6 +1165,91 @@ export interface paths {
         post?: never;
         /** Unpair this phone from the daemon, removing it from the roster */
         delete: operations["unpairPushDevice"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{reviewId}/conversation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a reviewer's durable Chat conversation */
+        get: operations["getReviewerConversation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{reviewId}/conversation/approvals/{requestId}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Answer a pending approval in a reviewer conversation */
+        post: operations["resolveReviewerConversationApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{reviewId}/conversation/inputs/{requestId}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Answer a structured reviewer input request */
+        post: operations["resolveReviewerConversationInput"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{reviewId}/conversation/interrupt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel the in-flight reviewer turn */
+        post: operations["interruptReviewerConversationTurn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{reviewId}/conversation/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send a message to a Chat reviewer */
+        post: operations["sendReviewerConversationMessage"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2727,8 +2812,19 @@ export interface components {
             customModelEntry: "none" | "direct" | "configured";
             /** Format: date-time */
             fetchedAt: string;
+            inputFingerprint?: string;
+            /** Format: date-time */
+            lastSuccessAt?: null | string;
+            metadata?: {
+                [key: string]: string;
+            };
             models: components["schemas"]["AgentModelInfo"][];
+            refreshError?: string;
             refreshRecommended?: boolean;
+            /** @enum {string} */
+            refreshState?: "idle" | "queued" | "refreshing" | "error";
+            /** Format: date-time */
+            retryAt?: null | string;
             /** @enum {string} */
             selectionMode: "catalog" | "text" | "mode";
             source: string;
@@ -3430,6 +3526,13 @@ export interface components {
             agentConfig?: components["schemas"]["AgentConfig"];
             harness: string;
         };
+        DomainReviewerSurface: {
+            controllerError?: string;
+            handleId?: string;
+            harness: string;
+            mode: string;
+            reviewId: string;
+        };
         EditConversationMessageRequest: {
             clientMessageId?: string;
             text: string;
@@ -3455,7 +3558,7 @@ export interface components {
         EnsureAgentReadinessRequest: {
             agentIds?: string[];
             /** @enum {string} */
-            purpose: "display" | "settings" | "launch";
+            purpose: "display" | "launch";
         };
         EnsureCodexAccountsRequest: {
             accountIds?: string[];
@@ -3674,6 +3777,7 @@ export interface components {
             reviewerActivityState?: "active" | "idle" | "waiting_input" | "blocked" | "exited";
             reviewerHandleId: string;
             reviewerHarness?: string;
+            reviewerSurface?: components["schemas"]["DomainReviewerSurface"];
             reviews: components["schemas"]["PRReviewState"][];
             runs: components["schemas"]["ReviewRun"][];
         };
@@ -3936,7 +4040,10 @@ export interface components {
             token?: string;
         };
         PutGitHubPATRequest: {
+            expiresIn?: number;
             pat: string;
+            refreshToken?: string;
+            refreshTokenExpiresIn?: number;
         };
         RegisterPushDeviceRequest: {
             /** @description Human-friendly device label. */
@@ -4548,6 +4655,7 @@ export interface components {
             /** @description True when a new review pass was started; false when an existing run for the same commit was reused. */
             created: boolean;
             reviewerHandleId: string;
+            reviewerSurface?: components["schemas"]["DomainReviewerSurface"];
             reviews: components["schemas"]["PRReviewState"][];
             runs: components["schemas"]["ReviewRun"][];
         };
@@ -8462,6 +8570,352 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getReviewerConversation: {
+        parameters: {
+            query?: {
+                /** @description Read items older than this conversation sequence. Omit for the newest page. */
+                beforeSequence?: null | number;
+                /** @description Maximum combined messages and activities to return. Defaults to 200. */
+                limit?: null | number;
+            };
+            header?: never;
+            path: {
+                /** @description Reviewer conversation identifier. */
+                reviewId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationSnapshotResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    resolveReviewerConversationApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Reviewer conversation identifier. */
+                reviewId: string;
+                /** @description Provider approval request identifier. Zero is a legitimate value. */
+                requestId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveConversationApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    resolveReviewerConversationInput: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Reviewer conversation identifier. */
+                reviewId: string;
+                /** @description Provider approval request identifier. Zero is a legitimate value. */
+                requestId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveConversationInputRequest"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    interruptReviewerConversationTurn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Reviewer conversation identifier. */
+                reviewId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    sendReviewerConversationMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Reviewer conversation identifier. */
+                reviewId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendConversationMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SendConversationMessageResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
             };
             /** @description Internal Server Error */
             500: {

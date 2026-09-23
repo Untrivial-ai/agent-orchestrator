@@ -299,6 +299,9 @@ type ChatStartConfig struct {
 	// Permissions is AO's existing per-session approval policy. Drivers map it
 	// onto their provider's native approval and sandbox settings.
 	Permissions PermissionMode
+	// ReadOnly requires a provider-enforced sandbox that cannot modify the
+	// workspace. It is used for review-owned conversations.
+	ReadOnly bool
 	// SystemPrompt carries AO's standing instructions for the session.
 	SystemPrompt string
 	// ProviderScopeID identifies the AO ownership boundary for opaque provider
@@ -307,6 +310,8 @@ type ChatStartConfig struct {
 	// ProviderIDsScoped matches the branch's persisted ID format. False preserves
 	// legacy projections written before scoped IDs were supported.
 	ProviderIDsScoped bool
+	// Ephemeral asks supporting providers not to persist this conversation.
+	Ephemeral bool
 	// AdditionalDirectories are extra absolute workspace roots the provider may
 	// access alongside WorkspacePath. Workspace projects use this for child repo
 	// worktrees; it is not a replacement for AO's worktree ownership.
@@ -332,6 +337,7 @@ type ChatResumeConfig struct {
 	// Effort is optional; empty keeps the provider conversation's current effort.
 	Effort      string
 	Permissions PermissionMode
+	ReadOnly    bool
 	// SystemPrompt is recomputed by the session manager on restore and reapplied
 	// to the provider process. It is not persisted in the conversation transcript.
 	SystemPrompt string

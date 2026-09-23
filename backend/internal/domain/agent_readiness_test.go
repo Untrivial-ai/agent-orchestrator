@@ -29,7 +29,7 @@ func TestEffectiveAgentReadiness(t *testing.T) {
 
 func TestAgentReadinessPurposeValidation(t *testing.T) {
 	t.Parallel()
-	if !AgentReadinessPurposeDisplay.Valid() || !AgentReadinessPurposeSettings.Valid() || !AgentReadinessPurposeLaunch.Valid() {
+	if !AgentReadinessPurposeDisplay.Valid() || !AgentReadinessPurposeLaunch.Valid() {
 		t.Fatal("documented readiness purposes must be valid")
 	}
 	if AgentReadinessPurpose("force").Valid() {

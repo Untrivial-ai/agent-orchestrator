@@ -1226,6 +1226,11 @@ type ReviewSessionIDParam struct {
 	ID string `path:"reviewSessionID" description:"Reviewer session identifier, currently the per-harness review row id."`
 }
 
+// ReviewIDParam identifies a durable reviewer-owned conversation.
+type ReviewIDParam struct {
+	ReviewID string `path:"reviewId" description:"Reviewer conversation identifier."`
+}
+
 // SpawnOrchestratorRequest is the body of POST /api/v1/orchestrators.
 type SpawnOrchestratorRequest struct {
 	ProjectID domain.ProjectID `json:"projectId"`
@@ -1267,7 +1272,7 @@ type AgentReadinessResponse = agentsvc.Readiness
 // An omitted or empty agentIds list selects all supported harnesses.
 type EnsureAgentReadinessRequest struct {
 	AgentIDs []string                     `json:"agentIds,omitempty"`
-	Purpose  domain.AgentReadinessPurpose `json:"purpose" enum:"display,settings,launch"`
+	Purpose  domain.AgentReadinessPurpose `json:"purpose" enum:"display,launch"`
 }
 
 // CodexAccountsResponse is the controller-owned, redacted cached account view.

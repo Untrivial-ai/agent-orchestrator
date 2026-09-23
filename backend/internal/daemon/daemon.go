@@ -540,7 +540,7 @@ func Run() error {
 	lcStack.LCM.SetSessionInputLease(sessMgr)
 	lcStack.LCM.SetSessionOperationGate(sessMgr)
 	termMgr.SetSessionInputLease(sessMgr)
-	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Logger: log})
+	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Logger: log, OnModelScopeChanged: agentSvc.InvalidateProjectModelCatalogs})
 	lcStack.trackerDone = startTrackerIntake(ctx, store, sessionSvc, tracker, log)
 
 	hostCommands := systemexec.New(cfg.DataDir)
@@ -686,6 +686,12 @@ func Run() error {
 			log.Error("cdc pipeline shutdown", "err", cdcErr)
 		}
 		return fmt.Errorf("reconcile sessions on boot: %w", reconcileErr)
+	}
+	// Reviewer-owned Chat controllers are durable independently of the worker's
+	// currently selected reviewer. Recover them through the required review
+	// service contract before accepting new automatic review work.
+	if reconcileErr := reviewSvc.RecoverChatReviewers(ctx); reconcileErr != nil {
+		log.Warn("reviewer chat recovery deferred", "err", reconcileErr)
 	}
 	agentSvc.WarmCodexAccounts()
 	autoReview := autoreview.New(store, reviewSvc, autoreview.Config{Logger: log})

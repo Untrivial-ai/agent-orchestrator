@@ -52,10 +52,24 @@ export async function listGitHubRepos(): Promise<GitHubReposResponse> {
 	return daemonFetch<GitHubReposResponse>("/api/v1/github/repos");
 }
 
-export async function saveGitHubPAT(pat: string): Promise<void> {
+export interface GitHubOAuthRefresh {
+	refreshToken?: string;
+	expiresIn?: number;
+	refreshTokenExpiresIn?: number;
+}
+
+// saveGitHubPAT stores a token on the daemon. For an expiring GitHub App OAuth
+// token, pass the refresh material so the daemon can renew it transparently
+// instead of forcing a reconnect; a plain PAT passes only the token.
+export async function saveGitHubPAT(pat: string, oauth?: GitHubOAuthRefresh): Promise<void> {
 	await daemonFetch<{ status: string }>("/api/v1/github/pat", {
 		method: "PUT",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ pat }),
+		body: JSON.stringify({
+			pat,
+			...(oauth?.refreshToken ? { refreshToken: oauth.refreshToken } : {}),
+			...(oauth?.expiresIn ? { expiresIn: oauth.expiresIn } : {}),
+			...(oauth?.refreshTokenExpiresIn ? { refreshTokenExpiresIn: oauth.refreshTokenExpiresIn } : {}),
+		}),
 	});
 }
