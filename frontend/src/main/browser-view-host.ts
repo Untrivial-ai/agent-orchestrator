@@ -35,7 +35,7 @@ import {
 } from "../shared/browser-profiles";
 import { attachAppShortcuts } from "./app-shortcuts";
 import type { AppShortcutId, KeybindingOverrides, ShortcutChord } from "../shared/shortcuts";
-import type { AgentBrowserRuntime } from "./agent-browser-runtime";
+import { MAX_SCREENSHOT_BYTES, type AgentBrowserRuntime } from "./agent-browser-runtime";
 import type { AgentBrowserTarget, AgentBrowserTargetProvider } from "./agent-browser-cdp-bridge";
 import type { BrowserProfileStore } from "./browser-profile-store";
 import type { BrowserHistoryStore } from "./browser-history-store";
@@ -2474,8 +2474,33 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 					if (!options.agentBrowserRuntime) {
 						throw browserError("BROWSER_AUTOMATION_UNAVAILABLE", "Browser automation runtime is unavailable");
 					}
-					await activeEntry(session).ready;
-					return options.agentBrowserRuntime.screenshot(sessionId, agentBrowserTargets(session), signal);
+					return queueNativeOperation(session, async () => {
+						await ensureNativeActiveTab(session, signal);
+						const target = activeEntry(session);
+						await target.ready;
+						try {
+							return await options.agentBrowserRuntime!.screenshot(
+								sessionId,
+								agentBrowserTargets(session),
+								signal,
+							);
+						} catch (error) {
+							if (!isAgentBrowserTimeout(error)) throw error;
+							// Native frame capture can stall against a hidden (not yet
+							// shown) WebContentsView. capturePage works there — it
+							// backs the interactive screenshot path — so fall back to it.
+							const image = await target.view.webContents.capturePage();
+							if (image.isEmpty()) {
+								throw browserError("SCREENSHOT_UNAVAILABLE", "The browser page could not be captured");
+							}
+							const png = image.toPNG();
+							if (png.length > MAX_SCREENSHOT_BYTES) {
+								throw browserError("SCREENSHOT_UNAVAILABLE", "Browser screenshot exceeded AO's size limit");
+							}
+							const { width, height } = image.getSize();
+							return { data: png.toString("base64"), width, height, untrustedExternalContent: true as const };
+						}
+					});
 				case "network-start":
 					return startNetworkCapture(
 						session,
@@ -2682,6 +2707,10 @@ const ACT_VERBS = new Set(["click", "dblclick", "focus", "hover", "fill", "type"
 
 function isStaleReferenceError(error: unknown): boolean {
 	return Boolean(error && typeof error === "object" && "code" in error && error.code === "STALE_REFERENCE");
+}
+
+function isAgentBrowserTimeout(error: unknown): boolean {
+	return Boolean(error && typeof error === "object" && "code" in error && error.code === "AGENT_BROWSER_TIMEOUT");
 }
 
 function tabResult(entry: BrowserEntry, active: boolean): BrowserTabState & { untrustedExternalContent: true } {
