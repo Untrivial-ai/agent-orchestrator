@@ -337,6 +337,18 @@ type UsageModelAggregate struct {
 	Cost    UsageCostAggregate
 }
 
+// UsageEventWindow bounds a session's visible usage events: the count of
+// assistant responses (AO's synthetic notices excluded) and the span their
+// transcript timestamps cover. KnownCreatedAtCount travels with the min and
+// max so one NULL timestamp can make the span unknown instead of silently
+// shortening the active-time divisor.
+type UsageEventWindow struct {
+	EventCount          int64
+	KnownCreatedAtCount int64
+	FirstEventAt        *time.Time
+	LastEventAt         *time.Time
+}
+
 // CompactSessionUsageAggregate is one batched storage row before checked token
 // and cost derivation.
 type CompactSessionUsageAggregate struct {
@@ -386,6 +398,12 @@ type SessionUsageSummary struct {
 	Incomplete bool
 	Totals     UsageMetricTotals
 	Harnesses  []HarnessUsageSummary
+	// Turns counts usage events — one per assistant response the transcript
+	// recorded. TokensPerSecond is average output-token throughput over the
+	// span between the first and last event; nil when output tokens or
+	// timestamps are incomplete.
+	Turns           int64
+	TokensPerSecond *float64
 }
 
 // SourceCursorState is the durable source state to commit after parsing a

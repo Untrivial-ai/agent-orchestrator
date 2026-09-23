@@ -14,6 +14,7 @@ type usageSummaryStore interface {
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	ListCompactSessionUsageAggregates(context.Context, domain.ProjectID) ([]domain.CompactSessionUsageAggregate, error)
 	ListUsageModelAggregates(context.Context, domain.SessionID) ([]domain.UsageModelAggregate, error)
+	GetUsageSessionEventWindow(context.Context, domain.SessionID) (domain.UsageEventWindow, error)
 	GetUsageSessionIncomplete(context.Context, domain.SessionID) (bool, error)
 }
 
@@ -74,6 +75,10 @@ func (r *SummaryReader) Get(ctx context.Context, sessionID domain.SessionID) (do
 	if err != nil {
 		return domain.SessionUsageSummary{}, err
 	}
+	window, err := r.store.GetUsageSessionEventWindow(ctx, sessionID)
+	if err != nil {
+		return domain.SessionUsageSummary{}, err
+	}
 	totals, err := usageTotals(models)
 	if err != nil {
 		return domain.SessionUsageSummary{}, err
@@ -84,7 +89,29 @@ func (r *SummaryReader) Get(ctx context.Context, sessionID domain.SessionID) (do
 	}
 	return domain.SessionUsageSummary{
 		SessionID: sessionID, Incomplete: incomplete, Totals: totals, Harnesses: harnesses,
+		Turns: window.EventCount, TokensPerSecond: usageTokensPerSecond(totals.OutputTokens, window),
 	}, nil
+}
+
+// usageTokensPerSecond divides OUTPUT tokens by the visible event-timestamp
+// span: generation speed is what the model produces per second — input (and
+// its cache reads) rides along per turn and would inflate the rate to
+// physically impossible numbers. Any unknown input — uncounted output, a
+// missing timestamp, a single event with no elapsed time — leaves throughput
+// unavailable rather than reporting a silently wrong rate. ponytail:
+// wall-clock span includes idle gaps; a per-turn delta sum would be the
+// upgrade if the average reads too low.
+func usageTokensPerSecond(output *int64, window domain.UsageEventWindow) *float64 {
+	if output == nil || window.KnownCreatedAtCount != window.EventCount ||
+		window.FirstEventAt == nil || window.LastEventAt == nil {
+		return nil
+	}
+	seconds := window.LastEventAt.Sub(*window.FirstEventAt).Seconds()
+	if seconds <= 0 {
+		return nil
+	}
+	throughput := float64(*output) / seconds
+	return &throughput
 }
 
 func usageTotals(models []domain.UsageModelAggregate) (domain.UsageMetricTotals, error) {

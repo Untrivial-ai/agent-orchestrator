@@ -949,6 +949,61 @@ func usageEventReplayDisposition(existing gen.GetModelUsageEventByKeyRow, event 
 	return existing.BillingProviderID.String == event.BillingProviderID, false
 }
 
+// GetUsageSessionEventWindow returns the visible-event count and timestamp
+// span a session's turns and throughput read from.
+func (s *Store) GetUsageSessionEventWindow(ctx context.Context, sessionID domain.SessionID) (domain.UsageEventWindow, error) {
+	row, err := s.qr.GetUsageSessionEventWindow(ctx, sessionID)
+	if err != nil {
+		return domain.UsageEventWindow{}, fmt.Errorf("usage event window for session %s: %w", sessionID, err)
+	}
+	firstAt, hasFirst := sqliteTimestamp(row.FirstEventAt)
+	lastAt, hasLast := sqliteTimestamp(row.LastEventAt)
+	return domain.UsageEventWindow{
+		EventCount:          row.EventCount,
+		KnownCreatedAtCount: row.KnownCreatedAtCount,
+		FirstEventAt:        timePtrWhen(firstAt, hasFirst),
+		LastEventAt:         timePtrWhen(lastAt, hasLast),
+	}, nil
+}
+
+// sqliteTimestamp decodes a raw MIN/MAX(created_at) scan value. sqlc cannot
+// infer a type through an aggregate, so the driver hands back interface{}:
+// modernc stores/reads time.Time as its String() form
+// ("2006-01-02 15:04:05.999999999 -0700 MST").
+func sqliteTimestamp(raw any) (time.Time, bool) {
+	switch value := raw.(type) {
+	case time.Time:
+		return value, true
+	case *time.Time:
+		if value == nil {
+			return time.Time{}, false
+		}
+		return *value, true
+	case string:
+		for _, layout := range []string{
+			"2006-01-02 15:04:05.999999999 -0700 MST",
+			"2006-01-02 15:04:05.999999999",
+			"2006-01-02 15:04:05 -0700 MST",
+			"2006-01-02 15:04:05",
+			time.RFC3339Nano,
+		} {
+			if parsed, err := time.Parse(layout, value); err == nil {
+				return parsed, true
+			}
+		}
+	case []byte:
+		return sqliteTimestamp(string(value))
+	}
+	return time.Time{}, false
+}
+
+func timePtrWhen(value time.Time, ok bool) *time.Time {
+	if !ok {
+		return nil
+	}
+	return &value
+}
+
 func usageAggregateFromGen(row gen.AggregateUsageBySessionHarnessModelRow) domain.UsageModelAggregate {
 	return domain.UsageModelAggregate{
 		Harness: row.Harness,

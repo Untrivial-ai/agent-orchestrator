@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -15,7 +16,8 @@ type usageSummaryStoreStub struct {
 	found      bool
 	incomplete bool
 	models     []domain.UsageModelAggregate
-	calls      [4]int
+	window     domain.UsageEventWindow
+	calls      [5]int
 }
 
 func (s *usageSummaryStoreStub) ListCompactSessionUsageAggregates(_ context.Context, id domain.ProjectID) ([]domain.CompactSessionUsageAggregate, error) {
@@ -30,8 +32,12 @@ func (s *usageSummaryStoreStub) ListUsageModelAggregates(context.Context, domain
 	s.calls[2]++
 	return s.models, nil
 }
-func (s *usageSummaryStoreStub) GetUsageSessionIncomplete(context.Context, domain.SessionID) (bool, error) {
+func (s *usageSummaryStoreStub) GetUsageSessionEventWindow(context.Context, domain.SessionID) (domain.UsageEventWindow, error) {
 	s.calls[3]++
+	return s.window, nil
+}
+func (s *usageSummaryStoreStub) GetUsageSessionIncomplete(context.Context, domain.SessionID) (bool, error) {
+	s.calls[4]++
 	return s.incomplete, nil
 }
 
@@ -155,7 +161,7 @@ func TestSummaryReaderGetPreservesStrongestPartialLowerBoundWithoutDoubleCountin
 		got.Harnesses[1].Totals.ProcessedTokens == nil || *got.Harnesses[1].Totals.ProcessedTokens != 125 {
 		t.Fatalf("processed totals by scope = %+v", got.Harnesses)
 	}
-	if store.calls != [4]int{0, 1, 1, 1} {
+	if store.calls != [5]int{0, 1, 1, 1, 1} {
 		t.Fatalf("store calls = %v", store.calls)
 	}
 }
@@ -257,6 +263,61 @@ func TestSummaryReaderGetReturnsUnavailableMetricsWithoutEvents(t *testing.T) {
 	if got.Totals.InputTokens != nil || got.Totals.OutputTokens != nil ||
 		got.Totals.ProcessedTokens != nil || got.Totals.EstimatedCost != nil || len(got.Harnesses) != 0 {
 		t.Fatalf("empty usage = %+v", got)
+	}
+	if got.Turns != 0 || got.TokensPerSecond != nil {
+		t.Fatalf("empty usage turns/rate = %d/%v, want 0/nil", got.Turns, got.TokensPerSecond)
+	}
+}
+
+func TestSummaryReaderGetDerivesTurnsAndTokensPerSecond(t *testing.T) {
+	first := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	last := first.Add(90 * time.Second)
+	store := &usageSummaryStoreStub{
+		found:   true,
+		session: domain.SessionRecord{ID: "reverb-13", Harness: domain.HarnessClaudeCode},
+		models: []domain.UsageModelAggregate{
+			{
+				Harness: domain.HarnessClaudeCode, ModelID: "claude-sonnet",
+				Tokens: testUsageMetrics(1000, 400, 600, 120),
+				Cost:   completeCostAggregate(5, 0, 0, 0, 0),
+			},
+		},
+		window: domain.UsageEventWindow{
+			EventCount: 5, KnownCreatedAtCount: 5, FirstEventAt: &first, LastEventAt: &last,
+		},
+	}
+	got, err := NewSummaryReader(store).Get(context.Background(), "reverb-13")
+	mustNoError(t, err)
+	if store.calls != [5]int{0, 1, 1, 1, 1} {
+		t.Fatalf("store calls = %v", store.calls)
+	}
+	if got.Turns != 5 {
+		t.Fatalf("turns = %d, want 5", got.Turns)
+	}
+	// Output tokens over the 90 s visible-event span.
+	if got.TokensPerSecond == nil || math.Abs(*got.TokensPerSecond-120.0/90.0) > 1e-9 {
+		t.Fatalf("tokensPerSecond = %v, want %v", got.TokensPerSecond, 120.0/90.0)
+	}
+
+	// One NULL timestamp widens the unknown instead of shortening the divisor.
+	partialWindow := store.window
+	partialWindow.KnownCreatedAtCount = 4
+	store.window = partialWindow
+	got, err = NewSummaryReader(store).Get(context.Background(), "reverb-13")
+	mustNoError(t, err)
+	if got.Turns != 5 || got.TokensPerSecond != nil {
+		t.Fatalf("turns/rate = %d/%v, want 5/nil with a NULL timestamp", got.Turns, got.TokensPerSecond)
+	}
+
+	// A single event has no elapsed time to divide by.
+	singleWindow := store.window
+	singleWindow.KnownCreatedAtCount = 5
+	singleWindow.LastEventAt = singleWindow.FirstEventAt
+	store.window = singleWindow
+	got, err = NewSummaryReader(store).Get(context.Background(), "reverb-13")
+	mustNoError(t, err)
+	if got.TokensPerSecond != nil {
+		t.Fatalf("tokensPerSecond = %v, want nil for a single-event window", *got.TokensPerSecond)
 	}
 }
 

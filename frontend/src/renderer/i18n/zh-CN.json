@@ -1988,6 +1988,8 @@
 	"inspector.usage.processedTokens": "已处理令牌",
 	"inspector.usage.processedTokensAria": "已处理 {{count}} 个令牌",
 	"inspector.usage.processedTokensUnavailable": "无法获取已处理令牌数",
+	"inspector.usage.turns": "回合数",
+	"inspector.usage.tokensPerSecond": "吞吐量",
 	"inspector.workers": "工作代理",
 	"inspector.workersCount": "工作代理（{{count}}）",
 	"inspector.workersEmpty": "尚未创建工作代理。",

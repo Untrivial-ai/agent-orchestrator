@@ -12270,13 +12270,26 @@ components:
           type: boolean
         sessionId:
           type: string
+        tokensPerSecond:
+          exclusiveMinimum: 0
+          type:
+          - "null"
+          - number
         totals:
           $ref: '#/components/schemas/UsageTotalsResponse'
+        turns:
+          description: Assistant responses observed in the transcripts (one usage
+            event per turn).
+          format: int64
+          minimum: 0
+          type: integer
       required:
       - sessionId
       - incomplete
       - totals
       - harnesses
+      - turns
+      - tokensPerSecond
       type: object
     SetActivityRequest:
       properties:

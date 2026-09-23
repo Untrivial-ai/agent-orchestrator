@@ -82,6 +82,7 @@ func sessionUsageResponse(summary domain.SessionUsageSummary) SessionUsageRespon
 	return SessionUsageResponse{
 		SessionID: summary.SessionID, Incomplete: summary.Incomplete,
 		Totals: usageTotalsResponse(summary.Totals), Harnesses: harnesses,
+		Turns: summary.Turns, TokensPerSecond: summary.TokensPerSecond,
 	}
 }
 

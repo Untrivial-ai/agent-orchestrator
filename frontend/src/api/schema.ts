@@ -4324,7 +4324,13 @@ export interface components {
             harnesses: components["schemas"]["UsageHarnessResponse"][];
             incomplete: boolean;
             sessionId: string;
+            tokensPerSecond: null | number;
             totals: components["schemas"]["UsageTotalsResponse"];
+            /**
+             * Format: int64
+             * @description Assistant responses observed in the transcripts (one usage event per turn).
+             */
+            turns: number;
         };
         SetActivityRequest: {
             /** @description Native agent session identifier used to resume its transcript. */

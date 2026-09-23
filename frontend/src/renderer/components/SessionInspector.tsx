@@ -500,7 +500,7 @@ function UsageCostTelemetry({ usage }: { usage: SessionUsage }) {
 					className="rounded-lg border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-2.5 py-2.5"
 					data-testid="session-usage-metrics"
 				>
-					<UsageMetrics totals={usage.totals} />
+					<UsageMetrics totals={usage.totals} turns={usage.turns} tokensPerSecond={usage.tokensPerSecond} />
 				</div>
 			</div>
 
@@ -911,15 +911,65 @@ function EstimatedCostInfo({ cost }: { cost: EstimatedCost | null }) {
 	);
 }
 
-function UsageMetrics({ totals }: { totals: SessionUsage["totals"] }) {
+function UsageMetrics({
+	totals,
+	turns,
+	tokensPerSecond,
+}: {
+	totals: SessionUsage["totals"];
+	// Session-level extras: per-model peeks omit them.
+	turns?: number;
+	tokensPerSecond?: number | null;
+}) {
 	const { t } = useTranslation();
 	const cacheHitRate = formatCacheHitRate(totals.cachedInputTokens, totals.inputTokens);
+	const turnsLabel = t("inspector.usage.turns");
+	const throughputLabel = t("inspector.usage.tokensPerSecond");
+	const throughput =
+		tokensPerSecond === null || tokensPerSecond === undefined
+			? null
+			: `${
+					// One decimal below 100 tok/s, integers above: the rate is a
+					// comparison aid, and its decimals stop carrying signal long
+					// before the number gets long.
+					tokensPerSecond >= 100
+						? Math.round(tokensPerSecond).toLocaleString("en-US")
+						: tokensPerSecond.toFixed(1)
+				} tok/s`;
 	return (
 		<dl className="grid grid-cols-2 gap-x-4 gap-y-2 @max-[300px]/inspector:grid-cols-1" data-testid="session-usage-metrics">
 			<UsageMetric label={t("inspector.usage.uncachedInputTokens")} metric={totals.uncachedInputTokens} />
 			<UsageMetric label={t("inspector.usage.cachedInputTokens")} metric={totals.cachedInputTokens} />
 			<UsageMetric label={t("inspector.usage.outputTokens")} metric={totals.outputTokens} />
 			<UsageRateMetric rate={cacheHitRate} />
+			{turns !== undefined ? (
+				<div className="min-w-0">
+					<dt className="truncate text-2xs text-settings-muted">{turnsLabel}</dt>
+					<dd
+						aria-label={`${turnsLabel}: ${turns}`}
+						className="mt-0.5 truncate font-mono text-sm-md text-settings-label"
+						title={`${turnsLabel}: ${turns}`}
+					>
+						{turns > 0 ? turns.toLocaleString("en-US") : "—"}
+					</dd>
+				</div>
+			) : null}
+			{tokensPerSecond !== undefined ? (
+				<div className="min-w-0">
+					<dt className="truncate text-2xs text-settings-muted">{throughputLabel}</dt>
+					<dd
+						aria-label={
+							throughput === null
+								? t("inspector.usage.metricUnavailable", { label: throughputLabel })
+								: throughput
+						}
+						className="mt-0.5 truncate font-mono text-sm-md text-settings-label"
+						title={throughput ?? undefined}
+					>
+						{throughput ?? "—"}
+					</dd>
+				</div>
+			) : null}
 		</dl>
 	);
 }

@@ -2036,6 +2036,8 @@
 	"inspector.usage.processedTokens": "Tokens processados",
 	"inspector.usage.processedTokensAria": "{{count}} tokens processados",
 	"inspector.usage.processedTokensUnavailable": "Tokens processados indisponíveis",
+	"inspector.usage.turns": "Turnos",
+	"inspector.usage.tokensPerSecond": "Taxa de processamento",
 	"inspector.workers": "Workers",
 	"inspector.workersCount": "Workers ({{count}})",
 	"inspector.workersEmpty": "Nenhum worker criado ainda.",

@@ -1560,6 +1560,10 @@ type SessionUsageResponse struct {
 	Incomplete bool                   `json:"incomplete"`
 	Totals     UsageTotalsResponse    `json:"totals"`
 	Harnesses  []UsageHarnessResponse `json:"harnesses"`
+	Turns      int64                  `json:"turns" minimum:"0" description:"Assistant responses observed in the transcripts (one usage event per turn)."`
+	// Average output tokens per second over the transcript-timestamp span;
+	// null when output tokens or timestamps are incomplete.
+	TokensPerSecond *float64 `json:"tokensPerSecond" exclusiveMinimum:"0"`
 }
 
 // SystemRequirementsResponse is the body of GET /api/v1/system/requirements.

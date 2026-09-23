@@ -2006,6 +2006,8 @@
 	"inspector.usage.processedTokens": "処理済みトークン",
 	"inspector.usage.processedTokensAria": "処理済みトークン {{count}} 個",
 	"inspector.usage.processedTokensUnavailable": "処理済みトークンを利用できません",
+	"inspector.usage.turns": "ターン数",
+	"inspector.usage.tokensPerSecond": "スループット",
 	"inspector.workers": "ワーカー",
 	"inspector.workersCount": "ワーカー（{{count}}）",
 	"inspector.workersEmpty": "ワーカーはまだ起動されていません。",

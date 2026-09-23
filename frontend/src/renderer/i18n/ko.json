@@ -2006,6 +2006,8 @@
 	"inspector.usage.processedTokens": "처리된 토큰",
 	"inspector.usage.processedTokensAria": "처리된 토큰 {{count}}개",
 	"inspector.usage.processedTokensUnavailable": "처리된 토큰을 사용할 수 없음",
+	"inspector.usage.turns": "턴 수",
+	"inspector.usage.tokensPerSecond": "처리량",
 	"inspector.workers": "워커",
 	"inspector.workersCount": "워커 ({{count}})",
 	"inspector.workersEmpty": "아직 생성된 워커가 없습니다.",
