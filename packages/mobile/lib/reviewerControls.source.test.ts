@@ -20,6 +20,10 @@ describe("reviewer control integration", () => {
 		expect(actions).toContain("confirmReviewerChange(reviewerOverride, { ...reviewerConfig, [key]: value })");
 	});
 
+	it("does not warn or save when the selected reviewer settings are unchanged", () => {
+		expect(actions).toContain("reviewerSelectionChanged(reviewerOverride, reviewerConfig, id, agentConfig)");
+	});
+
 	it("renders every reviewer through the shared harness logo registry", () => {
 		expect(actions).toContain('import { AgentLogo } from "../../lib/AgentLogo"');
 		expect(actions).toContain("harness={agent.id}");

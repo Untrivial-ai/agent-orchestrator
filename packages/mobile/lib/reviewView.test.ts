@@ -38,13 +38,14 @@ describe("mobile review presentation", () => {
 		expect(reviewForPullRequest(reviews, state().prUrl, 12)?.prUrl).toBe(state().prUrl);
 	});
 
-	it("does not select another PR when a review URL is absent from merged summaries", () => {
+	it("matches aliases by repository and number without selecting another PR", () => {
 		const prs = [
-			{ url: "https://github.com/acme/repo/pull/12", htmlUrl: "https://github.com/acme/repo/pull/12", number: 12 },
-			{ url: "https://github.com/acme/repo/pull/13", htmlUrl: "https://github.com/acme/repo/pull/13", number: 13 },
+			{ url: "https://github.com/acme/legacy-name/pull/12", htmlUrl: "https://github.com/acme/legacy-name/pull/12", repo: "acme/repo", number: 12 },
+			{ url: "https://github.com/acme/repo/pull/13", htmlUrl: "https://github.com/acme/repo/pull/13", repo: "acme/repo", number: 13 },
 		] as SessionPRSummary[];
 
 		expect(pullRequestSummaryForURL(prs, prs[1].url)).toBe(prs[1]);
+		expect(pullRequestSummaryForURL(prs, "https://github.com/acme/repo/pull/12")).toBe(prs[0]);
 		expect(pullRequestSummaryForURL(prs, "https://github.com/acme/old-repo/pull/12")).toBeUndefined();
 	});
 

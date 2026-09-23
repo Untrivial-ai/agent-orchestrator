@@ -26,7 +26,7 @@ import { AgentLogo } from "../../lib/AgentLogo";
 import { haptics } from "../../lib/haptics";
 import { openGitHub } from "../../lib/openGitHub";
 import { formatExternalReviewMessage, formatInlineReviewCommentMessage } from "../../lib/reviewFeedback";
-import { reviewerChoices, reviewerSwitchSelection, reviewerSwitchWarning } from "../../lib/reviewerControls";
+import { reviewerChoices, reviewerSelectionChanged, reviewerSwitchSelection, reviewerSwitchWarning } from "../../lib/reviewerControls";
 import { pullRequestSummaryForURL } from "../../lib/reviewView";
 import { useApp } from "../../lib/store";
 import type { Theme } from "../../lib/theme";
@@ -115,6 +115,7 @@ export default function ReviewActionsSheet() {
 
 	async function confirmReviewerChange(id: string, agentConfig: ReviewerAgentConfig) {
 		if (!config || busy) return;
+		if (!reviewerSelectionChanged(reviewerOverride, reviewerConfig, id, agentConfig)) return;
 		setBusy({ kind: "reviewer", id });
 		setError("");
 		try {

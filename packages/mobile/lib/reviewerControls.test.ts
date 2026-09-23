@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { reviewerChoices, reviewerSwitchSelection, reviewerSwitchWarning } from "./reviewerControls";
+import { reviewerChoices, reviewerSelectionChanged, reviewerSwitchSelection, reviewerSwitchWarning } from "./reviewerControls";
 
 describe("mobile reviewer controls", () => {
 	it("allows authorized and auth-unknown reviewers but disables unavailable agents", () => {
@@ -24,6 +24,12 @@ describe("mobile reviewer controls", () => {
 			harness: "codex",
 			agentConfig: { model: "gpt-5", mode: "plan" },
 		});
+	});
+
+	it("distinguishes reviewer changes from selecting the current settings", () => {
+		expect(reviewerSelectionChanged("codex", { model: "gpt-5", effort: "" }, "codex", { model: "gpt-5" })).toBe(false);
+		expect(reviewerSelectionChanged("codex", { model: "gpt-5" }, "codex", { model: "gpt-6" })).toBe(true);
+		expect(reviewerSelectionChanged("codex", {}, "claude-code", {})).toBe(true);
 	});
 
 	it("only warns when switching an active review", () => {

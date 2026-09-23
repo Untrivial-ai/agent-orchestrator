@@ -25,7 +25,27 @@ export function pullRequestSummaryForURL(
 	prs: SessionPRSummary[],
 	prUrl: string,
 ): SessionPRSummary | undefined {
-	return prs.find((pr) => pr.url === prUrl || pr.htmlUrl === prUrl);
+	const exact = prs.find((pr) => pr.url === prUrl || pr.htmlUrl === prUrl);
+	if (exact) return exact;
+	const requested = pullRequestIdentity(prUrl);
+	return requested
+		? prs.find((pr) => pr.number === requested.number && pr.repo.toLowerCase() === requested.repo)
+		: undefined;
+}
+
+function pullRequestIdentity(value: string): { repo: string; number: number } | undefined {
+	try {
+		const parts = new URL(value).pathname.split("/").filter(Boolean);
+		const marker = parts.findIndex((part) => part === "pull" || part === "merge_requests");
+		if (marker < 2 || marker + 1 >= parts.length) return undefined;
+		const number = Number(parts[marker + 1]);
+		if (!Number.isInteger(number) || number <= 0) return undefined;
+		const repoParts = parts.slice(0, marker);
+		if (repoParts.at(-1) === "-") repoParts.pop();
+		return { repo: repoParts.join("/").toLowerCase(), number };
+	} catch {
+		return undefined;
+	}
 }
 
 export function reviewStatusLabel(status: PRReviewState["status"]): string {

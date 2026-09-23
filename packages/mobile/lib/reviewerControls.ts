@@ -23,6 +23,21 @@ export function reviewerSwitchSelection(
 	};
 }
 
+export function reviewerSelectionChanged(
+	currentHarness: string,
+	currentConfig: ReviewerAgentConfig,
+	nextHarness: string,
+	nextConfig: ReviewerAgentConfig,
+): boolean {
+	const current = reviewerSwitchSelection(currentHarness, currentConfig);
+	const next = reviewerSwitchSelection(nextHarness, nextConfig);
+	return current.harness !== next.harness
+		|| current.agentConfig?.model !== next.agentConfig?.model
+		|| current.agentConfig?.mode !== next.agentConfig?.mode
+		|| current.agentConfig?.effort !== next.agentConfig?.effort
+		|| current.agentConfig?.permissions !== next.agentConfig?.permissions;
+}
+
 /** Changing an active reviewer's harness or config replaces its pane and cancels its running pass. */
 export function reviewerSwitchWarning(hasRunningReview: boolean): string | undefined {
 	return hasRunningReview
