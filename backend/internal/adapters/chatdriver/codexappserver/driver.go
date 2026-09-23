@@ -311,6 +311,9 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		"approvalsReviewer": reviewer,
 		"sandbox":           sandbox,
 	}
+	if cfg.Ephemeral {
+		params["ephemeral"] = true
+	}
 	if cfg.Model != "" {
 		params["model"] = cfg.Model
 	}

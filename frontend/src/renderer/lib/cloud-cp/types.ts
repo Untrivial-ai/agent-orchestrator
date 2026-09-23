@@ -127,6 +127,23 @@ export interface CloudCpCreateProjectRequest {
 	/** 1-255 characters. */
 	defaultBranch: string;
 	config?: Record<string, unknown>;
+	/**
+	 * Optional coder dev-kit config chosen at project setup (template picker +
+	 * size/startup + extra repos). Stored on the project; every coder session of
+	 * the project inherits it. Absent = default template, single repo.
+	 */
+	coder?: CloudCpProjectCoderConfig;
+}
+
+export interface CloudCpProjectCoderConfig {
+	/** Coder template UUID from GET /orgs/{orgId}/sandbox/coder/templates. Omit for the default template. */
+	templateId?: string;
+	/** t-shirt size the template maps to a VM SKU. Only with a non-default template. */
+	size?: "small" | "medium" | "large";
+	/** Optional shell snippet the template runs after checkout. Only with a non-default template. */
+	startupScript?: string;
+	/** Additional repositories every session of the project clones alongside the primary repo. */
+	extraRepos?: CloudCpSessionRepo[];
 }
 
 /** PATCH /orgs/{orgId}/projects/{projectId} */
@@ -183,6 +200,28 @@ export interface CloudCpCreateSessionRequest {
 	 * from `/me`.
 	 */
 	provider?: string;
+}
+
+export interface CloudCpSessionRepo {
+	url: string;
+	branch?: string;
+}
+
+/** GET /orgs/{orgId}/sandbox/coder/templates */
+export interface CloudCpCoderTemplate {
+	id: string;
+	name: string;
+	displayName: string;
+	description: string;
+	icon: string;
+	// The per-workspace coder_parameter names this template declares (e.g.
+	// "size", "startup_script"). The picker only offers a control when its
+	// parameter is present, so a template that declares none shows no form.
+	parameters: string[];
+}
+
+export interface CloudCpCoderTemplatesResponse {
+	templates: CloudCpCoderTemplate[];
 }
 
 export interface CloudCpSession {

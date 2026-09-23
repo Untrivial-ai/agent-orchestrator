@@ -628,17 +628,15 @@ function visibleMergeReasons(pr: SessionPRSummary): string[] {
 	return pr.mergeability.reasons.filter((reason) => reason !== "blocked_by_provider");
 }
 
+// GitHub's and GitLab's `/conflicts` subpages only exist when the host judges the
+// conflict resolvable in its web editor; otherwise they 404. The PR page always
+// exists and shows the conflict banner, so link there instead.
 function mergeConflictUrl(pr: SessionPRSummary): string | undefined {
-	return prSubpageUrl(pr, "conflicts") ?? pr.mergeability.prUrl ?? prBrowserUrl(pr);
+	return prURL(pr) ?? pr.mergeability.prUrl ?? prBrowserUrl(pr);
 }
 
 function prBaseUrl(pr: SessionPRSummary): string | undefined {
 	return prURL(pr);
-}
-
-function prSubpageUrl(pr: SessionPRSummary, subpage: "conflicts"): string | undefined {
-	const base = prURL(pr);
-	return base ? `${base}/${subpage}` : undefined;
 }
 
 function prURL(pr: SessionPRSummary): string | undefined {

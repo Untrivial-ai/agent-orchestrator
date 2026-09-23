@@ -26,6 +26,9 @@ import { useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from
 import type { components } from "../../api/schema";
 import type { ImportFolderScan } from "../../preload";
 import { useCloudCp } from "../hooks/useCloudCp";
+import { useCloudSandboxProviders } from "../hooks/useCloudSandboxProviders";
+import { CoderTemplatePicker } from "./CoderTemplatePicker";
+import { buildCoderRequestOptions, useCoderSessionOptionsStore } from "../stores/coder-session-options-store";
 import { useCloudGate } from "../hooks/useCloudGate";
 import { useCloudOrg } from "../hooks/useCloudOrg";
 import { usePreparedClone } from "../hooks/usePreparedClone";
@@ -1334,6 +1337,15 @@ function CloudProjectCard({
 	const { client, baseUrl } = useCloudCp();
 	const { org } = useCloudOrg();
 	const queryClient = useQueryClient();
+	// The coder dev-kit picker is offered only when the deployment/org runs coder;
+	// its choices are stored on the project and inherited by every session.
+	const sandboxProviders = useCloudSandboxProviders();
+	const coderAvailable = sandboxProviders.available.includes("coder");
+	const resetCoderOptions = useCoderSessionOptionsStore((s) => s.reset);
+	useEffect(() => {
+		resetCoderOptions();
+		return () => resetCoderOptions();
+	}, [resetCoderOptions]);
 
 	const [projectName, setProjectName] = useState("");
 	const [nameSubmitted, setNameSubmitted] = useState(false);
@@ -1384,7 +1396,11 @@ function CloudProjectCard({
 		queryKey: ["github-repos"],
 		enabled: hasGithubConnection,
 		staleTime: 60_000,
-		retry: (failureCount, error) => !isGitHubAuthInvalidError(error) && failureCount < 3,
+		// A 401 here is often transient (e.g. the daemon fetching repos before it
+		// has re-read a valid stored token right after launch), so give auth
+		// errors one retry to self-heal before surfacing a reconnect prompt;
+		// non-auth errors keep the usual three.
+		retry: (failureCount, error) => (isGitHubAuthInvalidError(error) ? failureCount < 1 : failureCount < 3),
 		queryFn: async () => {
 			const { repos } = await listGitHubRepos();
 			return repos.map((r) => ({
@@ -1421,7 +1437,21 @@ function CloudProjectCard({
 			setSubmitIsUnreachable(false);
 			setSubmitIsUnavailable(false);
 		} catch (err) {
-			setGithubTokenError(err instanceof Error ? err.message : t("createProject.couldNotAdd"));
+			// A 401 here is the AO Cloud SESSION token, not the GitHub PAT: PUT
+			// /me/github-pat is rejected at the control plane's auth middleware
+			// before the token is ever validated. Prompt a re-sign-in instead of
+			// mislabeling it as an invalid token (a genuinely bad PAT returns 422
+			// with a token-specific message, handled by the else branch).
+			if (err instanceof CloudCpError && err.status === 401) {
+				setGithubTokenError(
+					t("createProject.cloudSessionExpiredForToken", {
+						defaultValue: "Your AO Cloud session expired. Sign in again, then re-enter the token.",
+					}),
+				);
+				onAuthRequired();
+			} else {
+				setGithubTokenError(err instanceof Error ? err.message : t("createProject.couldNotAdd"));
+			}
 		} finally {
 			setGithubTokenBusy(false);
 		}
@@ -1436,15 +1466,19 @@ function CloudProjectCard({
 		setGithubOAuthBusy(true);
 		setGithubOAuthError(null);
 		try {
-			const token = await aoBridge.cloud.connectProviderAuth({
+			const result = await aoBridge.cloud.connectProviderAuth({
 				baseUrl,
 				orgId: org.id,
 				provider: "github",
 			});
-			if (typeof token === "string" && token) {
+			const secret = typeof result === "string" ? result : result?.secret;
+			// For a GitHub App token the result carries refresh material; persist it
+			// on the daemon so the token renews itself instead of expiring in ~8h.
+			const oauth = typeof result === "object" && result ? result : undefined;
+			if (secret) {
 				await Promise.all([
-					saveGitHubPAT(token),
-					client.putGitHubPAT({ secret: token }),
+					saveGitHubPAT(secret, oauth),
+					client.putGitHubPAT({ secret }),
 				]);
 			}
 			await Promise.all([
@@ -1453,7 +1487,19 @@ function CloudProjectCard({
 				queryClient.invalidateQueries({ queryKey: ["github-repos"] }),
 			]);
 		} catch (err) {
-			setGithubOAuthError(err instanceof Error ? err.message : t("createProject.githubAuthFailed", { defaultValue: "GitHub authentication failed" }));
+			// If the AO Cloud session lapsed mid-connect, saving to the control
+			// plane returns a 401 from its auth middleware. Re-authenticate rather
+			// than reporting it as a GitHub failure.
+			if (err instanceof CloudCpError && err.status === 401) {
+				setGithubOAuthError(
+					t("createProject.cloudSessionExpiredForConnect", {
+						defaultValue: "Your AO Cloud session expired. Sign in again, then connect GitHub.",
+					}),
+				);
+				onAuthRequired();
+			} else {
+				setGithubOAuthError(err instanceof Error ? err.message : t("createProject.githubAuthFailed", { defaultValue: "GitHub authentication failed" }));
+			}
 		} finally {
 			setGithubOAuthBusy(false);
 		}
@@ -1480,6 +1526,7 @@ function CloudProjectCard({
 				setIsCreating(false);
 				return;
 			}
+			const coder = buildCoderRequestOptions(useCoderSessionOptionsStore.getState());
 			await client.createProject(org.id, {
 				displayName: projectName.trim(),
 				repositoryUrl: repositoryUrl.trim(),
@@ -1488,6 +1535,7 @@ function CloudProjectCard({
 					worker: { agent: selection.workerAgent },
 					orchestrator: { agent: selection.orchestratorAgent },
 				},
+				...(coder ? { coder } : {}),
 			});
 			await queryClient.invalidateQueries({ queryKey: cloudProjectsQueryKey });
 			onCreated();
@@ -1519,7 +1567,7 @@ function CloudProjectCard({
 				</button>
 			) : null}
 
-			<div className={cn(onboardingPanelBodyClass, dialog && onClose ? "pt-12" : "pt-4")}>
+			<div className={cn(onboardingPanelBodyClass, "pt-4")}>
 				{/* Project name */}
 				<div className="space-y-2">
 					<Label htmlFor="cloudProjectName" className={onboardingFormLabelClass}>
@@ -1655,20 +1703,33 @@ function CloudProjectCard({
 										<div className="flex items-center gap-2 text-[12px] leading-5 text-destructive" role="alert">
 											<span>
 												{isGitHubAuthInvalidError(githubRepos.error)
-													? t("createProject.githubAuthorizationExpired", { defaultValue: "GitHub authorization expired." })
+													? t("createProject.githubReposUnavailable", { defaultValue: "Couldn't load your GitHub repositories." })
 													: t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." })}
 											</span>
 											{isGitHubAuthInvalidError(githubRepos.error) ? (
-												<button
-													type="button"
-													className="shrink-0 rounded-md border border-destructive/30 px-2 py-0.5 font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-60"
-													disabled={githubOAuthBusy}
-													onClick={() => void connectGitHub()}
-												>
-													{githubOAuthBusy
-														? t("createProject.openingGitHub", { defaultValue: "Opening GitHub..." })
-														: t("createProject.reconnectGitHub", { defaultValue: "Reconnect GitHub" })}
-												</button>
+												<>
+													{/* Try again first: the stored token is usually still valid, so a
+													    plain refetch clears a transient 401 without a full OAuth round-trip.
+													    Reconnect stays as the fallback for a genuinely revoked token. */}
+													<button
+														type="button"
+														className="underline"
+														disabled={githubRepos.isFetching}
+														onClick={() => void githubRepos.refetch()}
+													>
+														{t("createProject.retry")}
+													</button>
+													<button
+														type="button"
+														className="shrink-0 rounded-md border border-destructive/30 px-2 py-0.5 font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-60"
+														disabled={githubOAuthBusy}
+														onClick={() => void connectGitHub()}
+													>
+														{githubOAuthBusy
+															? t("createProject.openingGitHub", { defaultValue: "Opening GitHub..." })
+															: t("createProject.reconnectGitHub", { defaultValue: "Reconnect GitHub" })}
+													</button>
+												</>
 											) : (
 												<button type="button" className="underline" onClick={() => void githubRepos.refetch()}>
 													{t("createProject.retry")}
@@ -1795,6 +1856,20 @@ function CloudProjectCard({
 						</>
 					)}
 				</div>
+
+				{/* Coder dev kit: template + additional repos + size, stored on the
+					project and inherited by every session. Only when coder is offered. */}
+				{coderAvailable && (hasGithubConnection || useManualPat) ? (
+					<div className="space-y-2">
+						<CoderTemplatePicker
+							orgId={org?.id}
+							repos={(githubRepos.data ?? []).map((repo) => ({
+								label: repo.fullName,
+								url: `https://github.com/${repo.fullName}`,
+							}))}
+						/>
+					</div>
+				) : null}
 
 				{/* Agents — inline */}
 				{(hasGithubConnection || useManualPat) && org !== undefined ? (

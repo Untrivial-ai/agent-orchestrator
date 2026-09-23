@@ -36,6 +36,12 @@ func (s *stubAutolinkStore) ProjectActiveOrchestrator(
 	return s.orchestratorID, s.orchProvider, s.orchFound, s.orchErr
 }
 
+func (s *stubAutolinkStore) GetProject(
+	_ context.Context, _ domain.Principal, _, projectID string,
+) (domain.Project, error) {
+	return domain.Project{ID: projectID}, nil
+}
+
 func (s *stubAutolinkStore) CreateSession(
 	_ context.Context, _ domain.Principal, _, _ string, _ int, input domain.CreateSession,
 ) (domain.Session, error) {

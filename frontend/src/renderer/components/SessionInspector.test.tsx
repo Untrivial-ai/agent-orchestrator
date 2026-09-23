@@ -1538,6 +1538,25 @@ describe("SessionInspector Activity section", () => {
     },
   );
 
+  it("ignores stale failing CI from a merged PR when the open PR is passing", () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session(
+          [pr(5753, "open", { ci: "passing" }), pr(5754, "merged", { ci: "failing" })],
+          {
+            status: "working",
+            activity: { state: "idle", lastActivityAt: "2026-06-15T10:00:00Z" },
+          },
+        )}
+      />,
+    );
+
+    const activityRow = activitySection()
+      .getByText("Idle")
+      .closest("[data-testid='inspector-timeline-event']") as HTMLElement;
+    expect(within(activityRow).queryByText("CI Failed")).not.toBeInTheDocument();
+  });
+
   it("renders PR conflicts as an SCM state in the current Activity row", () => {
     renderWithQuery(
       <SessionInspector

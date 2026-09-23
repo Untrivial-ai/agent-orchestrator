@@ -81,7 +81,9 @@ function createAutoUpdaterMock(): AutoUpdaterMock {
 // The module persists staged provenance beside the update settings, and that
 // write is fire-and-forget: on a shared state dir a write from one test could
 // land after the next test's cleanup. One fresh directory per test removes the
-// race outright rather than trying to time it.
+// race outright rather than trying to time it. A write from the test's own
+// module can still land while its directory is being removed, so the removal
+// retries rather than failing the run on ENOTEMPTY.
 let stateDir = "";
 const hostPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
 beforeEach(() => {
@@ -90,7 +92,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   Object.defineProperty(process, "platform", hostPlatform);
-  rmSync(stateDir, { recursive: true, force: true });
+  rmSync(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 });
 
 /** Alias kept for readability: a re-import is a simulated relaunch. */

@@ -378,6 +378,14 @@ func prepareWorkspace(
 		); err != nil {
 			return fmt.Errorf("configure repository tooling: %w", err)
 		}
+		// Multi-repo dev kit: clone any additional repositories alongside the
+		// primary checkout. Non-fatal by design — an extra repo that cannot be
+		// cloned (e.g. it is outside the session credential's GitHub App
+		// installation) must never stop the session from starting on its primary
+		// repo. Extra repos reuse the session's checkout-grant token, so they work
+		// for repositories the installation can access; arbitrary private
+		// third-party repos need per-repo grants (a follow-up).
+		cloneExtraRepos(ctx, logger, checkoutGrant.Token, bootstrap.Launch.ExtraRepos, workspace, dataDir)
 	}
 	if err := worker.EnsureWorkspaceReviewBase(
 		ctx, worker.ExecGitRunner{}, workspace, bootstrap.Launch.DefaultBranch,
@@ -385,6 +393,35 @@ func prepareWorkspace(
 		return fmt.Errorf("record workspace review base: %w", err)
 	}
 	return nil
+}
+
+// cloneExtraRepos clones each additional dev-kit repository as a sibling of the
+// primary checkout, so the agent (whose working directory is the primary repo)
+// can reach it at ../<name>. It is best-effort: every failure is logged and
+// skipped so the session always starts on its primary repo. The launcher
+// (workerexec) computes the same paths via worker.ExtraRepoPath and lists them
+// in the agent's system prompt.
+func cloneExtraRepos(ctx context.Context, logger *slog.Logger, token string, repos []worker.RepoRef, workspace, dataDir string) {
+	if len(repos) == 0 {
+		return
+	}
+	parent := filepath.Dir(workspace)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		logger.Warn("multi-repo: cannot create extra-repos directory", "error", err)
+		return
+	}
+	for _, repo := range repos {
+		dest := worker.ExtraRepoPath(workspace, repo.URL)
+		// Clone via worker.CloneExtraRepo, which uses the primary checkout's
+		// askpass mechanism: the token stays in the command's environment and
+		// never enters the URL, argv, or the repo's .git/config, and the repo is
+		// wired to the session credential helper for the agent's own git ops.
+		if err := worker.CloneExtraRepo(ctx, worker.ExecGitRunner{}, parent, dest, repo.URL, repo.Branch, token, dataDir); err != nil {
+			logger.Warn("multi-repo: extra repo clone failed (non-fatal)", "repo", repo.URL, "error", err)
+			continue
+		}
+		logger.Info("multi-repo: cloned extra repo", "repo", repo.URL, "path", dest)
+	}
 }
 
 func startInteractiveAgent(

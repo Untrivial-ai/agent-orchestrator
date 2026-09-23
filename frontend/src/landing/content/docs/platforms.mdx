@@ -63,7 +63,7 @@ Security properties:
 
 - The LAN listener is off by default and exists only while Connect Mobile is enabled.
 - It is protected by a rotating connection password.
-- The pairing QR contains the address, not the password.
+- Scanning the pairing QR fills the advertised host, port, connection password, and any secure transport mode automatically. Treat the QR as a bearer credential: do not share it or screenshots of it, and rotate the connection password if it is exposed.
 - Traffic is plaintext HTTP and intended only for a trusted home network.
 - Daemon control, telemetry, and browser-control routes remain loopback-only.
 

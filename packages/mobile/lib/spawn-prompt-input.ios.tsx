@@ -3,6 +3,7 @@ import { textFieldStyle } from "@expo/ui/swift-ui/modifiers";
 import { useEffect } from "react";
 import { useTheme, useThemeState } from "./ThemeProvider";
 import type { SpawnPromptInputProps } from "./spawn-prompt-input.android";
+import { type, space } from "./tokens";
 
 export function SpawnPromptInput({ value, onChangeText, height = 112 }: SpawnPromptInputProps) {
 	const t = useTheme();
@@ -14,7 +15,7 @@ export function SpawnPromptInput({ value, onChangeText, height = 112 }: SpawnPro
 	}, [nativeValue, value]);
 
 	return (
-		<Host style={{ flex: 1, height }} colorScheme={scheme} seedColor={t.blue}>
+		<Host style={{ flex: 1, height }} colorScheme={scheme} seedColor={t.accent}>
 			<TextInput
 				value={nativeValue}
 				onChangeText={onChangeText}
@@ -23,8 +24,8 @@ export function SpawnPromptInput({ value, onChangeText, height = 112 }: SpawnPro
 				numberOfLines={3}
 				maxLength={4096}
 				autoFocus
-				style={{ height, paddingHorizontal: 16, paddingVertical: 14 }}
-				textStyle={{ color: t.textPrimary, fontSize: 16 }}
+				style={{ height, paddingHorizontal: space.lg, paddingVertical: space.md }}
+				textStyle={{ fontFamily: "Geist_400Regular", color: t.textPrimary, fontSize: type.callout.fontSize }}
 				placeholderTextColor={t.textTertiary}
 				modifiers={[textFieldStyle("plain")]}
 			/>

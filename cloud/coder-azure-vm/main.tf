@@ -46,6 +46,45 @@ data "coder_provisioner" "me" {}
 data "coder_workspace" "me" {}
 data "coder_workspace_owner" "me" {}
 
+# Machine size, chosen per session by AO's template picker (rich parameter
+# "size"). AO only sends this for a non-default template; a template rendered
+# with no value falls back to the default below, which maps to the same SKU the
+# template used before this parameter existed, so behavior is unchanged.
+data "coder_parameter" "size" {
+  name         = "size"
+  display_name = "Machine size"
+  description  = "vCPU and memory for the workspace VM."
+  type         = "string"
+  default      = "small"
+  mutable      = false
+  icon         = "/icon/memory.svg"
+  order        = 1
+  option {
+    name  = "Small — 2 vCPU / 8 GB"
+    value = "small"
+  }
+  option {
+    name  = "Medium — 4 vCPU / 16 GB"
+    value = "medium"
+  }
+  option {
+    name  = "Large — 8 vCPU / 32 GB"
+    value = "large"
+  }
+}
+
+# Optional per-session shell snippet run after the workspace is ready (dev-env
+# bring-up, e.g. a Makefile target). Empty by default.
+data "coder_parameter" "startup_script" {
+  name         = "startup_script"
+  display_name = "Startup script"
+  description  = "Optional shell commands to run once the workspace is ready."
+  type         = "string"
+  default      = ""
+  mutable      = true
+  order        = 2
+}
+
 resource "coder_agent" "main" {
   arch = "amd64"
   os   = "linux"
@@ -65,6 +104,11 @@ resource "coder_agent" "main" {
     claude --version || true
     codex --version || true
     cursor-agent --version || true
+    # Optional AO-provided per-session dev-env bring-up. Run outside `set -e` so a
+    # failing user script never blocks the agent from coming up.
+    set +e
+    ${data.coder_parameter.startup_script.value}
+    set -e
   EOT
 
   env = {
@@ -84,6 +128,15 @@ resource "tls_private_key" "vm" {
 
 locals {
   name = lower("ao-${substr(data.coder_workspace.me.id, 0, 18)}")
+
+  # Map the picker's t-shirt size to an Azure VM SKU. "small" matches the SKU the
+  # template used before the size parameter existed, so an unset value is a no-op.
+  size_to_sku = {
+    small  = "Standard_D2s_v5" # ~2 vCPU / 8 GB
+    medium = "Standard_D4s_v5" # ~4 vCPU / 16 GB
+    large  = "Standard_D8s_v5" # ~8 vCPU / 32 GB
+  }
+  vm_sku = lookup(local.size_to_sku, data.coder_parameter.size.value, var.vm_size)
 
   # Run the coder agent as the (baked) coder user via a systemd service so it
   # survives stop/start reboots. The AO worker is baked into the image and gets
@@ -193,7 +246,7 @@ resource "azurerm_linux_virtual_machine" "main" {
   name                  = local.name
   resource_group_name   = var.resource_group
   location              = var.location
-  size                  = var.vm_size
+  size                  = local.vm_sku
   admin_username        = var.admin_username
   network_interface_ids = [azurerm_network_interface.main[0].id]
   custom_data           = local.custom_data

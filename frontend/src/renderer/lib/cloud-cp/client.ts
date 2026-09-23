@@ -14,6 +14,7 @@ import type {
 	CloudCpCancelTurnResponse,
 	CloudCpChatEventsQuery,
 	CloudCpChatEventsResponse,
+	CloudCpCoderTemplatesResponse,
 	CloudCpClientEvent,
 	CloudCpCreateOrganizationRequest,
 	CloudCpCreateOrganizationResponse,
@@ -161,6 +162,8 @@ export interface CloudCpClient {
 		transitionId: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpAcknowledgeInterfaceTransitionNoticeResponse>;
+	/** Lists the Coder templates the picker offers (empty when coder is unavailable/unentitled). */
+	listCoderTemplates(orgId: string, options?: CloudCpRequestOptions): Promise<CloudCpCoderTemplatesResponse>;
 	/** Lists the sessions an orchestrator spawned, with each child's pull requests. */
 	listSessionChildren(
 		orgId: string,
@@ -471,6 +474,8 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 				`/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/interface-transition/${seg(transitionId)}/notice-acknowledgement`,
 				{ signal: o?.signal },
 			),
+		listCoderTemplates: (orgId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sandbox/coder/templates`, { signal: o?.signal }),
 		listSessionChildren: (orgId, sessionId, query, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/children`, {
 				query: { limit: query?.limit, cursor: query?.cursor },
