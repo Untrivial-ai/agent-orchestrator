@@ -462,7 +462,7 @@ func (f *fakeLauncher) Notify(_ context.Context, handleID string, spec LaunchSpe
 	}
 	return f.notifyErr
 }
-func (f *fakeLauncher) Alive(_ context.Context, _ string) (bool, error) {
+func (f *fakeLauncher) Alive(_ context.Context, _, _ string) (bool, error) {
 	f.aliveChecked = true
 	return f.alive || f.spawned || f.restored, f.aliveErr
 }
@@ -2651,6 +2651,52 @@ func TestListReturnsHandleAndRuns(t *testing.T) {
 	}
 	if got.ReviewerHandleID != "review-mer-1" || got.ReviewerHarness != domain.ReviewerClaudeCode || got.ReviewerActivityState != domain.ActivityIdle || len(got.Runs) != 1 {
 		t.Fatalf("list = %+v", got)
+	}
+}
+
+func TestListMarksRunningReviewFailedWhenReviewerExited(t *testing.T) {
+	store := &fakeStore{
+		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerAider, ReviewerHandleID: "review-mer-1", ReviewerActivityState: domain.ActivityActive},
+		runs: []domain.ReviewRun{{
+			ID: "run-1", ReviewID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerAider,
+			PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunRunning,
+		}},
+	}
+	launcher := &fakeLauncher{alive: false}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	got, err := eng.List(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if !launcher.aliveChecked {
+		t.Fatal("expected reviewer liveness probe")
+	}
+	if got.ReviewerActivityState != domain.ActivityExited {
+		t.Fatalf("activity = %q, want exited", got.ReviewerActivityState)
+	}
+	if len(got.Runs) != 1 || got.Runs[0].Status != domain.ReviewRunFailed || got.Runs[0].Body != reviewerExitedBeforeSubmission {
+		t.Fatalf("runs = %+v, want failed reviewer-exit result", got.Runs)
+	}
+}
+
+func TestListDoesNotTreatReviewerProbeFailureAsExit(t *testing.T) {
+	store := &fakeStore{
+		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerAider, ReviewerHandleID: "review-mer-1", ReviewerActivityState: domain.ActivityActive},
+		runs: []domain.ReviewRun{{
+			ID: "run-1", ReviewID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerAider,
+			PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunRunning,
+		}},
+	}
+	launcher := &fakeLauncher{aliveErr: errors.New("runtime probe unavailable")}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	got, err := eng.List(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got.ReviewerActivityState != domain.ActivityActive || len(got.Runs) != 1 || got.Runs[0].Status != domain.ReviewRunRunning {
+		t.Fatalf("list = %+v, want unchanged active review", got)
 	}
 }
 

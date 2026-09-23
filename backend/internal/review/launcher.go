@@ -50,8 +50,8 @@ type Launcher interface {
 	RestoreTerminal(ctx context.Context, spec LaunchSpec) (LaunchResult, error)
 	// Notify asks an already-running reviewer pane to review a new commit.
 	Notify(ctx context.Context, handleID string, spec LaunchSpec) error
-	// Alive reports whether a reviewer pane is still running.
-	Alive(ctx context.Context, handleID string) (bool, error)
+	// Alive reports whether the exact reviewer process is still running.
+	Alive(ctx context.Context, handleID, launchID string) (bool, error)
 	// Reusable reports whether the harness accepts another review task in its
 	// existing TUI. Reviewers with launch-fixed context return false.
 	Reusable(harness domain.ReviewerHarness) bool
@@ -132,7 +132,8 @@ type reviewerRuntime interface {
 	Destroy(ctx context.Context, handle ports.RuntimeHandle) error
 	Interrupt(ctx context.Context, handle ports.RuntimeHandle) error
 	SendInput(ctx context.Context, handle ports.RuntimeHandle, input string) error
-	IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error)
+	IsChildAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error)
+	IsExactSupervisedProcessAlive(ctx context.Context, handle ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error)
 	SendMessage(ctx context.Context, handle ports.RuntimeHandle, message string) error
 	GetOutput(ctx context.Context, handle ports.RuntimeHandle, lines int) (string, error)
 }
@@ -540,11 +541,21 @@ func (l *agentLauncher) launchReviewerTerminalWithMode(ctx context.Context, spec
 	if workingDirectory == "" {
 		workingDirectory = spec.WorkspacePath
 	}
+	env := l.runtimeEnv(ctx, spec, cmd.Argv, cmd.Env)
+	argv := cmd.Argv
+	if strings.TrimSpace(spec.LaunchID) != "" {
+		executable, resolveErr := l.executable()
+		if resolveErr != nil {
+			return LaunchResult{}, fmt.Errorf("resolve AO executable: %w", resolveErr)
+		}
+		env[sessionmanager.EnvSupervisedProcess] = "1"
+		argv = append([]string{executable, "agent-process", "supervise", "--session", handleID, "--launch", spec.LaunchID, "--"}, argv...)
+	}
 	handle, err := l.runtime.Create(ctx, ports.RuntimeConfig{
 		SessionID:     domain.SessionID(handleID),
 		WorkspacePath: workingDirectory,
-		Argv:          cmd.Argv,
-		Env:           l.runtimeEnv(ctx, spec, cmd.Argv, cmd.Env),
+		Argv:          argv,
+		Env:           env,
 	})
 	if err != nil {
 		return LaunchResult{}, fmt.Errorf("reviewer runtime: %w", err)
@@ -730,14 +741,20 @@ func (l *agentLauncher) Notify(ctx context.Context, handleID string, spec Launch
 	return nil
 }
 
-func (l *agentLauncher) Alive(ctx context.Context, handleID string) (bool, error) {
+func (l *agentLauncher) Alive(ctx context.Context, handleID, launchID string) (bool, error) {
 	if handleID == "" {
 		return false, nil
 	}
 	if reviewID, ok := reviewerChatID(handleID); ok && l.chat != nil {
 		return l.chat.ReviewChatAlive(reviewID), nil
 	}
-	return l.runtime.IsAlive(ctx, ports.RuntimeHandle{ID: handleID})
+	if strings.TrimSpace(launchID) != "" {
+		return l.runtime.IsExactSupervisedProcessAlive(ctx, ports.RuntimeHandle{ID: handleID}, ports.SupervisedProcessRef{
+			SessionID: domain.SessionID(handleID),
+			LaunchID:  launchID,
+		})
+	}
+	return l.runtime.IsChildAlive(ctx, ports.RuntimeHandle{ID: handleID})
 }
 
 func (l *agentLauncher) Reusable(harness domain.ReviewerHarness) bool {

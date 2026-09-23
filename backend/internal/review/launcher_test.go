@@ -408,6 +408,7 @@ type fakeRuntime struct {
 	created       bool
 	output        string
 	outputReads   int
+	exactRef      ports.SupervisedProcessRef
 }
 
 func (f *fakeRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
@@ -423,6 +424,13 @@ func (f *fakeRuntime) Destroy(_ context.Context, handle ports.RuntimeHandle) err
 	return nil
 }
 func (f *fakeRuntime) IsAlive(_ context.Context, _ ports.RuntimeHandle) (bool, error) {
+	return f.alive, nil
+}
+func (f *fakeRuntime) IsChildAlive(_ context.Context, _ ports.RuntimeHandle) (bool, error) {
+	return f.alive, nil
+}
+func (f *fakeRuntime) IsExactSupervisedProcessAlive(_ context.Context, _ ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error) {
+	f.exactRef = ref
 	return f.alive, nil
 }
 func (f *fakeRuntime) GetOutput(_ context.Context, _ ports.RuntimeHandle, _ int) (string, error) {
@@ -832,12 +840,41 @@ func TestLauncherNotifyKeepsEarlierTaskReferenceImmutable(t *testing.T) {
 }
 
 func TestLauncherAlive(t *testing.T) {
-	l := NewLauncher(fakeReviewerResolver{ok: true}, &fakeRuntime{alive: true}, t.TempDir())
-	if ok, _ := l.Alive(context.Background(), "review-mer-1"); !ok {
+	rt := &fakeRuntime{alive: true}
+	l := NewLauncher(fakeReviewerResolver{ok: true}, rt, t.TempDir())
+	if ok, _ := l.Alive(context.Background(), "review-mer-1", ""); !ok {
 		t.Fatal("want alive true")
 	}
-	if ok, _ := l.Alive(context.Background(), ""); ok {
+	if ok, _ := l.Alive(context.Background(), "review-mer-1", "launch-1"); !ok {
+		t.Fatal("want supervised reviewer alive")
+	}
+	if rt.exactRef.SessionID != "review-mer-1" || rt.exactRef.LaunchID != "launch-1" {
+		t.Fatalf("exact process ref = %+v", rt.exactRef)
+	}
+	if ok, _ := l.Alive(context.Background(), "", ""); ok {
 		t.Fatal("empty handle should not be alive")
+	}
+}
+
+func TestLauncherSupervisesReviewerLaunch(t *testing.T) {
+	rt := &fakeRuntime{}
+	l := NewLauncher(
+		fakeReviewerResolver{reviewer: &fakeReviewer{}, ok: true},
+		rt,
+		t.TempDir(),
+		WithExecutable(func() (string, error) { return "/usr/local/bin/ao", nil }),
+	)
+	spec := launchSpec()
+	spec.LaunchID = "launch-1"
+	if _, err := l.Spawn(context.Background(), spec); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	want := "/usr/local/bin/ao agent-process supervise --session review-mer-1 --launch launch-1 -- greptile review"
+	if got := strings.Join(rt.createCfg.Argv, " "); got != want {
+		t.Fatalf("runtime argv = %q, want %q", got, want)
+	}
+	if rt.createCfg.Env[sessionmanager.EnvSupervisedProcess] != "1" || rt.createCfg.Env[sessionmanager.EnvRuntimeLaunchID] != "launch-1" {
+		t.Fatalf("supervisor env = %#v", rt.createCfg.Env)
 	}
 }
 
