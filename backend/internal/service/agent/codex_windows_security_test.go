@@ -37,6 +37,22 @@ func TestWindowsAncestorACLPolicyAllowsReadButRejectsMutation(t *testing.T) {
 	}
 }
 
+func TestWindowsVolumeRootDetection(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{path: `C:\`, want: true},
+		{path: `C:\Users`, want: false},
+		{path: `\\server\share\`, want: true},
+		{path: `\\server\share\vault`, want: false},
+	} {
+		if got := isCodexWindowsVolumeRoot(tc.path); got != tc.want {
+			t.Errorf("isCodexWindowsVolumeRoot(%q) = %t, want %t", tc.path, got, tc.want)
+		}
+	}
+}
+
 func TestWindowsNoFollowAndWriteThroughPolicies(t *testing.T) {
 	if got := codexWindowsNoFollowOpenFlags(); got&codexWindowsOpenReparsePoint == 0 || got&codexWindowsBackupSemantics == 0 {
 		t.Fatalf("no-follow open flags = %#x", got)
