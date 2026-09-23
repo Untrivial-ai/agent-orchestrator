@@ -137,7 +137,7 @@ export function AgentModelCombobox({
 	const normalizedSearch = normalizeSearch(search);
 	const searchIndex = useMemo(() => buildModelSearchIndex(models), [models]);
 	const selected = searchIndex.byID.get(normalizeSearch(value));
-	const showSearch = models.length >= MODEL_SEARCH_THRESHOLD;
+	const showSearch = allowDirectCustom || models.length >= MODEL_SEARCH_THRESHOLD;
 	const hasMultipleProviders = useMemo(
 		() =>
 			new Set(

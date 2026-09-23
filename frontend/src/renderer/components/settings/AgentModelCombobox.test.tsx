@@ -108,6 +108,7 @@ describe("AgentModelCombobox", () => {
 				label: index === 6 ? "GPT Luna" : `GPT ${index}`,
 				provider: "OpenAI",
 			})),
+			{ allowCustom: false, customModelEntry: "none" },
 		);
 
 		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
