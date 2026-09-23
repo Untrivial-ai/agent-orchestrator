@@ -42,6 +42,9 @@ export type BrowserProfileStoreOptions = {
 
 type ProfileOperation<T> = () => Promise<T>;
 
+// Rejects the waiter after timeoutMs but does not cancel the underlying work.
+// Callers that wrap Electron session clears must account for abandoned clears
+// still running on the partition after a timeout rejection.
 export async function withBrowserProfileOperationTimeout<T>(
 	operation: () => Promise<T>,
 	timeoutMs = BROWSER_PROFILE_OPERATION_TIMEOUT_MS,
@@ -391,6 +394,12 @@ export class BrowserProfileStore {
 			if (isLive()) throw new BrowserProfileStoreError("BROWSER_PROFILE_ACTIVE", "The browser profile is currently in use.");
 			this.profileOperationsInProgress.add(profileId);
 			try {
+				// Timeout unblocks the queue and clears the in-progress markers below,
+				// but cannot stop Electron clearStorageData/clearCache already running
+				// on this partition. After a timeout the store reports idle while that
+				// abandoned clear may still be in flight; a retried clear/delete or a
+				// browser reopen on the same partition can overlap it. Stuck clears are
+				// rare and the 60s bound is deliberate.
 				const result = await withBrowserProfileOperationTimeout(operation);
 				if (isLive()) {
 					throw new BrowserProfileStoreError("BROWSER_PROFILE_ACTIVE", "The browser profile became active while it was being changed.");
