@@ -115,7 +115,7 @@ export default function MobileSessionRoute() {
 		case "loading":
 			return (
 				<View style={styles.center}>
-					<ActivityIndicator color={t.blue} />
+					<ActivityIndicator color={t.accent} />
 				</View>
 			);
 		case "unpaired":

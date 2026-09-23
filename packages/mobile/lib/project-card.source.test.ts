@@ -9,7 +9,7 @@ describe("project row", () => {
 	// Matches a worker row: a divider, not a bordered card.
 	it("is a flat row with a divider", () => {
 		expect(card).toMatch(/row:\s*\{\s*borderBottomWidth:\s*rowDividerWidth/);
-		expect(card).toMatch(/body:\s*\{\s*paddingHorizontal:\s*18/);
+		expect(card).toMatch(/body:\s*\{\s*paddingHorizontal:\s*space\.lg/);
 	});
 
 	// The full-width button outweighed the project name; a footer pill does not,

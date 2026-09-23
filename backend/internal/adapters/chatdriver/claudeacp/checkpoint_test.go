@@ -110,6 +110,68 @@ func TestNativeCheckpointQueuedSubmissionAndDelayedStops(t *testing.T) {
 	}
 }
 
+func TestNativeCheckpointTurnCompanionIsNotAUserBoundary(t *testing.T) {
+	evidence := checkpointEvidence(
+		domain.NativeCheckpointObservation{Submission: true, SubmissionID: "submission", PromptID: "prompt", Text: "A"},
+		domain.NativeCheckpointObservation{PromptID: "prompt", Text: "answer"},
+	)
+	for _, test := range []struct {
+		name      string
+		companion string
+		parent    string
+		wantError bool
+	}{
+		{
+			name:      "meta turn companion",
+			companion: `{"type":"user","sessionId":"native","uuid":"companion","parentUuid":"user","promptId":"prompt","isMeta":true,"turnCompanion":true,"message":{"content":[{"type":"text","text":"auxiliary context"}]}}`,
+			parent:    "companion",
+		},
+		{
+			name:      "meta only",
+			companion: `{"type":"user","sessionId":"native","uuid":"meta","parentUuid":"user","promptId":"prompt","isMeta":true,"message":{"content":"B"}}`,
+			parent:    "meta",
+			wantError: true,
+		},
+		{
+			name:      "turn companion only",
+			companion: `{"type":"user","sessionId":"native","uuid":"companion","parentUuid":"user","promptId":"prompt","turnCompanion":true,"message":{"content":"B"}}`,
+			parent:    "companion",
+			wantError: true,
+		},
+		{
+			name:      "tool result only",
+			companion: `{"type":"user","sessionId":"native","uuid":"tool-result","parentUuid":"user","promptId":"prompt","message":{"content":[{"type":"tool_result","tool_use_id":"tool","content":"result"}]}}`,
+			parent:    "tool-result",
+		},
+		{
+			name:      "genuine duplicate user",
+			companion: `{"type":"user","sessionId":"native","uuid":"duplicate","parentUuid":"user","promptId":"prompt","message":{"content":"B"}}`,
+			parent:    "duplicate",
+			wantError: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transcript := strings.Join([]string{
+				`{"type":"user","sessionId":"native","uuid":"user","promptId":"prompt","message":{"content":"A"}}`,
+				test.companion,
+				`{"type":"attachment","sessionId":"native","uuid":"attachment","parentUuid":"` + test.parent + `","attachment":{"type":"hook_additional_context","hookEvent":"UserPromptSubmit","content":["AO transcript correlation ID: submission."]}}`,
+				`{"type":"assistant","sessionId":"native","uuid":"assistant","parentUuid":"attachment","message":{"content":"answer","stop_reason":"end_turn"}}`,
+			}, "\n") + "\n"
+			got, err := verifyCheckpointTranscript(context.Background(), strings.NewReader(transcript), ports.NativeCheckpointRequest{
+				ProviderConversationID: "native",
+				Evidence:               evidence,
+			})
+			if test.wantError {
+				if !errors.Is(err, ports.ErrChatHistoryUnsettled) || !strings.Contains(err.Error(), "ambiguous native prompt ID") {
+					t.Fatalf("error=%v", err)
+				}
+			} else if err != nil || got.UserMessageID != "user" {
+				t.Fatalf("boundary=%+v error=%v", got, err)
+			}
+		})
+	}
+}
+
 func TestNativeCheckpointRejectsUnprovenAncestry(t *testing.T) {
 	source := checkpointFixture(t, []string{"A", "B"}, []string{"answer A", "answer B"})
 	evidence := checkpointEvidence(domain.NativeCheckpointObservation{PromptID: "prompt-1", Text: "answer B"})

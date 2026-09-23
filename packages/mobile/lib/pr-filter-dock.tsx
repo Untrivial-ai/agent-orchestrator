@@ -3,6 +3,7 @@ import type { PRListFilter } from "./prView";
 import { Pill } from "./ui";
 import type { Theme } from "./theme";
 import { useThemedStyles } from "./ThemeProvider";
+import { space } from "./tokens";
 
 export function PRFilterDock({ filter, counts, onChange }: {
 	filter: PRListFilter;
@@ -28,9 +29,9 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	shell: {
 		flexDirection: "row",
 		alignItems: "center",
-		gap: 4,
-		padding: 4,
-		borderRadius: 24,
+		gap: space.xxs,
+		padding: space.xxs,
+		borderRadius: 20, borderCurve: "continuous",
 		borderWidth: StyleSheet.hairlineWidth,
 		borderColor: t.borderDefault,
 		backgroundColor: t.bgElevated,

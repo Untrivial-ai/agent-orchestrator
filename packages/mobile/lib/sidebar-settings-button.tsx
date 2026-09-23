@@ -7,7 +7,7 @@ export function SidebarSettingsButton({ active, onPress }: { active: boolean; on
 	const { scheme } = useThemeState();
 
 	return (
-		<Host style={{ width: 48, height: 48 }} colorScheme={scheme} seedColor={t.blue}>
+		<Host style={{ width: 48, height: 48 }} colorScheme={scheme} seedColor={t.accent}>
 			<Row
 				alignment="center"
 				onPress={onPress}
@@ -15,14 +15,14 @@ export function SidebarSettingsButton({ active, onPress }: { active: boolean; on
 				style={{
 					width: 48,
 					height: 48,
-					borderRadius: 24,
-					backgroundColor: active ? t.tintBlue : "transparent",
+					borderRadius: 20,
+					backgroundColor: active ? t.accentTint : "transparent",
 				}}
 			>
 				<SidebarDestinationIcon
 					destination={{ id: "settings", label: "Settings", href: "/settings" }}
 					active={active}
-					color={active ? t.blue : t.textSecondary}
+					color={active ? t.accent : t.textSecondary}
 				/>
 			</Row>
 		</Host>

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -56,6 +57,7 @@ type setActivityAPIRequest struct {
 	LatestUserPrompt             string                              `json:"latestUserPrompt,omitempty"`
 	LatestAssistantUpdate        string                              `json:"latestAssistantUpdate,omitempty"`
 	ConversationCheckpointOrigin domain.ConversationCheckpointOrigin `json:"conversationCheckpointOrigin,omitempty"`
+	CoordinationID               string                              `json:"coordinationId,omitempty"`
 	ProviderTurnID               string                              `json:"providerTurnId,omitempty"`
 	SubmissionID                 string                              `json:"submissionId,omitempty"`
 	TranscriptPath               string                              `json:"transcriptPath,omitempty"`
@@ -99,6 +101,7 @@ const (
 // PermissionRequest payloads); adapters whose payloads lack them yield empty
 // strings and the signal degrades to today's state-only form.
 func activityMeta(payload []byte) (toolName, toolUseID string) {
+	payload = normalizeHookPayload(payload)
 	var p struct {
 		ToolName  string `json:"tool_name"`
 		ToolUseID string `json:"tool_use_id"`
@@ -113,16 +116,27 @@ func activityMeta(payload []byte) (toolName, toolUseID string) {
 	return p.ToolName, p.ToolUseID
 }
 
+// normalizeHookPayload strips a leading UTF-8 BOM so payloads re-encoded by a
+// hook wrapper (notably Windows PowerShell, whose pipeline writes UTF-16 text
+// that surfaces to the child with a BOM prefix) still decode as JSON.
+func normalizeHookPayload(payload []byte) []byte {
+	return bytes.TrimPrefix(payload, []byte("\xef\xbb\xbf"))
+}
+
 // hookAgentSessionID extracts the native resume handle shared by Agy, Copilot,
-// Codex, Claude Code, and other hook payloads. It is independent of activity
-// derivation because SessionStart is intentionally metadata-only for harnesses
-// where process startup is not proof that a turn is active.
+// Codex, Claude Code, Cline, and other hook payloads. It is independent of
+// activity derivation because SessionStart is intentionally metadata-only for
+// harnesses where process startup is not proof that a turn is active.
 func hookAgentSessionID(payload []byte) string {
+	payload = normalizeHookPayload(payload)
 	var p struct {
 		SessionID           string `json:"session_id"`
 		SessionIDCamel      string `json:"sessionId"`
 		ConversationID      string `json:"conversation_id"`
 		ConversationIDCamel string `json:"conversationId"`
+		// Cline exposes the resumable task handle as top-level taskId.
+		TaskIDCamel string `json:"taskId"`
+		TaskIDSnake string `json:"task_id"`
 	}
 	_ = json.Unmarshal(payload, &p)
 	id := strings.TrimSpace(p.SessionID)
@@ -135,6 +149,12 @@ func hookAgentSessionID(payload []byte) string {
 	if id == "" {
 		id = strings.TrimSpace(p.ConversationIDCamel)
 	}
+	if id == "" {
+		id = strings.TrimSpace(p.TaskIDCamel)
+	}
+	if id == "" {
+		id = strings.TrimSpace(p.TaskIDSnake)
+	}
 	if len(id) > maxActivityMetaLen {
 		return ""
 	}
@@ -145,6 +165,7 @@ func hookAgentSessionID(payload []byte) string {
 // It is a fallback for AO_RUNTIME_LAUNCH_ID when child-process env inheritance
 // is trimmed by the agent runtime.
 func hookLaunchID(payload []byte) string {
+	payload = normalizeHookPayload(payload)
 	var p struct {
 		LaunchID      string `json:"launch_id"`
 		LaunchIDCamel string `json:"launchId"`
@@ -164,6 +185,7 @@ func hookLaunchID(payload []byte) string {
 // decodes separately from conversation facts because hook producers may emit
 // a malformed field in one projection while the other remains useful.
 func hookUsageMetadata(agent string, payload []byte) *usageHookMetadata {
+	payload = normalizeHookPayload(payload)
 	harness := domain.AgentHarness(agent)
 	if harness != domain.HarnessClaudeCode && harness != domain.HarnessCodex {
 		return nil
@@ -249,10 +271,12 @@ type hookConversationSnapshot struct {
 	LatestUserPrompt      string
 	LatestAssistantUpdate string
 	CheckpointOrigin      domain.ConversationCheckpointOrigin
+	CoordinationID        string
 	TranscriptPath        string
 }
 
 func hookConversationFacts(agent domain.AgentHarness, event string, payload []byte) hookConversationSnapshot {
+	payload = normalizeHookPayload(payload)
 	var p struct {
 		Prompt               string `json:"prompt"`
 		TurnID               string `json:"turn_id"`
@@ -310,11 +334,13 @@ func hookConversationFacts(agent domain.AgentHarness, event string, payload []by
 			origin = domain.ConversationCheckpointOriginCoordination
 		}
 	}
+	coordinationID, _ := domain.ReportDeliveryID(observedPrompt)
 	return hookConversationSnapshot{
 		ProviderTurnID:        turnID,
 		LatestUserPrompt:      capHookText(userPrompt, maxHookInteractionLen),
 		LatestAssistantUpdate: capHookText(assistant, maxHookInteractionLen),
 		CheckpointOrigin:      origin,
+		CoordinationID:        coordinationID,
 		TranscriptPath:        capHookText(firstHookValue(p.TranscriptPath, p.TranscriptPathCamel), maxHookTranscriptPath),
 	}
 }
@@ -330,7 +356,8 @@ func firstHookValue(values ...string) string {
 
 func isAOCoordinationMessage(value string) bool {
 	value = strings.TrimSpace(value)
-	return strings.HasPrefix(value, "<ao-handoff-request") ||
+	_, reportDelivery := domain.ReportDeliveryID(value)
+	return reportDelivery || strings.HasPrefix(value, "<ao-handoff-request") ||
 		strings.HasPrefix(value, "AO transferred the previous agent's context in hidden system instructions.")
 }
 
@@ -511,6 +538,10 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	switch domain.AgentHarness(agent) {
 	case domain.HarnessClaudeCode, domain.HarnessCodex, domain.HarnessContinue:
 		conversation = hookConversationFacts(domain.AgentHarness(agent), event, payload)
+	case domain.HarnessOpenCode, domain.HarnessGrok, domain.HarnessKilocode,
+		domain.HarnessOMP, domain.HarnessPi,
+		domain.HarnessAmp, domain.HarnessPrimeAgent:
+		conversation = hookSemanticAcceptanceFacts(event, payload)
 	}
 	path := "sessions/" + url.PathEscape(sessionID) + "/activity"
 	req := setActivityAPIRequest{
@@ -522,6 +553,7 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 		LatestUserPrompt:             conversation.LatestUserPrompt,
 		LatestAssistantUpdate:        conversation.LatestAssistantUpdate,
 		ConversationCheckpointOrigin: conversation.CheckpointOrigin,
+		CoordinationID:               conversation.CoordinationID,
 		ProviderTurnID:               conversation.ProviderTurnID,
 		TranscriptPath:               conversation.TranscriptPath,
 		LaunchID:                     launchID,
@@ -546,6 +578,29 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 		c.reportHookFailure(agent, event, sessionID, err)
 	}
 	return nil
+}
+
+// hookSemanticAcceptanceFacts extracts only AO's opaque delivery identity.
+// OpenCode and Grok expose accepted prompt text, but ordinary prompt content is
+// not part of their durable conversation-checkpoint contract.
+func hookSemanticAcceptanceFacts(event string, payload []byte) hookConversationSnapshot {
+	if event != "user-prompt-submit" {
+		return hookConversationSnapshot{}
+	}
+	var p struct {
+		Prompt string `json:"prompt"`
+	}
+	if json.Unmarshal(payload, &p) != nil {
+		return hookConversationSnapshot{}
+	}
+	id, ok := domain.ReportDeliveryID(p.Prompt)
+	if !ok {
+		return hookConversationSnapshot{}
+	}
+	return hookConversationSnapshot{
+		CheckpointOrigin: domain.ConversationCheckpointOriginCoordination,
+		CoordinationID:   id,
+	}
 }
 
 func (c *commandContext) postActivityHook(ctx context.Context, path string, req setActivityAPIRequest) error {

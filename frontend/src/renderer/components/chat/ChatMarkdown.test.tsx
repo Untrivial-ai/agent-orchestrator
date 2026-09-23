@@ -117,6 +117,64 @@ describe("ChatMarkdown", () => {
 		expect(screen.getByText("backend/service.go:42")).toHaveClass("text-markdown-code");
 	});
 
+	it("opens a known inline-code file path in Files", async () => {
+		const onFileOpen = vi.fn();
+		renderWithLinkHandler(
+			"Open `backend/service.go:42` but keep `--resume` as code.",
+			vi.fn(),
+			["backend/service.go"],
+			onFileOpen,
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Open backend/service.go in Files" }));
+
+		expect(onFileOpen).toHaveBeenCalledWith("backend/service.go");
+		expect(screen.getByText("--resume").closest("button")).toBeNull();
+	});
+
+	it("opens an absolute markdown file link in Files instead of externally", async () => {
+		const onFileOpen = vi.fn();
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		renderWithLinkHandler(
+			"See [the component](/Users/me/project/frontend/src/App.tsx:42).",
+			vi.fn(),
+			["frontend/src/App.tsx"],
+			onFileOpen,
+		);
+
+		await userEvent.click(screen.getByRole("link", { name: "the component" }));
+
+		expect(onFileOpen).toHaveBeenCalledWith("frontend/src/App.tsx");
+		expect(openExternal).not.toHaveBeenCalled();
+		openExternal.mockRestore();
+	});
+
+	it("does not nest a file-path button inside a markdown file link", () => {
+		renderWithLinkHandler(
+			"See [`frontend/src/App.tsx`](frontend/src/App.tsx).",
+			vi.fn(),
+			["frontend/src/App.tsx"],
+			vi.fn(),
+		);
+
+		const link = screen.getByRole("link", { name: "frontend/src/App.tsx" });
+		expect(link.querySelector("button")).toBeNull();
+	});
+
+	it("opens an explicit relative file link before the workspace catalog catches up", async () => {
+		const onFileOpen = vi.fn();
+		renderWithLinkHandler(
+			"See [the new file](src/generated/new-file.ts#L8).",
+			vi.fn(),
+			[],
+			onFileOpen,
+		);
+
+		await userEvent.click(screen.getByRole("link", { name: "the new file" }));
+
+		expect(onFileOpen).toHaveBeenCalledWith("src/generated/new-file.ts");
+	});
+
 	it("escapes raw HTML instead of rendering it", () => {
 		// Agent output is only as trustworthy as the files it just read, so an
 		// <img onerror> in a README must never become a live element.

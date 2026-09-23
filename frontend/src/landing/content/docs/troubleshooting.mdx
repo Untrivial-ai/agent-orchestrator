@@ -95,7 +95,7 @@ ao doctor --json
 		Confirm Connect Mobile is still enabled, both devices are on the same trusted LAN, and the phone used the current connection password. Rotating the password disconnects the previous phone.
 	</Accordion>
 	<Accordion title="The QR code was shared">
-		The QR carries the host and port, not the password. Rotate the connection password in desktop settings if the pairing details or password may have been exposed.
+		The QR carries the host, port, connection password, and any secure transport mode needed for pairing. Treat it as a bearer credential: do not share the QR or screenshots of it. Rotate the connection password in desktop settings if it may have been exposed.
 	</Accordion>
 	<Accordion title="Can I use Connect Mobile on public Wi-Fi?">
 		Do not. Transport is plaintext HTTP by deliberate design. Use it only on a trusted home network, and disable it when finished.
