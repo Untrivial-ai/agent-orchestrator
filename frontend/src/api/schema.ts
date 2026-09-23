@@ -586,6 +586,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/fs/dirs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the subdirectories of a directory on the daemon host */
+        get: operations["listDirs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/github/pat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Store a GitHub personal access token locally */
+        put: operations["putGitHubPAT"];
+        post?: never;
+        /** Remove the stored GitHub personal access token */
+        delete: operations["deleteGitHubPAT"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/github/repos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List repositories accessible with the stored GitHub token */
+        get: operations["listGitHubRepos"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/github/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Check whether a GitHub personal access token is stored locally */
+        get: operations["getGitHubStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/identity": {
         parameters: {
             query?: never;
@@ -923,7 +992,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start a worker task and ask the orchestrator to title it */
+        /** Start a worker task and refine its title in the background */
         post: operations["delegateTask"];
         delete?: never;
         options?: never;
@@ -1150,6 +1219,91 @@ export interface paths {
         post?: never;
         /** Unpair this phone from the daemon, removing it from the roster */
         delete: operations["unpairPushDevice"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{reviewId}/conversation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a reviewer's durable Chat conversation */
+        get: operations["getReviewerConversation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{reviewId}/conversation/approvals/{requestId}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Answer a pending approval in a reviewer conversation */
+        post: operations["resolveReviewerConversationApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{reviewId}/conversation/inputs/{requestId}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Answer a structured reviewer input request */
+        post: operations["resolveReviewerConversationInput"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{reviewId}/conversation/interrupt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel the in-flight reviewer turn */
+        post: operations["interruptReviewerConversationTurn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reviews/{reviewId}/conversation/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send a message to a Chat reviewer */
+        post: operations["sendReviewerConversationMessage"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1849,6 +2003,57 @@ export interface paths {
         };
         /** List pull requests owned by a session */
         get: operations["listSessionPRs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/pr/{prNumber}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one file from an associated pull request base-to-head diff */
+        get: operations["getSessionPRFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/pr/{prNumber}/file/revision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one text-capable side of a pull request comparison */
+        get: operations["getSessionPRFileRevision"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/pr/{prNumber}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the exact base-to-head changed files for an associated pull request */
+        get: operations["listSessionPRFiles"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2661,8 +2866,19 @@ export interface components {
             customModelEntry: "none" | "direct" | "configured";
             /** Format: date-time */
             fetchedAt: string;
+            inputFingerprint?: string;
+            /** Format: date-time */
+            lastSuccessAt?: null | string;
+            metadata?: {
+                [key: string]: string;
+            };
             models: components["schemas"]["AgentModelInfo"][];
+            refreshError?: string;
             refreshRecommended?: boolean;
+            /** @enum {string} */
+            refreshState?: "idle" | "queued" | "refreshing" | "error";
+            /** Format: date-time */
+            retryAt?: null | string;
             /** @enum {string} */
             selectionMode: "catalog" | "text" | "mode";
             source: string;
@@ -3437,6 +3653,13 @@ export interface components {
             agentConfig?: components["schemas"]["AgentConfig"];
             harness: string;
         };
+        DomainReviewerSurface: {
+            controllerError?: string;
+            handleId?: string;
+            harness: string;
+            mode: string;
+            reviewId: string;
+        };
         EditConversationMessageRequest: {
             clientMessageId?: string;
             text: string;
@@ -3462,7 +3685,7 @@ export interface components {
         EnsureAgentReadinessRequest: {
             agentIds?: string[];
             /** @enum {string} */
-            purpose: "display" | "settings" | "launch";
+            purpose: "display" | "launch";
         };
         EnsureCodexAccountsRequest: {
             accountIds?: string[];
@@ -3494,6 +3717,21 @@ export interface components {
             ok: boolean;
             session: components["schemas"]["ControllersSessionView"];
             sessionId: string;
+        };
+        FSEntry: {
+            /** @description True when the directory carries a .git entry (clone or worktree checkout). */
+            gitRepo: boolean;
+            /** @description Directory name. */
+            name: string;
+            /** @description Absolute path of the directory on the daemon host. */
+            path: string;
+        };
+        GitHubRepo: {
+            clone_url: string;
+            default_branch: string;
+            full_name: string;
+            name: string;
+            private: boolean;
         };
         GitHubRepositoryPreparation: {
             name?: string;
@@ -3644,11 +3882,27 @@ export interface components {
         ListCompactSessionUsageResponse: {
             sessions: components["schemas"]["CompactSessionUsageResponse"][];
         };
+        ListDirsResponse: {
+            /** @description Subdirectories, excluding dotted names. */
+            entries: components["schemas"]["FSEntry"][];
+            /** @description Absolute path of the listed directory's parent; equals path at the filesystem root. */
+            parent: string;
+            /** @description Absolute path that was listed. */
+            path: string;
+            /** @description True when the listing hit the entry cap and more subdirectories exist. */
+            truncated?: boolean;
+        };
         ListNotificationsResponse: {
             nextCursor?: string;
             notifications: components["schemas"]["NotificationResponse"][];
             unreadCount: number;
             unresolvedCount: number;
+        };
+        ListPRFilesResponse: {
+            files: components["schemas"]["WorkspaceFileSummary"][];
+            sessionId: string;
+            summary: components["schemas"]["WorkspaceSummary"];
+            truncated: boolean;
         };
         ListProjectsResponse: {
             projects: components["schemas"]["ProjectSummary"][];
@@ -3658,6 +3912,7 @@ export interface components {
             reviewerActivityState?: "active" | "idle" | "waiting_input" | "blocked" | "exited";
             reviewerHandleId: string;
             reviewerHarness?: string;
+            reviewerSurface?: components["schemas"]["DomainReviewerSurface"];
             reviews: components["schemas"]["PRReviewState"][];
             runs: components["schemas"]["ReviewRun"][];
         };
@@ -3918,6 +4173,12 @@ export interface components {
             lastSeenAt: string;
             platform?: string;
             token?: string;
+        };
+        PutGitHubPATRequest: {
+            expiresIn?: number;
+            pat: string;
+            refreshToken?: string;
+            refreshTokenExpiresIn?: number;
         };
         RegisterPushDeviceRequest: {
             /** @description Human-friendly device label. */
@@ -4529,6 +4790,7 @@ export interface components {
             /** @description True when a new review pass was started; false when an existing run for the same commit was reused. */
             created: boolean;
             reviewerHandleId: string;
+            reviewerSurface?: components["schemas"]["DomainReviewerSurface"];
             reviews: components["schemas"]["PRReviewState"][];
             runs: components["schemas"]["ReviewRun"][];
         };
@@ -6714,6 +6976,211 @@ export interface operations {
             };
         };
     };
+    listDirs: {
+        parameters: {
+            query?: {
+                /** @description Absolute directory on the daemon host to list. When omitted, the daemon user's home directory. */
+                path?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListDirsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    putGitHubPAT: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PutGitHubPATRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    deleteGitHubPAT: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listGitHubRepos: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: components["schemas"]["GitHubRepo"][];
+                    };
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getGitHubStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: boolean;
+                    };
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     getIdentity: {
         parameters: {
             query?: never;
@@ -8599,6 +9066,352 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getReviewerConversation: {
+        parameters: {
+            query?: {
+                /** @description Read items older than this conversation sequence. Omit for the newest page. */
+                beforeSequence?: null | number;
+                /** @description Maximum combined messages and activities to return. Defaults to 200. */
+                limit?: null | number;
+            };
+            header?: never;
+            path: {
+                /** @description Reviewer conversation identifier. */
+                reviewId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationSnapshotResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    resolveReviewerConversationApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Reviewer conversation identifier. */
+                reviewId: string;
+                /** @description Provider approval request identifier. Zero is a legitimate value. */
+                requestId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveConversationApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    resolveReviewerConversationInput: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Reviewer conversation identifier. */
+                reviewId: string;
+                /** @description Provider approval request identifier. Zero is a legitimate value. */
+                requestId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveConversationInputRequest"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    interruptReviewerConversationTurn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Reviewer conversation identifier. */
+                reviewId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    sendReviewerConversationMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Reviewer conversation identifier. */
+                reviewId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendConversationMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SendConversationMessageResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
             };
             /** @description Internal Server Error */
             500: {
@@ -11471,6 +12284,179 @@ export interface operations {
             };
             /** @description Not Implemented */
             501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionPRFile: {
+        parameters: {
+            query: {
+                /** @description Repository-relative file path. */
+                path: string;
+                /** @description Previous repository-relative path supplied by the selected PR file summary for rename detection. */
+                previousPath?: string;
+                /** @description Stable URL of the selected associated pull request. */
+                sourceUrl?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                /** @description Associated pull request number. */
+                prNumber: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceFileResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionPRFileRevision: {
+        parameters: {
+            query: {
+                /** @description Repository-relative file path. */
+                path: string;
+                /** @description Comparison side. Defaults to after. */
+                side?: "before" | "after";
+                /** @description Stable URL of the selected associated pull request. */
+                sourceUrl?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                /** @description Associated pull request number. */
+                prNumber: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceFileRevisionResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listSessionPRFiles: {
+        parameters: {
+            query?: {
+                /** @description Stable URL of the selected associated pull request. */
+                sourceUrl?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+                /** @description Associated pull request number. */
+                prNumber: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListPRFilesResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

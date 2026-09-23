@@ -52,13 +52,14 @@ type Service struct {
 	onModelChanged   func(domain.SessionID, string)
 	stopProviderHost func(context.Context, domain.SessionID) error
 
-	mu           sync.RWMutex
-	controllers  map[domain.SessionID]*Controller
-	startConfigs map[domain.SessionID]StartConfig
-	gateMu       sync.Mutex
-	gates        map[domain.SessionID]controllerGate
-	probeMu      sync.Mutex
-	probed       map[domain.AgentHarness]ports.ChatCapabilities
+	mu               sync.RWMutex
+	controllers      map[domain.SessionID]*Controller
+	ownerControllers map[domain.ConversationOwner]*Controller
+	startConfigs     map[domain.ConversationOwner]StartConfig
+	gateMu           sync.Mutex
+	gates            map[domain.ConversationOwner]controllerGate
+	probeMu          sync.Mutex
+	probed           map[domain.AgentHarness]ports.ChatCapabilities
 }
 
 // controllerGate serializes start/stop for one session without making provider
@@ -141,25 +142,45 @@ func New(opts Options) *Service {
 		onModelChanged:         opts.OnModelChanged,
 		stopProviderHost:       opts.StopProviderHost,
 		controllers:            make(map[domain.SessionID]*Controller),
-		startConfigs:           make(map[domain.SessionID]StartConfig),
-		gates:                  make(map[domain.SessionID]controllerGate),
+		ownerControllers:       make(map[domain.ConversationOwner]*Controller),
+		startConfigs:           make(map[domain.ConversationOwner]StartConfig),
+		gates:                  make(map[domain.ConversationOwner]controllerGate),
 		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
 	}
 }
 
-func (s *Service) controllerGate(id domain.SessionID) controllerGate {
+func (s *Service) controllerGate(owner domain.ConversationOwner) controllerGate {
 	s.gateMu.Lock()
 	defer s.gateMu.Unlock()
-	gate := s.gates[id]
+	gate := s.gates[owner]
 	if gate == nil {
 		gate = make(controllerGate, 1)
-		s.gates[id] = gate
+		s.gates[owner] = gate
 	}
 	return gate
 }
 
+func conversationOwner(cfg StartConfig) domain.ConversationOwner {
+	if cfg.Owner.Kind != "" && cfg.Owner.ID != "" {
+		return cfg.Owner
+	}
+	return domain.SessionConversationOwner(cfg.SessionID)
+}
+
+func providerHostID(cfg StartConfig) domain.SessionID {
+	if owner := conversationOwner(cfg); owner.Kind == domain.ConversationOwnerReview {
+		return domain.SessionID("review-" + owner.ID)
+	}
+	return cfg.SessionID
+}
+
 // StartConfig opens a controller for a session.
 type StartConfig = ports.ChatControllerStart
+
+type reviewerConversationStore interface {
+	ConversationForReview(context.Context, string) (domain.ConversationRecord, error)
+	GetReviewByID(context.Context, string) (domain.Review, bool, error)
+}
 
 // ControllerCommit is the conversation state committed by ControllerReady.
 // Carrying it back across the callback avoids a fallible database read after an
@@ -253,7 +274,11 @@ func (s *Service) settleOrphanedWork(ctx context.Context, session domain.Session
 // conversation: presenting unrelated history as continuous is worse than an error
 // the user can act on.
 func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, error) {
-	gate := s.controllerGate(cfg.SessionID)
+	owner := conversationOwner(cfg)
+	if owner.Kind == domain.ConversationOwnerReview {
+		cfg.ReadOnly = true
+	}
+	gate := s.controllerGate(owner)
 	if err := gate.lock(ctx); err != nil {
 		return nil, err
 	}
@@ -336,7 +361,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}
 
 	s.mu.RLock()
-	existing := s.controllers[cfg.SessionID]
+	existing := s.ownerControllers[owner]
 	s.mu.RUnlock()
 	if existing != nil {
 		if existing.State() != ports.ChatControllerStopped {
@@ -352,8 +377,11 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			return nil, ctx.Err()
 		}
 		s.mu.Lock()
-		if current := s.controllers[cfg.SessionID]; current == existing {
-			delete(s.controllers, cfg.SessionID)
+		if current := s.ownerControllers[owner]; current == existing {
+			delete(s.ownerControllers, owner)
+			if owner.Kind == domain.ConversationOwnerSession {
+				delete(s.controllers, cfg.SessionID)
+			}
 		}
 		s.mu.Unlock()
 	}
@@ -431,7 +459,12 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}
 	conversationID := s.newID()
 	var conversation domain.ConversationRecord
-	if cfg.ProviderHandoff != nil {
+	if owner.Kind == domain.ConversationOwnerReview {
+		if cfg.ProviderHandoff != nil || owner.ID == "" {
+			return nil, errors.New("reviewer chat does not support provider handoff")
+		}
+		conversation, err = s.store.CreateReviewConversation(ctx, conversationID, owner.ID, cfg.ProjectID, cfg.SessionID, now)
+	} else if cfg.ProviderHandoff != nil {
 		// Read the observed owner without rebinding it. Provider I/O can fail;
 		// ownership changes only with the prepared history's lifecycle commit.
 		handoff := cfg.ProviderHandoff
@@ -462,7 +495,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}
 	var repairedBranch domain.ConversationBranch
 	var restoredProviderOwner bool
-	if cfg.ProviderHandoff == nil {
+	if cfg.ProviderHandoff == nil && owner.Kind != domain.ConversationOwnerReview {
 		repairedBranch, restoredProviderOwner, err = s.store.RepairIncompleteConversationEdit(
 			ctx, cfg.SessionID, conversation.ID, s.now())
 		if err != nil {
@@ -544,9 +577,10 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}
 
 	var conv ports.ChatConversation
+	hostID := providerHostID(cfg)
 	if cfg.ProviderConversationID != "" {
 		conv, err = driver.Resume(ctx, ports.ChatResumeConfig{
-			SessionID:              cfg.SessionID,
+			SessionID:              hostID,
 			ProviderConversationID: cfg.ProviderConversationID,
 			DataDir:                cfg.DataDir,
 			WorkspacePath:          cfg.WorkspacePath,
@@ -555,6 +589,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			Model:                  cfg.Model,
 			Effort:                 cfg.Effort,
 			Permissions:            cfg.Permissions,
+			ReadOnly:               cfg.ReadOnly,
 			SystemPrompt:           cfg.SystemPrompt,
 			ProviderScopeID:        providerScopeID,
 			ProviderIDsScoped:      providerBoundaryID != "" || activeBranch.ProviderIDsScoped,
@@ -564,7 +599,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	} else {
 		conv, err = driver.Start(ctx, ports.ChatStartConfig{
 			ProviderIDsScoped:     providerBoundaryID != "" || activeBranch.ProviderIDsScoped,
-			SessionID:             cfg.SessionID,
+			SessionID:             hostID,
 			DataDir:               cfg.DataDir,
 			WorkspacePath:         cfg.WorkspacePath,
 			Env:                   cfg.Env,
@@ -572,6 +607,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			Model:                 cfg.Model,
 			Effort:                cfg.Effort,
 			Permissions:           cfg.Permissions,
+			ReadOnly:              cfg.ReadOnly,
 			SystemPrompt:          cfg.SystemPrompt,
 			ProviderScopeID:       providerScopeID,
 			AdditionalDirectories: cfg.AdditionalDirectories,
@@ -649,7 +685,16 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		generation = s.newID()
 	}
 	if providerBoundaryID == "" {
-		if err := s.store.ClaimChatControllerGeneration(ctx, cfg.SessionID, generation); err != nil {
+		if owner.Kind == domain.ConversationOwnerReview {
+			claimed, claimErr := s.store.ClaimReviewChatController(ctx, owner.ID, conv.ProviderConversationID(), generation, s.now())
+			if claimErr != nil || !claimed {
+				_ = cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
+				if claimErr != nil {
+					return nil, fmt.Errorf("claim reviewer chat controller: %w", claimErr)
+				}
+				return nil, errors.New("reviewer chat controller ownership changed")
+			}
+		} else if err := s.store.ClaimChatControllerGeneration(ctx, cfg.SessionID, generation); err != nil {
 			_ = cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
 			return nil, fmt.Errorf("claim chat controller: %w", err)
 		}
@@ -673,13 +718,13 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// behind a controller that no longer existed. Nothing would ever have corrected
 	// it. Settling here covers every way a controller can come up, and is a no-op
 	// for a session that has none of it.
-	if !liveReconnect && cfg.ProviderHandoff == nil {
+	if !liveReconnect && cfg.ProviderHandoff == nil && owner.Kind != domain.ConversationOwnerReview {
 		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID)
 	}
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
 	controller := newController(
-		cfg.SessionID, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
+		cfg.SessionID, owner, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
 	var commitProviderHistory func(context.Context) error
 	if liveReconnect {
 		providerTurnID := controller.restoreLiveTurnOwnership(liveRows.Turns)
@@ -844,13 +889,16 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		cfg.ExpectedControllerOwner.ControllerGeneration = controller.Generation()
 	}
 	s.mu.Lock()
-	s.controllers[cfg.SessionID] = controller
+	s.ownerControllers[owner] = controller
+	if owner.Kind == domain.ConversationOwnerSession {
+		s.controllers[cfg.SessionID] = controller
+	}
 	// A committed reservation is consumed. Internal controller restarts must
 	// resume the now-current branch, not retry its old ownership snapshot.
 	cfg.ProviderHandoff = nil
 	cfg.ProviderScopeID = ""
 	cfg.HistoryMode = ports.ChatHistoryImport
-	s.startConfigs[cfg.SessionID] = cloneStartConfig(cfg)
+	s.startConfigs[owner] = cloneStartConfig(cfg)
 	controller.start()
 	s.mu.Unlock()
 
@@ -860,8 +908,11 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		controller.Wait()
 		controller.waitForBranchHandoff()
 		s.mu.Lock()
-		if current, ok := s.controllers[cfg.SessionID]; ok && current == controller {
-			delete(s.controllers, cfg.SessionID)
+		if current, ok := s.ownerControllers[owner]; ok && current == controller {
+			delete(s.ownerControllers, owner)
+			if owner.Kind == domain.ConversationOwnerSession {
+				delete(s.controllers, cfg.SessionID)
+			}
 		}
 		s.mu.Unlock()
 	}()
@@ -899,6 +950,17 @@ func (s *Service) Controller(sessionID domain.SessionID) (*Controller, error) {
 	return controller, nil
 }
 
+// ControllerForOwner returns a live controller using the typed durable owner.
+func (s *Service) ControllerForOwner(owner domain.ConversationOwner) (*Controller, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	controller, ok := s.ownerControllers[owner]
+	if !ok {
+		return nil, ErrNoController
+	}
+	return controller, nil
+}
+
 // HasLiveChatController reports whether the service owns a controller that can
 // still process provider events. A stopped controller can remain in the registry
 // briefly while its final cleanup lands; Start waits for that cleanup before
@@ -908,6 +970,12 @@ func (s *Service) HasLiveChatController(sessionID domain.SessionID) bool {
 	controller := s.controllers[sessionID]
 	s.mu.RUnlock()
 	return controller != nil && controller.State() != ports.ChatControllerStopped
+}
+
+// HasLiveControllerForOwner is the typed-owner form used by reviewer chats.
+func (s *Service) HasLiveControllerForOwner(owner domain.ConversationOwner) bool {
+	controller, err := s.ControllerForOwner(owner)
+	return err == nil && controller.State() != ports.ChatControllerStopped
 }
 
 // PreservesProviderOnRestart reports only established live ownership. Unknown
@@ -953,6 +1021,15 @@ func (s *Service) Send(
 	return controller.Send(ctx, msg)
 }
 
+// SendForOwner sends a user message to an owner-specific chat controller.
+func (s *Service) SendForOwner(ctx context.Context, owner domain.ConversationOwner, msg ports.ChatUserMessage) (domain.ConversationTurn, error) {
+	controller, err := s.ControllerForOwner(owner)
+	if err != nil {
+		return domain.ConversationTurn{}, err
+	}
+	return controller.Send(ctx, msg)
+}
+
 // Resolve answers a pending approval.
 func (s *Service) Resolve(
 	ctx context.Context,
@@ -964,6 +1041,15 @@ func (s *Service) Resolve(
 		return err
 	}
 	controller, err := s.Controller(id)
+	if err != nil {
+		return err
+	}
+	return controller.Resolve(ctx, requestID, decision)
+}
+
+// ResolveForOwner resolves a pending approval for an owner-specific controller.
+func (s *Service) ResolveForOwner(ctx context.Context, owner domain.ConversationOwner, requestID string, decision ports.ChatDecision) error {
+	controller, err := s.ControllerForOwner(owner)
 	if err != nil {
 		return err
 	}
@@ -989,12 +1075,30 @@ func (s *Service) ResolveInput(
 	return controller.ResolveInput(ctx, requestID, response)
 }
 
+// ResolveInputForOwner answers structured input for an owner-specific controller.
+func (s *Service) ResolveInputForOwner(ctx context.Context, owner domain.ConversationOwner, requestID string, response ports.ChatInputResponse) error {
+	controller, err := s.ControllerForOwner(owner)
+	if err != nil {
+		return err
+	}
+	return controller.ResolveInput(ctx, requestID, response)
+}
+
 // Interrupt cancels a session's in-flight turn.
 func (s *Service) Interrupt(ctx context.Context, id domain.SessionID) error {
 	if _, err := s.requireChatSession(ctx, id); err != nil {
 		return err
 	}
 	controller, err := s.Controller(id)
+	if err != nil {
+		return err
+	}
+	return controller.Interrupt(ctx)
+}
+
+// InterruptForOwner cancels the in-flight turn for an owner-specific controller.
+func (s *Service) InterruptForOwner(ctx context.Context, owner domain.ConversationOwner) error {
+	controller, err := s.ControllerForOwner(owner)
 	if err != nil {
 		return err
 	}
@@ -1051,7 +1155,8 @@ func (s *Service) AbortChatHandoff(id domain.SessionID) {
 
 // Stop closes a session's controller. Safe to call for a session that has none.
 func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
-	gate := s.controllerGate(id)
+	owner := domain.SessionConversationOwner(id)
+	gate := s.controllerGate(owner)
 	if err := gate.lock(ctx); err != nil {
 		return err
 	}
@@ -1062,7 +1167,7 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 	s.mu.RUnlock()
 	if !ok {
 		s.mu.Lock()
-		delete(s.startConfigs, id)
+		delete(s.startConfigs, owner)
 		s.mu.Unlock()
 		if s.stopProviderHost != nil {
 			return s.stopProviderHost(ctx, id)
@@ -1090,7 +1195,43 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 		if current, found := s.controllers[id]; found && current == controller {
 			delete(s.controllers, id)
 		}
-		delete(s.startConfigs, id)
+		delete(s.startConfigs, owner)
+		s.mu.Unlock()
+	default:
+	}
+	return err
+}
+
+// StopForOwner closes a typed-owner controller without touching its parent
+// worker's Chat controller.
+func (s *Service) StopForOwner(ctx context.Context, owner domain.ConversationOwner) error {
+	gate := s.controllerGate(owner)
+	if err := gate.lock(ctx); err != nil {
+		return err
+	}
+	defer gate.unlock()
+
+	controller, err := s.ControllerForOwner(owner)
+	if errors.Is(err, ErrNoController) {
+		s.mu.Lock()
+		delete(s.startConfigs, owner)
+		s.mu.Unlock()
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	err = controller.Terminate(ctx)
+	select {
+	case <-controller.stopped:
+		s.mu.Lock()
+		if s.ownerControllers[owner] == controller {
+			delete(s.ownerControllers, owner)
+			delete(s.startConfigs, owner)
+			if owner.Kind == domain.ConversationOwnerSession {
+				delete(s.controllers, controller.sessionID)
+			}
+		}
 		s.mu.Unlock()
 	default:
 	}
@@ -1101,20 +1242,21 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 func (s *Service) StopAll(ctx context.Context) {
 	s.mu.Lock()
 	type shutdownTarget struct {
+		owner      domain.ConversationOwner
 		id         domain.SessionID
 		controller *Controller
 	}
-	targets := make([]shutdownTarget, 0, len(s.controllers))
-	for id, controller := range s.controllers {
-		targets = append(targets, shutdownTarget{id: id, controller: controller})
+	targets := make([]shutdownTarget, 0, len(s.ownerControllers))
+	for owner, controller := range s.ownerControllers {
+		targets = append(targets, shutdownTarget{owner: owner, id: controller.sessionID, controller: controller})
 	}
 	s.mu.Unlock()
 	slices.SortFunc(targets, func(a, b shutdownTarget) int {
-		return strings.Compare(string(a.id), string(b.id))
+		return strings.Compare(string(a.owner.Kind)+":"+a.owner.ID, string(b.owner.Kind)+":"+b.owner.ID)
 	})
 
 	for _, target := range targets {
-		gate := s.controllerGate(target.id)
+		gate := s.controllerGate(target.owner)
 		// Take an uncontended gate immediately so an expired shared shutdown
 		// context cannot skip Close. If Start/Stop/edit/branch already holds it,
 		// wait only until the original deadline — never past ShutdownTimeout.
@@ -1125,7 +1267,7 @@ func (s *Service) StopAll(ctx context.Context) {
 			}
 		}
 		s.mu.RLock()
-		current, ok := s.controllers[target.id]
+		current, ok := s.ownerControllers[target.owner]
 		s.mu.RUnlock()
 		if !ok || current != target.controller {
 			gate.unlock()
@@ -1137,9 +1279,12 @@ func (s *Service) StopAll(ctx context.Context) {
 		select {
 		case <-target.controller.stopped:
 			s.mu.Lock()
-			if current, ok := s.controllers[target.id]; ok && current == target.controller {
-				delete(s.controllers, target.id)
-				delete(s.startConfigs, target.id)
+			if current, ok := s.ownerControllers[target.owner]; ok && current == target.controller {
+				delete(s.ownerControllers, target.owner)
+				delete(s.startConfigs, target.owner)
+				if target.owner.Kind == domain.ConversationOwnerSession {
+					delete(s.controllers, target.id)
+				}
 			}
 			s.mu.Unlock()
 		default:
@@ -1271,6 +1416,46 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 	}, nil
 }
 
+// SnapshotForReview reads a reviewer-owned chat narrative without treating the
+// reviewer row as an AO session.
+func (s *Service) SnapshotForReview(ctx context.Context, reviewID string) (Snapshot, error) {
+	store, ok := s.store.(reviewerConversationStore)
+	if !ok {
+		return Snapshot{}, errors.New("reviewer conversation store is unavailable")
+	}
+	review, found, err := store.GetReviewByID(ctx, reviewID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if !found {
+		return Snapshot{}, ports.ErrSessionNotFound
+	}
+	if review.InterfaceMode != domain.ReviewerInterfaceChat {
+		return Snapshot{}, ErrNotChatMode
+	}
+	conversation, err := store.ConversationForReview(ctx, reviewID)
+	if errors.Is(err, domain.ErrNoConversation) {
+		return Snapshot{SessionID: review.SessionID, Harness: domain.AgentHarness(review.Harness), Mode: domain.SessionModeChat, Controller: ports.ChatControllerStopped}, nil
+	}
+	if err != nil {
+		return Snapshot{}, err
+	}
+	rows, err := s.reader.LoadConversationSnapshot(ctx, conversation.ID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return s.snapshotForReviewRows(review, rows), nil
+}
+
+func (s *Service) snapshotForReviewRows(review domain.Review, rows ConversationRows) Snapshot {
+	state := ports.ChatControllerStopped
+	var caps ports.ChatCapabilities
+	if controller, err := s.ControllerForOwner(domain.ReviewConversationOwner(review.ID)); err == nil {
+		state, caps = controller.State(), controller.Capabilities()
+	}
+	return Snapshot{Conversation: rows.Conversation, ActiveBranch: rows.ActiveBranch, EditFloorSequence: rows.EditFloorSequence, NativeForkAvailableAfterSequence: rows.NativeForkAvailableAfterSequence, SessionID: review.SessionID, Harness: domain.AgentHarness(review.Harness), Mode: domain.SessionModeChat, Controller: state, Turns: rows.Turns, Messages: rows.Messages, Activities: rows.Activities, BranchPoints: rows.BranchPoints, BranchedFromEarlierMessage: rows.BranchedFromEarlierMessage, OldestSequence: rows.OldestSequence, HasMoreBefore: rows.HasMoreBefore, Capabilities: caps, Usage: rows.Conversation.Usage, RateLimits: rows.Conversation.RateLimits}
+}
+
 // SnapshotPage reads one bounded timeline page. The live conversation metadata
 // remains current on every page; only turns/messages/activities are windowed.
 func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeSequence, limit int64) (Snapshot, error) {
@@ -1325,6 +1510,39 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 		Usage:                            rows.Conversation.Usage,
 		RateLimits:                       rows.Conversation.RateLimits,
 	}, nil
+}
+
+// SnapshotPageForReview returns a paginated snapshot of a reviewer-owned chat.
+func (s *Service) SnapshotPageForReview(ctx context.Context, reviewID string, beforeSequence, limit int64) (Snapshot, error) {
+	if s.pageReader == nil {
+		return s.SnapshotForReview(ctx, reviewID)
+	}
+	store, ok := s.store.(reviewerConversationStore)
+	if !ok {
+		return Snapshot{}, errors.New("reviewer conversation store is unavailable")
+	}
+	review, found, err := store.GetReviewByID(ctx, reviewID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if !found {
+		return Snapshot{}, ports.ErrSessionNotFound
+	}
+	if review.InterfaceMode != domain.ReviewerInterfaceChat {
+		return Snapshot{}, ErrNotChatMode
+	}
+	conversation, err := store.ConversationForReview(ctx, reviewID)
+	if errors.Is(err, domain.ErrNoConversation) {
+		return s.SnapshotForReview(ctx, reviewID)
+	}
+	if err != nil {
+		return Snapshot{}, err
+	}
+	rows, err := s.pageReader.LoadConversationSnapshotPage(ctx, conversation.ID, beforeSequence, limit)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return s.snapshotForReviewRows(review, rows), nil
 }
 
 // SnapshotReaderFunc adapts a plain function to SnapshotReader. The daemon wiring

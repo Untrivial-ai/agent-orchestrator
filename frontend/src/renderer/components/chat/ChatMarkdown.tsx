@@ -47,6 +47,10 @@ import {
 	workspaceFilePath,
 } from "../../lib/external-link-policy";
 import { AppLink } from "../AppLink";
+import {
+	explicitWorkspaceFilePath,
+	findWorkspaceFilePath,
+} from "../../lib/workspace-file-path";
 import { HighlightedCode } from "./HighlightedCode";
 import { MermaidBlock } from "./MermaidBlock";
 import { CopyButton } from "./CopyButton";
@@ -79,6 +83,7 @@ const PLUGINS = [remarkGfm];
  * and re-parse every message on every poll.
  */
 const StreamingProse = createContext(false);
+const InsideMarkdownLink = createContext(false);
 const OpenChatLink = createContext<{
 	open?: (url: string) => void;
 	openFile?: (path: string) => void;
@@ -231,8 +236,11 @@ function compactEmoji(children: ReactNode): ReactNode {
 
 function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
 	const { open: onLinkOpen, openFile: onFileOpen, workspacePaths } = useContext(OpenChatLink);
-	const filePath = href ? workspaceFilePath(href, workspacePaths) : undefined;
+	const filePath = href && onFileOpen
+		? workspaceFilePath(href, workspacePaths) ?? findWorkspaceFilePath(href, workspacePaths) ?? explicitWorkspaceFilePath(href)
+		: undefined;
 	const browserLink = href ? isWebLink(href) || !!filePath || isPotentialWorkspaceFileLink(href) : false;
+	const openInFiles = filePath && !/\.html?$/i.test(filePath) ? filePath : undefined;
 	return (
 		<AppLink
 			href={href}
@@ -241,6 +249,11 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 			filePath={filePath}
 			onFileOpen={onFileOpen}
 			onClick={(event) => {
+				if (openInFiles && onFileOpen) {
+					event.preventDefault();
+					onFileOpen(openInFiles);
+					return;
+				}
 				if (href && !browserLink) {
 					event.preventDefault();
 					void openLinkInSystemBrowser(href);
@@ -250,7 +263,9 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 			rel="noreferrer noopener"
 			className="text-markdown-link underline decoration-markdown-link/45 underline-offset-2 transition-colors hover:text-markdown-link-hover hover:decoration-markdown-link-hover/75"
 		>
-			<ChatImageLinkScope>{children}</ChatImageLinkScope>
+			<ChatImageLinkScope>
+				<InsideMarkdownLink.Provider value>{children}</InsideMarkdownLink.Provider>
+			</ChatImageLinkScope>
 		</AppLink>
 	);
 }
@@ -266,6 +281,29 @@ function MermaidFence({ code }: { code: string }) {
 	const streaming = useContext(StreamingProse);
 	const { open: onLinkOpen } = useContext(OpenChatLink);
 	return <MermaidBlock code={code} streaming={streaming} onLinkOpen={onLinkOpen} />;
+}
+
+function InlineCode({ children }: { children?: ReactNode }) {
+	const { openFile: onFileOpen, workspacePaths } = useContext(OpenChatLink);
+	const insideLink = useContext(InsideMarkdownLink);
+	const text = typeof children === "string" ? children : undefined;
+	const filePath = text && onFileOpen ? findWorkspaceFilePath(text, workspacePaths) : undefined;
+	const code = (
+		<code className="rounded bg-surface px-[5px] py-[2px] font-mono text-[11.5px] text-markdown-code">
+			{children}
+		</code>
+	);
+	if (!filePath || !onFileOpen || insideLink) return code;
+	return (
+		<button
+			type="button"
+			onClick={() => onFileOpen(filePath)}
+			aria-label={`Open ${filePath} in Files`}
+			className="inline rounded text-left transition-colors hover:bg-interactive-hover"
+		>
+			{code}
+		</button>
+	);
 }
 
 const COMPONENTS: Components = {
@@ -336,11 +374,7 @@ const COMPONENTS: Components = {
 		return <CodeBlock code={fence.code} language={fence.language} />;
 	},
 	// Only inline code reaches here; `pre` above takes every fence.
-	code: ({ children }) => (
-		<code className="rounded bg-surface px-[5px] py-[2px] font-mono text-[11.5px] text-markdown-code">
-			{children}
-		</code>
-	),
+	code: InlineCode,
 
 	// Wide tables scroll inside their own container so the conversation column
 	// never scrolls sideways.

@@ -650,9 +650,28 @@ export function installCloudIPC(
     }
 
     if (credential.provider !== provider) throw new Error("Cloud provider login returned an unexpected provider.");
+
+    if (provider === "github") {
+      // Returned to the renderer, which saves it via the daemon's
+      // PUT /api/v1/github/pat endpoint. Include the OAuth refresh material so
+      // the daemon can renew an expiring GitHub App token without a reconnect.
+      return {
+        secret: credential.secret,
+        refreshToken: credential.refreshToken,
+        expiresIn: credential.expiresIn,
+        refreshTokenExpiresIn: credential.refreshTokenExpiresIn,
+      };
+    }
+
     const basePath = base.pathname.replace(/\/+$/, "");
     const target = new URL(`${base.origin}${basePath}/api/cloud/v1/orgs/${encodeURIComponent(orgId)}/provider-connections/agents/${encodeURIComponent(credential.provider)}`);
-    const response = await fetch(target, { method: "PUT", redirect: "error", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ credentialType: credential.credentialType, secret: credential.secret }) });
+    const response = await fetch(target, {
+      method: "PUT",
+      redirect: "error",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ credentialType: credential.credentialType, secret: credential.secret }),
+    });
     if (!response.ok) throw new Error("AO Cloud could not save the provider credential.");
+    return undefined;
   });
 }

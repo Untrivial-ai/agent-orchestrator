@@ -256,6 +256,17 @@ export const aoBridge: AoBridge =
 			list: async () => [],
 			getActive: async () => null,
 		},
+		// The daemon-served web build has no Electron bridge and so no access to
+		// ~/.ao/remotes.json. Reporting no hosts leaves the UI showing local only,
+		// which is the truth there.
+		remotes: {
+			list: async () => [],
+			add: async () => "offline" as const,
+			update: async () => "offline" as const,
+			remove: async () => undefined,
+			probe: async () => "offline" as const,
+			request: async () => ({ status: 0, body: null }),
+		},
 		cloud: {
 			getSession: async () => null,
 			signIn: async () => undefined,

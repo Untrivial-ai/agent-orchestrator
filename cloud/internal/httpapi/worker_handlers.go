@@ -249,6 +249,15 @@ func launchContextFrom(launch domain.WorkerLaunch) (worker.LaunchContext, error)
 		AgentRules:        agentRules,
 		OrchestratorRules: orchestratorRules,
 	})
+	// Extra repos are project-level (chosen at project setup, stored on the
+	// project config), so every session of the project clones the same set.
+	var extraRepos []worker.RepoRef
+	if coderCfg, ok := domain.DecodeProjectCoderConfig(launch.ProjectConfig); ok && len(coderCfg.ExtraRepos) > 0 {
+		extraRepos = make([]worker.RepoRef, 0, len(coderCfg.ExtraRepos))
+		for _, repo := range coderCfg.ExtraRepos {
+			extraRepos = append(extraRepos, worker.RepoRef{URL: repo.URL, Branch: repo.Branch})
+		}
+	}
 	return worker.LaunchContext{
 		SessionID:       launch.SessionID,
 		ProjectID:       launch.ProjectID,
@@ -263,6 +272,7 @@ func launchContextFrom(launch domain.WorkerLaunch) (worker.LaunchContext, error)
 		DeniedCommands:  launch.DeniedCommands,
 		RepositoryURL:   launch.RepositoryURL,
 		DefaultBranch:   launch.DefaultBranch,
+		ExtraRepos:      extraRepos,
 		SystemPrompt:    systemPrompt,
 	}, nil
 }

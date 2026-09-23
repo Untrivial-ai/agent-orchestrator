@@ -1534,10 +1534,10 @@ SELECT COALESCE((
 	return tx.Commit()
 }
 
-// repairBurnedAutomationsMigrationHistory releases goose version 149 when it
+// repairBurnedAutomationsMigrationHistory releases goose version 153 when it
 // was recorded by a parallel feature branch (session_effort, conversation CDC,
 // etc.) without the Phase C automations schema. goose then applies
-// 0149_automations.sql. Without this, session list/reconcile crash on boot
+// 0153_automations.sql. Without this, session list/reconcile crash on boot
 // with "no such column: automation_run_id" while the Automations UI spins.
 func repairBurnedAutomationsMigrationHistory(db *sql.DB) error {
 	var gooseTable int
@@ -1562,19 +1562,19 @@ func repairBurnedAutomationsMigrationHistory(db *sql.DB) error {
 		return nil
 	}
 
-	var applied149 int
+	var applied153 int
 	if err := db.QueryRow(`
 SELECT COALESCE((
     SELECT is_applied FROM goose_db_version
-    WHERE version_id = 149 ORDER BY id DESC LIMIT 1
-), 0)`).Scan(&applied149); err != nil {
+    WHERE version_id = 153 ORDER BY id DESC LIMIT 1
+), 0)`).Scan(&applied153); err != nil {
 		return err
 	}
-	if applied149 == 0 {
+	if applied153 == 0 {
 		return nil
 	}
 
-	_, err := db.Exec(`DELETE FROM goose_db_version WHERE version_id = 149`)
+	_, err := db.Exec(`DELETE FROM goose_db_version WHERE version_id = 153`)
 	return err
 }
 

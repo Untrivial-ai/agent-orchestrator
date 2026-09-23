@@ -1152,7 +1152,8 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		// The user-visible resolved selection is Model for regular harnesses and
 		// Mode for adapters whose catalog is a mode list (e.g. Amp). If an explicit
 		// Model override exists it wins; otherwise fall back to the resolved Mode.
-		Model: resolvedModelForMetadata(cfg.Harness, agentConfig, adapterConfig),
+		Model:  resolvedModelForMetadata(cfg.Harness, agentConfig, adapterConfig),
+		Effort: agentConfig.Effort,
 	}
 	if prompt != "" {
 		metadata.LatestUserPromptAt = m.clock()
@@ -3780,7 +3781,7 @@ You are acting as the AO orchestrator for project %s. Do not implement code chan
 
 Your next action for any implementation, fix, UI change, test, PR, or code-review task must be to spawn or redirect a worker session. Use:
 
-ao spawn --project %s --name "<label, max 20 chars>" --prompt "<clear worker task>"
+ao spawn --project %s --name "<label, max 100 chars>" --prompt "<clear worker task>"
 
 If a suitable worker already exists, use ao send to redirect that worker instead. After spawning or redirecting, report the worker session id and stop. Do not do the worker's task in this orchestrator session.
 

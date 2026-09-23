@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
+	MAX_PROJECT_DISPLAY_NAME_LEN,
 	ProjectAgentsSettingsView,
 	ProjectGeneralSettingsView,
 	ProjectSettingsFormView,
@@ -385,14 +386,19 @@ function SettingsBody({
 				onSubmit={() => {
 				setSavedAt(null);
 				setReplacementError(null);
-				const validation = validateProjectSettings(form, { validateIntake: !isScratchProject });
+				const validation = validateProjectSettings(form, {
+					validateIntake: !isScratchProject,
+					originalDisplayName: project.name,
+				});
 				if (validation) {
 					setValidationError(
 						validation === "agents_required"
 							? t("settings.project.agentsRequired")
 							: validation === "name_required"
 								? t("settings.project.nameRequired")
-								: t("settings.project.intakeAssigneeRequired"),
+								: validation === "name_too_long"
+									? t("settings.project.nameTooLong", { max: MAX_PROJECT_DISPLAY_NAME_LEN })
+									: t("settings.project.intakeAssigneeRequired"),
 					);
 					return;
 				}
@@ -777,7 +783,11 @@ function AgentModelField({
 						customModelEntry={customModelEntry}
 						agentLabel={agentId}
 						onRefresh={refreshCatalog}
-						disabled={query.isFetching || agentId === ""}
+						refreshing={catalog?.refreshState === "queued" || catalog?.refreshState === "refreshing"}
+						lastSuccessAt={catalog?.lastSuccessAt}
+						refreshError={catalog?.refreshError}
+						retryAt={catalog?.retryAt}
+						disabled={(query.isFetching && !catalog) || agentId === ""}
 						onChange={selectCatalogModel}
 						onCustom={selectCustomModel}
 						triggerClassName="justify-end"

@@ -749,6 +749,48 @@ func TestServicePersistsAndPassesInitialModelTuningBeforeProviderStart(t *testin
 	}
 }
 
+func TestReviewerChatUsesItsOwnProviderHost(t *testing.T) {
+	st := openStore(t)
+	now := time.Now().UTC()
+	if err := st.UpsertReview(context.Background(), domain.Review{
+		ID: "review-1", SessionID: testSession, ProjectID: testProject,
+		Harness: domain.ReviewerCodex, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertReview: %v", err)
+	}
+
+	provider := newFakeConversation()
+	var closed atomic.Bool
+	provider.onClose = func() { closed.Store(true) }
+	var started ports.ChatStartConfig
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: st,
+		Drivers: fakeRegistry{driver: fakeDriver{conv: provider, startCfg: &started}},
+		Log:     slog.New(slog.DiscardHandler),
+		NewID:   func() string { return "review-conversation" },
+	})
+	owner := domain.ReviewConversationOwner("review-1")
+	t.Cleanup(func() { _ = svc.StopForOwner(context.Background(), owner) })
+
+	_, err := svc.Start(context.Background(), chatsvc.StartConfig{
+		Owner: owner, SessionID: testSession, ProjectID: testProject,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Start reviewer chat: %v", err)
+	}
+	if started.SessionID != "review-review-1" {
+		t.Fatalf("reviewer provider host = %q, want review-review-1", started.SessionID)
+	}
+	if !started.ReadOnly {
+		t.Fatal("reviewer provider was not launched read-only")
+	}
+	svc.StopAll(context.Background())
+	if !closed.Load() {
+		t.Fatal("StopAll did not close the review-owned controller")
+	}
+}
+
 func TestPendingAgentSwitchFreshStartUsesReservedProviderScope(t *testing.T) {
 	st := openStore(t)
 	now := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
