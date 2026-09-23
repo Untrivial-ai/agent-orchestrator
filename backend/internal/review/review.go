@@ -1099,7 +1099,11 @@ func (e *Engine) reconcileExitedReviewer(ctx stdctx.Context, review *domain.Revi
 		return false, nil
 	}
 	alive, err := e.launcher.Alive(ctx, review.ReviewerHandleID, review.ReviewerLaunchID)
-	if err != nil || alive {
+	if err != nil {
+		// An unavailable probe is unknown, not evidence that the reviewer died.
+		return false, nil //nolint:nilerr // Preserve active state on inconclusive liveness checks.
+	}
+	if alive {
 		return false, nil
 	}
 	for _, run := range runs {
