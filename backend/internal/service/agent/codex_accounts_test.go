@@ -2161,6 +2161,8 @@ func TestAuthenticationRequestCancellationDoesNotCancelSharedRead(t *testing.T) 
 	shared := manager.auth[record.Snapshot.ID].call
 	manager.mu.Unlock()
 	if shared == nil {
+		cancel()
+		close(release)
 		t.Fatal("shared authentication read was not in flight")
 		return
 	}
