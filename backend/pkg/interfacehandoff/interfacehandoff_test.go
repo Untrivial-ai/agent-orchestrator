@@ -69,4 +69,7 @@ func TestFailureOutcomeRequiresRecoveryAfterSourceStopping(t *testing.T) {
 			t.Fatalf("failure outcome for %q = %q, want recovery_required", phase, got)
 		}
 	}
+	if !CanAdvance(PhaseTargetStarting, PhaseTargetStarting) {
+		t.Fatal("target-starting recovery detail update must be idempotent")
+	}
 }

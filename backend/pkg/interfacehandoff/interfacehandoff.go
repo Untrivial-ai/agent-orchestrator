@@ -114,6 +114,12 @@ func CanAdvance(from, to Phase) bool {
 	if !from.Active() || !to.Valid() {
 		return false
 	}
+	// A target whose shutdown is unconfirmed remains fenced in
+	// target_starting while the adapter records the recovery detail. This is an
+	// idempotent checkpoint update, not a second controller start.
+	if from == PhaseTargetStarting && to == PhaseTargetStarting {
+		return true
+	}
 	if next, ok := from.Next(); ok && to == next {
 		return true
 	}
