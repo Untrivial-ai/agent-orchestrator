@@ -30,4 +30,21 @@ describe("reviewer control integration", () => {
 		expect(detail).toContain("!data.reviewerHandleId || autoReviewEnabled");
 		expect(detail).toContain("disabled={Boolean(mutation) || autoReviewEnabled}");
 	});
+
+	it("checks fresh review state before changing reviewer, model, or mode", () => {
+		expect(actions).toContain("const latest = await getSessionReviews(config, sessionId)");
+		expect(actions).toContain("latest.reviews.some((item) => item.status === \"running\")");
+		expect(actions).toContain("confirmReviewerChange(reviewerOverride");
+		expect(actions).not.toContain('reviewerSwitchWarning(running === "true")');
+	});
+
+	it("does not fall back to a different pull request", () => {
+		expect(actions).toContain("setPR(matchedPR)");
+		expect(actions).not.toContain("?? prs[0]");
+	});
+
+	it("keys automatic-review dismissal to the stable run id", () => {
+		expect(detail).toContain("const autoReviewFailureId = autoReviewFailure?.id");
+		expect(detail).toContain("[autoReviewFailureId, dismissedAutoFailureId]");
+	});
 });

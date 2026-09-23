@@ -49,19 +49,19 @@ export default function ReviewDetailScreen() {
 	useFocusEffect(useCallback(() => { void load(); }, [load]));
 	const review = reviewForPullRequest(data?.reviews ?? [], prUrl, Number(prNumber) || undefined);
 	const autoReviewFailure = latestAutoReviewFailure(data?.reviews ?? [], autoReviewEnabled);
+	const autoReviewFailureId = autoReviewFailure?.id;
 	useEffect(() => {
-		if (!autoReviewFailure || autoReviewFailure.id === dismissedAutoFailureId) return;
-		const timer = setTimeout(() => setDismissedAutoFailureId(autoReviewFailure.id), 10_000);
+		if (!autoReviewFailureId || autoReviewFailureId === dismissedAutoFailureId) return;
+		const timer = setTimeout(() => setDismissedAutoFailureId(autoReviewFailureId), 10_000);
 		return () => clearTimeout(timer);
-	}, [autoReviewFailure, dismissedAutoFailureId]);
-	const anyReviewRunning = data?.reviews.some((item) => item.status === "running") ?? false;
+	}, [autoReviewFailureId, dismissedAutoFailureId]);
 	useLayoutEffect(() => navigation.setOptions({ title: review?.title || "Review" }), [navigation, review?.title]);
 	useLayoutEffect(() => navigation.setOptions({
 		headerRight: review?.prUrl ? () => <View style={styles.headerActions}>
 			<Pressable accessibilityRole="link" accessibilityLabel={`Open pull request ${review.prNumber} in GitHub`} hitSlop={8} style={styles.headerAction} onPress={() => { haptics.tap(); void openGitHub(review.prUrl); }}><Feather name="external-link" size={19} color={t.textSecondary} /></Pressable>
-			<Pressable accessibilityRole="button" accessibilityLabel="More review actions" hitSlop={8} style={styles.headerAction} onPress={() => { haptics.tap(); router.push({ pathname: "/sheets/review-actions", params: { sessionId, prUrl: review.prUrl, reviewer: data?.reviewerHarness ?? "", running: String(anyReviewRunning) } }); }}><Feather name="more-horizontal" size={21} color={t.textSecondary} /></Pressable>
+			<Pressable accessibilityRole="button" accessibilityLabel="More review actions" hitSlop={8} style={styles.headerAction} onPress={() => { haptics.tap(); router.push({ pathname: "/sheets/review-actions", params: { sessionId, prUrl: review.prUrl, reviewer: data?.reviewerHarness ?? "" } }); }}><Feather name="more-horizontal" size={21} color={t.textSecondary} /></Pressable>
 		</View> : undefined,
-	}), [anyReviewRunning, data?.reviewerHarness, navigation, review?.prNumber, review?.prUrl, router, sessionId, styles.headerAction, styles.headerActions, t.textSecondary]);
+	}), [data?.reviewerHarness, navigation, review?.prNumber, review?.prUrl, router, sessionId, styles.headerAction, styles.headerActions, t.textSecondary]);
 	useEffect(() => {
 		if (review?.status !== "running" && !autoReviewEnabled) return;
 		const timer = setInterval(() => void load(true), 2_000);

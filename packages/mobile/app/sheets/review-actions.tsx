@@ -42,7 +42,7 @@ type BusyAction = { kind: "reviewer" | "rerequest" | "resolve" | "send"; id: str
 export default function ReviewActionsSheet() {
 	const styles = useThemedStyles(makeStyles);
 	const { config } = useApp();
-	const { sessionId = "", prUrl = "", reviewer = "", running = "" } = useLocalSearchParams<{ sessionId?: string; prUrl?: string; reviewer?: string; running?: string }>();
+	const { sessionId = "", prUrl = "", reviewer = "" } = useLocalSearchParams<{ sessionId?: string; prUrl?: string; reviewer?: string }>();
 	const [agents, setAgents] = useState<ReturnType<typeof reviewerChoices>>([]);
 	const [models, setModels] = useState<AgentModelCatalog>();
 	const [reviewerConfig, setReviewerConfig] = useState<ReviewerAgentConfig>({});
@@ -95,7 +95,7 @@ export default function ReviewActionsSheet() {
 	const externalReviews = useMemo(() => (pr?.review.reviews ?? []).filter((item) => item.reviewerId !== pr?.author && ![...aoReviewIds].some((id) => item.reviewUrl?.includes(`pullrequestreview-${id}`))), [aoReviewIds, pr]);
 
 	async function saveReviewer(id: string, agentConfig: ReviewerAgentConfig) {
-		if (!config || busy) return;
+		if (!config) return;
 		haptics.select();
 		setBusy({ kind: "reviewer", id });
 		setError("");
@@ -113,23 +113,33 @@ export default function ReviewActionsSheet() {
 		}
 	}
 
-	function confirmReviewerChange(id: string, nextConfig: ReviewerAgentConfig) {
-		const warning = reviewerSwitchWarning(running === "true");
-		if (!warning) { void saveReviewer(id, nextConfig); return; }
-		Alert.alert("Change active reviewer?", warning, [
-			{ text: "Keep current", style: "cancel" },
-			{ text: "Change reviewer", style: "destructive", onPress: () => void saveReviewer(id, nextConfig) },
-		]);
+	async function confirmReviewerChange(id: string, agentConfig: ReviewerAgentConfig) {
+		if (!config || busy) return;
+		setBusy({ kind: "reviewer", id });
+		setError("");
+		try {
+			const latest = await getSessionReviews(config, sessionId);
+			setReviews(latest);
+			const warning = reviewerSwitchWarning(latest.reviews.some((item) => item.status === "running"));
+			if (!warning) { await saveReviewer(id, agentConfig); return; }
+			Alert.alert("Change active reviewer?", warning, [
+				{ text: "Keep current", style: "cancel", onPress: () => setBusy(undefined) },
+				{ text: "Change reviewer", style: "destructive", onPress: () => void saveReviewer(id, agentConfig) },
+			], { cancelable: true, onDismiss: () => setBusy(undefined) });
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : "Could not check the active review before changing reviewer settings.");
+			setBusy(undefined);
+		}
 	}
 
 	function chooseReviewer(id: string) {
 		const nextConfig = id && id === reviewerOverride ? reviewerConfig : {};
-		confirmReviewerChange(id, nextConfig);
+		void confirmReviewerChange(id, nextConfig);
 	}
 
 	function chooseModel(value: string) {
 		const key = models?.selectionMode === "mode" ? "mode" : "model";
-		confirmReviewerChange(reviewerOverride, { ...reviewerConfig, [key]: value });
+		void confirmReviewerChange(reviewerOverride, { ...reviewerConfig, [key]: value });
 	}
 
 	async function updatePolicy(key: PolicyKey, value: boolean) {
