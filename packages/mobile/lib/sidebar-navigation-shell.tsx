@@ -1,5 +1,4 @@
 import { Button, Column, Host, Icon, RNHostView, Row, Spacer, Text } from "@expo/ui";
-import { rotationEffect } from "@expo/ui/swift-ui/modifiers";
 import { usePathname, useRouter } from "expo-router";
 import {
 	createContext,
@@ -315,7 +314,9 @@ function SessionRow({
 			</View>
 			{session.isPinned ? (
 				<Host matchContents>
-					<Icon name="pin.fill" size={13} color={t.textTertiary} modifiers={[rotationEffect(28)]} />
+					{/* Upright, like the desktop's own row — see the Android shell for the
+					    measurement behind dropping the tilt. */}
+					<Icon name="pin.fill" size={13} color={t.textTertiary} />
 				</Host>
 			) : null}
 		</Pressable>

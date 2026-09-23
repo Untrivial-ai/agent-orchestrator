@@ -342,9 +342,12 @@ function SessionRow({ session, projectName, onPress }: {
 					<Text numberOfLines={1} style={styles.sessionMeta}>{statusLabel} · {projectName}</Text>
 				</View>
 			</View>
-			{/* The desktop's Pin, tilted the way the swipe rail tilts it, so one action
-			    reads the same wherever it appears. */}
-			{session.isPinned ? <Feather name="pin" size={14} color={t.textTertiary} style={{ transform: [{ rotate: "28deg" }] }} /> : null}
+			{/* Upright, like the desktop's own row (`{isPinned ? <PinOff/> : <Pin/>}` with
+			    no rotation anywhere). It was tilted 28° here and in the rail to match a
+			    tilt the desktop does not have — and a rotated glyph does not sit in the
+			    middle of its button: on Android the rail's pin measured 11px left of
+			    centre in an 81px circle, where the untilted trash beside it was 0.6px. */}
+			{session.isPinned ? <Feather name="pin" size={14} color={t.textTertiary} /> : null}
 		</Pressable>
 	);
 }

@@ -8,7 +8,6 @@ import {
 	controlSize,
 	frame,
 	labelStyle,
-	rotationEffect,
 	tint,
 } from "@expo/ui/swift-ui/modifiers";
 import { useTheme, useThemeState } from "./ThemeProvider";
@@ -60,7 +59,6 @@ export function WorkerRowActions({
 						systemName={pinned ? "pin.fill" : "pin"}
 						size={iconSize.lg}
 						color={t.textPrimary}
-						modifiers={[rotationEffect(28)]}
 					/>
 				</Button>
 				<Button

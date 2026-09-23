@@ -66,7 +66,6 @@ function PinAction({
 					// Foreground ink: `amber` means "needs your attention" in this palette,
 					// and a pinned row is not asking for anything.
 					color={t.textPrimary}
-					style={{ transform: [{ rotate: "28deg" }] }}
 				/>
 			</Pressable>
 		</View>

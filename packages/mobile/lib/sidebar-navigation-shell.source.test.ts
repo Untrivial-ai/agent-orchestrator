@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 const source = readFileSync(new URL("./sidebar-navigation-shell.tsx", import.meta.url), "utf8");
 const androidSource = readFileSync(new URL("./sidebar-navigation-shell.android.tsx", import.meta.url), "utf8");
+const railAndroid = readFileSync(new URL("./worker-row-actions.tsx", import.meta.url), "utf8");
+const railIos = readFileSync(new URL("./worker-row-actions.ios.tsx", import.meta.url), "utf8");
 
 describe("sidebar page separation", () => {
 	it("uses a border without adding a drawer shadow", () => {
@@ -48,12 +50,22 @@ describe("sidebar page separation", () => {
 
 	it("uses a filled pin, rather than a star, for pinned sessions in the drawer", () => {
 		expect(source).toContain('<Icon name="pin.fill"');
-		expect(source).toContain("rotationEffect(28)");
 		expect(source).not.toContain(">★</RNText>");
 		// The drawer draws the desktop's Lucide Pin now, not a FontAwesome pushpin.
 		expect(androidSource).toContain('<Feather name="pin"');
 		expect(androidSource).not.toContain("FontAwesome");
-		expect(androidSource).toContain('rotate: "28deg"');
 		expect(androidSource).not.toContain('name="star"');
+	});
+
+	// The mark was tilted 28° on both platforms, in both the drawer and the rail,
+	// on the belief that the desktop tilted it. The desktop draws it bare
+	// (`{isPinned ? <PinOff/> : <Pin/>}`), and the tilt is what pushed the glyph off
+	// centre: on Android the rail's pin measured 11px left of centre in an 81px
+	// button while the untilted trash beside it sat 0.6px off.
+	it("draws the pin upright, like the desktop does", () => {
+		expect(source).not.toContain("rotationEffect");
+		expect(androidSource).not.toContain('rotate: "28deg"');
+		expect(railAndroid).not.toContain("rotate");
+		expect(railIos).not.toContain("rotationEffect");
 	});
 });
