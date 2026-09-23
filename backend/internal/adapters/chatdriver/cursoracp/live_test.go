@@ -3,6 +3,7 @@ package cursoracp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,9 +11,42 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/cursor"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+// TestMain gives persistent ACP hosts the same internal entry point as the
+// production ao binary. Without it, an opt-in live test self-spawns the test
+// executable as an ordinary test run and no host descriptor is ever published.
+func TestMain(m *testing.M) {
+	if len(os.Args) >= 7 && os.Args[1] == "chat-host" {
+		protocol := persistenthost.ProtocolRaw
+		fingerprint := ""
+		separator := 5
+		if os.Args[5] == string(persistenthost.ProtocolACP) {
+			protocol = persistenthost.ProtocolACP
+			if len(os.Args) > 6 {
+				fingerprint = os.Args[6]
+			}
+			separator = 7
+		}
+		if len(os.Args) <= separator || os.Args[separator] != "--" {
+			os.Exit(2)
+		}
+		err := persistenthost.Run(context.Background(), persistenthost.Config{
+			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
+			Env: os.Environ(), Argv: os.Args[separator+1:], Protocol: protocol,
+			OwnershipFingerprint: fingerprint,
+		})
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 // Run explicitly with AO_LIVE_CURSOR_ACP=1. It uses the user's existing Cursor
 // executable, account, and AO-managed Cursor profile; CI never depends on them.
@@ -179,6 +213,21 @@ func sendLiveTurn(ctx context.Context, t *testing.T, conv ports.ChatConversation
 	return sendLiveTurnWithSettings(ctx, t, conv, text, ports.ChatTurnSettings{})
 }
 
+func sendLiveTurnSanitized(ctx context.Context, t *testing.T, conv ports.ChatConversation, text string) ports.ChatTurnRef {
+	t.Helper()
+	ref, err := conv.SendTurn(ctx, ports.ChatUserMessage{
+		Text: text, ClientMessageID: "live-" + time.Now().Format("150405.000000000"),
+		Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatal("SendTurn failed")
+	}
+	if err := conv.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
+		t.Fatal("StartDeferredTurn failed")
+	}
+	return ref
+}
+
 func sendLiveTurnWithSettings(
 	ctx context.Context,
 	t *testing.T,
@@ -208,6 +257,27 @@ func waitForLiveTurn(
 	approve bool,
 	interrupt bool,
 ) string {
+	return waitForLiveTurnResult(ctx, t, conv, turnID, approve, interrupt, true)
+}
+
+func waitForLiveTurnSanitized(
+	ctx context.Context,
+	t *testing.T,
+	conv ports.ChatConversation,
+	turnID string,
+) string {
+	return waitForLiveTurnResult(ctx, t, conv, turnID, false, false, false)
+}
+
+func waitForLiveTurnResult(
+	ctx context.Context,
+	t *testing.T,
+	conv ports.ChatConversation,
+	turnID string,
+	approve bool,
+	interrupt bool,
+	reportAnswer bool,
+) string {
 	t.Helper()
 	var answer strings.Builder
 	interrupted := false
@@ -215,7 +285,10 @@ func waitForLiveTurn(
 		select {
 		case event, ok := <-conv.Events():
 			if !ok {
-				t.Fatalf("controller closed before turn completion; answer=%q", answer.String())
+				if reportAnswer {
+					t.Fatalf("controller closed before turn completion; answer=%q", answer.String())
+				}
+				t.Fatal("controller closed before turn completion")
 			}
 			if event.ProviderTurnID != "" && event.ProviderTurnID != turnID {
 				continue
@@ -225,6 +298,9 @@ func waitForLiveTurn(
 				answer.WriteString(event.Delta)
 			case ports.ChatEventApprovalRequested:
 				if !approve || len(event.Decisions) == 0 {
+					if !reportAnswer {
+						t.Fatal("unexpected or unanswerable approval")
+					}
 					t.Fatalf("unexpected/unanswerable approval: %#v", event)
 				}
 				decision := event.Decisions[0]
@@ -252,7 +328,10 @@ func waitForLiveTurn(
 					t.Fatalf("cancelled turn state = %q", event.TurnState)
 				}
 				if !interrupt && event.TurnState != domain.TurnStateCompleted {
-					t.Fatalf("turn state = %q; answer=%q", event.TurnState, answer.String())
+					if reportAnswer {
+						t.Fatalf("turn state = %q; answer=%q", event.TurnState, answer.String())
+					}
+					t.Fatalf("turn state = %q", event.TurnState)
 				}
 				if err := conv.(ports.ChatProviderEventAcknowledger).AcknowledgeProviderEvent(context.Background(), event.ProviderEventID); err != nil {
 					t.Fatalf("acknowledge: %v", err)
@@ -260,7 +339,10 @@ func waitForLiveTurn(
 				return answer.String()
 			}
 		case <-ctx.Done():
-			t.Fatalf("live turn timed out: %v; answer=%q", ctx.Err(), answer.String())
+			if reportAnswer {
+				t.Fatalf("live turn timed out: %v; answer=%q", ctx.Err(), answer.String())
+			}
+			t.Fatalf("live turn timed out: %v", ctx.Err())
 		}
 	}
 }

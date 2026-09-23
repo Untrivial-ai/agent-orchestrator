@@ -732,11 +732,11 @@ func TestHooks_NonSwitchingHarnessDoesNotReportConversationFacts(t *testing.T) {
 	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
 	writeRunFileFor(t, cfg, srv)
 
-	payload := `{"prompt":"private cursor prompt","last_assistant_message":"private cursor response","transcript_path":"/tmp/cursor/session.jsonl"}`
+	payload := `{"prompt":"private kimi prompt","last_assistant_message":"private kimi response","transcript_path":"/tmp/kimi/session.jsonl"}`
 	_, _, err := executeCLI(t, Deps{
 		In:           strings.NewReader(payload),
 		ProcessAlive: func(int) bool { return true },
-	}, "hooks", "cursor", "stop")
+	}, "hooks", "kimi", "stop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -746,6 +746,156 @@ func TestHooks_NonSwitchingHarnessDoesNotReportConversationFacts(t *testing.T) {
 	}
 	if req.LatestUserPrompt != "" || req.LatestAssistantUpdate != "" || req.TranscriptPath != "" {
 		t.Fatalf("non-switching harness reported conversation facts: %#v", req)
+	}
+}
+
+func TestHooks_CursorDoesNotReportUnverifiedConversationFacts(t *testing.T) {
+	// Cursor 2026.09.02-c22c1a3's installed bundle emits generation_id on
+	// beforeSubmitPrompt and stop, but its JSONL transcript discards native
+	// message IDs and generation IDs. These are sanitized static-schema
+	// fixtures, not evidence that the live cross-interface contract passed.
+	for _, tt := range []struct {
+		name    string
+		event   string
+		payload string
+	}{
+		{
+			name:    "submission generation is not a native user identity",
+			event:   "user-prompt-submit",
+			payload: `{"conversation_id":"cursor-native-1","generation_id":"generation-1","model":"model","prompt":"continue","attachments":[],"transcript_path":"/tmp/cursor/native.jsonl"}`,
+		},
+		{
+			name:    "completed stop has no native message boundary",
+			event:   "stop",
+			payload: `{"conversation_id":"cursor-native-1","generation_id":"generation-1","model":"model","status":"completed","loop_count":0,"transcript_path":"/tmp/cursor/native.jsonl"}`,
+		},
+		{
+			name:    "aborted stop",
+			event:   "stop",
+			payload: `{"conversation_id":"cursor-native-1","generation_id":"generation-1","status":"aborted","loop_count":0,"transcript_path":"/tmp/cursor/native.jsonl"}`,
+		},
+		{
+			name:    "foreign provider fields",
+			event:   "user-prompt-submit",
+			payload: `{"prompt":"continue","prompt_id":"claude-prompt","turn_id":"codex-turn","last_assistant_message":"done","transcript_path":"/tmp/foreign.jsonl"}`,
+		},
+		{
+			name:    "subagent payload",
+			event:   "stop",
+			payload: `{"conversation_id":"cursor-child","generation_id":"child-generation","agent_id":"child","status":"completed","transcript_path":"/tmp/cursor/subagents/child.jsonl"}`,
+		},
+		{
+			name:    "control characters in generation",
+			event:   "user-prompt-submit",
+			payload: `{"generation_id":"bad\u001b[0mid","prompt":"continue"}`,
+		},
+		{
+			name:    "oversized generation",
+			event:   "user-prompt-submit",
+			payload: `{"generation_id":"` + strings.Repeat("a", 257) + `","prompt":"continue"}`,
+		},
+		{
+			name:    "coordination submission",
+			event:   "user-prompt-submit",
+			payload: `{"generation_id":"generation-1","prompt":"<ao-handoff-request>prepare context"}`,
+		},
+		{
+			name:    "malformed payload",
+			event:   "user-prompt-submit",
+			payload: `{"generation_id":"generation-1","prompt":"continue",`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("AO_SESSION_ID", "ao-7")
+			t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-1")
+			cfg := setConfigEnv(t)
+			srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+			writeRunFileFor(t, cfg, srv)
+
+			stdout, _, err := executeCLI(t, Deps{
+				In:           strings.NewReader(tt.payload),
+				ProcessAlive: func(int) bool { return true },
+			}, "hooks", "cursor", tt.event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var req setActivityAPIRequest
+			if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+				t.Fatal(err)
+			}
+			if capture.hits != 1 || req.Event != tt.event || req.LaunchID != "launch-1" {
+				t.Fatalf("ordinary activity reporting changed: hits=%d request=%+v", capture.hits, req)
+			}
+			if req.AgentSessionID != "" || req.ProviderTurnID != "" || req.SubmissionID != "" || req.LatestUserPrompt != "" ||
+				req.LatestAssistantUpdate != "" || req.TranscriptPath != "" || req.ConversationCheckpointOrigin != "" {
+				t.Fatalf("Cursor reported unverified conversation facts: %+v", req)
+			}
+			if stdout != "" {
+				t.Fatalf("Cursor emitted unverified submission context: %q", stdout)
+			}
+		})
+	}
+}
+
+func TestHooks_CursorResumeIdentityRequiresMainSessionStart(t *testing.T) {
+	const mainStart = `{"conversation_id":"cursor-native-1","generation_id":"cursor-native-1","model":"model","is_background_agent":false,"composer_mode":"agent"}`
+	for _, review := range []bool{false, true} {
+		for _, tt := range []struct {
+			name, event, payload, wantID string
+		}{
+			{"main session start", "session-start", mainStart, "cursor-native-1"},
+			{"stop cannot replace identity", "stop", mainStart, ""},
+			{"submission cannot replace identity", "user-prompt-submit", mainStart, ""},
+			{"tool cannot replace identity", "after-shell-execution", mainStart, ""},
+			{"shell permission cannot replace identity", "before-shell-execution", mainStart, ""},
+			{"MCP permission cannot replace identity", "before-mcp-execution", mainStart, ""},
+			{"subagent session start", "session-start", strings.TrimSuffix(mainStart, "}") + `,"agent_id":"child"}`, ""},
+			{"subagent alias", "session-start", strings.TrimSuffix(mainStart, "}") + `,"subagent_id":"child"}`, ""},
+			{"parent identity", "session-start", strings.TrimSuffix(mainStart, "}") + `,"parent_agent_id":"parent"}`, ""},
+			{"background session", "session-start", strings.Replace(mainStart, `false`, `true`, 1), ""},
+			{"missing foreground proof", "session-start", `{"conversation_id":"cursor-native-1","generation_id":"cursor-native-1"}`, ""},
+			{"different generation", "session-start", strings.Replace(mainStart, `"generation_id":"cursor-native-1"`, `"generation_id":"foreign"`, 1), ""},
+			{"foreign session id", "session-start", strings.TrimSuffix(mainStart, "}") + `,"session_id":"foreign"}`, ""},
+			{"foreign conversation alias", "session-start", strings.Replace(mainStart, `"conversation_id"`, `"conversationId"`, 1), ""},
+			{"control characters", "session-start", strings.ReplaceAll(mainStart, `cursor-native-1`, `cursor\u001b[0m`), ""},
+			{"oversized identity", "session-start", strings.ReplaceAll(mainStart, `cursor-native-1`, strings.Repeat("a", 257)), ""},
+			{"malformed boundary", "session-start", mainStart + `{`, ""},
+		} {
+			name := tt.name
+			if review {
+				name = "review/" + name
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Setenv("AO_SESSION_ID", "ao-7")
+				t.Setenv("AO_REVIEW_SESSION_ID", "")
+				t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-1")
+				t.Setenv("AO_PERMISSION_MODE", "auto")
+				wantPath := "/api/v1/sessions/ao-7/activity"
+				if review {
+					t.Setenv("AO_REVIEW_SESSION_ID", "review-7")
+					wantPath = "/api/v1/reviews/review-7/activity"
+				}
+				cfg := setConfigEnv(t)
+				srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+				writeRunFileFor(t, cfg, srv)
+				_, _, err := executeCLI(t, Deps{
+					In: strings.NewReader(tt.payload), ProcessAlive: func(int) bool { return true },
+				}, "hooks", "cursor", tt.event)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if capture.hits == 0 && tt.wantID == "" {
+					return // Metadata-only hooks may have no remaining activity to send.
+				}
+				var request setActivityAPIRequest
+				if err := json.Unmarshal([]byte(capture.body), &request); err != nil {
+					t.Fatal(err)
+				}
+				if capture.hits != 1 || capture.path != wantPath || request.LaunchID != "launch-1" || request.AgentSessionID != tt.wantID {
+					t.Fatalf("hits=%d path=%q request=%+v; want path=%q native ID=%q", capture.hits, capture.path, request, wantPath, tt.wantID)
+				}
+			})
+		}
 	}
 }
 

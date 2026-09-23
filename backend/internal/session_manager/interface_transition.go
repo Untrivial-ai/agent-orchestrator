@@ -767,6 +767,9 @@ func (m *Manager) persistedNativeConversationID(
 		return "", err
 	}
 	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	if agent, ok := handoff.(ports.Agent); ok {
+		m.augmentAgentRuntimeEnv(agent, env)
+	}
 	exists, err := probe.NativeConversationExists(ctx, ports.SessionRef{
 		ID:            string(rec.ID),
 		WorkspacePath: rec.Metadata.WorkspacePath,
