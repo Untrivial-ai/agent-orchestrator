@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -99,6 +100,7 @@ const (
 // PermissionRequest payloads); adapters whose payloads lack them yield empty
 // strings and the signal degrades to today's state-only form.
 func activityMeta(payload []byte) (toolName, toolUseID string) {
+	payload = normalizeHookPayload(payload)
 	var p struct {
 		ToolName  string `json:"tool_name"`
 		ToolUseID string `json:"tool_use_id"`
@@ -113,16 +115,27 @@ func activityMeta(payload []byte) (toolName, toolUseID string) {
 	return p.ToolName, p.ToolUseID
 }
 
+// normalizeHookPayload strips a leading UTF-8 BOM so payloads re-encoded by a
+// hook wrapper (notably Windows PowerShell, whose pipeline writes UTF-16 text
+// that surfaces to the child with a BOM prefix) still decode as JSON.
+func normalizeHookPayload(payload []byte) []byte {
+	return bytes.TrimPrefix(payload, []byte("\xef\xbb\xbf"))
+}
+
 // hookAgentSessionID extracts the native resume handle shared by Agy, Copilot,
-// Codex, Claude Code, and other hook payloads. It is independent of activity
-// derivation because SessionStart is intentionally metadata-only for harnesses
-// where process startup is not proof that a turn is active.
+// Codex, Claude Code, Cline, and other hook payloads. It is independent of
+// activity derivation because SessionStart is intentionally metadata-only for
+// harnesses where process startup is not proof that a turn is active.
 func hookAgentSessionID(payload []byte) string {
+	payload = normalizeHookPayload(payload)
 	var p struct {
 		SessionID           string `json:"session_id"`
 		SessionIDCamel      string `json:"sessionId"`
 		ConversationID      string `json:"conversation_id"`
 		ConversationIDCamel string `json:"conversationId"`
+		// Cline exposes the resumable task handle as top-level taskId.
+		TaskIDCamel string `json:"taskId"`
+		TaskIDSnake string `json:"task_id"`
 	}
 	_ = json.Unmarshal(payload, &p)
 	id := strings.TrimSpace(p.SessionID)
@@ -135,6 +148,12 @@ func hookAgentSessionID(payload []byte) string {
 	if id == "" {
 		id = strings.TrimSpace(p.ConversationIDCamel)
 	}
+	if id == "" {
+		id = strings.TrimSpace(p.TaskIDCamel)
+	}
+	if id == "" {
+		id = strings.TrimSpace(p.TaskIDSnake)
+	}
 	if len(id) > maxActivityMetaLen {
 		return ""
 	}
@@ -145,6 +164,7 @@ func hookAgentSessionID(payload []byte) string {
 // It is a fallback for AO_RUNTIME_LAUNCH_ID when child-process env inheritance
 // is trimmed by the agent runtime.
 func hookLaunchID(payload []byte) string {
+	payload = normalizeHookPayload(payload)
 	var p struct {
 		LaunchID      string `json:"launch_id"`
 		LaunchIDCamel string `json:"launchId"`
@@ -164,6 +184,7 @@ func hookLaunchID(payload []byte) string {
 // decodes separately from conversation facts because hook producers may emit
 // a malformed field in one projection while the other remains useful.
 func hookUsageMetadata(agent string, payload []byte) *usageHookMetadata {
+	payload = normalizeHookPayload(payload)
 	harness := domain.AgentHarness(agent)
 	if harness != domain.HarnessClaudeCode && harness != domain.HarnessCodex {
 		return nil
@@ -253,6 +274,7 @@ type hookConversationSnapshot struct {
 }
 
 func hookConversationFacts(agent domain.AgentHarness, event string, payload []byte) hookConversationSnapshot {
+	payload = normalizeHookPayload(payload)
 	var p struct {
 		Prompt               string `json:"prompt"`
 		TurnID               string `json:"turn_id"`

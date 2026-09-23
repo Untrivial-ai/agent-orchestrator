@@ -1,8 +1,9 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 import { useTheme } from "./ThemeProvider";
 import { workerDockVisibility } from "./worker-dock-layout";
 import type { WorkerDockProps } from "./worker-dock";
+import { iconSize, radius, space, type } from "./tokens";
 
 export function WorkerDock({
 	query,
@@ -33,7 +34,7 @@ export function WorkerDock({
 						onChangeText={onQueryChange}
 						placeholder="Search workers"
 						placeholderTextColor={t.textTertiary}
-						selectionColor={t.blue}
+						selectionColor={t.accent}
 						autoFocus
 						autoCapitalize="none"
 						autoCorrect={false}
@@ -49,7 +50,7 @@ export function WorkerDock({
 						onPress={onSearchClose}
 						style={({ pressed }) => [styles.searchClose, pressed && { backgroundColor: t.bgSubtle }]}
 					>
-						<Feather name="x" size={20} color={t.textSecondary} />
+						<Feather name="x" size={iconSize.lg} color={t.textSecondary} />
 					</Pressable>
 				</View>
 			) : visibility.showControls && visibility.showSpawn ? <View style={styles.flexSpacer} /> : null}
@@ -73,17 +74,17 @@ function RoundButton({ icon, label, onPress, active = false, testID }: {
 			testID={testID}
 			accessibilityRole="button"
 			accessibilityLabel={label}
-			android_ripple={{ color: t.tintBlue, borderless: true, radius: 26 }}
+			android_ripple={{ color: t.accentTint, borderless: true, radius: 26 }}
 			onPress={onPress}
 			style={({ pressed }) => [
 				styles.action,
 				{
-					backgroundColor: active || pressed ? t.tintBlue : t.bgElevated,
-					borderColor: active ? t.blue : t.borderDefault,
+					backgroundColor: active || pressed ? t.accentTint : t.bgElevated,
+					borderColor: active ? t.accent : t.borderDefault,
 				},
 			]}
 		>
-			<Feather name={icon} size={22} color={active ? t.blue : t.textSecondary} />
+			<Feather name={icon} size={iconSize.lg} color={active ? t.accent : t.textSecondary} />
 		</Pressable>
 	);
 }
@@ -91,30 +92,30 @@ function RoundButton({ icon, label, onPress, active = false, testID }: {
 const styles = StyleSheet.create({
 	// The parent dock is itself a horizontal row, so explicitly claim its full
 	// width before asking the spacer to separate the two actions.
-	row: { flex: 1, height: 52, flexDirection: "row", gap: 10 },
+	row: { flex: 1, height: 52, flexDirection: "row", gap: space.sm },
 	flexSpacer: { flex: 1 },
 	searchWrap: {
 		flex: 1,
 		height: 52,
 		flexDirection: "row",
 		alignItems: "center",
-		borderRadius: 18,
+		borderRadius: radius.pill,
 		borderCurve: "continuous",
 		borderWidth: StyleSheet.hairlineWidth,
 		overflow: "hidden",
 	},
-	search: {
+	search: { fontFamily: "Geist_400Regular",
 		flex: 1,
 		height: 52,
-		paddingLeft: 16,
-		paddingRight: 6,
-		fontSize: 16,
+		paddingLeft: space.lg,
+		paddingRight: space.xs,
+		fontSize: type.callout.fontSize,
 	},
-	searchClose: { width: 44, height: 44, borderRadius: 14, alignItems: "center", justifyContent: "center", marginRight: 4 },
+	searchClose: { width: 44, height: 44, borderRadius: radius.pill, borderCurve: "continuous", alignItems: "center", justifyContent: "center", marginRight: space.xxs },
 	action: {
-		width: 52,
-		height: 52,
-		borderRadius: 26,
+		width: 44,
+		height: 44,
+		borderRadius: radius.pill, borderCurve: "continuous",
 		borderWidth: StyleSheet.hairlineWidth,
 		alignItems: "center",
 		justifyContent: "center",

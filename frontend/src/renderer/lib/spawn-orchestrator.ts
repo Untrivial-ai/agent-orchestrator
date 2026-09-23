@@ -1,4 +1,6 @@
 import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequestId } from "./api-client";
+import { appI18n } from "../i18n";
+import { aoBridge } from "./bridge";
 import type { OrchestratorSpawnSource } from "./orchestrator-spawn-sources";
 import { captureRendererEvent } from "./telemetry";
 import type { SessionMode } from "../types/conversation";
@@ -84,5 +86,36 @@ export async function spawnOrchestrator(
 	} catch (err) {
 		void captureRendererEvent("ao.renderer.orchestrator_spawn_failed", { project_id: projectId, source });
 		throw err;
+	}
+}
+
+/**
+ * Relaunches an orchestrator whose agent exited but whose session row is still
+ * alive. Both launchers route through here so their error handling cannot
+ * drift apart.
+ *
+ * Only ever on an explicit click, never on the exit itself: the supervisor
+ * discards the agent's exit code, so a deliberate quit is indistinguishable
+ * from a crash or a rate limit, and auto-relaunching the last of those loops
+ * against a metered API.
+ *
+ * A 409 AGENT_NOT_EXITED means it is already running — the caller asked for a
+ * working orchestrator and that is this one, so it resolves rather than throws.
+ */
+export async function resumeOrchestrator(sessionId: string): Promise<void> {
+	const { data, error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/resume-agent", {
+		params: { path: { sessionId } },
+	});
+	if (error && apiErrorCode(error) !== "AGENT_NOT_EXITED") {
+		throw new Error(apiErrorMessage(error, `Could not resume the orchestrator (${response.status})`));
+	}
+	if (data?.resumeMode === "saved_prompt") {
+		void aoBridge.notifications
+			.show({
+				id: `resume-agent-fallback:${sessionId}:${Date.now()}`,
+				title: appI18n.t("inspector.startedFromPrompt"),
+				body: appI18n.t("inspector.resumeFallbackBody"),
+			})
+			.catch((err) => console.warn("Unable to show resume fallback notification", err));
 	}
 }
