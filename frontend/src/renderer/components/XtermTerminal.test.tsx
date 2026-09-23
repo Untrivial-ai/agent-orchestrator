@@ -26,8 +26,23 @@ const state = vi.hoisted(() => ({
 		wheelHandler?: (event: WheelEvent) => boolean;
 		selection: string;
 		options: Record<string, unknown>;
+		cols: number;
 		modes: { bracketedPasteMode: boolean; mouseTrackingMode: string };
-		buffer: { active: { baseY: number; type: string; viewportY: number } };
+		buffer: {
+			active: {
+				baseY: number;
+				type: string;
+				viewportY: number;
+				getLine: (
+					row: number,
+				) => { translateToString: (trimRight: boolean) => string; isWrapped: boolean } | undefined;
+			};
+		};
+		bufferLines: Array<{ translateToString: (trimRight: boolean) => string; isWrapped: boolean }>;
+		selectionRange?: { start: { x: number; y: number }; end: { x: number; y: number } };
+		getSelectionPosition():
+			| { start: { x: number; y: number }; end: { x: number; y: number } }
+			| undefined;
 		scrollLines: ReturnType<typeof vi.fn>;
 		scrollToBottom: ReturnType<typeof vi.fn>;
 		scrollToLine: ReturnType<typeof vi.fn>;
@@ -69,7 +84,19 @@ vi.mock("@xterm/xterm", () => ({
 		keyHandler?: (event: KeyboardEvent) => boolean;
 		wheelHandler?: (event: WheelEvent) => boolean;
 		modes = { bracketedPasteMode: false, mouseTrackingMode: "vt200" };
-		buffer = { active: { baseY: 0, type: "normal", viewportY: 0 } };
+		bufferLines: Array<{ translateToString: (trimRight: boolean) => string; isWrapped: boolean }> = [];
+		buffer = {
+			active: {
+				baseY: 0,
+				type: "normal",
+				viewportY: 0,
+				getLine: (row: number) => this.bufferLines[row],
+			},
+		};
+		selectionRange?: { start: { x: number; y: number }; end: { x: number; y: number } };
+		getSelectionPosition() {
+			return this.selectionRange;
+		}
 		scrollLines = vi.fn();
 		scrollToBottom = vi.fn();
 		scrollToLine = vi.fn();
@@ -1099,6 +1126,98 @@ describe("XtermTerminal", () => {
 
 		expect(window.ao!.clipboard.writeText).not.toHaveBeenCalled();
 		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+
+	it("copies the selection to the clipboard when the mouse button is released", async () => {
+		const { container } = render(<XtermTerminal theme="dark" />);
+		const host = container.querySelector(".terminal-xterm-host")!;
+		state.lastTerminal!.selection = "released selection";
+
+		fireEvent.pointerDown(host, { button: 0 });
+		fireEvent.pointerUp(document, { button: 0 });
+
+		await waitFor(() => expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith("released selection"));
+		expect(await screen.findByRole("status")).toHaveTextContent("Copied to clipboard");
+	});
+
+	it("does not copy on release when the copy-on-select setting is off", async () => {
+		const { container } = render(<XtermTerminal theme="dark" />);
+		state.lastTerminal!.selection = "keep out of the clipboard";
+		act(() => useUiStore.getState().setTerminalCopyOnSelect(false));
+
+		try {
+			fireEvent.pointerDown(container.querySelector(".terminal-xterm-host")!, { button: 0 });
+			fireEvent.pointerUp(document, { button: 0 });
+			await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+			expect(window.ao!.clipboard.writeText).not.toHaveBeenCalled();
+			expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		} finally {
+			act(() => useUiStore.getState().setTerminalCopyOnSelect(true));
+		}
+	});
+
+	it("ignores releases that did not follow a left-button press inside the terminal", async () => {
+		const { container } = render(<XtermTerminal theme="dark" />);
+		state.lastTerminal!.selection = "should stay out";
+		const host = container.querySelector(".terminal-xterm-host")!;
+
+		fireEvent.pointerUp(document, { button: 0 });
+		fireEvent.pointerDown(host, { button: 2 });
+		fireEvent.pointerUp(document, { button: 2 });
+		fireEvent.pointerDown(host, { button: 2 });
+		fireEvent.pointerUp(document, { button: 0 });
+		await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+		expect(window.ao!.clipboard.writeText).not.toHaveBeenCalled();
+	});
+
+	it("joins selected TUI rows that fill the whole grid width when copying", () => {
+		render(<XtermTerminal theme="dark" />);
+		const terminal = state.lastTerminal!;
+		terminal.cols = 5;
+		terminal.bufferLines = [
+			{ isWrapped: false, translateToString: () => "hello" },
+			{ isWrapped: false, translateToString: () => "wo" },
+			{ isWrapped: false, translateToString: () => "next" },
+		];
+		terminal.selectionRange = { start: { x: 0, y: 0 }, end: { x: 3, y: 2 } };
+		terminal.selection = "hello\nwo\nnext";
+
+		terminal.keyHandler!({
+			key: "c",
+			metaKey: true,
+			ctrlKey: false,
+			shiftKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent);
+
+		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith("hellowo\nnext");
+	});
+
+	it("keeps xterm-wrapped rows merged instead of re-splitting them", () => {
+		render(<XtermTerminal theme="dark" />);
+		const terminal = state.lastTerminal!;
+		terminal.cols = 5;
+		terminal.bufferLines = [
+			{ isWrapped: false, translateToString: () => "hello" },
+			{ isWrapped: true, translateToString: () => "world" },
+			{ isWrapped: false, translateToString: () => "tail" },
+		];
+		terminal.selectionRange = { start: { x: 0, y: 0 }, end: { x: 4, y: 2 } };
+		terminal.selection = "helloworld\ntail";
+
+		terminal.keyHandler!({
+			key: "c",
+			metaKey: true,
+			ctrlKey: false,
+			shiftKey: false,
+			preventDefault: vi.fn(),
+			stopPropagation: vi.fn(),
+		} as unknown as KeyboardEvent);
+
+		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith("helloworldtail");
 	});
 
 	it("shows a copied toast after an explicit copy", async () => {

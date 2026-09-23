@@ -964,6 +964,7 @@
 	"settings.connectMobile": "モバイル接続",
 	"settings.developerMode": "開発者モード",
 	"settings.remoteHosts": "リモートホスト（実験的）",
+	"settings.terminalCopyOnSelect": "選択時にコピー",
 	"settings.general": "一般",
 	"settings.appearance": "外観",
 	"settings.privacy": "プライバシー",

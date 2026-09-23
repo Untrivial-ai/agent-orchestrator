@@ -984,6 +984,7 @@
 	"settings.connectMobile": "Conectar mobile",
 	"settings.developerMode": "Modo desenvolvedor",
 	"settings.remoteHosts": "Hosts remotos (experimental)",
+	"settings.terminalCopyOnSelect": "Copiar ao selecionar",
 	"settings.general": "Geral",
 	"settings.appearance": "Aparência",
 	"settings.privacy": "Privacidade",

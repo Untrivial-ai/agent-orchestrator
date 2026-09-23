@@ -147,6 +147,37 @@ function bracketPastedText(text: string, bracketedPasteMode: boolean): string {
 	return bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text;
 }
 
+// xterm marks physically wrapped rows (`isWrapped`) and getSelection() joins
+// them itself, but agent TUIs repaint full-screen with absolute cursor moves,
+// so their visually continuous rows never get that mark and are copied with a
+// hard newline exactly at the window edge (issue #5785). Walk the selected
+// buffer range and drop the newline between adjacent selected rows when the
+// upper row fills every column of the grid — a full-width TUI row has no line
+// end of its own. Rows xterm already merged are skipped, and a row trimmed
+// shorter than the grid keeps its newline.
+// ponytail: "fills the grid" is a heuristic — a genuine paragraph line that
+// happens to end at the last column joins too; buffer-level precision (what
+// getSelectionPosition gives us here) is already applied, the rest has no
+// on-screen marker to read.
+function joinVisuallyContinuousLines(term: Terminal, selection: string): string {
+	const range = term.getSelectionPosition();
+	if (!range) return selection;
+	const lines = selection.split("\n");
+	const buffer = term.buffer.active;
+	let joined = lines[0] ?? "";
+	let index = 0;
+	for (let row = range.start.y + 1; row <= range.end.y; row++) {
+		// xterm already merged this row into the previous one; no text boundary here.
+		if (buffer.getLine(row)?.isWrapped) continue;
+		const text = lines[++index];
+		if (text === undefined) break;
+		const previous = buffer.getLine(row - 1);
+		const continuous = !!previous && previous.translateToString(true).length === term.cols;
+		joined += `${continuous ? "" : "\n"}${text}`;
+	}
+	return joined;
+}
+
 function isTerminalCopyShortcut(event: KeyboardEvent): boolean {
 	if (event.key === "Insert") return event.ctrlKey && !event.altKey && !event.metaKey;
 	if (event.key.toLowerCase() !== "c") return false;
@@ -766,7 +797,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		scheduleScrollbarUpdate();
 
 		const copySelection = (options?: { clipboardData?: DataTransfer | null }) => {
-			const selection = term.getSelection();
+			const selection = joinVisuallyContinuousLines(term, term.getSelection());
 			if (!selection) return false;
 			options?.clipboardData?.setData("text/plain", selection);
 			void aoBridge.clipboard
@@ -995,6 +1026,29 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		};
 		shell.addEventListener("copy", copyInput);
 		window.addEventListener("keydown", copyShortcut, true);
+
+		// Copy on select: releasing the mouse button after a selection copies it,
+		// like every native terminal (issue #5785). xterm computes the selection
+		// continuously during mousemove and its own mouseup handler does not touch
+		// the selection, so the model is already final when pointerup fires —
+		// copying here cannot race the TUI repaint that later drops the highlight.
+		// Arming on pointerdown inside the terminal (left button only) keeps
+		// releases elsewhere in the app — context menu items, the scrollbar — from
+		// re-copying a lingering selection.
+		let pointerSelectionArmed = false;
+		const pointerDown = (event: PointerEvent) => {
+			if (event.button !== 0) return;
+			pointerSelectionArmed = true;
+		};
+		const pointerUp = (event: PointerEvent) => {
+			if (!pointerSelectionArmed) return;
+			pointerSelectionArmed = false;
+			if (event.button !== 0) return;
+			if (!useUiStore.getState().terminalCopyOnSelect) return;
+			copySelection();
+		};
+		host.addEventListener("pointerdown", pointerDown);
+		document.addEventListener("pointerup", pointerUp);
 
 		const fitTerminal = () => {
 			// Parked terminals keep their last measured box and continue parsing
@@ -1431,6 +1485,8 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			window.removeEventListener("resize", scheduleVisibleFit);
 			shell.removeEventListener("copy", copyInput);
 			window.removeEventListener("keydown", copyShortcut, true);
+			host.removeEventListener("pointerdown", pointerDown);
+			document.removeEventListener("pointerup", pointerUp);
 			shell.removeEventListener("contextmenu", openContextMenu);
 			shell.removeEventListener("paste", pasteInput, true);
 			shell.removeEventListener("compositionend", compositionInput, true);

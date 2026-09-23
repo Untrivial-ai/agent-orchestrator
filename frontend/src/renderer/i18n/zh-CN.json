@@ -946,6 +946,7 @@
 	"settings.connectMobile": "连接手机",
 	"settings.developerMode": "开发者模式",
 	"settings.remoteHosts": "远程主机（实验性）",
+	"settings.terminalCopyOnSelect": "选中即复制",
 	"settings.general": "通用",
 	"settings.appearance": "外观",
 	"settings.privacy": "隐私",
