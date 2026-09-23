@@ -8,6 +8,7 @@ import { SessionTopbarProvider } from "./SessionTopbarPortal";
 import { TooltipProvider } from "./ui/tooltip";
 import type { SessionInterfaceTransitionStatus } from "../hooks/useSessionInterfaceTransition";
 import { useUiStore, type InspectorView } from "../stores/ui-store";
+import { useTerminalResetStore } from "../stores/terminal-reset-store";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { setChatDraftBoundary } from "../lib/chat-draft-boundary";
 import { chatDraftScopeKey } from "../lib/chat-drafts";
@@ -326,6 +327,11 @@ vi.mock("./chat/SessionChatSurface", async () => {
 	}),
 	};
 });
+vi.mock("./chat/ReviewerChatSurface", () => ({
+	ReviewerChatSurface: ({ reviewId }: { reviewId: string }) => (
+		<div data-testid="reviewer-chat-surface">{reviewId}</div>
+	),
+}));
 vi.mock("./CenterPane", () => ({
 	CenterPane: ({
 		agentInputDisabled,
@@ -341,6 +347,7 @@ vi.mock("./CenterPane", () => ({
 		workspaceTabs,
 		workspaceTabActions,
 		reviewerTerminal,
+		reviewerChatContent,
 		terminalTarget,
 		auxiliaryTabOrder,
 	}: {
@@ -357,6 +364,7 @@ vi.mock("./CenterPane", () => ({
 		workspaceTabs?: Array<{ key: string; content: ReactNode; onSelect: () => void }>;
 		workspaceTabActions?: ReactNode;
 		reviewerTerminal?: { handleId: string; harness: string };
+		reviewerChatContent?: ReactNode;
 		terminalTarget?: { kind: string; handleId?: string };
 		auxiliaryTabOrder?: string[];
 	}) => (
@@ -377,6 +385,7 @@ vi.mock("./CenterPane", () => ({
 			</div>
 			<div data-testid="session-tab">{session?.title ?? ""}</div>
 			<div data-testid="reviewer-harness">{reviewerTerminal?.harness ?? ""}</div>
+			{reviewerChatContent}
 			{reviewerTerminal ? (
 				<button type="button" onClick={() => onSelectReviewerTerminal?.(reviewerTerminal)}>
 					select reviewer tab
@@ -535,16 +544,20 @@ vi.mock("./SessionInspector", () => ({
 		isInspectorVisible = true,
 		onOpenFiles,
 		onOpenReviewFile,
+		onOpenReviewerChat,
 		onToggleBrowserPopOut,
 		onViewChange,
+		onWorkerMessageSent,
 		view,
 	}: {
 		filesView?: ReactNode;
 		isInspectorVisible?: boolean;
 		onOpenFiles?: () => void;
 		onOpenReviewFile?: (target: { line?: number; path: string }) => void;
+		onOpenReviewerChat?: (reviewId: string) => void;
 		onToggleBrowserPopOut?: (next: boolean) => void;
 		onViewChange?: (view: InspectorView) => void;
+		onWorkerMessageSent?: () => void;
 		view?: string;
 	}) => {
 		inspectorVisibilityRenders.push(isInspectorVisible);
@@ -576,6 +589,12 @@ vi.mock("./SessionInspector", () => ({
 				</button>
 				<button type="button" onClick={() => onOpenReviewFile?.({ path: "notes.txt" })}>
 					view review basename
+				</button>
+				<button type="button" onClick={() => onOpenReviewerChat?.("review-1")}>
+					open reviewer chat
+				</button>
+				<button type="button" onClick={onWorkerMessageSent}>
+					send review feedback
 				</button>
 				{view === "files" ? filesView : null}
 			</div>
@@ -713,6 +732,7 @@ describe("SessionView", () => {
 			isSidebarOpen: true,
 			visibleTerminalKindBySession: {},
 		});
+		useTerminalResetStore.setState({ baselineEpoch: {}, nonces: {}, reconnecting: {} });
 		browserDestroy.mockReset();
 		browserViewOptions.current = undefined;
 		browserViewState.url = "";
@@ -912,7 +932,7 @@ describe("SessionView", () => {
 		expect(cloudResumeMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("shows a generic elapsed timer, not Coder-specific copy, while a cloud workspace is connecting", () => {
+	it("shows only the multi-step loader while a cloud workspace is connecting", () => {
 		const session = workerSession("sess-2");
 		session.runtimeConnected = false;
 		session.cloud = {
@@ -924,10 +944,104 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId="sess-2" />);
 
-		// The connecting top-right status is a bare elapsed-time counter (e.g. "0s"),
-		// never a provider-specific label like "Waiting for Coder agent".
-		expect(screen.getByRole("status").textContent ?? "").toMatch(/^\d+s$/);
-		expect(screen.getByRole("status")).not.toHaveTextContent("Coder");
+		const loaderScreen = screen.getByTestId("cloud-session-loader-screen");
+		const loader = within(loaderScreen).getByRole("status", { name: "Session setup activity" });
+		expect(loaderScreen).toHaveClass("absolute", "inset-0", "grid", "place-items-center", "bg-background");
+		expect(loaderScreen.children).toHaveLength(1);
+		expect(loader).toHaveTextContent("Orchestrating your environment");
+		expect(loader).not.toHaveTextContent("Connecting");
+		expect(loader).not.toHaveTextContent("Coder");
+		expect(loader).not.toHaveClass("right-4", "top-4");
+		expect(loader).toHaveClass("-translate-x-8");
+		expect(document.querySelector("[data-cloud-lifecycle-stage]")).not.toBeInTheDocument();
+	});
+
+	it("removes the cloud lifecycle badge once the session is connected", () => {
+		const session = workerSession("sess-2");
+		session.runtimeConnected = true;
+		session.cloud = {
+			orgId: "cloud-org",
+			sandboxProvider: "coder",
+			desiredState: "running",
+			observedState: "running",
+		};
+
+		render(<SessionView sessionId="sess-2" />);
+
+		expect(document.querySelector("[data-cloud-lifecycle-stage]")).not.toBeInTheDocument();
+		expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+	});
+
+	it("keeps the multi-step loader visible while a restored cloud session reconnects", () => {
+		const session = workerSession("sess-2");
+		session.runtimeConnected = true;
+		session.cloud = {
+			orgId: "cloud-org",
+			sandboxProvider: "coder",
+			desiredState: "running",
+			observedState: "running",
+		};
+		useTerminalResetStore.setState({ reconnecting: { "sess-2": true } });
+
+		render(<SessionView sessionId="sess-2" />);
+
+		expect(screen.getByTestId("cloud-session-loader-screen")).toBeInTheDocument();
+		expect(screen.getByRole("status", { name: "Session setup activity" })).toHaveTextContent(
+			"Orchestrating your environment",
+		);
+	});
+
+	it("does not re-raise the full-screen loader when a connected cloud session's runtime relay drops mid-turn", () => {
+		const session = workerSession("sess-2");
+		session.runtimeConnected = true;
+		session.cloud = {
+			orgId: "cloud-org",
+			sandboxProvider: "coder",
+			desiredState: "running",
+			observedState: "running",
+		};
+		const view = render(<SessionView sessionId="sess-2" />);
+		// Connected: no lifecycle loader over the terminal.
+		expect(screen.queryByTestId("cloud-session-loader-screen")).not.toBeInTheDocument();
+
+		// The worker relay row lapses mid-turn: runtimeConnected flips false while the
+		// sandbox stays running (stage -> "restoring_agent"). The connect latch must
+		// keep the terminal visible instead of re-raising the full-screen loader.
+		session.runtimeConnected = false;
+		view.rerender(<SessionView sessionId="sess-2" />);
+		expect(screen.queryByTestId("cloud-session-loader-screen")).not.toBeInTheDocument();
+	});
+
+	it("shows the live agent terminal (not the loader) while the sandbox is still bootstrapping", () => {
+		// Fresh spawn: the agent runs its first turn while observed is still
+		// "bootstrapping" (flips to "running" only afterwards). Once the agent
+		// terminal is minted (terminalGeneration set) and the relay is connected,
+		// the terminal is streaming and must be visible, not covered by the loader.
+		const session = workerSession("sess-2");
+		session.runtimeConnected = true;
+		session.terminalGeneration = "6234";
+		session.cloud = {
+			orgId: "cloud-org",
+			sandboxProvider: "coder",
+			desiredState: "running",
+			observedState: "bootstrapping",
+		};
+		render(<SessionView sessionId="sess-2" />);
+		expect(screen.queryByTestId("cloud-session-loader-screen")).not.toBeInTheDocument();
+	});
+
+	it("keeps the loader while bootstrapping before the agent terminal is minted", () => {
+		const session = workerSession("sess-2");
+		session.runtimeConnected = true;
+		session.terminalGeneration = undefined;
+		session.cloud = {
+			orgId: "cloud-org",
+			sandboxProvider: "coder",
+			desiredState: "running",
+			observedState: "bootstrapping",
+		};
+		render(<SessionView sessionId="sess-2" />);
+		expect(screen.getByTestId("cloud-session-loader-screen")).toBeInTheDocument();
 	});
 
 	it("activates a new terminal opened while a file tab is selected", async () => {
@@ -2530,6 +2644,84 @@ describe("SessionView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "select chat tab" }));
 		expect(screen.queryByTestId("terminal-target")).not.toBeInTheDocument();
 		expect(screen.getByTestId("chat-surface")).toBeInTheDocument();
+	});
+
+	it("returns to worker Chat after review feedback is sent", () => {
+		const worker = workerSession("sess-1");
+		worker.mode = "chat";
+		worker.prs = [{
+			url: "https://github.com/acme/repo/pull/7",
+			number: 7,
+			state: "open",
+			ci: "passing",
+			review: "none",
+			mergeability: "mergeable",
+			reviewComments: false,
+			updatedAt: "2026-06-15T00:00:00Z",
+		}];
+
+		render(<SessionView sessionId="sess-1" />);
+		fireEvent.click(screen.getByRole("button", { name: "open reviewer chat" }));
+		expect(screen.getByTestId("reviewer-chat-surface")).toHaveTextContent("review-1");
+
+		fireEvent.click(screen.getByRole("button", { name: "send review feedback" }));
+		expect(screen.queryByTestId("reviewer-chat-surface")).not.toBeInTheDocument();
+		expect(screen.getByTestId("chat-surface")).toBeInTheDocument();
+	});
+
+	it("returns to worker Chat when the selected reviewer Chat is replaced", async () => {
+		const worker = workerSession("sess-1");
+		worker.mode = "chat";
+		const view = render(<SessionView sessionId="sess-1" />);
+		act(() => {
+			view.client.setQueryData(["session-reviews", "sess-1"], {
+				reviewerHandleId: "review-chat:review-1",
+				reviewerSurface: { mode: "chat", reviewId: "review-1", harness: "codex" },
+				reviews: [],
+				runs: [],
+			});
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "open reviewer chat" }));
+		expect(screen.getByTestId("reviewer-chat-surface")).toHaveTextContent("review-1");
+
+		act(() => {
+			view.client.setQueryData(["session-reviews", "sess-1"], {
+				reviewerHandleId: "review-chat:review-2",
+				reviewerSurface: { mode: "chat", reviewId: "review-2", harness: "claude-code" },
+				reviews: [],
+				runs: [],
+			});
+		});
+
+		await waitFor(() => expect(screen.queryByTestId("reviewer-chat-surface")).not.toBeInTheDocument());
+		expect(screen.getByTestId("chat-surface")).toBeInTheDocument();
+	});
+
+	it("returns to the worker terminal when the selected reviewer Chat disappears", async () => {
+		const view = render(<SessionView sessionId="sess-1" />);
+		act(() => {
+			view.client.setQueryData(["session-reviews", "sess-1"], {
+				reviewerHandleId: "review-chat:review-1",
+				reviewerSurface: { mode: "chat", reviewId: "review-1", harness: "codex" },
+				reviews: [],
+				runs: [],
+			});
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "open reviewer chat" }));
+		expect(screen.getByTestId("reviewer-chat-surface")).toHaveTextContent("review-1");
+
+		act(() => {
+			view.client.setQueryData(["session-reviews", "sess-1"], {
+				reviewerHandleId: "",
+				reviews: [],
+				runs: [],
+			});
+		});
+
+		await waitFor(() => expect(screen.queryByTestId("reviewer-chat-surface")).not.toBeInTheDocument());
+		expect(screen.getByTestId("terminal-target")).toHaveTextContent("worker");
 	});
 
 	it("returns to the session terminal when the reviewer handle is cleared", async () => {

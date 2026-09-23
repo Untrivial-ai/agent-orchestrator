@@ -41,12 +41,14 @@ export function collectPRs(sessions: DashboardSession[]): { pr: DashboardPR; ses
 	return out;
 }
 
-export type Tone = "neutral" | "passive" | "success" | "warning" | "error";
+export type Tone = "neutral" | "passive" | "success" | "warning" | "error" | "merged";
 
 export function toneColor(t: Theme, tone: Tone): string {
 	switch (tone) {
 		case "success":
 			return t.green;
+		case "merged":
+			return t.purple;
 		case "warning":
 			return t.amber;
 		case "error":
@@ -173,7 +175,7 @@ export function mergeReasonLabel(reason: string): string {
  */
 export function prSummaryLine(pr: DashboardPR): { text: string; tone: Tone } {
 	const life = prLifecycle(pr);
-	if (life === "merged") return { text: "Merged", tone: "success" };
+	if (life === "merged") return { text: "Merged", tone: "merged" };
 	if (life === "closed") return { text: "Closed without merging", tone: "passive" };
 
 	const atoms: { text: string; tone: Tone }[] = [];
@@ -215,10 +217,11 @@ export type RichPR = {
  * noise about a PR nobody can act on.
  */
 export function prStatusAtoms(rich: RichPR): { text: string; tone: Tone }[] {
-	// Green, not the badge's purple: this line is the status summary, the same
-	// slot that says "CI passing · Mergeable". Purple is reserved for the
-	// lifecycle badge on the identity line above.
-	if (rich.state === "merged") return [{ text: "Merged", tone: "success" }];
+	// Purple, matching the lifecycle badge on the identity line above. This line
+	// used to say green — "the status summary slot" — which put the word Merged in
+	// a different colour from the badge saying the same thing two lines up, and in
+	// the same green the card uses for "Mergeable", a state you can still act on.
+	if (rich.state === "merged") return [{ text: "Merged", tone: "merged" }];
 	if (rich.state === "closed") return [{ text: "Closed", tone: "passive" }];
 
 	const atoms: { text: string; tone: Tone }[] = [];

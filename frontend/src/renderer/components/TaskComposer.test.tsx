@@ -106,23 +106,282 @@ afterEach(() => {
 	h.agentCatalog = undefined;
 	vi.unstubAllGlobals();
 	h.agentValues.length = 0;
+	window.localStorage.removeItem("ao.taskComposer.preferences.v1");
 });
 
 describe("TaskComposer", () => {
-	it("prompts for an agent instead of loading models forever in a standalone task", () => {
+	it("preselects the highest-ranked ready agent for a standalone task", async () => {
+		h.agentCatalog = {
+			agents: [
+				agentReadiness("claude-code", "Claude Code"),
+				agentReadiness("codex", "Codex", { usageCount: 3, lastUsedAt: "2026-09-20T12:00:00Z" }),
+				agentReadiness("cursor", "Cursor", { authentication: "unauthorized" }),
+			],
+		};
+
 		render(
 			<Wrap>
 				<TaskComposer projectId="__standalone__" onCreated={vi.fn()} />
 			</Wrap>,
 		);
 
+		await waitFor(() => expect(screen.getByLabelText("Agent")).toHaveAttribute("data-value", "codex"));
 		expect(screen.queryByRole("status", { name: "Loading models…" })).not.toBeInTheDocument();
+	});
+
+	it("preserves an explicitly selected standalone agent when readiness rankings refresh", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		h.agentCatalog = {
+			agents: [
+				agentReadiness("codex", "Codex", { usageCount: 3, lastUsedAt: "2026-09-20T12:00:00Z" }),
+				agentReadiness("claude-code", "Claude Code"),
+			],
+		};
+
+		const { rerender } = render(
+			<Wrap queryClient={queryClient}>
+				<TaskComposer projectId="__standalone__" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		await waitFor(() => expect(screen.getByLabelText("Agent")).toHaveAttribute("data-value", "codex"));
+		fireEvent.click(screen.getByLabelText("Agent"));
+		expect(screen.getByLabelText("Agent")).toHaveAttribute("data-value", "claude-code");
+
+		h.agentCatalog = {
+			agents: [
+				agentReadiness("claude-code", "Claude Code"),
+				agentReadiness("codex", "Codex", { usageCount: 10, lastUsedAt: "2026-09-21T12:00:00Z" }),
+			],
+		};
+		rerender(
+			<Wrap queryClient={queryClient}>
+				<TaskComposer projectId="__standalone__" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		await waitFor(() =>
+			expect(screen.getByLabelText("Agent")).toHaveAttribute("data-value", "claude-code"),
+		);
+	});
+
+	it("restores a standalone agent's draft model after switching away and back", async () => {
+		h.agentCatalog = {
+			agents: [
+				agentReadiness("codex", "Codex", { usageCount: 3, lastUsedAt: "2026-09-20T12:00:00Z" }),
+				agentReadiness("claude-code", "Claude Code"),
+			],
+		};
+		h.get.mockImplementation(async (path: string, request?: { params?: { path?: { agent?: string } } }) => {
+			if (path.includes("/models")) {
+				return request?.params?.path?.agent === "claude-code"
+					? {
+							data: {
+								agent: "claude-code",
+								selectionMode: "text",
+								models: [{ id: "fable-5.1", label: "Fable 5.1", isDefault: true }],
+								allowCustom: true,
+							},
+						}
+					: {
+							data: {
+								agent: "codex",
+								selectionMode: "text",
+								models: [
+									{ id: "gpt-6-astra", label: "GPT-6-Astra", isDefault: true },
+									{ id: "gpt-5.5", label: "GPT-5.5" },
+								],
+								allowCustom: true,
+							},
+						};
+			}
+			return { data: { status: "ok", project: { config: {} } } };
+		});
+
+		render(<Wrap><TaskComposer projectId="__standalone__" onCreated={vi.fn()} /></Wrap>);
+
+		const model = await screen.findByRole("button", { name: "Model" });
+		expect(model).toHaveTextContent("GPT-6-Astra");
+		await userEvent.click(model);
+		await userEvent.click(await screen.findByRole("menuitem", { name: "GPT-5.5" }));
+		expect(model).toHaveTextContent("GPT-5.5");
+
+		fireEvent.click(screen.getByLabelText("Agent"));
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Fable 5.1");
+		fireEvent.click(screen.getByLabelText("Agent"));
+
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.5");
+	});
+
+	it("restores the last successfully spawned standalone harness and model in a new composer", async () => {
+		h.agentCatalog = {
+			agents: [
+				agentReadiness("codex", "Codex", { usageCount: 3, lastUsedAt: "2026-09-20T12:00:00Z" }),
+				agentReadiness("claude-code", "Claude Code"),
+			],
+		};
+		h.get.mockImplementation(async (path: string, request?: { params?: { path?: { agent?: string } } }) => {
+			if (path.includes("/models")) {
+				return request?.params?.path?.agent === "claude-code"
+					? {
+							data: {
+								agent: "claude-code",
+								selectionMode: "text",
+								models: [{ id: "fable-5.1", label: "Fable 5.1", isDefault: true }],
+								allowCustom: true,
+							},
+						}
+					: {
+							data: {
+								agent: "codex",
+								selectionMode: "text",
+								models: [
+									{ id: "gpt-6-astra", label: "GPT-6-Astra", isDefault: true },
+									{ id: "gpt-5.5", label: "GPT-5.5" },
+								],
+								allowCustom: true,
+							},
+						};
+			}
+			return { data: { status: "ok", project: { config: {} } } };
+		});
+		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-remembered" } } });
+
+		const first = render(<Wrap><TaskComposer projectId="__standalone__" onCreated={vi.fn()} /></Wrap>);
+		fireEvent.click(await screen.findByLabelText("Agent"));
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Fable 5.1");
+		fireEvent.change(task(), { target: { value: "Remember this setup" } });
+		fireEvent.click(screen.getByText("Start task"));
+		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
+		first.unmount();
+
+		render(<Wrap><TaskComposer projectId="__standalone__" onCreated={vi.fn()} /></Wrap>);
+
+		await waitFor(() => expect(screen.getByLabelText("Agent")).toHaveAttribute("data-value", "claude-code"));
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Fable 5.1");
+	});
+
+	it("persists successful model choices per project without leaking them to another project", async () => {
+		h.agentCatalog = { agents: [agentReadiness("codex", "Codex")] };
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "codex",
+						selectionMode: "text",
+						models: [
+							{ id: "gpt-6-astra", label: "GPT-6-Astra", isDefault: true },
+							{ id: "gpt-5.5", label: "GPT-5.5" },
+						],
+						allowCustom: true,
+					},
+				};
+			}
+			return { data: { status: "ok", project: { agent: "codex", config: {} } } };
+		});
+		h.post.mockResolvedValueOnce({ data: { workerId: "project-remembered" } });
+
+		const first = render(<Wrap><TaskComposer projectId="project-a" onCreated={vi.fn()} /></Wrap>);
+		const model = await screen.findByRole("button", { name: "Model" });
+		await userEvent.click(model);
+		await userEvent.click(await screen.findByRole("menuitem", { name: "GPT-5.5" }));
+		fireEvent.change(task(), { target: { value: "Remember this project setup" } });
+		fireEvent.click(screen.getByText("Start task"));
+		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
+		first.unmount();
+
+		const remembered = render(<Wrap><TaskComposer projectId="project-a" onCreated={vi.fn()} /></Wrap>);
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.5");
+		remembered.unmount();
+
+		render(<Wrap><TaskComposer projectId="project-b" onCreated={vi.fn()} /></Wrap>);
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("GPT-6-Astra");
+	});
+
+	it("does not persist a standalone preference when task creation fails", async () => {
+		h.agentCatalog = { agents: [agentReadiness("codex", "Codex")] };
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "codex",
+						selectionMode: "text",
+						models: [
+							{ id: "gpt-6-astra", label: "GPT-6-Astra", isDefault: true },
+							{ id: "gpt-5.5", label: "GPT-5.5" },
+						],
+						allowCustom: true,
+					},
+				};
+			}
+			return { data: { status: "ok", project: { config: {} } } };
+		});
+		h.post.mockResolvedValueOnce({ error: { code: "SPAWN_FAILED", message: "Could not start task" } });
+
+		render(<Wrap><TaskComposer projectId="__standalone__" onCreated={vi.fn()} /></Wrap>);
+		const model = await screen.findByRole("button", { name: "Model" });
+		await userEvent.click(model);
+		await userEvent.click(await screen.findByRole("menuitem", { name: "GPT-5.5" }));
+		fireEvent.change(task(), { target: { value: "This spawn will fail" } });
+		fireEvent.click(screen.getByText("Start task"));
+
+		expect(await screen.findByText("Could not start task")).toBeInTheDocument();
+		expect(window.localStorage.getItem("ao.taskComposer.preferences.v1")).toBeNull();
+	});
+
+	it("falls back when remembered standalone harness and model choices are no longer valid", async () => {
+		window.localStorage.setItem("ao.taskComposer.preferences.v1", JSON.stringify({
+			__standalone__: {
+				lastAgent: "removed-agent",
+				agents: {
+					codex: { model: "retired-model", mode: "" },
+					"removed-agent": { model: "removed-model", mode: "" },
+				},
+			},
+		}));
+		h.agentCatalog = { agents: [agentReadiness("codex", "Codex")] };
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "codex",
+						selectionMode: "text",
+						models: [{ id: "gpt-6-astra", label: "GPT-6-Astra", isDefault: true }],
+						allowCustom: false,
+					},
+				};
+			}
+			return { data: { status: "ok", project: { config: {} } } };
+		});
+
+		render(<Wrap><TaskComposer projectId="__standalone__" onCreated={vi.fn()} /></Wrap>);
+
+		await waitFor(() => expect(screen.getByLabelText("Agent")).toHaveAttribute("data-value", "codex"));
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("GPT-6-Astra");
+	});
+
+	it("keeps a standalone task unselected when no agent is ready", () => {
+		h.agentCatalog = {
+			agents: [
+				agentReadiness("claude-code", "Claude Code", { installation: "not_installed" }),
+				agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+			],
+		};
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="__standalone__" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		expect(screen.getByLabelText("Agent")).toHaveAttribute("data-value", "");
 		expect(screen.getByLabelText("Model")).toHaveTextContent("Select agent");
 		expect(screen.getByLabelText("Model")).toHaveAttribute("aria-disabled", "true");
 	});
 
 	it("starts a standalone worker without loading or sending a project", async () => {
 		const onCreated = vi.fn();
+		h.agentCatalog = { agents: [agentReadiness("codex", "Codex")] };
 		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-1" } } });
 
 		render(
@@ -131,7 +390,7 @@ describe("TaskComposer", () => {
 			</Wrap>,
 		);
 
-		fireEvent.click(screen.getByLabelText("Agent"));
+		await waitFor(() => expect(screen.getByLabelText("Agent")).toHaveAttribute("data-value", "codex"));
 		fireEvent.change(task(), { target: { value: "Research release options" } });
 		fireEvent.click(screen.getByText("Start task"));
 
@@ -646,7 +905,7 @@ describe("TaskComposer", () => {
 		fireEvent.click(screen.getByText("Start task"));
 
 		await waitFor(() => expect(screen.getByText("nope")).toBeInTheDocument());
-		expect(onSubmittingChange).toHaveBeenLastCalledWith(false);
+		await waitFor(() => expect(onSubmittingChange).toHaveBeenLastCalledWith(false));
 	});
 
 	it("silently routes agents without Chat support to Terminal UI", async () => {
@@ -1035,6 +1294,35 @@ describe("TaskComposer", () => {
 				}),
 			),
 		);
+	});
+
+	it("forwards model refresh metadata to the task picker", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "codex",
+						selectionMode: "catalog",
+						models: [{ id: "gpt-5", label: "GPT-5", isDefault: true }],
+						allowCustom: true,
+						lastSuccessAt: "2026-09-23T08:00:00Z",
+						refreshState: "error",
+						refreshError: "Provider temporarily unavailable",
+						retryAt: "2026-09-23T08:05:00Z",
+					},
+				};
+			}
+			return { data: { status: "ok", project: { agent: "codex", config: {} } } };
+		});
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		await userEvent.click(await screen.findByRole("button", { name: "Model" }));
+		expect(await screen.findByTitle("Provider temporarily unavailable")).toBeInTheDocument();
 	});
 
 	it("does not render free text when models must be configured in the agent", async () => {

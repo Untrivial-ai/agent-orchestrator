@@ -17,19 +17,49 @@ import (
 func (s *Store) UpsertReview(ctx context.Context, r domain.Review) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if r.InterfaceMode == "" {
+		existing, err := s.qw.GetReviewBySessionAndHarness(ctx, gen.GetReviewBySessionAndHarnessParams{SessionID: r.SessionID, Harness: r.Harness})
+		switch {
+		case err == nil:
+			r.InterfaceMode = domain.ReviewerInterfaceMode(existing.InterfaceMode)
+		case errors.Is(err, sql.ErrNoRows):
+			r.InterfaceMode = domain.ReviewerInterfaceTUI
+		default:
+			return fmt.Errorf("get review interface mode: %w", err)
+		}
+	}
 	return s.qw.UpsertReview(ctx, gen.UpsertReviewParams{
-		ID:                    r.ID,
-		SessionID:             r.SessionID,
-		ProjectID:             r.ProjectID,
-		Harness:               r.Harness,
-		PRURL:                 r.PRURL,
-		ReviewerHandleID:      r.ReviewerHandleID,
-		AgentSessionID:        r.AgentSessionID,
-		ReviewerActivityState: string(r.ReviewerActivityState),
-		ReviewerLaunchID:      r.ReviewerLaunchID,
-		CreatedAt:             r.CreatedAt,
-		UpdatedAt:             r.UpdatedAt,
+		ID:                     r.ID,
+		SessionID:              r.SessionID,
+		ProjectID:              r.ProjectID,
+		Harness:                r.Harness,
+		PRURL:                  r.PRURL,
+		ReviewerHandleID:       r.ReviewerHandleID,
+		AgentSessionID:         r.AgentSessionID,
+		ReviewerActivityState:  string(r.ReviewerActivityState),
+		ReviewerLaunchID:       r.ReviewerLaunchID,
+		InterfaceMode:          string(r.InterfaceMode),
+		ProviderConversationID: r.ProviderConversationID,
+		ControllerGeneration:   r.ControllerGeneration,
+		ControllerError:        r.ControllerError,
+		CreatedAt:              r.CreatedAt,
+		UpdatedAt:              r.UpdatedAt,
 	})
+}
+
+// SetReviewInterfaceMode persists the surface before its controller starts.
+func (s *Store) SetReviewInterfaceMode(ctx context.Context, id string, mode domain.ReviewerInterfaceMode, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.SetReviewInterfaceMode(ctx, gen.SetReviewInterfaceModeParams{
+		InterfaceMode: string(mode),
+		Column2:       string(mode),
+		Column3:       string(mode),
+		Column4:       string(mode),
+		UpdatedAt:     now,
+		ID:            id,
+	})
+	return n > 0, err
 }
 
 // GetReviewBySession returns the latest review row for a worker session,
@@ -80,6 +110,35 @@ func (s *Store) ListReviewsBySession(ctx context.Context, id domain.SessionID) (
 	out := make([]domain.Review, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, reviewFromListReviewsBySessionRow(row))
+	}
+	return out, nil
+}
+
+// ClaimReviewChatController records ownership of a reviewer chat controller.
+func (s *Store) ClaimReviewChatController(ctx context.Context, id, providerID, generation string, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.ClaimReviewChatController(ctx, gen.ClaimReviewChatControllerParams{ProviderConversationID: providerID, ControllerGeneration: generation, UpdatedAt: now, ID: id})
+	return n > 0, err
+}
+
+// RecordReviewChatControllerError records the most recent controller failure.
+func (s *Store) RecordReviewChatControllerError(ctx context.Context, id, message string, now time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.RecordReviewChatControllerError(ctx, gen.RecordReviewChatControllerErrorParams{ControllerError: message, UpdatedAt: now, ID: id})
+	return n > 0, err
+}
+
+// ListRecoverableChatReviews returns durable reviewer chats eligible for recovery.
+func (s *Store) ListRecoverableChatReviews(ctx context.Context) ([]domain.Review, error) {
+	rows, err := s.qr.ListRecoverableChatReviews(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list recoverable reviewer chats: %w", err)
+	}
+	out := make([]domain.Review, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, reviewFromListRecoverableChatReviewsRow(row))
 	}
 	return out, nil
 }
@@ -319,66 +378,86 @@ func (s *Store) ListReviewRunsByBatch(ctx context.Context, id domain.SessionID, 
 
 func reviewFromGetReviewBySessionRow(r gen.GetReviewBySessionRow) domain.Review {
 	return domain.Review{
-		ID:                    r.ID,
-		SessionID:             r.SessionID,
-		ProjectID:             r.ProjectID,
-		Harness:               r.Harness,
-		PRURL:                 r.PRURL,
-		ReviewerHandleID:      r.ReviewerHandleID,
-		AgentSessionID:        r.AgentSessionID,
-		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
-		ReviewerLaunchID:      r.ReviewerLaunchID,
-		CreatedAt:             r.CreatedAt,
-		UpdatedAt:             r.UpdatedAt,
+		ID:                     r.ID,
+		SessionID:              r.SessionID,
+		ProjectID:              r.ProjectID,
+		Harness:                r.Harness,
+		PRURL:                  r.PRURL,
+		ReviewerHandleID:       r.ReviewerHandleID,
+		AgentSessionID:         r.AgentSessionID,
+		ReviewerActivityState:  domain.ActivityState(r.ReviewerActivityState),
+		ReviewerLaunchID:       r.ReviewerLaunchID,
+		InterfaceMode:          domain.ReviewerInterfaceMode(r.InterfaceMode),
+		ProviderConversationID: r.ProviderConversationID,
+		ControllerGeneration:   r.ControllerGeneration,
+		ControllerError:        r.ControllerError,
+		CreatedAt:              r.CreatedAt,
+		UpdatedAt:              r.UpdatedAt,
 	}
 }
 
 func reviewFromGetReviewBySessionAndHarnessRow(r gen.GetReviewBySessionAndHarnessRow) domain.Review {
 	return domain.Review{
-		ID:                    r.ID,
-		SessionID:             r.SessionID,
-		ProjectID:             r.ProjectID,
-		Harness:               r.Harness,
-		PRURL:                 r.PRURL,
-		ReviewerHandleID:      r.ReviewerHandleID,
-		AgentSessionID:        r.AgentSessionID,
-		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
-		ReviewerLaunchID:      r.ReviewerLaunchID,
-		CreatedAt:             r.CreatedAt,
-		UpdatedAt:             r.UpdatedAt,
+		ID:                     r.ID,
+		SessionID:              r.SessionID,
+		ProjectID:              r.ProjectID,
+		Harness:                r.Harness,
+		PRURL:                  r.PRURL,
+		ReviewerHandleID:       r.ReviewerHandleID,
+		AgentSessionID:         r.AgentSessionID,
+		ReviewerActivityState:  domain.ActivityState(r.ReviewerActivityState),
+		ReviewerLaunchID:       r.ReviewerLaunchID,
+		InterfaceMode:          domain.ReviewerInterfaceMode(r.InterfaceMode),
+		ProviderConversationID: r.ProviderConversationID,
+		ControllerGeneration:   r.ControllerGeneration,
+		ControllerError:        r.ControllerError,
+		CreatedAt:              r.CreatedAt,
+		UpdatedAt:              r.UpdatedAt,
 	}
 }
 
 func reviewFromListReviewsBySessionRow(r gen.ListReviewsBySessionRow) domain.Review {
 	return domain.Review{
-		ID:                    r.ID,
-		SessionID:             r.SessionID,
-		ProjectID:             r.ProjectID,
-		Harness:               r.Harness,
-		PRURL:                 r.PRURL,
-		ReviewerHandleID:      r.ReviewerHandleID,
-		AgentSessionID:        r.AgentSessionID,
-		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
-		ReviewerLaunchID:      r.ReviewerLaunchID,
-		CreatedAt:             r.CreatedAt,
-		UpdatedAt:             r.UpdatedAt,
+		ID:                     r.ID,
+		SessionID:              r.SessionID,
+		ProjectID:              r.ProjectID,
+		Harness:                r.Harness,
+		PRURL:                  r.PRURL,
+		ReviewerHandleID:       r.ReviewerHandleID,
+		AgentSessionID:         r.AgentSessionID,
+		ReviewerActivityState:  domain.ActivityState(r.ReviewerActivityState),
+		ReviewerLaunchID:       r.ReviewerLaunchID,
+		InterfaceMode:          domain.ReviewerInterfaceMode(r.InterfaceMode),
+		ProviderConversationID: r.ProviderConversationID,
+		ControllerGeneration:   r.ControllerGeneration,
+		ControllerError:        r.ControllerError,
+		CreatedAt:              r.CreatedAt,
+		UpdatedAt:              r.UpdatedAt,
 	}
 }
 
 func reviewFromReview(r gen.GetReviewByIDRow) domain.Review {
 	return domain.Review{
-		ID:                    r.ID,
-		SessionID:             r.SessionID,
-		ProjectID:             r.ProjectID,
-		Harness:               r.Harness,
-		PRURL:                 r.PRURL,
-		ReviewerHandleID:      r.ReviewerHandleID,
-		AgentSessionID:        r.AgentSessionID,
-		ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState),
-		ReviewerLaunchID:      r.ReviewerLaunchID,
-		CreatedAt:             r.CreatedAt,
-		UpdatedAt:             r.UpdatedAt,
+		ID:                     r.ID,
+		SessionID:              r.SessionID,
+		ProjectID:              r.ProjectID,
+		Harness:                r.Harness,
+		PRURL:                  r.PRURL,
+		ReviewerHandleID:       r.ReviewerHandleID,
+		AgentSessionID:         r.AgentSessionID,
+		ReviewerActivityState:  domain.ActivityState(r.ReviewerActivityState),
+		ReviewerLaunchID:       r.ReviewerLaunchID,
+		InterfaceMode:          domain.ReviewerInterfaceMode(r.InterfaceMode),
+		ProviderConversationID: r.ProviderConversationID,
+		ControllerGeneration:   r.ControllerGeneration,
+		ControllerError:        r.ControllerError,
+		CreatedAt:              r.CreatedAt,
+		UpdatedAt:              r.UpdatedAt,
 	}
+}
+
+func reviewFromListRecoverableChatReviewsRow(r gen.ListRecoverableChatReviewsRow) domain.Review {
+	return domain.Review{ID: r.ID, SessionID: r.SessionID, ProjectID: r.ProjectID, Harness: r.Harness, PRURL: r.PRURL, ReviewerHandleID: r.ReviewerHandleID, AgentSessionID: r.AgentSessionID, ReviewerActivityState: domain.ActivityState(r.ReviewerActivityState), ReviewerLaunchID: r.ReviewerLaunchID, InterfaceMode: domain.ReviewerInterfaceMode(r.InterfaceMode), ProviderConversationID: r.ProviderConversationID, ControllerGeneration: r.ControllerGeneration, ControllerError: r.ControllerError, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
 }
 
 func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {

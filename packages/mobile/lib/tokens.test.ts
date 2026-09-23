@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fontScaleCap, radius, space, type } from "./tokens";
+import { fontScaleCap, microLabel, radius, space, type } from "./tokens";
 
 // These tests are a regression fence, not a description of taste. A scale that
 // stops ascending has been edited carelessly, and the anchors below are the
@@ -47,36 +47,42 @@ describe("font scale caps", () => {
 });
 
 describe("type scale", () => {
-	// Lifted verbatim from worker-list-row.tsx `title`, so a rewritten row that
-	// adopts the token is a no-op rather than a silent restyle.
-	it("matches the existing list-row title exactly", () => {
-		expect(type.rowTitle).toEqual({
-			fontSize: 16,
-			lineHeight: 21,
-			fontWeight: "600",
-			letterSpacing: -0.15,
-		});
+	// The ramp is Apple's Dynamic Type scale rather than a vocabulary of
+	// per-screen sizes, so the fence is its shape: sizes never decrease as the
+	// roles get larger, and the anchors below are the steps the app reads at.
+	const steps = [
+		type.caption2,
+		type.caption1,
+		type.footnote,
+		type.subheadline,
+		type.callout,
+		type.body,
+		type.headline,
+		type.title3,
+		type.title2,
+		type.title1,
+		type.largeTitle,
+	];
+
+	it("never decreases as the roles get larger", () => {
+		const sizes = steps.map((step) => step.fontSize);
+		expect(sizes).toEqual([...sizes].sort((a, b) => a - b));
 	});
 
-	it("matches the existing screen title exactly", () => {
-		expect(type.title).toEqual({ fontSize: 26, fontWeight: "800", letterSpacing: -0.5 });
+	it("spans the scale the system uses at its ends", () => {
+		expect(type.caption2.fontSize).toBe(11);
+		expect(type.largeTitle.fontSize).toBe(34);
 	});
 
-	it("descends from title to micro", () => {
-		const sizes = [
-			type.title.fontSize,
-			type.sheetTitle.fontSize,
-			type.emptyTitle.fontSize,
-			type.rowTitle.fontSize,
-			type.body.fontSize,
-			type.meta.fontSize,
-			type.micro.fontSize,
-		];
-		expect(sizes).toEqual([...sizes].sort((a, b) => b - a));
+	it("keeps the reading sizes where the app reads at them", () => {
+		expect(type.body.fontSize).toBe(17);
+		expect(type.footnote.fontSize).toBe(13);
 	});
 
-	it("gives the eyebrow its tracking, which is what separates it from micro", () => {
-		expect(type.eyebrow.fontSize).toBe(type.micro.fontSize);
-		expect(type.eyebrow.letterSpacing).toBe(1.2);
+	it("gives micro-labels positive tracking and large titles negative", () => {
+		// Optical tracking flips sign at the ends of the ramp; that, not the size,
+		// is what makes a small label read as a label.
+		expect(microLabel.letterSpacing).toBeGreaterThan(0);
+		expect(type.body.letterSpacing).toBeLessThan(0);
 	});
 });

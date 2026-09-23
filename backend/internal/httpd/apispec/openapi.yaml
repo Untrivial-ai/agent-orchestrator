@@ -1222,6 +1222,155 @@ paths:
       summary: Stream CDC events with durable replay
       tags:
       - events
+  /api/v1/fs/dirs:
+    get:
+      operationId: listDirs
+      parameters:
+      - description: Absolute directory on the daemon host to list. When omitted,
+          the daemon user's home directory.
+        in: query
+        name: path
+        schema:
+          description: Absolute directory on the daemon host to list. When omitted,
+            the daemon user's home directory.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListDirsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List the subdirectories of a directory on the daemon host
+      tags:
+      - fs
+  /api/v1/github/pat:
+    delete:
+      operationId: deleteGitHubPAT
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Remove the stored GitHub personal access token
+      tags:
+      - github
+    put:
+      operationId: putGitHubPAT
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutGitHubPATRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Store a GitHub personal access token locally
+      tags:
+      - github
+  /api/v1/github/repos:
+    get:
+      operationId: listGitHubRepos
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  items:
+                    $ref: '#/components/schemas/GitHubRepo'
+                  type: array
+                type: object
+          description: OK
+        "401":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unauthorized
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List repositories accessible with the stored GitHub token
+      tags:
+      - github
+  /api/v1/github/status:
+    get:
+      operationId: getGitHubStatus
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: boolean
+                type: object
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Check whether a GitHub personal access token is stored locally
+      tags:
+      - github
   /api/v1/identity:
     get:
       operationId: getIdentity
@@ -2046,7 +2195,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Start a worker task and ask the orchestrator to title it
+      summary: Start a worker task and refine its title in the background
       tags:
       - sessions
   /api/v1/projects:
@@ -2642,6 +2791,300 @@ paths:
       summary: Unpair this phone from the daemon, removing it from the roster
       tags:
       - push
+  /api/v1/reviews/{reviewId}/conversation:
+    get:
+      operationId: getReviewerConversation
+      parameters:
+      - description: Reviewer conversation identifier.
+        in: path
+        name: reviewId
+        required: true
+        schema:
+          description: Reviewer conversation identifier.
+          type: string
+      - description: Read items older than this conversation sequence. Omit for the
+          newest page.
+        in: query
+        name: beforeSequence
+        schema:
+          description: Read items older than this conversation sequence. Omit for
+            the newest page.
+          minimum: 1
+          type:
+          - "null"
+          - integer
+      - description: Maximum combined messages and activities to return. Defaults
+          to 200.
+        in: query
+        name: limit
+        schema:
+          description: Maximum combined messages and activities to return. Defaults
+            to 200.
+          maximum: 500
+          minimum: 1
+          type:
+          - "null"
+          - integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationSnapshotResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read a reviewer's durable Chat conversation
+      tags:
+      - conversations
+  /api/v1/reviews/{reviewId}/conversation/approvals/{requestId}/resolve:
+    post:
+      operationId: resolveReviewerConversationApproval
+      parameters:
+      - description: Reviewer conversation identifier.
+        in: path
+        name: reviewId
+        required: true
+        schema:
+          description: Reviewer conversation identifier.
+          type: string
+      - description: Provider approval request identifier. Zero is a legitimate value.
+        in: path
+        name: requestId
+        required: true
+        schema:
+          description: Provider approval request identifier. Zero is a legitimate
+            value.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveConversationApprovalRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Answer a pending approval in a reviewer conversation
+      tags:
+      - conversations
+  /api/v1/reviews/{reviewId}/conversation/inputs/{requestId}/resolve:
+    post:
+      operationId: resolveReviewerConversationInput
+      parameters:
+      - description: Reviewer conversation identifier.
+        in: path
+        name: reviewId
+        required: true
+        schema:
+          description: Reviewer conversation identifier.
+          type: string
+      - description: Provider approval request identifier. Zero is a legitimate value.
+        in: path
+        name: requestId
+        required: true
+        schema:
+          description: Provider approval request identifier. Zero is a legitimate
+            value.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveConversationInputRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Answer a structured reviewer input request
+      tags:
+      - conversations
+  /api/v1/reviews/{reviewId}/conversation/interrupt:
+    post:
+      operationId: interruptReviewerConversationTurn
+      parameters:
+      - description: Reviewer conversation identifier.
+        in: path
+        name: reviewId
+        required: true
+        schema:
+          description: Reviewer conversation identifier.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Cancel the in-flight reviewer turn
+      tags:
+      - conversations
+  /api/v1/reviews/{reviewId}/conversation/messages:
+    post:
+      operationId: sendReviewerConversationMessage
+      parameters:
+      - description: Reviewer conversation identifier.
+        in: path
+        name: reviewId
+        required: true
+        schema:
+          description: Reviewer conversation identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendConversationMessageRequest'
+        required: true
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendConversationMessageResponse'
+          description: Accepted
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Send a message to a Chat reviewer
+      tags:
+      - conversations
   /api/v1/reviews/{reviewSessionID}/activity:
     post:
       operationId: setReviewActivity
@@ -7708,12 +8151,37 @@ components:
         fetchedAt:
           format: date-time
           type: string
+        inputFingerprint:
+          type: string
+        lastSuccessAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        metadata:
+          additionalProperties:
+            type: string
+          type: object
         models:
           items:
             $ref: '#/components/schemas/AgentModelInfo'
           type: array
+        refreshError:
+          type: string
         refreshRecommended:
           type: boolean
+        refreshState:
+          enum:
+          - idle
+          - queued
+          - refreshing
+          - error
+          type: string
+        retryAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         selectionMode:
           enum:
           - catalog
@@ -9683,6 +10151,23 @@ components:
       required:
       - harness
       type: object
+    DomainReviewerSurface:
+      properties:
+        controllerError:
+          type: string
+        handleId:
+          type: string
+        harness:
+          type: string
+        mode:
+          type: string
+        reviewId:
+          type: string
+      required:
+      - mode
+      - reviewId
+      - harness
+      type: object
     EditConversationMessageRequest:
       properties:
         clientMessageId:
@@ -9756,7 +10241,6 @@ components:
         purpose:
           enum:
           - display
-          - settings
           - launch
           type: string
       required:
@@ -9833,6 +10317,42 @@ components:
       - ok
       - sessionId
       - session
+      type: object
+    FSEntry:
+      properties:
+        gitRepo:
+          description: True when the directory carries a .git entry (clone or worktree
+            checkout).
+          type: boolean
+        name:
+          description: Directory name.
+          type: string
+        path:
+          description: Absolute path of the directory on the daemon host.
+          type: string
+      required:
+      - name
+      - path
+      - gitRepo
+      type: object
+    GitHubRepo:
+      properties:
+        clone_url:
+          type: string
+        default_branch:
+          type: string
+        full_name:
+          type: string
+        name:
+          type: string
+        private:
+          type: boolean
+      required:
+      - name
+      - full_name
+      - private
+      - default_branch
+      - clone_url
       type: object
     GitHubRepositoryPreparation:
       properties:
@@ -10227,6 +10747,29 @@ components:
       required:
       - sessions
       type: object
+    ListDirsResponse:
+      properties:
+        entries:
+          description: Subdirectories, excluding dotted names.
+          items:
+            $ref: '#/components/schemas/FSEntry'
+          type: array
+        parent:
+          description: Absolute path of the listed directory's parent; equals path
+            at the filesystem root.
+          type: string
+        path:
+          description: Absolute path that was listed.
+          type: string
+        truncated:
+          description: True when the listing hit the entry cap and more subdirectories
+            exist.
+          type: boolean
+      required:
+      - path
+      - parent
+      - entries
+      type: object
     ListNotificationsResponse:
       properties:
         nextCursor:
@@ -10285,6 +10828,8 @@ components:
           type: string
         reviewerHarness:
           type: string
+        reviewerSurface:
+          $ref: '#/components/schemas/DomainReviewerSurface'
         reviews:
           items:
             $ref: '#/components/schemas/PRReviewState'
@@ -10951,6 +11496,19 @@ components:
       required:
       - createdAt
       - lastSeenAt
+      type: object
+    PutGitHubPATRequest:
+      properties:
+        expiresIn:
+          type: integer
+        pat:
+          type: string
+        refreshToken:
+          type: string
+        refreshTokenExpiresIn:
+          type: integer
+      required:
+      - pat
       type: object
     RegisterPushDeviceRequest:
       properties:
@@ -12506,6 +13064,8 @@ components:
           type: boolean
         reviewerHandleId:
           type: string
+        reviewerSurface:
+          $ref: '#/components/schemas/DomainReviewerSurface'
         reviews:
           items:
             $ref: '#/components/schemas/PRReviewState'
@@ -13102,8 +13662,12 @@ tags:
   name: mobile
 - description: Target-isolated desktop browser runtime (loopback only)
   name: browser
+- description: Read-only filesystem browsing for remote clients
+  name: fs
 - description: Local machine readiness checks the desktop app runs before showing
     the board
   name: system
 - description: Server-side unfurl of external links for the CSP-locked renderer
   name: link-preview
+- description: Local GitHub personal access token storage and repository listing
+  name: github

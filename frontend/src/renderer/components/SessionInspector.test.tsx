@@ -42,18 +42,6 @@ function postCallsFor(path: string) {
   return postMock.mock.calls.filter(([calledPath]) => calledPath === path);
 }
 
-function mockPostsWithResponse(response: unknown) {
-  postMock.mockImplementation(async (path: string) => {
-    if (path === "/api/v1/agents/readiness/ensure") {
-      const agents = ["claude-code", "codex", "opencode"].map((id) =>
-        agentReadiness(id),
-      );
-      return { data: { agents } };
-    }
-    return response;
-  });
-}
-
 function setRenderedOverflow(element: HTMLElement, overflowing: boolean) {
   Object.defineProperties(element, {
     clientHeight: { configurable: true, value: 64 },
@@ -300,7 +288,7 @@ beforeEach(() => {
     error: undefined,
     response: { status: 200 },
   });
-  mockPostsWithResponse({
+  postMock.mockResolvedValue({
     data: { ok: true, sessionId: "sess-1" },
     error: undefined,
   });
@@ -1550,6 +1538,25 @@ describe("SessionInspector Activity section", () => {
     },
   );
 
+  it("ignores stale failing CI from a merged PR when the open PR is passing", () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session(
+          [pr(5753, "open", { ci: "passing" }), pr(5754, "merged", { ci: "failing" })],
+          {
+            status: "working",
+            activity: { state: "idle", lastActivityAt: "2026-06-15T10:00:00Z" },
+          },
+        )}
+      />,
+    );
+
+    const activityRow = activitySection()
+      .getByText("Idle")
+      .closest("[data-testid='inspector-timeline-event']") as HTMLElement;
+    expect(within(activityRow).queryByText("CI Failed")).not.toBeInTheDocument();
+  });
+
   it("renders PR conflicts as an SCM state in the current Activity row", () => {
     renderWithQuery(
       <SessionInspector
@@ -1666,18 +1673,11 @@ describe("SessionInspector Activity section", () => {
     }
   });
 
-  it("surfaces project, repository, branch, and active agent context in the summary", async () => {
-    renderWithQuery(<SessionInspector session={session([], { branch: "feature/session" })} />);
+	it("keeps execution context out of the summary", () => {
+		renderWithQuery(<SessionInspector session={session([], { branch: "feature/session" })} />);
 
-    const context = await screen.findByTestId("execution-context");
-    await waitFor(() => expect(context).toHaveTextContent("feature/session"));
-    expect(within(context).getByText("Branch", { exact: true })).toBeInTheDocument();
-    expect(within(context).getByText("Default branch", { exact: true })).toBeInTheDocument();
-    expect(context).toHaveTextContent("main");
-    expect(context).toHaveTextContent("my-app");
-    expect(context).toHaveTextContent("/repo");
-    expect(context).toHaveTextContent("Claude");
-  });
+		expect(screen.queryByTestId("execution-context")).not.toBeInTheDocument();
+	});
 
   it("keeps workspace, PR, and SCM context rows in the Activity timeline", () => {
     renderWithQuery(
@@ -1990,6 +1990,33 @@ describe("SessionInspector summary reviews", () => {
       handleId: "reviewer-pane",
       harness: "codex",
     });
+  });
+
+  it("opens reviewer Chat when triggering a review from a Chat session", async () => {
+    mockCommonGets([], "", [reviewState(3, "needs_review")]);
+    postMock.mockResolvedValue({
+      response: { status: 201 },
+      data: {
+        reviewerHandleId: "reviewer-pane",
+        reviewerSurface: { mode: "chat", reviewId: "review-1", harness: "codex" },
+        reviews: [{ ...reviewState(3, "running"), latestRun: { ...approvedReview, status: "running", verdict: "", body: "" } }],
+      },
+    });
+    const onOpenReviewerTerminal = vi.fn();
+    const onOpenReviewerChat = vi.fn();
+
+    renderWithQuery(
+      <SessionInspector
+        onOpenReviewerTerminal={onOpenReviewerTerminal}
+        onOpenReviewerChat={onOpenReviewerChat}
+        session={session([pr(3, "open")], { mode: "chat" })}
+      />,
+    );
+    await openReviewsSection();
+    await userEvent.click(await screen.findByRole("button", { name: "Review latest commit" }));
+
+    await waitFor(() => expect(onOpenReviewerChat).toHaveBeenCalledWith("review-1"));
+    expect(onOpenReviewerTerminal).not.toHaveBeenCalled();
   });
 
   it("shows the worker-compatible default reviewer before a run exists", async () => {
@@ -2447,6 +2474,7 @@ describe("SessionInspector summary reviews", () => {
 
   it("opens an AO review in Browser and sends its summary to the worker", async () => {
     const reviewUrl = "https://github.com/acme/repo/pull/3#pullrequestreview-98765";
+    const onWorkerMessageSent = vi.fn();
     mockCommonGets([], "reviewer-pane", [
       {
         ...reviewState(3, "up_to_date", "abc123"),
@@ -2459,7 +2487,12 @@ describe("SessionInspector summary reviews", () => {
       },
     ]);
 
-    renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
+    renderWithQuery(
+      <SessionInspector
+        onWorkerMessageSent={onWorkerMessageSent}
+        session={session([pr(3, "open")])}
+      />,
+    );
     await openReviewsSection();
 
     await userEvent.click(await screen.findByRole("button", { name: "Review actions" }));
@@ -2487,6 +2520,7 @@ describe("SessionInspector summary reviews", () => {
       params: { path: { sessionId: "sess-1" } },
       body: { message: expect.stringContaining(`Review URL: ${reviewUrl}`) },
     });
+    expect(onWorkerMessageSent).toHaveBeenCalledOnce();
   });
 
   it("shows inline comments on their exact AO review pass without duplicating them externally", async () => {
@@ -3084,7 +3118,7 @@ describe("SessionInspector summary reviews", () => {
     mockCommonGets([], "reviewer-pane", [
       reviewState(3, "needs_review", "sha-1"),
     ]);
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       response: { status: 201 },
     });
@@ -3141,7 +3175,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3197,7 +3231,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3252,7 +3286,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3314,7 +3348,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3360,7 +3394,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3473,7 +3507,7 @@ describe("SessionInspector summary reviews", () => {
     mockCommonGets([], "reviewer-pane", [
       reviewState(3, "needs_review", "sha-1"),
     ]);
-    mockPostsWithResponse({
+    postMock.mockResolvedValue({
       data: { reviewerHandleId: "", reviews: [] },
       response: { status: 201 },
     });

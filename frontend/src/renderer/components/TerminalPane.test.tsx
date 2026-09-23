@@ -1043,7 +1043,8 @@ describe("terminal restore", () => {
 		try {
 			expect(await screen.findByRole("button", { name: "Restore session" })).toBeInTheDocument();
 			expect(screen.getByTestId("xterm")).toBeInTheDocument();
-			expect(screen.getByText("Terminal error: terminal handle missing")).toBeInTheDocument();
+			expect(screen.getByText("Terminal ended")).toBeInTheDocument();
+			expect(screen.queryByText("Terminal error: terminal handle missing")).not.toBeInTheDocument();
 		} finally {
 			view.restore();
 		}

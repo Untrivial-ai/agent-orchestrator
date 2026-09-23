@@ -14,6 +14,7 @@ import type {
 	CloudCpCancelTurnResponse,
 	CloudCpChatEventsQuery,
 	CloudCpChatEventsResponse,
+	CloudCpCoderTemplatesResponse,
 	CloudCpClientEvent,
 	CloudCpCreateOrganizationRequest,
 	CloudCpCreateOrganizationResponse,
@@ -29,6 +30,7 @@ import type {
 	CloudCpProjectResponse,
 	CloudCpProviderConnectionResponse,
 	CloudCpProviderConnectionsResponse,
+	CloudCpGitHubReposResponse,
 	CloudCpPutAgentConnectionRequest,
 	CloudCpPutGitHubPATRequest,
 	CloudCpSendMessageRequest,
@@ -136,6 +138,8 @@ export interface CloudCpClient {
 		options?: CloudCpMutationOptions,
 	): Promise<CloudCpSessionResponse>;
 	getSession(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
+	/** Lists the Coder templates the picker offers (empty when coder is unavailable/unentitled). */
+	listCoderTemplates(orgId: string, options?: CloudCpRequestOptions): Promise<CloudCpCoderTemplatesResponse>;
 	/** Lists the sessions an orchestrator spawned, with each child's pull requests. */
 	listSessionChildren(
 		orgId: string,
@@ -222,6 +226,7 @@ export interface CloudCpClient {
 	deleteAgentConnection(orgId: string, agent: CloudCpAgentProvider, options?: CloudCpRequestOptions): Promise<void>;
 	putGitHubPAT(body: CloudCpPutGitHubPATRequest, options?: CloudCpRequestOptions): Promise<CloudCpProviderConnectionResponse>;
 	deleteGitHubPAT(options?: CloudCpRequestOptions): Promise<void>;
+	listGitHubRepos(options?: CloudCpRequestOptions): Promise<CloudCpGitHubReposResponse>;
 	validateSavedRepositoryAccess(
 		body: CloudCpValidateRepositoryAccessRequest,
 		options?: CloudCpRequestOptions,
@@ -420,6 +425,8 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			}),
 		getSession: (orgId, sessionId, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
+		listCoderTemplates: (orgId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sandbox/coder/templates`, { signal: o?.signal }),
 		listSessionChildren: (orgId, sessionId, query, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/children`, {
 				query: { limit: query?.limit, cursor: query?.cursor },
@@ -511,6 +518,7 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			}),
 		putGitHubPAT: (body, o) => requestJson("PUT", "/me/github-pat", { body, signal: o?.signal }),
 		deleteGitHubPAT: (o) => requestVoid("DELETE", "/me/github-pat", { signal: o?.signal }),
+		listGitHubRepos: (o) => requestJson("GET", "/me/github/repos", { signal: o?.signal }),
 		validateSavedRepositoryAccess: (body, o) =>
 			requestJson("POST", "/me/github-pat/validate-saved-repository", { body, signal: o?.signal }),
 	};

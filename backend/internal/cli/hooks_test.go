@@ -795,6 +795,57 @@ func mustJSONString(t *testing.T, value string) string {
 	return string(b)
 }
 
+func TestHookPayloadHelpersTolerateUTF8BOM(t *testing.T) {
+	payload := append([]byte("\xef\xbb\xbf"), []byte(`{"session_id":"native-bom-1","tool_name":"Bash","tool_use_id":"toolu_1","launch_id":"launch-1","prompt":"do it","transcript_path":"/tmp/t.jsonl"}`)...)
+	if got := hookAgentSessionID(payload); got != "native-bom-1" {
+		t.Fatalf("hookAgentSessionID = %q, want native-bom-1", got)
+	}
+	if tool, useID := activityMeta(payload); tool != "Bash" || useID != "toolu_1" {
+		t.Fatalf("activityMeta = (%q, %q), want (Bash, toolu_1)", tool, useID)
+	}
+	if got := hookLaunchID(payload); got != "launch-1" {
+		t.Fatalf("hookLaunchID = %q, want launch-1", got)
+	}
+	facts := hookConversationFacts(domain.HarnessClaudeCode, "user-prompt-submit", payload)
+	if facts.LatestUserPrompt != "do it" || facts.TranscriptPath != "/tmp/t.jsonl" {
+		t.Fatalf("hookConversationFacts = %+v", facts)
+	}
+}
+
+func TestHookAgentSessionIDReadsClineTaskID(t *testing.T) {
+	if got := hookAgentSessionID([]byte(`{"taskId":"cline-task-abc123"}`)); got != "cline-task-abc123" {
+		t.Fatalf("hookAgentSessionID(taskId) = %q, want cline-task-abc123", got)
+	}
+	if got := hookAgentSessionID([]byte(`{"task_id":"cline-task-snake"}`)); got != "cline-task-snake" {
+		t.Fatalf("hookAgentSessionID(task_id) = %q, want cline-task-snake", got)
+	}
+	// Existing aliases keep precedence over the Cline task handle.
+	if got := hookAgentSessionID([]byte(`{"session_id":"sess-1","taskId":"cline-task-abc123"}`)); got != "sess-1" {
+		t.Fatalf("hookAgentSessionID precedence = %q, want sess-1", got)
+	}
+}
+
+func TestHooks_ClineSessionStartReportsTaskID(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(`{"taskId":"cline-task-abc123"}`),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "cline", "session-start")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var req setActivityAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v\nbody=%s", err, capture.body)
+	}
+	want := setActivityAPIRequest{State: "active", Event: "session-start", AgentSessionID: "cline-task-abc123"}
+	assertActivityRequest(t, req, want)
+}
+
 func TestHooks_SessionStartReportsNativeSessionIDWithoutActivity(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "ao-7")
 	cfg := setConfigEnv(t)

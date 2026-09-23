@@ -63,7 +63,7 @@ func (s *Service) EnsureReadiness(ctx context.Context, agentIDs []string, purpos
 			return Readiness{}, apierr.Invalid("UNKNOWN_AGENT_ID", "Unknown agent adapter: "+unsupported.id, map[string]any{"agentId": unsupported.id})
 		}
 		if !purpose.Valid() {
-			return Readiness{}, apierr.Invalid("INVALID_READINESS_PURPOSE", "Purpose must be display, settings, or launch", map[string]any{"purpose": purpose})
+			return Readiness{}, apierr.Invalid("INVALID_READINESS_PURPOSE", "Purpose must be display or launch", map[string]any{"purpose": purpose})
 		}
 		return Readiness{}, err
 	}
@@ -87,11 +87,13 @@ func (s *Service) InvalidateAgentInstallation(agentID string) {
 			invalidator.InvalidateBinaryResolution()
 		}
 	}
+	s.InvalidateModelCatalogs(agentID)
 }
 
 // InvalidateAgentAuthentication marks an agent's authentication observation stale.
 func (s *Service) InvalidateAgentAuthentication(agentID string) {
 	s.readiness.Invalidate(agentID, readinessInvalidateAuthentication)
+	s.InvalidateModelCatalogs(agentID)
 	if agentID == string(domain.HarnessCodex) && s.codexAccounts != nil {
 		if accountID := s.codexAccounts.activeAccountID(); accountID != "" {
 			s.codexAccounts.invalidate(accountID)

@@ -1219,6 +1219,11 @@ type ReviewSessionIDParam struct {
 	ID string `path:"reviewSessionID" description:"Reviewer session identifier, currently the per-harness review row id."`
 }
 
+// ReviewIDParam identifies a durable reviewer-owned conversation.
+type ReviewIDParam struct {
+	ReviewID string `path:"reviewId" description:"Reviewer conversation identifier."`
+}
+
 // SpawnOrchestratorRequest is the body of POST /api/v1/orchestrators.
 type SpawnOrchestratorRequest struct {
 	ProjectID domain.ProjectID `json:"projectId"`
@@ -1260,7 +1265,7 @@ type AgentReadinessResponse = agentsvc.Readiness
 // An omitted or empty agentIds list selects all supported harnesses.
 type EnsureAgentReadinessRequest struct {
 	AgentIDs []string                     `json:"agentIds,omitempty"`
-	Purpose  domain.AgentReadinessPurpose `json:"purpose" enum:"display,settings,launch"`
+	Purpose  domain.AgentReadinessPurpose `json:"purpose" enum:"display,launch"`
 }
 
 // CodexAccountsResponse is the controller-owned, redacted cached account view.
@@ -1722,6 +1727,26 @@ type ImportStatusResponse struct {
 // of the import run (counts + notes), reused verbatim from the import engine.
 type ImportRunResponse struct {
 	Report legacyimport.Report `json:"report"`
+}
+
+// ListDirsQuery is the query string accepted by GET /api/v1/fs/dirs.
+type ListDirsQuery struct {
+	Path string `query:"path,omitempty" description:"Absolute directory on the daemon host to list. When omitted, the daemon user's home directory."`
+}
+
+// FSEntry is one directory in a /api/v1/fs/dirs listing.
+type FSEntry struct {
+	Name    string `json:"name" description:"Directory name."`
+	Path    string `json:"path" description:"Absolute path of the directory on the daemon host."`
+	GitRepo bool   `json:"gitRepo" description:"True when the directory carries a .git entry (clone or worktree checkout)."`
+}
+
+// ListDirsResponse is the body of GET /api/v1/fs/dirs.
+type ListDirsResponse struct {
+	Path      string    `json:"path" description:"Absolute path that was listed."`
+	Parent    string    `json:"parent" description:"Absolute path of the listed directory's parent; equals path at the filesystem root."`
+	Entries   []FSEntry `json:"entries" description:"Subdirectories, excluding dotted names."`
+	Truncated bool      `json:"truncated,omitempty" description:"True when the listing hit the entry cap and more subdirectories exist."`
 }
 
 // DevImportProjectsRequest is the body of POST /api/v1/dev/import-projects.
