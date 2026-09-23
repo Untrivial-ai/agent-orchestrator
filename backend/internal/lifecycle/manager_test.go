@@ -853,17 +853,31 @@ func TestActivity_InvalidIsIgnored(t *testing.T) {
 
 func TestActivity_DelayedNeedsInputNotificationDoesNotPromoteIdle(t *testing.T) {
 	m, st, _ := newManager()
-	st.sessions["mer-1"] = working("mer-1")
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity:      domain.Activity{State: domain.ActivityActive, LastActivityAt: time.Now()},
+		FirstSignalAt: time.Now(),
+		Metadata: domain.SessionMetadata{
+			RuntimeLaunchID: "launch-1", AgentSessionID: "native-1", AgentSessionIDLaunchID: "launch-1",
+		},
+	}
+	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityActive, Event: "user-prompt-submit",
+		LaunchID: "launch-1", AgentSessionID: "native-1", LatestUserPrompt: "finish the task",
+		ProviderTurnID: "prompt-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
-		Valid: true, State: domain.ActivityIdle, Event: "stop",
+		Valid: true, State: domain.ActivityIdle, Event: "stop", LaunchID: "launch-1", AgentSessionID: "native-1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	before := st.sessions["mer-1"]
 
 	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
-		Valid: true, State: domain.ActivityWaitingInput, Event: "notification",
+		Valid: true, State: domain.ActivityWaitingInput, Event: "notification", LaunchID: "launch-1", AgentSessionID: "native-1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -876,12 +890,21 @@ func TestActivity_DelayedNeedsInputNotificationDoesNotPromoteIdle(t *testing.T) 
 	}
 }
 
-func TestActivity_NeedsInputNotificationDuringTurnStillPromotes(t *testing.T) {
+func TestActivity_NeedsInputNotificationForNewCheckpointPromotesFromIdle(t *testing.T) {
 	m, st, _ := newManager()
-	st.sessions["mer-1"] = working("mer-1")
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity:      domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now()},
+		FirstSignalAt: time.Now(),
+		Metadata: domain.SessionMetadata{
+			RuntimeLaunchID: "launch-1", AgentSessionID: "native-1", AgentSessionIDLaunchID: "launch-1",
+			LatestUserPrompt: "new turn", ConversationCheckpointState: domain.ConversationCheckpointPrompt,
+			ConversationCheckpointGeneration: "launch-1", ConversationCheckpointNativeID: "native-1",
+		},
+	}
 
 	if err := m.ApplyActivitySignal(ctx, "mer-1", ports.ActivitySignal{
-		Valid: true, State: domain.ActivityWaitingInput, Event: "notification",
+		Valid: true, State: domain.ActivityWaitingInput, Event: "notification", LaunchID: "launch-1", AgentSessionID: "native-1",
 	}); err != nil {
 		t.Fatal(err)
 	}
