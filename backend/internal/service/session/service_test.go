@@ -5245,3 +5245,168 @@ func TestSpawnTelemetryCarriesRequestID(t *testing.T) {
 		})
 	}
 }
+
+// TestSpawnOrchestratorNoCleanSendsContinuityNotice is the focused regression
+// test for #2501's second root cause: SpawnOrchestrator(clean=false) spawns a
+// fresh session whenever no active orchestrator exists. When the lack of an
+// active orchestrator is because a prior orchestrator was just flipped to
+// terminated by the reaper-probe race, the replacement must now carry a
+// durable continuity notice naming the predecessor so the user (and the new
+// agent) can recover context instead of starting cold with zero signal.
+func TestSpawnOrchestratorNoCleanSendsContinuityNotice(t *testing.T) {
+	base := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name            string
+		predecessor     *domain.SessionRecord // nil = no prior session
+		spawned         domain.SessionRecord
+		wantSent        bool
+		wantPredecessor domain.SessionID
+	}{
+		{
+			name:        "no predecessor spawns cold with no notice",
+			predecessor: nil,
+			spawned:     domain.SessionRecord{ID: "mer-new", ProjectID: "mer", Kind: domain.KindOrchestrator},
+			wantSent:    false,
+		},
+		{
+			name: "recent terminated predecessor triggers continuity notice",
+			predecessor: &domain.SessionRecord{
+				ID: "mer-old", ProjectID: "mer", Kind: domain.KindOrchestrator,
+				IsTerminated: true, UpdatedAt: base.Add(-3 * time.Minute),
+				Metadata: domain.SessionMetadata{NativeTranscriptPath: "/home/u/.ao/transcripts/mer-old.jsonl"},
+			},
+			spawned:         domain.SessionRecord{ID: "mer-new", ProjectID: "mer", Kind: domain.KindOrchestrator},
+			wantSent:        true,
+			wantPredecessor: "mer-old",
+		},
+		{
+			name: "ancient terminated predecessor is treated as cold start",
+			predecessor: &domain.SessionRecord{
+				ID: "mer-ancients", ProjectID: "mer", Kind: domain.KindOrchestrator,
+				IsTerminated: true, UpdatedAt: base.Add(-8 * time.Hour),
+			},
+			spawned:  domain.SessionRecord{ID: "mer-new", ProjectID: "mer", Kind: domain.KindOrchestrator},
+			wantSent: false,
+		},
+		{
+			name: "newest terminated predecessor is chosen over older ones",
+			predecessor: &domain.SessionRecord{
+				ID: "mer-newest", ProjectID: "mer", Kind: domain.KindOrchestrator,
+				IsTerminated: true, UpdatedAt: base.Add(-1 * time.Minute),
+			},
+			spawned:         domain.SessionRecord{ID: "mer-new", ProjectID: "mer", Kind: domain.KindOrchestrator},
+			wantSent:        true,
+			wantPredecessor: "mer-newest",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+			if tc.predecessor != nil {
+				st.sessions[tc.predecessor.ID] = *tc.predecessor
+				// Also add an older terminated sibling in the "newest chosen" case
+				// so we exercise sessionNewer on the terminated list.
+				if tc.name == "newest terminated predecessor is chosen over older ones" {
+					st.sessions["mer-older"] = domain.SessionRecord{
+						ID: "mer-older", ProjectID: "mer", Kind: domain.KindOrchestrator,
+						IsTerminated: true, UpdatedAt: base.Add(-25 * time.Minute),
+					}
+				}
+			}
+
+			fc := &fakeCommander{spawnRecord: tc.spawned}
+			svc := &Service{
+				manager: fc,
+				store:   st,
+				clock:   func() time.Time { return base },
+			}
+
+			got, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "")
+			if err != nil {
+				t.Fatalf("SpawnOrchestrator: %v", err)
+			}
+			if got.ID != tc.spawned.ID {
+				t.Fatalf("returned id = %q, want %q", got.ID, tc.spawned.ID)
+			}
+			if !fc.spawned {
+				t.Fatal("expected manager.Spawn to be called, it was not")
+			}
+			if tc.wantSent {
+				if len(fc.sent) == 0 {
+					t.Fatal("expected a continuity Send call, got none")
+				}
+				// Must be sent to the *new* session's id so the notice lands in its transcript.
+				if fc.sent[0] != tc.spawned.ID {
+					t.Fatalf("continuity notice sent to %q, want new session %q", fc.sent[0], tc.spawned.ID)
+				}
+				if len(fc.sentMessages) == 0 {
+					t.Fatal("expected sentMessages to contain the notice text")
+				}
+				msg := fc.sentMessages[0]
+				if !strings.Contains(msg, string(tc.wantPredecessor)) {
+					t.Fatalf("continuity notice must name predecessor %q, got msg = %q", tc.wantPredecessor, msg)
+				}
+				if tc.predecessor != nil && tc.predecessor.Metadata.NativeTranscriptPath != "" {
+					if !strings.Contains(msg, tc.predecessor.Metadata.NativeTranscriptPath) {
+						t.Fatalf("continuity notice must reference transcript path %q, got msg = %q", tc.predecessor.Metadata.NativeTranscriptPath, msg)
+					}
+				}
+			} else {
+				if len(fc.sent) != 0 {
+					t.Fatalf("expected zero Send calls, got sends to %v (messages: %q)", fc.sent, fc.sentMessages)
+				}
+			}
+		})
+	}
+}
+
+// TestSpawnOrchestratorNoCleanIdempotentDoesNotDoubleNotice guards against a
+// double-click or re-render race: when clean=false returns a freshly-spawned
+// session on the first call, a second immediate call must find that session
+// via activeOrchestrators and return it unchanged without sending a duplicate
+// continuity notice.
+func TestSpawnOrchestratorNoCleanIdempotentDoesNotDoubleNotice(t *testing.T) {
+	base := time.Date(2026, 8, 2, 12, 5, 0, 0, time.UTC)
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
+	st.sessions["mer-old"] = domain.SessionRecord{
+		ID: "mer-old", ProjectID: "mer", Kind: domain.KindOrchestrator,
+		IsTerminated: true, UpdatedAt: base.Add(-3 * time.Minute),
+	}
+	spawned := domain.SessionRecord{ID: "mer-new", ProjectID: "mer", Kind: domain.KindOrchestrator}
+	fc := &fakeCommander{spawnRecord: spawned}
+	svc := &Service{
+		manager: fc,
+		store:   st,
+		clock:   func() time.Time { return base },
+	}
+
+	first, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "")
+	if err != nil {
+		t.Fatalf("first SpawnOrchestrator: %v", err)
+	}
+	if first.ID != "mer-new" {
+		t.Fatalf("first returned id = %q, want mer-new", first.ID)
+	}
+	firstSends := len(fc.sent)
+	if firstSends != 1 {
+		t.Fatalf("expected exactly 1 Send call after first spawn, got %d", firstSends)
+	}
+	// Simulate the freshly-spawned session being present in the store so the
+	// second activeOrchestrators call finds it.
+	st.sessions[spawned.ID] = spawned
+
+	second, err := svc.SpawnOrchestrator(context.Background(), "mer", false, "")
+	if err != nil {
+		t.Fatalf("second SpawnOrchestrator: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("second call returned %q, want existing %q", second.ID, first.ID)
+	}
+	if len(fc.sent) != firstSends {
+		t.Fatalf("second call must not issue additional Send calls; got %d total (messages=%q)", len(fc.sent), fc.sentMessages)
+	}
+}
