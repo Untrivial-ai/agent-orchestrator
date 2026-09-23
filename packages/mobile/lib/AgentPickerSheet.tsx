@@ -46,6 +46,9 @@ export function AgentPickerSheet({
 			style={s.list}
 			data={agents}
 			keyExtractor={(a) => a.id}
+			// Keeps an Android drag with the list; without it the sheet's own pan
+			// takes the gesture and dismisses instead of scrolling back up.
+			nestedScrollEnabled
 			contentContainerStyle={SHEET_SCROLL_CONTENT}
 			ListEmptyComponent={
 				<Text style={s.empty}>No agents reported. Check that AO is running on your computer, then refresh.</Text>

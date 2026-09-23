@@ -60,6 +60,9 @@ export function ProjectPickerSheet({
 			style={s.list}
 			data={rows}
 			keyExtractor={(r) => r.id}
+			// Keeps an Android drag with the list; without it the sheet's own pan
+			// takes the gesture and dismisses instead of scrolling back up.
+			nestedScrollEnabled
 			contentContainerStyle={SHEET_SCROLL_CONTENT}
 			ListHeaderComponent={<SheetHeader title={title} subtitle={subtitle} />}
 			ListEmptyComponent={<Text style={s.empty}>No projects yet. Add one from the AO dashboard on your computer.</Text>}

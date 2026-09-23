@@ -16,6 +16,9 @@ export function ConversationMapSheet({ markers, onSelect }: { markers: Conversat
 		contentContainerStyle={styles.content}
 		data={markers}
 		keyExtractor={(item) => item.key}
+		// Keeps an Android drag with the list; without it the sheet's own pan
+		// takes the gesture and dismisses instead of scrolling back up.
+		nestedScrollEnabled
 		ListHeaderComponent={<>
 			<View style={styles.header}><SheetHeader title="Conversation history" subtitle={markers.length ? `${markers.length} ${markers.length === 1 ? "exchange" : "exchanges"}` : "Jump between the important moments in this conversation."} /></View>
 			{markers.length ? <View style={styles.sectionHeader}><Text style={styles.sectionTitle}>History</Text><View style={styles.sectionRule} /></View> : null}

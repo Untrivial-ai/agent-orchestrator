@@ -34,6 +34,9 @@ export function ComposerPickerSheet({
 			keyboardDismissMode="interactive"
 			data={choices}
 			keyExtractor={(choice) => choice.value}
+			// Keeps an Android drag with the list; without it the sheet's own pan
+			// takes the gesture and dismisses instead of scrolling back up.
+			nestedScrollEnabled
 			ListHeaderComponent={(
 				<>
 					<SheetHeader

@@ -27,6 +27,9 @@ export function ModelPickerSheet({ catalog, selected, loading, refreshing, error
 		style={styles.list}
 		data={rows}
 		keyExtractor={(item) => item.id || "__auto__"}
+		// Keeps an Android drag with the list; without it the sheet's own pan
+		// takes the gesture and dismisses instead of scrolling back up.
+		nestedScrollEnabled
 		contentContainerStyle={SHEET_SCROLL_CONTENT}
 		// The custom-model field lives in this list's footer, so the keyboard is up
 		// over the rows it is meant to help pick. Without this, Android's default
