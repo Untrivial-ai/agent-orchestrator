@@ -183,7 +183,7 @@ export function TaskComposer({
 					projectId: input.projectId,
 					kind: "worker",
 					harness: input.agent ?? "claude-code",
-					displayName: input.brief.trim().slice(0, 100) || (input.agent ?? "claude-code"),
+					displayName: input.brief.trim().slice(0, 80) || (input.agent ?? "claude-code"),
 					prompt: input.brief,
 					...(selectedProvider ? { provider: selectedProvider } : {}),
 				}, { idempotencyKey });

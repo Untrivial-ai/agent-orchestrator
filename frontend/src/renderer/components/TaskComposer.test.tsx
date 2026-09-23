@@ -265,6 +265,8 @@ describe("TaskComposer", () => {
 		);
 		h.createCloudSession.mockResolvedValue({ session: { id: "cloud-session-2" } });
 		const onCreated = vi.fn();
+		const prompt =
+			"Report the current branch and list the top-level repository files. Then wait for another instruction.";
 
 		render(
 			<Wrap>
@@ -275,7 +277,7 @@ describe("TaskComposer", () => {
 			"ao.renderer.cloud_preparation_failed",
 			{ project_id: "cloud-project" },
 		));
-		fireEvent.change(task(), { target: { value: "Keep this prompt" } });
+		fireEvent.change(task(), { target: { value: prompt } });
 		fireEvent.click(screen.getByRole("button", { name: "Start task" }));
 
 		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("cloud-session-2"));
@@ -283,7 +285,10 @@ describe("TaskComposer", () => {
 		expect(h.commitCloudPreparation).not.toHaveBeenCalled();
 		expect(h.createCloudSession).toHaveBeenCalledWith(
 			"org-1",
-			expect.objectContaining({ prompt: "Keep this prompt" }),
+			expect.objectContaining({
+				displayName: prompt.slice(0, 80),
+				prompt,
+			}),
 			expect.objectContaining({ idempotencyKey: expect.any(String) }),
 		);
 	});
