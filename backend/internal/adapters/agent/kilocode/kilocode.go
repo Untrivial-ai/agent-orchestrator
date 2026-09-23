@@ -205,6 +205,10 @@ type kilocodeInlineConfig struct {
 }
 
 type kilocodeAgentSettings struct {
+	// Mode is Kilo's agent kind ("primary"/"subagent"/"all"). The TUI selects
+	// AO's agent with --agent and works either way; the ACP path selects it
+	// with default_agent, which Kilo honors only for a primary agent.
+	Mode   string `json:"mode,omitempty"`
 	Prompt string `json:"prompt,omitempty"`
 	Model  string `json:"model,omitempty"`
 }

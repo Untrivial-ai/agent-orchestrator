@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	acpsdk "github.com/coder/acp-go-sdk"
-
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/nativeacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -28,7 +26,7 @@ func New(plugin nativeacp.Plugin, log *slog.Logger) ports.ChatDriver {
 		Harness:          domain.HarnessCursor,
 		Configure:        configure,
 		SessionOptions:   sessionOptions,
-		PermissionPolicy: permissionPolicy,
+		PermissionPolicy: acpdriver.StandardPermissionPolicy(ports.PermissionModeBypassPermissions),
 		ClientExtension:  handleExtension,
 		ClientExtensionAliases: map[string]string{
 			askQuestionMethod: "_cursor/ask_question",
@@ -118,42 +116,6 @@ func writeStandingRule(ctx context.Context, cfg acpdriver.LaunchConfig) (string,
 		return "", err
 	}
 	return pluginDir, nil
-}
-
-func permissionPolicy(
-	mode ports.PermissionMode,
-	params acpsdk.RequestPermissionRequest,
-) (acpsdk.PermissionOptionId, bool) {
-	mode = ports.NormalizePermissionMode(mode)
-	if mode == ports.PermissionModeAcceptEdits {
-		kind := acpsdk.ToolKind("")
-		if params.ToolCall.Kind != nil {
-			kind = *params.ToolCall.Kind
-		}
-		if kind != acpsdk.ToolKindEdit && kind != acpsdk.ToolKindDelete && kind != acpsdk.ToolKindMove {
-			return "", false
-		}
-		return permissionOption(params.Options, acpsdk.PermissionOptionKindAllowOnce)
-	}
-	if mode == ports.PermissionModeBypassPermissions {
-		if id, ok := permissionOption(params.Options, acpsdk.PermissionOptionKindAllowAlways); ok {
-			return id, true
-		}
-		return permissionOption(params.Options, acpsdk.PermissionOptionKindAllowOnce)
-	}
-	return "", false
-}
-
-func permissionOption(
-	options []acpsdk.PermissionOption,
-	kind acpsdk.PermissionOptionKind,
-) (acpsdk.PermissionOptionId, bool) {
-	for _, option := range options {
-		if option.Kind == kind {
-			return option.OptionId, true
-		}
-	}
-	return "", false
 }
 
 func sessionOptions(settings ports.ChatTurnSettings) []acpdriver.SessionOption {

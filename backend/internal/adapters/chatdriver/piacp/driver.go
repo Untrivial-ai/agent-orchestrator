@@ -102,27 +102,25 @@ func cloneEnv(in map[string]string) map[string]string {
 	return out
 }
 
+// bindingName names this binding's session-private prompt directory.
+const bindingName = "pi-acp"
+
 func instructionDir(cfg acpdriver.LaunchConfig) string {
-	return filepath.Join(cfg.DataDir, "prompts", string(cfg.SessionID), "pi-acp")
+	return acpdriver.SessionPromptDir(cfg, bindingName)
 }
 
 func prepareStandingInstructions(ctx context.Context, cfg acpdriver.LaunchConfig) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	if strings.TrimSpace(cfg.SystemPrompt) == "" {
 		return nil
 	}
-	dir := instructionDir(cfg)
-	if err := os.MkdirAll(filepath.Join(dir, "agent"), 0o700); err != nil {
-		return fmt.Errorf("prepare Pi ACP instructions: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
+	if _, err := acpdriver.WriteSessionPrompt(
+		ctx, cfg, bindingName, "AGENTS.md", cfg.SystemPrompt); err != nil {
 		return err
 	}
-	content := strings.TrimRight(cfg.SystemPrompt, "\n") + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(content), 0o600); err != nil {
-		return fmt.Errorf("write Pi ACP instructions: %w", err)
+	// Pi's resource manifest names an agent directory alongside the generated
+	// AGENTS.md; it stays empty unless the user adds agents of their own.
+	if err := os.MkdirAll(filepath.Join(instructionDir(cfg), "agent"), 0o700); err != nil {
+		return fmt.Errorf("prepare Pi ACP agent directory: %w", err)
 	}
 	return nil
 }

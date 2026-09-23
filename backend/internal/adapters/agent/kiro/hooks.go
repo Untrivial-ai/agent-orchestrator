@@ -32,6 +32,11 @@ const (
 	kiroAgentDescription = "Agent Orchestrator session instructions"
 )
 
+// AgentName is the workspace-local custom agent AO installs for Kiro sessions.
+// TUI launches select it with `chat --agent`; Chat launches select the same
+// agent with `acp --agent`, so both surfaces share AO's standing instructions.
+const AgentName = kiroAgentName
+
 // kiroHookFile is the on-disk shape of .kiro/agents/ao.json. It is used by
 // tests to decode the written file. Kiro hooks are a map of camelCase event
 // name to a flat array of {matcher?, command} entries.
@@ -112,6 +117,34 @@ func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfi
 		return fmt.Errorf("kiro.GetAgentHooks: gitignore: %w", err)
 	}
 	return nil
+}
+
+// PrepareACPAgent installs the workspace-local custom agent selected by
+// `kiro-cli acp --agent ao`. Chat sessions call this immediately before launch;
+// unlike TUI sessions, they do not run GetAgentHooks during workspace setup.
+func PrepareACPAgent(ctx context.Context, workspacePath, systemPrompt string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(workspacePath) == "" {
+		return errors.New("kiro: workspace path is required for ACP agent")
+	}
+
+	agentPath := kiroAgentPath(workspacePath)
+	topLevel, rawHooks, err := readKiroHooks(agentPath)
+	if err != nil {
+		return fmt.Errorf("kiro: prepare ACP agent: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := writeKiroHooks(agentPath, topLevel, rawHooks, systemPrompt, "", ports.AgentConfig{}); err != nil {
+		return fmt.Errorf("kiro: prepare ACP agent: %w", err)
+	}
+	if err := hookutil.EnsureWorkspaceGitignore(filepath.Dir(agentPath), kiroAgentFileName); err != nil {
+		return fmt.Errorf("kiro: gitignore ACP agent: %w", err)
+	}
+	return ctx.Err()
 }
 
 // UninstallHooks removes AO's Kiro hooks from the workspace-local
