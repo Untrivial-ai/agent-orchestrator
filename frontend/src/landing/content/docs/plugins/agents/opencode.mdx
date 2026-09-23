@@ -12,4 +12,10 @@ ao spawn --project my-app --name opencode-task --agent opencode --mode chat
 
 OpenCode can run as its native Terminal UI or through its native ACP interface in structured Chat. Chat history is persisted by AO as a durable, paged conversation projection while provider conversation identity is retained for continuity.
 
+AO's approval choices map onto what OpenCode itself does, so a session behaves the way the same session would outside AO. **Default approvals** adds no rules and leaves your configuration to decide. **Accept edits** approves file changes, the one behaviour OpenCode has no mode for. **Auto-approve** is OpenCode's `--auto`: everything that is not explicitly denied runs, including the out-of-worktree and repeat-loop guards it otherwise asks about. **Bypass permissions** is `permission: "allow"`, its own full-access setting, and the only mode that also passes explicit denies.
+
+Your own policy stays authoritative in every mode but Bypass, wherever you wrote it. AO never rewrites your permission rules for Accept edits or Auto: in the Terminal UI, Auto is the provider's `--auto` flag, and in Chat, where there are no flags, AO answers each permission request the way that flag does. A tool you denied never raises a request, so it stays denied whether the rule lives in your global config, the repository, a `.opencode` directory, or settings your organisation manages.
+
+The Chat picker switches between AO's agents, so a change applies immediately in either direction, including back to a stricter mode.
+
 OpenCode is also a shipped reviewer harness. Reviewer configuration is independent from the worker harness; inspect project settings and `ao review --help` for the current review workflow.

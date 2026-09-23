@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"database/sql"
 	"fmt"
 	"testing"
 	"testing/fstest"
@@ -15,7 +14,6 @@ import (
 )
 
 func TestMigratePRReviewPartialUpgrade(t *testing.T) {
-	fixture := migrationFixture(t, 122)
 	for _, tt := range []struct {
 		name          string
 		baseVersion   int64
@@ -30,14 +28,8 @@ func TestMigratePRReviewPartialUpgrade(t *testing.T) {
 		{name: "burned_130_without_column", baseVersion: 129, burned130: true, wantPartial: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			dataDir := fixture(t)
-			db, err := sql.Open("sqlite", databaseURI(dataDir)+pragmas)
-			if err != nil {
-				t.Fatal(err)
-			}
-			db.SetMaxOpenConns(1)
-			t.Cleanup(func() { _ = db.Close() })
-			upTo(t, db, tt.baseVersion)
+			dataDir := t.TempDir()
+			db := openMigratedDatabaseCopyAt(t, dataDir, tt.baseVersion, pragmas)
 			if tt.legacyVersion != 0 {
 				// Reproduce the migration actually shipped in intermediate PR
 				// builds, including its applied Goose version and FALSE default.

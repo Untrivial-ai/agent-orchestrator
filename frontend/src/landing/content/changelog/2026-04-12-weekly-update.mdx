@@ -1,0 +1,66 @@
+---
+title: "Cursor support, prompt-driven sessions, and a lighter dashboard"
+description: "Cursor joined the agent catalog, sessions could start from a prompt alone, and the dashboard shipped far less JavaScript."
+date: "2026-04-12"
+rangeStart: "2026-04-06"
+rangeEnd: "2026-04-12"
+historical: true
+---
+
+
+## Cursor joins the supported agent catalog <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1076" />
+
+Cursor joined the supported agent catalog with the same launch and session controls available to other agents.
+
+## Start a session directly from a prompt <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1069" />
+
+A session can start directly from a prompt even when there is no tracker issue to attach.
+
+## A ninety-percent smaller dashboard download <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/928" />
+
+The dashboard's initial JavaScript payload was reduced by roughly ninety percent for a much faster first load.
+
+## Improvements
+
+### Terminal
+
+- **Single-socket — multiplex terminals + sessions over one WebSocket** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/887" />
+
+### Agents
+
+- **Stable session titles via pinnedSummary metadata** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/946" />
+- **Add JSON output to ao session ls** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/969" />
+- **Hide orchestrator sessions from ao session ls by default** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1090" />
+
+
+---
+
+## Bug fixes
+
+### Pull requests
+
+- **Reduce GitHub API rate limiting from batch enrichment bypass** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/906" />
+- **Cross-platform process management (PR 2/6)** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1028" />
+- **Platform-aware shell for postCreate, script-runner, symlinks (PR 4/6)** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1032" />
+
+### Agents
+
+- **Print session URL instead of tmux attach in ao start** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/971" />
+- **Restore done/terminated sessions column on kanban board** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/934" />
+- **Ao start navigates to session page instead of orchestrator selection** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/958" />
+- **Agent isProcessRunning PID check for process runtime (PR 3/6)** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1031" />
+
+### Product
+
+- **Resolve notifier aliases in lifecycle routing** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/967" />
+
+### Terminal
+
+- **Derive activity from runtime probe, not terminal status** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1112" />
+- **Display PR details card above terminal in session detail** <PRBadge url="https://github.com/Untrivial-ai/agent-orchestrator/pull/1026" />
+
+
+## Learn more
+
+- [Read the documentation](/docs)
+- [View detailed releases on GitHub](https://github.com/Untrivial-ai/agent-orchestrator/releases)

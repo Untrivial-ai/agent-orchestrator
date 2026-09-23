@@ -4,12 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "changelog:draft": "node scripts/changelog/draft.mjs",
+    "changelog:backfill": "node scripts/changelog/backfill.mjs",
+    "changelog:test": "node --test scripts/changelog/changelog-core-tests.mjs",
+    "changelog:ui-test": "node --test scripts/changelog/ui-consistency-tests.mjs",
+    "changelog:validate": "node scripts/changelog/validate.mjs",
     "icons:generate": "node scripts/generate-favicons.mjs",
     "icons:check": "node scripts/generate-favicons.mjs --check",
     "dev": "next dev",
     "build": "next build",
     "postbuild": "node scripts/generate-markdown-twins.mjs",
-    "start": "next start"
+    "start": "next start",
+    "images:optimize": "node scripts/optimize-images.mjs"
   },
   "workspaces": [
     "packages/*"
@@ -26,7 +32,6 @@
     "@t3-oss/env-nextjs": "0.13.11",
     "@xterm/xterm": "^6.0.0",
     "clsx": "^2.1.1",
-    "framer-motion": "12.38.0",
     "geist": "1.7.0",
     "gray-matter": "4.0.3",
     "lucide-react": "0.563.0",
@@ -59,6 +64,7 @@
     "cheerio": "1.2.0",
     "node-html-markdown": "2.0.0",
     "sharp": "0.34.5",
+    "svgo": "^4.1.0",
     "tailwindcss": "4.2.2",
     "three": "^0.181.2",
     "typescript": "6.0.3"

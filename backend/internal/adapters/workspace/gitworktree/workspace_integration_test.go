@@ -158,6 +158,38 @@ func TestWorkspaceIntegrationRestoreExistingBranchDoesNotResolveDefault(t *testi
 	}
 }
 
+// TestWorkspaceIntegrationEnablesPerWorktreeConfig verifies the isolation
+// prerequisite for worker instructions: a setting written with Git's explicit
+// --worktree scope is visible only in the linked session worktree, not the
+// human checkout's shared config.
+func TestWorkspaceIntegrationEnablesPerWorktreeConfig(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, tmp)
+	root := filepath.Join(tmp, "managed")
+	ws, err := New(Options{Binary: git, ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	info, err := ws.Create(context.Background(), ports.WorkspaceConfig{ProjectID: "proj", SessionID: "sess", Branch: "feature/config"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer func() { _ = ws.Destroy(context.Background(), info) }()
+
+	if got := strings.TrimSpace(string(outputGit(t, git, repo, "config", "--get", "extensions.worktreeConfig"))); got != "true" {
+		t.Fatalf("extensions.worktreeConfig = %q, want true", got)
+	}
+	runGit(t, git, info.Path, "config", "--worktree", "ao.worker-setting", "session-only")
+	if got := strings.TrimSpace(string(outputGit(t, git, info.Path, "config", "--get", "ao.worker-setting"))); got != "session-only" {
+		t.Fatalf("worktree setting = %q, want session-only", got)
+	}
+	if _, err := exec.Command(git, "-C", repo, "config", "--get", "ao.worker-setting").Output(); err == nil {
+		t.Fatal("worktree-scoped setting leaked into the human checkout")
+	}
+}
+
 func TestWorkspaceIntegrationDestroyRefusesLockedWorktree(t *testing.T) {
 	git := requireGit(t)
 	tmp := t.TempDir()
@@ -1220,6 +1252,15 @@ func gitOutput(t *testing.T, git, dir string, args ...string) string {
 func runGit(t *testing.T, git, dir string, args ...string) {
 	t.Helper()
 	run(t, git, append([]string{"-C", dir}, args...)...)
+}
+
+func outputGit(t *testing.T, git, dir string, args ...string) []byte {
+	t.Helper()
+	out, err := exec.Command(git, append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s -C %s %s: %v\n%s", git, dir, strings.Join(args, " "), err, out)
+	}
+	return out
 }
 
 func run(t *testing.T, binary string, args ...string) {

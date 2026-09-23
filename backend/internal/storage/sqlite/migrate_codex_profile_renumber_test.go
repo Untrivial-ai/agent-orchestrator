@@ -3,7 +3,6 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -12,14 +11,7 @@ import (
 )
 
 func TestMigrateRepairsRenumberedCodexProfileHistory(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 116)
+	db := openMigratedDatabaseCopy(t, 116)
 	applyLegacyCodexProfileMigrations(t, db, []legacyCodexProfileMigration{
 		{version: 117, canonicalPath: "migrations/0122_drop_agent_inventory_cache.sql", legacyName: "drop_agent_inventory_cache.sql"},
 	})

@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../icons";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 import { MicKey } from "../voice/MicKey";
 import type { VoiceMode, VoiceState } from "../voice/types";
@@ -6,6 +6,7 @@ import { useTheme, useThemedStyles, useThemeState } from "../ThemeProvider";
 import type { Theme } from "../theme";
 import { haptics } from "../haptics";
 import type { SendTarget } from "./sendRoute";
+import { iconSize, press, space, type } from "../tokens";
 
 // One field, one send button. The normal route sends a message to the agent; the
 // terminal route is an explicit escape hatch for prompts that need a literal
@@ -47,11 +48,11 @@ export function Composer({
 					style={styles.input}
 					value={value}
 					onChangeText={onChangeText}
-					placeholder={target === "terminal" ? "Send to terminal..." : "Message the agent..."}
+					placeholder={target === "terminal" ? "Send to terminal…" : "Message the agent…"}
 					placeholderTextColor={t.textFaint}
 					multiline
 					keyboardAppearance={scheme}
-					selectionColor={t.blue}
+					selectionColor={t.accent}
 					// No autoFocus: the bar is always mounted now, so focusing on mount
 					// would pop the keyboard over the terminal every time the screen opens.
 				/>
@@ -64,13 +65,13 @@ export function Composer({
 					style={({ pressed }) => [
 						styles.routeToggle,
 						target === "terminal" && styles.routeToggleActive,
-						pressed && { opacity: 0.7 },
+						pressed && { opacity: press.opacity },
 					]}
 				>
 					<Feather
 						name={target === "terminal" ? "message-square" : "terminal"}
-						size={15}
-						color={target === "terminal" ? t.textTertiary : t.blue}
+						size={iconSize.sm}
+						color={target === "terminal" ? t.textTertiary : t.accent}
 					/>
 				</Pressable> : null}
 				{/* Only offered while there is a keyboard to dismiss, instead of a
@@ -81,9 +82,9 @@ export function Composer({
 						accessibilityLabel="Hide keyboard"
 						onPress={() => { haptics.tap(); onDismissKeyboard(); }}
 						hitSlop={8}
-						style={({ pressed }) => [styles.dismiss, pressed && { opacity: 0.6 }]}
+						style={({ pressed }) => [styles.dismiss, pressed && { opacity: press.opacity }]}
 					>
-						<Feather name="chevron-down" size={16} color={t.textTertiary} />
+						<Feather name="chevron-down" size={iconSize.sm} color={t.textTertiary} />
 					</Pressable>
 				) : null}
 			</View>
@@ -95,9 +96,9 @@ export function Composer({
 				accessibilityLabel="Send"
 				disabled={!canSend}
 				onPress={() => { haptics.tap(); onSend(); }}
-				style={({ pressed }) => [styles.send, !canSend && { opacity: 0.35 }, pressed && { opacity: 0.8 }]}
+				style={({ pressed }) => [styles.send, !canSend && { opacity: 0.35 }, pressed && { opacity: press.opacity }]}
 			>
-				<Feather name="send" size={17} color={t.onAccent} />
+				<Feather name="send" size={iconSize.md} color={t.onAccent} />
 			</Pressable>
 		</View>
 	);
@@ -110,10 +111,10 @@ const makeStyles = (t: Theme) =>
 	bar: {
 		flexDirection: "row",
 		alignItems: "flex-end",
-		gap: 7,
-		paddingHorizontal: 8,
-		paddingTop: 2,
-		paddingBottom: 7,
+		gap: space.xs,
+		paddingHorizontal: space.sm,
+		paddingTop: space.hair,
+		paddingBottom: space.xs,
 	},
 	field: {
 		flex: 1,
@@ -123,19 +124,19 @@ const makeStyles = (t: Theme) =>
 		// Caps growth at roughly four lines so a long prompt can't swallow the
 		// terminal above it.
 		maxHeight: 108,
-		borderRadius: 11,
+		borderRadius: 12, borderCurve: "continuous",
 		borderWidth: 1,
 		borderColor: t.borderDefault,
 		backgroundColor: t.bgElevated,
-		paddingLeft: 11,
-		paddingRight: 4,
+		paddingLeft: space.md,
+		paddingRight: space.xxs,
 	},
-	input: {
+	input: { fontFamily: "Geist_400Regular",
 		flex: 1,
 		color: t.textPrimary,
-		fontSize: 15,
-		paddingTop: 10,
-		paddingBottom: 10,
+		fontSize: type.subheadline.fontSize,
+		paddingTop: space.sm,
+		paddingBottom: space.sm,
 		maxHeight: 106,
 	},
 	dismiss: { width: 28, height: CONTROL_SIZE, alignItems: "center", justifyContent: "center" },
@@ -144,16 +145,16 @@ const makeStyles = (t: Theme) =>
 		height: CONTROL_SIZE,
 		alignItems: "center",
 		justifyContent: "center",
-		borderRadius: 8,
+		borderRadius: 8, borderCurve: "continuous",
 	},
-	routeToggleActive: { backgroundColor: t.tintBlue },
+	routeToggleActive: { backgroundColor: t.accentTint },
 	// Rounded square at the same radius as the mic, so the two read as a pair and
 	// match the field beside them rather than being the only circles in the dock.
 	send: {
 		width: CONTROL_SIZE,
 		height: CONTROL_SIZE,
-		borderRadius: 12,
-		backgroundColor: t.blue,
+		borderRadius: 12, borderCurve: "continuous",
+		backgroundColor: t.accent,
 		alignItems: "center",
 		justifyContent: "center",
 	},

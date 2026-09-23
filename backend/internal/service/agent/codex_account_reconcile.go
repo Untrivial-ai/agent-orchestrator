@@ -334,7 +334,7 @@ func (m *codexAccountManager) reconcileGlobalInner(ctx context.Context) error {
 	if err := m.catalog.refresh(); err != nil {
 		return deviceReconciliationStorageFailure(err)
 	}
-	globalCredential, admitted, credentialErr := readCodexFileState(m.globalCredentialPath(), true)
+	globalCredential, admitted, credentialErr := readCodexDeviceFileState(m.globalCredentialPath(), true)
 	if credentialErr != nil {
 		return deviceReconciliationStorageFailure(credentialErr)
 	}
@@ -358,7 +358,7 @@ func (m *codexAccountManager) reconcileGlobalInner(ctx context.Context) error {
 	if match == codexCredentialMatchNone && identityErr != nil {
 		return deviceReconciliationFailure("global_credential_invalid", false)
 	}
-	latestGlobal, latestState, latestErr := readCodexFileState(m.globalCredentialPath(), false)
+	latestGlobal, latestState, latestErr := readCodexDeviceFileState(m.globalCredentialPath(), false)
 	if latestErr != nil || !sameCodexFileState(admitted, latestState) || !bytes.Equal(globalCredential, latestGlobal) {
 		return deviceReconciliationFailure("global_account_changed", true)
 	}
@@ -395,7 +395,7 @@ func (m *codexAccountManager) reconcileGlobalInner(ctx context.Context) error {
 		discardImport()
 		return deviceReconciliationStorageFailure(err)
 	}
-	finalGlobal, finalState, finalErr := readCodexFileState(m.globalCredentialPath(), false)
+	finalGlobal, finalState, finalErr := readCodexDeviceFileState(m.globalCredentialPath(), false)
 	if finalErr != nil || !sameCodexFileState(admitted, finalState) || !bytes.Equal(finalGlobal, globalCredential) {
 		discardImport()
 		return deviceReconciliationFailure("global_account_changed", true)

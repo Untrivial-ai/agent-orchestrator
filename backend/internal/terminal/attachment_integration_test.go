@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -49,6 +50,72 @@ func TestAttachmentStreamsRealTmuxPane(t *testing.T) {
 	eventually(t, 5*time.Second, func() bool { return strings.Contains(got.string(), "AO_MARKER_42") })
 
 	// Kill the session: the attachment must observe it as gone and not re-attach.
+	if err := rt.Destroy(context.Background(), handle); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	eventually(t, 5*time.Second, func() bool { return a.isExited() })
+}
+
+// TestAttachmentExitsOnDestroyUnderDetachOnDestroyOff is the regression for
+// issue #4223. A user tmux.conf with `set -g detach-on-destroy off` also
+// governs AO's tmux server, so destroying an AO session used to reparent AO's
+// attach client onto one of the user's own sessions instead of exiting: the
+// embedded terminal kept streaming and typed keystrokes leaked into that
+// session. The test starts an isolated tmux server with that config, adds a
+// decoy "user" session for the client to hop onto, and asserts the attachment
+// still observes the destroy as an exit.
+func TestAttachmentExitsOnDestroyUnderDetachOnDestroyOff(t *testing.T) {
+	systemTmux, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux unavailable")
+	}
+	// See TestAttachmentReattachAdoptsNewSize: tmux needs a usable TERM to attach.
+	t.Setenv("TERM", "xterm-256color")
+
+	// tmux reads its config only when the server starts, so route every
+	// invocation (Create, Attach, Destroy) through a wrapper that passes -f on
+	// a private socket: the user's real server and config stay untouched.
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "tmux.conf")
+	if err := os.WriteFile(conf, []byte("set -g detach-on-destroy off\n"), 0o600); err != nil {
+		t.Fatalf("write tmux.conf: %v", err)
+	}
+	wrapper := filepath.Join(dir, "tmux")
+	script := "#!/bin/sh\nexec '" + systemTmux + "' -f '" + conf + "' \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatalf("write tmux wrapper: %v", err)
+	}
+	socket := "ao-term-dod-it-" + strconv.Itoa(os.Getpid())
+	t.Cleanup(func() { _ = exec.Command(wrapper, "-L", socket, "kill-server").Run() })
+
+	// The decoy is the user's own session: with detach-on-destroy off, tmux
+	// would move AO's client here when the AO session dies.
+	decoy := "user-session-" + strconv.Itoa(os.Getpid())
+	if out, err := exec.Command(wrapper, "-L", socket, "new-session", "-d", "-s", decoy, "sh", "-c", "sleep 300").CombinedOutput(); err != nil {
+		t.Fatalf("create decoy session: %v: %s", err, out)
+	}
+
+	name := "ao-term-dod-" + strconv.Itoa(os.Getpid())
+	rt := tmux.New(tmux.Options{Binary: wrapper, LegacyBinary: wrapper, SocketName: socket, Timeout: 10 * time.Second})
+	handle, err := rt.Create(context.Background(), ports.RuntimeConfig{
+		SessionID:     domain.SessionID(name),
+		WorkspacePath: t.TempDir(),
+		Argv:          []string{"sh", "-lc", "printf AO_READY\\n; exec sh -i"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Destroy(context.Background(), handle) })
+
+	var got safeBytes
+	a := newAttachment(name, handle, rt, nil, got.add, nil, testLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.run(ctx)
+	eventually(t, 5*time.Second, func() bool { return strings.Contains(got.string(), "AO_READY") })
+
+	// Destroying the AO session must end the attach client rather than hop it
+	// onto the decoy, so the attachment sees an exit and stops.
 	if err := rt.Destroy(context.Background(), handle); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}

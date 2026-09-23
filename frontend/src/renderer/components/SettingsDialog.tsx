@@ -1,8 +1,7 @@
 import { Bot, GitBranch, Inbox, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { FocusScope } from "@radix-ui/react-focus-scope";
+import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useCloudGate } from "../hooks/useCloudGate";
 import { ensureCodexAccounts } from "../hooks/useCodexAccountsQuery";
@@ -29,9 +28,19 @@ function initialProjectSaveState(): ProjectSettingsSaveState {
 }
 
 export function SettingsDialog() {
+	const settingsModal = useUiStore((state) => state.settingsModal);
+	const projectSettings = settingsModal?.scope === "project" ? settingsModal : settingsModal?.returnTo;
+	return (
+		<>
+			{projectSettings && <SettingsDialogLayer key={projectSettings.projectId} settingsModal={projectSettings} />}
+			{settingsModal?.scope === "global" && <SettingsDialogLayer key="global" settingsModal={settingsModal} />}
+		</>
+	);
+}
+
+function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const settingsModal = useUiStore((state) => state.settingsModal);
 	const closeSettings = useUiStore((state) => state.closeSettings);
 	// Reads the daemon settings the dialog tree already queries; no extra fetch.
 	const { cloudEnabled } = useCloudGate();
@@ -59,6 +68,7 @@ export function SettingsDialog() {
 
 	const isProjectSettings = displaySettings?.scope === "project";
 	const [activeSection, setActiveSection] = useState<GlobalSettingsSection>("general");
+	const [focusAgentId, setFocusAgentId] = useState<string>();
 	const [activeProjectSection, setActiveProjectSection] = useState<ProjectSettingsSection>("general");
 	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>(initialProjectSaveState);
 	const globalSettingsWasOpen = useRef(false);
@@ -71,13 +81,14 @@ export function SettingsDialog() {
 		if (isProjectSettings && (projectSaveState.phase === "pending" || projectSaveState.phase === "saving")) return;
 		closeSettings();
 	};
-	const requestCloseRef = useRef(closeSettingsDialog);
-	requestCloseRef.current = closeSettingsDialog;
 	const closeButtonRef = useRef<HTMLButtonElement>(null);
-	const open = settingsModal !== null;
+	const contentRef = useRef<HTMLDivElement>(null);
+	const returnFocusRef = useRef(document.activeElement as HTMLElement | null);
+	const returnDialogRef = useRef(returnFocusRef.current?.closest<HTMLElement>('[role="dialog"]') ?? null);
+	const hasAgentFocusTarget = settingsModal.scope === "global" && Boolean(settingsModal.focusAgentId);
 	useEffect(() => {
-		if (!open) return;
-		// FocusScope contains focus immediately. Move visible focus after the
+		if (hasAgentFocusTarget) return;
+		// The modal contains focus immediately. Move visible focus after the
 		// first paint because focus() forces style resolution.
 		let focusTimer = 0;
 		const focusFrame = requestAnimationFrame(() => {
@@ -87,7 +98,7 @@ export function SettingsDialog() {
 			cancelAnimationFrame(focusFrame);
 			window.clearTimeout(focusTimer);
 		};
-	}, [open]);
+	}, [hasAgentFocusTarget]);
 
 	useEffect(() => {
 		if (settingsModal?.scope === "global") {
@@ -98,6 +109,10 @@ export function SettingsDialog() {
 			setProjectSaveState(initialProjectSaveState());
 		}
 	}, [cloudEnabled, settingsModal]);
+
+	useEffect(() => {
+		setFocusAgentId(settingsModal?.scope === "global" ? settingsModal.focusAgentId : undefined);
+	}, [settingsModal]);
 
 	useEffect(() => {
 		const globalSettingsOpen = settingsModal?.scope === "global";
@@ -119,34 +134,38 @@ export function SettingsDialog() {
 			.catch(() => undefined);
 	}, [queryClient, settingsModal?.scope]);
 
-	if (!open || !displaySettings) return null;
-
-	return createPortal(
-		<>
-			<div
-				aria-hidden="true"
+	return (
+		<Dialog.Root open onOpenChange={(open) => { if (!open) closeSettingsDialog(); }}>
+			<Dialog.Portal>
+			<Dialog.Overlay
 				className="dialog-overlay animate-overlay-in motion-reduce:animate-none"
 				data-testid="settings-dialog-overlay"
-				onPointerDown={closeSettingsDialog}
 				onWheel={(event) => event.preventDefault()}
 			/>
-			<FocusScope loop trapped onMountAutoFocus={(event) => event.preventDefault()}>
-				<div
-					aria-describedby="settings-dialog-description"
-					aria-labelledby="settings-dialog-title"
+				<Dialog.Content
 					aria-modal="true"
 					className={cn(
 						settingsDialogContentClass,
 						"fixed left-1/2 top-1/2 h-(--size-settings-dialog-height) w-(--size-settings-dialog-wide) max-h-none -translate-x-1/2 -translate-y-1/2 origin-center overflow-hidden p-0 animate-modal-in motion-reduce:animate-none sm:rounded-lg",
 					)}
-					onKeyDown={(event) => {
-						if (event.key !== "Escape") return;
-						event.preventDefault();
-						requestCloseRef.current();
+					onOpenAutoFocus={(event) => event.preventDefault()}
+					onEscapeKeyDown={(event) => {
+						if (contentRef.current?.contains(event.target as Node)) return;
+						const target = event.target instanceof Element ? event.target : null;
+						const activeElement = document.activeElement instanceof Element ? document.activeElement : null;
+						const nestedPopup = [target, activeElement].some((element) =>
+							element?.closest('[role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]'),
+						);
+						if (nestedPopup) event.preventDefault();
 					}}
-					data-state="open"
-					role="dialog"
-					tabIndex={-1}
+					onCloseAutoFocus={(event) => {
+						event.preventDefault();
+						// Successful recovery removes its CTA. The originating dialog
+						// remains mounted and can receive focus when that happens.
+						const target = returnFocusRef.current?.isConnected ? returnFocusRef.current : returnDialogRef.current;
+						if (target?.isConnected) target.focus({ preventScroll: true });
+					}}
+					ref={contentRef}
 				>
 					<div className="flex h-full min-h-0">
 						<aside className="flex w-48 shrink-0 flex-col border-r border-(--color-border-settings-dialog-header) bg-card">
@@ -168,7 +187,10 @@ export function SettingsDialog() {
 											icon={icon}
 											key={id}
 											label={label(t)}
-											onClick={() => setActiveSection(id)}
+											onClick={() => {
+												setActiveSection(id);
+												setFocusAgentId(undefined);
+											}}
 										/>
 									))}
 						</nav>
@@ -205,8 +227,13 @@ export function SettingsDialog() {
 										t("settings.project.saveChanges")
 									)}
 								</Button>
+								{projectSaveState.phase === "failed" && projectSaveState.error && (
+									<p className="mt-1.5 px-0.5 text-xs text-destructive leading-tight" role="alert">
+										{projectSaveState.error}
+									</p>
+								)}
 								<span className="sr-only" role="status" aria-live="polite">
-									{projectSaveState.error ?? (projectSaveState.phase === "saved" ? t("settings.project.saved") : "")}
+									{projectSaveState.phase === "saved" ? t("settings.project.saved") : ""}
 								</span>
 							</div>
 						)}
@@ -215,10 +242,10 @@ export function SettingsDialog() {
 					{/* Main area — same bg as the app page */}
 					<div className="flex min-w-0 flex-1 flex-col bg-card">
 						<DialogHeader className={cn(settingsDialogHeaderClass, "flex h-auto shrink-0 flex-row items-center justify-between border-b-0 pb-3")}>
-							<h2 className="text-2xl font-bold text-foreground" id="settings-dialog-title">{activeLabel}</h2>
-							<p className="sr-only" id="settings-dialog-description">
+							<Dialog.Title className="text-2xl font-bold text-foreground">{activeLabel}</Dialog.Title>
+							<Dialog.Description className="sr-only">
 								{isProjectSettings ? t("settings.project.dialogDescription") : t("settings.dialogDescription", { section: activeLabel.toLowerCase() })}
-							</p>
+							</Dialog.Description>
 							<button
 								aria-label={t("settings.close")}
 								className="settings-close-button"
@@ -244,6 +271,7 @@ export function SettingsDialog() {
 								) : (
 									<GlobalSettingsForm
 										cloudEnabled={cloudEnabled}
+										focusAgentId={focusAgentId}
 										section={activeSection}
 									/>
 								)
@@ -253,10 +281,9 @@ export function SettingsDialog() {
 						</div>
 					</div>
 				</div>
-				</div>
-			</FocusScope>
-		</>,
-		document.body,
+				</Dialog.Content>
+			</Dialog.Portal>
+		</Dialog.Root>
 	);
 }
 

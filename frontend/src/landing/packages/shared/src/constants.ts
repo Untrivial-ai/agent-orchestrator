@@ -11,6 +11,7 @@ export const COMPANY = {
   X_URL: "https://x.com/ao_build",
   YOUTUBE_URL: "https://www.youtube.com/@itrytoohard",
   LINKEDIN_URL: "https://www.linkedin.com/company/agent-orchestrator/",
+  INSTAGRAM_URL: "https://www.instagram.com/aoagents",
   DISCORD_URL: "https://discord.com/invite/UZv7JjxbwG",
   FOUNDERS_EMAIL: "prateek@untrivial.ai",
   REPORT_ISSUE_URL: "https://github.com/Untrivial-ai/agent-orchestrator/issues/new",

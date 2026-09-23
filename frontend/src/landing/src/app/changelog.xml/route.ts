@@ -1,11 +1,10 @@
 import { COMPANY } from "@ao/shared/constants";
-import { getChangelogEntries } from "@/lib/changelog";
-
+import { getWeeklyUpdates } from "@/lib/changelog";
 
 export const dynamic = "force-static";
 
 export async function GET() {
-	const entries = await getChangelogEntries();
+	const entries = getWeeklyUpdates();
 	const baseUrl = COMPANY.MARKETING_URL;
 
 	const escapeXml = (str: string) =>

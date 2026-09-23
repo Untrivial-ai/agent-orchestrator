@@ -209,6 +209,7 @@ type fakeCodexLoginTerminal struct {
 	closeErr        error
 	writeCredential bool
 	credential      []byte
+	childExited     bool
 }
 
 func (f *fakeCodexLoginTerminal) OpenCommandTerminal(_ context.Context, in shellterm.OpenCommandTerminalInput) (shellterm.ShellTerminal, error) {
@@ -235,6 +236,12 @@ func (f *fakeCodexLoginTerminal) CloseShellTerminal(_ context.Context, handle st
 	}
 	f.closed = append(f.closed, handle)
 	return nil
+}
+
+func (f *fakeCodexLoginTerminal) IsShellTerminalChildAlive(_ context.Context, _ string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return !f.childExited, nil
 }
 
 func supportedCodexAccountCapabilities() domain.CodexAccountCapabilities {

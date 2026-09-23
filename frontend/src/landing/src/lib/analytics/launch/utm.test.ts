@@ -51,10 +51,10 @@ describe("LAUNCH_CHANNELS", () => {
 		expect(new Set(sources).size).toBe(sources.length);
 	});
 
-	it("marks Instagram as a not-live placeholder", () => {
+	it("includes the live Instagram profile URL", () => {
 		const ig = LAUNCH_CHANNELS.find((c) => c.source === "instagram");
-		expect(ig?.todo).toBe(true);
-		expect(ig?.profileUrl).toContain("TODO");
+		expect(ig?.todo).toBeUndefined();
+		expect(ig?.profileUrl).toBe("https://www.instagram.com/aoagents");
 	});
 
 	it("includes Product Hunt as a real, tagged link to the site", () => {

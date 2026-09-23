@@ -1,5 +1,22 @@
 import type { InputProperty } from "./types";
 
+export type InputPropertyEntry = readonly [string, InputProperty];
+
+export function elicitationPromptCopy(value?: string): string | undefined {
+	const copy = value?.trim();
+	if (!copy || /^please answer the following questions\.?$/i.test(copy)) return undefined;
+	return copy;
+}
+
+export function elicitationStepPresentation(index: number, total: number) {
+	const current = Math.min(Math.max(index, 0), Math.max(total - 1, 0));
+	return {
+		status: total > 1 ? `Needs input · Question ${current + 1} of ${total}` : "Needs input",
+		showBack: current > 0,
+		primaryLabel: current < total - 1 ? "Next" : "Continue",
+	};
+}
+
 export function initialInputValue(property: InputProperty): unknown {
 	if (property.default !== undefined) return property.default;
 	if (property.type === "array") return [];
@@ -17,6 +34,26 @@ export function inputOptions(property: InputProperty): Array<{ value: string; la
 	return (property.enum ?? []).flatMap((value) => typeof value === "string"
 		? [{ value, label: value }]
 		: []);
+}
+
+export function groupedQuestionInputs(properties: readonly InputPropertyEntry[]): InputPropertyEntry[][] | undefined {
+	if (!properties.length) return undefined;
+	const groups = new Map<number, { question?: InputPropertyEntry; custom?: InputPropertyEntry }>();
+	for (const entry of properties) {
+		const match = /^question_(\d+)(_custom)?$/.exec(entry[0]);
+		if (!match) return undefined;
+		const index = Number(match[1]);
+		const group = groups.get(index) ?? {};
+		if (match[2]) group.custom = entry;
+		else group.question = entry;
+		groups.set(index, group);
+	}
+	const ordered: InputPropertyEntry[][] = [];
+	for (const [, group] of [...groups.entries()].sort(([left], [right]) => left - right)) {
+		if (!group.question) return undefined;
+		ordered.push(group.custom ? [group.question, group.custom] : [group.question]);
+	}
+	return ordered;
 }
 
 export function toggleInputValue(values: unknown[], value: string): string[] {

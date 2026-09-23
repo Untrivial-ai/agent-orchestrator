@@ -82,6 +82,24 @@ function RestartToUpdateDialogBody() {
 		(workspace.data ?? []).flatMap((project) => project.sessions),
 	);
 
+	const hasFailed = failureDetail !== null;
+
+	// Squirrel can't be reset in-process, so retry restarts AO like a manual
+	// quit-and-reopen.
+	const retry = async () => {
+		if (installing.current) return;
+		installing.current = true;
+		setPending(true);
+		try {
+			await aoBridge.updates.relaunch();
+		} catch {
+			// Relaunch quits this process; a rejection means it didn't, and there
+			// is nothing further to do here.
+			installing.current = false;
+			if (mounted.current) setPending(false);
+		}
+	};
+
 	const confirm = async () => {
 		// A ref guards same-turn clicks before React commits the disabled state.
 		if (installing.current || !version) return;
@@ -181,15 +199,29 @@ function RestartToUpdateDialogBody() {
 							{failureDetail && <p className="whitespace-pre-line break-words">{failureDetail}</p>}
 						</div>
 					)}
-					<p className="mt-2 text-xs leading-4 text-settings-muted">{t("update.restart.installsOnQuit")}</p>
+					{/* On failure the main process turns off install-on-quit, so hide
+					    this line rather than contradict the error above. */}
+					{failureDetail === null && (
+						<p className="mt-2 text-xs leading-4 text-settings-muted">{t("update.restart.installsOnQuit")}</p>
+					)}
 				</div>
 
 				<div className={settingsDialogFooterClass}>
 					<Button type="button" variant="outline" size="sm" onClick={close} disabled={pending}>
 						{t("confirm.cancel")}
 					</Button>
-					<Button type="button" variant="primary" size="sm" onClick={confirm} disabled={pending || !version}>
-						{pending ? t("update.restart.preparing") : t("update.restart.confirm")}
+					<Button
+						type="button"
+						variant="primary"
+						size="sm"
+						onClick={hasFailed ? retry : confirm}
+						disabled={pending || (!hasFailed && !version)}
+					>
+						{pending
+							? t("update.restart.preparing")
+							: hasFailed
+								? t("update.restart.retry")
+								: t("update.restart.confirm")}
 					</Button>
 				</div>
 			</DialogContent>

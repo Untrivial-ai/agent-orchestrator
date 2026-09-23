@@ -118,7 +118,7 @@ const ERROR_MESSAGES: Record<string, string> = {
 	"service-not-allowed": "Speech recognition is unavailable on this device.",
 	"language-not-supported": "Speech recognition is not available for this language.",
 	network: "Speech recognition needs a network connection and could not reach it.",
-	"audio-capture": "Could not capture audio from the microphone.",
+	"audio-capture": "Couldn't capture audio from the microphone.",
 	interrupted: "Recording was interrupted.",
 	busy: "The speech recogniser is busy. Try again in a moment.",
 };
@@ -396,7 +396,7 @@ export function createDeviceVoiceProvider(): VoiceProvider {
 					},
 				});
 			} catch (e) {
-				fail(e instanceof Error ? e.message : "Could not start the microphone.");
+				fail(e instanceof Error ? e.message : "Couldn't start the microphone.");
 			}
 		},
 
