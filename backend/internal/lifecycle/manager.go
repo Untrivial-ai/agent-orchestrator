@@ -870,6 +870,18 @@ retryProjection:
 		(s.TranscriptPath != "" && rec.Metadata.NativeTranscriptPath != s.TranscriptPath) ||
 		checkpointChanged
 	toolFlightBeforeProjection := cloneToolFlight(m.flights[id])
+	// Claude Code emits agent_needs_input as a delayed notification after a
+	// completed turn. The deriver intentionally maps that notification to
+	// waiting_input, but a completed/unsettled checkpoint proves that the last
+	// observed turn already ended. A newer prompt checkpoint takes precedence,
+	// even if its active hook projection was lost, so a legitimate new turn is
+	// not discarded merely because the durable activity state is still idle.
+	if s.Valid && s.Event == "notification" &&
+		s.State == domain.ActivityWaitingInput && rec.Activity.State == domain.ActivityIdle &&
+		(checkpoint.ConversationCheckpointState == domain.ConversationCheckpointComplete ||
+			checkpoint.ConversationCheckpointUnsettled) {
+		s.Valid = false
+	}
 	if s.Valid {
 		s = m.applyToolPrecedenceLocked(id, rec.Activity.State, s)
 	}
