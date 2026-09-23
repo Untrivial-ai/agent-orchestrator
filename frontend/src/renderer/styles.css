@@ -311,6 +311,24 @@
 	--animate-popover-out: popover-out 100ms cubic-bezier(0.4, 0, 1, 1);
 }
 
+/* Pierre powers both the continuous review and focused source views. Keep its
+   Shiki tokenization while making the surface inherit AO's editor typography,
+   workspace canvas, and responsive wrapped-line geometry. */
+.ao-pierre-surface {
+	--diffs-font-family: var(--font-family-mono);
+	--diffs-header-font-family: var(--font-family-base);
+	--diffs-font-size: var(--font-size-sm);
+	--diffs-line-height: var(--line-height-row);
+	--diffs-light-bg: var(--color-bg-primary);
+	--diffs-dark-bg: var(--color-bg-primary);
+	--diffs-light: var(--color-text-terminal);
+	--diffs-dark: var(--color-text-terminal);
+	--diffs-bg-context-override: color-mix(in srgb, var(--color-bg-primary) 92%, var(--foreground) 8%);
+	--diffs-bg-context-gutter-override: color-mix(in srgb, var(--color-bg-primary) 84%, var(--foreground) 16%);
+	--diffs-bg-separator-override: var(--surface);
+	background: var(--color-bg-primary);
+}
+
 /* Full-viewport modal/sheet scrim — dim + blur everything behind pop panels. */
 @utility dialog-overlay {
 	position: fixed;
@@ -319,6 +337,18 @@
 	background-color: var(--color-scrim);
 	-webkit-backdrop-filter: blur(var(--blur-overlay));
 	backdrop-filter: blur(var(--blur-overlay));
+}
+
+@utility modal-shake {
+	animation: project-import-shake 280ms ease-in-out;
+}
+
+@utility toast-enter {
+	animation: toast-enter 180ms var(--ease-out);
+}
+
+@utility toast-exit {
+	animation: toast-exit 180ms ease-in forwards;
 }
 
 @utility agent-switch-terminal-scrim {
@@ -486,6 +516,18 @@
 
 .center-panel-shell.center-panel-shell--mac.center-panel-shell--fullscreen {
 	padding: 0;
+}
+
+/* Keep the session card intact: this strip belongs to its slate outer frame,
+ * above the complete card (tabs and inspector alike), so it is a native macOS
+ * or Linux drag target without introducing a seam inside session content. */
+.center-panel-shell--draggable-session-frame {
+	flex-direction: column;
+}
+
+.center-panel-session-drag-strip {
+	flex: 0 0 var(--space-2);
+	-webkit-app-region: drag;
 }
 
 /* Sidebar closed on mac: content panel expands to fill the full window.
@@ -958,9 +1000,8 @@ button.settings-row-bar {
 	opacity: 0.75;
 }
 
-/* The composer is one continuous surface. Agent and model share equal, stable
-   tracks so changing provider names never moves the model or the primary action;
-   transparent controls keep the row reading as card padding rather than a form. */
+/* The composer keeps provider controls in stable tracks so changing labels
+   never moves the model or primary action. */
 .composer-toolbar {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto auto;
@@ -981,39 +1022,26 @@ button.settings-row-bar {
 .composer-run-controls {
 	display: grid;
 	min-width: 0;
-	grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr);
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 	align-items: center;
-	overflow: hidden;
-	border-radius: var(--radius-md);
-	/* Same mix formula as the settings-modal dropdown trigger, but anchored to
-	   --card (an opaque color) instead of --color-bg-settings-row (transparent
-	   by design there, since it always sits inside an already-painted dialog
-	   surface) — this pill floats on its own with nothing painted behind it. */
-	background-color: color-mix(in oklch, var(--card) 97%, var(--foreground));
+	column-gap: var(--space-2);
+}
+
+.composer-run-controls-with-effort {
+	/* Capability-driven Agent / Model / Effort sizing: 2 / 2 / 1. */
+	grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) minmax(5.5rem, 1fr);
 }
 
 .composer-toolbar-slot {
 	min-width: 0;
 }
 
-.composer-toolbar-divider {
-	align-self: stretch;
-	width: 1px;
-	height: 100%;
-	background-color: var(--color-border);
-}
-
-/* The divider is the shared edge between the two segments — when either one
-   is focused, it becomes part of that segment's own border/focus ring
-   instead of staying a disconnected neutral line. */
-.composer-run-controls:has(.composer-toolbar-slot :focus-within) .composer-toolbar-divider {
-	background-color: var(--bridge-accent);
-}
-
 .composer-toolbar .composer-toolbar-option {
 	height: var(--size-settings-action-height);
-	border-radius: 0 !important;
-	background-color: transparent !important;
+	/* Same mix formula as the settings-modal dropdown trigger, but anchored to
+	   --card (an opaque color) instead of --color-bg-settings-row. */
+	border-radius: var(--radius-md) !important;
+	background-color: color-mix(in oklch, var(--card) 97%, var(--foreground)) !important;
 }
 
 .composer-toolbar .composer-toolbar-option:hover:not(:disabled),
@@ -1025,8 +1053,8 @@ button.settings-row-bar {
 	box-shadow: none;
 }
 
-/* Inline value control inside the task composer's bottom toolbar. Reads as a
-   value you can change, not as a form field: no visible chrome until hover/focus. */
+/* Inline value control inside the task composer's bottom toolbar. Each chip is
+   its own dropdown trigger with the quiet filled chrome settings uses. */
 @utility composer-chip {
 	display: inline-flex;
 	width: auto;
@@ -1036,11 +1064,8 @@ button.settings-row-bar {
 	align-items: center;
 	gap: calc(var(--spacing) * 2);
 	border: 1px solid transparent;
-	/* SelectTrigger and settings-option-trigger bring different radii. The
-	   shared container now owns the rounding, so each segment stays square and
-	   only the outer edge reads as one pill. */
-	border-radius: 0 !important;
-	background-color: transparent;
+	border-radius: var(--radius-md);
+	background-color: color-mix(in oklch, var(--card) 97%, var(--foreground));
 	padding-inline: var(--space-2);
 	font-size: var(--font-size-base);
 	color: var(--color-foreground);
@@ -1122,6 +1147,18 @@ button.settings-row-bar {
 		box-shadow: none;
 		color: var(--color-text-settings-row);
 		outline: none;
+	}
+
+	/* The clear affordance is secondary to the query itself, so it recedes
+	   until pointed at. */
+	&::-webkit-search-cancel-button {
+		opacity: 0.4;
+		cursor: pointer;
+		transition: opacity var(--duration-fast) ease-out;
+	}
+
+	&::-webkit-search-cancel-button:hover {
+		opacity: 1;
 	}
 }
 
@@ -1560,6 +1597,32 @@ textarea,
 	background-color: color-mix(in srgb, var(--color-scrollbar) 56%, transparent);
 }
 
+/* Thin project-list scrollbar: keeps a scroll affordance without the chunky
+   system thumb. Linux also suppresses the end-cap buttons below. */
+.project-sidebar-scrollbar {
+	scrollbar-width: thin;
+	scrollbar-color: color-mix(in srgb, var(--color-scrollbar) 28%, transparent) transparent;
+}
+
+.project-sidebar-scrollbar::-webkit-scrollbar {
+	width: 6px;
+}
+
+.project-sidebar-scrollbar::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.project-sidebar-scrollbar::-webkit-scrollbar-thumb {
+	min-height: 24px;
+	border-radius: 999px;
+	background-color: color-mix(in srgb, var(--color-scrollbar) 28%, transparent);
+}
+
+.project-sidebar-scrollbar:hover::-webkit-scrollbar-thumb,
+.project-sidebar-scrollbar:focus-within::-webkit-scrollbar-thumb {
+	background-color: color-mix(in srgb, var(--color-scrollbar) 42%, transparent);
+}
+
 .platform-linux .project-sidebar-scrollbar::-webkit-scrollbar {
 	width: 6px;
 }
@@ -1643,6 +1706,80 @@ textarea,
 .terminal-surface .xterm-screen,
 .terminal-surface .xterm-helpers {
 	background-color: var(--color-bg-terminal-opaque) !important;
+}
+
+.multi-step-loader__step {
+	/* `both`: hold the final keyframe (opacity 0) after the exit and pre-apply
+	   the 0% keyframe before the entry. Without it the element snaps back to its
+	   base style (opacity 1) at animation end, flashing the outgoing sentence
+	   fully opaque for a frame before the swap. */
+	animation: multi-step-loader-step var(--multi-step-loader-duration, 3500ms) ease-in-out both;
+}
+
+.multi-step-loader__dot {
+	animation: multi-step-loader-dot var(--multi-step-loader-duration, 3500ms) ease-in-out both;
+}
+
+.multi-step-loader__check {
+	animation: multi-step-loader-check var(--multi-step-loader-duration, 3500ms) ease-out both;
+}
+
+@keyframes multi-step-loader-step {
+	0% {
+		filter: blur(3px);
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	8%,
+	86% {
+		filter: blur(0);
+		opacity: 1;
+		transform: translateY(0);
+	}
+	94%,
+	100% {
+		filter: blur(2px);
+		opacity: 0;
+		transform: translateY(-2px);
+	}
+}
+
+@keyframes multi-step-loader-dot {
+	0%,
+	82% {
+		opacity: 1;
+		transform: scale(1);
+	}
+	90%,
+	100% {
+		opacity: 0;
+		transform: scale(0.72);
+	}
+}
+
+@keyframes multi-step-loader-check {
+	0%,
+	82% {
+		opacity: 0;
+		transform: scale(0.72);
+	}
+	90%,
+	100% {
+		opacity: 1;
+		transform: scale(1);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.multi-step-loader__step,
+	.multi-step-loader__dot,
+	.multi-step-loader__check {
+		animation: none;
+	}
+
+	.multi-step-loader__check {
+		display: none;
+	}
 }
 
 @keyframes status-pulse {
@@ -1904,6 +2041,22 @@ textarea,
 	}
 }
 
+@keyframes project-import-shake {
+	0%, 100% { transform: translate(-50%, -50%); }
+	25% { transform: translate(calc(-50% - 6px), -50%); }
+	75% { transform: translate(calc(-50% + 6px), -50%); }
+}
+
+@keyframes toast-enter {
+	from { opacity: 0; transform: translateY(8px) scale(0.98); }
+	to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toast-exit {
+	from { opacity: 1; transform: translateY(0) scale(1); }
+	to { opacity: 0; transform: translateY(8px) scale(0.98); }
+}
+
 @keyframes modal-out {
 	from {
 		opacity: 1;
@@ -1937,14 +2090,12 @@ textarea,
 	}
 }
 
-/* ── Global resize state (sidebar drag) ─────────────────────────────────── */
+/* ── Global resize state (sidebar / inspector drag) ─────────────────────── */
+/* Grip paint lives on ResizeHandle's fixed span — DO NOT restore
+   `body.is-resizing-x [data-slot="resize-handle"]::after` (rejected chrome). */
 body.is-resizing-x {
 	cursor: col-resize;
 	user-select: none;
-}
-
-body.is-resizing-x [data-slot="resize-handle"]::after {
-	background: var(--color-border);
 }
 
 body.is-resizing-x [data-slot="sidebar-gap"],
@@ -1978,11 +2129,101 @@ body.is-resizing-x .session-split[data-workspace-resizing="true"] [data-slot="in
 	}
 }
 
-/* Keep keyboard focus visible without adding a ring to the sidebar chrome. */
-.sidebar-focusless :focus-visible {
+/* Keep keyboard focus visible without adding a ring to the sidebar chrome.
+   Opt out elements that own their own fill (icon actions, brand, folder toggle,
+   NavRowHighlight hosts) so each new control does not need another !important. */
+.sidebar-focusless :focus-visible:not(.sidebar-icon-action):not([data-sidebar-brand]):not([data-project-folder]) {
 	background-color: var(--color-interactive-hover) !important;
 	outline: none !important;
 	box-shadow: none !important;
+}
+
+/* Icon-only trailing controls (project kebab/orchestrator, session pin/kill,
+   Projects "+") tint the glyph only — never pick up the focus fill above. */
+.sidebar-focusless .sidebar-icon-action:focus-visible {
+	background-color: transparent !important;
+}
+
+/* Growing NavRowHighlight owns the fill — don't paint a second focus slab on
+   the host or its inner focusable (session open button). */
+.sidebar-focusless .group\/nav-row:focus-visible,
+.sidebar-focusless .group\/nav-row :focus-visible {
+	background-color: transparent !important;
+}
+
+/* Folder disclosure hit-target sits over the icon, outside the nav-row host —
+   never paint the sidebar focus fill on it. */
+.sidebar-focusless [data-project-folder]:focus-visible {
+	background-color: transparent !important;
+}
+
+/* Brand → home is opted out of the wash above; still needs a keyboard cue.
+   Beats the global `:focus-visible { outline: none !important }` via specificity. */
+.sidebar-focusless [data-sidebar-brand]:focus-visible {
+	outline: 2px solid color-mix(in oklab, var(--color-ring) 55%, transparent) !important;
+	outline-offset: 2px !important;
+	background-color: transparent !important;
+	box-shadow: none !important;
+}
+
+/* Keyboard focus for the growing pill: focus-visible only (not focus-within),
+   so a mouse click on Pinned / footer rows does not leave the pill stuck on.
+   Project folder toggle + trailing actions live outside the nav-row host but
+   inside data-project-drag-row — light that project's pill from there too. */
+.group\/nav-row:focus-visible [data-nav-row-highlight-idle],
+.group\/nav-row:has(:focus-visible) [data-nav-row-highlight-idle],
+[data-project-drag-row]:has(:focus-visible) [data-nav-row-highlight-idle] {
+	width: 100%;
+	height: 100%;
+	opacity: 1;
+}
+
+/* Fine-pointer hover only: row highlight grow, folder↔chevron swap, session
+   action reveal. Touch must not sticky-hover; keyboard uses focus-visible above.
+   Folder/chevron/actions use `scale`/`rotate` (not `transform`) so Tailwind v4
+   utilities are actually overridden on hover. */
+@media (hover: hover) and (pointer: fine) {
+	/* Per-row host. Project trailing actions / folder toggle sit outside the
+	   nav button but inside data-project-drag-row — require that row's :hover
+	   so expanded sessions under the same menu-item are not all lit at once. */
+	.group\/nav-row:hover [data-nav-row-highlight-idle],
+	.group\/menu-item:not([data-dragging="true"]) [data-project-drag-row]:hover [data-nav-row-highlight-idle] {
+		width: 100%;
+		height: 100%;
+		opacity: 1;
+	}
+
+	/* 1.2 + 3.2 — contextual folder/chevron; scale animates, opacity snaps; skip while drag ghost */
+	.group\/menu-item:hover:not([data-dragging="true"]) [data-project-folder-icon] {
+		scale: 0.8;
+		opacity: 0;
+	}
+
+	.group\/menu-item:hover:not([data-dragging="true"]) [data-project-chevron-icon] {
+		scale: 1;
+		opacity: 1;
+	}
+
+	.group\/menu-item:hover:not([data-dragging="true"]) [data-project-folder-visual][data-expanded] [data-project-chevron-icon] {
+		rotate: 90deg;
+	}
+
+	.group\/session-row:hover [data-session-action-buttons] {
+		scale: 1;
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.group\/session-row:hover [data-session-message-age] {
+		opacity: 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	[data-nav-row-highlight] {
+		width: 100% !important;
+		height: 100% !important;
+	}
 }
 
 /* A reorder can leave its source row, so lock the renderer cursor until the
@@ -2073,6 +2314,39 @@ html.sidebar-reordering * {
 
 .cursor-chat-surface button:not(:disabled):active {
 	transform: scale(0.96);
+}
+
+/* Timeline summaries are disclosure controls, not raised buttons. Keeping their
+   footprint fixed prevents the label from shifting when the pointer lands. */
+.cursor-chat-surface .activity-summary-button:not(:disabled):active {
+	transform: none;
+}
+
+.activity-run-toggle {
+	border-bottom: 1px solid color-mix(in oklch, var(--color-border) 48%, transparent);
+	color: var(--color-text-muted);
+}
+
+.activity-run-toggle:hover,
+.activity-subgroup-toggle:hover {
+	color: var(--color-text-primary);
+}
+
+.activity-summary-button:hover > .activity-summary-label {
+	color: var(--color-text-primary);
+}
+
+.activity-row-toggle:hover > .activity-row-label {
+	color: var(--color-text-primary);
+}
+
+.cursor-chat-surface .activity-summary-button:not(:disabled),
+.cursor-chat-surface .activity-row-toggle:not(:disabled) {
+	transition: none;
+}
+
+.activity-subgroup {
+	min-width: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2535,9 +2809,21 @@ html.sidebar-reordering * {
 	box-shadow: none;
 }
 
-:root[data-theme="light"] .cursor-chat-human-message {
-	background: color-mix(in srgb, var(--color-bg-secondary) 78%, var(--color-bg-tertiary));
+/* Light theme collapses the surface stack the dark bubble relies on: `--card`
+   and `--background` are the same near-white, so `--color-bg-secondary` cannot
+   sit above the canvas. Take the unwashed tertiary step and paint the hairline
+   this rule has always declared, so the message still reads as enclosed. */
+:root[data-theme="light"] .cursor-chat-human-message:not([data-queued]) {
+	border-width: 1px;
+	background: var(--color-bg-tertiary);
 	border-color: color-mix(in oklch, var(--color-text-primary) 14%, transparent);
+}
+
+/* Queued keeps its dashed, unfilled outline: the agent has not seen it yet, and
+   a fill would make it read as sent. */
+:root[data-theme="light"] .cursor-chat-human-message[data-queued] {
+	background: transparent;
+	border-color: color-mix(in oklch, var(--color-text-primary) 22%, transparent);
 }
 
 :root[data-theme="light"] .cursor-chat-origin-message,
@@ -2901,7 +3187,7 @@ html.sidebar-reordering * {
 	align-items: center;
 	gap: 13px;
 	padding: 0 16px 0 14px;
-	border-bottom: 1px solid var(--border);
+	border-bottom: 1px solid var(--color-border-strong);
 	background: var(--bg);
 	z-index: 10;
 }
@@ -3339,9 +3625,9 @@ html.sidebar-reordering * {
 	padding: 18px 18px 40px;
 }
 
-/* Browser tab: the panel fills the rail edge-to-edge, so drop the body padding
-   and the panel's own border/radius so it sits flush against the resize handle. */
-.session-inspector__body.session-inspector__body--browser {
+/* Browser tab: the browser chrome is part of the inspector frame, not a
+   floating card inset inside it. */
+.session-inspector__body--browser {
 	padding: 0;
 	overflow: hidden;
 }
@@ -3463,6 +3749,79 @@ html.sidebar-reordering * {
 	background: var(--bg);
 	color: var(--fg);
 	user-select: none;
+}
+
+/* In browser mode, use equal side tracks so the address field is centered in
+   the inspector itself. Flex centering only centers it in the leftover space,
+   which shifts it right because the tab controls are wider than the actions. */
+.session-inspector__topbar--browser {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 240px) minmax(0, 1fr);
+	padding-left: 0;
+	transition: grid-template-columns var(--duration-fast) ease;
+}
+
+.session-inspector__topbar--browser:has(.browser-panel__address-bar--editing) {
+	grid-template-columns: minmax(0, 1fr) clamp(240px, 52cqw, 560px) minmax(0, 1fr);
+}
+
+.session-inspector__topbar--browser > .session-inspector__tablist {
+	grid-column: 1;
+	padding-left: var(--space-1);
+}
+
+.session-inspector__topbar > .browser-panel__topbar-host {
+	grid-column: 2;
+	width: 100%;
+}
+
+.session-inspector__topbar > .browser-panel__topbar-host > .browser-panel__address-bar {
+	transform: translateX(clamp(32px, 6cqw, 48px));
+}
+
+.session-inspector__topbar--browser > .session-inspector-actions-spacer {
+	grid-column: 3;
+	justify-self: end;
+}
+
+/* Once zoom or a narrow window leaves too little horizontal room, put the URL
+   field on its own row. The inspector tabs and actions keep the first row, so
+   none of the controls can overlap. */
+@container inspector (max-width: 440px) {
+	.session-inspector__topbar--browser {
+		height: calc(var(--size-inspector-tabs) + var(--size-inspector-tabs));
+		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-rows: var(--size-inspector-tabs) var(--size-inspector-tabs);
+	}
+
+	.session-inspector__topbar--browser > .session-inspector__tablist {
+		grid-column: 1;
+		grid-row: 1;
+	}
+
+	.session-inspector__topbar--browser > .session-inspector-actions-spacer {
+		grid-column: 2;
+		grid-row: 1;
+	}
+
+	.session-inspector__topbar--browser > .browser-panel__topbar-host {
+		grid-column: 1 / -1;
+		grid-row: 2;
+		width: 180px;
+		justify-self: center;
+		transition: width var(--duration-fast) ease;
+	}
+
+	.session-inspector__topbar--browser
+		> .browser-panel__topbar-host
+		> .browser-panel__address-bar {
+		transform: none;
+	}
+
+	.session-inspector__topbar--browser:has(.browser-panel__address-bar--editing)
+		> .browser-panel__topbar-host {
+		width: min(400px, calc(100cqw - 16px));
+	}
 }
 
 .session-inspector__tab-button {
@@ -4082,19 +4441,9 @@ html.sidebar-reordering * {
 	flex-direction: column;
 	overflow: hidden;
 	border: 1px solid var(--border);
-	border-radius: 8px;
-	background:
-		linear-gradient(180deg, color-mix(in srgb, var(--color-bg-secondary) 92%, transparent), transparent 118px),
-		linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 10%, transparent), transparent 42%),
-		var(--bg);
-	box-shadow:
-		0 0 0 1px color-mix(in srgb, var(--color-border) 42%, transparent),
-		0 20px 48px color-mix(in srgb, black 18%, transparent),
-		0 8px 18px color-mix(in srgb, black 10%, transparent);
-	transition:
-		border-color var(--duration-normal) ease,
-		box-shadow var(--duration-normal) ease,
-		background var(--duration-normal) ease;
+	border-radius: 0;
+	background: var(--bg);
+	transition: border-color var(--duration-normal) ease;
 }
 
 /* Maximized browser overlay: a fixed layer over the app workspace (portaled to
@@ -4114,13 +4463,13 @@ html.sidebar-reordering * {
 	-webkit-app-region: no-drag;
 }
 
-/* Browser maximize is a real geometry transition, not a full-screen layer that
-   appears after the docked panel disappears. The portal spans the viewport;
-   its frame begins at the measured inspector rect and the native browser slot
-   follows that box on every animation frame. */
+/* Browser maximize switches geometry atomically. A live WebContentsView cannot
+   share a compositor timeline with DOM layout; animating its box would resize
+   Chromium over IPC every frame and make the controls visibly trail the page. */
 .browser-popout-overlay {
 	--browser-popout-top: env(titlebar-area-height, 0px);
-	--browser-popout-easing: linear(0, 0.333 12.5%, 0.642 25%, 0.813 37.5%, 0.902 50%, 0.949 62.5%, 0.974 75%, 0.986 87.5%, 1);
+	--browser-popout-inline-inset: var(--size-center-panel-inline-inset);
+	box-sizing: border-box;
 	position: fixed;
 	inset: var(--browser-popout-top) 0 0;
 	z-index: 40;
@@ -4136,49 +4485,20 @@ html.sidebar-reordering * {
 	bottom: 0;
 	left: 0;
 	background: color-mix(in srgb, var(--bg) 94%, black);
-	opacity: 1;
-	transition: opacity 240ms ease-out;
 }
 
 .browser-popout-frame {
 	position: absolute;
 	top: 0;
-	left: 0;
-	width: 100vw;
+	right: var(--browser-popout-inline-inset);
+	left: var(--browser-popout-inline-inset);
+	display: flex;
 	height: 100%;
+	flex-direction: column;
 	overflow: hidden;
 	border-radius: 0;
 	background: var(--bg);
 	box-shadow: none;
-	transition:
-		top 320ms var(--browser-popout-easing),
-		left 320ms var(--browser-popout-easing),
-		width 320ms var(--browser-popout-easing),
-		height 320ms var(--browser-popout-easing),
-		border-radius 240ms ease-out,
-		box-shadow 240ms ease-out;
-	will-change: top, left, width, height, border-radius;
-}
-
-.browser-popout-overlay[data-phase="opening"] .browser-popout-frame,
-.browser-popout-overlay[data-phase="closing"] .browser-popout-frame {
-	top: calc(
-		var(--browser-popout-dock-top, var(--browser-popout-top)) - var(--browser-popout-top)
-	);
-	left: var(--browser-popout-dock-left, 0px);
-	width: var(--browser-popout-dock-width, 100vw);
-	height: var(--browser-popout-dock-height, 100%);
-	border-radius: var(--radius-lg);
-	box-shadow: 0 18px 55px color-mix(in srgb, black 30%, transparent);
-}
-
-.browser-popout-overlay[data-phase="opening"] .browser-popout-frame {
-	transition: none;
-}
-
-.browser-popout-overlay[data-phase="opening"] .browser-popout-backdrop,
-.browser-popout-overlay[data-phase="closing"] .browser-popout-backdrop {
-	opacity: 0;
 }
 
 /* Keep native browser/files surfaces below the custom Windows titlebar. The
@@ -4207,8 +4527,14 @@ body:has(#root .platform-windows) > .files-popout-overlay {
 	--browser-popout-top: var(--size-traffic-light-clearance);
 }
 
+.browser-popout-overlay--mac-windowed {
+	--browser-popout-inline-inset: var(--size-center-panel-inset-mac);
+}
+
 .browser-popout-overlay .browser-panel__toolbar,
-.browser-popout-overlay .browser-panel__toolbar * {
+.browser-popout-overlay .browser-panel__toolbar *,
+.browser-panel__address-bar,
+.browser-panel__address-bar * {
 	-webkit-app-region: no-drag;
 }
 
@@ -4229,30 +4555,274 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	box-shadow: none;
 }
 
-.browser-panel__toolbar {
+/* Pin the URL bar into the reserved titlebar band (macOS traffic lights,
+   Windows custom titlebar, Linux shell topbar) instead of consuming a second
+   row inside the popout frame. The popout overlay itself still begins below
+   that band; this host is viewport-fixed so it fills the empty strip. */
+.browser-popout-titlebar {
+	position: fixed;
+	top: 0;
+	right: 0;
+	left: 0;
+	z-index: 41;
+	display: flex;
+	height: var(--browser-popout-top);
+	min-width: 0;
+	align-items: center;
+	border-bottom: 1px solid var(--border);
+	background: var(--bg);
+	-webkit-app-region: no-drag;
+}
+
+.browser-popout-titlebar--mac-windowed {
+	padding-right: var(--space-3);
+	padding-left: var(--size-titlebar-content-offset);
+}
+
+.browser-popout-titlebar > .browser-panel__address-bar {
+	position: absolute;
+	left: 50%;
+	width: min(480px, calc(100vw - 32px));
+	flex: none;
+	height: auto;
+	min-height: 0;
+	transform: translateX(-50%);
+	transition: width var(--duration-fast) ease;
+}
+
+.browser-popout-titlebar > .browser-panel__address-bar--editing {
+	width: min(760px, calc(100vw - 32px));
+}
+
+.browser-popout-titlebar .browser-panel__url-wrap {
+	max-width: none;
+}
+
+.browser-popout-titlebar--mac-windowed > .browser-panel__address-bar {
+	max-width: calc(100vw - (2 * var(--size-titlebar-content-offset)));
+}
+
+/* Native macOS fullscreen drops the traffic-light reserve: keep a titlebar
+   row for the URL and push the animated frame below it. */
+.browser-popout-overlay:not(.browser-popout-overlay--mac-windowed) .browser-popout-titlebar {
+	height: max(var(--browser-popout-top), var(--size-inspector-tabs));
+}
+
+.browser-popout-overlay:not(.browser-popout-overlay--mac-windowed) .browser-popout-frame {
+	top: max(var(--browser-popout-top), var(--size-inspector-tabs));
+	height: calc(100% - max(var(--browser-popout-top), var(--size-inspector-tabs)));
+}
+
+.browser-popout-frame > .browser-panel {
+	min-height: 0;
+	flex: 1 1 auto;
+}
+
+.browser-panel__topbar-host,
+.browser-panel__address-bar {
+	display: flex;
+	min-width: 0;
+	align-items: center;
+}
+
+.browser-panel__address-bar {
+	height: var(--size-inspector-tabs);
+	justify-content: center;
+}
+
+.browser-panel__topbar-host > .browser-panel__address-bar {
+	flex: 1 1 0;
+}
+
+.browser-panel > .browser-panel__address-bar {
+	width: 100%;
+	flex: 0 0 var(--size-inspector-tabs);
+	padding: 0 4px;
+}
+
+.browser-panel__tab-row {
 	container-name: browser-toolbar;
+	container-type: inline-size;
+	display: flex;
+	height: 40px;
+	align-items: center;
+	gap: 2px;
+	flex-shrink: 0;
+	min-width: 0;
+	/* Extra top inset balances .browser-panel__body's 4px top padding below the row. */
+	padding: calc(var(--space-1) + var(--space-1)) var(--space-1) var(--space-1);
+	background: var(--bg);
+}
+
+.browser-panel__toolbar,
+.browser-panel__tab-bar {
+	display: contents;
+}
+
+.browser-panel__toolbar > .browser-panel__navigation-control,
+.browser-panel__toolbar > .browser-panel__navigation-btn {
+	order: -1;
+}
+
+/* Annotation mode adds a second chrome row below tabs. Match the tab row's
+   flat chrome — no inset card surface. Keep actions spatially stable. */
+.browser-panel__annotation-row {
+	container-name: browser-annotation;
 	container-type: inline-size;
 	display: flex;
 	align-items: center;
 	gap: 2px;
 	flex-shrink: 0;
 	min-width: 0;
-	/* Matches the 28px (--size-control-md) buttons + 3px top/bottom exactly, so
-	   this is the actual driver of the bar's height — a bigger min-height here
-	   would silently swallow any padding reduction above it (buttons would just
-	   stay centered in the leftover space instead of the bar getting shorter). */
-	min-height: 34px;
-	/* No right padding: the new-tab button's own column is flush against this
-	   edge so it lines up with the docked rail directly below it. */
-	padding: 3px 0 3px 4px;
-	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
-	background:
-		linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, white 2%), var(--surface)),
-		var(--surface);
-	box-shadow:
-		inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
-		0 1px 0 color-mix(in srgb, black 22%, transparent);
-	backdrop-filter: blur(10px);
+	overflow: hidden;
+	padding: 0 var(--space-1);
+	background: var(--bg);
+}
+
+.browser-panel__toolbar--annotation {
+	position: relative;
+	display: flex;
+	width: 100%;
+	min-width: 0;
+	height: calc(var(--size-control-md) + 2 * var(--space-1));
+	align-items: center;
+	gap: 2px;
+	padding-block: var(--space-1);
+	background: transparent;
+}
+
+.browser-panel__annotation-actions {
+	z-index: 1;
+	display: flex;
+	min-width: 0;
+	align-items: center;
+	gap: var(--space-1);
+}
+
+.browser-panel__annotation-actions--leading {
+	margin-right: auto;
+}
+
+.browser-panel__annotation-actions--trailing {
+	margin-left: auto;
+}
+
+.browser-panel__annotation-context {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	display: flex;
+	max-width: min(38%, 320px);
+	min-width: 0;
+	translate: -50% -50%;
+	align-items: center;
+	gap: var(--space-1_5);
+	pointer-events: none;
+	font-size: var(--font-size-sm);
+	line-height: 1;
+}
+
+.browser-panel__annotation-status-dot {
+	width: 6px;
+	height: 6px;
+	flex: 0 0 6px;
+	border-radius: 50%;
+	background: var(--color-status-needs-you);
+}
+
+.browser-panel__annotation-count {
+	min-width: 0;
+	overflow: hidden;
+	color: var(--foreground);
+	font-weight: var(--font-weight-medium);
+	font-variant-numeric: tabular-nums;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.browser-panel__annotation-separator {
+	width: 1px;
+	height: 16px;
+	margin: 0 var(--space-1);
+	background: color-mix(in srgb, var(--color-border) 78%, transparent);
+}
+
+.browser-panel__toolbar.browser-panel__toolbar--annotation button:not(.browser-panel__annotation-send) {
+	border-radius: var(--radius-md);
+	box-shadow: none;
+	transform: none;
+	translate: none;
+	scale: 1;
+	transition:
+		background-color var(--duration-fast) ease,
+		border-color var(--duration-fast) ease,
+		color var(--duration-fast) ease,
+		opacity var(--duration-fast) ease;
+}
+
+.browser-panel__toolbar.browser-panel__toolbar--annotation button:not(.browser-panel__annotation-send):not(:disabled):hover,
+.browser-panel__toolbar.browser-panel__toolbar--annotation button:not(.browser-panel__annotation-send):not(:disabled):active {
+	box-shadow: none;
+	transform: none;
+	translate: none;
+	scale: 1;
+}
+
+.browser-panel__toolbar--annotation .browser-panel__annotation-discard:not(:disabled):hover {
+	background: color-mix(in srgb, var(--color-destructive) 10%, transparent);
+	color: var(--color-destructive);
+}
+
+.browser-panel__annotation-actions button {
+	position: relative;
+}
+
+.browser-panel__annotation-icon-count {
+	position: absolute;
+	top: 1px;
+	right: 2px;
+	color: var(--color-status-needs-you);
+	font-size: var(--font-size-nano);
+	font-weight: var(--font-weight-semibold);
+	font-variant-numeric: tabular-nums;
+	line-height: 1;
+}
+
+.browser-panel__toolbar--annotation .browser-panel__annotation-send {
+	height: var(--size-control-md);
+	gap: var(--space-1_5);
+	padding-inline: var(--space-2_5);
+	color: var(--primary-foreground);
+	font-size: var(--font-size-sm);
+	font-weight: var(--font-weight-medium);
+}
+
+/* The shared primary hover is a translucent wash (bg-primary/80). Over the
+   dark annotation toolbar that reads as a half-disabled button, so the Send
+   control steps its tone instead and stays solid. */
+.browser-panel__toolbar--annotation .browser-panel__annotation-send:not(:disabled):hover {
+	background-color: color-mix(in oklch, var(--primary) 90%, var(--background));
+}
+
+.browser-panel__toolbar--annotation .browser-panel__annotation-send:disabled {
+	opacity: 0.72;
+}
+
+.browser-panel__annotation-send-count {
+	color: inherit;
+	font-variant-numeric: tabular-nums;
+}
+
+@container browser-annotation (max-width: 30rem) {
+	.browser-panel__annotation-context {
+		max-width: 26%;
+	}
+}
+
+@container browser-annotation (max-width: 23rem) {
+	.browser-panel__annotation-context {
+		display: none;
+	}
 }
 
 /* Keep the URL field useful in the narrow inspector. The selected profile name
@@ -4274,42 +4844,58 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	}
 }
 
-.browser-panel__toolbar > :not(.browser-panel__url-wrap):not(button) {
-	transition:
-		opacity 140ms ease,
-		visibility 0s linear;
-}
-
-.browser-panel__toolbar--url-takeover > :not(.browser-panel__url-wrap):not(.browser-panel__navigation-btn):not(.browser-panel__navigation-control) {
-	visibility: hidden;
-	opacity: 0;
-	pointer-events: none;
-	transition-delay: 0s, 140ms;
-}
-
 .browser-panel {
 	container-name: browser-panel;
 	container-type: inline-size;
 }
 
-.browser-panel__tab-bar {
-	display: none;
-	height: 38px;
+.browser-panel__tab-actions {
+	margin-left: auto;
+	padding-left: 4px;
+}
+
+.browser-panel__tab-actions button,
+.browser-panel__toolbar button,
+.browser-panel__address-bar button,
+.browser-panel__tab-new,
+.browser-panel__tab-close {
+	color: var(--fg-muted);
+	transform-origin: center;
+	transition:
+		transform var(--duration-fast) ease-out,
+		filter var(--duration-fast) ease-out,
+		background-color var(--duration-fast) ease,
+		color var(--duration-fast) ease,
+		border-color var(--duration-fast) ease;
+}
+
+.browser-panel__tab-actions button:not(:disabled):hover,
+.browser-panel__toolbar button:not(.browser-panel__annotation-send):not(:disabled):hover,
+.browser-panel__address-bar button:not(:disabled):hover {
+	color: var(--fg);
+}
+
+.browser-panel__tab-actions button:not(:disabled):active,
+.browser-panel__toolbar button:not(:disabled):active,
+.browser-panel__address-bar button:not(:disabled):active {
+	transform: scale(0.98);
+	transform-origin: center;
+}
+
+.browser-panel__tab-region {
+	position: relative;
+	display: flex;
 	min-width: 0;
-	align-items: end;
-	padding: 6px 8px 0;
-	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
-	background: color-mix(in srgb, var(--surface) 92%, var(--bg));
+	flex: 1 1 0;
+	overflow: hidden;
 }
 
 .browser-panel__tab-strip {
 	display: flex;
-	width: fit-content;
-	max-width: calc(100% - 34px);
 	min-width: 0;
-	align-items: end;
+	align-items: center;
 	gap: 2px;
-	flex: 0 1 auto;
+	flex: 1 1 auto;
 	overflow-x: auto;
 	overflow-y: hidden;
 	scrollbar-width: none;
@@ -4319,18 +4905,31 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	display: none;
 }
 
+.browser-panel__tab-fade {
+	pointer-events: none;
+	position: absolute;
+	inset-block: 0;
+	right: 0;
+	z-index: 2;
+	width: 24px;
+	background: linear-gradient(90deg, transparent 0%, var(--bg) 82%);
+}
+
+.browser-panel__tab-fade--left {
+	left: 0;
+	right: auto;
+	background: linear-gradient(270deg, transparent 0%, var(--bg) 82%);
+}
+
 .browser-panel__tab {
 	position: relative;
 	display: flex;
-	width: 220px;
-	min-width: 52px;
-	max-width: 220px;
-	height: 32px;
-	align-items: center;
-	flex: 1 1 220px;
-	border: 1px solid transparent;
-	border-bottom: 0;
-	border-radius: 7px 7px 0 0;
+	width: 200px;
+	min-width: 150px;
+	max-width: 200px;
+	height: 28px;
+	flex: 0 1 200px;
+	border-radius: var(--radius-md);
 	color: var(--fg-muted);
 	background: transparent;
 }
@@ -4346,46 +4945,20 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	max-width: none;
 	flex: none;
 	color: var(--fg);
-	border-color: color-mix(in srgb, var(--color-border) 72%, transparent);
 	background: var(--surface);
-	box-shadow:
-		inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
-		0 6px 16px color-mix(in srgb, black 22%, transparent);
+	box-shadow: var(--shadow-popover);
 	cursor: grabbing;
 	pointer-events: none;
 }
 
-.browser-panel__tab:not(:last-child)::after {
-	position: absolute;
-	top: 8px;
-	right: -2px;
-	width: 1px;
-	height: 16px;
-	background: color-mix(in srgb, var(--color-border) 68%, transparent);
-	content: "";
-	opacity: 0.82;
-	transition: opacity 120ms ease-out;
-}
-
-.browser-panel__tab--active::after,
-.browser-panel__tab:has(+ .browser-panel__tab--active)::after,
-.browser-panel__tab:hover::after,
-.browser-panel__tab:has(+ .browser-panel__tab:hover)::after,
-.browser-panel__tab--drag-placeholder::after,
-.browser-panel__tab:has(+ .browser-panel__tab--drag-placeholder)::after {
-	opacity: 0;
-}
-
 .browser-panel__tab:hover {
 	color: var(--fg);
-	background: color-mix(in srgb, var(--surface-hover) 72%, transparent);
+	background: var(--interactive-hover);
 }
 
 .browser-panel__tab--active {
 	color: var(--fg);
-	border-color: color-mix(in srgb, var(--color-border) 72%, transparent);
-	background: var(--surface);
-	box-shadow: inset 0 1px 0 color-mix(in srgb, white 7%, transparent);
+	background: var(--interactive-active);
 }
 
 .browser-panel__tab-select {
@@ -4410,8 +4983,8 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__tab-icon {
-	width: 14px;
-	height: 14px;
+	width: 16px;
+	height: 16px;
 	flex: none;
 	color: var(--fg-passive);
 }
@@ -4425,6 +4998,8 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__tab-close {
+	position: relative;
+	top: 1px;
 	display: grid;
 	width: 26px;
 	height: 26px;
@@ -4435,11 +5010,20 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	border-radius: 5px;
 	color: var(--fg-muted);
 	background: transparent;
+	transition:
+		background var(--duration-fast) ease,
+		color var(--duration-fast) ease,
+		transform var(--duration-fast) ease;
 }
 
 .browser-panel__tab-close:not(:disabled):hover {
 	color: var(--fg);
 	background: var(--surface-hover);
+}
+
+.browser-panel__tab-close:not(:disabled):active {
+	transform: scale(0.98);
+	transform-origin: center;
 }
 
 .browser-panel__tab-close:disabled {
@@ -4456,15 +5040,20 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 
 .browser-panel__tab-new {
 	display: grid;
-	width: 30px;
-	height: 30px;
+	width: var(--size-control-md);
+	height: var(--size-control-md);
 	place-items: center;
 	flex: none;
-	margin: 0 0 1px 4px;
+	margin-left: 0;
 	border: 0;
-	border-radius: 7px;
+	border-radius: var(--radius-md);
 	color: var(--fg-muted);
 	background: transparent;
+	transform-origin: center;
+	transition:
+		background var(--duration-fast) ease,
+		color var(--duration-fast) ease,
+		transform var(--duration-fast) ease;
 }
 
 .browser-panel__tab-new--dragging {
@@ -4474,7 +5063,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 
 .browser-panel__tab-new:not(:disabled):hover {
 	color: var(--fg);
-	background: var(--surface-hover);
+	background: var(--interactive-hover);
 }
 
 .browser-panel__tab-new:focus-visible {
@@ -4482,50 +5071,43 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	outline-offset: -2px;
 }
 
-@container browser-panel (min-width: 640px) {
-	.browser-panel__tab-bar {
-		display: flex;
-	}
-
-	.browser-panel__toolbar-new-tab,
-	.browser-panel__toolbar-tabs-trigger,
-	.browser-tabs-rail {
-		display: none;
-	}
+.browser-panel__tab-new:active {
+	transform: scale(0.98);
+	transform-origin: center;
 }
 
-.browser-panel__url,
 .browser-panel__url-wrap {
 	display: flex;
 	align-items: center;
 	position: relative;
 	min-width: 0;
 	flex: 1;
+	max-width: 240px;
+	height: var(--size-control-md);
+	transition: max-width var(--duration-fast) ease;
 }
 
-.browser-panel__url-wrap {
-	height: 29px;
+.browser-panel > .browser-panel__address-bar--editing .browser-panel__url-wrap {
+	max-width: min(520px, calc(100% - 8px));
 }
 
-.browser-panel__toolbar button {
-	border-radius: 7px;
-	transition:
-		background var(--duration-fast) ease,
-		color var(--duration-fast) ease,
-		transform var(--duration-fast) ease,
-		box-shadow var(--duration-fast) ease,
-		opacity 140ms ease,
-		visibility 0s linear;
+.browser-panel__topbar-host > .browser-panel__address-bar--editing .browser-panel__url-wrap {
+	max-width: 100%;
 }
 
-.browser-panel__toolbar button:not(:disabled):hover {
-	transform: translateY(-1px);
-	box-shadow: 0 5px 12px color-mix(in srgb, black 12%, transparent);
+.browser-panel__history-suggestions {
+	--browser-history-suggestion-inset: 4px;
+	width: min(var(--radix-popover-trigger-width, 240px), calc(100vw - 16px));
+	min-width: min(var(--radix-popover-trigger-width, 240px), calc(100vw - 16px));
+	max-height: min(360px, var(--radix-popover-content-available-height));
+	padding: var(--browser-history-suggestion-inset);
+	overflow-x: hidden;
+	overflow-y: auto;
+	animation: none;
 }
 
-.browser-panel__toolbar button:not(:disabled):active {
-	transform: translateY(0);
-	box-shadow: none;
+.browser-panel__history-suggestions > [role="option"] {
+	border-radius: calc(var(--radius-settings-panel) - var(--browser-history-suggestion-inset));
 }
 
 .browser-panel__annotate-btn[aria-pressed="true"] {
@@ -4534,55 +5116,54 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 }
 
 .browser-panel__url-input {
-	position: absolute;
-	top: 0;
-	right: 0;
-	left: 0;
-	z-index: 0;
-	width: auto;
-	height: 29px;
-	border-color: color-mix(in srgb, var(--color-border) 72%, transparent);
-	border-radius: 7px;
-	background:
-		linear-gradient(180deg, color-mix(in srgb, var(--bg) 90%, white 2%), var(--bg));
-	box-shadow:
-		inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
-		0 1px 8px color-mix(in srgb, black 9%, transparent);
-	font-family: var(--font-mono);
+	width: 100%;
+	box-sizing: border-box;
+	height: var(--size-control-md);
+	border-color: var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--bg);
+	font-family: var(--font-family-base);
 	font-size: 12px;
+	text-align: center;
 	transition:
-		left 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
-		right 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
-		box-shadow var(--duration-fast) ease,
-		background-color var(--duration-fast) ease;
+		border-color var(--duration-fast) ease,
+		box-shadow var(--duration-fast) ease;
 }
 
-.browser-panel__toolbar--url-takeover .browser-panel__url-input {
-	left: var(--browser-url-expand-left, 0);
-	right: var(--browser-url-expand-right, 0);
-	z-index: 2;
+.browser-panel__url-input:focus,
+.browser-panel__url-input:focus-visible {
+	text-align: left;
+	border-color: color-mix(in oklab, var(--ring) 60%, var(--color-border));
+	box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
+	outline: none;
 }
 
-.browser-panel__url-input:focus {
-	box-shadow:
-		inset 0 1px 0 color-mix(in srgb, white 6%, transparent),
-		0 1px 8px color-mix(in srgb, black 9%, transparent);
-}
-
-.browser-panel__url-external {
+.browser-panel__url-external,
+.browser-panel__url-copy {
 	position: absolute;
 	top: 3px;
 	right: 3px;
 	z-index: 3;
 	width: 23px;
 	height: 23px;
+	border-radius: var(--radius-sm);
 	color: var(--fg-muted);
+	background: var(--surface);
+	box-shadow: 0 1px 4px color-mix(in srgb, black 18%, transparent);
 	opacity: 0;
 	pointer-events: none;
 }
 
-.browser-panel__url-wrap:hover:not(:has(.browser-panel__url-input:focus)) .browser-panel__url-external,
-.browser-panel__url-external:focus-visible {
+.browser-panel__url-copy {
+	right: 30px;
+}
+
+.browser-panel__url-copy--only {
+	right: 3px;
+}
+
+.browser-panel__url-wrap:hover:not(:has(.browser-panel__url-input:focus)) :is(.browser-panel__url-external, .browser-panel__url-copy),
+:is(.browser-panel__url-external, .browser-panel__url-copy):focus-visible {
 	opacity: 1;
 	pointer-events: auto;
 }
@@ -4595,18 +5176,16 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	background: var(--bg);
 }
 
+.browser-panel__body {
+	padding: 4px;
+	background: var(--bg);
+}
+
 .browser-panel__viewport {
 	position: relative;
 	flex: 1;
 	min-height: 0;
-	margin: 8px;
 	overflow: hidden;
-	border: 0;
-	border-radius: 8px;
-	box-shadow:
-		inset 0 0 0 1px color-mix(in srgb, var(--color-border) 28%, transparent),
-		inset 0 1px 0 color-mix(in srgb, white 3%, transparent),
-		0 12px 26px color-mix(in srgb, black 14%, transparent);
 }
 
 /* Opaque only when there's no live native page expected to show through
@@ -4615,9 +5194,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
    native WebContentsView (or, briefly, the raised transparent shell during
    an overlay) is what's actually visible here, not this div's own paint. */
 .browser-panel__viewport[data-placeholder="true"] {
-	background:
-		radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--color-accent) 8%, transparent), transparent 34%),
-		var(--bg);
+	background: var(--bg);
 }
 
 .browser-popout-overlay .browser-panel__viewport {
@@ -4730,6 +5307,7 @@ html[data-native-browser-composition="true"] .session-split:has(.browser-panel[d
 
 html[data-native-browser-composition="true"] .browser-panel[data-browser-native-page="live"],
 html[data-native-browser-composition="true"] .browser-panel[data-browser-native-page="live"] .browser-panel__content,
+html[data-native-browser-composition="true"] .browser-panel[data-browser-native-page="live"] .browser-panel__body,
 html[data-native-browser-composition="true"] .browser-panel[data-browser-native-page="live"] .browser-panel__viewport {
 	background: transparent !important;
 	box-shadow: none;
@@ -4778,12 +5356,16 @@ html[data-native-browser-composition="true"] .browser-popout-frame {
 	.browser-panel,
 	.browser-panel__toolbar button,
 	.browser-panel__toolbar > :not(.browser-panel__url-wrap),
-	.browser-panel__url-input {
+	.browser-panel__url-input,
+	.browser-panel__tab-new,
+	.browser-panel__tab-close {
 		transition: none;
 	}
 
 	.browser-panel__toolbar button:not(:disabled):hover,
-	.browser-panel__toolbar button:not(:disabled):active {
+	.browser-panel__toolbar button:not(:disabled):active,
+	.browser-panel__tab-new:active,
+	.browser-panel__tab-close:not(:disabled):active {
 		transform: none;
 	}
 }

@@ -41,12 +41,14 @@ export function collectPRs(sessions: DashboardSession[]): { pr: DashboardPR; ses
 	return out;
 }
 
-export type Tone = "neutral" | "passive" | "success" | "warning" | "error";
+export type Tone = "neutral" | "passive" | "success" | "warning" | "error" | "merged";
 
 export function toneColor(t: Theme, tone: Tone): string {
 	switch (tone) {
 		case "success":
 			return t.green;
+		case "merged":
+			return t.purple;
 		case "warning":
 			return t.amber;
 		case "error":
@@ -76,6 +78,10 @@ export function prTitle(pr: DashboardPR, fallback?: string | null): string {
 }
 
 export type PRLifecycle = "draft" | "open" | "merged" | "closed";
+export type PRListFilter = "open" | "merged" | "all";
+export type PRListItem = { pr: DashboardPR; session: DashboardSession };
+export type PRListSectionKey = "ready" | "attention" | "review" | "draft" | "merged" | "closed";
+export type PRListSection = { key: PRListSectionKey; label: string; data: PRListItem[] };
 
 /** Lifecycle state, reading `isDraft` — which the card has never rendered. */
 export function prLifecycle(pr: DashboardPR): PRLifecycle {
@@ -84,6 +90,41 @@ export function prLifecycle(pr: DashboardPR): PRLifecycle {
 	// `mapPR` folds the wire's "draft" into state:"open" and records it here, so
 	// the flag is the only place draft survives.
 	return pr.isDraft ? "draft" : "open";
+}
+
+function prListSectionKey(pr: DashboardPR): PRListSectionKey {
+	const life = prLifecycle(pr);
+	if (life === "merged" || life === "closed" || life === "draft") return life;
+	if (pr.mergeability?.mergeable && pr.reviewDecision === "approved") return "ready";
+	if (pr.ciStatus === "failing" || pr.reviewDecision === "changes_requested" || !!pr.unresolvedThreads) {
+		return "attention";
+	}
+	return "review";
+}
+
+const PR_LIST_SECTIONS: readonly { key: PRListSectionKey; label: string }[] = [
+	{ key: "ready", label: "Ready to merge" },
+	{ key: "attention", label: "Needs attention" },
+	{ key: "review", label: "In review" },
+	{ key: "draft", label: "Drafts" },
+	{ key: "merged", label: "Merged" },
+	{ key: "closed", label: "Closed" },
+];
+
+export function prListSections(items: PRListItem[], filter: PRListFilter): PRListSection[] {
+	const allowed = (key: PRListSectionKey) => {
+		if (filter === "open") return key !== "merged" && key !== "closed";
+		if (filter === "merged") return key === "merged";
+		return true;
+	};
+
+	return PR_LIST_SECTIONS.flatMap(({ key, label }) => {
+		if (!allowed(key)) return [];
+		const data = items
+			.filter(({ pr }) => prListSectionKey(pr) === key)
+			.sort((a, b) => b.pr.number - a.pr.number);
+		return data.length ? [{ key, label, data }] : [];
+	});
 }
 
 export function prStateVisual(t: Theme, pr: DashboardPR): { label: PRLifecycle; color: string; tint: string } {
@@ -134,7 +175,7 @@ export function mergeReasonLabel(reason: string): string {
  */
 export function prSummaryLine(pr: DashboardPR): { text: string; tone: Tone } {
 	const life = prLifecycle(pr);
-	if (life === "merged") return { text: "Merged", tone: "success" };
+	if (life === "merged") return { text: "Merged", tone: "merged" };
 	if (life === "closed") return { text: "Closed without merging", tone: "passive" };
 
 	const atoms: { text: string; tone: Tone }[] = [];
@@ -176,10 +217,11 @@ export type RichPR = {
  * noise about a PR nobody can act on.
  */
 export function prStatusAtoms(rich: RichPR): { text: string; tone: Tone }[] {
-	// Green, not the badge's purple: this line is the status summary, the same
-	// slot that says "CI passing · Mergeable". Purple is reserved for the
-	// lifecycle badge on the identity line above.
-	if (rich.state === "merged") return [{ text: "Merged", tone: "success" }];
+	// Purple, matching the lifecycle badge on the identity line above. This line
+	// used to say green — "the status summary slot" — which put the word Merged in
+	// a different colour from the badge saying the same thing two lines up, and in
+	// the same green the card uses for "Mergeable", a state you can still act on.
+	if (rich.state === "merged") return [{ text: "Merged", tone: "merged" }];
 	if (rich.state === "closed") return [{ text: "Closed", tone: "passive" }];
 
 	const atoms: { text: string; tone: Tone }[] = [];

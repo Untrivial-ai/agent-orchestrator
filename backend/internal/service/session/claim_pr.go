@@ -94,10 +94,8 @@ func (s *Service) ClaimPR(ctx context.Context, id domain.SessionID, ref string, 
 	if err != nil {
 		return ClaimPRResult{}, err
 	}
-	if err := requireSameRepo(prURL, project.RepoOriginURL); err != nil {
-		if project.Config.CanonicalRepoURL == "" || requireSameRepo(prURL, project.Config.CanonicalRepoURL) != nil {
-			return ClaimPRResult{}, err
-		}
+	if err := s.requireProjectPRRepository(ctx, project, prURL); err != nil {
+		return ClaimPRResult{}, err
 	}
 	if s.scm == nil || s.prClaimer == nil {
 		return ClaimPRResult{}, ErrSCMUnavailable
@@ -128,7 +126,7 @@ func (s *Service) ClaimPR(ctx context.Context, id domain.SessionID, ref string, 
 		return ClaimPRResult{}, err
 	}
 	now := s.clock().UTC()
-	pr, checks, reviews, threads, comments := claimRowsFromSCM(id, obs, now, rec)
+	pr, checks, reviews, threads, comments := claimRowsFromSCM(id, obs, reviewMode, now, rec)
 	outcome, err := s.prClaimer.ClaimPR(ctx, pr, checks, reviews, threads, comments, reviewMode, opts.AllowTakeover)
 	if err != nil {
 		return ClaimPRResult{}, err
@@ -139,13 +137,36 @@ func (s *Service) ClaimPR(ctx context.Context, id domain.SessionID, ref string, 
 	}
 	prs = claimedFirst(prs, prURL)
 	// TODO: implement workspace branch checkout. Until then, leave BranchChanged
-	// false and let CLI output omit the checkout line rather than claiming the
-	// session was already on the PR branch.
+	// false and have CLI output report that the workspace was unchanged, without
+	// assuming the session was already on the PR branch.
 	res := ClaimPRResult{PRs: prs, BranchChanged: false, DonorWasTerminated: outcome.OwnerTerminated}
 	if outcome.PreviousOwner != "" && outcome.PreviousOwner != id {
 		res.TakenOverFrom = []domain.SessionID{outcome.PreviousOwner}
 	}
 	return res, nil
+}
+
+func (s *Service) requireProjectPRRepository(ctx context.Context, project domain.ProjectRecord, prURL string) error {
+	originErr := requireSameRepo(prURL, project.RepoOriginURL)
+	if originErr == nil || (project.Config.CanonicalRepoURL != "" && requireSameRepo(prURL, project.Config.CanonicalRepoURL) == nil) {
+		return nil
+	}
+	if project.Kind.WithDefault() != domain.ProjectKindWorkspace {
+		return originErr
+	}
+	repos, err := s.store.ListWorkspaceRepos(ctx, project.ID)
+	if err != nil {
+		return fmt.Errorf("list workspace repositories for project %s: %w", project.ID, err)
+	}
+	for _, repo := range repos {
+		// A workspace root and local-only children may have no SCM identity.
+		// Only registered, parseable origins authorize a child repository;
+		// arbitrary checkout remotes never grant claim permission.
+		if requireSameRepo(prURL, repo.RepoOriginURL) == nil {
+			return nil
+		}
+	}
+	return ErrProjectMismatch
 }
 
 func (s *Service) fetchClaimObservation(ctx context.Context, ref ports.SCMPRRef) (ports.SCMObservation, error) {
@@ -213,10 +234,20 @@ func providerKey(host string) string {
 	return domain.RepositoryProvider(host)
 }
 
-func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, now time.Time, sessionRecord domain.SessionRecord) (domain.PullRequest, []domain.PullRequestCheck, []domain.PullRequestReview, []domain.PullRequestReviewThread, []domain.PullRequestComment) {
+func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, reviewMode ports.ReviewWriteMode, now time.Time, sessionRecord domain.SessionRecord) (domain.PullRequest, []domain.PullRequestCheck, []domain.PullRequestReview, []domain.PullRequestReviewThread, []domain.PullRequestComment) {
 	observedAt := obs.ObservedAt
 	if observedAt.IsZero() {
 		observedAt = now
+	}
+	// Review completeness follows the claim's own review fetch: a preserved
+	// (failed) review fetch passes a zero ReviewObservedAt so the upsert keeps
+	// the stored pair instead of publishing claim-time certainty it does not
+	// have. enrichClaimReviews fills obs.Review.Partial only on success.
+	reviewObservedAt := time.Time{}
+	reviewPartial := false
+	if reviewMode != ports.ReviewWritePreserve {
+		reviewObservedAt = observedAt
+		reviewPartial = obs.Review.Partial
 	}
 	pr := domain.PullRequest{
 		URL:                      firstNonEmpty(obs.PR.URL, obs.PR.HTMLURL),
@@ -240,6 +271,7 @@ func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, now 
 		Deletions:                obs.PR.Deletions,
 		ChangedFiles:             obs.PR.ChangedFiles,
 		Author:                   obs.PR.Author,
+		AuthorAvatarURL:          obs.PR.AuthorAvatarURL,
 		BaseSHA:                  obs.PR.BaseSHA,
 		MergeCommitSHA:           obs.PR.MergeCommitSHA,
 		ProviderState:            obs.PR.ProviderState,
@@ -252,7 +284,8 @@ func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, now 
 		ClosedAtProvider:         obs.PR.ClosedAtProvider,
 		ObservedAt:               observedAt,
 		CIObservedAt:             observedAt,
-		ReviewObservedAt:         observedAt,
+		ReviewObservedAt:         reviewObservedAt,
+		ReviewPartial:            reviewPartial,
 	}
 	checks := make([]domain.PullRequestCheck, 0, len(obs.CI.Checks))
 	for _, ch := range obs.CI.Checks {
@@ -285,7 +318,7 @@ func claimRowsFromSCM(sessionID domain.SessionID, obs ports.SCMObservation, now 
 	for _, th := range obs.Review.Threads {
 		threads = append(threads, domain.PullRequestReviewThread{ThreadID: th.ID, Path: th.Path, Line: th.Line, Resolved: th.Resolved, IsBot: th.IsBot, UpdatedAt: now})
 		for _, c := range th.Comments {
-			comments = append(comments, domain.PullRequestComment{ThreadID: th.ID, ReviewID: c.ReviewID, ID: c.ID, Author: c.Author, File: th.Path, Line: th.Line, Body: c.Body, URL: c.URL, Resolved: th.Resolved, IsBot: c.IsBot || th.IsBot, CreatedAt: now, AutoInjectReview: sessionRecord.AutoInjectReview})
+			comments = append(comments, domain.PullRequestComment{ThreadID: th.ID, ReviewID: c.ReviewID, ID: c.ID, Author: c.Author, File: th.Path, Line: th.Line, Body: c.Body, URL: c.URL, Resolved: th.Resolved, IsBot: c.IsBot, CreatedAt: now, AutoInjectReview: sessionRecord.AutoInjectReview})
 		}
 	}
 	return pr, checks, reviews, threads, comments

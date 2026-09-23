@@ -2,9 +2,11 @@
 import { describe, expect, it } from "vitest";
 import {
 	dockBounceType,
+	osToastChimeControllable,
 	shouldReplaceBounce,
 	shouldSignalAttention,
 	shouldToast,
+	toastSilent,
 	type NotificationType,
 } from "./notification-signals";
 
@@ -49,6 +51,45 @@ describe("shouldReplaceBounce", () => {
 
 	it("never replaces a pending critical bounce, so a blocked agent stays loud", () => {
 		expect(shouldReplaceBounce({ critical: true })).toBe(false);
+	});
+});
+
+describe("osToastChimeControllable", () => {
+	// Platform contract: Electron's mac and win presenters read `silent`;
+	// the Linux libnotify presenter does not (no suppress-sound hint).
+	it.each(["darwin", "win32"] as const)("is controllable on %s", (platform) => {
+		expect(osToastChimeControllable(platform)).toBe(true);
+	});
+
+	it.each(["linux", "freebsd", "openbsd"] as const)("is not controllable on %s", (platform) => {
+		expect(osToastChimeControllable(platform)).toBe(false);
+	});
+});
+
+describe("toastSilent", () => {
+	const HONOURING: NodeJS.Platform[] = ["darwin", "win32"];
+
+	it.each(HONOURING)("on %s mutes the toast whenever sound notifications are off", (platform) => {
+		expect(toastSilent(platform, false, false)).toBe(true);
+		expect(toastSilent(platform, false, true)).toBe(true);
+	});
+
+	it.each(HONOURING)("on %s mutes the toast when AO plays its own sound", (platform) => {
+		expect(toastSilent(platform, true, true)).toBe(true);
+	});
+
+	it.each(HONOURING)("on %s keeps the native chime for an informational toast when sound is on", (platform) => {
+		expect(toastSilent(platform, true, false)).toBe(false);
+	});
+
+	// On Linux the value would be ignored, so no combination may claim a mute.
+	it.each([
+		[false, false],
+		[false, true],
+		[true, false],
+		[true, true],
+	])("on linux never claims control (enabled=%s, playsSound=%s)", (enabled, playsSound) => {
+		expect(toastSilent("linux", enabled, playsSound)).toBeUndefined();
 	});
 });
 

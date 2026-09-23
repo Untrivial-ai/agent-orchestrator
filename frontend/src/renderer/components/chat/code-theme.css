@@ -39,7 +39,10 @@
 
 :is(.chat-code, .diff-code, .markdown-code) .hljs-comment,
 :is(.chat-code, .diff-code, .markdown-code) .hljs-quote {
-	color: var(--color-text-passive);
+	/* Passive text is intentionally very faint and becomes unreadable on the
+	   raised dark code surface. Comments are content, so use the accessible
+	   secondary-text role instead. */
+	color: var(--color-text-muted);
 	font-style: italic;
 }
 

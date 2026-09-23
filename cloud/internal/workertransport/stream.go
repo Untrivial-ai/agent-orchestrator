@@ -30,19 +30,17 @@ type terminalStream struct {
 	conn   *websocket.Conn
 	ctx    context.Context
 	mu     sync.Mutex
-	nextID int64
 	broken bool
 }
 
-func (t *terminalStream) sendOutput(data []byte) bool {
+func (t *terminalStream) sendOutput(id int64, data []byte) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.broken {
 		return false
 	}
-	t.nextID++
 	frame, err := json.Marshal(worker.TerminalStreamFrame{
-		Type: "output", Data: data, ID: t.nextID,
+		Type: "output", Data: data, ID: id,
 	})
 	if err != nil {
 		return false

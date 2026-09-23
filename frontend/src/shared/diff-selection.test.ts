@@ -6,6 +6,21 @@ import {
 } from "./diff-selection";
 
 describe("formatDiffSelectionMessage", () => {
+	it("includes opaque revision context when the review surface provides it", () => {
+		const message = formatDiffSelectionMessage({
+			instruction: "Explain",
+			filePath: "src/app.ts",
+			lines: [{ kind: "add", oldNo: null, newNo: 4, text: "return true;" }],
+			scope: "staged",
+			workspaceVersion: "workspace-123",
+			fileFingerprint: "file-456",
+		});
+
+		expect(message).toContain("Comparison scope: staged");
+		expect(message).toContain("Workspace version: workspace-123");
+		expect(message).toContain("File fingerprint: file-456");
+	});
+
 	it("formats a simple selection of context, add, and del lines with line range", () => {
 		const payload: DiffSelectionPayload = {
 			instruction: "Explain this change",

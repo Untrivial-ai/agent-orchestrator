@@ -29,3 +29,12 @@ type UserProviderConnection struct {
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
+
+// WorkerGitHubPAT is the encrypted personal access token the current worker
+// may use only for its own session's GitHub repository.
+type WorkerGitHubPAT struct {
+	OwnerUserID     string
+	CloneURL        string
+	EncryptedSecret []byte
+	Nonce           []byte
+}

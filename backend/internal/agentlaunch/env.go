@@ -2,6 +2,7 @@ package agentlaunch
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,11 +12,73 @@ import (
 	"strings"
 )
 
+const aoBinaryName = "ao"
+
+// PinnedPATH prepends an AO-only directory to the supplied
+// PATH. It rejects executables not named ao because their directory cannot
+// guarantee the identity of a bare ao command.
+func PinnedPATH(executable func() (string, error), getenv func(string) string, configured map[string]string, dataDir string) (string, error) {
+	exe, err := executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve daemon executable: %w", err)
+	}
+	dir, err := pinDirectory(exe, dataDir)
+	if err != nil {
+		return "", err
+	}
+	if dir == "" {
+		return "", fmt.Errorf("daemon executable %s is not named %q", exe, aoBinaryName)
+	}
+	base := configuredPATH(configured, runtime.GOOS == "windows")
+	if base == "" {
+		base = getenv("PATH")
+	}
+	if base == "" {
+		return dir, nil
+	}
+	return dir + string(os.PathListSeparator) + base, nil
+}
+
+func configuredPATH(configured map[string]string, caseInsensitive bool) string {
+	if path, ok := configured["PATH"]; ok {
+		return path
+	}
+	if caseInsensitive {
+		for key, value := range configured {
+			if strings.EqualFold(key, "PATH") {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+// PinnedDir returns the directory PinnedPATH would place first.
+func PinnedDir(executable func() (string, error), dataDir string) string {
+	exe, err := executable()
+	if err != nil {
+		return ""
+	}
+	dir, _ := pinDirectory(exe, dataDir)
+	return dir
+}
+
+func pinnedDirForExecutable(exe string) string {
+	name := filepath.Base(exe)
+	if runtime.GOOS == "windows" {
+		name = strings.TrimSuffix(strings.ToLower(name), ".exe")
+	}
+	if name != aoBinaryName {
+		return ""
+	}
+	return filepath.Dir(exe)
+}
+
 // AugmentRuntimePATHForLaunchBinary prepends the resolved launch binary
 // directory to the child PATH. For Node-backed CLI shims, it also prepends a
 // concrete Node runtime directory so shebangs like #!/usr/bin/env node work for
 // children of GUI-launched processes whose PATH may omit shell-manager setup.
-func AugmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]string, argv []string, lookPath func(string) (string, error)) {
+func AugmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]string, argv []string, lookPath func(string) (string, error), pinnedDir string) {
 	bin, ok := launchBinary(argv)
 	if !ok || !filepath.IsAbs(bin) {
 		return
@@ -39,7 +102,24 @@ func AugmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]strin
 			parts = append([]string{dirs[i]}, parts...)
 		}
 	}
+	parts = restorePinnedDir(parts, pinnedDir)
 	env["PATH"] = strings.Join(parts, string(os.PathListSeparator))
+}
+
+func restorePinnedDir(parts []string, dir string) []string {
+	if dir == "" || len(parts) == 0 || parts[0] == dir {
+		return parts
+	}
+	for i, part := range parts {
+		if part != dir {
+			continue
+		}
+		out := make([]string, 0, len(parts))
+		out = append(out, dir)
+		out = append(out, parts[:i]...)
+		return append(out, parts[i+1:]...)
+	}
+	return parts
 }
 
 func launchBinary(argv []string) (string, bool) {

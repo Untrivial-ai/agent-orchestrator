@@ -37,14 +37,14 @@ describe("ActivityRun nested agents", () => {
 		);
 
 		await user.click(screen.getByRole("button", { name: /Ran 2 tool calls/i }));
-		expect(screen.getByRole("button", { name: /Subagent 1 step/i })).toHaveAttribute(
+		expect(await screen.findByRole("button", { name: /Subagent 1 step/i })).toHaveAttribute(
 			"aria-expanded",
 			"false",
 		);
 		expect(screen.queryByText("Search source files")).not.toBeInTheDocument();
 
 		await user.click(screen.getByRole("button", { name: /Subagent 1 step/i }));
-		expect(screen.getByText("Search source files")).toBeInTheDocument();
+		expect(await screen.findByText("Search source files")).toBeInTheDocument();
 	});
 
 	it("keeps malformed provider cycles visible at the top level", async () => {
@@ -58,7 +58,7 @@ describe("ActivityRun nested agents", () => {
 			/>,
 		);
 		await user.click(screen.getByRole("button", { name: /Ran 2 tool calls/i }));
-		expect(screen.getByText("First")).toBeInTheDocument();
-		expect(screen.getByText("Second")).toBeInTheDocument();
+		expect(await screen.findByText("First")).toBeInTheDocument();
+		expect(await screen.findByText("Second")).toBeInTheDocument();
 	});
 });

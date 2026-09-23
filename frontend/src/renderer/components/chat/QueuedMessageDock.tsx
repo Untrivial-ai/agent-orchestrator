@@ -291,6 +291,7 @@ function SortableQueuedMessageRow({
 
 export const QueuedMessageDock = memo(function QueuedMessageDock({
 	messages,
+	disabled,
 	editingTurnId,
 	canSteer,
 	canSteerNext,
@@ -303,6 +304,7 @@ export const QueuedMessageDock = memo(function QueuedMessageDock({
 	cancelPendingTurnId,
 }: {
 	messages: QueuedMessage[];
+	disabled?: boolean;
 	editingTurnId?: string;
 	canSteer?: boolean;
 	canSteerNext?: boolean;
@@ -608,7 +610,7 @@ export const QueuedMessageDock = memo(function QueuedMessageDock({
 							>
 								{displayMessages.map(({ turnId, message }, index) => {
 									const busy =
-										promotePendingTurnId === turnId || cancelPendingTurnId === turnId;
+										disabled || promotePendingTurnId === turnId || cancelPendingTurnId === turnId;
 									const isNextQueuedTurn = turnId === nextQueuedTurnId;
 									return (
 										<SortableQueuedMessageRow
