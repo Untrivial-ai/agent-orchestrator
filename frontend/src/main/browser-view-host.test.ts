@@ -87,7 +87,10 @@ describe("browser URL sanitization", () => {
 });
 
 type InvokeHandler = (event: unknown, ...args: unknown[]) => unknown;
-type EventHandler = (event: { sender: { id: number; getZoomFactor?: () => number } }, ...args: unknown[]) => unknown;
+type EventHandler = (
+	event: { sender: { id: number; getZoomFactor?: () => number; send?: (channel: string, payload: unknown) => void } },
+	...args: unknown[]
+) => unknown;
 
 function annotationDraft(url = "http://localhost:4173/"): BrowserAnnotationDraft {
 	return {
@@ -324,7 +327,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 	const invokeFromTab = (channel: string, senderId: number, ...args: unknown[]) =>
 		handlers.get(channel)!({ sender: { id: senderId } }, ...args);
 	const emit = (channel: string, zoomFactor: number, ...args: unknown[]) =>
-		eventHandlers.get(channel)!({ sender: { id: 1, getZoomFactor: () => zoomFactor } }, ...args);
+		eventHandlers.get(channel)!({ sender: { id: 1, getZoomFactor: () => zoomFactor, send: shellSend } }, ...args);
 	const send = (channel: string, senderId: number, ...args: unknown[]) =>
 		eventHandlers.get(channel)!({ sender: { id: senderId } }, ...args);
 	const emitBeforeInput = (input: {
@@ -544,6 +547,7 @@ describe("browser shortcut routing", () => {
 		// not drop the shortcut target or the next ⌘T opens a shell terminal instead.
 		emit("browser:setBounds", 1, {
 			viewId: state.viewId,
+			revision: 1,
 			rect: { x: 0, y: 0, width: 10, height: 10 },
 			visible: false,
 		});
@@ -574,6 +578,7 @@ describe("browser shortcut routing", () => {
 		// Blank-tab hide must not drop the shortcut target.
 		emit("browser:setBounds", 1, {
 			viewId: state.viewId,
+			revision: 1,
 			rect: { x: 0, y: 0, width: 10, height: 10 },
 			visible: false,
 		});
@@ -982,7 +987,13 @@ function setupTabHost(
 	const invokeFromTab = (channel: string, senderId: number, ...args: unknown[]) =>
 		handlers.get(channel)!({ sender: { id: senderId } }, ...args) as Promise<unknown>;
 	const emit = (channel: string, ...args: unknown[]) =>
-		eventHandlers.get(channel)!({ sender: { id: 1, getZoomFactor: () => 1 } }, ...args);
+		eventHandlers.get(channel)!({
+			sender: {
+				id: 1,
+				getZoomFactor: () => 1,
+				send: (sentChannel: string, payload: unknown) => sent.push({ channel: sentChannel, payload }),
+			},
+		}, ...args);
 	const sendFromTab = (channel: string, senderId: number, ...args: unknown[]) =>
 		eventHandlers.get(channel)!({ sender: { id: senderId } }, ...args);
 	return {
@@ -1426,7 +1437,7 @@ describe("native Chromium DevTools host", () => {
 		const nav = await invoke("browser:ensure", "sess-1");
 		const viewId = (nav as BrowserNavState).viewId;
 		await invoke("browser:navigate", { viewId, url: "http://localhost:3000/" });
-		emit("browser:setBounds", 1, { viewId, rect: { x: 20, y: 30, width: 700, height: 500 }, visible: true });
+		emit("browser:setBounds", 1, { viewId, revision: 1, rect: { x: 20, y: 30, width: 700, height: 500 }, visible: true });
 
 		const opened = await invoke("browser:devtools", { viewId, operation: "open" });
 		expect(opened).toMatchObject({ open: true, placement: "right" });
@@ -1732,6 +1743,7 @@ describe("browser profile partitions and replacement", () => {
 		await invoke("browser:openTab", { viewId: nav.viewId, url: "https://example.com/" });
 		emit("browser:setBounds", {
 			viewId: nav.viewId,
+			revision: 1,
 			rect: { x: 24, y: 32, width: 640, height: 420 },
 			visible: true,
 		});
@@ -1983,6 +1995,7 @@ describe("native browser visibility", () => {
 
 		emit("browser:setBounds", 1, {
 			viewId: "1:sess-1",
+			revision: 1,
 			rect: { x: 10, y: 20, width: 320, height: 240 },
 			visible: true,
 		});
@@ -2006,6 +2019,7 @@ describe("native browser visibility", () => {
 		await invoke("browser:ensure", "sess-1");
 		emit("browser:setBounds", 1, {
 			viewId: "1:sess-1",
+			revision: 1,
 			rect: { x: 10, y: 20, width: 320, height: 240 },
 			visible: true,
 		});
@@ -2034,6 +2048,7 @@ describe("native browser visibility", () => {
 
 		emit("browser:setBounds", 1.25, {
 			viewId: "1:sess-1",
+			revision: 1,
 			rect: { x: 100.25, y: 20.25, width: 319.5, height: 239.5 },
 			visible: true,
 		});
@@ -2277,6 +2292,7 @@ describe("agent browser runtime", () => {
 		const ensured = (await invoke("browser:ensure", "sess-1")) as BrowserNavState;
 		emit("browser:setBounds", {
 			viewId: ensured.viewId,
+			revision: 1,
 			rect: { x: 10, y: 20, width: 320, height: 240 },
 			visible: true,
 		});
@@ -2832,6 +2848,38 @@ describe("agent browser network capture", () => {
 });
 
 describe("browser:setBounds", () => {
+	it("keeps the newest geometry across 200 rapid updates and acknowledges only applied revisions", async () => {
+		const { emit, invoke, shellSend, view } = setupHost();
+		await invoke("browser:ensure", "sess-1");
+		view.setBounds.mockClear();
+		shellSend.mockClear();
+
+		for (let revision = 1; revision <= 200; revision += 1) {
+			emit("browser:setBounds", 1, {
+				viewId: "1:sess-1",
+				revision,
+				rect: { x: revision, y: 20, width: 320, height: 240 },
+				visible: true,
+			});
+		}
+		emit("browser:setBounds", 1, {
+			viewId: "1:sess-1",
+			revision: 100,
+			rect: { x: 999, y: 20, width: 320, height: 240 },
+			visible: true,
+		});
+
+		expect(view.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 20, width: 320, height: 240 });
+		const acknowledgements = shellSend.mock.calls.filter(([channel]) => channel === "browser:boundsApplied");
+		expect(acknowledgements).toHaveLength(200);
+		expect(acknowledgements.at(-1)?.[1]).toEqual({
+			viewId: "1:sess-1",
+			revision: 200,
+			rect: { x: 200, y: 20, width: 320, height: 240 },
+			visible: true,
+		});
+	});
+
 	it("converts page-zoomed renderer slot bounds before positioning the native view", async () => {
 		const { emit, invoke, view } = setupHost();
 		await invoke("browser:ensure", "sess-1");
@@ -2839,6 +2887,7 @@ describe("browser:setBounds", () => {
 
 		emit("browser:setBounds", 1.25, {
 			viewId: "1:sess-1",
+			revision: 1,
 			rect: { x: 100, y: 20, width: 320, height: 240 },
 			visible: true,
 		});
@@ -2857,12 +2906,14 @@ describe("browser:setBounds", () => {
 
 		emit("browser:setBounds", 1, {
 			viewId: "1:sess-1",
+			revision: 1,
 			rect: { x: 100, y: 20, width: 320, height: 240 },
 			visible: true,
 		});
 		expect(view.setVisible).toHaveBeenLastCalledWith(false);
 		emit("browser:setBounds", 1, {
 			viewId: "1:sess-1",
+			revision: 2,
 			rect: { x: 0, y: 0, width: 0, height: 0 },
 			visible: false,
 		});
@@ -2880,6 +2931,7 @@ describe("browser:setBounds", () => {
 		await invoke("browser:ensure", "sess-1");
 		emit("browser:setBounds", 1, {
 			viewId: "1:sess-1",
+			revision: 1,
 			rect: { x: 100, y: 20, width: 320, height: 240 },
 			visible: true,
 		});
@@ -3450,7 +3502,7 @@ describe("getLastFocusedPanelContents", () => {
 			rendererOrigin: "http://localhost:5173",
 		});
 		const call = (channel: string, ...args: unknown[]) =>
-			handlers.get(channel)!({ sender: { id: 1, getZoomFactor: () => 1 } }, ...args);
+			handlers.get(channel)!({ sender: { id: 1, getZoomFactor: () => 1, send: shellSend } }, ...args);
 		return { host, call, shellSend, webContents, focus: () => focusListener?.() };
 	}
 
@@ -3468,7 +3520,7 @@ describe("getLastFocusedPanelContents", () => {
 		expect(host.getLastFocusedPanelContents()).toBe(webContents);
 		expect(shellSend).toHaveBeenCalledWith("browser:pageFocus", "1:s");
 
-		call("browser:setBounds", { viewId: "1:s", rect: { x: 0, y: 0, width: 10, height: 10 }, visible: false });
+		call("browser:setBounds", { viewId: "1:s", revision: 1, rect: { x: 0, y: 0, width: 10, height: 10 }, visible: false });
 		expect(host.getLastFocusedPanelContents()).toBeNull();
 
 		focus();
@@ -3747,7 +3799,12 @@ describe("browser human pointer and annotated screenshots", () => {
 	it("forwards the human pointer option for clicks and drags only when asked", async () => {
 		const { host, runtime, invoke, emit } = setupPointerHost();
 		const ensure = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
-		emit("browser:setBounds", 1, { viewId: ensure.viewId, rect: { x: 0, y: 0, width: 10, height: 10 }, visible: true });
+		emit("browser:setBounds", 1, {
+			viewId: ensure.viewId,
+			revision: 1,
+			rect: { x: 0, y: 0, width: 10, height: 10 },
+			visible: true,
+		});
 		const nativeArgs = () =>
 			(runtime.runAction as unknown as ReturnType<typeof vi.fn>).mock.calls.map((call: unknown[]) => call[2]);
 
@@ -3767,7 +3824,12 @@ describe("browser human pointer and annotated screenshots", () => {
 	it("fails fast for a human pointer action while the Browser panel is hidden", async () => {
 		const { host, invoke, emit } = setupPointerHost();
 		const ensure = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
-		emit("browser:setBounds", 1, { viewId: ensure.viewId, rect: { x: 0, y: 0, width: 10, height: 10 }, visible: false });
+		emit("browser:setBounds", 1, {
+			viewId: ensure.viewId,
+			revision: 1,
+			rect: { x: 0, y: 0, width: 10, height: 10 },
+			visible: false,
+		});
 
 		await expect(host.execute("sess-1", "click", { ref: "e1", human: true })).rejects.toMatchObject({
 			code: "BROWSER_PANEL_HIDDEN",

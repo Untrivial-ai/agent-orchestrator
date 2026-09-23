@@ -141,6 +141,7 @@ type InternalBrowserDevToolsOperation = BrowserDevToolsInput["operation"] | "tog
 
 type BrowserBoundsInput = {
 	viewId: string;
+	revision: number;
 	rect: BrowserRect;
 	visible: boolean;
 };
@@ -393,6 +394,7 @@ type BrowserSessionEntry = {
 	rendererBounds: BrowserRect;
 	zoomFactor: number;
 	visible: boolean;
+	layoutRevision: number;
 	networkTabId?: string;
 	agentBrowserCommands: number;
 	browserOperations: number;
@@ -834,6 +836,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				rendererBounds: OFFSCREEN_BOUNDS,
 				zoomFactor: 1,
 				visible: false,
+				layoutRevision: 0,
 				agentBrowserCommands: 0,
 				browserOperations: 0,
 				profileSwitching: false,
@@ -1475,9 +1478,10 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		}
 	}
 
-	const setBounds = ({ viewId, rect, visible }: BrowserBoundsInput, zoomFactor = 1): void => {
+	const setBounds = ({ viewId, revision, rect, visible }: BrowserBoundsInput, zoomFactor = 1): BrowserBoundsInput | undefined => {
 		const session = entries.get(viewId);
-		if (!session) return;
+		if (!session || !Number.isSafeInteger(revision) || revision <= session.layoutRevision) return;
+		session.layoutRevision = revision;
 		const effectiveZoomFactor = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
 		session.zoomFactor = effectiveZoomFactor;
 		if (!visible) {
@@ -1487,7 +1491,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			// Hiding the native surface (blank tab, transient measure) must not drop
 			// the browser shortcut target — the panel chrome is still the context.
 			forgetNativeFocus(viewId);
-			return;
+			return { viewId, revision, rect: session.bounds, visible: false };
 		}
 		// The renderer measures the slot in page-zoomed CSS pixels, while
 		// WebContentsView bounds are window coordinates. Convert before clamping so
@@ -1506,6 +1510,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		// becomes visible. Remember that active panel too, so the DevTools shortcut
 		// still targets the browser even when the native page itself is not focused.
 		lastFocusedViewId = viewId;
+		return { viewId, revision, rect: session.bounds, visible: true };
 	};
 
 	const navigate = async ({ viewId, url }: BrowserNavigateInput): Promise<BrowserNavState> => {
@@ -2044,7 +2049,9 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		return pushNavState(options, activeEntry(session));
 	});
 	on("browser:setBounds", (event, input: BrowserBoundsInput) => {
-		if (isRendererOwned(event, input.viewId)) setBounds(input, event.sender.getZoomFactor());
+		if (!input || !isRendererOwned(event, input.viewId)) return;
+		const applied = setBounds(input, event.sender.getZoomFactor());
+		if (applied) event.sender.send("browser:boundsApplied", applied);
 	});
 	handle("browser:navigate", (event, input: BrowserNavigateInput) =>
 		isRendererOwned(event, input.viewId) ? navigate(input) : emptyNavState(input.viewId),

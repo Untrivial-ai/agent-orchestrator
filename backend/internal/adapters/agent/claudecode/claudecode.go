@@ -64,6 +64,10 @@ func New() *Plugin {
 // accepted. See ports.SubmitActivitySignaler.
 func (p *Plugin) EmitsSubmitActivity() bool { return true }
 
+// EmitsSemanticMessageAcceptance reports that UserPromptSubmit includes the
+// accepted prompt, allowing AO delivery ids to be correlated semantically.
+func (p *Plugin) EmitsSemanticMessageAcceptance() bool { return true }
+
 // EmitsBlockedActivity signals that Claude Code fires both pre- and post-tool
 // hooks, so Activity.State can flip to blocked mid-turn on a permission dialog
 // and the guarded send loop can clear it once the tool completes. Only

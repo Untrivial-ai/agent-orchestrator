@@ -99,9 +99,12 @@ if (typeof document !== "undefined") {
 
 export type BrowserBoundsInput = {
 	viewId: string;
+	revision: number;
 	rect: BrowserRect;
 	visible: boolean;
 };
+
+export type BrowserBoundsApplied = BrowserBoundsInput;
 
 export type BrowserNavigateInput = {
 	viewId: string;
@@ -383,6 +386,13 @@ const api = {
 		nativeCompositionEnabled: true,
 		ensure: (sessionId: string) => ipcRenderer.invoke("browser:ensure", sessionId) as Promise<BrowserNavState>,
 		setBounds: (input: BrowserBoundsInput) => ipcRenderer.send("browser:setBounds", input),
+		onBoundsApplied: (listener: (result: BrowserBoundsApplied) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, result: BrowserBoundsApplied) => listener(result);
+			ipcRenderer.on("browser:boundsApplied", wrapped);
+			return () => {
+				ipcRenderer.off("browser:boundsApplied", wrapped);
+			};
+		},
 		setOverlayOpen: (open: boolean) => ipcRenderer.send("browser:overlay", open),
 		navigate: (input: BrowserNavigateInput) =>
 			ipcRenderer.invoke("browser:navigate", input) as Promise<BrowserNavState>,

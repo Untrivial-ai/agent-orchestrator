@@ -130,21 +130,21 @@ const MAX_HISTORY_SUGGESTIONS = 4;
 const MIN_DEVICE_FRAME_WIDTH = 240;
 const MAX_DEVICE_FRAME_WIDTH = 2560;
 
-const restrictBrowserTopTabDragToHorizontalAxis: Modifier = ({
+export const restrictBrowserTopTabDragToTabStrip: Modifier = ({
 	activeNodeRect,
+	containerNodeRect,
 	transform,
-	windowRect,
 }) => {
-	if (!activeNodeRect || !windowRect) return { ...transform, y: 0 };
-	const minX = windowRect.left - activeNodeRect.left;
-	const maxX = windowRect.right - activeNodeRect.right;
+	if (!activeNodeRect || !containerNodeRect) return { ...transform, y: 0 };
+	const minX = containerNodeRect.left - activeNodeRect.left;
+	const maxX = containerNodeRect.right - activeNodeRect.right;
 	return {
 		...transform,
 		x: Math.min(maxX, Math.max(minX, transform.x)),
 		y: 0,
 	};
 };
-const browserTopTabDragModifiers = [restrictBrowserTopTabDragToHorizontalAxis];
+const browserTopTabDragModifiers = [restrictBrowserTopTabDragToTabStrip];
 
 function clampDeviceFrameWidth(width: number): number | undefined {
 	if (!Number.isFinite(width)) return undefined;

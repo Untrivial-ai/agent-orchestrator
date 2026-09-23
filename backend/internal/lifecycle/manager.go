@@ -742,7 +742,7 @@ retryProjection:
 			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointCoordination
 			checkpoint.ConversationCheckpointGeneration = ownerGeneration
 			checkpoint.ConversationCheckpointNativeID = checkpointNativeID
-			checkpoint.ConversationCheckpointTurnID = ""
+			checkpoint.ConversationCheckpointTurnID = s.CoordinationID
 		} else {
 			promptAt := timeOr(s.Timestamp, now)
 			sameCheckpointOwner := !resetConversationCheckpoint && ownerGeneration != "" &&
@@ -805,7 +805,9 @@ retryProjection:
 			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointCoordination
 			checkpoint.ConversationCheckpointGeneration = ownerGeneration
 			checkpoint.ConversationCheckpointNativeID = checkpointNativeID
-			checkpoint.ConversationCheckpointTurnID = ""
+			if s.CoordinationID != "" {
+				checkpoint.ConversationCheckpointTurnID = s.CoordinationID
+			}
 		} else if checkpoint.ConversationCheckpointState == domain.ConversationCheckpointPrompt &&
 			!checkpoint.ConversationCheckpointUnsettled &&
 			(s.Timestamp.IsZero() || !s.Timestamp.Before(checkpoint.LatestUserPromptAt)) &&

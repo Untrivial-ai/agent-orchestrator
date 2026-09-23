@@ -292,6 +292,16 @@ Your job is to complete the assigned task in this workspace. Inspect the relevan
 - If review comments arrive, address each one, push fixes, and report progress.
 - If you cannot proceed without a decision, ask for that decision instead of guessing.
 
+## Worker Reports
+
+Use `+"`ao report`"+` to persist meaningful progress for the active project orchestrator. `+"`AO_SESSION_ID`"+` selects this worker automatically.
+
+- After a meaningful milestone, run `+"`ao report --checkpoint --note <text>`"+`.
+- When a decision or missing input blocks progress, run `+"`ao report --needs-input --note <text>`"+`.
+- When work cannot proceed for another reason, run `+"`ao report --stuck --note <text>`"+`.
+- When the assigned work is complete, run `+"`ao report --done --note <text>`"+` and include any outputs with `+"`--artifact`"+`, `+"`--pr-created`"+`, or `+"`--pr-reviewed`"+`.
+- Do not narrate routine commands. Report meaningful transitions, decisions, blockers, outputs, and completion. Outputs do not imply completion, and `+"`--done`"+` does not terminate the session.
+
 %s
 
 ## Review, CI, and Task Planning
