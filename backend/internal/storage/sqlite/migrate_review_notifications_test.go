@@ -2,8 +2,8 @@ package sqlite
 
 import "testing"
 
-func TestMigration0150ReviewNotificationsRoundTrip(t *testing.T) {
-	db := openMigratedDatabaseCopy(t, 149)
+func TestMigration0152ReviewNotificationsRoundTrip(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, 151)
 	const timestamp = "2026-09-23T08:00:00Z"
 	if _, err := db.Exec(`
 INSERT INTO sessions (id, num, kind, activity_last_at, created_at, updated_at)
@@ -17,7 +17,7 @@ INSERT INTO notifications (
 );`, timestamp, timestamp, timestamp, timestamp, timestamp, timestamp); err != nil {
 		t.Fatal(err)
 	}
-	upTo(t, db, 150)
+	upTo(t, db, 152)
 
 	assertReviewNotificationSchema := func() {
 		t.Helper()
@@ -69,7 +69,7 @@ FROM notifications WHERE id = 'notice-1'`).Scan(
 	}
 	assertExistingNotification()
 
-	downTo(t, db, 149)
+	downTo(t, db, 151)
 	var sourceKey int
 	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('notifications') WHERE name = 'source_key'`).Scan(&sourceKey); err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ FROM notifications WHERE id = 'notice-1'`).Scan(
 	}
 	assertExistingNotification()
 
-	upTo(t, db, 150)
+	upTo(t, db, 152)
 	assertReviewNotificationSchema()
 	assertExistingNotification()
 }

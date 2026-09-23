@@ -1022,6 +1022,8 @@
 	"settings.models.refreshAria": "{{label}} 목록 새로 고침",
 	"settings.models.refreshFailed": "모델을 새로 고칠 수 없습니다.",
 	"settings.models.refresh": "모델 새로 고침",
+	"settings.models.lastSuccess": "마지막 업데이트: {{time}}",
+	"settings.models.retry": "새로 고침 다시 시도",
 	"settings.models.searchAria": "{{label}} 검색",
 	"settings.models.searchPlaceholder": "모델 검색…",
 	"settings.models.searchModelsOrProvidersPlaceholder": "모델 또는 제공업체 검색…",

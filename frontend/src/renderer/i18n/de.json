@@ -1022,6 +1022,8 @@
 	"settings.models.refreshAria": "Liste für {{label}} aktualisieren",
 	"settings.models.refreshFailed": "Modelle konnten nicht aktualisiert werden.",
 	"settings.models.refresh": "Modelle aktualisieren",
+	"settings.models.lastSuccess": "Zuletzt aktualisiert: {{time}}",
+	"settings.models.retry": "Aktualisierung wiederholen",
 	"settings.models.searchAria": "{{label}} durchsuchen",
 	"settings.models.searchPlaceholder": "Modelle durchsuchen…",
 	"settings.models.searchModelsOrProvidersPlaceholder": "Modelle oder Anbieter durchsuchen…",

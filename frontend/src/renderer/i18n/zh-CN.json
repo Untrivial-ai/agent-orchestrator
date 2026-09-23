@@ -1004,6 +1004,8 @@
 	"settings.models.refreshAria": "刷新{{label}}列表",
 	"settings.models.refreshFailed": "无法刷新模型。",
 	"settings.models.refresh": "刷新模型",
+	"settings.models.lastSuccess": "上次更新：{{time}}",
+	"settings.models.retry": "重试刷新",
 	"settings.models.searchAria": "搜索{{label}}",
 	"settings.models.searchPlaceholder": "搜索模型…",
 	"settings.models.searchModelsOrProvidersPlaceholder": "搜索模型或提供商…",
