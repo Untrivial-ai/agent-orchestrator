@@ -25,6 +25,7 @@ import { modelOverride, resolveSpawnAgent, resolveSpawnModel, spawnModelSourceCh
 import { appendSpawnAttachments, type SpawnAttachment } from "../lib/spawn-attachments";
 import { SpawnComposerControls } from "../lib/spawn-composer-controls";
 import { SpawnPromptInput } from "../lib/spawn-prompt-input";
+import { availablePromptHeight } from "../lib/spawnPromptLayout";
 import { useApp } from "../lib/store";
 import { useVoiceInput } from "../lib/voice/useVoiceInput";
 import type { Theme } from "../lib/theme";
@@ -76,7 +77,7 @@ export default function SpawnModal() {
 	const keyboardHeight = useKeyboardState((state) => state.height);
 	const promptHeight = promptRoom === undefined
 		? undefined
-		: Math.max(PROMPT_MIN_HEIGHT, promptRoom - Math.max(0, keyboardHeight - space.sm));
+		: availablePromptHeight(promptRoom, keyboardHeight);
 
 
 
@@ -390,14 +391,14 @@ function spawnErrorCopy(e: unknown): string {
 	return `${title} ${message}`;
 }
 
-// The compact field Android keeps, and the floor for iOS's filling one.
+// Android's compact field height and the iOS host's minimum layout height.
 const PROMPT_MIN_HEIGHT = 112;
 
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgBase },
 		content: { flex: 1, paddingHorizontal: space.lg, paddingTop: space.lg, paddingBottom: space.sm, gap: space.sm },
-		iosContent: { paddingTop: space.huge },
+		iosContent: { paddingTop: space.xxxl },
 		androidModalRoot: { flex: 1, backgroundColor: "transparent" },
 		androidSheet: {
 			paddingTop: space.xs,

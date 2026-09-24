@@ -149,7 +149,7 @@ describe("Android native compatibility boundaries", () => {
 	it("gives the iOS Spawn prompt modest top breathing room", () => {
 		const spawn = source("../app/spawn.tsx");
 		expect(spawn).toContain('Platform.OS === "ios" && styles.iosContent');
-		expect(spawn).toContain("iosContent: { paddingTop: space.huge }");
+		expect(spawn).toContain("iosContent: { paddingTop: space.xxxl }");
 	});
 
 	it("waits for the Android destination route before closing the drawer", () => {

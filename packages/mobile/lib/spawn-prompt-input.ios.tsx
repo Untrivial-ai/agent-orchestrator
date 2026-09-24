@@ -31,7 +31,6 @@ const styles = StyleSheet.create({
 	// therefore a real editor hit target, and long prompts scroll within it.
 	input: {
 		width: "100%",
-		flex: 1,
 		fontFamily: "Geist_400Regular",
 		fontSize: type.callout.fontSize,
 		lineHeight: type.callout.lineHeight,

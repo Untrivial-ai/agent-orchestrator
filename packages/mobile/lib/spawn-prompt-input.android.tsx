@@ -22,7 +22,9 @@ export function SpawnPromptInput({ value, onChangeText }: SpawnPromptInputProps)
 			onChangeText={onChangeText}
 			placeholder="What should this worker do?"
 			placeholderTextColor={t.textTertiary}
-			selectionColor={t.accent}
+			selectionColor={t.accentBorder}
+			cursorColor={t.accent}
+			selectionHandleColor={t.accent}
 			multiline
 			numberOfLines={3}
 			textAlignVertical="top"
@@ -39,7 +41,7 @@ const styles = StyleSheet.create({
 		flex: 1,
 		height: 112,
 		paddingHorizontal: space.lg,
-		paddingVertical: space.md,
+		paddingVertical: space.sm,
 		borderRadius: 16,
 		borderCurve: "continuous",
 		fontSize: type.callout.fontSize,
