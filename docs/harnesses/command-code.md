@@ -66,11 +66,17 @@ Command Code has no separate "auto" tier, so accept-edits and auto both use
 
 ## Activity Tracking
 
-Not installed yet. Command Code exposes project hooks in
-`.commandcode/settings.json` (`SessionStart`, `PreToolUse`, `PostToolUse`,
-`Stop`) whose payloads carry the native `session_id`, so a later change can
-report lifecycle events and capture the native session id the way the other
-hook-capable harnesses do.
+AO merges workspace-local hooks into `.commandcode/settings.json` for
+`SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`. These callbacks report
+active/idle activity and persist Command Code's native `session_id`. AO marks
+this coverage partial because Command Code does not expose a permission-request
+hook, so it cannot reliably distinguish an approval prompt from other in-turn
+work.
+
+On `SessionStart`, the same hook returns Command Code's supported
+`additionalContext` response with AO's standing instructions. The prompt stays
+in AO-owned storage under `~/.ao` and AO does not modify the project's
+`AGENTS.md` or `.commandcode/AGENTS.md`.
 
 ## Chat Mode
 
@@ -79,11 +85,9 @@ Terminal UI-only and is not advertised as a Chat harness.
 
 ## Restore
 
-AO restores a Command Code session by launching a fresh session with AO's saved
-system prompt and task. Because AO installs no Command Code hooks yet, no native
-session id is captured, so the session manager always takes the fresh-launch
-fallback. `cmd -r`, `cmd -c`, and `cmd --session` remain available to the user
-inside the terminal.
+AO restores a Command Code session with `cmd --resume <session-id>` after the
+workspace hook has captured the native session id. Before the first hook is
+received, restore falls back to a fresh launch with AO's saved task.
 
 ## Auth
 
@@ -105,8 +109,4 @@ the terminal.
 
 - Headless `-p`/`--print` sessions. AO runs supervised, multi-turn Terminal UI
   sessions and does not use Command Code's single-turn print mode.
-- Native session resume from AO metadata, until hook-based id capture lands.
-- AO system-prompt injection. Command Code exposes no system-prompt flag, and its
-  `AGENTS.md` memory tiers are project-owned (a root `AGENTS.md` takes precedence
-  over `.commandcode/AGENTS.md`), so AO does not write into them.
 - `--effort` wiring. AO's agent config has no effort field to map.

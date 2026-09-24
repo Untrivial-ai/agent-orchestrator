@@ -742,7 +742,7 @@ func shouldEmitSessionStartContext(agent, event string) bool {
 		return false
 	}
 	switch agent {
-	case "agy", "devin":
+	case "agy", "command-code", "devin":
 		return true
 	default:
 		return false

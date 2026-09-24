@@ -2,6 +2,7 @@ package commandcode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -177,6 +178,117 @@ func TestSessionInfoFalseWithoutMetadata(t *testing.T) {
 	}
 	if ok {
 		t.Fatal("ok = true, want false with no metadata")
+	}
+}
+
+func TestGetAgentHooksInstallsCommandCodeLifecycleHooks(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "cmd"}
+	workspace := t.TempDir()
+	settingsPath := filepath.Join(workspace, ".commandcode", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{"theme":"dark","hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}`
+	if err := os.WriteFile(settingsPath, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := plugin.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: workspace}); err != nil {
+			t.Fatalf("GetAgentHooks #%d: %v", i+1, err)
+		}
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Theme string `json:"theme"`
+		Hooks map[string][]struct {
+			Hooks []struct {
+				Command string `json:"command"`
+			} `json:"hooks"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{
+		"ao hooks command-code session-start",
+		"ao hooks command-code pre-tool-use",
+		"ao hooks command-code post-tool-use",
+		"ao hooks command-code stop",
+	} {
+		count := 0
+		for _, groups := range settings.Hooks {
+			for _, group := range groups {
+				for _, hook := range group.Hooks {
+					if hook.Command == command {
+						count++
+					}
+				}
+			}
+		}
+		if count != 1 {
+			t.Fatalf("managed hook %q count = %d, want 1", command, count)
+		}
+	}
+	if settings.Theme != "dark" {
+		t.Fatalf("theme = %q, want dark", settings.Theme)
+	}
+	userHookFound := false
+	for _, group := range settings.Hooks["Stop"] {
+		for _, hook := range group.Hooks {
+			userHookFound = userHookFound || hook.Command == "echo mine"
+		}
+	}
+	if !userHookFound {
+		t.Fatal("user Stop hook was not preserved")
+	}
+
+	gitignore, err := os.ReadFile(filepath.Join(workspace, ".commandcode", ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gitignore), "settings.json") {
+		t.Fatalf(".gitignore does not cover managed settings:\n%s", gitignore)
+	}
+}
+
+func TestUninstallHooksRemovesOnlyAOHooks(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "cmd"}
+	workspace := t.TempDir()
+	settingsPath := filepath.Join(workspace, ".commandcode", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	seed := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}`
+	if err := os.WriteFile(settingsPath, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := plugin.GetAgentHooks(context.Background(), ports.WorkspaceHookConfig{WorkspacePath: workspace}); err != nil {
+		t.Fatal(err)
+	}
+	uninstaller, ok := any(plugin).(interface {
+		UninstallHooks(context.Context, string) error
+	})
+	if !ok {
+		t.Fatal("Plugin does not implement UninstallHooks")
+	}
+	if err := uninstaller.UninstallHooks(context.Background(), workspace); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if strings.Contains(body, "ao hooks command-code ") {
+		t.Fatalf("AO hooks remain after uninstall:\n%s", body)
+	}
+	if !strings.Contains(body, "echo mine") {
+		t.Fatalf("user hook was removed:\n%s", body)
 	}
 }
 

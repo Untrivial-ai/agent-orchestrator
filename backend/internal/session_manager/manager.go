@@ -4637,6 +4637,7 @@ func systemPromptFileRequired(harness domain.AgentHarness) bool {
 	case domain.HarnessAider,
 		domain.HarnessAgy,
 		domain.HarnessAuggie,
+		domain.HarnessCommandCode,
 		domain.HarnessKiro,
 		domain.HarnessOpenCode,
 		domain.HarnessCopilot,

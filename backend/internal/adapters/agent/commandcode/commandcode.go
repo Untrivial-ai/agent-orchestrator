@@ -12,10 +12,9 @@
 // "-" is never parsed as a flag. Its `-p`/`--print` mode runs a single headless
 // turn and exits, so supervised AO sessions do not use it.
 //
-// AO does not install Command Code hooks in this change, so no native session
-// id is captured yet; GetRestoreCommand reports ok=false and the session
-// manager relaunches with AO's saved prompt. `cmd -r`, `-c`, and `--session`
-// remain available to the user in the terminal.
+// AO installs workspace-local Command Code hooks to observe activity, capture
+// the native session id for restore, and inject AO's standing instructions as
+// SessionStart context without modifying the project's AGENTS.md.
 package commandcode
 
 import (
@@ -128,8 +127,7 @@ func (p *Plugin) PromptReadinessHints(ctx context.Context, _ ports.LaunchConfig)
 
 // GetRestoreCommand continues a Command Code session when AO has captured its
 // native session id. ok=false otherwise, so the restore manager falls back to a
-// fresh launch with AO's saved prompt. AO installs no Command Code hooks yet,
-// so in practice the id is not populated and restore takes the fallback.
+// fresh launch with AO's saved prompt.
 func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig) (cmd []string, ok bool, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
