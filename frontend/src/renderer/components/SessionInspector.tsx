@@ -956,7 +956,26 @@ function UsageMetrics({
 			) : null}
 			{tokensPerSecond !== undefined ? (
 				<div className="min-w-0">
-					<dt className="truncate text-2xs text-settings-muted">{throughputLabel}</dt>
+					<dt className="flex items-center gap-1 truncate text-2xs text-settings-muted">
+						<span className="truncate">{throughputLabel}</span>
+						{/* Same disclosure pattern as EstimatedCostInfo: the hint is a
+						    real affordance on the label, not a hidden title on the
+						    figure a reader has to think to hover. */}
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<button
+									aria-label={t("inspector.usage.tokensPerSecondHint")}
+									className="rounded-sm text-settings-muted outline-none transition-colors hover:text-settings-label focus-visible:ring-1 focus-visible:ring-ring"
+									type="button"
+								>
+									<Info aria-hidden="true" className="size-3" />
+								</button>
+							</TooltipTrigger>
+							<TooltipContent className="max-w-64 text-left" side="top">
+								<p>{t("inspector.usage.tokensPerSecondHint")}</p>
+							</TooltipContent>
+						</Tooltip>
+					</dt>
 					<dd
 						aria-label={
 							throughput === null
@@ -964,7 +983,6 @@ function UsageMetrics({
 								: throughput
 						}
 						className="mt-0.5 truncate font-mono text-sm-md text-settings-label"
-						title={throughput === null ? undefined : t("inspector.usage.tokensPerSecondHint")}
 					>
 						{throughput ?? "—"}
 					</dd>
