@@ -46,11 +46,16 @@ export function CommandCueCardView({ card, onViewTerminal }: { card: CommandCueC
 		const poll = async () => {
 			try {
 				const result = await getCommandCueTerminalStatus(card.handleId);
-				if (!cancelled) setState(card.handleId, result.state, undefined, result.output);
+				if (!cancelled && ACTIVE_STATES.has(useCommandCueStore.getState().cards[card.handleId]?.state ?? "")) {
+					setState(card.handleId, result.state, undefined, result.output);
+				}
 			} catch (error) {
 				if (cancelled) return;
 				if (apiErrorCode(error) === "CUE_COMMAND_TERMINAL_NOT_FOUND") useCommandCueStore.getState().close(card.handleId);
-				else setState(card.handleId, "failed", apiErrorMessage(error));
+				else {
+					const state = useCommandCueStore.getState().cards[card.handleId]?.state;
+					if (state && ACTIVE_STATES.has(state)) setState(card.handleId, state, apiErrorMessage(error));
+				}
 			} finally {
 				if (!cancelled && ACTIVE_STATES.has(useCommandCueStore.getState().cards[card.handleId]?.state ?? "")) {
 					timer = window.setTimeout(() => void poll(), 1_000);

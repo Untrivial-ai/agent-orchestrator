@@ -14,7 +14,7 @@ type CueType string
 
 // Cue types.
 const (
-	// CueTypeCommand runs a shell command through an agent session.
+	// CueTypeCommand runs a shell command in a dedicated terminal without an agent.
 	CueTypeCommand CueType = "command"
 	// CueTypeAgent sends a prompt through an agent session.
 	CueTypeAgent CueType = "agent"

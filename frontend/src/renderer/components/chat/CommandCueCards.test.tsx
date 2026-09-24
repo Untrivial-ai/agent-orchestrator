@@ -97,13 +97,49 @@ test("keeps failed stop confirmation open for retry and blocks duplicate stops",
 	expect(useCommandCueStore.getState().cards["shellterm-cue"].state).toBe("stopped");
 });
 
-test("marks a card failed when status polling fails and stops polling", async () => {
+test("keeps the last known state and output after a polling error, then recovers", async () => {
+	vi.useFakeTimers();
 	register();
-	vi.mocked(getCommandCueTerminalStatus).mockRejectedValue(new Error("daemon offline"));
+	useCommandCueStore.getState().setState("shellterm-cue", "running", undefined, "previous output");
+	vi.mocked(getCommandCueTerminalStatus)
+		.mockRejectedValueOnce(new Error("daemon offline"))
+		.mockResolvedValueOnce({ handleId: "shellterm-cue", state: "exited", output: "finished" });
 	render(<CommandCueCards projectId="project" sessionId="session" onViewTerminal={vi.fn()} />);
-	await screen.findByText("Failed");
+	await act(async () => { await Promise.resolve(); });
+	expect(screen.getByText("Running")).toBeInTheDocument();
 	expect(screen.getByRole("alert")).toHaveTextContent("daemon offline");
+	expect(screen.getByTestId("command-cue-output")).toHaveTextContent("previous output");
+	expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+	expect(screen.getByRole("button", { name: "View terminal" })).toBeEnabled();
 	expect(getCommandCueTerminalStatus).toHaveBeenCalledTimes(1);
+	await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+	expect(screen.getByText("Exited")).toBeInTheDocument();
+	expect(screen.queryByRole("alert")).toBeNull();
+	expect(screen.getByTestId("command-cue-output")).toHaveTextContent("finished");
+	await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+	expect(getCommandCueTerminalStatus).toHaveBeenCalledTimes(2);
+});
+
+test("closes a card when the terminal is confirmed missing", async () => {
+	register();
+	vi.mocked(getCommandCueTerminalStatus).mockRejectedValue({ code: "CUE_COMMAND_TERMINAL_NOT_FOUND", message: "missing" });
+	render(<CommandCueCards projectId="project" sessionId="session" onViewTerminal={vi.fn()} />);
+	await screen.findByText("Terminal closed");
+	expect(screen.getByRole("button", { name: "View terminal" })).toBeDisabled();
+	expect(getCommandCueTerminalStatus).toHaveBeenCalledTimes(1);
+});
+
+test("a delayed status response cannot restore a stopped command", async () => {
+	register();
+	let resolveStatus!: (value: { handleId: string; state: "running"; output: string }) => void;
+	vi.mocked(getCommandCueTerminalStatus).mockReturnValueOnce(new Promise((resolve) => { resolveStatus = resolve; }));
+	render(<CommandCueCards projectId="project" sessionId="session" onViewTerminal={vi.fn()} />);
+	fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+	fireEvent.click(within(screen.getByRole("dialog", { name: "Stop this command?" })).getByRole("button", { name: "Stop command" }));
+	await screen.findByText("Stopped");
+	await act(async () => resolveStatus({ handleId: "shellterm-cue", state: "running", output: "stale output" }));
+	expect(screen.getByText("Stopped")).toBeInTheDocument();
+	expect(screen.queryByText("stale output")).toBeNull();
 });
 
 test("retains output but disables terminal controls after close", async () => {

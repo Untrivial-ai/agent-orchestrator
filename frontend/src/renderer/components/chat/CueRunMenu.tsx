@@ -27,9 +27,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 const CUE_MENU_CLOSE_MS = 150;
 
 // The one cue runner, mounted as a topbar icon button wherever cues apply: the
-// project board (no sessionId) spawns a worker in the cue's project, and a
-// session topbar (sessionId) dispatches into that session. Keyed by target so
-// switching project or session drops in-flight menu state with the old target.
+// project board (no sessionId) starts a worker for agent Cues or a project
+// terminal for command Cues; the session topbar targets the selected session.
+// Keying by target drops in-flight menu state when switching project or session.
 export function CueRunMenu({
 	projectId,
 	sessionId,
