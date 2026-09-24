@@ -17,9 +17,10 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
+import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 import type {
 	ActivityKind,
@@ -1335,6 +1336,7 @@ export function useConversationSkills(sessionId: string | undefined, enabled: bo
  * complete list.
  */
 export function useWorkspaceFilePaths(sessionId: string | undefined, enabled: boolean) {
+	const queryClient = useQueryClient();
 	const query = useQuery({
 		queryKey: ["workspace-file-paths", sessionId ?? ""],
 		enabled: Boolean(sessionId) && enabled,
@@ -1358,6 +1360,10 @@ export function useWorkspaceFilePaths(sessionId: string | undefined, enabled: bo
 			};
 		},
 	});
+	useEffect(() => {
+		if (!sessionId || !enabled) return;
+		return subscribeWorkspaceFileChanges(sessionId, queryClient);
+	}, [enabled, queryClient, sessionId]);
 	return {
 		paths: query.data?.paths ?? [],
 		truncated: query.data?.truncated ?? false,
@@ -1396,7 +1402,7 @@ export function useStageAttachments(sessionId: string | undefined) {
  * reader sees one sequence — which is why sequence is conversation-scoped rather
  * than per-table.
  */
-function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
+export function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 	const items: ConversationItem[] = [
 		...(wire.messages ?? []).map(toMessage),
 		...(wire.activities ?? []).map(toActivity),
@@ -1566,7 +1572,7 @@ function applyQueuedTurnOrderToPages(
 }
 
 /** Merge the newest live page with any older pages loaded on demand. */
-function mergeConversationPages(pages: ConversationSnapshot[]): ConversationSnapshot | undefined {
+export function mergeConversationPages(pages: ConversationSnapshot[]): ConversationSnapshot | undefined {
 	const live = pages[0];
 	if (!live) return undefined;
 

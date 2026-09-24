@@ -64,6 +64,7 @@ func (c *conversation) Steer(
 	providerTurnID string,
 	msg ports.ChatUserMessage,
 ) (ports.ChatTurnRef, error) {
+	providerTurnID = c.nativeID(providerTurnID)
 	if strings.TrimSpace(msg.Text) == "" {
 		// Same rule as SendTurn: there is no keystroke concept here, so an empty
 		// steer is a caller bug rather than a way to nudge the agent.
@@ -115,7 +116,7 @@ func (c *conversation) Steer(
 	c.activeTurn = turn
 	c.mu.Unlock()
 
-	return ports.ChatTurnRef{ProviderTurnID: turn}, nil
+	return ports.ChatTurnRef{ProviderTurnID: c.scopedID(turn)}, nil
 }
 
 // steerInput converts the complete provider-neutral message before the request is

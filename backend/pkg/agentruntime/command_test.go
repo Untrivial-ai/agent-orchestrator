@@ -124,18 +124,20 @@ func TestBuildRestoreCommands(t *testing.T) {
 			},
 		},
 		{
-			name: "claude forwards configured model",
+			name: "claude forwards configured model and effort",
 			cfg: RestoreConfig{
 				Harness:    HarnessClaudeCode,
 				Binary:     "claude",
 				SessionID:  "session-1",
 				Model:      "  claude-opus-4-5  ",
+				Effort:     "  high  ",
 				Permission: PermissionBypassPermissions,
 			},
 			want: []string{
 				"claude",
 				"--permission-mode", "bypassPermissions",
 				"--model", "claude-opus-4-5",
+				"--effort", "high",
 				"--resume", ClaudeSessionID("session-1"),
 			},
 		},
@@ -168,6 +170,74 @@ func TestBuildRestoreCommands(t *testing.T) {
 		},
 	}
 
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok, err := BuildRestoreCommand(test.cfg)
+			if err != nil || !ok {
+				t.Fatalf("BuildRestoreCommand() = (%#v, %v, %v), want command", got, ok, err)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("command\nwant: %#v\n got: %#v", test.want, got)
+			}
+		})
+	}
+}
+
+// TestBuildRestoreCommandAppliesModel proves every harness restore command
+// carries the model chosen in ChatUI (#4893): rebuilding TUI must pass the
+// session's model through Codex, Claude Code, and Cursor resume commands rather
+// than silently reverting to a different default.
+func TestBuildRestoreCommandAppliesModel(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  RestoreConfig
+		want []string
+	}{
+		{
+			name: "claude",
+			cfg: RestoreConfig{
+				Harness:    HarnessClaudeCode,
+				Binary:     "claude",
+				SessionID:  "session-1",
+				Model:      "claude-4-5",
+				Permission: PermissionBypassPermissions,
+			},
+			want: []string{"claude", "--permission-mode", "bypassPermissions", "--model", "claude-4-5", "--resume", ClaudeSessionID("session-1")},
+		},
+		{
+			name: "codex",
+			cfg: RestoreConfig{
+				Harness:    HarnessCodex,
+				Binary:     "codex",
+				SessionID:  "session-1",
+				Metadata:   map[string]string{MetadataKeyAgentSessionID: "thread-1"},
+				Model:      "gpt-5",
+				Permission: PermissionAuto,
+			},
+			want: []string{
+				"codex", "resume",
+				"-c", "check_for_update_on_startup=false",
+				"-c", "notice.hide_rate_limit_model_nudge=true",
+				"--dangerously-bypass-hook-trust",
+				"--ask-for-approval", "on-request",
+				"-c", `approvals_reviewer="auto_review"`,
+				"--model", "gpt-5",
+				"thread-1",
+			},
+		},
+		{
+			name: "cursor",
+			cfg: RestoreConfig{
+				Harness:    HarnessCursor,
+				Binary:     "cursor-agent",
+				SessionID:  "session-1",
+				Metadata:   map[string]string{MetadataKeyAgentSessionID: "chat-1"},
+				Model:      "claude-4",
+				Permission: PermissionAuto,
+			},
+			want: []string{"cursor-agent", "--force", "--model", "claude-4", "--resume", "chat-1"},
+		},
+	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, ok, err := BuildRestoreCommand(test.cfg)
@@ -234,4 +304,41 @@ func TestClaudeNativeSessionIDValidation(t *testing.T) {
 
 func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+// Effort is a per-model capability, so the flag appears only when a level was
+// actually chosen — a model that accepts none must launch exactly as before.
+func TestClaudeEffortFlag(t *testing.T) {
+	tests := []struct {
+		name   string
+		effort string
+		want   bool
+	}{
+		{name: "chosen level is passed through", effort: "xhigh", want: true},
+		{name: "no level leaves the agent default", effort: "", want: false},
+		{name: "whitespace is not a level", effort: "   ", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, err := BuildLaunchCommand(LaunchConfig{
+				Harness: HarnessClaudeCode, Binary: "claude",
+				Model: "claude-opus-5", Effort: tc.effort,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := ""
+			for i, arg := range cmd {
+				if arg == "--effort" && i+1 < len(cmd) {
+					found = cmd[i+1]
+				}
+			}
+			if tc.want && found != tc.effort {
+				t.Fatalf("--effort = %q, want %q in %v", found, tc.effort, cmd)
+			}
+			if !tc.want && found != "" {
+				t.Fatalf("--effort must be omitted entirely, got %q in %v", found, cmd)
+			}
+		})
+	}
 }

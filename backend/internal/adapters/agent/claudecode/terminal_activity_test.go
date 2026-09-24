@@ -28,7 +28,7 @@ func claudeAbortedTurnScreen(draft string) string {
 		"  ⧉  scm-observer"
 }
 
-func TestDetectTerminalActivityAuthoritativeIdleAfterAbortedTurn(t *testing.T) {
+func TestDetectTerminalActivityWaitsForLoginAfterAbortedTurn(t *testing.T) {
 	plugin := &Plugin{}
 	tests := []struct {
 		name   string
@@ -47,8 +47,8 @@ func TestDetectTerminalActivityAuthoritativeIdleAfterAbortedTurn(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			state, ok := plugin.DetectTerminalActivity(tt.output)
-			if !ok || state != domain.ActivityIdle {
-				t.Fatalf("DetectTerminalActivity = (%q, %v), want (idle, true)", state, ok)
+			if !ok || state != domain.ActivityWaitingInput {
+				t.Fatalf("DetectTerminalActivity = (%q, %v), want (waiting_input, true)", state, ok)
 			}
 		})
 	}

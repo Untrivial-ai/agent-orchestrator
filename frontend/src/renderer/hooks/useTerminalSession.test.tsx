@@ -109,7 +109,6 @@ function createFakeTerminal(): FakeTerminal {
 		cols: 80,
 		rows: 24,
 		activeBufferType: "normal",
-		bufferType: () => terminal.activeBufferType,
 		autoCompleteWrites: true,
 		lines: [],
 		pendingWriteCallbacks: [],
@@ -986,6 +985,41 @@ describe("useTerminalSession", () => {
 		expect(view.result.current.state).toBe("attached");
 	});
 
+	it("has no client open timeout for a cloud pane: a slow open never storms", () => {
+		// A cloud pane opens its socket directly; readiness is server-driven (the
+		// CP holds it in "starting" until the terminal opens). There is NO client
+		// open timeout — the 3s/30s band-aids only ever tore a healthy slow open
+		// down mid-attach and rebuilt the mux, a self-sustaining storm. So however
+		// long the CP takes, the pane keeps its single mux and stays "connecting".
+		const cloudSession: WorkspaceSession = { ...session, cloud: { orgId: "org-1" } };
+		const { view, muxes } = setup({ attachedSession: cloudSession });
+		expect(view.result.current.state).toBe("connecting");
+		// Far past any old timeout: no teardown, no rebuild, no storm.
+		act(() => void vi.advanceTimersByTime(120_000));
+		expect(muxes).toHaveLength(1);
+		expect(muxes[0].disposed).toBe(false);
+		expect(view.result.current.state).toBe("connecting");
+		// The server finally acks: one clean attach, no rebuild.
+		act(() => muxes[0].emitOpened("handle-1"));
+		expect(view.result.current.state).toBe("attached");
+		expect(muxes).toHaveLength(1);
+	});
+
+	it("recovers a stalled cloud pane only when the socket closes (server-driven)", () => {
+		// With no client timer, a stalled cloud pane is recovered by the transport,
+		// not a clock: the CP closes the socket at its own ready deadline, which
+		// reaches onConnectionChange("closed") and schedules exactly one flat
+		// reattach. No client-side timeout ever fires to rebuild the mux.
+		const cloudSession: WorkspaceSession = { ...session, cloud: { orgId: "org-1" } };
+		const { view, muxes } = setup({ attachedSession: cloudSession });
+		act(() => void vi.advanceTimersByTime(120_000));
+		expect(muxes).toHaveLength(1); // no client teardown while the socket lives
+		act(() => muxes[0].emitConnection("closed")); // CP ready deadline closes it
+		act(() => void vi.advanceTimersByTime(1_000)); // flat cloud reconnect
+		expect(muxes).toHaveLength(2); // exactly one rebuild, not a storm
+		expect(view.result.current.state).not.toBe("attached");
+	});
+
 	it("backs off between failed reconnect attempts", () => {
 		const { muxes } = setup();
 		act(() => muxes[0].emitConnection("closed"));
@@ -1021,34 +1055,45 @@ describe("useTerminalSession", () => {
 		expect(muxes).toHaveLength(1);
 	});
 
-	describe("predictive local echo (cloud sessions)", () => {
+	describe("line-buffered local input (cloud sessions)", () => {
 		const cloudSession: WorkspaceSession = { ...session, cloud: { orgId: "org-1" } };
 
-		it("renders a predicted keystroke immediately and strips the server echo", () => {
+		it("renders typing immediately and sends the complete line on Enter", () => {
 			const { terminal, muxes } = setup({ attachedSession: cloudSession });
 			act(() => muxes[0].emitConnection("open"));
 			act(() => muxes[0].emitOpened("handle-1"));
-			terminal.typeKeys("a");
-			// The prediction landed locally before any server round trip…
-			expect(terminal.lines).toEqual(["a"]);
-			// …while the wire got the raw keystroke.
-			expect(muxes[0].inputs).toEqual([["handle-1", "a"]]);
+			act(() => terminal.typeKeys("a"));
+			act(() => terminal.typeKeys("b"));
+			// The draft landed locally before any server round trip…
+			expect(terminal.lines).toEqual(["\x1b[Ka", "b"]);
+			// …while nothing was streamed character by character.
+			expect(muxes[0].inputs).toEqual([]);
+			act(() => terminal.typeKeys("\r"));
+			expect(muxes[0].inputs).toEqual([
+				["handle-1", "ab"],
+				["handle-1", "\r"],
+			]);
 			// The authoritative echo of what is already on screen renders nothing.
-			act(() => muxes[0].emitData("handle-1", "a"));
-			expect(terminal.lines).toEqual(["a"]);
+			act(() => muxes[0].emitData("handle-1", "ab"));
+			expect(terminal.lines).toEqual(["\x1b[Ka", "b"]);
 			// Output beyond the echo flows through verbatim.
 			act(() => muxes[0].emitData("handle-1", "$ "));
-			expect(terminal.lines).toEqual(["a", "$ "]);
+			expect(terminal.lines).toEqual(["\x1b[Ka", "b", "$ "]);
 		});
 
-		it("never predicts while the pane is on the alternate buffer", () => {
+		it("buffers input inside alternate-buffer agent TUIs", () => {
 			const { terminal, muxes } = setup({ attachedSession: cloudSession });
 			terminal.activeBufferType = "alternate";
 			act(() => muxes[0].emitConnection("open"));
 			act(() => muxes[0].emitOpened("handle-1"));
-			terminal.typeKeys("a");
-			expect(terminal.lines).toEqual([]);
-			expect(muxes[0].inputs).toEqual([["handle-1", "a"]]);
+			act(() => terminal.typeKeys("a"));
+			expect(terminal.lines).toEqual(["\x1b[Ka"]);
+			expect(muxes[0].inputs).toEqual([]);
+			act(() => terminal.typeKeys("\r"));
+			expect(muxes[0].inputs).toEqual([
+				["handle-1", "a"],
+				["handle-1", "\r"],
+			]);
 		});
 
 		it("does not locally echo keystrokes on local sessions", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contextReadout, elapsedLabel, mcpServerFailureLabel, quotaWarning, resetLabel } from "./conversationChrome";
+import { contextReadout, elapsedLabel, mcpServerFailureLabel, quotaWarning, resetLabel, workingElapsedLabel } from "./conversationChrome";
 
 describe("mobile Chat conversation chrome", () => {
 	it("uses the same context thresholds and visible minimum as desktop", () => {
@@ -19,6 +19,12 @@ describe("mobile Chat conversation chrome", () => {
 	it("formats live turn and reset durations without wall-clock assumptions", () => {
 		expect(elapsedLabel("2026-08-05T00:00:00Z", Date.parse("2026-08-05T00:02:03Z"))).toBe("2m 3s");
 		expect(resetLabel(172_800)).toBe("2d");
+	});
+
+	it("starts a running turn at one second and advances from the server timestamp", () => {
+		const startedAt = "2026-08-05T00:00:00Z";
+		expect(workingElapsedLabel(startedAt, Date.parse(startedAt))).toBe("1s");
+		expect(workingElapsedLabel(startedAt, Date.parse("2026-08-05T00:01:02Z"))).toBe("1m 2s");
 	});
 
 	it("keeps both the MCP failure class and provider diagnostic", () => {

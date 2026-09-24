@@ -53,7 +53,7 @@ func TestInterfaceHandoffRecoversLegacyCheckpointFromUnsettledChatTurn(t *testin
 			t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 			cfg := chatsvc.StartConfig{
 				SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
-				WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", RequireNativeHistory: true,
+				WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 				HistoryPolicy: domain.SessionInterfaceTransitionHistoryStrict,
 			}
 			// Latest main can retire legacy text when its unsettled AO message
@@ -175,7 +175,7 @@ func TestInterfaceHandoffNewTrustedTUIPromptCannotBorrowOldFailedChatOutcome(t *
 	} {
 		_, err := svc.Start(ctx, chatsvc.StartConfig{
 			SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
-			WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", RequireNativeHistory: true,
+			WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1", HistoryMode: ports.ChatHistoryRequired,
 			HistoryPolicy: policy,
 		})
 		if !errors.Is(err, ports.ErrChatHistoryUnsettled) || ports.ChatHistoryMismatchOnlyUntrustedText(err) ||

@@ -1,19 +1,12 @@
 package sqlite
 
 import (
-	"database/sql"
-	"path/filepath"
 	"reflect"
 	"testing"
 )
 
 func TestMigrateRecognizesPreRenumberedChatSchema(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	upTo(t, db, 79)
+	db := openMigratedDatabaseCopy(t, 79)
 
 	// Reproduce a database opened by the feature branch when the exact same Chat
 	// migrations were numbered 0052-0065. Remove main's current 0052 schema so

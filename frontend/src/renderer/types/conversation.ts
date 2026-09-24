@@ -402,11 +402,12 @@ export interface SystemEventDetail {
 		| "provider.failure"
 		| "steer"
 		| "plan"
-		| "context.reset";
+		| "context.reset"
+		| "context.boundary";
 	/** model.rerouted */
 	fromModel?: string;
 	toModel?: string;
-	/** provider.failure: provider-neutral classification from an agent protocol extension. */
+	/** provider.failure */
 	category?: string;
 	severity?: "warning" | "error" | (string & {});
 	revision?: number;

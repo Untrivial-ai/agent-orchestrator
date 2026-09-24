@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -266,6 +267,8 @@ func TestGetAndRefreshAgentModels(t *testing.T) {
 		{name: "revalidate", method: http.MethodPost, path: "/api/v1/agents/codex/models/refresh?projectId=proj-1&revalidate=true", wantRevalidate: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			lastSuccess := time.Date(2026, 9, 7, 8, 0, 0, 0, time.UTC)
+			retryAt := lastSuccess.Add(time.Minute)
 			catalog := &fakeAgentCatalog{models: ports.AgentModelCatalog{
 				AgentID:          "codex",
 				SelectionMode:    ports.ModelSelectionCatalog,
@@ -273,6 +276,12 @@ func TestGetAndRefreshAgentModels(t *testing.T) {
 				CustomModelEntry: ports.CustomModelEntryDirect,
 				AllowCustom:      true,
 				Source:           "official-catalog",
+				Metadata:         map[string]string{"scope": "project"},
+				InputFingerprint: "fingerprint-v2",
+				LastSuccessAt:    &lastSuccess,
+				RefreshState:     "error",
+				RefreshError:     "temporary failure",
+				RetryAt:          &retryAt,
 			}}
 			srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{Agents: catalog}, httpd.ControlDeps{}))
 			defer srv.Close()
@@ -281,7 +290,7 @@ func TestGetAndRefreshAgentModels(t *testing.T) {
 			if status != http.StatusOK {
 				t.Fatalf("%s %s = %d, body=%s", tc.method, tc.path, status, body)
 			}
-			for _, want := range []string{`"agentId":"codex"`, `"selectionMode":"catalog"`, `"customModelEntry":"direct"`, `"allowCustom":true`, `"id":"gpt-5.6-sol"`} {
+			for _, want := range []string{`"agentId":"codex"`, `"selectionMode":"catalog"`, `"customModelEntry":"direct"`, `"allowCustom":true`, `"id":"gpt-5.6-sol"`, `"metadata":{"scope":"project"}`, `"inputFingerprint":"fingerprint-v2"`, `"lastSuccessAt":"2026-09-07T08:00:00Z"`, `"refreshState":"error"`, `"refreshError":"temporary failure"`, `"retryAt":"2026-09-07T08:01:00Z"`} {
 				if !strings.Contains(string(body), want) {
 					t.Fatalf("body missing %s: %s", want, body)
 				}

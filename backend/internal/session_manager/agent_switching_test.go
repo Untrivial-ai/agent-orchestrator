@@ -575,6 +575,9 @@ type switchTestAgent struct {
 	available           map[string]ports.NativeSessionAvailability
 	authStatus          ports.AgentAuthStatus
 	authErr             error
+	launchAuthStatus    ports.AgentAuthStatus
+	launchAuthErr       error
+	launchAuthCalls     int
 	locateTranscript    func(ports.NativeSessionRef) (string, bool, error)
 	onHooks             func()
 	hookCalls           int
@@ -589,6 +592,7 @@ type switchTestAgent struct {
 	launchPermissions   ports.PermissionMode
 	restorePrompt       string
 	restoreModel        string
+	restoreEffort       string
 	launchSystemPrompt  string
 	restoreSystemPrompt string
 	launchSystemFile    string
@@ -826,6 +830,11 @@ func (a *switchTestAgent) AuthStatus(ctx context.Context) (ports.AgentAuthStatus
 	return a.authStatus, a.authErr
 }
 
+func (a *switchTestAgent) ValidateLaunchAuth(context.Context, string, map[string]string) (ports.AgentAuthStatus, error) {
+	a.launchAuthCalls++
+	return a.launchAuthStatus, a.launchAuthErr
+}
+
 func (a *switchTestAgent) preflightCallCount() int {
 	a.preflightMu.Lock()
 	defer a.preflightMu.Unlock()
@@ -864,6 +873,7 @@ func (a *switchTestAgent) GetRestoreCommand(_ context.Context, cfg ports.Restore
 	}
 	a.restorePrompt = cfg.Prompt
 	a.restoreModel = cfg.Config.Model
+	a.restoreEffort = cfg.Config.Effort
 	a.restoreSystemPrompt = cfg.SystemPrompt
 	a.restoreSystemFile = cfg.SystemPromptFile
 	return []string{"agent", "resume", id, cfg.Prompt}, true, nil
@@ -1158,6 +1168,88 @@ func TestAgentSwitchChatControllerReadyUsesSourceGenerationCAS(t *testing.T) {
 	}
 }
 
+func TestSwitchAgentChatForwardsResolvedCodexEffort(t *testing.T) {
+	manager, store, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
+	rec := store.sessions["proj-1"]
+	rec.Mode = domain.SessionModeChat
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now().UTC()}
+	rec.Metadata.RuntimeHandleID = ""
+	rec.Metadata.RuntimeLaunchID = ""
+	rec.Metadata.AgentSessionID = ""
+	rec.Metadata.ProviderConversationID = "source-chat-native"
+	rec.Metadata.ControllerGeneration = "source-chat-generation"
+	store.sessions[rec.ID] = rec
+	project := store.projects[string(rec.ProjectID)]
+	project.Config.Worker = domain.RoleOverride{
+		Harness: domain.HarnessCodex,
+		AgentConfig: domain.AgentConfig{
+			Model: "gpt-5.6-sol", Effort: "high",
+		},
+	}
+	store.projects[string(rec.ProjectID)] = project
+	manager.modelCatalog = tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{
+		ID: "gpt-5.6-sol", Efforts: []string{"low", "high"},
+	}}}}
+	launcher := &switchAgentChatLauncher{
+		recordingLauncher: &recordingLauncher{},
+		store:             store,
+		live:              true,
+	}
+	manager.chat = launcher
+
+	if _, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+		TargetHarness: domain.HarnessCodex, IdempotencyKey: "chat-codex-effort",
+	}); err != nil {
+		t.Fatalf("SwitchAgent: %v", err)
+	}
+	if len(launcher.started) != 1 {
+		t.Fatalf("Chat starts = %d, want 1", len(launcher.started))
+	}
+	if got := launcher.started[0]; got.Model != "gpt-5.6-sol" || got.Effort != "high" {
+		t.Fatalf("Codex Chat tuning = model %q effort %q, want gpt-5.6-sol/high", got.Model, got.Effort)
+	}
+}
+
+func TestSwitchAgentChatRejectsUnsupportedCodexEffortBeforeStoppingSource(t *testing.T) {
+	manager, store, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
+	rec := store.sessions["proj-1"]
+	rec.Mode = domain.SessionModeChat
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now().UTC()}
+	rec.Metadata.RuntimeHandleID = ""
+	rec.Metadata.RuntimeLaunchID = ""
+	rec.Metadata.AgentSessionID = ""
+	rec.Metadata.ProviderConversationID = "source-chat-native"
+	rec.Metadata.ControllerGeneration = "source-chat-generation"
+	store.sessions[rec.ID] = rec
+	project := store.projects[string(rec.ProjectID)]
+	project.Config.Worker = domain.RoleOverride{
+		Harness: domain.HarnessCodex,
+		AgentConfig: domain.AgentConfig{
+			Model: "gpt-5.6-sol", Effort: "xhigh",
+		},
+	}
+	store.projects[string(rec.ProjectID)] = project
+	manager.modelCatalog = tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{
+		ID: "gpt-5.6-sol", Efforts: []string{"low", "high"},
+	}}}}
+	launcher := &switchAgentChatLauncher{
+		recordingLauncher: &recordingLauncher{},
+		store:             store,
+		live:              true,
+	}
+	manager.chat = launcher
+
+	_, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+		TargetHarness: domain.HarnessCodex, IdempotencyKey: "chat-invalid-codex-effort",
+	})
+	if !errors.Is(err, ports.ErrUnsupportedEffort) {
+		t.Fatalf("SwitchAgent error = %v, want ErrUnsupportedEffort", err)
+	}
+	if len(launcher.stopped) != 0 || !launcher.live {
+		t.Fatalf("source controller stopped before target validation: stopped=%v live=%v", launcher.stopped, launcher.live)
+	}
+}
+
 func TestResolveChatTargetActivationOutcomeRejectsIncompleteOwnershipTuples(t *testing.T) {
 	manager, store, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
 	activation := domain.AgentSwitchChatTargetActivation{
@@ -1280,7 +1372,7 @@ func TestSwitchAgentChatSwitchBackResumesVerifiedNativeConversation(t *testing.T
 		t.Fatalf("resumed Chat target scope = %q, want reserved boundary %q",
 			launcher.started[0].ProviderScopeID, chatSwitchProviderBoundaryID(sw.ID))
 	}
-	if !launcher.started[0].SkipNativeHistoryImport {
+	if launcher.started[0].HistoryMode != ports.ChatHistoryDeferred {
 		t.Fatal("switch-back projected target-native history into the source provider branch before activation")
 	}
 	if got := store.native[prior.ID]; got.LastGenerationID != sw.TargetGenerationID {
@@ -2657,6 +2749,7 @@ func TestSwitchAgentResumesVerifiedPriorNativeSession(t *testing.T) {
 	project := store.projects["proj"]
 	project.Config.Worker.Harness = domain.HarnessCodex
 	project.Config.Worker.AgentConfig.Model = "target-model"
+	project.Config.Worker.AgentConfig.Effort = "high"
 	store.projects[project.ID] = project
 	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
 	target.available["codex-prior"] = ports.NativeSessionAvailabilityAvailable
@@ -2674,14 +2767,56 @@ func TestSwitchAgentResumesVerifiedPriorNativeSession(t *testing.T) {
 	if sw.TargetStartMode != domain.AgentSwitchTargetStartResumed {
 		t.Fatalf("target mode = %q, want resumed", sw.TargetStartMode)
 	}
-	if target.restoreModel != "target-model" {
-		t.Fatalf("restore model = %q, want target-model", target.restoreModel)
+	if target.restoreModel != "target-model" || target.restoreEffort != "high" {
+		t.Fatalf("restore tuning = %q/%q, want target-model/high", target.restoreModel, target.restoreEffort)
 	}
 	if got := strings.Join(runtime.lastCfg.Argv, " "); !strings.Contains(got, "-- agent resume codex-prior ") || !strings.Contains(target.restoreSystemPrompt, "<ao-continuation") || target.restorePrompt != aoTargetActivationPrompt {
 		t.Fatalf("target argv = %q", got)
 	}
 	if store.native["native-prior"].LastGenerationID != "target-generation" {
 		t.Fatalf("target generation was not advanced: %+v", store.native["native-prior"])
+	}
+}
+
+func TestSwitchAgentResumableClaudeTargetDropsOtherProviderEffort(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	rec := store.sessions["proj-1"]
+	rec.Harness = domain.HarnessCodex
+	store.sessions[rec.ID] = rec
+	project := store.projects["proj"]
+	project.Config.Worker = domain.RoleOverride{
+		Harness: domain.HarnessCodex,
+		AgentConfig: domain.AgentConfig{
+			Model: "gpt-5.6-sol", Effort: "xhigh",
+		},
+	}
+	store.projects[project.ID] = project
+	source := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+	source.available["source-native"] = ports.NativeSessionAvailabilityAvailable
+	target := manager.agents.(switchTestAgents)[domain.HarnessClaudeCode].(*switchTestAgent)
+	target.available["claude-prior"] = ports.NativeSessionAvailabilityAvailable
+	now := time.Now().UTC().Add(-time.Hour)
+	store.native["native-claude-prior"] = domain.AgentNativeSession{
+		ID: "native-claude-prior", AOSessionID: rec.ID, Harness: domain.HarnessClaudeCode,
+		ConfigDir: target.configDir, NativeSessionID: "claude-prior",
+		LastGenerationID: "old-generation", CreatedAt: now, LastUsedAt: now,
+	}
+	manager.modelCatalog = tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{{
+		ID: "sonnet", IsDefault: true, Efforts: []string{"low", "high"},
+	}}}}
+
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+		TargetHarness: domain.HarnessClaudeCode, IdempotencyKey: "resume-claude-without-codex-effort",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw.TargetStartMode != domain.AgentSwitchTargetStartResumed {
+		t.Fatalf("target mode = %q, want resumed", sw.TargetStartMode)
+	}
+	if target.restoreEffort != "" {
+		t.Fatalf("Claude restore effort = %q, want provider default", target.restoreEffort)
 	}
 }
 
@@ -2912,6 +3047,29 @@ func TestSwitchAgentRejectsDefinitelyUnauthenticatedTargetBeforeStoppingSource(t
 	}
 }
 
+func TestSwitchAgentRejectsUnauthorizedLaunchContextBeforeStoppingSource(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+	target.launchAuthStatus = ports.AgentAuthStatusUnauthorized
+
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
+		TargetHarness: domain.HarnessCodex, IdempotencyKey: "launch-context-unauthenticated",
+	})
+	if !errors.Is(err, ErrTargetAgentUnauthorized) {
+		t.Fatalf("switch error = %v, want ErrTargetAgentUnauthorized", err)
+	}
+	if sw.State != domain.AgentSwitchFailed || target.launchAuthCalls != 1 {
+		t.Fatalf("switch=%+v launch auth calls=%d, want failed/1", sw, target.launchAuthCalls)
+	}
+	if runtime.restarted != 0 || runtime.destroyed != 0 || runtime.created != 0 {
+		t.Fatalf("source runtime changed: restarts=%d destroys=%d creates=%d", runtime.restarted, runtime.destroyed, runtime.created)
+	}
+	if got := store.sessions["proj-1"].Harness; got != domain.HarnessClaudeCode {
+		t.Fatalf("source harness changed to %q", got)
+	}
+}
+
 func TestSwitchAgentUsesCoordinatorUnauthorizedPolicyBeforeStoppingSource(t *testing.T) {
 	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
 	manager, store, _ := newSwitchTestManager(t, runtime)
@@ -2933,6 +3091,69 @@ func TestSwitchAgentUsesCoordinatorUnauthorizedPolicyBeforeStoppingSource(t *tes
 	}
 	if got := store.sessions["proj-1"].Harness; got != domain.HarnessClaudeCode {
 		t.Fatalf("session harness = %q, want source harness", got)
+	}
+}
+
+func TestSwitchAgentTreatsGlobalClaudeUnauthorizedAsAdvisoryForProjectGateway(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	rec := store.sessions["proj-1"]
+	rec.Harness = domain.HarnessCodex
+	store.sessions[rec.ID] = rec
+	project := store.projects["proj"]
+	project.Config.Env = map[string]string{
+		"ANTHROPIC_BASE_URL": "https://gateway.example",
+		"ANTHROPIC_API_KEY":  "project-fixture-key",
+	}
+	store.projects[project.ID] = project
+	readiness := &switchReadinessProvider{snapshot: domain.AgentReadinessSnapshot{
+		Installation: domain.AgentInstallationObservation{State: domain.AgentInstallationInstalled},
+		Authentication: domain.AgentAuthenticationObservation{
+			State: domain.AgentAuthenticationUnauthorized, Freshness: domain.AgentReadinessFresh,
+		},
+	}}
+	manager.SetAgentReadiness(readiness)
+
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+		TargetHarness: domain.HarnessClaudeCode, IdempotencyKey: "project-gateway-global-unauthorized",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw.State != domain.AgentSwitchCompleted || runtime.created != 1 {
+		t.Fatalf("switch=%+v runtime creates=%d, want completed target launch", sw, runtime.created)
+	}
+	if runtime.lastCfg.Env["ANTHROPIC_BASE_URL"] != "https://gateway.example" {
+		t.Fatalf("target environment omitted project gateway: %#v", runtime.lastCfg.Env)
+	}
+}
+
+func TestSwitchAgentTreatsFallbackClaudeUnauthorizedAsAdvisoryForProjectGateway(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	rec := store.sessions["proj-1"]
+	rec.Harness = domain.HarnessCodex
+	store.sessions[rec.ID] = rec
+	project := store.projects["proj"]
+	project.Config.Env = map[string]string{
+		"ANTHROPIC_BASE_URL": "https://gateway.example",
+		"ANTHROPIC_API_KEY":  "project-fixture-key",
+	}
+	store.projects[project.ID] = project
+	target := manager.agents.(switchTestAgents)[domain.HarnessClaudeCode].(*switchTestAgent)
+	target.authStatus = ports.AgentAuthStatusUnauthorized
+
+	sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+		TargetHarness: domain.HarnessClaudeCode, IdempotencyKey: "project-gateway-fallback-unauthorized",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw.State != domain.AgentSwitchCompleted || runtime.created != 1 {
+		t.Fatalf("switch=%+v runtime creates=%d, want completed target launch", sw, runtime.created)
+	}
+	if runtime.lastCfg.Env["ANTHROPIC_BASE_URL"] != "https://gateway.example" {
+		t.Fatalf("target environment omitted project gateway: %#v", runtime.lastCfg.Env)
 	}
 }
 
@@ -3453,6 +3674,7 @@ func TestWaitForTargetAcknowledgementOwnsIndependentDeliveryWindow(t *testing.T)
 	}
 	if admitted == nil {
 		t.Fatal("new switch admission returned no execution carrier")
+		return
 	}
 	admitted.store = switchContextAwareDeliveryStore{AgentSwitchStore: admitted.store}
 

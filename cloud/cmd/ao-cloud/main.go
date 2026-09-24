@@ -373,13 +373,36 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// A read-only Coder client backs the template picker endpoint. Built only
+	// when the deployment offers coder; otherwise the picker just shows "Default".
+	var coderTemplates httpapi.CoderTemplateLister
+	for _, provider := range cfg.AvailableSandboxProviders {
+		if provider == sandbox.ProviderCoder {
+			templateClient, err := coderprovider.New(coderprovider.Config{
+				BaseURL:    cfg.CoderURL,
+				Token:      cfg.CoderAPIToken,
+				Owner:      cfg.CoderOwner,
+				TemplateID: cfg.CoderTemplateID,
+				AgentName:  cfg.CoderAgentName,
+				Parameters: cfg.CoderParameters,
+			})
+			if err != nil {
+				return fmt.Errorf("build coder template lister: %w", err)
+			}
+			coderTemplates = templateClient
+			break
+		}
+	}
 	apiOptions := httpapi.Options{
 		Store:                     store,
+		CoderTemplates:            coderTemplates,
+		Transcripts:               store.SessionTranscripts(),
 		WorkOS:                    workosVerifier,
 		LocalAuthEnabled:          cfg.LocalAuthEnabled,
 		LocalSessionTTL:           cfg.LocalSessionTTL,
 		SandboxProvider:           cfg.SandboxProvider,
 		AvailableSandboxProviders: cfg.AvailableSandboxProviders,
+		CapabilityGatedProviders:  cfg.CapabilityGatedProviders,
 		Provisioning:              provisioningDefaults(cfg),
 		WorkerTokens:              workerTokens,
 		WorkerTokenTTL:            cfg.WorkerTokenTTL(),
@@ -397,6 +420,7 @@ func run(logger *slog.Logger) error {
 		SecretCipher:              providerCipher,
 		WebhookMaxBody:            cfg.GitHub.WebhookMaxBody,
 		TerminalStreamEnabled:     cfg.TerminalStreamEnabled,
+		TerminalRelayEnabled:      cfg.TerminalRelayEnabled,
 	}
 	if cfg.Environment == "development" &&
 		os.Getenv("AO_CLOUD_DEVELOPMENT_SKIP_CREDENTIAL_VALIDATION") == "true" {
@@ -404,6 +428,11 @@ func run(logger *slog.Logger) error {
 		apiOptions.CredentialValidator = developmentCredentialValidator{}
 	}
 	api := httpapi.New(apiOptions)
+	if cfg.TerminalRelayEnabled {
+		logger.Info("experimental terminal relay enabled",
+			"terminal_stream_enabled", cfg.TerminalStreamEnabled,
+			"mode", "local_same_replica")
+	}
 	// The work-wait long-poll and terminal streaming both ride a Postgres NOTIFY
 	// listener. Run it wherever workers connect so WaitForWork can be woken on
 	// enqueue; register the terminal channels only when that feature is on.

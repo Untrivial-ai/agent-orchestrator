@@ -190,6 +190,7 @@ if (typeof window !== "undefined") {
 				isLoading: false,
 			}),
 		setBounds: () => undefined,
+		onBoundsApplied: () => () => undefined,
 		setOverlayOpen: () => undefined,
 		navigate: async ({ viewId }: { viewId: string }) => ({
 				viewId,
@@ -266,6 +267,9 @@ if (typeof window !== "undefined") {
 			}),
 			destroy: () => undefined,
 			setAnnotationMode: async () => undefined,
+			completeAnnotation: async () => undefined,
+			discardAnnotations: async () => undefined,
+			annotationAction: async () => undefined,
 			onNavState: () => () => undefined,
 			onPageFocus: () => () => undefined,
 			onTabsState: () => () => undefined,
@@ -275,6 +279,7 @@ if (typeof window !== "undefined") {
 			onProfileManage: () => () => undefined,
 			onAnnotationSubmit: () => () => undefined,
 			onAnnotationCancel: () => () => undefined,
+			onAnnotationState: () => () => undefined,
 		},
 		browserProfiles: {
 			list: async () => ({ profiles: [] }),
@@ -297,6 +302,8 @@ if (typeof window !== "undefined") {
 			setBadge: async () => undefined,
 			devBounce: async () => undefined,
 			onClick: () => () => undefined,
+			onPlaySound: () => () => undefined,
+			reportSoundFailure: () => undefined,
 		},
 		tray: {
 			setAttentionState: () => undefined,
@@ -307,8 +314,9 @@ if (typeof window !== "undefined") {
 			setMigration: async () => undefined,
 		},
 		updateSettings: {
-			get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null }),
+			get: async () => ({ enabled: false, channel: "latest", nightlyAck: false, feature: null, macDifferentialUpdates: false }),
 			set: async () => undefined,
+			setMacDifferentialUpdates: async () => undefined,
 		},
 		uiSettings: {
 			get: async () => ({ ...DEFAULT_UI_SETTINGS }),
@@ -326,6 +334,7 @@ if (typeof window !== "undefined") {
 			download: async () => undefined,
 			install: async () => undefined,
 			isPostUpdateRelaunch: async () => false,
+			relaunch: async () => undefined,
 			onStatus: () => () => undefined,
 		onTelemetry: () => () => undefined,
 		},
@@ -333,10 +342,20 @@ if (typeof window !== "undefined") {
 			list: async () => [],
 			getActive: async () => null,
 		},
+		remotes: {
+			list: async () => [],
+			add: async () => "offline" as const,
+			update: async () => "offline" as const,
+			remove: async () => undefined,
+			probe: async () => "offline" as const,
+			request: async () => ({ status: 0, body: null }),
+		},
 		cloud: {
 			getSession: async () => null,
 			signIn: async () => undefined,
 			signOut: async () => undefined,
+			cancelProviderAuth: async () => undefined,
+			connectProviderAuth: async () => undefined,
 			localAuthAvailable: async () => false,
 			localRegister: async () => {
 				throw new Error("not available in tests");

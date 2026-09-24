@@ -27,7 +27,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -36,7 +35,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
 )
 
@@ -63,6 +61,10 @@ func New() *Plugin {
 // under AO's launch, so Activity.State can flip to active after a prompt is
 // accepted. See ports.SubmitActivitySignaler.
 func (p *Plugin) EmitsSubmitActivity() bool { return true }
+
+// EmitsSemanticMessageAcceptance reports that UserPromptSubmit includes the
+// accepted prompt, allowing AO delivery ids to be correlated semantically.
+func (p *Plugin) EmitsSemanticMessageAcceptance() bool { return true }
 
 // EmitsBlockedActivity signals that Claude Code fires both pre- and post-tool
 // hooks, so Activity.State can flip to blocked mid-turn on a permission dialog
@@ -124,6 +126,12 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 				Description: "Model override passed to `claude --model` (e.g. claude-opus-4-5).",
 			},
 			{
+				Key:  "effort",
+				Type: ports.ConfigFieldString,
+				Description: "Reasoning level passed to `claude --effort`. Valid levels are " +
+					"per-model and come from the provider's own catalog, so this is not a fixed enum.",
+			},
+			{
 				Key:         "permissions",
 				Type:        ports.ConfigFieldEnum,
 				Description: "Starting permission mode.",
@@ -179,6 +187,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 		SessionID:        cfg.SessionID,
 		NativeSessionID:  cfg.NativeSessionID,
 		Model:            cfg.Config.Model,
+		Effort:           cfg.Config.Effort,
 		Prompt:           cfg.Prompt,
 		SystemPrompt:     cfg.SystemPrompt,
 		SystemPromptFile: cfg.SystemPromptFile,
@@ -244,6 +253,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		SessionID:        cfg.Session.ID,
 		Metadata:         cfg.Session.Metadata,
 		Model:            cfg.Config.Model,
+		Effort:           cfg.Config.Effort,
 		Prompt:           cfg.Prompt,
 		SystemPrompt:     cfg.SystemPrompt,
 		SystemPromptFile: cfg.SystemPromptFile,
@@ -355,113 +365,6 @@ func (p *Plugin) NativeConversationExists(
 func isUUID(value string) bool {
 	_, err := uuid.Parse(value)
 	return err == nil
-}
-
-// AuthStatus checks Claude Code's local authentication state without starting a
-// session.
-func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) {
-	binary, err := p.claudeBinary(ctx)
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, err
-	}
-	if status, ok, err := claudeLocalAuthStatus(ctx); err != nil {
-		return ports.AgentAuthStatusUnknown, err
-	} else if ok {
-		return status, nil
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	out, err := aoprocess.CommandContext(probeCtx, binary, "auth", "status").CombinedOutput()
-	if probeCtx.Err() != nil {
-		return ports.AgentAuthStatusUnknown, probeCtx.Err()
-	}
-	if status, ok := claudeAuthStatusFromOutput(out); ok {
-		return status, nil
-	}
-	// An unfamiliar non-zero result is not affirmative evidence of missing
-	// credentials. Keep this advisory probe unknown and let launch report the
-	// authoritative failure.
-	_ = err
-	return ports.AgentAuthStatusUnknown, nil
-}
-
-func claudeAuthStatusFromOutput(out []byte) (ports.AgentAuthStatus, bool) {
-	start := bytes.IndexByte(out, '{')
-	end := bytes.LastIndexByte(out, '}')
-	if start < 0 || end < start {
-		return ports.AgentAuthStatusUnknown, false
-	}
-	var status struct {
-		LoggedIn bool `json:"loggedIn"`
-	}
-	if json.Unmarshal(out[start:end+1], &status) != nil {
-		return ports.AgentAuthStatusUnknown, false
-	}
-	if status.LoggedIn {
-		return ports.AgentAuthStatusAuthorized, true
-	}
-	return ports.AgentAuthStatusUnauthorized, true
-}
-
-func claudeLocalAuthStatus(ctx context.Context) (ports.AgentAuthStatus, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
-		if strings.TrimSpace(os.Getenv(name)) != "" {
-			return ports.AgentAuthStatusAuthorized, true, nil
-		}
-	}
-	cfgPath, err := claudeConfigPath()
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	return claudeConfigAuthStatus(cfgPath)
-}
-
-func claudeConfigAuthStatus(path string) (ports.AgentAuthStatus, bool, error) {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	if err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	if strings.TrimSpace(string(data)) == "" {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(data, &root); err != nil {
-		return ports.AgentAuthStatusUnknown, false, err
-	}
-	var hasSubscription bool
-	if raw := root["hasAvailableSubscription"]; len(raw) > 0 {
-		_ = json.Unmarshal(raw, &hasSubscription)
-	}
-	var userID string
-	if raw := root["userID"]; len(raw) > 0 {
-		_ = json.Unmarshal(raw, &userID)
-	}
-	if strings.TrimSpace(userID) != "" {
-		return ports.AgentAuthStatusAuthorized, true, nil
-	}
-	var oauthAccount map[string]any
-	if raw := root["oauthAccount"]; len(raw) > 0 {
-		if err := json.Unmarshal(raw, &oauthAccount); err != nil {
-			return ports.AgentAuthStatusUnknown, false, err
-		}
-	}
-	if len(oauthAccount) == 0 {
-		return ports.AgentAuthStatusUnknown, false, nil
-	}
-	if hasSubscription {
-		return ports.AgentAuthStatusAuthorized, true, nil
-	}
-	if accountUUID, ok := oauthAccount["accountUuid"].(string); ok && strings.TrimSpace(accountUUID) != "" {
-		return ports.AgentAuthStatusAuthorized, true, nil
-	}
-	return ports.AgentAuthStatusUnknown, false, nil
 }
 
 // claudeSessionUUID maps an AO session id onto a stable Claude Code

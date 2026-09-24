@@ -46,6 +46,39 @@ export function shouldToast(notification: { title?: string }, isSupported: boole
 }
 
 /**
+ * Platforms where Electron's Notification honours `silent`. The macOS
+ * (cocoa_notification.mm) and Windows (windows_toast_notification.cc)
+ * presenters read it; the Linux libnotify presenter never does and sends no
+ * freedesktop `suppress-sound` hint, so on Linux the daemon alone decides
+ * whether a toast chimes (Electron 33.4.11). The "Sound notifications"
+ * preference therefore promises control over AO-owned audio everywhere, and
+ * over the OS chime only where this returns true.
+ */
+export function osToastChimeControllable(platform: NodeJS.Platform): boolean {
+	return platform === "darwin" || platform === "win32";
+}
+
+/**
+ * The `silent` value for the OS toast, or `undefined` where the platform
+ * ignores it (see osToastChimeControllable) so the call site cannot read a
+ * muted toast into a value the presenter drops on the floor.
+ *
+ * Where it is honoured, two reasons mute: the user turned sound notifications
+ * off (the preference has to silence every chime, not just ours), or AO is
+ * about to play its own sound and must not layer the system chime on top of
+ * it. Otherwise (sound on, informational type) the toast keeps its native
+ * chime, which is the only sound that type gets.
+ */
+export function toastSilent(
+	platform: NodeJS.Platform,
+	soundNotificationsEnabled: boolean,
+	playsSound: boolean,
+): boolean | undefined {
+	if (!osToastChimeControllable(platform)) return undefined;
+	return !soundNotificationsEnabled || playsSound;
+}
+
+/**
  * macOS dock bounce style. A blocked agent waiting on the user keeps bouncing
  * until the app is activated ("critical"); anything else bounces once
  * ("informational"). This is where urgency lives, so every notification can

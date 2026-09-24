@@ -1,7 +1,6 @@
 package sqlite
 
 import (
-	"database/sql"
 	"fmt"
 	"testing"
 	"testing/fstest"
@@ -10,16 +9,9 @@ import (
 )
 
 func TestMigrateRepairsAgentInstallJobsFromLegacyVersions(t *testing.T) {
-	fixture := migrationFixture(t, 118)
 	for _, legacyVersion := range []int64{119, 120} {
 		t.Run(fmt.Sprintf("version_%d", legacyVersion), func(t *testing.T) {
-			db, err := sql.Open("sqlite", databaseURI(fixture(t))+pragmas)
-			if err != nil {
-				t.Fatalf("open sqlite: %v", err)
-			}
-			db.SetMaxOpenConns(1)
-			t.Cleanup(func() { _ = db.Close() })
-			upTo(t, db, 118)
+			db := openMigratedDatabaseCopy(t, 118)
 
 			contents, err := migrationsFS.ReadFile("migrations/0123_agent_install_jobs.sql")
 			if err != nil {
