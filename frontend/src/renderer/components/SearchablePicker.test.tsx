@@ -65,3 +65,57 @@ it("gives repository selectors a fixed, visibly scrollable result area", async (
 	expect(list).toHaveClass("h-72", "overflow-y-scroll", "repository-picker-scrollbar");
 	expect(screen.getAllByRole("option")).toHaveLength(40);
 });
+
+// The popover is portaled to <body>, so inside a modal Dialog react-remove-scroll
+// preventDefault()s the native wheel scroll. The picker drives the scroll itself
+// from a non-passive wheel listener, which must survive that preventDefault.
+it("scrolls an overflowing result list from the wheel and cancels the native scroll", async () => {
+	const user = userEvent.setup();
+	render(<SearchablePicker
+		ariaLabel="Repository"
+		placeholder="Select a repository"
+		searchPlaceholder="Search repositories"
+		fixedScroll
+		value=""
+		onChange={() => undefined}
+		options={Array.from({ length: 40 }, (_, index) => ({ value: String(index), label: `repo-${index}` }))}
+	/>);
+	await user.click(screen.getByRole("combobox", { name: "Repository" }));
+	const list = screen.getByRole("listbox", { name: "Repository" });
+
+	// jsdom does no layout, so drive scrollTop/overflow through explicit descriptors.
+	let scrollTop = 0;
+	Object.defineProperty(list, "scrollTop", { configurable: true, get: () => scrollTop, set: (value) => { scrollTop = value; } });
+	Object.defineProperty(list, "scrollHeight", { configurable: true, value: 1000 });
+	Object.defineProperty(list, "clientHeight", { configurable: true, value: 288 });
+
+	const wheel = new WheelEvent("wheel", { deltaY: 120, bubbles: true, cancelable: true });
+	list.dispatchEvent(wheel);
+	expect(scrollTop).toBe(120);
+	expect(wheel.defaultPrevented).toBe(true);
+});
+
+it("leaves a non-overflowing result list to scroll natively", async () => {
+	const user = userEvent.setup();
+	render(<SearchablePicker
+		ariaLabel="Repository"
+		placeholder="Select a repository"
+		searchPlaceholder="Search repositories"
+		fixedScroll
+		value=""
+		onChange={() => undefined}
+		options={[{ value: "one", label: "repo-one" }]}
+	/>);
+	await user.click(screen.getByRole("combobox", { name: "Repository" }));
+	const list = screen.getByRole("listbox", { name: "Repository" });
+
+	let scrollTop = 0;
+	Object.defineProperty(list, "scrollTop", { configurable: true, get: () => scrollTop, set: (value) => { scrollTop = value; } });
+	Object.defineProperty(list, "scrollHeight", { configurable: true, value: 100 });
+	Object.defineProperty(list, "clientHeight", { configurable: true, value: 288 });
+
+	const wheel = new WheelEvent("wheel", { deltaY: 120, bubbles: true, cancelable: true });
+	list.dispatchEvent(wheel);
+	expect(scrollTop).toBe(0);
+	expect(wheel.defaultPrevented).toBe(false);
+});
