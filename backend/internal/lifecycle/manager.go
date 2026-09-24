@@ -172,6 +172,13 @@ func WithTelemetry(sink ports.EventSink) Option {
 	return func(m *Manager) { m.telemetry = sink }
 }
 
+// WithDataDir supplies AO's data directory so ReconcileSessionOutputType can
+// derive a session's artifact directory when its stored value is empty (a
+// row created before that column existed).
+func WithDataDir(dir string) Option {
+	return func(m *Manager) { m.dataDir = dir }
+}
+
 // WithContainerReaper wires the container leg of #2652: MarkTerminated will
 // force-remove the terminated session's ao.session-labeled Docker containers,
 // unless the project opts out via ProjectConfig.ContainerReap.Disabled.
@@ -238,6 +245,9 @@ type Manager struct {
 	projects         projectConfigLoader
 	operationGateMu  sync.RWMutex
 	operationGate    sessionOperationGate
+	// dataDir backs ReconcileSessionOutputType's artifact-dir fallback for
+	// sessions rows created before session_output_type/artifact_dir existed.
+	dataDir string
 
 	mu        sync.Mutex
 	window    time.Duration
