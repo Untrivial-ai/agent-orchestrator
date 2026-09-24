@@ -72,6 +72,7 @@ type Session struct {
 	Branch           string
 	Mode             string
 	DeniedCommands   []string
+	Interface        SessionInterface
 	ActivityState    contract.ActivityState
 	IsTerminated     bool
 	RuntimeConnected bool
@@ -109,6 +110,7 @@ type CreateSession struct {
 	Prompt         string
 	Mode           string
 	DeniedCommands []string
+	Interface      SessionInterface
 	Provider       string
 	// SandboxConnectionID names a bring-your-own provider credential. It is
 	// empty for sandboxes that run on the platform's own account.
