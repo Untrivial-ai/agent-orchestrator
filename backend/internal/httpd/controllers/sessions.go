@@ -168,6 +168,7 @@ type SessionsController struct {
 // Register mounts the session routes on the supplied router.
 func (c *SessionsController) Register(r chi.Router) {
 	r.Get("/sessions", c.list)
+	r.Get("/sessions/history", c.history)
 	r.Post("/sessions", c.spawn)
 	r.Post("/sessions/cleanup", c.cleanup)
 	r.Get("/sessions/{sessionId}", c.get)
@@ -244,6 +245,58 @@ func (c *SessionsController) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, ListSessionsResponse{Sessions: sessionViews(sessions)})
+}
+
+func (c *SessionsController) history(w http.ResponseWriter, r *http.Request) {
+	historySvc, ok := c.Svc.(interface {
+		History(context.Context, sessionsvc.HistoryFilter) (sessionsvc.HistoryPage, error)
+	})
+	if !ok {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/history")
+		return
+	}
+	q := r.URL.Query()
+	limit := 50
+	if value := q.Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 100 {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_QUERY", "limit must be between 1 and 100", nil)
+			return
+		}
+		limit = parsed
+	}
+	kind := domain.SessionKind(q.Get("kind"))
+	if kind != "" && kind != domain.KindWorker && kind != domain.KindOrchestrator {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_QUERY", "kind must be worker or orchestrator", nil)
+		return
+	}
+	var since *time.Time
+	if value := q.Get("since"); value != "" {
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_QUERY", "since must be an RFC3339 timestamp", nil)
+			return
+		}
+		since = &parsed
+	}
+	page, err := historySvc.History(r.Context(), sessionsvc.HistoryFilter{
+		ProjectID: domain.ProjectID(q.Get("project")), Kind: kind,
+		Delivery: q.Get("delivery"), Query: q.Get("q"), Cursor: q.Get("cursor"), Since: since, Limit: limit,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "invalid history") {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_QUERY", err.Error(), nil)
+			return
+		}
+		envelope.WriteError(w, r, err)
+		return
+	}
+	view := HistorySessionsResponse{Sessions: make([]HistorySessionView, 0, len(page.Sessions)), NextCursor: page.NextCursor}
+	for _, item := range page.Sessions {
+		view.Sessions = append(view.Sessions, HistorySessionView{Session: sessionView(item.Session), StoppedAt: item.StoppedAt,
+			WorkspaceDisposition: item.WorkspaceDisposition, CleanupFailureCode: item.CleanupFailureCode, RetentionHolds: item.RetentionHolds})
+	}
+	envelope.WriteJSON(w, http.StatusOK, view)
 }
 
 func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {

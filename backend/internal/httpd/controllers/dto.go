@@ -360,6 +360,32 @@ type ListSessionsResponse struct {
 	Sessions []SessionView `json:"sessions"`
 }
 
+// HistorySessionsQuery selects a keyset page of stopped sessions.
+type HistorySessionsQuery struct {
+	Project  string `query:"project,omitempty" description:"Project id filter."`
+	Kind     string `query:"kind,omitempty" description:"worker or orchestrator."`
+	Delivery string `query:"delivery,omitempty" enum:"no_pr,merged,open,closed_unmerged" description:"Filter by tracked PR delivery state."`
+	Q        string `query:"q,omitempty" description:"Title, session id, or branch search; at most 100 characters."`
+	Since    string `query:"since,omitempty" description:"Only stops on or after this RFC3339 timestamp."`
+	Cursor   string `query:"cursor,omitempty" description:"Opaque cursor from the previous history page."`
+	Limit    int    `query:"limit,omitempty" description:"Page size from 1 to 100; default 50."`
+}
+
+// HistorySessionsResponse is a bounded page of stopped sessions. StoppedAt is
+// absent for sessions terminated before AO began recording that fact.
+type HistorySessionsResponse struct {
+	Sessions   []HistorySessionView `json:"sessions"`
+	NextCursor string               `json:"nextCursor,omitempty"`
+}
+
+type HistorySessionView struct {
+	Session              SessionView                 `json:"session"`
+	StoppedAt            *time.Time                  `json:"stoppedAt,omitempty" description:"Authoritative latest stop time; absent for legacy records with unknown stop time."`
+	WorkspaceDisposition domain.WorkspaceDisposition `json:"workspaceDisposition,omitempty" description:"Durable AO terminal-resource cleanup outcome, when known for this stop generation."`
+	CleanupFailureCode   string                      `json:"cleanupFailureCode,omitempty" description:"AO terminal-resource cleanup failure code, when present."`
+	RetentionHolds       []string                    `json:"retentionHolds" description:"Conservative report-only holds; this field never authorizes purging."`
+}
+
 // SpawnSessionRequest is the body of POST /api/v1/sessions.
 type SpawnSessionRequest struct {
 	// ProjectID is omitted for a standalone worker session.

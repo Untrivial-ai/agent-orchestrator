@@ -34,6 +34,8 @@ import (
 )
 
 type fakeSessionService struct {
+	historyPage                sessionsvc.HistoryPage
+	historyFilter              sessionsvc.HistoryFilter
 	sessions                   map[domain.SessionID]domain.Session
 	sent                       string
 	sentAttachment             *ports.SpawnAttachment
@@ -82,6 +84,35 @@ type fakeSessionService struct {
 	handoffSource              domain.AgentGenerationID
 	autoInjectCISession        domain.SessionID
 	autoInjectCIEnabled        bool
+}
+
+func (f *fakeSessionService) History(_ context.Context, filter sessionsvc.HistoryFilter) (sessionsvc.HistoryPage, error) {
+	f.historyFilter = filter
+	return f.historyPage, nil
+}
+
+func TestSessionsAPI_HistoryIsBoundedAndReadOnly(t *testing.T) {
+	svc := newFakeSessionService()
+	now := time.Now().UTC().Truncate(time.Second)
+	svc.historyPage = sessionsvc.HistoryPage{Sessions: []sessionsvc.HistoryItem{{
+		Session:   domain.Session{SessionRecord: domain.SessionRecord{ID: "mer-2", ProjectID: "mer", Kind: domain.KindWorker, IsTerminated: true}},
+		StoppedAt: &now, WorkspaceDisposition: domain.DispositionPreservedDirty,
+		RetentionHolds: []string{"workspace_not_reclaimed", "backup_unverified"},
+	}}, NextCursor: "next"}
+	srv := newSessionTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/history?project=mer&kind=worker&delivery=no_pr&limit=1", "")
+	if status != http.StatusOK || !strings.Contains(string(body), `"nextCursor":"next"`) || !strings.Contains(string(body), `"workspaceDisposition":"preserved_dirty"`) {
+		t.Fatalf("history = %d %s", status, body)
+	}
+	if svc.historyFilter.ProjectID != "mer" || svc.historyFilter.Kind != domain.KindWorker || svc.historyFilter.Delivery != "no_pr" || svc.historyFilter.Limit != 1 {
+		t.Fatalf("filter = %+v", svc.historyFilter)
+	}
+	for _, query := range []string{"limit=101", "kind=invalid", "since=wrong"} {
+		_, status, _ = doRequest(t, srv, http.MethodGet, "/api/v1/sessions/history?"+query, "")
+		if status != http.StatusBadRequest {
+			t.Fatalf("%s = %d", query, status)
+		}
+	}
 }
 
 type fakeInterfaceTransitionSessionService struct {

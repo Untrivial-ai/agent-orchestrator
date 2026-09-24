@@ -7405,6 +7405,79 @@ paths:
       summary: Clean up terminated session workspaces
       tags:
       - sessions
+  /api/v1/sessions/history:
+    get:
+      operationId: listSessionHistory
+      parameters:
+      - description: Project id filter.
+        in: query
+        name: project
+        schema:
+          description: Project id filter.
+          type: string
+      - description: worker or orchestrator.
+        in: query
+        name: kind
+        schema:
+          description: worker or orchestrator.
+          type: string
+      - description: Filter by tracked PR delivery state.
+        in: query
+        name: delivery
+        schema:
+          description: Filter by tracked PR delivery state.
+          enum:
+          - no_pr
+          - merged
+          - open
+          - closed_unmerged
+          type: string
+      - description: Title, session id, or branch search; at most 100 characters.
+        in: query
+        name: q
+        schema:
+          description: Title, session id, or branch search; at most 100 characters.
+          type: string
+      - description: Only stops on or after this RFC3339 timestamp.
+        in: query
+        name: since
+        schema:
+          description: Only stops on or after this RFC3339 timestamp.
+          type: string
+      - description: Opaque cursor from the previous history page.
+        in: query
+        name: cursor
+        schema:
+          description: Opaque cursor from the previous history page.
+          type: string
+      - description: Page size from 1 to 100; default 50.
+        in: query
+        name: limit
+        schema:
+          description: Page size from 1 to 100; default 50.
+          type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistorySessionsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List stopped sessions with keyset pagination
+      tags:
+      - sessions
   /api/v1/settings:
     get:
       operationId: getSettings
@@ -10570,6 +10643,45 @@ components:
       required:
       - repoPath
       - approvedActions
+      type: object
+    HistorySessionView:
+      properties:
+        cleanupFailureCode:
+          description: AO terminal-resource cleanup failure code, when present.
+          type: string
+        retentionHolds:
+          description: Conservative report-only holds; this field never authorizes
+            purging.
+          items:
+            type: string
+          type: array
+        session:
+          $ref: '#/components/schemas/ControllersSessionView'
+        stoppedAt:
+          description: Authoritative latest stop time; absent for legacy records with
+            unknown stop time.
+          format: date-time
+          type:
+          - "null"
+          - string
+        workspaceDisposition:
+          description: Durable AO terminal-resource cleanup outcome, when known for
+            this stop generation.
+          type: string
+      required:
+      - session
+      - retentionHolds
+      type: object
+    HistorySessionsResponse:
+      properties:
+        nextCursor:
+          type: string
+        sessions:
+          items:
+            $ref: '#/components/schemas/HistorySessionView'
+          type: array
+      required:
+      - sessions
       type: object
     IdentityResponse:
       properties:

@@ -61,6 +61,8 @@ func (f *fakeAgentReadiness) RecheckAgent(agentID string) {
 }
 
 type fakeStore struct {
+	historyEntries      []domain.SessionHistoryEntry
+	historyFilter       domain.SessionHistoryFilter
 	sessions            map[domain.SessionID]domain.SessionRecord
 	getSessionErr       error
 	activeSwitches      map[domain.SessionID]domain.AgentSwitch
@@ -81,6 +83,11 @@ type fakeStore struct {
 	listPRFactsCalls    int
 	listReviewRunsCalls int
 	num                 int
+}
+
+func (f *fakeStore) ListSessionHistory(_ context.Context, filter domain.SessionHistoryFilter) ([]domain.SessionHistoryEntry, error) {
+	f.historyFilter = filter
+	return f.historyEntries, nil
 }
 
 func newFakeStore() *fakeStore {

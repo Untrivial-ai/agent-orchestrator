@@ -229,8 +229,11 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersListDirsQuery":                            "ListDirsQuery",
 	"ControllersListDirsResponse":                         "ListDirsResponse",
 	"ControllersFSEntry":                                  "FSEntry",
+	"ControllersHistorySessionsQuery":                     "HistorySessionsQuery",
 	"ControllersCleanupSessionsQuery":                     "CleanupSessionsQuery",
 	"ControllersListSessionsResponse":                     "ListSessionsResponse",
+	"ControllersHistorySessionsResponse":                  "HistorySessionsResponse",
+	"ControllersHistorySessionView":                       "HistorySessionView",
 	"ControllersSpawnSessionRequest":                      "SpawnSessionRequest",
 	"ControllersSpawnSessionResponse":                     "SpawnSessionResponse",
 	"ControllersSessionResponse":                          "SessionResponse",
@@ -1991,6 +1994,16 @@ func sessionOperations() []operation {
 			pathParams: []any{controllers.ListSessionsQuery{}},
 			resps: []respUnit{
 				{http.StatusOK, controllers.ListSessionsResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/history", id: "listSessionHistory", tag: "sessions",
+			summary:    "List stopped sessions with keyset pagination",
+			pathParams: []any{controllers.HistorySessionsQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.HistorySessionsResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 			},

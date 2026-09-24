@@ -985,7 +985,19 @@ func (s *Service) TeardownProject(ctx context.Context, project domain.ProjectID)
 // List returns sessions as enriched display models after applying API filters.
 func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Session, error) {
 	recoveryRevision := s.statusRecoveryRevision()
-	recs, err := s.listRecords(ctx, filter.ProjectID)
+	var recs []domain.SessionRecord
+	var err error
+	if filter.Active != nil && *filter.Active {
+		if activeStore, ok := s.store.(interface {
+			ListActiveSessionRecords(context.Context, domain.ProjectID) ([]domain.SessionRecord, error)
+		}); ok {
+			recs, err = activeStore.ListActiveSessionRecords(ctx, filter.ProjectID)
+		} else {
+			recs, err = s.listRecords(ctx, filter.ProjectID)
+		}
+	} else {
+		recs, err = s.listRecords(ctx, filter.ProjectID)
+	}
 	if err != nil {
 		return nil, err
 	}

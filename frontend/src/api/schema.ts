@@ -2507,6 +2507,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List stopped sessions with keyset pagination */
+        get: operations["listSessionHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings": {
         parameters: {
             query?: never;
@@ -3670,6 +3687,24 @@ export interface components {
             initialCommitMessage?: string;
             remoteUrl?: string;
             repoPath: string;
+        };
+        HistorySessionView: {
+            /** @description AO terminal-resource cleanup failure code, when present. */
+            cleanupFailureCode?: string;
+            /** @description Conservative report-only holds; this field never authorizes purging. */
+            retentionHolds: string[];
+            session: components["schemas"]["ControllersSessionView"];
+            /**
+             * Format: date-time
+             * @description Authoritative latest stop time; absent for legacy records with unknown stop time.
+             */
+            stoppedAt?: null | string;
+            /** @description Durable AO terminal-resource cleanup outcome, when known for this stop generation. */
+            workspaceDisposition?: string;
+        };
+        HistorySessionsResponse: {
+            nextCursor?: string;
+            sessions: components["schemas"]["HistorySessionView"][];
         };
         IdentityResponse: {
             apiVersion: number;
@@ -14163,6 +14198,59 @@ export interface operations {
             };
             /** @description Not Implemented */
             501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listSessionHistory: {
+        parameters: {
+            query?: {
+                /** @description Project id filter. */
+                project?: string;
+                /** @description worker or orchestrator. */
+                kind?: string;
+                /** @description Filter by tracked PR delivery state. */
+                delivery?: "no_pr" | "merged" | "open" | "closed_unmerged";
+                /** @description Title, session id, or branch search; at most 100 characters. */
+                q?: string;
+                /** @description Only stops on or after this RFC3339 timestamp. */
+                since?: string;
+                /** @description Opaque cursor from the previous history page. */
+                cursor?: string;
+                /** @description Page size from 1 to 100; default 50. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HistorySessionsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
