@@ -158,7 +158,7 @@ export function CloudBrowserSurface({ model }: { model: CloudBrowserSurfaceModel
 							() => paintGenerationRef.current !== generation,
 						);
 						if (timing && paintGenerationRef.current === generation) {
-							reportPaintRef.current(frame.sequence, timing.decodeMs, timing.paintMs);
+							reportPaintRef.current(frame.sequence, timing.decodeMs, timing.paintMs, frame.frameUrl);
 						}
 					} catch {
 						// A newer queued frame can still decode after one malformed frame.

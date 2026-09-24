@@ -96,9 +96,18 @@ type Chromium struct {
 	failures  []time.Time
 	parked    bool
 	proc      Process
+	starting  *chromiumStartup
+	stopping  chan struct{}
 	// generation distinguishes the process a watcher goroutine belongs to;
 	// a stale watcher must not clear state owned by a newer launch.
 	generation int64
+}
+
+type chromiumStartup struct {
+	done     chan struct{}
+	cancel   context.CancelFunc
+	endpoint Endpoint
+	err      error
 }
 
 // NewChromium creates a supervisor. It starts nothing; call EnsureRunning.
@@ -128,17 +137,41 @@ func NewChromium(opts ChromiumOptions) *Chromium {
 }
 
 // EnsureRunning returns the CDP endpoint, starting Chromium on first use and
-// restarting it after unexpected exits. Concurrent calls coalesce: the launch
-// happens under the supervisor lock.
-func (c *Chromium) EnsureRunning(ctx context.Context) (Endpoint, error) {
+// restarting it after unexpected exits. Concurrent callers share one startup.
+func (c *Chromium) EnsureRunning(ctx context.Context) (endpoint Endpoint, err error) {
 	c.mu.Lock()
+	if c.stopping != nil {
+		c.mu.Unlock()
+		return Endpoint{}, context.Canceled
+	}
+	if startup := c.starting; startup != nil {
+		c.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return Endpoint{}, ctx.Err()
+		case <-startup.done:
+			return startup.endpoint, startup.err
+		}
+	}
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Endpoint{}, err
+	}
 	if c.parked {
 		return Endpoint{}, ErrParked
 	}
 	if endpoint, ok := c.endpointLocked(); ok {
 		return endpoint, nil
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	startup := &chromiumStartup{done: make(chan struct{}), cancel: cancel}
+	c.starting = startup
+	defer func() {
+		cancel()
+		startup.endpoint, startup.err = endpoint, err
+		c.starting = nil
+		close(startup.done)
+	}()
 
 	for attempt := 0; ; attempt++ {
 		if ctx.Err() != nil {
@@ -168,6 +201,9 @@ func (c *Chromium) EnsureRunning(ctx context.Context) (Endpoint, error) {
 		if err == nil {
 			return endpoint, nil
 		}
+		if ctx.Err() != nil {
+			return Endpoint{}, ctx.Err()
+		}
 		c.recordFailureLocked()
 		if len(c.failures) >= c.opts.ParkFailureLimit {
 			c.parked = true
@@ -180,8 +216,7 @@ func (c *Chromium) EnsureRunning(ctx context.Context) (Endpoint, error) {
 }
 
 // launchLocked spawns Chromium and waits for its DevToolsActivePort file.
-// Called with c.mu held; the mutex is not released during the readiness poll
-// so concurrent callers coalesce onto this attempt.
+// The startup record fences callers while readiness polling releases c.mu.
 func (c *Chromium) launchLocked(ctx context.Context) (Endpoint, error) {
 	if err := os.MkdirAll(c.opts.UserDataDir, 0o700); err != nil {
 		return Endpoint{}, fmt.Errorf("create chromium user data dir: %w", err)
@@ -225,8 +260,6 @@ func (c *Chromium) launchLocked(ctx context.Context) (Endpoint, error) {
 
 	endpoint, err := c.awaitEndpointLocked(ctx)
 	if err != nil {
-		// Leave c.proc running only if it is still the process we launched;
-		// otherwise a Stop from another goroutine already cleaned it up.
 		c.mu.Unlock()
 		stopErr := proc.Stop()
 		c.mu.Lock()
@@ -366,6 +399,35 @@ func (c *Chromium) CurrentStatus() Status {
 // Stop terminates the supervised Chromium. Safe when never started.
 func (c *Chromium) Stop(ctx context.Context) error {
 	c.mu.Lock()
+	if stopping := c.stopping; stopping != nil {
+		c.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-stopping:
+			return nil
+		}
+	}
+	c.stopping = make(chan struct{})
+	startup := c.starting
+	if startup != nil {
+		startup.cancel()
+	}
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		close(c.stopping)
+		c.stopping = nil
+		c.mu.Unlock()
+	}()
+	if startup != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-startup.done:
+		}
+	}
+	c.mu.Lock()
 	proc := c.proc
 	if proc != nil {
 		c.generation++
@@ -399,10 +461,15 @@ func (execSpawner) Start(_ context.Context, spec ProcessSpec) (Process, error) {
 }
 
 type execProcess struct {
-	cmd *exec.Cmd
+	cmd      *exec.Cmd
+	waitOnce sync.Once
+	waitErr  error
 }
 
-func (p *execProcess) Wait() error { return p.cmd.Wait() }
+func (p *execProcess) Wait() error {
+	p.waitOnce.Do(func() { p.waitErr = p.cmd.Wait() })
+	return p.waitErr
+}
 
 func (p *execProcess) Stop() error {
 	if p.cmd.Process == nil {
@@ -410,7 +477,7 @@ func (p *execProcess) Stop() error {
 	}
 	_ = p.cmd.Process.Signal(os.Interrupt)
 	done := make(chan error, 1)
-	go func() { done <- p.cmd.Wait() }()
+	go func() { done <- p.Wait() }()
 	select {
 	case <-done:
 		return nil

@@ -80,7 +80,7 @@ export function useCloudBrowserView(options: {
 	);
 	const setViewport = useCallback((width: number, height: number) => stream?.setViewport(width, height), [stream]);
 	const reportPaint = useCallback(
-		(frameSequence: number, decodeMs: number, paintMs: number) => stream?.reportPaint(frameSequence, decodeMs, paintMs),
+		(frameSequence: number, decodeMs: number, paintMs: number, frameUrl: string) => stream?.reportPaint(frameSequence, decodeMs, paintMs, frameUrl),
 		[stream],
 	);
 	const retry = useCallback(() => stream?.retryNow(), [stream]);

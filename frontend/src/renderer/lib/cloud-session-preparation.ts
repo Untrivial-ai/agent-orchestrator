@@ -287,11 +287,12 @@ async function renewEntry(entry: PreparationEntry): Promise<CloudSessionPreparat
 
 async function reattachEntry(entry: PreparationEntry): Promise<void> {
 	const previousSessionId = entry.durableSessionId;
-	if (entry.detachInFlight) await entry.detachInFlight.catch(() => undefined);
-	entry.createKey = globalThis.crypto.randomUUID();
-	const ready = entry.registration.create(
-		entry.createKey, entry.clientInstanceId,
-	).then(({ lease, sessionId }) => {
+	const detaching = entry.detachInFlight;
+	const ready = (async () => {
+		if (detaching) await detaching.catch(() => undefined);
+		entry.createKey = globalThis.crypto.randomUUID();
+		return entry.registration.create(entry.createKey, entry.clientInstanceId);
+	})().then(({ lease, sessionId }) => {
 		entry.durableSessionId = sessionId;
 		entry.generation = lease.generation;
 		setLease(entry, lease);

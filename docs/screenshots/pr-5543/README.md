@@ -49,3 +49,24 @@ independently asserted; its automated and worker-side checks remain separate.
 ![Worker page retained after viewer reattachment and resize.](review-viewer-reattach.png)
 
 [Native input recording](review-input-focus.mp4)
+
+## Review fixes, 2026-09-25
+
+Captured from another isolated native Electron checkout with scratch data and
+a real Docker worker running the updated binaries. Input reached the worker
+page while it continuously produced frames. A second viewer connection
+replaced the desktop viewer; the notice remained visible for eight seconds
+without automatic takeover. Clicking Retry restored control and text input.
+
+![Input while the worker continuously produces frames.](review-stream-input.png)
+
+![Replaced viewer remains disconnected until explicit retry.](review-viewer-replaced.png)
+
+![Text input after the user explicitly retries.](review-viewer-recovered.png)
+
+A 21.2-second screen recording was attempted but omitted: a host compositor
+recovery dialog obscured the application. The screenshots capture the actual
+native renderer, including the surrounding application. The local control
+plane used development authentication, a placeholder harness credential, and
+a public repository. Hosted-provider authentication and provisioning were
+not tested in this run.

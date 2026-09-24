@@ -3,6 +3,7 @@ import type { CloudCpClient } from "./cloud-cp";
 import { captureRendererEvent } from "./telemetry";
 
 const PROTOCOL_VERSION = 1;
+const VIEWER_REPLACED_CLOSE_CODE = 4001;
 const FRAME_HEADER_BYTES = 35;
 const FRAME_MAGIC = "AOBR";
 const MAX_FRAME_BYTES = 1024 * 1024 + 512;
@@ -112,7 +113,6 @@ type PendingFrame = {
 	bytes: number;
 	width: number;
 	height: number;
-	firstForConnection: boolean;
 	reconnect: boolean;
 };
 
@@ -169,11 +169,12 @@ export class CloudBrowserStream {
 	private readonly retiredEpochs = new Set<number>();
 	private readonly pendingInputs = new Map<number, PendingInput>();
 	private readonly pendingRequests = new Map<number, PendingRequest>();
-	private pendingFrame: { sequence: number; timing: PendingFrame } | null = null;
+	private readonly pendingFrames = new Map<string, { sequence: number; timing: PendingFrame }>();
 	private connectStartedAt = 0;
 	private connectionIsReconnect = false;
 	private hasOpened = false;
 	private receivedFrameForConnection = false;
+	private paintedFrameForConnection = false;
 
 	constructor(private readonly options: CloudBrowserStreamOptions) {}
 
@@ -236,7 +237,7 @@ export class CloudBrowserStream {
 		this.retry = 0;
 		this.rejectPendingRequests(new Error("The browser viewer is reconnecting."));
 		this.pendingInputs.clear();
-		this.pendingFrame = null;
+		this.pendingFrames.clear();
 		this.update({ status: "connecting", error: "", errorRequestId: "", viewportPending: true });
 		void this.connect();
 	}
@@ -295,14 +296,18 @@ export class CloudBrowserStream {
 		return inputSeq ?? 0;
 	}
 
-	reportPaint(frameSequence: number, decodeMs: number, paintMs: number): void {
-		const pending = this.pendingFrame;
-		if (!pending || pending.sequence !== frameSequence) return;
-		this.pendingFrame = null;
+	reportPaint(frameSequence: number, decodeMs: number, paintMs: number, frameUrl: string): void {
+		const pending = this.pendingFrames.get(frameUrl);
+		if (!pending || pending.sequence !== frameSequence ||
+			(this.paintedFrame && frameSequence <= this.paintedFrame.sequence)) return;
+		for (const [url, frame] of this.pendingFrames) {
+			if (frame.sequence <= frameSequence) this.pendingFrames.delete(url);
+		}
 		this.paintedFrame = { sequence: frameSequence, width: pending.timing.width, height: pending.timing.height };
 		this.acceptPaintedViewport();
 		const paintedAt = this.now();
-		if (pending.timing.firstForConnection) {
+		if (!this.paintedFrameForConnection) {
+			this.paintedFrameForConnection = true;
 			this.capture("ao.renderer.cloud_browser_first_frame", {
 				elapsed_ms: Math.max(0, Math.round(paintedAt - pending.timing.connectStartedAt)),
 				relay_to_paint_ms: Math.max(0, Math.round(paintedAt - pending.timing.receivedAt)),
@@ -349,6 +354,7 @@ export class CloudBrowserStream {
 		this.connectStartedAt = this.now();
 		this.connectionIsReconnect = this.hasOpened;
 		this.receivedFrameForConnection = false;
+		this.paintedFrameForConnection = false;
 		this.update({ status: this.snapshot.frameUrl ? "reconnecting" : "connecting", error: "", errorRequestId: "" });
 		try {
 			const ticket = await this.options.client.createBrowserViewerTicket(this.options.orgId, this.options.sessionId);
@@ -378,11 +384,15 @@ export class CloudBrowserStream {
 			socket.onerror = () => {
 				if (generation === this.generation) this.update({ error: "The browser stream encountered a connection error." });
 			};
-			socket.onclose = () => {
+			socket.onclose = (event) => {
 				if (generation !== this.generation) return;
 				this.socket = null;
 				this.stopPing();
 				this.stopFirstFrameTimer();
+				if (event.code === VIEWER_REPLACED_CLOSE_CODE) {
+					this.failConnection("This browser was opened in another window. Reconnect here to take control.");
+					return;
+				}
 				this.scheduleReconnect();
 			};
 		} catch (error) {
@@ -404,6 +414,8 @@ export class CloudBrowserStream {
 	private scheduleReconnect(): void {
 		if (this.refs === 0 || this.snapshot.status === "fatal" || this.retryTimer !== undefined) return;
 		this.rejectPendingRequests(new Error("The browser viewer is reconnecting."));
+		this.pendingFrames.clear();
+		this.paintedFrame = null;
 		this.update({ status: this.snapshot.frameUrl ? "reconnecting" : "connecting", viewportPending: true });
 		const delay = RETRY_DELAYS[Math.min(this.retry, RETRY_DELAYS.length - 1)]!;
 		this.retry += 1;
@@ -430,7 +442,7 @@ export class CloudBrowserStream {
 		this.retry = 0;
 		this.rejectPendingRequests(new Error("The browser viewer disconnected."));
 		this.pendingInputs.clear();
-		this.pendingFrame = null;
+		this.pendingFrames.clear();
 		this.update({ status: "idle", viewportPending: true, owner: "idle" });
 	}
 
@@ -574,17 +586,11 @@ export class CloudBrowserStream {
 		this.stopFirstFrameTimer();
 		const frameUrl = URL.createObjectURL(new Blob([buffer.slice(jpegOffset)], { type: "image/jpeg" }));
 		if (this.snapshot.frameUrl) URL.revokeObjectURL(this.snapshot.frameUrl);
-		this.update({
-			frameUrl,
-			frameWidth: width,
-			frameHeight: height,
-			frameSequence: sequence,
-			streamEpoch: epoch,
-			status: "ready",
-			error: "",
-			errorRequestId: "",
-		});
-		this.pendingFrame = {
+		if (this.pendingFrames.size >= 128) {
+			const oldest = this.pendingFrames.keys().next().value;
+			if (oldest !== undefined) this.pendingFrames.delete(oldest);
+		}
+		this.pendingFrames.set(frameUrl, {
 			sequence,
 			timing: {
 				receivedAt: this.now(),
@@ -592,11 +598,14 @@ export class CloudBrowserStream {
 				bytes: jpegBytes,
 				width,
 				height,
-				firstForConnection: !this.receivedFrameForConnection,
 				reconnect: this.connectionIsReconnect,
 			},
-		};
+		});
 		this.receivedFrameForConnection = true;
+		this.update({
+			frameUrl, frameWidth: width, frameHeight: height, frameSequence: sequence,
+			streamEpoch: epoch, status: "ready", error: "", errorRequestId: "",
+		});
 	}
 
 	private update(next: Partial<CloudBrowserSnapshot>): void {
@@ -619,7 +628,7 @@ export class CloudBrowserStream {
 		}
 		this.pendingInputs.clear();
 		this.rejectPendingRequests(new Error("The browser viewer restarted."));
-		this.pendingFrame = null;
+		this.pendingFrames.clear();
 		this.paintedFrame = null;
 		this.viewport = null;
 		this.update({ streamEpoch: epoch, frameSequence: 0, viewportPending: true });

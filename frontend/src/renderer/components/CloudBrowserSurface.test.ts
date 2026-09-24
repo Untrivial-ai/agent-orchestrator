@@ -250,7 +250,7 @@ describe("mapCloudBrowserPoint", () => {
 		await act(async () => decodes.shift()?.({ close: vi.fn() }));
 		await waitFor(() => expect(fetchFrame).toHaveBeenCalledWith("blob:frame-3"));
 		await act(async () => decodes.shift()?.({ close: vi.fn() }));
-		await waitFor(() => expect(reportPaint).toHaveBeenLastCalledWith(3, expect.any(Number), expect.any(Number)));
+		await waitFor(() => expect(reportPaint).toHaveBeenLastCalledWith(3, expect.any(Number), expect.any(Number), "blob:frame-3"));
 		expect(fetchFrame).not.toHaveBeenCalledWith("blob:frame-2");
 		expect(drawImage).toHaveBeenCalledTimes(2);
 	});

@@ -96,6 +96,7 @@ type Store interface {
 	OpenTerminal(context.Context, string, string, time.Duration) (domain.TerminalSession, error)
 	IssueBrowserViewerTicket(context.Context, domain.Principal, string, string, time.Duration) (string, []string, error)
 	OpenBrowserViewerTicket(context.Context, string) (domain.AccessTicket, error)
+	RefreshBrowserInteraction(context.Context, domain.Principal, string, string, int64) error
 	RefreshTerminalInteraction(context.Context, domain.TerminalSession, time.Duration) error
 	QueueTerminalInput(context.Context, domain.TerminalSession, string, []byte) error
 	QueueTerminalResize(context.Context, domain.TerminalSession, uint16, uint16) error

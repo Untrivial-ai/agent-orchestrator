@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/browserstream"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 	"github.com/coder/websocket"
@@ -19,9 +20,10 @@ import (
 )
 
 const (
-	browserViewerTicketTTL = 5 * time.Minute
-	browserControlBuffer   = 64
-	browserWireLimit       = browserstream.MaxFrameBytes + 512
+	browserViewerTicketTTL            = 5 * time.Minute
+	browserControlBuffer              = 64
+	browserWireLimit                  = browserstream.MaxFrameBytes + 512
+	browserInteractionRefreshInterval = 30 * time.Second
 )
 
 type browserStreams struct {
@@ -42,20 +44,24 @@ type browserWorkerPeer struct {
 }
 
 type browserViewerPeer struct {
-	subject        string
-	operate        bool
-	controls       chan []byte
-	frames         *browserstream.Latest
-	done           chan struct{}
-	once           sync.Once
-	rateMu         sync.Mutex
-	rateAt         time.Time
-	rate           int
-	started        time.Time
-	framesReceived atomic.Uint64
-	framesReplaced atomic.Uint64
-	bytesReceived  atomic.Uint64
-	first          sync.Once
+	subject                string
+	operate                bool
+	controls               chan []byte
+	frames                 *browserstream.Latest
+	done                   chan struct{}
+	once                   sync.Once
+	rateMu                 sync.Mutex
+	rateAt                 time.Time
+	rate                   int
+	started                time.Time
+	framesReceived         atomic.Uint64
+	framesReplaced         atomic.Uint64
+	bytesReceived          atomic.Uint64
+	first                  sync.Once
+	replaced               atomic.Bool
+	streamEpoch            atomic.Uint64
+	lastInteraction        time.Time
+	interactionWorkerEpoch int64
 }
 
 func newBrowserStreams() *browserStreams {
@@ -124,6 +130,7 @@ func (b *browserStreams) registerViewer(key string, peer *browserViewerPeer) (*b
 		return nil, false, func() bool { return false }
 	}
 	if session.viewer != nil {
+		session.viewer.replaced.Store(true)
 		session.viewer.close()
 	}
 	session.viewer = peer
@@ -330,6 +337,9 @@ func (s *Server) connectBrowserViewer(w http.ResponseWriter, r *http.Request) {
 	case <-s.drain:
 		_ = connection.Close(websocket.StatusTryAgainLater, "control plane draining")
 	}
+	if peer.replaced.Load() {
+		_ = connection.Close(browserstream.ViewerReplacedCloseCode, "browser viewer opened in another window")
+	}
 }
 
 func (s *Server) readBrowserViewer(ctx context.Context, connection *websocket.Conn, key string, peer *browserViewerPeer) error {
@@ -337,6 +347,9 @@ func (s *Server) readBrowserViewer(ctx context.Context, connection *websocket.Co
 		kind, payload, err := connection.Read(ctx)
 		if err != nil {
 			return err
+		}
+		if s.browserStreams.viewer(key) != peer {
+			return nil
 		}
 		if kind != websocket.MessageText || len(payload) == 0 || len(payload) > browserstream.MaxControlBytes {
 			return errors.New("invalid browser viewer message")
@@ -363,6 +376,29 @@ func (s *Server) readBrowserViewer(ctx context.Context, connection *websocket.Co
 			return nil
 		}
 		workerPeer := s.browserStreams.worker(key)
+		if workerPeer != nil && browserControlIsInteraction(control) && control.StreamEpoch == peer.streamEpoch.Load() &&
+			(peer.interactionWorkerEpoch != workerPeer.claims.Epoch || time.Since(peer.lastInteraction) >= browserInteractionRefreshInterval) {
+			leaseCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			err := s.store.RefreshBrowserInteraction(leaseCtx, domain.Principal{UserID: peer.subject},
+				workerPeer.claims.OrgID, workerPeer.claims.SessionID, workerPeer.claims.Epoch)
+			cancel()
+			if err != nil {
+				code := "BROWSER_SESSION_UNAVAILABLE"
+				if errors.Is(err, postgres.ErrForbidden) {
+					code = "BROWSER_POLICY_DENIED"
+				}
+				enqueueBrowserControl(peer.controls, peer.done, browserstream.Control{
+					Type: "input_rejected", Version: browserstream.Version, StreamEpoch: control.StreamEpoch,
+					InputSeq: control.InputSeq, Code: code,
+				})
+				continue
+			}
+			peer.lastInteraction = time.Now()
+			peer.interactionWorkerEpoch = workerPeer.claims.Epoch
+		}
+		if s.browserStreams.viewer(key) != peer {
+			return nil
+		}
 		if workerPeer == nil || !enqueueBrowserControl(workerPeer.send, workerPeer.done, control) {
 			enqueueBrowserControl(peer.controls, peer.done, browserstream.Control{
 				Type: "input_rejected", Version: browserstream.Version, InputSeq: control.InputSeq,
@@ -439,6 +475,9 @@ func (s *Server) readBrowserWorker(ctx context.Context, connection *websocket.Co
 		if err != nil {
 			return err
 		}
+		if s.browserStreams.worker(key) != peer {
+			return nil
+		}
 		viewerPeer := s.browserStreams.viewer(key)
 		if kind == websocket.MessageBinary {
 			if len(payload) > browserWireLimit {
@@ -449,6 +488,7 @@ func (s *Server) readBrowserWorker(ctx context.Context, connection *websocket.Co
 				return err
 			}
 			if viewerPeer != nil {
+				viewerPeer.streamEpoch.Store(frame.StreamEpoch)
 				viewerPeer.framesReceived.Add(1)
 				viewerPeer.bytesReceived.Add(uint64(len(payload)))
 				if viewerPeer.frames.Put(payload) {
@@ -533,6 +573,25 @@ func viewerControlOperates(messageType string) bool {
 	default:
 		return false
 	}
+}
+
+func browserControlIsInteraction(control browserstream.Control) bool {
+	if control.InputSeq == 0 || control.InputSeq > (1<<53)-1 || control.StreamEpoch == 0 || control.StreamEpoch > (1<<53)-1 {
+		return false
+	}
+	switch control.Type {
+	case "navigate", "tab", "dialog":
+		return true
+	case "input":
+		switch control.Kind {
+		case "pointerMove":
+			return control.Buttons != 0
+		case "pointerDown", "pointerUp", "doubleClick", "wheel", "keyDown", "keyUp", "text",
+			"compositionStart", "compositionUpdate", "compositionCommit", "compositionCancel":
+			return true
+		}
+	}
+	return false
 }
 
 func workerControlAllowed(messageType string) bool {

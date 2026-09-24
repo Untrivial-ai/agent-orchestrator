@@ -31,7 +31,7 @@ export type CloudBrowserSurfaceModel = {
 	snapshot: CloudBrowserSnapshot;
 	send: (control: Omit<CloudBrowserControl, "version" | "streamEpoch">) => boolean;
 	setViewport: (width: number, height: number) => void;
-	reportPaint: (frameSequence: number, decodeMs: number, paintMs: number) => void;
+	reportPaint: (frameSequence: number, decodeMs: number, paintMs: number, frameUrl: string) => void;
 	retry: () => void;
 };
 

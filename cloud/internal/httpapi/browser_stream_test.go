@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,10 @@ const (
 )
 
 type browserRelayStore struct{ Store }
+
+func (browserRelayStore) RefreshBrowserInteraction(context.Context, domain.Principal, string, string, int64) error {
+	return nil
+}
 
 func (browserRelayStore) OpenBrowserViewerTicket(context.Context, string) (domain.AccessTicket, error) {
 	return domain.AccessTicket{
@@ -238,6 +243,143 @@ func TestBrowserStreamsKeepSessionsIsolatedAndBoundInputRate(t *testing.T) {
 	}
 	if !first.allow(now.Add(time.Second)) {
 		t.Fatal("input rate did not reset after one second")
+	}
+}
+
+func TestBrowserReplacementHasTerminalCloseCode(t *testing.T) {
+	server := &Server{store: browserRelayStore{}, browserViewerEnabled: true, browserStreams: newBrowserStreams()}
+	router := chi.NewRouter()
+	router.Get("/orgs/{orgId}/sessions/{sessionId}/browser-view/stream", server.connectBrowserViewer)
+	httpServer := httptest.NewServer(router)
+	defer httpServer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	url := "ws" + httpServer.URL[len("http"):] + "/orgs/" + browserTestOrg + "/sessions/" + browserTestSession + "/browser-view/stream?ticket=test"
+	first, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.CloseNow()
+	second, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.CloseNow()
+	for err == nil {
+		_, _, err = first.Read(ctx)
+	}
+	if websocket.CloseStatus(err) != browserstream.ViewerReplacedCloseCode {
+		t.Fatalf("replacement close: %v", err)
+	}
+}
+
+type browserInteractionStore struct {
+	Store
+	refreshes  atomic.Int32
+	refreshErr error
+}
+
+func (s *browserInteractionStore) RefreshBrowserInteraction(_ context.Context, principal domain.Principal, orgID, sessionID string, epoch int64) error {
+	if principal.UserID != "user-1" || orgID != browserTestOrg || sessionID != browserTestSession || epoch != 7 {
+		return postgres.ErrStaleWorker
+	}
+	s.refreshes.Add(1)
+	return s.refreshErr
+}
+
+func TestBrowserInteractionLeaseIsAuthorizedAndThrottled(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		operate  bool
+		storeErr error
+		replaced bool
+	}{
+		{name: "operator", operate: true},
+		{name: "read only"},
+		{name: "revoked", operate: true, storeErr: postgres.ErrForbidden},
+		{name: "stale worker", operate: true, storeErr: postgres.ErrStaleWorker},
+		{name: "replaced", operate: true, replaced: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &browserInteractionStore{refreshErr: test.storeErr}
+			server := &Server{store: store, browserStreams: newBrowserStreams()}
+			peer := &browserViewerPeer{subject: "user-1", operate: test.operate, done: make(chan struct{}),
+				frames: browserstream.NewLatest(), controls: make(chan []byte, 16)}
+			peer.streamEpoch.Store(1)
+			defer peer.close()
+			workerPeer := &browserWorkerPeer{claims: worker.Claims{OrgID: browserTestOrg, SessionID: browserTestSession, Epoch: 7},
+				send: make(chan []byte, 16), done: make(chan struct{})}
+			key := browserRelayKey(browserTestOrg, browserTestSession)
+			server.browserStreams.registerViewer(key, peer)
+			server.browserStreams.registerWorker(key, workerPeer)
+			if test.replaced {
+				replacement := &browserViewerPeer{subject: "user-1", done: make(chan struct{}), frames: browserstream.NewLatest()}
+				defer replacement.close()
+				server.browserStreams.registerViewer(key, replacement)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := websocket.Accept(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.CloseNow()
+				_ = server.readBrowserViewer(ctx, conn, key, peer)
+			}))
+			defer httpServer.Close()
+			conn, _, err := websocket.Dial(ctx, "ws"+httpServer.URL[len("http"):], nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.CloseNow()
+			controls := []browserstream.Control{
+				{Type: "ping"}, {Type: "viewport"}, {Type: "input", Kind: "pointerMove"},
+				{Type: "input", Kind: "keyDown", StreamEpoch: 2},
+				{Type: "input", Kind: "text", Text: "first"}, {Type: "input", Kind: "text", Text: "second"},
+			}
+			for index, control := range controls {
+				control.Version, control.InputSeq = browserstream.Version, uint64(index+1)
+				if control.StreamEpoch == 0 {
+					control.StreamEpoch = 1
+				}
+				payload, _ := json.Marshal(control)
+				if err := conn.Write(ctx, websocket.MessageText, payload); err != nil {
+					t.Fatal(err)
+				}
+				if test.replaced {
+					if _, _, err := conn.Read(ctx); err == nil {
+						t.Fatal("replaced viewer remained connected")
+					}
+					break
+				}
+				select {
+				case <-workerPeer.send:
+					if index >= 4 && (!test.operate || test.storeErr != nil) {
+						t.Fatal("unauthorized input forwarded")
+					}
+				case <-peer.controls:
+					if test.operate && (test.storeErr == nil || index < 4) {
+						t.Fatal("valid control rejected")
+					}
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				if index < 4 && store.refreshes.Load() != 0 {
+					t.Fatal("passive or stale input renewed lease")
+				}
+			}
+			want := int32(0)
+			if test.operate && !test.replaced {
+				want = 1
+				if test.storeErr != nil {
+					want = 2
+				}
+			}
+			if got := store.refreshes.Load(); got != want {
+				t.Fatalf("refreshes=%d, want %d", got, want)
+			}
+		})
 	}
 }
 

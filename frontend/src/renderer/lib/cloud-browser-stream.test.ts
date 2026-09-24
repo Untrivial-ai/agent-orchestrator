@@ -14,10 +14,10 @@ class FakeSocket {
 	send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void { this.sent.push(data); }
 	close(): void { this.closed = true; this.readyState = WebSocket.CLOSED; }
 	open(): void { this.readyState = WebSocket.OPEN; this.onopen?.call(this as unknown as WebSocket, new Event("open")); }
-	serverClose(): void {
+	serverClose(code = 1006): void {
 		this.closed = true;
 		this.readyState = WebSocket.CLOSED;
-		this.onclose?.call(this as unknown as WebSocket, new CloseEvent("close"));
+		this.onclose?.call(this as unknown as WebSocket, new CloseEvent("close", { code }));
 	}
 	message(data: string | ArrayBuffer): void {
 		this.onmessage?.call(this as unknown as WebSocket, new MessageEvent("message", { data }));
@@ -56,6 +56,58 @@ afterEach(() => {
 });
 
 describe("CloudBrowserStream", () => {
+	it("does not reclaim a viewer replaced by another window until explicitly retried", async () => {
+		vi.useFakeTimers();
+		const socket = new FakeSocket();
+		const issue = vi.fn().mockResolvedValue({ ticket: "ticket", canOperate: true });
+		const stream = new CloudBrowserStream({
+			baseUrl: "https://cloud.example", orgId: "org", sessionId: "session",
+			client: { createBrowserViewerTicket: issue }, createSocket: () => socket,
+		});
+		stream.retain();
+		await Promise.resolve(); await Promise.resolve();
+		socket.open();
+		socket.serverClose(4001);
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(issue).toHaveBeenCalledOnce();
+		expect(stream.getSnapshot()).toMatchObject({ status: "fatal", canOperate: false });
+		expect(stream.getSnapshot().error).toContain("another window");
+		stream.retryNow();
+		await Promise.resolve(); await Promise.resolve();
+		expect(issue).toHaveBeenCalledTimes(2);
+		stream.dispose();
+	});
+
+	it("accepts a painted viewport while newer frames are still arriving", async () => {
+		const socket = new FakeSocket();
+		let url = 0;
+		vi.spyOn(URL, "createObjectURL").mockImplementation(() => `blob:frame-${++url}`);
+		vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+		const stream = new CloudBrowserStream({
+			baseUrl: "https://cloud.example", orgId: "org", sessionId: "session",
+			client: { createBrowserViewerTicket: vi.fn().mockResolvedValue({ ticket: "ticket", canOperate: true }) },
+			createSocket: () => socket,
+		});
+		stream.retain();
+		await Promise.resolve(); await Promise.resolve();
+		socket.open();
+		socket.message(JSON.stringify({ type: "hello", version: 1, streamEpoch: 1 }));
+		acknowledgeViewport(stream, socket);
+		socket.message(frame(1n, 1n));
+		socket.message(frame(1n, 2n));
+		stream.reportPaint(1, 80, 1, "blob:frame-1");
+		expect(stream.getSnapshot().viewportPending).toBe(false);
+		expect(stream.send({ type: "input", kind: "text", text: "working" })).toBe(true);
+		socket.message(JSON.stringify({ type: "hello", version: 1, streamEpoch: 2 }));
+		acknowledgeViewport(stream, socket);
+		socket.message(frame(2n, 2n));
+		stream.reportPaint(2, 80, 1, "blob:frame-2");
+		expect(stream.getSnapshot().viewportPending).toBe(true);
+		stream.reportPaint(2, 80, 1, "blob:frame-3");
+		expect(stream.getSnapshot().viewportPending).toBe(false);
+		stream.dispose();
+	});
+
 	it("keeps the viewer attached when resizing loses control ownership", async () => {
 		const socket = new FakeSocket();
 		vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:frame");
@@ -77,7 +129,7 @@ describe("CloudBrowserStream", () => {
 		socket.message(JSON.stringify({ type: "control_owner", version: 1, streamEpoch: 1, owner: "idle" }));
 		// The surface resubmits its dimensions when control ownership changes.
 		acknowledgeViewport(stream, socket);
-		socket.message(frame(1n, 1n)); stream.reportPaint(1, 0, 0);
+		socket.message(frame(1n, 1n)); stream.reportPaint(1, 0, 0, stream.getSnapshot().frameUrl);
 		expect(stream.getSnapshot().viewportPending).toBe(false);
 		stream.dispose();
 	});
@@ -98,7 +150,7 @@ describe("CloudBrowserStream", () => {
 		socket.open();
 		socket.message(JSON.stringify({ type: "hello", version: 1, streamEpoch: 1 }));
 		acknowledgeViewport(stream, socket);
-		socket.message(frame(1n, 1n)); stream.reportPaint(1, 0, 0);
+		socket.message(frame(1n, 1n)); stream.reportPaint(1, 0, 0, stream.getSnapshot().frameUrl);
 		stream.setViewport(1000, 800);
 		const resize = JSON.parse(String(socket.sent.at(-1)));
 		socket.message(JSON.stringify({ ...resize, type: "input_rejected", code }));
@@ -118,7 +170,7 @@ describe("CloudBrowserStream", () => {
 		acknowledgeViewport(stream, recovered, 1000, 800);
 		recovered.message(frame(2n, 1n, 1000, 800));
 		expect(stream.send({ type: "input", kind: "text", text: "no" })).toBe(false);
-		stream.reportPaint(1, 0, 0);
+		stream.reportPaint(1, 0, 0, stream.getSnapshot().frameUrl);
 		expect(stream.send({ type: "input", kind: "text", text: "yes" })).toBe(true);
 		stream.dispose();
 	});
@@ -274,7 +326,7 @@ describe("CloudBrowserStream", () => {
 		vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
 		acknowledgeViewport(stream, socket);
 		socket.message(frame(1n, 1n));
-		stream.reportPaint(1, 0, 0);
+		stream.reportPaint(1, 0, 0, stream.getSnapshot().frameUrl);
 
 		const close = stream.request({ type: "tab", operation: "close", tabId: "tab-2" });
 		const closeControl = JSON.parse(String(socket.sent.at(-1))) as { inputSeq: number; operation: string; tabId: string };
@@ -320,7 +372,7 @@ describe("CloudBrowserStream", () => {
 		vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
 		acknowledgeViewport(stream, socket);
 		socket.message(frame(1n, 1n));
-		stream.reportPaint(1, 0, 0);
+		stream.reportPaint(1, 0, 0, stream.getSnapshot().frameUrl);
 
 		const close = stream.request({ type: "tab", operation: "close", tabId: "tab-2" });
 		socket.serverClose();
@@ -342,23 +394,23 @@ describe("CloudBrowserStream", () => {
 		socket.open();
 		socket.message(JSON.stringify({ type: "hello", version: 1, streamEpoch: 1 }));
 		acknowledgeViewport(stream, socket);
-		socket.message(frame(1n, 1n)); stream.reportPaint(1, 0, 0);
+		socket.message(frame(1n, 1n)); stream.reportPaint(1, 0, 0, stream.getSnapshot().frameUrl);
 		expect(stream.getSnapshot().viewportPending).toBe(false);
 		acknowledgeViewport(stream, socket, 1000, 800, 2);
 		expect(stream.send({ type: "input", kind: "pointerDown", x: 10, y: 10 })).toBe(false);
-		socket.message(frame(1n, 2n)); stream.reportPaint(2, 0, 0);
+		socket.message(frame(1n, 2n)); stream.reportPaint(2, 0, 0, stream.getSnapshot().frameUrl);
 		expect(stream.getSnapshot().viewportPending).toBe(true);
 		socket.message(frame(1n, 3n, 1000, 800));
 		expect(stream.getSnapshot().viewportPending).toBe(true);
-		stream.reportPaint(3, 0, 0);
+		stream.reportPaint(3, 0, 0, stream.getSnapshot().frameUrl);
 		expect(stream.getSnapshot().viewportPending).toBe(false);
 		stream.setViewport(800, 600);
 		const oldResize = JSON.parse(String(socket.sent.at(-1)));
 		acknowledgeViewport(stream, socket, 1000, 800, 4);
 		socket.message(JSON.stringify({ ...oldResize, type: "viewport_ack", minFrameSeq: 1 }));
-		stream.reportPaint(3, 0, 0);
+		stream.reportPaint(3, 0, 0, stream.getSnapshot().frameUrl);
 		expect(stream.getSnapshot().viewportPending).toBe(true);
-		socket.message(frame(1n, 4n, 1000, 800)); stream.reportPaint(4, 0, 0);
+		socket.message(frame(1n, 4n, 1000, 800)); stream.reportPaint(4, 0, 0, stream.getSnapshot().frameUrl);
 		expect(stream.getSnapshot().viewportPending).toBe(false);
 		stream.dispose();
 	});
@@ -440,7 +492,7 @@ describe("CloudBrowserStream", () => {
 		now = 100;
 		sockets[0]!.message(frame(1n, 1n));
 		now = 110;
-		stream.reportPaint(1, 7.6, 1.6);
+		stream.reportPaint(1, 7.6, 1.6, stream.getSnapshot().frameUrl);
 		expect(capture).toHaveBeenCalledWith("ao.renderer.cloud_browser_first_frame", {
 			elapsed_ms: 110,
 			relay_to_paint_ms: 10,
@@ -465,7 +517,7 @@ describe("CloudBrowserStream", () => {
 		now = 260;
 		sockets[0]!.message(frame(1n, 2n));
 		now = 270;
-		stream.reportPaint(2, 5, 1);
+		stream.reportPaint(2, 5, 1, stream.getSnapshot().frameUrl);
 		expect(capture).toHaveBeenCalledWith("ao.renderer.cloud_browser_input_frame", {
 			elapsed_ms: 70,
 			input_kind: "input",
@@ -482,7 +534,7 @@ describe("CloudBrowserStream", () => {
 		now = 400;
 		sockets[1]!.message(frame(2n, 1n));
 		now = 410;
-		stream.reportPaint(1, 4, 1);
+		stream.reportPaint(1, 4, 1, stream.getSnapshot().frameUrl);
 		expect(capture).toHaveBeenCalledWith("ao.renderer.cloud_browser_first_frame", expect.objectContaining({
 			elapsed_ms: 110,
 			reconnect: true,

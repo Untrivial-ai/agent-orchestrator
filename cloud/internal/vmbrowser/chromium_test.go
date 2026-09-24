@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -128,6 +129,63 @@ func TestChromiumEnsureRunningIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestChromiumConcurrentStartupWaiterCanCancel(t *testing.T) {
+	started := make(chan string, 4)
+	spawner := &fakeSpawner{next: func(_ int, spec ProcessSpec) Process {
+		started <- spec.Dir
+		return &fakeProcess{exit: make(chan struct{})}
+	}}
+	c := newTestChromium(t, spawner)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	t.Cleanup(func() { _ = c.Stop(context.Background()) })
+	result := make(chan error, 1)
+	go func() { _, err := c.EnsureRunning(ctx); result <- err }()
+	dir := <-started
+	waitCtx, stopWait := context.WithTimeout(ctx, 80*time.Millisecond)
+	defer stopWait()
+	if _, err := c.EnsureRunning(waitCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("canceled waiter: %v", err)
+	}
+	writePortFile(t, dir)
+	if err := <-result; err != nil {
+		t.Fatalf("original startup: %v", err)
+	}
+	if got := spawner.startCount(); got != 1 {
+		t.Fatalf("concurrent callers launched %d processes, want 1", got)
+	}
+}
+
+func TestChromiumStopCancelsPendingStartup(t *testing.T) {
+	started := make(chan struct{}, 8)
+	spawner := &fakeSpawner{next: func(_ int, _ ProcessSpec) Process {
+		started <- struct{}{}
+		return &fakeProcess{exit: make(chan struct{})}
+	}}
+	c := newTestChromium(t, spawner)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { _, err := c.EnsureRunning(ctx); result <- err }()
+	<-started
+	if err := c.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("startup after stop: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		cancel()
+		<-result
+		t.Fatal("stop did not cancel startup")
+	}
+	if c.CurrentStatus().Running || spawner.startCount() != 1 {
+		t.Fatal("stop resurrected the pending browser")
+	}
+}
+
 func TestChromiumRestartsAfterCrash(t *testing.T) {
 	spawner := &fakeSpawner{}
 	crashed := false
@@ -205,6 +263,38 @@ func TestChromiumStopIsSafeWhenNeverStarted(t *testing.T) {
 	if err := c.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop on never-started chromium: %v", err)
 	}
+}
+
+func TestChromiumProcessWaitAndStopShareExit(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(binary, "-test.run=^TestChromiumProcessHelper$")
+	cmd.Env = append(os.Environ(), "AO_TEST_CHROMIUM_PROCESS=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	proc := &execProcess{cmd: cmd}
+	t.Cleanup(func() { _ = proc.Stop() })
+	exited := make(chan error, 2)
+	go func() { exited <- proc.Wait() }()
+	go func() { exited <- proc.Wait() }()
+	if err := proc.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	first, second := <-exited, <-exited
+	if first != second {
+		t.Fatalf("waiters observed different exits: %v, %v", first, second)
+	}
+}
+
+func TestChromiumProcessHelper(t *testing.T) {
+	if os.Getenv("AO_TEST_CHROMIUM_PROCESS") != "1" {
+		return
+	}
+	time.Sleep(time.Minute)
+	os.Exit(0)
 }
 
 func TestChromiumLaunchFlags(t *testing.T) {

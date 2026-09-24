@@ -107,6 +107,31 @@ describe("cloud session preparation", () => {
 		await expect(second.commit({ displayName: "Reopen", prompt: "Continue" })).resolves.toBe("session-1");
 	});
 
+	it("waits for an outstanding detach and reattachment before committing", async () => {
+		let finishDetach!: () => void;
+		let finishAttach!: (value: { lease: ReturnType<typeof lease>; sessionId: string }) => void;
+		const options = registration({
+			detach: vi.fn(() => new Promise<void>((resolve) => { finishDetach = resolve; })),
+			create: vi.fn()
+				.mockResolvedValueOnce({ lease: lease(), sessionId: "session-1" })
+				.mockImplementationOnce(() => new Promise((resolve) => { finishAttach = resolve; })),
+		});
+		const first = startCloudSessionPreparation(options);
+		await flushPromises();
+		first.release();
+		await flushPromises();
+		const reopened = startCloudSessionPreparation(options);
+		const committed = reopened.commit({ displayName: "Reopen", prompt: "Continue" });
+		await flushPromises();
+		expect(options.commit).not.toHaveBeenCalled();
+		finishDetach();
+		await vi.waitFor(() => expect(options.create).toHaveBeenCalledTimes(2));
+		expect(options.commit).not.toHaveBeenCalled();
+		finishAttach({ lease: { ...lease(), generation: 2 }, sessionId: "session-2" });
+		await expect(committed).resolves.toBe("session-2");
+		expect(options.commit).toHaveBeenCalledWith("session-2", expect.any(Object), expect.any(String), expect.any(String), 2);
+	});
+
 	it("retries an ambiguous server reattach with its reattach idempotency key", async () => {
 		const create = vi.fn()
 			.mockImplementationOnce(async () => ({ lease: lease(), sessionId: "session-1" }))

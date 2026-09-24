@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	Version         = 1
-	MaxControlBytes = 32 << 10
-	MaxFrameBytes   = 1 << 20
-	MaxTargetID     = 128
+	Version                 = 1
+	MaxControlBytes         = 32 << 10
+	MaxFrameBytes           = 1 << 20
+	MaxTargetID             = 128
+	ViewerReplacedCloseCode = 4001
 
 	frameHeaderBytes = 35
 	frameKindJPEG    = 1

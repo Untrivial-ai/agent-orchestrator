@@ -93,7 +93,7 @@ describe("useCloudBrowserView", () => {
 			const header = new DataView(bytes.buffer);
 			header.setBigUint64(6, 1n); header.setBigUint64(14, 1n); header.setUint16(22, 800); header.setUint16(24, 600);
 			socket.onmessage?.(new MessageEvent("message", { data: bytes.buffer }));
-			result.current.cloudSurface!.reportPaint(1, 0, 0);
+			result.current.cloudSurface!.reportPaint(1, 0, 0, "blob:frame");
 		});
 
 		let close!: Promise<void>;
