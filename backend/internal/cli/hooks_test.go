@@ -1254,6 +1254,83 @@ func TestHooks_AgySessionStartReportsConversationID(t *testing.T) {
 	assertActivityRequest(t, req, want)
 }
 
+// OpenHands' hook payload (openhands.sdk.hooks.types.HookEvent) carries the
+// conversation id as session_id, and its executor reads additionalContext from
+// the top level of stdout; hookSpecificOutput is ignored.
+func TestHooks_OpenHandsUserPromptSubmitInjectsInstructions(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	cfg := setConfigEnv(t)
+	promptDir := filepath.Join(cfg.dataDir, "prompts", "ao-7")
+	if err := os.MkdirAll(promptDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(promptDir, "system.md"), []byte("follow AO standing instructions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	payload := `{"event_type":"UserPromptSubmit","message":"fix the bug","session_id":"0b6c1f5e-5a4e-4d8b-9c55-0d5c2b1f7a10","working_dir":"/ws","metadata":{}}`
+	out, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader(payload),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "openhands", "user-prompt-submit")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("hook output is not one JSON object: %q: %v", out, err)
+	}
+	if response["additionalContext"] != "follow AO standing instructions" {
+		t.Fatalf("additionalContext = %#v, want top-level instructions; output %q", response["additionalContext"], out)
+	}
+	if _, nested := response["hookSpecificOutput"]; nested {
+		t.Fatalf("OpenHands ignores hookSpecificOutput: %q", out)
+	}
+	var req setActivityAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v\nbody=%s", err, capture.body)
+	}
+	want := setActivityAPIRequest{State: "active", Event: "user-prompt-submit", AgentSessionID: "0b6c1f5e-5a4e-4d8b-9c55-0d5c2b1f7a10"}
+	assertActivityRequest(t, req, want)
+}
+
+func TestHooks_OpenHandsSessionStartAndStopEmitNoOutput(t *testing.T) {
+	for _, tc := range []struct {
+		event string
+		state string
+	}{
+		{"session-start", "active"},
+		// Any stdout on Stop is parsed as a decision; OpenHands must be left
+		// free to stop.
+		{"stop", "idle"},
+	} {
+		t.Run(tc.event, func(t *testing.T) {
+			t.Setenv("AO_SESSION_ID", "ao-7")
+			cfg := setConfigEnv(t)
+			srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+			writeRunFileFor(t, cfg, srv)
+
+			out, _, err := executeCLI(t, Deps{
+				In:           strings.NewReader(`{"session_id":"oh-native-1"}`),
+				ProcessAlive: func(int) bool { return true },
+			}, "hooks", "openhands", tc.event)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if strings.TrimSpace(out) != "" {
+				t.Fatalf("unexpected hook output %q", out)
+			}
+			var req setActivityAPIRequest
+			if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+				t.Fatalf("decode body: %v\nbody=%s", err, capture.body)
+			}
+			assertActivityRequest(t, req, setActivityAPIRequest{State: tc.state, Event: tc.event, AgentSessionID: "oh-native-1"})
+		})
+	}
+}
+
 func TestHooks_AgyModernEventsReturnValidJSON(t *testing.T) {
 	for _, event := range []string{"pre-invocation", "post-tool-use", "stop"} {
 		t.Run(event, func(t *testing.T) {

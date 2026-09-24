@@ -46,6 +46,34 @@ func TestLaunchAndRestore(t *testing.T) {
 	}
 }
 
+func TestModelOverride(t *testing.T) {
+	p := testPlugin()
+	ctx := context.Background()
+	cmd, err := p.GetLaunchCommand(ctx, ports.LaunchConfig{
+		Prompt:      "go",
+		Config:      ports.AgentConfig{Model: " anthropic/claude-sonnet-4-5 "},
+		Permissions: ports.PermissionModeAuto,
+	})
+	want := []string{"env", "LLM_MODEL=anthropic/claude-sonnet-4-5", "openhands", "--override-with-envs", "--llm-approve", "--task=go"}
+	if err != nil || !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("launch = %q, %v; want %q", cmd, err, want)
+	}
+
+	cmd, ok, err := p.GetRestoreCommand(ctx, ports.RestoreConfig{
+		Session: ports.SessionRef{Metadata: map[string]string{ports.MetadataKeyAgentSessionID: "id"}},
+		Config:  ports.AgentConfig{Model: "openai/gpt-5"},
+	})
+	want = []string{"env", "LLM_MODEL=openai/gpt-5", "openhands", "--override-with-envs", "--resume", "id"}
+	if err != nil || !ok || !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("restore = %q, %v, %v; want %q", cmd, ok, err, want)
+	}
+
+	spec, err := p.GetConfigSpec(ctx)
+	if err != nil || len(spec.Fields) != 1 || spec.Fields[0].Key != "model" {
+		t.Fatalf("config spec = %+v, %v", spec, err)
+	}
+}
+
 func TestPermissions(t *testing.T) {
 	for _, tc := range []struct {
 		mode ports.PermissionMode

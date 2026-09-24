@@ -33,6 +33,7 @@ const (
 	HarnessAutohand   AgentHarness = "autohand"
 	HarnessOMP        AgentHarness = "omp"
 	HarnessUnreal     AgentHarness = "unreal-agent"
+	HarnessOpenHands  AgentHarness = "openhands"
 	// HarnessFake is retained for existing test fixtures and historical session
 	// rows, but is not user-selectable.
 	HarnessFake AgentHarness = "fake"
@@ -46,7 +47,7 @@ var AllHarnesses = []AgentHarness{
 	HarnessCopilot, HarnessGoose, HarnessAuggie, HarnessContinue, HarnessDevin,
 	HarnessCline, HarnessKimi, HarnessMuse, HarnessKiro, HarnessKilocode, HarnessVibe, HarnessPi,
 	HarnessKimchi, HarnessPrimeAgent, HarnessAutohand,
-	HarnessOMP, HarnessUnreal,
+	HarnessOMP, HarnessUnreal, HarnessOpenHands,
 }
 
 // IsKnown reports whether h is one of the supported harnesses.

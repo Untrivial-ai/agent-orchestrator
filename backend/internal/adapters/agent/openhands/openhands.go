@@ -8,11 +8,11 @@
 // system (.openhands/hooks.json): the hook payload's session_id is the
 // conversation id that `openhands --resume <id>` accepts.
 //
-// OpenHands has no system-prompt flag, and its only model override path
-// (--override-with-envs) requires LLM_API_KEY and LLM_MODEL together, so this
-// adapter exposes no model config key: the model stays in the user's own
-// ~/.openhands/agent_settings.json. AO instructions are delivered through the
-// UserPromptSubmit hook's additionalContext instead.
+// OpenHands has no model or system-prompt flag. A model override is applied as
+// LLM_MODEL with --override-with-envs, which OpenHands layers over the user's
+// saved ~/.openhands/agent_settings.json for this process only. AO
+// instructions are delivered through the UserPromptSubmit hook's
+// additionalContext instead.
 package openhands
 
 import (
@@ -27,7 +27,13 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-const adapterID = "openhands"
+const (
+	adapterID = "openhands"
+
+	// modelEnvVar is read only when --override-with-envs is passed; with saved
+	// settings present, a partial override (model alone) is applied on top.
+	modelEnvVar = "LLM_MODEL"
+)
 
 // Plugin supplies OpenHands CLI commands and hook integration. It is safe for
 // concurrent use.
@@ -62,14 +68,19 @@ func (p *Plugin) Manifest() adapters.Manifest {
 	}
 }
 
+// GetConfigSpec exposes the model override.
+func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
+	return agentbase.ModelConfigSpec(ctx, "Model override (LiteLLM name, e.g. anthropic/claude-sonnet-4-5) applied over the saved OpenHands settings via LLM_MODEL.")
+}
+
 // GetLaunchCommand starts an interactive OpenHands conversation:
 //
-//	openhands [--llm-approve|--always-approve] [--task=<prompt>]
+//	[env LLM_MODEL=<model>] openhands [--override-with-envs] [--llm-approve|--always-approve] [--task=<prompt>]
 //
 // OpenHands assigns its own conversation id and reports it through hooks, so
 // cfg.NativeSessionID is ignored.
 func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) ([]string, error) {
-	cmd, err := p.command(ctx, cfg.Permissions, cfg.AllowedTools, cfg.DisallowedTools)
+	cmd, err := p.command(ctx, cfg.Permissions, cfg.Config, cfg.AllowedTools, cfg.DisallowedTools)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +90,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 
 // GetRestoreCommand resumes the conversation id recorded by OpenHands hooks:
 //
-//	openhands [approval flag] --resume <id> [--task=<prompt>]
+//	[env LLM_MODEL=<model>] openhands [flags] --resume <id> [--task=<prompt>]
 //
 // ok is false until a hook has reported the native id, so callers fall back to
 // a fresh launch.
@@ -91,7 +102,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	if id == "" {
 		return nil, false, nil
 	}
-	cmd, err := p.command(ctx, cfg.Permissions, cfg.AllowedTools, cfg.DisallowedTools)
+	cmd, err := p.command(ctx, cfg.Permissions, cfg.Config, cfg.AllowedTools, cfg.DisallowedTools)
 	if err != nil {
 		return nil, false, err
 	}
@@ -109,7 +120,12 @@ func (p *Plugin) SessionInfo(ctx context.Context, ref ports.SessionRef) (ports.S
 	return info, ok, nil
 }
 
-func (p *Plugin) command(ctx context.Context, mode ports.PermissionMode, allow, deny []string) ([]string, error) {
+// command builds the argv shared by launch and restore. A model override is
+// delivered as an `env` argv prefix, which the tmux runtime's shell and the
+// Windows ConPTY spawner both apply to the child environment. Note that
+// --override-with-envs also applies any LLM_API_KEY/LLM_BASE_URL already set in
+// the session environment.
+func (p *Plugin) command(ctx context.Context, mode ports.PermissionMode, cfg ports.AgentConfig, allow, deny []string) ([]string, error) {
 	if len(allow) != 0 || len(deny) != 0 {
 		return nil, fmt.Errorf("openhands: tool restrictions are not supported by this adapter")
 	}
@@ -120,7 +136,12 @@ func (p *Plugin) command(ctx context.Context, mode ports.PermissionMode, allow, 
 	if err := p.verifyVersion(ctx, bin); err != nil {
 		return nil, err
 	}
-	cmd := []string{bin}
+	var cmd []string
+	if model := strings.TrimSpace(cfg.Model); model != "" {
+		cmd = append(cmd, "env", modelEnvVar+"="+model, bin, "--override-with-envs")
+	} else {
+		cmd = append(cmd, bin)
+	}
 	if flag := approvalFlag(mode); flag != "" {
 		cmd = append(cmd, flag)
 	}

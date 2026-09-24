@@ -943,6 +943,53 @@ VALUES ('agent-orchestrator-1', 'agent-orchestrator', 1, 'omp', ?, ?, ?);
 	}
 }
 
+// TestMigrateAllowsOpenHandsHarness checks both paths to an OpenHands-capable
+// schema: running migration 156, and startup repair of a profile that has 156
+// recorded but still carries the pre-OpenHands physical CHECK constraint.
+func TestMigrateAllowsOpenHandsHarness(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		recorded156 bool
+	}{
+		{name: "migration", recorded156: false},
+		{name: "repair", recorded156: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openMigratedDatabaseCopy(t, 155)
+			if tc.recorded156 {
+				if _, err := db.Exec(
+					`INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`,
+					156,
+				); err != nil {
+					t.Fatalf("seed migration 156: %v", err)
+				}
+			}
+			if err := migrate(db); err != nil {
+				t.Fatalf("migrate pre-openhands profile: %v", err)
+			}
+			var schema string
+			if err := db.QueryRow(
+				"SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'",
+			).Scan(&schema); err != nil {
+				t.Fatalf("read sessions schema: %v", err)
+			}
+			for _, harness := range []string{"'omp'", "'unreal-agent'", "'openhands'"} {
+				if !strings.Contains(schema, harness) {
+					t.Fatalf("sessions.harness CHECK is missing %s:\n%s", harness, schema)
+				}
+			}
+			if _, err := db.Exec(`
+INSERT INTO projects (id, path, registered_at, config)
+VALUES ('agent-orchestrator', '/repo/agent-orchestrator', ?, '{}');
+INSERT INTO sessions (id, project_id, num, harness, activity_last_at, created_at, updated_at)
+VALUES ('agent-orchestrator-1', 'agent-orchestrator', 1, 'openhands', ?, ?, ?);
+`, time.Unix(100, 0).UTC(), time.Unix(101, 0).UTC(), time.Unix(101, 0).UTC(), time.Unix(101, 0).UTC()); err != nil {
+				t.Fatalf("insert openhands session: %v", err)
+			}
+		})
+	}
+}
+
 func TestOpenReadOnlyDoesNotCreateDatabase(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "missing")
 	if _, err := OpenReadOnly(context.Background(), dataDir); err == nil {
