@@ -406,8 +406,7 @@ func buildProjectConfig(opts projectSetConfigOptions) (projectConfig, error) {
 
 // trackerProviderForFlags resolves --tracker-provider against the domain's
 // supported-provider set. An explicit value is validated; otherwise the
-// provider is only defaulted once some other tracker flag is in play, so a
-// config built from unrelated flags stays empty.
+// provider stays empty so the origin can determine GitHub or GitLab.
 func trackerProviderForFlags(opts projectSetConfigOptions) (string, error) {
 	provider := strings.TrimSpace(opts.trackerProvider)
 	if provider != "" {

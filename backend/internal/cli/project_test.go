@@ -139,7 +139,7 @@ func TestBuildProjectConfigTrackerProviderFlag(t *testing.T) {
 	}
 }
 
-func TestBuildProjectConfigTrackerProviderDefaultsToGitHub(t *testing.T) {
+func TestBuildProjectConfigTrackerProviderPreservesInference(t *testing.T) {
 	got, err := buildProjectConfig(projectSetConfigOptions{
 		trackerIntake:   true,
 		trackerAssignee: "alice",
@@ -147,8 +147,8 @@ func TestBuildProjectConfigTrackerProviderDefaultsToGitHub(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.TrackerIntake.Provider != "github" {
-		t.Fatalf("tracker intake provider = %q, want github", got.TrackerIntake.Provider)
+	if got.TrackerIntake.Provider != "" {
+		t.Fatalf("tracker intake provider = %q, want empty for origin inference", got.TrackerIntake.Provider)
 	}
 }
 

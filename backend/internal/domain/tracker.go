@@ -106,8 +106,7 @@ type ListFilter struct {
 // cannot accidentally drain an entire issue backlog.
 type TrackerIntakeConfig struct {
 	Enabled bool `json:"enabled,omitempty"`
-	// Provider defaults to github when Enabled is true. Supported values:
-	// "github" and "gitlab".
+	// Provider is inferred from the origin when empty. OneDev must be explicit.
 	Provider TrackerProvider `json:"provider,omitempty" enum:"github,gitlab,onedev"`
 	// Repo is the provider-native repository key ("owner/repo" for GitHub,
 	// "group/project" for GitLab). When empty, the intake loop derives it from

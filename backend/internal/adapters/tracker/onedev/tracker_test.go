@@ -240,10 +240,7 @@ func TestHostRoutingIgnoresPortMismatch(t *testing.T) {
 	}
 }
 
-// TestBlankHostResolvesOnlyForASingleInstance pins that OneDev's missing
-// default host is honoured: a blank host is a usable shorthand in the
-// single-instance case and a hard error once there is more than one, rather
-// than a silent pick.
+// Empty hosts select the only configured workflow; multiple instances are rejected.
 func TestBlankHostResolvesOnlyForASingleInstance(t *testing.T) {
 	one, err := New(Options{Token: scmonedev.StaticTokenSource("t"), AllowedHosts: []string{"a.example.com"}})
 	if err != nil {
@@ -252,12 +249,9 @@ func TestBlankHostResolvesOnlyForASingleInstance(t *testing.T) {
 	if err := one.ConfigForHost(""); err != nil {
 		t.Errorf("ConfigForHost(\"\") with one instance = %v; want nil", err)
 	}
-	two, err := New(Options{Token: scmonedev.StaticTokenSource("t"), AllowedHosts: []string{"a.example.com", "b.example.com"}})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := two.ConfigForHost(""); !errors.Is(err, ErrHostNotAllowed) {
-		t.Errorf("ConfigForHost(\"\") with two instances = %v; want ErrHostNotAllowed", err)
+	_, err = New(Options{Token: scmonedev.StaticTokenSource("t"), AllowedHosts: []string{"a.example.com", "b.example.com"}})
+	if err == nil || !strings.Contains(err.Error(), "one instance") {
+		t.Fatalf("New with two instances = %v; want explicit workflow-scope error", err)
 	}
 }
 

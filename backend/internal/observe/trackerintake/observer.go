@@ -418,7 +418,7 @@ func cleanRepoPath(path string, provider domain.TrackerProvider) string {
 	// path is required for GraphQL's fullPath parameter and REST project lookups.
 	if provider == domain.TrackerProviderGitLab || provider == domain.TrackerProviderOneDev {
 		for _, p := range parts {
-			if strings.TrimSpace(p) == "" {
+			if strings.TrimSpace(p) == "" || (provider == domain.TrackerProviderOneDev && (p == "." || p == "..")) {
 				return ""
 			}
 		}

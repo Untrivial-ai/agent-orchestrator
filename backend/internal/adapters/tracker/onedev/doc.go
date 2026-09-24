@@ -4,7 +4,7 @@
 //   - Get returns a normalized snapshot of one issue.
 //   - List returns a filtered slice of a project's issues, paginated with
 //     OneDev's offset/count paging.
-//   - Preflight performs one cheap authenticated GET against every configured
+//   - Preflight performs one cheap authenticated GET against the configured
 //     instance to verify the credential is accepted; success is cached for the
 //     lifetime of the Tracker, failures are not.
 //
@@ -16,9 +16,10 @@
 //
 // There is no onedev.com. Every instance is self-hosted, so — exactly as in
 // the SCM provider — AllowedHosts is required configuration and New fails with
-// ErrNoAllowedHosts when it is empty. Every TrackerID and TrackerRepo this
-// adapter accepts or produces carries a populated Host; the zero value has no
-// meaning here, unlike GitLab where "" means gitlab.com.
+// ErrNoAllowedHosts when it is empty. Exactly one distinct instance is
+// supported because issue-state mappings and assignee fields are configured
+// globally. More than one is rejected until workflow settings are host-scoped.
+// An empty issue host selects that single instance; produced IDs carry its host.
 //
 // The host allowlist is parsed here rather than borrowed from the SCM package
 // because those helpers are unexported and the SCM adapter is out of scope for
@@ -94,6 +95,7 @@
 // # Out of scope
 //
 //   - No Comment, no Transition — the adapter is read-only.
+//   - No manual OneDev issue hydration through ao spawn; intake builds the prompt.
 //   - No conditional requests: OneDev sends neither ETag nor Last-Modified.
 //   - No webhook receiver, no polling goroutine.
 package onedev

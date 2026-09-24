@@ -161,6 +161,9 @@ func New(opts Options) (*Tracker, error) {
 		hosts[h.authority] = hostEntry{host: h, tokens: opts.Token}
 		byHostname[h.hostname()] = append(byHostname[h.hostname()], h.authority)
 	}
+	if len(hosts) > 1 {
+		return nil, errors.New("onedev tracker: configure one instance; issue states and assignee fields are instance-specific")
+	}
 	if len(hosts) == 0 {
 		return nil, ErrNoAllowedHosts
 	}
