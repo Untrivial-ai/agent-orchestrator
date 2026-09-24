@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -146,4 +147,81 @@ func TestAppendAttachmentReferences(t *testing.T) {
 			t.Errorf("got %q, want %q", got, "brief")
 		}
 	})
+}
+
+// TestStageAttachmentsLeasesUntilCommittedBySend exercises the lease lifecycle
+// end-to-end: StageAttachments leases a draft attachment, and a chat message
+// that names it (the same format the composer writes; see
+// appendAttachmentReferences) commits the lease when Send delivers it. Once
+// committed, ReleaseAttachments — the explicit-discard path a composer chip
+// removal would take — must no longer be able to delete it.
+func TestStageAttachmentsLeasesUntilCommittedBySend(t *testing.T) {
+	workspace := t.TempDir()
+	dataDir := t.TempDir()
+	launcher := &recordingLauncher{}
+	m, st, _ := newChatManager(launcher)
+	// newChatManager points DataDir at a fixed non-existent path (chat tests
+	// normally never touch the filesystem); swap in a real store rooted at a
+	// temp dir so this test can exercise actual staged bytes.
+	m.attachments = attachmentstore.New(dataDir)
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: chatTestProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+
+	refs, err := m.StageAttachments(context.Background(), "mer-1", []ports.SpawnAttachment{
+		{Ext: ".png", Data: []byte("draft bytes")},
+	})
+	if err != nil {
+		t.Fatalf("StageAttachments: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("refs = %v, want 1", refs)
+	}
+
+	message := appendAttachmentReferences("look at this", refs)
+	if err := m.Send(context.Background(), "mer-1", message, nil); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if len(launcher.relayed) != 1 || launcher.relayed[0] != message {
+		t.Fatalf("relayed = %v, want [%q]", launcher.relayed, message)
+	}
+
+	// The send committed the lease: an explicit release naming the same ref must
+	// not be able to delete the now-historical attachment.
+	if err := m.ReleaseAttachments(context.Background(), "mer-1", refs); err != nil {
+		t.Fatalf("ReleaseAttachments: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, filepath.FromSlash(refs[0]))); err != nil {
+		t.Fatalf("committed attachment was deleted by release: %v", err)
+	}
+}
+
+// TestReleaseAttachmentsDeletesAnUnsentDraft covers the chip-removal path: a
+// staged attachment that a message never referenced is fully removed, both from
+// the worktree and from durable storage, by an explicit release.
+func TestReleaseAttachmentsDeletesAnUnsentDraft(t *testing.T) {
+	workspace := t.TempDir()
+	dataDir := t.TempDir()
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{
+		ID:       "ao-1",
+		Metadata: domain.SessionMetadata{WorkspacePath: workspace},
+	}
+	m := New(Deps{Store: st, Workspace: &fakeWorkspace{}, DataDir: dataDir})
+
+	refs, err := m.StageAttachments(context.Background(), "ao-1", []ports.SpawnAttachment{
+		{Ext: ".png", Data: []byte("unsent draft")},
+	})
+	if err != nil {
+		t.Fatalf("StageAttachments: %v", err)
+	}
+
+	if err := m.ReleaseAttachments(context.Background(), "ao-1", refs); err != nil {
+		t.Fatalf("ReleaseAttachments: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, filepath.FromSlash(refs[0]))); !os.IsNotExist(err) {
+		t.Fatalf("released draft attachment still on disk: %v", err)
+	}
 }

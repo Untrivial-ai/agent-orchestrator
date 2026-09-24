@@ -3196,6 +3196,17 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 //
 // Failures on individual sessions are logged and do not abort the loop.
 func (m *Manager) RestoreAll(ctx context.Context) error {
+	// Reclaim draft attachment leases abandoned since the last time the daemon
+	// ran: a renderer crash, a killed app, or a draft nobody ever sent or
+	// explicitly discarded. This is the "restart recovery" backstop behind the
+	// commit/release paths above — it runs once per daemon start, across every
+	// session, not just the ones this pass goes on to restore.
+	if reclaimed, gcErr := m.attachments.GCExpiredLeases(ctx, m.clock()); gcErr != nil {
+		m.logger.Warn("restore-all: gc expired attachment leases failed", "error", gcErr)
+	} else if reclaimed > 0 {
+		m.logger.Info("restore-all: reclaimed expired attachment leases", "count", reclaimed)
+	}
+
 	recs, err := m.store.ListAllSessions(ctx)
 	if err != nil {
 		return fmt.Errorf("restore-all: list sessions: %w", err)

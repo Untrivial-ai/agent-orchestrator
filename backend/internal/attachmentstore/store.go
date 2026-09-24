@@ -8,14 +8,18 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -27,6 +31,17 @@ const (
 	// MaxFileBytes matches the HTTP attachment limit and also bounds legacy
 	// imports from agent-writable worktrees.
 	MaxFileBytes = 10 << 20
+
+	// leaseFileName holds the uncommitted-lease manifest for one session. It
+	// never matches validateName (no "attachment-"/"image-" prefix), so the
+	// directory listers in ImportWorkspace/MaterializeWorkspace already skip it.
+	leaseFileName = ".leases.json"
+
+	// DefaultLeaseTTL bounds how long a staged-but-uncommitted chat draft
+	// attachment survives before GCExpiredLeases reclaims it. Generous enough
+	// that an ordinary compose-then-send round trip never races it, bounded
+	// enough that an abandoned draft cannot grow session storage forever.
+	DefaultLeaseTTL = 24 * time.Hour
 )
 
 var (
@@ -36,9 +51,20 @@ var (
 	errTooLarge = errors.New("attachment is too large")
 )
 
+// attachmentRefPattern recognizes a worktree-relative attachment reference
+// embedded in free-form chat message text, the shape the composer writes
+// (see ChatComposer's withAttachmentReferences: "- .ao/attachments/<name>").
+var attachmentRefPattern = regexp.MustCompile(`\.ao/attachments/[A-Za-z0-9._-]+`)
+
 // Store persists canonical attachment bytes beneath an AO data directory.
+//
+// mu serializes lease-manifest reads/writes across sessions. Lease churn is rare
+// (staging a file, sending a message, an app restart) next to the bytes I/O it
+// guards, so one process-wide lock is simpler than a per-session lock registry
+// and cannot leak entries the way a lazily created per-session map would.
 type Store struct {
 	dataDir string
+	mu      sync.Mutex
 }
 
 // New returns a store rooted at dataDir.
@@ -306,6 +332,323 @@ func NameFromWorkspacePath(raw string) (string, bool) {
 		return "", false
 	}
 	return parts[2], true
+}
+
+// NamesFromMessage extracts the attachment names referenced by worktree-relative
+// paths embedded in a delivered message's text. It is used only to decide which
+// staged leases a successfully sent message committed, never to resolve a path
+// for reading, so a malformed or unsafe-looking match is silently skipped rather
+// than treated as an error.
+func NamesFromMessage(message string) []string {
+	if !strings.Contains(message, ".ao/attachments/") {
+		return nil
+	}
+	matches := attachmentRefPattern.FindAllString(message, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(matches))
+	names := make([]string, 0, len(matches))
+	for _, raw := range matches {
+		name, ok := NameFromWorkspacePath(raw)
+		if !ok || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
+}
+
+// leaseRecord tracks one staged-but-uncommitted attachment. workspacePath is
+// carried alongside the name so Release and GCExpiredLeases can clean up the
+// worktree projection without a second lookup against session state that may
+// itself have already been torn down.
+type leaseRecord struct {
+	Name          string    `json:"name"`
+	WorkspacePath string    `json:"workspacePath,omitempty"`
+	LeasedAt      time.Time `json:"leasedAt"`
+	ExpiresAt     time.Time `json:"expiresAt"`
+}
+
+type leaseManifest struct {
+	Leases []leaseRecord `json:"leases"`
+}
+
+// Lease records name as staged-but-uncommitted for id, expiring after ttl
+// unless Commit runs first. The caller must already have written the canonical
+// and workspace copies (via Put): Lease only tracks ownership so a later
+// Release or GCExpiredLeases knows it is safe to delete them.
+func (s *Store) Lease(ctx context.Context, id domain.SessionID, name, workspacePath string, ttl time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateSessionID(id); err != nil {
+		return err
+	}
+	if err := validateName(name); err != nil {
+		return err
+	}
+	if ttl <= 0 {
+		ttl = DefaultLeaseTTL
+	}
+	now := time.Now().UTC()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sessionRoot, err := s.openCanonicalSession(ctx, id, true)
+	if err != nil {
+		return fmt.Errorf("open canonical attachment directory: %w", err)
+	}
+	defer func() { _ = sessionRoot.Close() }()
+
+	manifest, err := readLeaseManifest(sessionRoot)
+	if err != nil {
+		return fmt.Errorf("read lease manifest: %w", err)
+	}
+	manifest.Leases = append(manifest.Leases, leaseRecord{
+		Name:          name,
+		WorkspacePath: workspacePath,
+		LeasedAt:      now,
+		ExpiresAt:     now.Add(ttl),
+	})
+	return writeLeaseManifest(ctx, sessionRoot, manifest)
+}
+
+// Commit marks names as permanently owned by accepted conversation history, so
+// Release and GCExpiredLeases can no longer delete them. Committing a name that
+// was never leased (already committed earlier, or never staged) is a no-op: a
+// retried send, or a message that names a path AO never staged, cannot fail
+// here.
+func (s *Store) Commit(ctx context.Context, id domain.SessionID, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateSessionID(id); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sessionRoot, err := s.openCanonicalSession(ctx, id, false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open canonical attachment directory: %w", err)
+	}
+	defer func() { _ = sessionRoot.Close() }()
+
+	manifest, err := readLeaseManifest(sessionRoot)
+	if err != nil {
+		return fmt.Errorf("read lease manifest: %w", err)
+	}
+	drop := make(map[string]bool, len(names))
+	for _, name := range names {
+		drop[name] = true
+	}
+	kept := manifest.Leases[:0]
+	changed := false
+	for _, lease := range manifest.Leases {
+		if drop[lease.Name] {
+			changed = true
+			continue
+		}
+		kept = append(kept, lease)
+	}
+	if !changed {
+		return nil
+	}
+	manifest.Leases = kept
+	return writeLeaseManifest(ctx, sessionRoot, manifest)
+}
+
+// Release deletes the canonical and workspace copies of any of names that are
+// still uncommitted leases, and removes their lease entry. A name already
+// committed (so no longer in the manifest) is left completely untouched: this
+// is what keeps a concurrent Release from ever deleting a file after Commit
+// accepted it into history, no matter which one the caller issued first.
+func (s *Store) Release(ctx context.Context, id domain.SessionID, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateSessionID(id); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sessionRoot, err := s.openCanonicalSession(ctx, id, false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open canonical attachment directory: %w", err)
+	}
+	defer func() { _ = sessionRoot.Close() }()
+
+	manifest, err := readLeaseManifest(sessionRoot)
+	if err != nil {
+		return fmt.Errorf("read lease manifest: %w", err)
+	}
+	want := make(map[string]bool, len(names))
+	for _, name := range names {
+		want[name] = true
+	}
+	kept := manifest.Leases[:0]
+	var toDelete []leaseRecord
+	for _, lease := range manifest.Leases {
+		if want[lease.Name] {
+			toDelete = append(toDelete, lease)
+			continue
+		}
+		kept = append(kept, lease)
+	}
+	if len(toDelete) == 0 {
+		return nil
+	}
+	manifest.Leases = kept
+	for _, lease := range toDelete {
+		deleteLeasedCopies(sessionRoot, lease)
+	}
+	return writeLeaseManifest(ctx, sessionRoot, manifest)
+}
+
+// GCExpiredLeases deletes the canonical and workspace copies of every
+// uncommitted lease that expired before now, across every session, and returns
+// how many it reclaimed. It is meant to run once at daemon startup so a draft
+// abandoned by a renderer crash or an app quit before its lease was released
+// does not survive indefinitely.
+func (s *Store) GCExpiredLeases(ctx context.Context, now time.Time) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	root, err := s.openCanonicalRoot(ctx, false)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("open canonical attachment root: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return 0, fmt.Errorf("list canonical attachment sessions: %w", err)
+	}
+
+	reclaimed := 0
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return reclaimed, err
+		}
+		if !entry.IsDir() || validateSessionID(domain.SessionID(entry.Name())) != nil {
+			continue
+		}
+		sessionRoot, err := openChildDir(ctx, root, entry.Name(), false, 0)
+		if err != nil {
+			continue
+		}
+		manifest, readErr := readLeaseManifest(sessionRoot)
+		if readErr != nil {
+			_ = sessionRoot.Close()
+			continue
+		}
+		kept := manifest.Leases[:0]
+		changed := false
+		for _, lease := range manifest.Leases {
+			if lease.ExpiresAt.After(now) {
+				kept = append(kept, lease)
+				continue
+			}
+			deleteLeasedCopies(sessionRoot, lease)
+			reclaimed++
+			changed = true
+		}
+		if changed {
+			manifest.Leases = kept
+			_ = writeLeaseManifest(ctx, sessionRoot, manifest)
+		}
+		_ = sessionRoot.Close()
+	}
+	return reclaimed, nil
+}
+
+// deleteLeasedCopies removes a lease's canonical file and, best-effort, its
+// worktree projection. The canonical delete is what actually reclaims the
+// session's durable storage; a missing worktree (already torn down, or the
+// session was never restored) is expected and not an error.
+func deleteLeasedCopies(sessionRoot *os.Root, lease leaseRecord) {
+	if validateName(lease.Name) != nil {
+		return
+	}
+	if err := sessionRoot.Remove(lease.Name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	if strings.TrimSpace(lease.WorkspacePath) == "" {
+		return
+	}
+	workspaceRoot, err := os.OpenRoot(lease.WorkspacePath)
+	if err != nil {
+		return
+	}
+	defer func() { _ = workspaceRoot.Close() }()
+	projected, err := openChildDir(context.Background(), workspaceRoot, filepath.FromSlash(WorkspaceDir), false, 0)
+	if err != nil {
+		return
+	}
+	defer func() { _ = projected.Close() }()
+	_ = projected.Remove(lease.Name)
+}
+
+func readLeaseManifest(sessionRoot *os.Root) (leaseManifest, error) {
+	var manifest leaseManifest
+	file, err := sessionRoot.Open(leaseFileName)
+	if errors.Is(err, fs.ErrNotExist) {
+		return manifest, nil
+	}
+	if err != nil {
+		return manifest, err
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, 4<<20))
+	if err != nil {
+		return manifest, err
+	}
+	if len(data) == 0 {
+		return manifest, nil
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return leaseManifest{}, err
+	}
+	return manifest, nil
+}
+
+func writeLeaseManifest(ctx context.Context, sessionRoot *os.Root, manifest leaseManifest) error {
+	if len(manifest.Leases) == 0 {
+		if err := sessionRoot.Remove(leaseFileName); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	return writeReaderAtomicRoot(ctx, sessionRoot, ".", leaseFileName, bytes.NewReader(data), true)
 }
 
 func (s *Store) openCanonicalRoot(ctx context.Context, create bool) (*os.Root, error) {
