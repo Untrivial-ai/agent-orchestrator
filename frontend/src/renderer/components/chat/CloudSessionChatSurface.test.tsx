@@ -1,7 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import type { CloudCpClientEvent } from "../../lib/cloud-cp";
 import type { WorkspaceSession } from "../../types/workspace";
-import { appendCloudEvents, toSnapshot } from "./CloudSessionChatSurface";
+import { appendCloudEvents, CloudSessionChatSurface, loadCloudChatEvents, toSnapshot } from "./CloudSessionChatSurface";
+
+const cloudMocks = vi.hoisted(() => ({
+	listChatEvents: vi.fn(),
+	sendSessionMessage: vi.fn(),
+	cancelTurn: vi.fn(),
+	steerTurn: vi.fn(),
+	chatProps: vi.fn(),
+}));
+vi.mock("../../hooks/useCloudCp", () => ({
+	useCloudCp: () => ({ ready: true, client: cloudMocks }),
+}));
+vi.mock("./ChatWorkspace", () => ({
+	ChatWorkspace: (props: unknown) => {
+		cloudMocks.chatProps(props);
+		return <div data-testid="cloud-chat" />;
+	},
+}));
 
 const session = {
 	id: "session-1",
@@ -17,6 +36,33 @@ const session = {
 } satisfies WorkspaceSession;
 
 describe("CloudSessionChatSurface", () => {
+	it("surfaces send errors and sends cancellation to the active turn", async () => {
+		cloudMocks.listChatEvents.mockReset().mockResolvedValue({
+			events: [
+				{ sessionId: session.id, sequence: 1, type: "chat.user_message", payload: { text: "Run", turnId: "turn-1" }, createdAt: session.updatedAt },
+				{ sessionId: session.id, sequence: 2, type: "chat.turn_started", payload: { turnId: "turn-1" }, createdAt: session.updatedAt },
+			],
+			hasMore: false,
+			nextAfter: 2,
+		});
+		cloudMocks.sendSessionMessage.mockReset().mockRejectedValue(new Error("send failed"));
+		cloudMocks.cancelTurn.mockReset().mockRejectedValue(new Error("cancel failed"));
+		cloudMocks.chatProps.mockClear();
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+		render(
+			<QueryClientProvider client={queryClient}>
+				<CloudSessionChatSurface session={{ ...session, cloud: { orgId: "org-1" } }} />
+			</QueryClientProvider>,
+		);
+		await waitFor(() => expect(cloudMocks.chatProps.mock.lastCall?.[0].onInterrupt).toBeTypeOf("function"));
+		const props = cloudMocks.chatProps.mock.lastCall?.[0];
+		await expect(props.onSend("hello", [], "message-1")).rejects.toThrow("send failed");
+		await waitFor(() => expect(cloudMocks.chatProps.mock.lastCall?.[0].commandError).toBe("send failed"));
+		cloudMocks.chatProps.mock.lastCall?.[0].onInterrupt();
+		await waitFor(() => expect(cloudMocks.cancelTurn).toHaveBeenCalledWith("org-1", session.id, "turn-1"));
+		await waitFor(() => expect(cloudMocks.chatProps.mock.lastCall?.[0].commandError).toBe("cancel failed"));
+	});
+
 	it("appends only newer events without duplicating replayed pages", () => {
 		const event = (sequence: number): CloudCpClientEvent => ({
 			sessionId: session.id,
@@ -29,6 +75,33 @@ describe("CloudSessionChatSurface", () => {
 		const merged = appendCloudEvents(existing, [event(500), event(501)]);
 		expect(merged.map((item) => item.sequence)).toEqual([1, 500, 501]);
 		expect(merged.at(-1)?.sequence).toBe(501);
+	});
+
+	it("continues a long history from its last sequence", async () => {
+		const event = (sequence: number): CloudCpClientEvent => ({
+			sessionId: session.id, sequence, type: "chat.assistant_delta",
+			payload: { text: String(sequence) }, createdAt: session.updatedAt,
+		});
+		const listChatEvents = vi.fn().mockResolvedValue({ events: [event(500), event(501)], hasMore: false, nextAfter: 501 });
+		const events = await loadCloudChatEvents({ listChatEvents }, "org-1", session.id, [event(1), event(500)]);
+		expect(listChatEvents).toHaveBeenCalledWith("org-1", session.id, { after: 500, limit: 500 });
+		expect(events.map((item) => item.sequence)).toEqual([1, 500, 501]);
+	});
+
+	it("projects completed and interrupted turns without leaving output streaming", () => {
+		const events: CloudCpClientEvent[] = [
+			{ sessionId: session.id, sequence: 1, type: "chat.user_message", payload: { text: "First", turnId: "turn-1" }, createdAt: session.updatedAt },
+			{ sessionId: session.id, sequence: 2, type: "chat.turn_started", payload: { turnId: "turn-1" }, createdAt: session.updatedAt },
+			{ sessionId: session.id, sequence: 3, type: "chat.assistant_delta", payload: { text: "Done", turnId: "turn-1" }, createdAt: session.updatedAt },
+			{ sessionId: session.id, sequence: 4, type: "chat.turn_completed", payload: { turnId: "turn-1" }, createdAt: session.updatedAt },
+			{ sessionId: session.id, sequence: 5, type: "chat.user_message", payload: { text: "Second", turnId: "turn-2" }, createdAt: session.updatedAt },
+			{ sessionId: session.id, sequence: 6, type: "chat.turn_started", payload: { turnId: "turn-2" }, createdAt: session.updatedAt },
+			{ sessionId: session.id, sequence: 7, type: "chat.turn_interrupted", payload: { turnId: "turn-2" }, createdAt: session.updatedAt },
+		];
+		const snapshot = toSnapshot(session, events);
+		expect(snapshot.turns.map((turn) => turn.state)).toEqual(["completed", "interrupted"]);
+		expect(snapshot.items).toContainEqual(expect.objectContaining({ role: "assistant", text: "Done", streaming: false }));
+		expect(snapshot.controller.state).toBe("ready");
 	});
 
 	it("projects a durable steer as activity on the active turn", () => {

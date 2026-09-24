@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, type ReactNode } from "react";
 import { useCloudCp } from "../../hooks/useCloudCp";
-import type { CloudCpClientEvent } from "../../lib/cloud-cp";
+import type { CloudCpClient, CloudCpClientEvent } from "../../lib/cloud-cp";
 import type { ConversationItem, ConversationMessage, ConversationSnapshot, ConversationTurn } from "../../types/conversation";
 import type { WorkspaceSession } from "../../types/workspace";
 import { ChatWorkspace } from "./ChatWorkspace";
@@ -31,6 +31,23 @@ function eventTurnID(event: CloudCpClientEvent): string | undefined {
 export function appendCloudEvents(existing: CloudCpClientEvent[], incoming: CloudCpClientEvent[]): CloudCpClientEvent[] {
 	const lastSequence = existing.at(-1)?.sequence ?? 0;
 	return [...existing, ...incoming.filter((event) => event.sequence > lastSequence)];
+}
+
+export async function loadCloudChatEvents(
+	client: Pick<CloudCpClient, "listChatEvents">,
+	orgId: string,
+	sessionId: string,
+	existing: CloudCpClientEvent[],
+): Promise<CloudCpClientEvent[]> {
+	let events = existing;
+	let after = existing.at(-1)?.sequence ?? 0;
+	for (;;) {
+		const page = await client.listChatEvents(orgId, sessionId, { after, limit: 500 });
+		events = appendCloudEvents(events, page.events);
+		if (!page.hasMore) return events;
+		if (page.nextAfter <= after) throw new Error("Cloud event cursor did not advance.");
+		after = page.nextAfter;
+	}
 }
 
 /** Builds the shared ChatWorkspace projection from Cloud's durable event log. */
@@ -136,15 +153,7 @@ export function CloudSessionChatSurface({
 		queryFn: async () => {
 			if (!cloud) return [] as CloudCpClientEvent[];
 			const previous = queryClient.getQueryData<CloudCpClientEvent[]>(["cloud-chat-events", cloud.orgId, session.id]) ?? [];
-			let events = previous;
-			let after = previous.at(-1)?.sequence ?? 0;
-			for (;;) {
-				const page = await client.listChatEvents(cloud.orgId, session.id, { after, limit: 500 });
-				events = appendCloudEvents(events, page.events);
-				if (!page.hasMore) return events;
-				if (page.nextAfter <= after) throw new Error("Cloud event cursor did not advance.");
-				after = page.nextAfter;
-			}
+			return loadCloudChatEvents(client, cloud.orgId, session.id, previous);
 		},
 	});
 	const invalidate = () =>
@@ -188,11 +197,15 @@ export function CloudSessionChatSurface({
 			controllerTransitioning={controllerTransitioning}
 			newWorkDisabled={newWorkDisabled}
 			commandError={
-				eventsQuery.error instanceof Error
-					? eventsQuery.error.message
-					: send.error instanceof Error
-						? send.error.message
-						: undefined
+				interrupt.error instanceof Error
+					? interrupt.error.message
+					: steer.error instanceof Error
+						? steer.error.message
+						: eventsQuery.error instanceof Error
+							? eventsQuery.error.message
+							: send.error instanceof Error
+								? send.error.message
+								: undefined
 			}
 			headerActions={headerActions}
 			onInterrupt={activeTurn ? () => interrupt.mutate() : undefined}
