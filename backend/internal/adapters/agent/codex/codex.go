@@ -133,6 +133,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	}
 	appendTerminalCompatibilityFlags(&providerArgs)
 	appendReasoningEffortFlag(&providerArgs, cfg.Config.Effort)
+	appendCodexProxyArgs(&providerArgs, cfg.ProviderRoute)
 	return agentruntime.BuildLaunchCommand(agentruntime.LaunchConfig{
 		Harness:          agentruntime.HarnessCodex,
 		Binary:           binary,
@@ -172,6 +173,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	}
 	appendTerminalCompatibilityFlags(&providerArgs)
 	appendReasoningEffortFlag(&providerArgs, cfg.Config.Effort)
+	appendCodexProxyArgs(&providerArgs, cfg.ProviderRoute)
 	return agentruntime.BuildRestoreCommand(agentruntime.RestoreConfig{
 		Harness:          agentruntime.HarnessCodex,
 		Binary:           binary,
@@ -191,6 +193,36 @@ func appendReasoningEffortFlag(args *[]string, effort string) {
 	if effort = strings.TrimSpace(effort); effort != "" {
 		*args = append(*args, "-c", "model_reasoning_effort="+codexTOMLConfigString(effort))
 	}
+}
+
+// appendCodexProxyArgs opts this invocation into AO's OpenAI Responses-compatible
+// provider. The bearer token is deliberately not represented in these flags;
+// the session manager adds it to the child environment under TokenEnv.
+func appendCodexProxyArgs(args *[]string, route ports.AgentProviderRoute) {
+	baseURL := strings.TrimRight(strings.TrimSpace(route.BaseURL), "/")
+	if baseURL == "" {
+		return
+	}
+	providerName := strings.TrimSpace(route.ProviderName)
+	if providerName == "" {
+		providerName = ports.CodexProxyProviderName
+	}
+	tokenEnv := strings.TrimSpace(route.TokenEnv)
+	if tokenEnv == "" {
+		tokenEnv = ports.CodexProxyTokenEnv
+	}
+	endpoint := baseURL
+	if !strings.HasSuffix(endpoint, "/v1") {
+		endpoint += "/v1"
+	}
+	*args = append(*args,
+		"-c", "model_provider="+providerName,
+		"-c", "model_providers."+providerName+".name=AO Accounts Manager",
+		"-c", "model_providers."+providerName+".base_url="+codexTOMLConfigString(endpoint),
+		"-c", "model_providers."+providerName+".env_key="+tokenEnv,
+		"-c", "model_providers."+providerName+".wire_api=responses",
+		"-c", "model_providers."+providerName+".requires_openai_auth=false",
+	)
 }
 
 // SessionInfo surfaces Codex hook-derived metadata. Metadata is intentionally

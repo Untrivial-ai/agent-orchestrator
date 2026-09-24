@@ -34,6 +34,7 @@ import { CloudFileContentPane, CloudWorkspaceDiff } from "./CloudWorkspaceDiff";
 import { SessionFileTab } from "./SessionFileTabs";
 import { SessionFileWorkspace } from "./SessionFileWorkspace";
 import { SessionActionsMenu } from "./SessionActionsMenu";
+import { CodexSessionAccountMenuItems } from "./CodexSessionAccountMenuItems";
 import { SessionInspector } from "./SessionInspector";
 import {
 	SessionInterfaceSwitchButton,
@@ -1722,10 +1723,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// harness without Chat therefore gets no ⋮ instead of an empty menu.
 	const sessionTabActions = useMemo(() => interfaceSwitchUnsupported ? null : (
 		<SessionActionsMenu inlineStatus={interfaceSwitchInlineStatus}>
+			<CodexSessionAccountMenuItems enabled={session?.provider === "codex"} sessionId={sessionId} />
 			{interfaceSwitchMenuItem}
 			{handoffMenuItem}
 		</SessionActionsMenu>
-	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem, interfaceSwitchUnsupported]);
+	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem, session?.provider, sessionId]);
 	// Spinner replaces the ⋮ at the same size, so the tab title does not need a
 	// wider action slot while switching.
 	const sessionTabActionWide = false;

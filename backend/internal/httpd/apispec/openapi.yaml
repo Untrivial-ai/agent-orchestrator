@@ -823,6 +823,57 @@ paths:
       summary: Open an inline native login terminal for a new AO Codex account
       tags:
       - agents
+  /api/v1/agents/codex/sessions/{sessionId}/account:
+    post:
+      operationId: switchCodexSessionAccount
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SwitchCodexSessionAccountRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SwitchCodexSessionAccountResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Pin later requests from one Codex session to another logged-in account
+      tags:
+      - agents
   /api/v1/agents/install-jobs:
     get:
       operationId: listAgentInstallJobs
@@ -13169,6 +13220,24 @@ components:
           type: string
       required:
       - targetHarness
+      type: object
+    SwitchCodexSessionAccountRequest:
+      properties:
+        accountId:
+          minLength: 1
+          type: string
+      required:
+      - accountId
+      type: object
+    SwitchCodexSessionAccountResponse:
+      properties:
+        accountId:
+          type: string
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - accountId
       type: object
     SystemRequirement:
       properties:

@@ -3787,6 +3787,7 @@ func TestACPCompactionExecutesPromptAndEmitsCompactedEvent(t *testing.T) {
 
 	if compactedEvent == nil {
 		t.Fatal("ChatEventCompacted was not emitted")
+		return
 	}
 	if !strings.Contains(compactedEvent.Summary, "15.0k tokens") {
 		t.Errorf("summary = %q, want 15.0k tokens named", compactedEvent.Summary)

@@ -828,10 +828,18 @@ func (m *Manager) preflightInterfaceTarget(
 			return ports.ErrAgentAuthRequired
 		}
 	}
+	var providerRoute ports.AgentProviderRoute
+	if rec.Harness == domain.HarnessCodex && m.codexRouteProvider != nil {
+		var routeErr error
+		providerRoute, routeErr = m.codexRouteProvider.RouteForSession(ctx, string(rec.ID))
+		if routeErr != nil {
+			return routeErr
+		}
+	}
 	var cmd []string
 	if transition.NativeConversationID == "" {
 		cmd, _, _, err = freshLaunchArgv(ctx, agent, rec.ID, rec.Metadata.WorkspacePath,
-			rec.Metadata, systemPrompt, "", config, rec.Kind, m.dataDir, true)
+			rec.Metadata, systemPrompt, "", config, rec.Kind, m.dataDir, true, providerRoute)
 	} else {
 		var resumable bool
 		cmd, resumable, err = agent.GetRestoreCommand(ctx, ports.RestoreConfig{
@@ -840,7 +848,7 @@ func (m *Manager) preflightInterfaceTarget(
 				Metadata: map[string]string{ports.MetadataKeyAgentSessionID: transition.NativeConversationID},
 			},
 			Kind: rec.Kind, DataDir: m.dataDir, SystemPrompt: systemPrompt,
-			Config: config, Permissions: config.Permissions,
+			Config: config, Permissions: config.Permissions, ProviderRoute: providerRoute,
 		})
 		if err == nil && !resumable {
 			return ErrNativeConversationMissing

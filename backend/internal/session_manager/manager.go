@@ -423,6 +423,7 @@ type Manager struct {
 	executable                     func() (string, error)
 	newLaunchID                    func() string
 	codexOperationGate             ports.CodexOperationGate
+	codexRouteProvider             ports.CodexRouteProvider
 	startupBackgroundReconcileDone chan struct{}
 	startupBackgroundReconcileOnce sync.Once
 	statusRecoveryMu               sync.RWMutex
@@ -746,6 +747,9 @@ type Deps struct {
 	// CodexOperationGate is shared with account clients and reviewer launches.
 	// Nil preserves focused-test compatibility by disabling device-global gating.
 	CodexOperationGate ports.CodexOperationGate
+	// CodexRouteProvider supplies a loopback CLIProxy route for Codex launches.
+	// Nil keeps focused embedders/tests on the native Codex path.
+	CodexRouteProvider ports.CodexRouteProvider
 	// ReconcileWorkers bounds concurrent live-session recovery during daemon
 	// startup. Values below one preserve the serial default for embedders/tests;
 	// production explicitly opts into a small worker pool.
@@ -786,6 +790,7 @@ func New(d Deps) *Manager {
 		executable:                     d.Executable,
 		newLaunchID:                    d.NewLaunchID,
 		codexOperationGate:             defaultCodexOperationGate(d.CodexOperationGate),
+		codexRouteProvider:             d.CodexRouteProvider,
 		backgroundContext:              d.BackgroundContext,
 		startupBackgroundReconcileDone: make(chan struct{}),
 		agentOperations:                make(map[domain.SessionID]agentOperationKind),
@@ -1084,6 +1089,11 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, false)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepare, err)
 	}
+	providerRoute, err := m.prepareCodexRoute(ctx, cfg.Harness, string(id), env)
+	if err != nil {
+		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnLaunchCommand, err)
+	}
 	launchCfg := ports.LaunchConfig{
 		DataDir:          m.dataDir,
 		SessionID:        string(id),
@@ -1095,6 +1105,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		IssueID:          string(cfg.IssueID),
 		Config:           adapterConfig,
 		Permissions:      adapterConfig.Permissions,
+		ProviderRoute:    providerRoute,
 	}
 	delivery, err := agent.GetPromptDeliveryStrategy(ctx, launchCfg)
 	if err != nil {
@@ -2573,15 +2584,20 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	if err := m.prepareWorkspace(ctx, agent, rec.ID, ws.Path, systemPrompt, systemPromptFile, agentConfig, env); err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
 	}
+	providerRoute, err := m.prepareCodexRoute(ctx, rec.Harness, string(rec.ID), env)
+	if err != nil {
+		m.cleanupSystemPromptDir(rec.ID)
+		return RestoreResult{}, fmt.Errorf("%s %s: provider route: %w", operation, rec.ID, err)
+	}
 	var argv []string
 	var delivery ports.PromptDeliveryStrategy
 	var mode RestoreMode
 	if forceFresh {
 		argv, delivery, mode, err = freshLaunchArgv(ctx, agent, rec.ID, ws.Path, rec.Metadata,
-			systemPrompt, systemPromptFile, agentConfig, rec.Kind, m.dataDir, true)
+			systemPrompt, systemPromptFile, agentConfig, rec.Kind, m.dataDir, true, providerRoute)
 	} else {
 		argv, delivery, mode, err = restoreArgv(ctx, agent, rec.ID, ws.Path, rec.Metadata,
-			systemPrompt, systemPromptFile, agentConfig, rec.Kind, rec.Harness, m.dataDir, env)
+			systemPrompt, systemPromptFile, agentConfig, rec.Kind, rec.Harness, m.dataDir, env, providerRoute)
 	}
 	if err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
@@ -2672,6 +2688,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 			SystemPromptFile: systemPromptFile,
 			Config:           agentConfig,
 			Permissions:      agentConfig.Permissions,
+			ProviderRoute:    providerRoute,
 		}
 		if err := m.deliverAfterStartPrompt(ctx, agent, launchCfg, handle, rec.ID, rec.Metadata.Prompt); err != nil {
 			m.destroySpawnRuntimeAfterFailure(ctx, handle)
@@ -5261,13 +5278,13 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // signals via ok=false (e.g. no native session id captured yet). Returns
 // ErrNotResumable when transcript-preserving restore is required but unavailable,
 // or when a promptless, unresumable worker has nothing to restore from.
-func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, _ domain.AgentHarness, dataDir string, env map[string]string) ([]string, ports.PromptDeliveryStrategy, RestoreMode, error) {
+func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, _ domain.AgentHarness, dataDir string, env map[string]string, providerRoute ports.AgentProviderRoute) ([]string, ports.PromptDeliveryStrategy, RestoreMode, error) {
 	ref := ports.SessionRef{
 		ID:            string(id),
 		WorkspacePath: workspacePath,
 		Metadata:      map[string]string{ports.MetadataKeyAgentSessionID: meta.AgentSessionID},
 	}
-	cmd, ok, err := agent.GetRestoreCommand(ctx, ports.RestoreConfig{Session: ref, Kind: kind, DataDir: dataDir, SystemPrompt: systemPrompt, SystemPromptFile: systemPromptFile, Config: agentConfig, Permissions: agentConfig.Permissions})
+	cmd, ok, err := agent.GetRestoreCommand(ctx, ports.RestoreConfig{Session: ref, Kind: kind, DataDir: dataDir, SystemPrompt: systemPrompt, SystemPromptFile: systemPromptFile, Config: agentConfig, Permissions: agentConfig.Permissions, ProviderRoute: providerRoute})
 	if err != nil {
 		return nil, "", "", fmt.Errorf("restore command: %w", err)
 	}
@@ -5285,7 +5302,7 @@ func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, wo
 	// a saved prompt, rather than stranding the work behind ErrNotResumable. A
 	// worker that never got that far (no id, no prompt) still stays unresumable.
 	return freshLaunchArgv(ctx, agent, id, workspacePath, meta, systemPrompt,
-		systemPromptFile, agentConfig, kind, dataDir, conversationLost)
+		systemPromptFile, agentConfig, kind, dataDir, conversationLost, providerRoute)
 }
 
 // nativeConversationMissing reports whether the agent can see a persisted
@@ -5320,7 +5337,7 @@ func nativeConversationMissing(ctx context.Context, agent ports.Agent, ref ports
 // freshLaunchArgv builds the non-resume half of restoreArgv. Interface
 // transitions also use it when an adapter proves its reserved id has no
 // persisted history, both for preflight and for the actual target launch.
-func freshLaunchArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, dataDir string, allowPromptless bool) ([]string, ports.PromptDeliveryStrategy, RestoreMode, error) {
+func freshLaunchArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, meta domain.SessionMetadata, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, kind domain.SessionKind, dataDir string, allowPromptless bool, providerRoute ports.AgentProviderRoute) ([]string, ports.PromptDeliveryStrategy, RestoreMode, error) {
 	// A saved prompt is replayed fresh. An orchestrator is promptless by design
 	// and relaunches with the system prompt only. A promptless WORKER has no task
 	// and no session id to restore from: do not blank-relaunch it.
@@ -5340,6 +5357,7 @@ func freshLaunchArgv(ctx context.Context, agent ports.Agent, id domain.SessionID
 		SystemPromptFile: systemPromptFile,
 		Config:           agentConfig,
 		Permissions:      agentConfig.Permissions,
+		ProviderRoute:    providerRoute,
 	}
 	delivery, err := agent.GetPromptDeliveryStrategy(ctx, launchCfg)
 	if err != nil {
@@ -5403,6 +5421,33 @@ func PinnedHookDir(executable func() (string, error), dataDir string) string {
 
 func (m *Manager) augmentRuntimePATHForLaunchBinary(ctx context.Context, env map[string]string, argv []string) {
 	AugmentRuntimePATHForLaunchBinary(ctx, env, argv, m.lookPath, PinnedHookDir(m.executable, m.dataDir))
+}
+
+// prepareCodexRoute makes the account-manager route available to a child
+// process. The route token is intentionally placed only in env: provider argv
+// is routinely surfaced in diagnostics and must never contain credentials.
+func (m *Manager) prepareCodexRoute(ctx context.Context, harness domain.AgentHarness, sessionID string, env map[string]string) (ports.AgentProviderRoute, error) {
+	if harness != domain.HarnessCodex || m.codexRouteProvider == nil {
+		return ports.AgentProviderRoute{}, nil
+	}
+	route, err := m.codexRouteProvider.RouteForSession(ctx, sessionID)
+	if err != nil {
+		return ports.AgentProviderRoute{}, err
+	}
+	if strings.TrimSpace(route.BaseURL) == "" || strings.TrimSpace(route.Token) == "" {
+		return ports.AgentProviderRoute{}, ports.ErrCodexProxyUnavailable
+	}
+	if strings.TrimSpace(route.ProviderName) == "" {
+		route.ProviderName = ports.CodexProxyProviderName
+	}
+	if strings.TrimSpace(route.TokenEnv) == "" {
+		route.TokenEnv = ports.CodexProxyTokenEnv
+	}
+	if env == nil {
+		return ports.AgentProviderRoute{}, ports.ErrCodexProxyUnavailable
+	}
+	env[route.TokenEnv] = route.Token
+	return route, nil
 }
 
 // AugmentRuntimePATHForLaunchBinary is retained at the session-manager boundary

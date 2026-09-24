@@ -527,6 +527,10 @@ type LaunchConfig struct {
 	SystemPrompt     string
 	SystemPromptFile string
 	WorkspacePath    string
+	// ProviderRoute is populated for Codex sessions when AO owns the provider
+	// connection through the embedded accounts manager. The route token is
+	// passed through the child environment, never through argv.
+	ProviderRoute AgentProviderRoute
 }
 
 // WorkspaceHookConfig carries inputs needed to install workspace-local agent hooks.
@@ -560,6 +564,8 @@ type RestoreConfig struct {
 	// system-prompt flag should re-apply this in their resume command.
 	SystemPrompt     string
 	SystemPromptFile string
+	// ProviderRoute mirrors LaunchConfig.ProviderRoute for native resumes.
+	ProviderRoute AgentProviderRoute
 }
 
 // SessionRef identifies an AO session whose agent-owned metadata may be read.

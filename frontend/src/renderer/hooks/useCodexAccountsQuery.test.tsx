@@ -9,7 +9,13 @@ vi.mock("../lib/api-client", () => ({
 	apiErrorMessage: () => "request failed",
 }));
 
-import { codexAccountsQueryKey, useCodexAccountsQuery, useEnsureCodexAccounts, type CodexAccountsResponse } from "./useCodexAccountsQuery";
+import {
+	codexAccountsQueryKey,
+	switchCodexSessionAccount,
+	useCodexAccountsQuery,
+	useEnsureCodexAccounts,
+	type CodexAccountsResponse,
+} from "./useCodexAccountsQuery";
 import { writeCodexAccounts } from "./codex-accounts-state";
 
 const response: CodexAccountsResponse = {
@@ -45,6 +51,19 @@ describe("Codex account query", () => {
 		await waitFor(() => expect(result.current.isSuccess).toBe(true));
 		expect(getMock).toHaveBeenCalledWith("/api/v1/agents/codex/accounts");
 		expect(postMock).not.toHaveBeenCalled();
+	});
+
+	it("posts a session-scoped account pin", async () => {
+		postMock.mockResolvedValueOnce({ data: { sessionId: "session-1", accountId: "account-2" } });
+
+		await expect(switchCodexSessionAccount("session-1", "account-2")).resolves.toEqual({
+			sessionId: "session-1",
+			accountId: "account-2",
+		});
+		expect(postMock).toHaveBeenCalledWith("/api/v1/agents/codex/sessions/{sessionId}/account", {
+			params: { path: { sessionId: "session-1" } },
+			body: { accountId: "account-2" },
+		});
 	});
 
 	it("does not let a delayed GET replace a newer account SSE snapshot", async () => {

@@ -2,6 +2,10 @@ module github.com/aoagents/agent-orchestrator/backend
 
 go 1.27.1
 
+replace cloud.google.com/go => cloud.google.com/go v0.110.0
+
+replace golang.org/x/oauth2 => golang.org/x/oauth2 v0.36.0
+
 require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/aymanbagabas/go-pty v0.2.3
@@ -15,6 +19,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/pressly/goose/v3 v3.27.1
+	github.com/router-for-me/CLIProxyAPI/v7 v7.3.8
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/pflag v1.0.9
 	github.com/stretchr/testify v1.11.1

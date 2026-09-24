@@ -1521,6 +1521,18 @@ type CodexAccountSwitchResponse struct {
 	CompletedAt            *time.Time              `json:"completedAt,omitempty"`
 }
 
+// SwitchCodexSessionAccountRequest selects the proxy account for later
+// requests from one running Codex session.
+type SwitchCodexSessionAccountRequest struct {
+	AccountID string `json:"accountId" minLength:"1"`
+}
+
+// SwitchCodexSessionAccountResponse confirms the new session-local pin.
+type SwitchCodexSessionAccountResponse struct {
+	SessionID string `json:"sessionId"`
+	AccountID string `json:"accountId"`
+}
+
 // AgentReadinessSnapshot is one normalized harness readiness view.
 type AgentReadinessSnapshot = domain.AgentReadinessSnapshot
 

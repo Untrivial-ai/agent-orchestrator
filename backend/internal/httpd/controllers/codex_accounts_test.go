@@ -41,6 +41,9 @@ type fakeCodexAccounts struct {
 	switchReadID        string
 	switchReadResult    domain.CodexAccountSwitch
 	switchReadErr       error
+	sessionID           string
+	sessionAccountID    string
+	sessionAccountErr   error
 }
 
 func (f *fakeCodexAccounts) CachedCodexAccounts(context.Context) (agentsvc.CodexAccounts, error) {
@@ -93,6 +96,13 @@ func (f *fakeCodexAccounts) GetCodexAccountSwitch(_ context.Context, id string) 
 	f.switchReadID = id
 	return f.switchReadResult, f.switchReadErr
 }
+func (f *fakeCodexAccounts) SwitchSessionAccount(_ context.Context, sessionID, accountID string) (string, error) {
+	f.sessionID, f.sessionAccountID = sessionID, accountID
+	if f.sessionAccountErr != nil {
+		return "", f.sessionAccountErr
+	}
+	return accountID, nil
+}
 func codexAccountsFixture() agentsvc.CodexAccounts {
 	supported := domain.CodexCapabilityObservation{State: domain.CodexCapabilitySupported, ReasonCode: "supported", Reason: "available"}
 	remaining := 95.0
@@ -132,7 +142,7 @@ func codexAccountsFixture() agentsvc.CodexAccounts {
 
 func newCodexAccountServer(t *testing.T, fake *fakeCodexAccounts) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, slog.New(slog.DiscardHandler), nil, httpd.APIDeps{CodexAccounts: fake}, httpd.ControlDeps{}))
+	return httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, slog.New(slog.DiscardHandler), nil, httpd.APIDeps{CodexAccounts: fake, CodexSessionRoutes: fake}, httpd.ControlDeps{}))
 }
 
 func TestCodexAccountRoutesExposeSafeCachedAndEnsureShapes(t *testing.T) {
@@ -181,6 +191,21 @@ func TestCodexAccountRoutesExposeSafeCachedAndEnsureShapes(t *testing.T) {
 	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/accounts/ensure", `{"accountIds":[],"unknown":true}`)
 	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"INVALID_JSON"`) {
 		t.Fatalf("strict ensure status=%d body=%s", status, body)
+	}
+}
+
+func TestCodexSessionAccountRoutePinsSubsequentRequests(t *testing.T) {
+	fake := &fakeCodexAccounts{result: codexAccountsFixture()}
+	srv := newCodexAccountServer(t, fake)
+	defer srv.Close()
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/sessions/session-1/account", `{"accountId":"account-2"}`)
+	if status != http.StatusOK || fake.sessionID != "session-1" || fake.sessionAccountID != "account-2" || !strings.Contains(string(body), `"sessionId":"session-1"`) || !strings.Contains(string(body), `"accountId":"account-2"`) {
+		t.Fatalf("switch status=%d session=%q account=%q body=%s", status, fake.sessionID, fake.sessionAccountID, body)
+	}
+	body, status, _ = doRequest(t, srv, http.MethodPost, "/api/v1/agents/codex/sessions/session-1/account", `{}`)
+	if status != http.StatusBadRequest || !strings.Contains(string(body), `"code":"ACCOUNT_ID_REQUIRED"`) {
+		t.Fatalf("invalid switch status=%d body=%s", status, body)
 	}
 }
 
