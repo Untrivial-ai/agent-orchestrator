@@ -176,6 +176,7 @@ export interface CloudCpProjectDeletedResponse {
 export type CloudCpSessionKind = "worker" | "orchestrator";
 
 export type CloudCpSessionMode = "read-only" | "standard" | "trusted";
+export type CloudCpInterfaceMode = "tui" | "chat";
 
 /** POST /orgs/{orgId}/sessions (requires an Idempotency-Key header). */
 export interface CloudCpCreateSessionRequest {
@@ -230,6 +231,7 @@ export interface CloudCpSession {
 	displayName: string;
 	branch: string;
 	mode: string;
+	interfaceMode: CloudCpInterfaceMode;
 	deniedCommands: string[];
 	activityState: string;
 	status: string;
@@ -250,6 +252,61 @@ export interface CloudCpSession {
 	workerEpoch?: number;
 	createdAt: string;
 	updatedAt: string;
+}
+
+export interface CloudCpInterfaceTransition {
+	id: string;
+	/** Mirrors the durable Cloud coordinator state machine. */
+	phase:
+		| "requested"
+		| "preflighting"
+		| "draining"
+		| "source_stopping"
+		| "source_stopped"
+		| "target_starting"
+		| "activating"
+		| "completed"
+		| "failed"
+		| "cancelled"
+		| "recovery_required";
+	policy: "drain" | "interrupt";
+	sessionId: string;
+	sourceMode: CloudCpInterfaceMode;
+	targetMode: CloudCpInterfaceMode;
+	nativeConversationId?: string;
+	errorCode?: string;
+	errorDetail?: string;
+	noticeAcknowledgedAt?: string;
+	createdAt: string;
+	updatedAt: string;
+	completedAt?: string;
+}
+
+export interface CloudCpInterfaceTransitionStatusResponse {
+	supported: boolean;
+	targetMode: CloudCpInterfaceMode;
+	reasonCode?: string;
+	reason?: string;
+	transition?: CloudCpInterfaceTransition;
+}
+
+export interface CloudCpStartInterfaceTransitionRequest {
+	targetMode: CloudCpInterfaceMode;
+	policy: "drain" | "interrupt";
+}
+
+export interface CloudCpStartInterfaceTransitionResponse {
+	transition: CloudCpInterfaceTransition;
+}
+
+/** DELETE /orgs/{orgId}/sessions/{sessionId}/interface-transition */
+export interface CloudCpCancelInterfaceTransitionResponse {
+	ok: boolean;
+}
+
+/** PUT /orgs/{orgId}/sessions/{sessionId}/interface-transition/{transitionId}/notice-acknowledgement */
+export interface CloudCpAcknowledgeInterfaceTransitionNoticeResponse {
+	ok: boolean;
 }
 
 export interface CloudCpSessionResponse {
@@ -532,6 +589,11 @@ export interface CloudCpSendMessageResponse {
 /** POST /orgs/{orgId}/sessions/{sessionId}/turns/{turnId}/cancel responds 202. */
 export interface CloudCpCancelTurnResponse {
 	ok: boolean;
+}
+
+/** POST steering response; guidance for the active turn was accepted. */
+export interface CloudCpSteerTurnResponse {
+	event: CloudCpClientEvent;
 }
 
 export interface CloudCpChatEventsQuery {

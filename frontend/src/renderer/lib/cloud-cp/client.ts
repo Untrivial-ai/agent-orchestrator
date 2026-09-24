@@ -41,12 +41,18 @@ import type {
 	CloudCpPutGitHubPATRequest,
 	CloudCpSendMessageRequest,
 	CloudCpSendMessageResponse,
+	CloudCpSteerTurnResponse,
 	CloudCpSessionChildrenResponse,
 	CloudCpSessionDeletedResponse,
 	CloudCpSessionListResponse,
 	CloudCpResumeSessionResponse,
 	CloudCpRestoreSessionResponse,
 	CloudCpSessionResponse,
+	CloudCpAcknowledgeInterfaceTransitionNoticeResponse,
+	CloudCpCancelInterfaceTransitionResponse,
+	CloudCpInterfaceTransitionStatusResponse,
+	CloudCpStartInterfaceTransitionRequest,
+	CloudCpStartInterfaceTransitionResponse,
 	CloudCpWorkspaceDiff,
 	CloudCpWorkspaceDiffFileDetail,
 	CloudCpWorkspaceReviewDiffsRequest,
@@ -152,6 +158,24 @@ export interface CloudCpClient {
 		options?: CloudCpMutationOptions,
 	): Promise<CloudCpSessionResponse>;
 	getSession(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
+	getInterfaceTransition(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpInterfaceTransitionStatusResponse>;
+	startInterfaceTransition(
+		orgId: string,
+		sessionId: string,
+		body: CloudCpStartInterfaceTransitionRequest,
+		options?: CloudCpMutationOptions,
+	): Promise<CloudCpStartInterfaceTransitionResponse>;
+	cancelInterfaceTransition(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpCancelInterfaceTransitionResponse>;
+	acknowledgeInterfaceTransitionNotice(
+		orgId: string,
+		sessionId: string,
+		transitionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpAcknowledgeInterfaceTransitionNoticeResponse>;
 	/** Lists the Coder templates the picker offers (empty when coder is unavailable/unentitled). */
 	listCoderTemplates(orgId: string, options?: CloudCpRequestOptions): Promise<CloudCpCoderTemplatesResponse>;
 	/** Lists the sessions an orchestrator spawned, with each child's pull requests. */
@@ -206,6 +230,13 @@ export interface CloudCpClient {
 		turnId: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpCancelTurnResponse>;
+	steerTurn(
+		orgId: string,
+		sessionId: string,
+		turnId: string,
+		body: CloudCpSendMessageRequest,
+		options?: CloudCpMutationOptions,
+	): Promise<CloudCpSteerTurnResponse>;
 	listChatEvents(
 		orgId: string,
 		sessionId: string,
@@ -471,6 +502,24 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			}),
 		getSession: (orgId, sessionId, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
+		getInterfaceTransition: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/interface-transition`, { signal: o?.signal }),
+		startInterfaceTransition: (orgId, sessionId, body, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/interface-transition`, {
+				body,
+				signal: o?.signal,
+				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
+			}),
+		cancelInterfaceTransition: (orgId, sessionId, o) =>
+			requestJson("DELETE", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/interface-transition`, {
+				signal: o?.signal,
+			}),
+		acknowledgeInterfaceTransitionNotice: (orgId, sessionId, transitionId, o) =>
+			requestJson(
+				"PUT",
+				`/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/interface-transition/${seg(transitionId)}/notice-acknowledgement`,
+				{ signal: o?.signal },
+			),
 		listCoderTemplates: (orgId, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sandbox/coder/templates`, { signal: o?.signal }),
 		listSessionChildren: (orgId, sessionId, query, o) =>
@@ -536,6 +585,12 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 		cancelTurn: (orgId, sessionId, turnId, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/turns/${seg(turnId)}/cancel`, {
 				signal: o?.signal,
+			}),
+		steerTurn: (orgId, sessionId, turnId, body, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/turns/${seg(turnId)}/steer`, {
+				body,
+				signal: o?.signal,
+				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
 			}),
 		listChatEvents: (orgId, sessionId, query, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/chat-events`, {

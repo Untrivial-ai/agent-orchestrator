@@ -72,8 +72,10 @@ type Store interface {
 	MarkWorkerSeen(ctx context.Context, orgID, sessionID, workerID, version string, epoch int64, capabilities []string) error
 	SetWorkerActivity(ctx context.Context, orgID, sessionID, workerID string, epoch int64, activity worker.ActivityEvent) error
 	AppendSessionEvent(ctx context.Context, orgID, sessionID, eventType string, payload json.RawMessage) (domain.ClientEvent, error)
+	AppendInteractiveConversationFacts(context.Context, string, string, string, string, string, string) error
 	ClaimWorkerTurn(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (domain.WorkerTurn, bool, error)
 	RequestTurnCancellation(ctx context.Context, principal domain.Principal, orgID, sessionID, turnID string) error
+	SteerTurn(context.Context, domain.Principal, string, string, string, string, string) (domain.ClientEvent, error)
 	WorkerTurnCancellationRequested(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int) (bool, error)
 	AppendWorkerTurnOutput(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int, stream, text string) error
 	FinishWorkerTurn(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int, outcome, errorMessage string) (bool, error)
@@ -115,6 +117,12 @@ type Store interface {
 	RedeemProjectShareLink(context.Context, domain.Principal, string, string) (domain.SharedProject, error)
 	ListSharedProjects(context.Context, domain.Principal) ([]domain.SharedProject, error)
 	ListSharedProjectSessions(context.Context, domain.Principal, string, string) ([]domain.Session, error)
+	GetSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, error)
+	StartSessionInterfaceTransition(context.Context, domain.Principal, string, string, domain.SessionInterface, domain.SessionInterface, domain.SessionInterfaceTransitionPolicy, string) (domain.SessionInterfaceTransition, error)
+	GetActiveSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, bool, error)
+	GetLatestRelevantSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, bool, error)
+	AdvanceSessionInterfaceTransition(context.Context, domain.Principal, string, string, domain.SessionInterfaceTransitionPhase, domain.SessionInterfaceTransitionPhase, string, string, string) error
+	AcknowledgeSessionInterfaceTransitionNotice(context.Context, domain.Principal, string, string, string) error
 }
 
 // WorkerTokens issues and verifies the short-lived credentials sandbox workers
@@ -447,6 +455,7 @@ func New(options Options) *Server {
 			router.Delete("/sessions/{sessionId}", server.deleteSession)
 			router.Post("/sessions/{sessionId}/messages", server.sendMessage)
 			router.Post("/sessions/{sessionId}/turns/{turnId}/cancel", server.cancelTurn)
+			router.Post("/sessions/{sessionId}/turns/{turnId}/steer", server.steerTurn)
 			router.Get("/sessions/{sessionId}/chat-events", server.replayClientEvents)
 			router.Get("/sessions/{sessionId}/events", server.streamClientEvents)
 			router.Post("/sessions/{sessionId}/terminal-ticket", server.createTerminalTicket)
@@ -468,6 +477,10 @@ func New(options Options) *Server {
 			router.Put("/sessions/{sessionId}/workspace/review/file", server.putWorkspaceReviewFile)
 			router.Get("/sessions/{sessionId}/pull-requests", server.listSessionPullRequests)
 			router.Get("/sessions/{sessionId}/reviews", server.getSessionReviewState)
+			router.Get("/sessions/{sessionId}/interface-transition", server.getSessionInterfaceTransition)
+			router.Post("/sessions/{sessionId}/interface-transition", server.startSessionInterfaceTransition)
+			router.Delete("/sessions/{sessionId}/interface-transition", server.cancelSessionInterfaceTransition)
+			router.Put("/sessions/{sessionId}/interface-transition/{transitionId}/notice-acknowledgement", server.acknowledgeSessionInterfaceTransitionNotice)
 			router.Get("/members", server.listOrgMembers)
 			router.Patch("/members/{userId}", server.updateOrgMemberRole)
 			router.Get("/invitations", server.listOrgInvitations)
