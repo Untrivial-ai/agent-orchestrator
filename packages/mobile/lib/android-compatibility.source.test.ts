@@ -130,20 +130,20 @@ describe("Android native compatibility boundaries", () => {
 		expect(controls).not.toContain("<Host");
 	});
 
-	it("keeps the iOS Spawn prompt geometry aligned with Android", () => {
+	it("makes the entire iOS Spawn prompt a native text-input hit target", () => {
 		const ios = source("./spawn-prompt-input.ios.tsx");
-		// Expo's universal TextInput maps `numberOfLines` to SwiftUI's
-		// `lineLimit(..., reservesSpace: true)`. Reserving every available line
-		// vertically centres an empty prompt and makes a long prompt grow behind the
-		// selector rail. Keep one visible line at the top and treat the calculated
-		// line count as a cap so additional text scrolls inside the bounded field.
+		// A SwiftUI TextField keeps an intrinsic one-line hit target even when its
+		// Host is tall. React Native's native TextInput owns the full frame, so every
+		// visible point in the prompt area focuses the editor.
+		expect(ios).toContain('import { StyleSheet, TextInput } from "react-native"');
+		expect(ios).not.toContain('@expo/ui');
 		expect(ios).toContain("height = 112");
 		expect(ios).toMatch(/paddingHorizontal:\s*space\.lg/);
-		expect(ios).toMatch(/paddingVertical:\s*space\.md/);
-		expect(ios).toContain("lineLimit({ min: 1, max: lines })");
-		expect(ios).toContain('alignment: "topLeading"');
-		expect(ios).not.toContain("numberOfLines={lines}");
-		expect(ios).not.toContain("height: 154");
+		expect(ios).toMatch(/paddingTop:\s*space\.huge/);
+		expect(ios).toMatch(/paddingBottom:\s*space\.md/);
+		expect(ios).toContain('textAlignVertical="top"');
+		expect(ios).toContain("scrollEnabled");
+		expect(ios).toMatch(/style=\{\[styles\.input,\s*\{\s*height,/);
 	});
 
 	it("gives the iOS Spawn prompt modest top breathing room", () => {
