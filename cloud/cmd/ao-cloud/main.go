@@ -17,6 +17,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/githubapp"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/httpapi"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/idlepause"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/interfacereconcile"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/prstatus"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/reconcile"
@@ -484,6 +485,18 @@ func run(logger *slog.Logger) error {
 			}
 		}()
 	}
+
+	transitionDriver := interfacereconcile.NewTransportDriver(store, "interface-coordinator", 45*time.Second, logger)
+	transitionCoordinator := interfacereconcile.New(store, transitionDriver, interfacereconcile.Options{
+		Interval: cfg.InterfaceHandoffInterval,
+		Logger:   logger,
+	})
+	go func() {
+		logger.Info("interface-transition coordinator started", "interval", cfg.InterfaceHandoffInterval)
+		if err := transitionCoordinator.Run(ctx); err != nil {
+			logger.Error("interface-transition coordinator stopped", "error", err)
+		}
+	}()
 
 	if prStatusScanner != nil {
 		go func() {
