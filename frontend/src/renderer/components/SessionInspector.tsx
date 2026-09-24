@@ -964,7 +964,7 @@ function UsageMetrics({
 								: throughput
 						}
 						className="mt-0.5 truncate font-mono text-sm-md text-settings-label"
-						title={throughput ?? undefined}
+						title={throughput === null ? undefined : t("inspector.usage.tokensPerSecondHint")}
 					>
 						{throughput ?? "—"}
 					</dd>

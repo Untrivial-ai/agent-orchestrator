@@ -371,41 +371,6 @@ func (q *Queries) GetUsageBindingBySessionHarnessRoot(ctx context.Context, arg G
 	return i, err
 }
 
-const getUsageSessionEventWindow = `-- name: GetUsageSessionEventWindow :one
-SELECT
-    CAST(COUNT(*) AS INTEGER) AS event_count,
-    CAST(COUNT(mue.created_at) AS INTEGER) AS known_created_at_count,
-    MIN(mue.created_at) AS first_event_at,
-    MAX(mue.created_at) AS last_event_at
-FROM model_usage_events mue
-JOIN usage_bindings ub ON ub.id = mue.binding_id
-WHERE ub.session_id = ?
-  AND lower(trim(mue.model_id)) <> '<synthetic>'
-`
-
-type GetUsageSessionEventWindowRow struct {
-	EventCount          int64
-	KnownCreatedAtCount int64
-	FirstEventAt        interface{}
-	LastEventAt         interface{}
-}
-
-// Turns and the throughput window read the same visible-event scope the token
-// totals use: assistant messages only, AO's synthetic notices excluded. A
-// single NULL timestamp makes the span unknown rather than silently shortening
-// the active-time divisor, so the known count travels with the min and max.
-func (q *Queries) GetUsageSessionEventWindow(ctx context.Context, sessionID domain.SessionID) (GetUsageSessionEventWindowRow, error) {
-	row := q.db.QueryRowContext(ctx, getUsageSessionEventWindow, sessionID)
-	var i GetUsageSessionEventWindowRow
-	err := row.Scan(
-		&i.EventCount,
-		&i.KnownCreatedAtCount,
-		&i.FirstEventAt,
-		&i.LastEventAt,
-	)
-	return i, err
-}
-
 const getUsageSessionIncomplete = `-- name: GetUsageSessionIncomplete :one
 SELECT CAST(COALESCE((
     SELECT incomplete FROM usage_session_integrity WHERE session_id = ?
@@ -1224,6 +1189,43 @@ func (q *Queries) ListUsageDiscoveryBindings(ctx context.Context, limit int64) (
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUsageSessionEventTimestamps = `-- name: ListUsageSessionEventTimestamps :many
+SELECT mue.created_at AS created_at
+FROM model_usage_events mue
+JOIN usage_bindings ub ON ub.id = mue.binding_id
+WHERE ub.session_id = ?
+  AND lower(trim(mue.model_id)) <> '<synthetic>'
+ORDER BY mue.created_at
+`
+
+// Turns and the throughput divisor read the same visible-event scope the
+// token totals use: assistant messages only, AO's synthetic notices
+// excluded. Timestamps come back individually rather than as MIN/MAX so the
+// service can sum per-gap active time instead of one session-long span that
+// would also count think time and idle between turns.
+func (q *Queries) ListUsageSessionEventTimestamps(ctx context.Context, sessionID domain.SessionID) ([]sql.NullTime, error) {
+	rows, err := q.db.QueryContext(ctx, listUsageSessionEventTimestamps, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []sql.NullTime{}
+	for rows.Next() {
+		var created_at sql.NullTime
+		if err := rows.Scan(&created_at); err != nil {
+			return nil, err
+		}
+		items = append(items, created_at)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

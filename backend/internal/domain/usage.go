@@ -338,15 +338,14 @@ type UsageModelAggregate struct {
 }
 
 // UsageEventWindow bounds a session's visible usage events: the count of
-// assistant responses (AO's synthetic notices excluded) and the span their
-// transcript timestamps cover. KnownCreatedAtCount travels with the min and
-// max so one NULL timestamp can make the span unknown instead of silently
-// shortening the active-time divisor.
+// assistant responses (AO's synthetic notices excluded) plus their known
+// transcript timestamps, ordered. KnownCreatedAtCount travels with the
+// timestamps so one NULL timestamp can make throughput unknown instead of
+// silently shortening the active-time divisor.
 type UsageEventWindow struct {
 	EventCount          int64
 	KnownCreatedAtCount int64
-	FirstEventAt        *time.Time
-	LastEventAt         *time.Time
+	Timestamps          []time.Time
 }
 
 // CompactSessionUsageAggregate is one batched storage row before checked token

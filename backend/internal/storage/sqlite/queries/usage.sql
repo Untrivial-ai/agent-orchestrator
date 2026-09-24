@@ -597,20 +597,18 @@ WHERE ub.session_id = ?
 GROUP BY ub.harness, mue.model_id
 ORDER BY SUM(mue.input_tokens + mue.output_tokens) DESC, ub.harness, mue.model_id;
 
--- name: GetUsageSessionEventWindow :one
--- Turns and the throughput window read the same visible-event scope the token
--- totals use: assistant messages only, AO's synthetic notices excluded. A
--- single NULL timestamp makes the span unknown rather than silently shortening
--- the active-time divisor, so the known count travels with the min and max.
-SELECT
-    CAST(COUNT(*) AS INTEGER) AS event_count,
-    CAST(COUNT(mue.created_at) AS INTEGER) AS known_created_at_count,
-    MIN(mue.created_at) AS first_event_at,
-    MAX(mue.created_at) AS last_event_at
+-- name: ListUsageSessionEventTimestamps :many
+-- Turns and the throughput divisor read the same visible-event scope the
+-- token totals use: assistant messages only, AO's synthetic notices
+-- excluded. Timestamps come back individually rather than as MIN/MAX so the
+-- service can sum per-gap active time instead of one session-long span that
+-- would also count think time and idle between turns.
+SELECT mue.created_at AS created_at
 FROM model_usage_events mue
 JOIN usage_bindings ub ON ub.id = mue.binding_id
 WHERE ub.session_id = ?
-  AND lower(trim(mue.model_id)) <> '<synthetic>';
+  AND lower(trim(mue.model_id)) <> '<synthetic>'
+ORDER BY mue.created_at;
 
 -- name: GetUsageSessionIncomplete :one
 SELECT CAST(COALESCE((

@@ -2008,6 +2008,7 @@
 	"inspector.usage.processedTokensUnavailable": "처리된 토큰을 사용할 수 없음",
 	"inspector.usage.turns": "턴 수",
 	"inspector.usage.tokensPerSecond": "처리량",
+	"inspector.usage.tokensPerSecondHint": "활성 시간 기준 초당 출력 토큰 — 응답 간 2분 초과 공백은 제외됩니다",
 	"inspector.workers": "워커",
 	"inspector.workersCount": "워커 ({{count}})",
 	"inspector.workersEmpty": "아직 생성된 워커가 없습니다.",

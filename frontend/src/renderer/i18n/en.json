@@ -1997,6 +1997,7 @@
 	"inspector.usage.processedTokensUnavailable": "Processed tokens unavailable",
 	"inspector.usage.turns": "Turns",
 	"inspector.usage.tokensPerSecond": "Throughput",
+	"inspector.usage.tokensPerSecondHint": "Output tokens per second of active time — gaps over 2 minutes between responses are excluded",
 	"inspector.workers": "Workers",
 	"inspector.workersCount": "Workers ({{count}})",
 	"inspector.workersEmpty": "No workers spawned yet.",

@@ -2008,6 +2008,7 @@
 	"inspector.usage.processedTokensUnavailable": "Verarbeitete Token nicht verfügbar",
 	"inspector.usage.turns": "Turns",
 	"inspector.usage.tokensPerSecond": "Durchsatz",
+	"inspector.usage.tokensPerSecondHint": "Ausgabe-Tokens pro Sekunde aktiver Zeit — Pausen über 2 Minuten zwischen Antworten sind ausgeschlossen",
 	"inspector.workers": "Worker",
 	"inspector.workersCount": "Worker ({{count}})",
 	"inspector.workersEmpty": "Noch keine Worker gestartet.",

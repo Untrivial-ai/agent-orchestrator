@@ -270,8 +270,12 @@ func TestSummaryReaderGetReturnsUnavailableMetricsWithoutEvents(t *testing.T) {
 }
 
 func TestSummaryReaderGetDerivesTurnsAndTokensPerSecond(t *testing.T) {
-	first := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
-	last := first.Add(90 * time.Second)
+	base := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	// Deltas: 30 s + 10 s (in-turn) + 600 s idle (past the cutoff) + 45 s.
+	timestamps := []time.Time{
+		base, base.Add(30 * time.Second), base.Add(40 * time.Second),
+		base.Add(640 * time.Second), base.Add(685 * time.Second),
+	}
 	store := &usageSummaryStoreStub{
 		found:   true,
 		session: domain.SessionRecord{ID: "reverb-13", Harness: domain.HarnessClaudeCode},
@@ -283,7 +287,7 @@ func TestSummaryReaderGetDerivesTurnsAndTokensPerSecond(t *testing.T) {
 			},
 		},
 		window: domain.UsageEventWindow{
-			EventCount: 5, KnownCreatedAtCount: 5, FirstEventAt: &first, LastEventAt: &last,
+			EventCount: 5, KnownCreatedAtCount: 5, Timestamps: timestamps,
 		},
 	}
 	got, err := NewSummaryReader(store).Get(context.Background(), "reverb-13")
@@ -294,9 +298,10 @@ func TestSummaryReaderGetDerivesTurnsAndTokensPerSecond(t *testing.T) {
 	if got.Turns != 5 {
 		t.Fatalf("turns = %d, want 5", got.Turns)
 	}
-	// Output tokens over the 90 s visible-event span.
-	if got.TokensPerSecond == nil || math.Abs(*got.TokensPerSecond-120.0/90.0) > 1e-9 {
-		t.Fatalf("tokensPerSecond = %v, want %v", got.TokensPerSecond, 120.0/90.0)
+	// Output tokens over 85 s of active time: the 600 s between-turn idle
+	// gap must stay out of the divisor.
+	if got.TokensPerSecond == nil || math.Abs(*got.TokensPerSecond-120.0/85.0) > 1e-9 {
+		t.Fatalf("tokensPerSecond = %v, want %v", got.TokensPerSecond, 120.0/85.0)
 	}
 
 	// One NULL timestamp widens the unknown instead of shortening the divisor.
@@ -309,15 +314,19 @@ func TestSummaryReaderGetDerivesTurnsAndTokensPerSecond(t *testing.T) {
 		t.Fatalf("turns/rate = %d/%v, want 5/nil with a NULL timestamp", got.Turns, got.TokensPerSecond)
 	}
 
-	// A single event has no elapsed time to divide by.
-	singleWindow := store.window
-	singleWindow.KnownCreatedAtCount = 5
-	singleWindow.LastEventAt = singleWindow.FirstEventAt
-	store.window = singleWindow
+	// A single event has no inter-event gap to divide by.
+	store.window = domain.UsageEventWindow{
+		EventCount: 1, KnownCreatedAtCount: 1, Timestamps: timestamps[:1],
+	}
 	got, err = NewSummaryReader(store).Get(context.Background(), "reverb-13")
 	mustNoError(t, err)
 	if got.TokensPerSecond != nil {
 		t.Fatalf("tokensPerSecond = %v, want nil for a single-event window", *got.TokensPerSecond)
+	}
+
+	// Non-monotonic pairs (unreachable via the sorted store read) are skipped.
+	if skipped := usageActiveSeconds([]time.Time{timestamps[2], timestamps[0]}); skipped != 0 {
+		t.Fatalf("usageActiveSeconds = %v, want 0 for a non-monotonic pair", skipped)
 	}
 }
 

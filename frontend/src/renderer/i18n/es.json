@@ -2038,6 +2038,7 @@
 	"inspector.usage.processedTokensUnavailable": "Tokens procesados no disponibles",
 	"inspector.usage.turns": "Turnos",
 	"inspector.usage.tokensPerSecond": "Rendimiento",
+	"inspector.usage.tokensPerSecondHint": "Tokens de salida por segundo de tiempo activo: se excluyen las pausas de más de 2 minutos entre respuestas",
 	"inspector.workers": "Workers",
 	"inspector.workersCount": "Workers ({{count}})",
 	"inspector.workersEmpty": "Aún no se han creado workers.",
