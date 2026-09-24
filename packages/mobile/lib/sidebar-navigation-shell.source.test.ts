@@ -40,12 +40,12 @@ describe("sidebar page separation", () => {
 		}
 	});
 
-	it("floats drawer actions above Recent Workers instead of reserving a footer", () => {
-		for (const shell of [source, androidSource]) {
-			expect(shell).toMatch(/sidebarActions:\s*\{[^}]*position:\s*"absolute"/s);
-			expect(shell).toContain("bottom: insets.bottom + 10");
-			expect(shell).toContain("paddingBottom: insets.bottom + 76");
-		}
+	it("keeps Android drawer actions clear of recent workers while iOS retains floating actions", () => {
+		expect(source).toMatch(/sidebarActions:\s*\{[^}]*position:\s*"absolute"/s);
+		expect(source).toContain("bottom: insets.bottom + 10");
+		expect(androidSource).not.toMatch(/sidebarActions:\s*\{[^}]*position:\s*"absolute"/s);
+		expect(androidSource).toMatch(/sidebarActions:\s*\{[^}]*height:\s*52/s);
+		expect(androidSource).not.toContain("paddingBottom: insets.bottom + 76");
 	});
 
 	it("uses a filled pin, rather than a star, for pinned sessions in the drawer", () => {

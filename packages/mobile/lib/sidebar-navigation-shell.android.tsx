@@ -237,10 +237,7 @@ export function SidebarNavigationShell({ children }: { children: ReactNode }) {
 				data={liveSessions}
 				keyExtractor={(session) => `${session.projectId}:${session.id}`}
 				style={[styles.sessionList, sessionsStale && styles.sessionListStale]}
-			contentContainerStyle={[
-				liveSessions.length === 0 ? styles.emptySessionList : styles.sessionListContent,
-				{ paddingBottom: insets.bottom + 76 },
-			]}
+				contentContainerStyle={liveSessions.length === 0 ? styles.emptySessionList : styles.sessionListContent}
 				showsVerticalScrollIndicator={false}
 				renderItem={({ item }) => (
 					<SessionRow
@@ -252,7 +249,7 @@ export function SidebarNavigationShell({ children }: { children: ReactNode }) {
 				ListEmptyComponent={<Text style={styles.emptySessions}>No active sessions</Text>}
 			/>
 
-			<View pointerEvents="box-none" style={[styles.sidebarActions, { bottom: insets.bottom + 10 }]}>
+			<View pointerEvents="box-none" style={styles.sidebarActions}>
 				<SidebarSettingsButton active={activeDestination === "settings"} onPress={openSettings} />
 				<SidebarSpawnButton onPress={spawnWorker} />
 			</View>
@@ -431,10 +428,8 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	statusDot: { width: 6, height: 6, borderRadius: 4 },
 	sessionMeta: { fontFamily: "Geist_400Regular", flex: 1, color: t.textTertiary, fontSize: type.caption1.fontSize, includeFontPadding: false },
 	sidebarActions: {
-		position: "absolute",
-		left: 28,
-		right: 28,
-		height: 48,
+		height: 52,
+		marginHorizontal: 4,
 		flexDirection: "row",
 		alignItems: "center",
 		justifyContent: "space-between",
