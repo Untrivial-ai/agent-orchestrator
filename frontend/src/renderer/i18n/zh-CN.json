@@ -1992,6 +1992,7 @@
 	"inspector.usage.tokensPerSecond": "吞吐量",
 	"inspector.usage.tokensPerSecondHint": "每秒输出令牌（按活跃时间计）— 响应之间超过 2 分钟的间隔不计入",
 	"inspector.usage.uncachedInputTokensHint": "按完整输入价格计费的输入令牌 — 未由服务商缓存提供。",
+	"inspector.usage.metricHintLabel": "关于此指标",
 	"inspector.usage.cachedInputTokensHint": "由服务商缓存提供、按折扣缓存读取价格计费的输入令牌。",
 	"inspector.usage.outputTokensHint": "模型生成的令牌，按输出价格计费。",
 	"inspector.usage.turnsHint": "会话转录中记录的助手响应数；AO 自身的合成通知不计入。",

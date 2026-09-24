@@ -2040,6 +2040,7 @@
 	"inspector.usage.tokensPerSecond": "Débit",
 	"inspector.usage.tokensPerSecondHint": "Jetons de sortie par seconde de temps actif — les pauses de plus de 2 minutes entre les réponses sont exclues",
 	"inspector.usage.uncachedInputTokensHint": "Jetons d'entrée facturés au tarif d'entrée complet — non servis depuis le cache du fournisseur.",
+	"inspector.usage.metricHintLabel": "À propos de cette métrique",
 	"inspector.usage.cachedInputTokensHint": "Jetons d'entrée servis depuis le cache du fournisseur et facturés au tarif réduit de lecture de cache.",
 	"inspector.usage.outputTokensHint": "Jetons générés par le modèle, facturés au tarif de sortie.",
 	"inspector.usage.turnsHint": "Réponses de l'assistant enregistrées dans les transcriptions de la session ; les avis synthétiques d'AO ne sont pas comptés.",

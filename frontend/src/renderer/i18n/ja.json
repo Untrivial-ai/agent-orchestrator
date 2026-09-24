@@ -2010,6 +2010,7 @@
 	"inspector.usage.tokensPerSecond": "スループット",
 	"inspector.usage.tokensPerSecondHint": "出力トークン/秒（アクティブ時間ベース）— 応答間の2分超の空白は除外されます",
 	"inspector.usage.uncachedInputTokensHint": "フルの入力レートで課金される入力トークン — プロバイダのキャッシュからは供給されていません。",
+	"inspector.usage.metricHintLabel": "この指標について",
 	"inspector.usage.cachedInputTokensHint": "プロバイダのキャッシュから供給され、割引のキャッシュ読み取りレートで課金される入力トークン。",
 	"inspector.usage.outputTokensHint": "モデルが生成したトークン。出力レートで課金されます。",
 	"inspector.usage.turnsHint": "セッションのトランスクリプトに記録されたアシスタント応答数。AO 自身の合成通知は含まれません。",

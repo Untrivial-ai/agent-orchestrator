@@ -917,11 +917,15 @@ function EstimatedCostInfo({ cost }: { cost: EstimatedCost | null }) {
  * to think to hover.
  */
 function MetricInfoIcon({ hint }: { hint: string }) {
+	const { t } = useTranslation();
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
+				{/* A generic accessible name: the hint text itself would collide
+				    with the value's aria-label (e.g. the cache-hit-rate figure) and
+				    break getByLabelText queries and screen-reader navigation. */}
 				<button
-					aria-label={hint}
+					aria-label={t("inspector.usage.metricHintLabel")}
 					className="rounded-sm text-settings-muted outline-none transition-colors hover:text-settings-label focus-visible:ring-1 focus-visible:ring-ring"
 					type="button"
 				>
