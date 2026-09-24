@@ -309,7 +309,7 @@ func appendUserMessage(
 	var transitionID string
 	transitionErr := tx.QueryRow(ctx, `SELECT id FROM ao_interface_transitions
 		WHERE org_id = $1 AND session_id = $2
-		  AND phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required')
+		  AND phase NOT IN ('completed', 'failed', 'cancelled')
 		FOR UPDATE`, orgID, sessionID).Scan(&transitionID)
 	if transitionErr == nil {
 		var turnID string

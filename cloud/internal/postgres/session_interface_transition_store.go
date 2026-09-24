@@ -89,7 +89,7 @@ func (s *Store) StartSessionInterfaceTransition(
 				SELECT 1 FROM ao_interface_transitions t
 				WHERE t.session_id = $1 AND t.org_id = $2
 					AND t.phase NOT IN (
-						'completed', 'failed', 'cancelled', 'recovery_required'
+						'completed', 'failed', 'cancelled'
 					)
 			)`,
 			sessionID,
