@@ -527,6 +527,17 @@ func previewOriginEntry(sess domain.Session) (previewutil.StoredEntry, bool) {
 	if entry, ok := previewutil.StoredEntryFromPreview(sess.Metadata.PreviewURL, sess.ID); ok {
 		switch entry.Scope {
 		case previewutil.StoredEntryScopeArtifact:
+			// __ao_artifacts__/ is a reserved marker AO itself prepends when
+			// it builds an artifact preview link, but it was a valid
+			// workspace-relative path before artifact previews existed. A
+			// real workspace file at that exact literal path must keep
+			// winning over the artifact directory, mirroring previewFile's
+			// same collision guard for the legacy /preview/files route.
+			if literal, ok := previewutil.ArtifactEntryPath(entry.Path); ok {
+				if _, existsInWorkspace := previewutil.EntryAtPath(sess.Metadata.WorkspacePath, literal); existsInWorkspace {
+					return previewutil.StoredEntry{Scope: previewutil.StoredEntryScopeWorkspace, Path: literal}, true
+				}
+			}
 			if _, exists := previewutil.EntryAtPath(sess.Metadata.ArtifactDir, entry.Path); exists {
 				return entry, true
 			}

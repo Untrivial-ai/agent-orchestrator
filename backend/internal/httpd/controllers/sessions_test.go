@@ -1566,6 +1566,52 @@ func TestSessionsAPI_PreviewFileWorkspaceFileWinsOverArtifactNamespaceCollision(
 	}
 }
 
+// TestSessionsAPI_PreviewOriginWorkspaceFileWinsOverArtifactNamespaceCollision
+// covers the same __ao_artifacts__/ namespace collision as the legacy-route
+// test above, but on the isolated-origin PreviewOrigin route — the primary
+// Browser route the desktop app actually uses. A stored preview URL pointing
+// at that literal path must resolve to the real workspace file that existed
+// there before artifact previews did, not to the unrelated artifact
+// directory content.
+func TestSessionsAPI_PreviewOriginWorkspaceFileWinsOverArtifactNamespaceCollision(t *testing.T) {
+	workspace := t.TempDir()
+	collidingPath := filepath.Join(workspace, "__ao_artifacts__", "index.html")
+	if err := os.MkdirAll(filepath.Dir(collidingPath), 0o755); err != nil {
+		t.Fatalf("mkdir workspace collision dir: %v", err)
+	}
+	if err := os.WriteFile(collidingPath, []byte("workspace content"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+
+	artifactDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(artifactDir, "index.html"), []byte("artifact content"), 0o644); err != nil {
+		t.Fatalf("write artifact file: %v", err)
+	}
+
+	svc := newFakeSessionService()
+	s := svc.sessions["ao-1"]
+	s.Metadata.WorkspacePath = workspace
+	s.Metadata.ArtifactDir = artifactDir
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	previewURL, err := previewutil.FileURL(srv.URL, "ao-1", "__ao_artifacts__/index.html")
+	if err != nil {
+		t.Fatalf("build preview URL: %v", err)
+	}
+	s = svc.sessions["ao-1"]
+	s.Metadata.PreviewURL = previewURL
+	svc.sessions["ao-1"] = s
+
+	body, status, _ := doPreviewOriginRequest(t, srv, previewURL, "/")
+	if status != http.StatusOK {
+		t.Fatalf("GET preview origin = %d, want 200; body=%s", status, body)
+	}
+	if !bytes.Contains(body, []byte("workspace content")) {
+		t.Fatalf("served body = %q, want the colliding workspace file's content, not the artifact directory's", body)
+	}
+}
+
 func TestSessionsAPI_SetReviewerAllowsConfigWithoutHarness(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
