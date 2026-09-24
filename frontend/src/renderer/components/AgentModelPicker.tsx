@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { isConcreteModelID, modelChoiceLabel } from "../lib/agent-model-choices";
 import {
 	agentModelsQueryKey,
 	agentModelsQueryOptions,
@@ -85,19 +86,21 @@ export function AgentModelPicker({
 	}
 
 	if (catalog?.selectionMode === "mode") {
-		const options = (catalog.models ?? []).filter((item) => item.id && item.id.toLowerCase() !== "default").map((item) => ({
+		const options = (catalog.models ?? []).filter((item) => isConcreteModelID(item.id)).map((item) => ({
 			value: item.id,
-			label: /^default(?:\s*\([^)]*\))?$/i.test(item.label.trim()) ? item.id : item.label,
+			label: modelChoiceLabel(item),
 		}));
-		const explicitMode = mode.toLowerCase() === "default" ? "" : mode;
-		const effectiveMode = explicitMode || catalog.models?.find((item) => item.isDefault && item.id.toLowerCase() !== "default")?.id || "";
+		const explicitMode = isConcreteModelID(mode) ? mode : "";
+		const defaultMode = catalog.models?.find((item) => item.isDefault && isConcreteModelID(item.id))?.id || "";
+		const effectiveMode = explicitMode || defaultMode;
 		const visibleModeLabel = options.find((option) => option.value === effectiveMode)?.label ?? (explicitMode || t("settings.models.modeNotReported"));
 		return (
 			<SettingsOptionMenu
 				aria-label={t("newTask.model")}
 				value={effectiveMode}
 				options={options}
-				disabled={disabled || agentId === "" || options.length === 0}
+				action={explicitMode && !defaultMode ? { label: t("settings.models.useAgentMode"), onSelect: () => onModeChange("") } : undefined}
+				disabled={disabled || agentId === "" || (options.length === 0 && !(explicitMode && !defaultMode))}
 				triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
 				menuAlign="start"
 				renderTrigger={() => (
@@ -105,7 +108,7 @@ export function AgentModelPicker({
 						{visibleModeLabel}
 					</span>
 				)}
-				onChange={onModeChange}
+				onChange={(value) => onModeChange(value === defaultMode ? "" : value)}
 			/>
 		);
 	}

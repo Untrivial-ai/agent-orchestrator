@@ -254,47 +254,75 @@ describe("ACP session config options", () => {
 		expect(screen.queryByRole("button", { name: "Mode" })).not.toBeInTheDocument();
 	});
 
-	it("omits an implicit extra choice while retaining concrete choices", async () => {
+	it("keeps a mapped permission default selectable under its meaningful label", async () => {
 		const user = userEvent.setup();
 		const onChange = vi.fn();
-		render(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange} configOptions={[{
+		render(<TurnSettingsBar models={[]} settings={{ approvalMode: "auto" }} onChangeConfigOption={onChange}
+			configOptions={[{
+				id: "mode", name: "Permission mode", category: "mode", type: "select", currentValue: "auto",
+				choices: [
+					{ value: "default", name: "Default", permissionMode: "default" },
+					{ value: "auto", name: "Auto", permissionMode: "auto" },
+				],
+			}]} />);
+		await user.click(screen.getByRole("button", { name: "Permission mode" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Use agent permissions" }));
+		expect(onChange).toHaveBeenCalledWith("mode", { value: "default" });
+	});
+
+	it("keeps an opaque agent setting available after choosing a concrete value", async () => {
+		const user = userEvent.setup();
+		const onChange = vi.fn();
+		const option: ChatConfigOption = {
 			id: "profile", name: "Profile", type: "select", currentValue: "default",
 			choices: [
 				{ value: "default", name: "Default" },
 				{ value: "fast", name: "Fast" },
 			],
-		}]} />);
+		};
+		const view = render(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange} configOptions={[option]} />);
 		await user.click(screen.getByRole("button", { name: "Profile" }));
-		expect(screen.getByText("Selection not reported")).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Use agent setting", checked: true })).toBeInTheDocument();
 		expect(screen.queryByRole("menuitemradio", { name: "Default" })).not.toBeInTheDocument();
 		await user.click(screen.getByRole("menuitemradio", { name: "Fast" }));
 		expect(onChange).toHaveBeenCalledWith("profile", { value: "fast" });
+		view.rerender(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange}
+			configOptions={[{ ...option, currentValue: "fast" }]} />);
+		await user.click(screen.getByRole("button", { name: "Profile" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Use agent setting" }));
+		expect(onChange).toHaveBeenLastCalledWith("profile", { value: "default" });
 	});
 
-	it("omits an unreported effort choice without claiming a concrete level", async () => {
+	it("keeps an unreported effort selectable without claiming a concrete level", async () => {
 		const user = userEvent.setup();
 		const onChange = vi.fn();
-		render(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange} configOptions={[{
+		const option: ChatConfigOption = {
 			id: "effort", name: "Effort", category: "thought_level", type: "select", currentValue: "default",
 			choices: [
 				{ value: "default", name: "Default" },
 				{ value: "low", name: "Low" },
 				{ value: "high", name: "High" },
 			],
-		}]} />);
+		};
+		const view = render(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange} configOptions={[option]} />);
 
 		const picker = screen.getByRole("button", { name: "Effort" });
-		expect(picker).toHaveTextContent("Effort not reported");
+		expect(picker).toHaveTextContent("Use agent effort");
 		await user.click(picker);
 		expect(screen.queryByRole("menuitemradio", { name: "Default" })).not.toBeInTheDocument();
 		await user.click(screen.getByRole("menuitemradio", { name: "High" }));
 		expect(onChange).toHaveBeenCalledWith("effort", { value: "high" });
+		view.rerender(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange}
+			configOptions={[{ ...option, currentValue: "high" }]} />);
+		await user.click(screen.getByRole("button", { name: "Effort" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Use agent effort" }));
+		expect(onChange).toHaveBeenLastCalledWith("effort", { value: "default" });
 	});
 
 	it("shows the concrete recommended model selected without a duplicate default option", async () => {
 		const user = userEvent.setup();
 		const onChange = vi.fn();
-		render(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange} configOptions={[{
+		const option: ChatConfigOption = {
 			id: "model",
 			name: "Model",
 			category: "model",
@@ -305,7 +333,8 @@ describe("ACP session config options", () => {
 				{ value: "opus", name: "Opus" },
 				{ value: "sonnet", name: "Sonnet" },
 			],
-		}]} />);
+		};
+		const view = render(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange} configOptions={[option]} />);
 
 		const picker = screen.getByRole("button", { name: "Model" });
 		expect(picker).toHaveTextContent("Opus");
@@ -314,6 +343,27 @@ describe("ACP session config options", () => {
 		expect(screen.getByRole("menuitemradio", { name: "Opus", checked: true })).toBeInTheDocument();
 		await user.click(screen.getByRole("menuitemradio", { name: "Sonnet" }));
 		expect(onChange).toHaveBeenCalledWith("model", { value: "sonnet" });
+		view.rerender(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange}
+			configOptions={[{ ...option, currentValue: "sonnet" }]} />);
+		await user.click(screen.getByRole("button", { name: "Model" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Opus" }));
+		expect(onChange).toHaveBeenLastCalledWith("model", { value: "default" });
+	});
+
+	it("lets an explicitly pinned recommended model return to agent control", async () => {
+		const onChange = vi.fn();
+		render(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange} configOptions={[{
+			id: "model", name: "Model", category: "model", type: "select", currentValue: "opus",
+			choices: [
+				{ value: "default", name: "Default (recommended)", description: "Opus" },
+				{ value: "opus", name: "Opus" },
+				{ value: "sonnet", name: "Sonnet" },
+			],
+		}]} />);
+		await userEvent.click(screen.getByRole("button", { name: "Model" }));
+		expect(screen.getByRole("menuitemradio", { name: "Opus", checked: true })).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "Use agent model (Opus)" }));
+		expect(onChange).toHaveBeenCalledWith("model", { value: "default" });
 	});
 
 	it("searches visible model names without matching hidden choice values", async () => {
@@ -921,7 +971,7 @@ describe("Cursor Ask and Agent chat modes", () => {
 		await user.click(approvals);
 		expect(screen.queryByRole("menuitemradio", { name: "Ask" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("menuitemradio", { name: "Agent" })).not.toBeInTheDocument();
-		expect(screen.queryByRole("menuitemradio", { name: "Use agent permissions" })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Use agent permissions" })).toBeInTheDocument();
 		expect(screen.getByRole("menuitemradio", { name: "Accept edits" })).toBeInTheDocument();
 		expect(screen.getByRole("menuitemradio", { name: "Auto-approve" })).toBeInTheDocument();
 		expect(screen.getByRole("menuitemradio", { name: "Bypass permissions" })).toBeInTheDocument();
@@ -1269,9 +1319,9 @@ describe("OpenCode's live permission tiers", () => {
 
 		expect(hasProviderPermissionMode([OPENCODE_MODES])).toBe(true);
 		const approvals = screen.getByRole("button", { name: "Session Mode" });
-		expect(approvals).toHaveTextContent("Agent permissions not reported");
+		expect(approvals).toHaveTextContent("Use agent permissions");
 		await user.click(approvals);
-		expect(screen.queryByRole("menuitemradio", { name: "Use agent permissions" })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Use agent permissions", checked: true })).toBeInTheDocument();
 		await user.click(screen.getByRole("menuitemradio", { name: "Bypass permissions" }));
 		expect(onChangeConfigOption).toHaveBeenCalledWith("mode", { value: "ao-bypass" });
 
@@ -1279,6 +1329,17 @@ describe("OpenCode's live permission tiers", () => {
 		await user.click(screen.getByRole("button", { name: "Model mode for the next turn" }));
 		expect(screen.getByRole("switch", { name: "Plan Mode" })).toBeInTheDocument();
 		expect(screen.queryByRole("menuitemradio", { name: "Agent Mode" })).not.toBeInTheDocument();
+	});
+
+	it("can switch back to the agent's permission policy", async () => {
+		const user = userEvent.setup();
+		const onChangeConfigOption = vi.fn();
+		render(<TurnSettingsBar harness="opencode" models={[]} settings={{ approvalMode: "accept-edits" }}
+			configOptions={[{ ...OPENCODE_MODES, currentValue: "ao-accept-edits" }]}
+			onChangeConfigOption={onChangeConfigOption} />);
+		await user.click(screen.getByRole("button", { name: "Session Mode" }));
+		await user.click(screen.getByRole("menuitemradio", { name: "Use agent permissions" }));
+		expect(onChangeConfigOption).toHaveBeenCalledWith("mode", { value: "ao-default" });
 	});
 });
 
@@ -1335,7 +1396,7 @@ describe("OpenCode-style execution modes", () => {
 			<TurnSettingsBar
 				harness="opencode"
 				models={[]}
-				settings={{ approvalMode: "default" }}
+			settings={{ approvalMode: "accept-edits" }}
 				configOptions={[OPENCODE_MODES]}
 				onChange={onChange}
 				onChangeConfigOption={vi.fn()}
@@ -1343,10 +1404,9 @@ describe("OpenCode-style execution modes", () => {
 		);
 
 		const approvals = screen.getByRole("button", { name: "Approval policy for the next turn" });
-		expect(approvals).toHaveTextContent("Use agent permissions");
+		expect(approvals).toHaveTextContent("Accept edits");
 		await user.click(approvals);
-		expect(screen.queryByRole("menuitemradio", { name: "Use agent permissions" })).not.toBeInTheDocument();
-		await user.click(screen.getByRole("menuitemradio", { name: "Bypass permissions" }));
-		expect(onChange).toHaveBeenCalledWith({ approvalMode: "bypass-permissions" });
+		await user.click(screen.getByRole("menuitemradio", { name: "Use agent permissions" }));
+		expect(onChange).toHaveBeenCalledWith({ approvalMode: "default" });
 	});
 });

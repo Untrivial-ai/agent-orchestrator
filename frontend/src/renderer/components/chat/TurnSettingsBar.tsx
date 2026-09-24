@@ -30,6 +30,7 @@ import {
 	OptionMenuTrigger,
 } from "../ui/option-menu";
 import { cn } from "../../lib/utils";
+import { isDefaultPlaceholderLabel } from "../../lib/agent-model-choices";
 import { Switch } from "../ui/switch";
 import { ModelMenuChoices } from "./ModelMenuChoices";
 import type {
@@ -50,6 +51,7 @@ const APPROVAL_COPY: Record<ApprovalMode, { label: string }> = {
 };
 
 const APPROVAL_ORDER: ApprovalMode[] = [
+	"default",
 	"accept-edits",
 	"auto",
 	"bypass-permissions",
@@ -148,11 +150,6 @@ export function TurnSettingsBar({
 		void Promise.resolve(onChangeConfigOption(optionId, value)).catch(() => {});
 	};
 	const modeOption = grouped.mode;
-	const visibleModeOption = modeOption && {
-		...modeOption,
-		choices: modeOption.choices.filter((choice) => !isImplicitApprovalChoice(choice)),
-	};
-	const currentModeChoice = modeOption?.choices.find((choice) => choice.value === modeOption.currentValue);
 	const inlineExecutionMode =
 		grouped.executionMode && isPlanBinary(grouped.executionMode) ? grouped.executionMode : undefined;
 	const standaloneExecutionMode =
@@ -238,12 +235,11 @@ export function TurnSettingsBar({
 				{showRightDropdown || children ? (
 					<div className="flex h-7 shrink-0 items-center gap-1">
 						{children}
-						{!planning && visibleModeOption && onChangeConfigOption ? (
+						{!planning && modeOption && onChangeConfigOption ? (
 							<ConfigOptionPicker
-								option={visibleModeOption}
-								label={currentModeChoice && isImplicitApprovalChoice(currentModeChoice) ? "Agent permissions not reported" : undefined}
-								disabled={optionDisabled || visibleModeOption.choices.length === 0}
-								onChange={(value) => applyOption(visibleModeOption.id, value)}
+								option={modeOption}
+								disabled={optionDisabled}
+								onChange={(value) => applyOption(modeOption.id, value)}
 								footer={rememberAction}
 							/>
 						) : onChange ? (
@@ -873,13 +869,6 @@ export function hasProviderPermissionMode(options: ChatConfigOption[]): boolean 
 	return Boolean(partitionConfigOptions(options).mode);
 }
 
-function isImplicitApprovalChoice(choice: ChatConfigOption["choices"][number]): boolean {
-	return choice.permissionMode === "default" && (
-		choice.value === "ao-default" ||
-		/^(?:default(?:\s*\([^)]*\))?|use agent permissions)$/i.test(choice.name.trim())
-	);
-}
-
 function partitionConfigOptions(options: ChatConfigOption[]): {
 	model: ChatConfigOption[];
 	effort: ChatConfigOption[];
@@ -935,22 +924,42 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 	return { model: [...primaryModel, ...otherModel], effort, executionMode, toggles, mode, extra };
 }
 
-// ACP may expose an implicit choice whose description names a concrete option.
-// Select that option when known; otherwise leave the effective choice unreported.
+// ACP may expose a provider-owned choice whose description names a concrete
+// option. Keep its wire value so users can return to following the provider.
 function resolveImplicitChoice(option: ChatConfigOption): ChatConfigOption {
-	const implicit = option.choices.find((choice) =>
+	const mapped = isModeOption(option) ? {
+		...option,
+		choices: option.choices.map((choice) =>
+			choice.permissionMode === "default" && isDefaultPlaceholderLabel(choice.name)
+				? { ...choice, name: "Use agent permissions" }
+				: choice,
+		),
+	} : option;
+	const implicit = mapped.choices.find((choice) =>
 		choice.value === "default" && (
-			!isModeOption(option) || /^(?:default(?:\s*\([^)]*\))?|use agent permissions)$/i.test(choice.name.trim())
+			!isModeOption(mapped) || (choice.permissionMode !== "default" && (isDefaultPlaceholderLabel(choice.name) || /^use agent permissions$/i.test(choice.name.trim())))
 		),
 	);
-	if (!implicit) return option;
-	const concrete = option.choices.find((choice) =>
+	if (!implicit) return mapped;
+	if (isModeOption(mapped)) return { ...mapped, choices: mapped.choices.filter((choice) => choice !== implicit) };
+	const concrete = mapped.choices.find((choice) =>
 		choice.value !== implicit.value && choice.name.toLowerCase() === implicit.description?.trim().toLowerCase(),
 	);
+	const followLabel = isModelOption(mapped) ? "Use agent model" : isEffortOption(mapped) ? "Use agent effort" : "Use agent setting";
+	if (concrete && mapped.currentValue !== concrete.value) {
+		const label = isDefaultPlaceholderLabel(concrete.name) ? concrete.value : concrete.name;
+		return {
+			...mapped,
+			choices: mapped.choices.filter((choice) => choice !== concrete).map((choice) =>
+				choice === implicit ? { ...choice, name: label } : choice,
+			),
+		};
+	}
 	return {
-		...option,
-		currentValue: option.currentValue === implicit.value && concrete ? concrete.value : option.currentValue,
-		choices: option.choices.filter((choice) => choice !== implicit),
+		...mapped,
+		choices: mapped.choices.map((choice) => choice === implicit && isDefaultPlaceholderLabel(choice.name)
+			? { ...choice, name: concrete ? `${followLabel} (${concrete.name})` : followLabel }
+			: choice),
 	};
 }
 

@@ -1072,6 +1072,8 @@
 	"settings.project.permissionAcceptEdits": "편집 수락",
 	"settings.project.permissionAuto": "자동",
 	"settings.project.permissionBypass": "권한 우회",
+	"settings.project.permissionUseClaude": "Claude 권한 설정 사용",
+	"settings.project.permissionUseAgent": "에이전트 권한 설정 사용",
 	"settings.project.permissionNotReported": "에이전트 권한 정보가 제공되지 않음",
 	"settings.project.permissionMode": "권한 모드",
 	"settings.project.refresh": "새로고침",
@@ -2098,6 +2100,9 @@
 	"executionContext.loading": "프로젝트 컨텍스트 로드 중…",
 	"coder.template.default": "조직 워크스페이스",
 	"settings.models.modelNotReported": "모델 정보가 제공되지 않음",
+	"settings.models.useAgentModel": "에이전트 모델 사용",
+	"settings.models.useAgentMode": "에이전트 모드 사용",
+	"settings.models.useAgentEffort": "에이전트 추론 수준 사용",
 	"settings.models.effortNotReported": "추론 수준 정보가 제공되지 않음",
 	"settings.models.modeNotReported": "모드 정보가 제공되지 않음"
 }

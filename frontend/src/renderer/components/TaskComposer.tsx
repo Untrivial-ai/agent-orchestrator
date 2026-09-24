@@ -26,6 +26,7 @@ import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudOrg } from "../hooks/useCloudOrg";
 import { useProviderConnections } from "../hooks/useProviderConnections";
 import { cloudAgentInfos } from "../lib/cloud-agents";
+import { isConcreteModelID, modelChoiceLabel } from "../lib/agent-model-choices";
 import {
 	buildRankedAgentOptions,
 	DEFAULT_AGENT_PRIORITY_RANK,
@@ -394,9 +395,8 @@ export function TaskComposer({
 				selectionMode: modelCatalogQuery.data.selectionMode,
 			}
 		: undefined;
-	// Only send a catalog choice when the provider identifies it as the default.
 	// An unmarked first row is not evidence of what the provider will run.
-	const catalogModels = modelCatalogQuery.data?.models?.filter((item) => item.id && item.id.toLowerCase() !== "default") ?? [];
+	const catalogModels = modelCatalogQuery.data?.models?.filter((item) => isConcreteModelID(item.id)) ?? [];
 	const catalogDefaultOption =
 		catalogModels.find((item) => item.isDefault)?.id ?? "";
 	const catalogUsesModes = modelCatalogQuery.data?.selectionMode === "mode";
@@ -404,23 +404,28 @@ export function TaskComposer({
 	const rememberedModel = rememberedConfigForSelectedAgent?.model ?? "";
 	const rememberedMode = rememberedConfigForSelectedAgent?.mode ?? "";
 	const rememberedModelIsValid =
-		rememberedModel !== "" && rememberedModel.toLowerCase() !== "default" &&
+		isConcreteModelID(rememberedModel) &&
 		Boolean(
 			modelCatalogQuery.data &&
 				(modelCatalogQuery.data.allowCustom || catalogModels.some((item) => item.id === rememberedModel)),
 		);
 	const rememberedModeIsValid =
-		rememberedMode !== "" && rememberedMode.toLowerCase() !== "default" && catalogModels.some((item) => item.id === rememberedMode);
+		isConcreteModelID(rememberedMode) && catalogModels.some((item) => item.id === rememberedMode);
 	const defaultModelForSelectedAgent =
 		(rememberedModelIsValid ? rememberedModel : "") ||
-		(projectModelForSelectedAgent.toLowerCase() === "default" ? "" : projectModelForSelectedAgent) ||
+		(isConcreteModelID(projectModelForSelectedAgent) ? projectModelForSelectedAgent : "") ||
 		(catalogUsesModes ? "" : catalogDefaultOption);
 	const defaultModeForSelectedAgent =
 		(rememberedModeIsValid ? rememberedMode : "") ||
-		(projectModeForSelectedAgent.toLowerCase() === "default" ? "" : projectModeForSelectedAgent) ||
+		(isConcreteModelID(projectModeForSelectedAgent) ? projectModeForSelectedAgent : "") ||
 		(catalogUsesModes ? catalogDefaultOption : "");
-	const selectedModel = model || defaultModelForSelectedAgent;
-	const selectedMode = mode || defaultModeForSelectedAgent;
+	const selectedModel = model || (modelTouched ? (catalogUsesModes ? "" : catalogDefaultOption) : defaultModelForSelectedAgent);
+	const selectedMode = mode || (modelTouched ? (catalogUsesModes ? catalogDefaultOption : "") : defaultModeForSelectedAgent);
+	const selectedModelOrMode = (selectedModel || selectedMode).trim();
+	const projectModelOrMode = projectModelForSelectedAgent || projectModeForSelectedAgent;
+	const requestedModel = selectedModelOrMode && selectedModelOrMode !== projectModelOrMode && (
+		selectedModelOrMode !== catalogDefaultOption || isConcreteModelID(projectModelOrMode)
+	) ? selectedModelOrMode : undefined;
 	const rememberedEffortIsExplicit = Boolean(
 		rememberedConfigForSelectedAgent &&
 			Object.prototype.hasOwnProperty.call(rememberedConfigForSelectedAgent, "effort"),
@@ -505,11 +510,6 @@ export function TaskComposer({
 	) => {
 		if (!projectId || !canSubmit || isSubmitting) return;
 
-		const cleanModel = selectedModel.trim();
-		const cleanMode = selectedMode.trim();
-		// Same rule as agent: the visible selection is authoritative, whether
-		// it came from project setup or the catalog default.
-		const requestedModel = cleanModel || cleanMode || undefined;
 		const requestedEffort = effortTouched || rememberedEffortIsExplicit ? effort : undefined;
 
 		setIsSubmitting(true);
@@ -529,8 +529,6 @@ export function TaskComposer({
 			const sessionId = await createTask({
 				projectId,
 				brief,
-				// The visible selection is authoritative: it is either the user's pick
-				// or the resolved default, so spawning names it explicitly.
 				agent: selectedAgent ? (selectedAgent as CreateTaskInput["agent"]) : undefined,
 				model: requestedModel,
 				// Only explicit Codex picks set this; agent changes reset it, and TUI retries preserve it.
@@ -541,8 +539,8 @@ export function TaskComposer({
 			});
 			if (selectedAgent) {
 				const preference: TaskComposerAgentPreference = {
-					model: cleanModel,
-					mode: cleanMode,
+					model: selectedModel ? requestedModel ?? "" : "",
+					mode: selectedMode ? requestedModel ?? "" : "",
 					...(requestedEffort !== undefined ? { effort: requestedEffort } : {}),
 				};
 				agentDrafts[selectedAgent] = preference;
@@ -599,8 +597,8 @@ export function TaskComposer({
 				onChange: (value) => {
 					if (selectedAgent) {
 						agentDrafts[selectedAgent] = {
-							model: selectedModel,
-							mode: selectedMode,
+							model: selectedModel ? requestedModel ?? "" : "",
+							mode: selectedMode ? requestedModel ?? "" : "",
 							...(effortTouched || rememberedEffortIsExplicit ? { effort } : {}),
 						};
 					}
@@ -673,7 +671,8 @@ export function TaskComposer({
 			}}
 			renderAgentControl={(control) => <DesktopAgentControl {...control} manageAgents={!isCloudProject} />}
 			renderEffortControl={(control) => <TaskEffortPicker {...control} defaultEffort={effortModel?.defaultEffort} />}
-			renderModelControl={(control) => <TaskModelPicker {...control} onRefresh={refreshSelectedModels} />}
+			renderModelControl={(control) => <TaskModelPicker {...control} onRefresh={refreshSelectedModels}
+				showFollowAgentAction={Boolean(catalogDefaultOption || !isConcreteModelID(projectModelOrMode))} />}
 			showEffort={!requiresTuiFallback && effortOptions.length > 0}
 		/>
 	);
@@ -733,7 +732,8 @@ function TaskModelPicker({
 	onModelChange,
 	onModeChange,
 	onRefresh,
-}: TaskComposerModelControl & { onRefresh: () => Promise<void> }) {
+	showFollowAgentAction,
+}: TaskComposerModelControl & { onRefresh: () => Promise<void>; showFollowAgentAction: boolean }) {
 	const { t } = useTranslation();
 
 	// No agent selected: there is nothing loading and no model to choose yet, so
@@ -771,12 +771,13 @@ function TaskModelPicker({
 	}
 
 	if (catalog?.selectionMode === "mode") {
-		const options = (catalog.models ?? []).filter((item) => item.id && item.id.toLowerCase() !== "default").map((item) => ({
+		const options = (catalog.models ?? []).filter((item) => isConcreteModelID(item.id)).map((item) => ({
 			value: item.id,
-			label: /^default(?:\s*\([^)]*\))?$/i.test(item.label.trim()) ? item.id : item.label,
+			label: modelChoiceLabel(item),
 		}));
-		const explicitMode = mode.toLowerCase() === "default" ? "" : mode;
-		const effectiveMode = explicitMode || catalog.models?.find((item) => item.isDefault && item.id.toLowerCase() !== "default")?.id || "";
+		const explicitMode = isConcreteModelID(mode) ? mode : "";
+		const defaultMode = catalog.models?.find((item) => item.isDefault && isConcreteModelID(item.id))?.id || "";
+		const effectiveMode = explicitMode || defaultMode;
 		const visibleModeLabel = options.find((option) => option.value === effectiveMode)?.label ?? t("settings.models.modeNotReported");
 		return (
 			<SettingsOptionMenu
@@ -784,6 +785,9 @@ function TaskModelPicker({
 				disabled={disabled || options.length === 0}
 				value={effectiveMode}
 				options={options}
+				action={explicitMode && !defaultMode && showFollowAgentAction
+					? { label: t("settings.models.useAgentMode"), onSelect: () => onModeChange("") }
+					: undefined}
 				triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
 				menuAlign="start"
 				renderTrigger={() => (
@@ -791,7 +795,7 @@ function TaskModelPicker({
 						{visibleModeLabel}
 					</span>
 				)}
-				onChange={onModeChange}
+				onChange={(value) => onModeChange(value === defaultMode ? "" : value)}
 			/>
 		);
 	}
@@ -822,6 +826,7 @@ function TaskModelPicker({
 			refreshError={catalog?.refreshError}
 			retryAt={catalog?.retryAt}
 			disabled={disabled || agentId === ""}
+			showFollowAgentAction={showFollowAgentAction}
 			onChange={selectCatalogModel}
 			onCustom={selectCustomModel}
 			compact

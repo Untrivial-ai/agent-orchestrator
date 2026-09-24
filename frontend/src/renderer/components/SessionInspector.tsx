@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { WORKER_DEFAULT_REVIEWERS } from "../lib/reviewer-harnesses";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { captureRendererEvent } from "../lib/telemetry";
 import { formatTimeCompact } from "../lib/format-time";
@@ -1467,14 +1468,6 @@ function scmTimelineStates(session: WorkspaceSession): ScmTimelineState[] {
 /** Reviewer harness the daemon accepts, typed from the generated schema. */
 type ReviewerHarness = NonNullable<components["schemas"]["TriggerReviewRequest"]["harness"]>;
 type AgentCatalog = components["schemas"]["AgentReadinessResponse"];
-
-const WORKER_DEFAULT_REVIEWERS: Partial<Record<WorkspaceSession["provider"], ReviewerHarness>> = {
-	"claude-code": "claude-code",
-	codex: "codex",
-	opencode: "opencode",
-	muse: "muse",
-	kimchi: "kimchi",
-};
 
 function resolveDefaultReviewerHarness(config: ProjectConfig | undefined, workerHarness: WorkspaceSession["provider"]): ReviewerHarness {
 	const configuredHarness = config?.reviewers?.[0]?.harness;

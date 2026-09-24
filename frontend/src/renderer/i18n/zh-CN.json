@@ -1054,6 +1054,8 @@
 	"settings.project.permissionAcceptEdits": "接受编辑",
 	"settings.project.permissionAuto": "自动",
 	"settings.project.permissionBypass": "绕过权限",
+	"settings.project.permissionUseClaude": "使用 Claude 的权限设置",
+	"settings.project.permissionUseAgent": "使用智能体的权限设置",
 	"settings.project.permissionNotReported": "未报告代理权限",
 	"settings.project.permissionMode": "权限模式",
 	"settings.project.refresh": "刷新",
@@ -2080,6 +2082,9 @@
 	"executionContext.loading": "正在加载项目上下文…",
 	"coder.template.default": "组织工作区",
 	"settings.models.modelNotReported": "未报告模型",
+	"settings.models.useAgentModel": "使用智能体模型",
+	"settings.models.useAgentMode": "使用智能体模式",
+	"settings.models.useAgentEffort": "使用智能体推理强度",
 	"settings.models.effortNotReported": "未报告推理强度",
 	"settings.models.modeNotReported": "未报告模式"
 }

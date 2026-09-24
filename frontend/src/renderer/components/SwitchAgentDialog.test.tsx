@@ -52,10 +52,12 @@ function renderDialog(
 	session: WorkspaceSession = worker,
 	onOpenChange = vi.fn(),
 	agentSwitch?: AgentSwitchSummary,
+	projectConfig: unknown = { config: {} },
 ) {
 	const queryClient = new QueryClient({
 		defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
 	});
+	if (projectConfig !== null) queryClient.setQueryData(["project", session.workspaceId], projectConfig);
 	for (const agentId of ["claude-code", "codex"]) {
 		queryClient.setQueryData(agentModelsQueryKey(agentId, session.workspaceId), {
 			agentId,
@@ -209,11 +211,80 @@ describe("SwitchAgentDialog", () => {
 		expect(switchMocks.mutate).toHaveBeenLastCalledWith(
 			{
 				idempotencyKey: "idempotency-1",
-				model: "claude-opus-4-6",
+				model: "",
 				session: switchedSession,
 				targetHarness: "claude-code",
 			},
 			{ onSuccess: expect.any(Function) },
+		);
+	});
+
+	it("shows the reported target model without pinning it on switch", async () => {
+		renderDialog();
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		expect(within(dialog).getByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.4");
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenCalledWith(
+			expect.objectContaining({ model: "", targetHarness: "codex" }),
+			expect.any(Object),
+		);
+	});
+
+	it("shows the project model and inherits it when switching without a model change", async () => {
+		const { queryClient } = renderDialog();
+		queryClient.setQueryData(["project", worker.workspaceId], {
+			config: { worker: { agent: "codex", agentConfig: { model: "gpt-5.4-mini" } } },
+		});
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		await waitFor(() => expect(within(dialog).getByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.4 Mini"));
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenCalledWith(
+			expect.objectContaining({ model: "", targetHarness: "codex" }),
+			expect.any(Object),
+		);
+	});
+
+	it("sends the catalog choice only when it overrides a different project model", async () => {
+		const { queryClient } = renderDialog();
+		queryClient.setQueryData(["project", worker.workspaceId], {
+			config: { worker: { agent: "codex", agentConfig: { model: "gpt-5.4-mini" } } },
+		});
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		await waitFor(() => expect(within(dialog).getByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.4 Mini"));
+		await userEvent.click(within(dialog).getByRole("button", { name: "Model" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "GPT-5.4" }));
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenCalledWith(
+			expect.objectContaining({ model: "gpt-5.4", targetHarness: "codex" }),
+			expect.any(Object),
+		);
+	});
+
+	it("uses the legacy project model when the role model belongs to another agent", async () => {
+		const { queryClient } = renderDialog();
+		queryClient.setQueryData(["project", worker.workspaceId], {
+			config: {
+				agentConfig: { model: "gpt-5.4-mini" },
+				worker: { agent: "claude-code", agentConfig: { model: "claude-opus-4-6" } },
+			},
+		});
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		await waitFor(() => expect(within(dialog).getByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.4 Mini"));
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenCalledWith(
+			expect.objectContaining({ model: "", targetHarness: "codex" }),
+			expect.any(Object),
+		);
+	});
+
+	it("uses the shown catalog model if project settings are unavailable", async () => {
+		renderDialog(worker, vi.fn(), undefined, null);
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		expect(within(dialog).getByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.4");
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenCalledWith(
+			expect.objectContaining({ model: "gpt-5.4", targetHarness: "codex" }),
+			expect.any(Object),
 		);
 	});
 

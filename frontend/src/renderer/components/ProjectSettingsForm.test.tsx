@@ -280,7 +280,7 @@ describe("ProjectSettingsForm", () => {
 			),
 		);
 		expect(ensureAgentReadinessMock).toHaveBeenCalledWith();
-		expect(screen.getByRole("button", { name: "Worker approval" })).toHaveTextContent("Agent permissions not reported");
+		expect(screen.getByRole("button", { name: "Worker approval" })).toHaveTextContent("Auto");
 		expect(screen.queryByRole("button", { name: "Refresh agents" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Refresh worker model list" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Refresh orchestrator model list" })).not.toBeInTheDocument();
@@ -508,7 +508,7 @@ describe("ProjectSettingsForm", () => {
 		);
 	});
 
-	it("shows known Codex permissions and omits implicit permission choices", async () => {
+	it("shows Claude's permission setting and preserves saved permission modes", async () => {
 		mockProject({
 			id: "proj-1", name: "Project One", kind: "single_repo", path: "/repo/project-one",
 			repo: "", defaultBranch: "main", config: {
@@ -520,10 +520,15 @@ describe("ProjectSettingsForm", () => {
 		const worker = await screen.findByRole("button", { name: "Worker approval" });
 		const orchestrator = screen.getByRole("button", { name: "Orchestrator approval" });
 		expect(worker).toHaveTextContent("Bypass permissions");
-		expect(orchestrator).toHaveTextContent("Agent permissions not reported");
+		expect(orchestrator).toHaveTextContent("Use Claude permissions");
 		await userEvent.click(worker);
 		expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
 			"Auto", "Accept edits", "Bypass permissions",
+		]);
+		await userEvent.keyboard("{Escape}");
+		await userEvent.click(orchestrator);
+		expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+			"Use Claude permissions", "Auto", "Accept edits", "Bypass permissions",
 		]);
 		await userEvent.keyboard("{Escape}");
 		submitSettings();
@@ -531,6 +536,40 @@ describe("ProjectSettingsForm", () => {
 		const config = putMock.mock.calls[0][1].body.config;
 		expect(config.worker.agentConfig.permissions).toBe("default");
 		expect(config.orchestrator.agentConfig.permissions).toBe("default");
+	});
+
+	it("can switch back to Claude's own permission setting", async () => {
+		mockProject({
+			id: "proj-1", name: "Project One", kind: "single_repo", path: "/repo/project-one",
+			repo: "", defaultBranch: "main", config: {
+				worker: { agent: "claude-code", agentConfig: { permissions: "accept-edits" } },
+				orchestrator: { agent: "claude-code" },
+			},
+		});
+		renderSettings("proj-1", undefined, "agents");
+		const worker = await screen.findByRole("button", { name: "Worker approval" });
+		expect(worker).toHaveTextContent("Accept edits");
+		await userEvent.click(worker);
+		await userEvent.click(screen.getByRole("menuitem", { name: "Use Claude permissions" }));
+		expect(worker).toHaveTextContent("Use Claude permissions");
+		submitSettings();
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		expect(putMock.mock.calls[0][1].body.config.worker.agentConfig.permissions).toBe("default");
+	});
+
+	it("shows Auto for unset permissions without saving an override", async () => {
+		mockProject({
+			id: "proj-1", name: "Project One", kind: "single_repo", path: "/repo/project-one",
+			repo: "", defaultBranch: "main", config: {
+				worker: { agent: "claude-code" },
+				orchestrator: { agent: "claude-code" },
+			},
+		});
+		renderSettings("proj-1", undefined, "agents");
+		expect(await screen.findByRole("button", { name: "Worker approval" })).toHaveTextContent("Auto");
+		submitSettings();
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		expect(putMock.mock.calls[0][1].body.config.worker.agentConfig?.permissions).toBeUndefined();
 	});
 
 	it("resolves a legacy mode value to the catalog's marked mode", async () => {

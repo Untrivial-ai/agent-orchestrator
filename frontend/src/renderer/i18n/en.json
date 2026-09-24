@@ -1202,6 +1202,8 @@
 	"settings.project.permissionAcceptEdits": "Accept edits",
 	"settings.project.permissionAuto": "Auto",
 	"settings.project.permissionBypass": "Bypass permissions",
+	"settings.project.permissionUseClaude": "Use Claude permissions",
+	"settings.project.permissionUseAgent": "Use agent permissions",
 	"settings.project.permissionNotReported": "Agent permissions not reported",
 	"settings.project.permissionMode": "Permission mode",
 	"settings.project.refresh": "Refresh",
@@ -2078,6 +2080,9 @@
 	"executionContext.loading": "loading project context…",
 	"coder.template.default": "Organization workspace",
 	"settings.models.modelNotReported": "Model not reported",
+	"settings.models.useAgentModel": "Use agent model",
+	"settings.models.useAgentMode": "Use agent mode",
+	"settings.models.useAgentEffort": "Use agent effort",
 	"settings.models.effortNotReported": "Effort not reported",
 	"settings.models.modeNotReported": "Mode not reported"
 }

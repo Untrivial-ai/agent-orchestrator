@@ -114,6 +114,38 @@ describe("AgentModelCombobox", () => {
 		expect(screen.getByRole("menuitem", { name: "GPT-5.6 Sol" })).toBeInTheDocument();
 	});
 
+	it("clears an override when the reported agent model is selected", async () => {
+		const { onChange } = renderCombobox([
+			{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol", isDefault: true },
+			{ id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+		], { value: "gpt-5.6-luna" });
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "GPT-5.6 Sol" }));
+		expect(onChange).toHaveBeenCalledWith("");
+	});
+
+	it("can clear an override when the agent does not report its model", async () => {
+		const { onChange } = renderCombobox([
+			{ id: "default", label: "Default (recommended)", isDefault: true },
+			{ id: "sonnet", label: "Sonnet" },
+		], { value: "sonnet" });
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "Use agent model" }));
+		expect(onChange).toHaveBeenCalledWith("");
+	});
+
+	it("clears an effort override when the reported agent effort is selected", async () => {
+		const onEffortChange = vi.fn();
+		renderCombobox([
+			{ id: "capable", label: "Capable", isDefault: true, efforts: ["low", "high"], defaultEffort: "low" },
+		], { value: "capable", compact: true, tuning: { effort: "high", onEffortChange } });
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		act(() => screen.getByRole("menuitem", { name: /Reasoning effort/ }).focus());
+		await userEvent.keyboard("{ArrowRight}");
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
+		expect(onEffortChange).toHaveBeenCalledWith("");
+	});
+
 	it("does not invent a concrete model for an opaque provider choice", async () => {
 		const { onChange } = renderCombobox([
 			{ id: "default", label: "Default (recommended)", isDefault: true },

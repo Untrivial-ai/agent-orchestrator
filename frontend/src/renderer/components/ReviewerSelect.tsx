@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { components } from "../../api/schema";
 import { agentModelsQueryOptions, type AgentModelCatalog } from "../hooks/useAgentModelsQuery";
 import { agentLabel } from "../lib/agent-options";
+import { isConcreteModelID, modelChoiceLabel } from "../lib/agent-model-choices";
 import {
 	buildRankedAgentOptions,
 	isReadyAgent,
@@ -216,10 +217,8 @@ function ReviewerHarnessOption({
 	const isCurrentDefaultSelection = isCurrentHarness && currentModel === "" && currentMode === "";
 	const options = modelOptions(catalog);
 	const catalogKnown = catalogQuery.data !== undefined || catalogQuery.isFetched;
-	const defaultModel = catalog?.models?.find((item) => item.isDefault && item.id.toLowerCase() !== "default")?.id;
-	const selectDefault = () => onSelect(persistHarness, defaultModel
-		? catalog?.selectionMode === "mode" ? { mode: defaultModel } : { model: defaultModel }
-		: {});
+	const defaultModel = catalog?.models?.find((item) => item.isDefault && isConcreteModelID(item.id))?.id;
+	const selectDefault = () => onSelect(persistHarness, {});
 
 	if (catalogKnown && options.length === 0) {
 		return (
@@ -269,7 +268,13 @@ function ReviewerHarnessOption({
 				{!catalogKnown ? (
 					<OptionMenuItem disabled>{t("common.loading", { defaultValue: "Loading…" })}</OptionMenuItem>
 				) : null}
+				{isCurrentHarness && !isCurrentDefaultSelection && !defaultModel && (
+					<OptionMenuItem onSelect={selectDefault}>
+						{t(catalog?.selectionMode === "mode" ? "settings.models.useAgentMode" : "settings.models.useAgentModel")}
+					</OptionMenuItem>
+				)}
 				{options.map((option) => {
+					const config = option.value === defaultModel ? {} : option.kind === "mode" ? { mode: option.value } : { model: option.value };
 					const selected =
 						isCurrentHarness &&
 						((option.kind === "mode" && currentMode === option.value) ||
@@ -278,7 +283,7 @@ function ReviewerHarnessOption({
 					return (
 						<OptionMenuItem
 							key={`${option.kind}:${option.value}`}
-							onSelect={() => onSelect(persistHarness, option.kind === "mode" ? { mode: option.value } : { model: option.value })}
+							onSelect={() => onSelect(persistHarness, config)}
 							active={selected}
 						>
 							<span className="flex min-w-0 items-center justify-between gap-3">
@@ -296,17 +301,17 @@ function ReviewerHarnessOption({
 function modelOptions(catalog?: AgentModelCatalog): Array<{ kind: "model" | "mode"; label: string; value: string }> {
 	if (!catalog) return [];
 	if (catalog.selectionMode !== "catalog" && catalog.selectionMode !== "mode" && catalog.selectionMode !== "text") return [];
-	return (catalog.models ?? []).filter((item) => item.id && item.id.toLowerCase() !== "default").map((item) => ({
+	return (catalog.models ?? []).filter((item) => isConcreteModelID(item.id)).map((item) => ({
 		kind: catalog.selectionMode === "mode" ? "mode" : "model",
-		label: /^default(?:\s*\([^)]*\))?$/i.test(item.label.trim()) ? item.id : item.label,
+		label: modelChoiceLabel(item),
 		value: item.id,
 	}));
 }
 
 function modelOrModeLabel(catalog: AgentModelCatalog | undefined, model: string, mode: string, emptyLabel: string): string {
 	const configured = mode || model;
-	const value = configured.toLowerCase() === "default" ? "" : configured;
-	const effective = value || catalog?.models?.find((item) => item.isDefault && item.id.toLowerCase() !== "default")?.id || "";
+	const value = isConcreteModelID(configured) ? configured : "";
+	const effective = value || catalog?.models?.find((item) => item.isDefault && isConcreteModelID(item.id))?.id || "";
 	if (!effective) return emptyLabel;
 	return modelOptions(catalog).find((item) => item.value === effective)?.label || effective;
 }

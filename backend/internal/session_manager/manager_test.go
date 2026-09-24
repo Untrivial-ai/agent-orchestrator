@@ -3878,12 +3878,12 @@ func TestPersistChatModel(t *testing.T) {
 		t.Fatalf("session state changed, want active and non-terminated: %+v", rec)
 	}
 
-	// Persisting an empty model is a no-op: it never clears a durable choice.
+	// Clearing the override lets a later TUI rebuild follow provider defaults.
 	if err := m.PersistChatModel(ctx, "mer-1", ""); err != nil {
 		t.Fatalf("PersistChatModel(empty): %v", err)
 	}
-	if st.sessions["mer-1"].Metadata.Model != "5.6-luna" {
-		t.Fatalf("empty persist blanked model to %q, want it preserved", st.sessions["mer-1"].Metadata.Model)
+	if st.sessions["mer-1"].Metadata.Model != "" {
+		t.Fatalf("cleared model = %q, want provider default", st.sessions["mer-1"].Metadata.Model)
 	}
 }
 

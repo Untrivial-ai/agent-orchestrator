@@ -3,6 +3,7 @@ import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState
 import { useTranslation } from "react-i18next";
 import type { AgentModelCatalog } from "../../hooks/useAgentModelsQuery";
 import { useSuppressStrayFocusRing } from "../../hooks/useSuppressStrayFocusRing";
+import { isConcreteModelID, modelChoiceLabel } from "../../lib/agent-model-choices";
 import { cn } from "../../lib/utils";
 import { useModelTuning, type ModelTuningControlsProps } from "./ModelTuningControls";
 import { OptionMenuItem, OptionMenuSub, OptionMenuSubContent, OptionMenuSubTrigger } from "../ui/option-menu";
@@ -75,6 +76,7 @@ export function AgentModelCombobox({
 	renderTrigger,
 	recentScope,
 	compact = false,
+	showFollowAgentAction = true,
 	tuning,
 	disabled = false,
 	"aria-label": ariaLabel,
@@ -93,6 +95,7 @@ export function AgentModelCombobox({
 	onCustom: (value: string) => void;
 	/** Shown when the agent does not report a concrete model. */
 	emptyLabel?: string;
+	showFollowAgentAction?: boolean;
 	triggerLabel?: string;
 	triggerClassName?: string;
 	menuAlign?: "start" | "center" | "end";
@@ -112,10 +115,10 @@ export function AgentModelCombobox({
 }) {
 	const { t } = useTranslation();
 	const concreteModels = useMemo(
-		() => models.filter((model) => model.id && model.id.toLowerCase() !== "default"),
+		() => models.filter((model) => isConcreteModelID(model.id)),
 		[models],
 	);
-	const explicitModel = value.toLowerCase() === "default" ? "" : value;
+	const explicitModel = isConcreteModelID(value) ? value : "";
 	const { selected: effortModel, invalidEffort } = useModelTuning({
 		models: concreteModels,
 		model: explicitModel,
@@ -128,7 +131,8 @@ export function AgentModelCombobox({
 	const explicitEffort = tuning?.effort?.toLowerCase() === "default" ? "" : tuning?.effort;
 	const showEffort = Boolean(tuning && (effortOptions.length || explicitEffort));
 	const providerEffort = effortModel?.defaultEffort;
-	const effectiveEffort = explicitEffort || (providerEffort && effortOptions.includes(providerEffort) ? providerEffort : "");
+	const defaultEffort = providerEffort && effortOptions.includes(providerEffort) ? providerEffort : "";
+	const effectiveEffort = explicitEffort || defaultEffort;
 	const currentEffortLabel = effectiveEffort ? effortLabel(effectiveEffort) : t("settings.models.effortNotReported");
 	const entryMode = customModelEntry ?? (allowCustom ? "direct" : "none");
 	const allowDirectCustom = entryMode === "direct";
@@ -144,7 +148,8 @@ export function AgentModelCombobox({
 	const recentModelIDs = recentScope ? (sessionRecentModels[recentKey] ?? storedRecentModels) : [];
 	const normalizedSearch = normalizeSearch(search);
 	const searchIndex = useMemo(() => buildModelSearchIndex(concreteModels), [concreteModels]);
-	const effectiveModel = explicitModel || concreteModels.find((model) => model.isDefault)?.id || "";
+	const defaultModel = concreteModels.find((model) => model.isDefault)?.id || "";
+	const effectiveModel = explicitModel || defaultModel;
 	const selected = searchIndex.byID.get(normalizeSearch(effectiveModel));
 	const showSearch = allowDirectCustom || concreteModels.length >= MODEL_SEARCH_THRESHOLD;
 	const hasMultipleProviders = useMemo(
@@ -205,7 +210,7 @@ export function AgentModelCombobox({
 			const next = rememberRecentModel(recentScope, modelID);
 			setSessionRecentModels((current) => ({ ...current, [recentScope]: next }));
 		}
-		onChange(modelID);
+		onChange(modelID === defaultModel ? "" : modelID);
 	};
 	const selectCatalogModel = (event: Event, item: IndexedModel) => {
 		const openEffort = Boolean(tuning && item.model.efforts?.some((effort) => effort && effort.toLowerCase() !== "default"));
@@ -345,6 +350,11 @@ export function AgentModelCombobox({
 						className="model-menu-scroll min-h-0 overflow-y-auto overscroll-contain"
 						onScroll={updateScrollCue}
 					>
+						{normalizedSearch === "" && showFollowAgentAction && explicitModel && !defaultModel && (
+							<DropdownMenuItem onSelect={() => onChange("")} className={modelItemClass(false)}>
+								{t("settings.models.useAgentModel")}
+							</DropdownMenuItem>
+						)}
 						{groups.map((group, groupIndex) => (
 							<div key={group.key}>
 								{!compact && (groupIndex > 0 || normalizedSearch === "") && <DropdownMenuSeparator />}
@@ -450,10 +460,15 @@ export function AgentModelCombobox({
 								setEffortMenuOpen(false);
 								effortTriggerRef.current?.focus();
 							}}>
+								{explicitEffort && !defaultEffort && (
+									<OptionMenuItem onSelect={() => tuning.onEffortChange("")} className="gap-3 text-xs">
+										{t("settings.models.useAgentEffort")}
+									</OptionMenuItem>
+								)}
 								{effortOptions.map((effort) => (
 									<OptionMenuItem key={effort} role="menuitemradio" aria-checked={effort === effectiveEffort}
 										active={effort === effectiveEffort} onSelect={() => {
-											tuning.onEffortChange(effort);
+											tuning.onEffortChange(effort === defaultEffort ? "" : effort);
 											setEffortMenuOpen(false);
 											setAwaitingEffort(false);
 											setMenuOpen(false);
@@ -544,7 +559,7 @@ function providerFromModelID(modelID: string): string {
 
 export function buildModelSearchIndex(models: AgentModel[]): ModelSearchIndex {
 	const indexedModels = models.map((model, index) => {
-		const label = /^default(?:\s*\([^)]*\))?$/i.test(model.label.trim()) ? model.id : model.label || model.id;
+		const label = modelChoiceLabel(model);
 		const provider = model.provider?.trim() || providerFromModelID(model.id) || "Other";
 		return {
 			model,

@@ -4055,6 +4055,14 @@ func TestSetTurnSettingsPersistsModelBeforeRouting(t *testing.T) {
 	if !reflect.DeepEqual(log, []string{string(testSession) + ":5.6-luna", string(testSession) + ":5.6-full"}) {
 		t.Fatalf("model persistence log = %v, want luna then full", log)
 	}
+
+	// Clearing the override must clear session metadata for a later TUI rebuild.
+	if _, err := svc.SetTurnSettings(ctx, testSession, domain.ConversationSettings{}); err != nil {
+		t.Fatalf("SetTurnSettings (clear): %v", err)
+	}
+	if !reflect.DeepEqual(log, []string{string(testSession) + ":5.6-luna", string(testSession) + ":5.6-full", string(testSession) + ":"}) {
+		t.Fatalf("model persistence log = %v, want model override cleared", log)
+	}
 }
 
 type failConversationReadStore struct {

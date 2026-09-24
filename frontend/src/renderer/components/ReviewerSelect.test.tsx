@@ -64,6 +64,41 @@ describe("ReviewerSelect", () => {
 		expect(screen.getByRole("button", { name: "Reviewer" })).toHaveTextContent("Codex · GPT Test");
 	});
 
+	it("selecting the reported reviewer model keeps following the agent", async () => {
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		client.setQueryData(["agent-models", "codex", ""], {
+			agentId: "codex", selectionMode: "catalog", models: [
+				{ id: "gpt-test", label: "GPT Test", isDefault: true },
+				{ id: "gpt-other", label: "GPT Other" },
+			],
+		});
+		const onConfigChange = vi.fn();
+		render(<QueryClientProvider client={client}><ReviewerSelect
+			ariaLabel="Reviewer" value="codex" model="gpt-other" defaultHarness="claude-code"
+			onChange={() => undefined} onConfigChange={onConfigChange}
+		/></QueryClientProvider>);
+		await userEvent.click(screen.getByRole("button", { name: "Reviewer" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: /Codex/ }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "GPT Test" }));
+		expect(onConfigChange).toHaveBeenCalledWith("codex", {});
+	});
+
+	it("can clear a reviewer model override when no agent model is reported", async () => {
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		client.setQueryData(["agent-models", "codex", ""], {
+			agentId: "codex", selectionMode: "catalog", models: [{ id: "gpt-test", label: "GPT Test" }],
+		});
+		const onConfigChange = vi.fn();
+		render(<QueryClientProvider client={client}><ReviewerSelect
+			ariaLabel="Reviewer" value="codex" model="gpt-test" defaultHarness="claude-code"
+			onChange={() => undefined} onConfigChange={onConfigChange}
+		/></QueryClientProvider>);
+		await userEvent.click(screen.getByRole("button", { name: "Reviewer" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: /Codex/ }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "Use agent model" }));
+		expect(onConfigChange).toHaveBeenCalledWith("codex", {});
+	});
+
 	it("requires a concrete reviewer model when the catalog reports no default", async () => {
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		client.setQueryData(["agent-models", "codex", ""], {

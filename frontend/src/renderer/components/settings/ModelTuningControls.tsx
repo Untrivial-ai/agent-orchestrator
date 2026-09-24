@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../../api/schema";
+import { isConcreteModelID } from "../../lib/agent-model-choices";
 import { SettingsOptionMenu } from "./SettingsOptionMenu";
 import { SettingsRow } from "./SettingsRow";
 
@@ -29,10 +30,10 @@ export function useModelTuning(props: Omit<ModelTuningControlsProps, "variant" |
 	} = props;
 	const previousModel = useRef(model);
 	const previousValidity = useRef<boolean | undefined>(undefined);
-	const concreteModel = model.toLowerCase() === "default" ? "" : model;
+	const concreteModel = isConcreteModelID(model) ? model : "";
 	const selected =
 		(concreteModel ? models?.find((item) => item.id === concreteModel) : undefined) ??
-		(concreteModel === "" ? models?.find((item) => item.isDefault && item.id.toLowerCase() !== "default") : undefined);
+		(concreteModel === "" ? models?.find((item) => item.isDefault && isConcreteModelID(item.id)) : undefined);
 	const capabilitiesKnown = models !== undefined;
 	const invalidEffort = Boolean(effort && capabilitiesKnown && !selected?.efforts?.includes(effort));
 

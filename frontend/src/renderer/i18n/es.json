@@ -1092,6 +1092,8 @@
 	"settings.project.permissionAcceptEdits": "Aceptar ediciones",
 	"settings.project.permissionAuto": "Automático",
 	"settings.project.permissionBypass": "Omitir permisos",
+	"settings.project.permissionUseClaude": "Usar permisos de Claude",
+	"settings.project.permissionUseAgent": "Usar permisos del agente",
 	"settings.project.permissionNotReported": "Permisos del agente no informados",
 	"settings.project.permissionMode": "Modo de permisos",
 	"settings.project.refresh": "Actualizar",
@@ -2128,6 +2130,9 @@
 	"executionContext.loading": "cargando el contexto del proyecto…",
 	"coder.template.default": "Espacio de trabajo de la organización",
 	"settings.models.modelNotReported": "Modelo no informado",
+	"settings.models.useAgentModel": "Usar modelo del agente",
+	"settings.models.useAgentMode": "Usar modo del agente",
+	"settings.models.useAgentEffort": "Usar esfuerzo de razonamiento del agente",
 	"settings.models.effortNotReported": "Esfuerzo no informado",
 	"settings.models.modeNotReported": "Modo no informado"
 }

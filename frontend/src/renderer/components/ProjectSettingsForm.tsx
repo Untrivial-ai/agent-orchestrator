@@ -24,6 +24,8 @@ import {
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { isConcreteModelID, modelChoiceLabel } from "../lib/agent-model-choices";
+import { WORKER_DEFAULT_REVIEWERS } from "../lib/reviewer-harnesses";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
 import { OrchestratorSpawnError, spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { captureRendererEvent } from "../lib/telemetry";
@@ -189,8 +191,7 @@ function SettingsBody({
 		}));
 	const effectiveIntakeRepo = form.intakeRepo.trim() || deriveRepoPath(project.repo);
 	const reviewerWarning = reviewerTrustWarning(form.reviewerHarness);
-	const defaultReviewerHarness = ["claude-code", "codex", "opencode", "muse", "kimchi"].includes(form.workerAgent)
-		? form.workerAgent : "claude-code";
+	const defaultReviewerHarness = WORKER_DEFAULT_REVIEWERS[form.workerAgent] ?? "claude-code";
 	const mutation = useMutation({
 		mutationFn: async () => {
 			void captureRendererEvent("ao.renderer.settings_save_requested", { project_id: projectId });
@@ -736,11 +737,11 @@ function AgentModelField({
 	}
 
 	if (isMode) {
-		const defaultMode = catalog?.models?.find((item) => item.isDefault && item.id.toLowerCase() !== "default")?.id;
-		const selectedMode = mode.toLowerCase() === "default" ? "" : mode;
-		const options = (catalog.models ?? []).filter((item) => item.id && item.id.toLowerCase() !== "default").map((item) => ({
+		const defaultMode = catalog?.models?.find((item) => item.isDefault && isConcreteModelID(item.id))?.id;
+		const selectedMode = isConcreteModelID(mode) ? mode : "";
+		const options = (catalog.models ?? []).filter((item) => isConcreteModelID(item.id)).map((item) => ({
 			value: item.id,
-			label: /^default(?:\s*\([^)]*\))?$/i.test(item.label.trim()) ? item.id : item.label,
+			label: modelChoiceLabel(item),
 		}));
 		return (
 			<>
@@ -751,8 +752,9 @@ function AgentModelField({
 							value={selectedMode || defaultMode || ""}
 							options={options}
 							placeholder={t("settings.models.modeNotReported")}
+							action={selectedMode && !defaultMode ? { label: t("settings.models.useAgentMode"), onSelect: () => onModeChange("") } : undefined}
 							triggerClassName="justify-end"
-							disabled={options.length === 0}
+							disabled={options.length === 0 && !(selectedMode && !defaultMode)}
 							onChange={(value) => {
 								onModeChange(value === defaultMode ? "" : value);
 								onModelChange("");
@@ -815,7 +817,7 @@ function AgentModelField({
 
 function PermissionModeSelect({ ariaLabel, value, agentId, onChange }: { ariaLabel: string; value: string; agentId: string; onChange: (value: string) => void }) {
 	const { t } = useTranslation();
-	const options = PERMISSION_MODE_VALUES.map((value) => ({
+	const options: { value: string; label: string }[] = PERMISSION_MODE_VALUES.map((value) => ({
 		value,
 		label:
 			value === "accept-edits"
@@ -824,13 +826,21 @@ function PermissionModeSelect({ ariaLabel, value, agentId, onChange }: { ariaLab
 					? t("settings.project.permissionAuto")
 					: t("settings.project.permissionBypass"),
 	}));
+	if (agentId !== "codex") {
+		options.unshift({
+			value: "default",
+			label: agentId === "claude-code"
+				? t("settings.project.permissionUseClaude")
+				: t("settings.project.permissionUseAgent"),
+		});
+	}
 
 	return (
 		<SettingsOptionMenu
 			aria-label={ariaLabel}
-			value={value === "default" && agentId === "codex" ? "bypass-permissions" : value}
+			value={value === "default" && agentId === "codex" ? "bypass-permissions" : value || "auto"}
 			options={options}
-			placeholder={value === "" || value === "default" ? t("settings.project.permissionNotReported") : undefined}
+			placeholder={t("settings.project.permissionNotReported")}
 			onChange={onChange}
 		/>
 	);
