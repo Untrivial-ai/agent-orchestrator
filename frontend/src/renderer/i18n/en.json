@@ -1735,6 +1735,8 @@
 	"settings.project.repoNotDetected": "Could not detect a GitHub repo from this project's git origin.",
 	"settings.project.assignee": "Assignee",
 	"settings.project.intakeAssigneePlaceholder": "type username or * for any",
+	"settings.project.intakeProvider": "Issue tracker",
+	"settings.project.intakeProviderAutomatic": "Automatic (from repository)",
 	"settings.project.intakeDescription": "Auto-spawn worker sessions from matching tracker issues.",
 	"settings.project.intakeHelpAria": "What does enabling issue intake do?",
 	"settings.project.intakeTooltip": "Auto-spawns a worker session for each matching tracker issue.",

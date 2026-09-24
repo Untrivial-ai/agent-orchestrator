@@ -1582,6 +1582,8 @@
 	"settings.project.repoNotDetected": "このプロジェクトの git origin から GitHub リポジトリを検出できませんでした。",
 	"settings.project.assignee": "担当者",
 	"settings.project.intakeAssigneePlaceholder": "ユーザー名を入力、または * ですべて",
+	"settings.project.intakeProvider": "課題トラッカー",
+	"settings.project.intakeProviderAutomatic": "自動（リポジトリから）",
 	"settings.project.intakeDescription": "一致するトラッカー Issue からワーカーセッションを自動起動します。",
 	"settings.project.intakeHelpAria": "Issue インテークを有効にするとどうなりますか？",
 	"settings.project.intakeTooltip": "一致する各Issueに対してワーカーセッションを自動起動します。",

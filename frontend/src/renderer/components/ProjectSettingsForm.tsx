@@ -157,6 +157,7 @@ function SettingsBody({
 		reviewerPermissions: config.reviewers?.[0]?.agentConfig?.permissions ?? config.agentConfig?.permissions ?? "",
 		autoReview: config.autoReview ?? false,
 		intakeEnabled: intake.enabled ?? false,
+		intakeProvider: intake.provider,
 		intakeRepo: intake.repo ?? "",
 		intakeAssignee: intake.assignee ?? "",
 	});
@@ -177,6 +178,7 @@ function SettingsBody({
 
 	const intakeForm: IntakeForm = {
 		enabled: form.intakeEnabled,
+		provider: form.intakeProvider ?? "",
 		repo: form.intakeRepo,
 		assignee: form.intakeAssignee,
 	};
@@ -184,6 +186,7 @@ function SettingsBody({
 		setForm((f) => ({
 			...f,
 			intakeEnabled: patch.enabled ?? f.intakeEnabled,
+			intakeProvider: patch.provider === "" ? undefined : patch.provider ?? f.intakeProvider,
 			intakeRepo: patch.repo ?? f.intakeRepo,
 			intakeAssignee: patch.assignee ?? f.intakeAssignee,
 		}));

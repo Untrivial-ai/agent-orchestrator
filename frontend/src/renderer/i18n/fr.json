@@ -1606,6 +1606,8 @@
 	"settings.project.repoNotDetected": "Impossible de détecter un dépôt GitHub à partir de l'origine git de ce projet.",
 	"settings.project.assignee": "Assigné",
 	"settings.project.intakeAssigneePlaceholder": "saisissez un nom d'utilisateur ou * pour n'importe lequel",
+	"settings.project.intakeProvider": "Suivi des tickets",
+	"settings.project.intakeProviderAutomatic": "Automatique (selon le dépôt)",
 	"settings.project.intakeDescription": "Crée automatiquement des sessions worker à partir des issues du tracker correspondantes.",
 	"settings.project.intakeHelpAria": "Que fait l'activation de l'intake des issues ?",
 	"settings.project.intakeTooltip": "Crée automatiquement une session worker pour chaque issue du tracker correspondante.",

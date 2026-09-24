@@ -5,6 +5,7 @@ import type { components } from "../../api/schema";
 import { cn } from "../lib/utils";
 import { Label } from "./ui/label";
 import { SettingsInlineInput, SettingsRow } from "./settings/SettingsRow";
+import { SettingsOptionMenu } from "./settings/SettingsOptionMenu";
 import { Switch } from "./ui/switch";
 
 type TrackerIntakeConfig = components["schemas"]["TrackerIntakeConfig"];
@@ -15,15 +16,10 @@ type TrackerIntakeConfig = components["schemas"]["TrackerIntakeConfig"];
 // (--tracker-repo) survives a UI save instead of being wiped.
 export type IntakeForm = {
 	enabled: boolean;
+	provider: NonNullable<TrackerIntakeConfig["provider"]> | "";
 	repo: string;
 	assignee: string;
 };
-
-// The provider is not set here — the daemon infers it from the project's repo
-// origin URL (github.com → github, any other host → gitlab). Adding
-// Linear/Jira later means: the backend enum grows, IntakeFields gains a
-// provider <Select> + per-provider scope fields, and buildIntake switches the
-// scope field it emits.
 
 // intakeNeedsRule mirrors the backend guard (TrackerIntakeConfig.Validate):
 // enabling intake requires an assignee so it cannot drain an entire issue
@@ -42,6 +38,7 @@ export function buildIntake(
 	const next: TrackerIntakeConfig = {
 		...existing,
 		enabled: form.enabled || undefined,
+		provider: form.provider || undefined,
 		repo: form.repo.trim() || undefined,
 		assignee: form.assignee.trim() || undefined,
 	};
@@ -123,6 +120,19 @@ export function IntakeFields({
 }) {
 	const { t } = useTranslation();
 	const needsRule = intakeNeedsRule(form);
+	const providerControl = (
+		<SettingsOptionMenu<IntakeForm["provider"]>
+			aria-label={t("settings.project.intakeProvider")}
+			value={form.provider}
+			options={[
+				{ value: "", label: t("settings.project.intakeProviderAutomatic") },
+				{ value: "github", label: "GitHub" },
+				{ value: "gitlab", label: "GitLab" },
+				{ value: "onedev", label: "OneDev" },
+			]}
+			onChange={(provider) => onChange({ provider })}
+		/>
+	);
 	if (variant === "settings") {
 		return (
 			<div className="flex flex-col gap-1.5">
@@ -135,6 +145,9 @@ export function IntakeFields({
 				</SettingsRow>
 				{form.enabled && (
 					<>
+						<SettingsRow label={t("settings.project.intakeProvider")}>
+							{providerControl}
+						</SettingsRow>
 						{repoPreview && (
 							<SettingsRow label={t("settings.project.repository")}>
 								{repoPreview.value ? (
@@ -202,6 +215,9 @@ export function IntakeFields({
 			</div>
 			{form.enabled && (
 				<>
+					<IntakeField label={t("settings.project.intakeProvider")} labelClassName={labelClassName}>
+						{providerControl}
+					</IntakeField>
 					{repoPreview && (
 						<IntakeField label={t("settings.project.repository")} labelClassName={labelClassName}>
 							{repoPreview.value ? (
