@@ -51,6 +51,79 @@ func TestModelDiscoveryErrorExplainsTimeout(t *testing.T) {
 	}
 }
 
+func TestKiroDiscoveryRunsOnlyAfterAConfirmedSignIn(t *testing.T) {
+	const missingBinary = "ao-test-missing-kiro-cli"
+	for _, tc := range []struct {
+		name        string
+		output      string
+		err         error
+		block       bool
+		env         map[string]string
+		wantSkipped bool
+		wantProbe   bool
+	}{
+		{name: "signed out", output: `{"error":"Not logged in"}`, err: errors.New("exit status 1"), wantSkipped: true, wantProbe: true},
+		{name: "signed out with clean exit", output: "You are not logged in", wantSkipped: true, wantProbe: true},
+		{name: "unrecognized output with failed exit", output: "something went wrong", err: errors.New("exit status 2"), wantSkipped: true, wantProbe: true},
+		{name: "probe could not run", err: errors.New("exec: permission denied"), wantSkipped: true, wantProbe: true},
+		{name: "probe timed out", block: true, wantSkipped: true, wantProbe: true},
+		{name: "signed in", output: "Logged in with Google", wantProbe: true},
+		{name: "unrecognized output with clean exit", output: `{"accountType":"BuilderId","email":"dev@example.com"}`, wantProbe: true},
+		{name: "api key", env: map[string]string{"KIRO_API_KEY": "secret"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previous := signInProbe
+			t.Cleanup(func() { signInProbe = previous })
+			probed := false
+			signInProbe = func(ctx context.Context, binary string, args []string, _ string, _ map[string]string) ([]byte, error) {
+				probed = true
+				if binary != missingBinary || !reflect.DeepEqual(args, []string{"whoami", "--format", "json"}) {
+					t.Fatalf("probe = %s %q, want the discovery binary running whoami --format json", binary, args)
+				}
+				if tc.block {
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}
+				return []byte(tc.output), tc.err
+			}
+			ctx := context.Background()
+			if tc.block {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 20*time.Millisecond)
+				defer cancel()
+			}
+
+			_, err := Discover(ctx, "kiro", missingBinary, "", tc.env)
+			if skipped := errors.Is(err, ports.ErrAgentModelDiscoverySignInRequired); skipped != tc.wantSkipped {
+				t.Fatalf("Discover error = %v, want sign-in skip %t", err, tc.wantSkipped)
+			}
+			if err == nil {
+				t.Fatal("Discover succeeded against a missing binary")
+			}
+			if probed != tc.wantProbe {
+				t.Fatalf("probed = %t, want %t", probed, tc.wantProbe)
+			}
+		})
+	}
+}
+
+func TestDiscoveryWithoutASignInCheckNeverProbes(t *testing.T) {
+	previous := signInProbe
+	t.Cleanup(func() { signInProbe = previous })
+	signInProbe = func(context.Context, string, []string, string, map[string]string) ([]byte, error) {
+		t.Fatal("sign-in probe ran for a harness without a sign-in check")
+		return nil, nil
+	}
+	for agentID, spec := range commandSpecs {
+		if spec.signIn != nil {
+			continue
+		}
+		if _, err := Discover(context.Background(), agentID, "ao-test-missing-binary", "", nil); errors.Is(err, ports.ErrAgentModelDiscoverySignInRequired) {
+			t.Fatalf("%s discovery was skipped for sign-in", agentID)
+		}
+	}
+}
+
 func TestOpenCodeDiscoveryUsesPureMode(t *testing.T) {
 	spec := commandSpecs["opencode"]
 	if len(spec.args) != 2 || spec.args[0] != "--pure" || spec.args[1] != "models" {

@@ -28,6 +28,12 @@ var ErrAgentBinaryNotFound = errors.New("agent: binary not found on PATH")
 // callers must not present an unverified name-only match as installed.
 var ErrAgentBinaryIdentityUnknown = errors.New("agent: binary identity unknown")
 
+// ErrAgentModelDiscoverySignInRequired is returned by model discovery when the
+// agent's model-list command would start an interactive sign-in because the
+// CLI is not confirmed as signed in. It is not a discovery failure: callers
+// keep the last catalog and retry once the agent reports a login.
+var ErrAgentModelDiscoverySignInRequired = errors.New("agent: sign-in required to list models")
+
 // AgentAuthStatus describes the result of a short local auth probe for an
 // installed agent. It is advisory only: credentials, quota, selected model
 // availability, or CLI state can still fail at session spawn/model-call time.

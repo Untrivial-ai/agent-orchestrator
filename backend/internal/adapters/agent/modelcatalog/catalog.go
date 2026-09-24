@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authprobe"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
@@ -38,6 +39,55 @@ const (
 type commandSpec struct {
 	args   []string
 	parser func([]byte) ([]ports.AgentModelInfo, error)
+	// signIn is set for CLIs whose model-list command opens an interactive
+	// browser sign-in when signed out. Discovery only runs once it confirms a
+	// login, so background refreshes never open that sign-in page.
+	signIn *signInCheck
+}
+
+// signInCheck confirms a login before a sign-in-prompting model command runs.
+type signInCheck struct {
+	// args is the CLI's non-interactive auth status command.
+	args []string
+	// envKeys are credentials that authorize the CLI without an interactive login.
+	envKeys []string
+}
+
+// kiroSignIn uses Kiro's documented auth status command; `chat --list-models`
+// opens the browser sign-in page when Kiro is signed out.
+var kiroSignIn = &signInCheck{args: []string{"whoami", "--format", "json"}, envKeys: []string{"KIRO_API_KEY"}}
+
+// signInCheckTimeout bounds the status probe. A probe that times out is not a
+// confirmed login, so discovery is skipped rather than risking the sign-in page.
+const signInCheckTimeout = 5 * time.Second
+
+// signInProbe runs the status command; tests replace it.
+var signInProbe = func(ctx context.Context, binary string, args []string, workingDir string, env map[string]string) ([]byte, error) {
+	return modelCommand(ctx, binary, args, workingDir, env).CombinedOutput()
+}
+
+// signedIn fails closed: only an explicit credential, a recognized signed-in
+// response, or a clean exit with no signed-out text counts as a login.
+func (c *signInCheck) signedIn(ctx context.Context, binary, workingDir string, env map[string]string) bool {
+	for _, key := range c.envKeys {
+		if strings.TrimSpace(env[key]) != "" || strings.TrimSpace(os.Getenv(key)) != "" {
+			return true
+		}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, signInCheckTimeout)
+	defer cancel()
+	output, err := signInProbe(probeCtx, binary, c.args, workingDir, env)
+	if probeCtx.Err() != nil {
+		return false
+	}
+	switch authprobe.StatusFromText(string(output)) {
+	case ports.AgentAuthStatusAuthorized:
+		return true
+	case ports.AgentAuthStatusUnauthorized:
+		return false
+	default:
+		return err == nil
+	}
 }
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[[:alpha:]]`)
@@ -55,7 +105,7 @@ var commandSpecs = map[string]commandSpec{
 	"kimi":        {args: []string{"provider", "list", "--json"}, parser: parseJSONModels},
 	"auggie":      {args: []string{"models", "list", "--json"}, parser: parseJSONModels},
 	"devin":       {args: []string{"models", "list", "--format", "json"}, parser: parseJSONModels},
-	"kiro":        {args: []string{"chat", "--list-models", "--format", "json"}, parser: parseJSONModels},
+	"kiro":        {args: []string{"chat", "--list-models", "--format", "json"}, parser: parseJSONModels, signIn: kiroSignIn},
 	"omp":         {args: []string{"models", "--json"}, parser: parseJSONModels},
 	"copilot":     {args: []string{"help", "config"}, parser: parseCopilotConfigModels},
 	"droid":       {args: []string{"exec", "--help"}, parser: parseDroidHelpModels},
@@ -242,6 +292,9 @@ func Discover(ctx context.Context, agentID, binary, workingDir string, env map[s
 	}
 	if strings.TrimSpace(binary) == "" {
 		return base, errors.New("agent binary is not installed")
+	}
+	if spec.signIn != nil && !spec.signIn.signedIn(ctx, binary, workingDir, env) {
+		return base, fmt.Errorf("%s model discovery: %w", agentID, ports.ErrAgentModelDiscoverySignInRequired)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()

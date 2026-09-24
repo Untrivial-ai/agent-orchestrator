@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -529,18 +530,15 @@ func (s *Service) loadModels(ctx context.Context, agentID string, mode modelLoad
 	if mode == modelLoadRefresh {
 		_ = s.persistCatalogState(ctx, cached, hasCached, "refreshing", "", time.Time{}, generation)
 	}
-	var discovered ports.AgentModelCatalog
-	var discoverErr error
-	if signedOutDiscoveryWouldPromptLogin(ctx, item) {
-		discoverErr = fmt.Errorf("%s is not signed in; sign in to load its models", item.Manifest.Name)
-	} else {
-		discovered, discoverErr = s.discoverer.Discover(ctx, request)
-	}
+	discovered, discoverErr := s.discoverer.Discover(ctx, request)
 	discovered = applyCustomModelEntryPolicy(discovered, policy)
 	discovered.BinaryVersion = version
 	persistCtx := s.ctx
 	if persistCtx == nil {
 		persistCtx = context.Background()
+	}
+	if errors.Is(discoverErr, ports.ErrAgentModelDiscoverySignInRequired) {
+		return s.keepCatalogUntilSignIn(persistCtx, item.Manifest.Name, cached, hasCached, policy, version, generation), nil
 	}
 	if discoverErr != nil {
 		if hasCached {
@@ -592,22 +590,32 @@ func (s *Service) loadModels(ctx context.Context, agentID string, mode modelLoad
 	return discovered, nil
 }
 
-// loginPromptingDiscovery lists harnesses whose model-listing command starts
-// the vendor's interactive browser sign-in when the CLI is signed out. Running
-// it from background discovery (daemon start, retries) would repeatedly open
-// the sign-in page, so discovery is skipped until the harness reports a login.
-var loginPromptingDiscovery = map[string]struct{}{"kiro": {}}
-
-func signedOutDiscoveryWouldPromptLogin(ctx context.Context, item agentregistry.HarnessAgent) bool {
-	if _, gated := loginPromptingDiscovery[string(item.Harness)]; !gated {
-		return false
+// keepCatalogUntilSignIn handles discovery skipped because the agent is not
+// signed in. That is not a failure: a cached catalog stays as it was (not stale,
+// no retry budget spent, no retry timer), and a first load stores an idle
+// placeholder. Either record is left due for revalidation, so the next picker
+// read, daemon start, or post-login auth probe (InvalidateModelCatalogs) loads
+// the real models once the agent reports a login.
+func (s *Service) keepCatalogUntilSignIn(ctx context.Context, agentName string, cached decodedCatalog, hasCached bool, policy ports.AgentModelCatalog, version string, generation int64) ports.AgentModelCatalog {
+	warning := agentName + " is not signed in; sign in to load its models"
+	catalog := cached.Catalog
+	if !hasCached {
+		catalog = policy
+		catalog.BinaryVersion = version
+		catalog.InputFingerprint = version
+		catalog.Warning = warning
 	}
-	checker, ok := item.Agent.(ports.AgentAuthChecker)
-	if !ok {
-		return false
+	catalog.RefreshState = "idle"
+	catalog.RefreshError = ""
+	catalog.RetryAt = nil
+	catalog.RefreshRecommended = false
+	if err := s.saveCatalog(ctx, catalog, generation, 0); err != nil {
+		catalog.Warning = appendCacheWarning(catalog.Warning)
 	}
-	status, err := checker.AuthStatus(ctx)
-	return err == nil && status == ports.AgentAuthStatusUnauthorized
+	if hasCached {
+		catalog.Warning = warning
+	}
+	return catalog
 }
 
 func applyCustomModelEntryPolicy(catalog, policy ports.AgentModelCatalog) ports.AgentModelCatalog {
