@@ -911,6 +911,30 @@ function EstimatedCostInfo({ cost }: { cost: EstimatedCost | null }) {
 	);
 }
 
+/**
+ * The ⓘ disclosure shared by the usage metrics grid: a real affordance on the
+ * label (same pattern as EstimatedCostInfo), not a hidden title a reader has
+ * to think to hover.
+ */
+function MetricInfoIcon({ hint }: { hint: string }) {
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<button
+					aria-label={hint}
+					className="rounded-sm text-settings-muted outline-none transition-colors hover:text-settings-label focus-visible:ring-1 focus-visible:ring-ring"
+					type="button"
+				>
+					<Info aria-hidden="true" className="size-3" />
+				</button>
+			</TooltipTrigger>
+			<TooltipContent className="max-w-64 text-left" side="top">
+				<p>{hint}</p>
+			</TooltipContent>
+		</Tooltip>
+	);
+}
+
 function UsageMetrics({
 	totals,
 	turns,
@@ -938,17 +962,31 @@ function UsageMetrics({
 				} tok/s`;
 	return (
 		<dl className="grid grid-cols-2 gap-x-4 gap-y-2 @max-[300px]/inspector:grid-cols-1" data-testid="session-usage-metrics">
-			<UsageMetric label={t("inspector.usage.uncachedInputTokens")} metric={totals.uncachedInputTokens} />
-			<UsageMetric label={t("inspector.usage.cachedInputTokens")} metric={totals.cachedInputTokens} />
-			<UsageMetric label={t("inspector.usage.outputTokens")} metric={totals.outputTokens} />
+			<UsageMetric
+				hint={t("inspector.usage.uncachedInputTokensHint")}
+				label={t("inspector.usage.uncachedInputTokens")}
+				metric={totals.uncachedInputTokens}
+			/>
+			<UsageMetric
+				hint={t("inspector.usage.cachedInputTokensHint")}
+				label={t("inspector.usage.cachedInputTokens")}
+				metric={totals.cachedInputTokens}
+			/>
+			<UsageMetric
+				hint={t("inspector.usage.outputTokensHint")}
+				label={t("inspector.usage.outputTokens")}
+				metric={totals.outputTokens}
+			/>
 			<UsageRateMetric rate={cacheHitRate} />
 			{turns !== undefined ? (
 				<div className="min-w-0">
-					<dt className="truncate text-2xs text-settings-muted">{turnsLabel}</dt>
+					<dt className="flex items-center gap-1 truncate text-2xs text-settings-muted">
+						<span className="truncate">{turnsLabel}</span>
+						<MetricInfoIcon hint={t("inspector.usage.turnsHint")} />
+					</dt>
 					<dd
 						aria-label={`${turnsLabel}: ${turns}`}
 						className="mt-0.5 truncate font-mono text-sm-md text-settings-label"
-						title={`${turnsLabel}: ${turns}`}
 					>
 						{turns > 0 ? turns.toLocaleString("en-US") : "—"}
 					</dd>
@@ -958,23 +996,7 @@ function UsageMetrics({
 				<div className="min-w-0">
 					<dt className="flex items-center gap-1 truncate text-2xs text-settings-muted">
 						<span className="truncate">{throughputLabel}</span>
-						{/* Same disclosure pattern as EstimatedCostInfo: the hint is a
-						    real affordance on the label, not a hidden title on the
-						    figure a reader has to think to hover. */}
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<button
-									aria-label={t("inspector.usage.tokensPerSecondHint")}
-									className="rounded-sm text-settings-muted outline-none transition-colors hover:text-settings-label focus-visible:ring-1 focus-visible:ring-ring"
-									type="button"
-								>
-									<Info aria-hidden="true" className="size-3" />
-								</button>
-							</TooltipTrigger>
-							<TooltipContent className="max-w-64 text-left" side="top">
-								<p>{t("inspector.usage.tokensPerSecondHint")}</p>
-							</TooltipContent>
-						</Tooltip>
+						<MetricInfoIcon hint={t("inspector.usage.tokensPerSecondHint")} />
 					</dt>
 					<dd
 						aria-label={
@@ -1001,11 +1023,13 @@ function UsageRateMetric({ rate }: { rate: string | null }) {
 			: t("inspector.usage.cacheHitRateDescription", { rate });
 	return (
 		<div className="min-w-0">
-			<dt className="truncate text-2xs text-settings-muted">{label}</dt>
+			<dt className="flex items-center gap-1 truncate text-2xs text-settings-muted">
+				<span className="truncate">{label}</span>
+				<MetricInfoIcon hint={description} />
+			</dt>
 			<dd
 				aria-label={description}
 				className="mt-0.5 truncate font-mono text-sm-md text-settings-label"
-				title={description}
 			>
 				{rate === null ? "—" : `${rate}%`}
 			</dd>
@@ -1013,7 +1037,15 @@ function UsageRateMetric({ rate }: { rate: string | null }) {
 	);
 }
 
-function UsageMetric({ label, metric }: { label: string; metric: number | null | undefined }) {
+function UsageMetric({
+	hint,
+	label,
+	metric,
+}: {
+	hint?: string;
+	label: string;
+	metric: number | null | undefined;
+}) {
 	const { t } = useTranslation();
 	const value = typeof metric === "number" && Number.isFinite(metric) ? metric : null;
 	const exactValue = value?.toLocaleString("en-US");
@@ -1023,7 +1055,10 @@ function UsageMetric({ label, metric }: { label: string; metric: number | null |
 			: t("inspector.usage.metricAria", { label, count: exactValue });
 	return (
 		<div className="min-w-0">
-			<dt className="truncate text-2xs text-settings-muted">{label}</dt>
+			<dt className="flex items-center gap-1 truncate text-2xs text-settings-muted">
+				<span className="truncate">{label}</span>
+				{hint ? <MetricInfoIcon hint={hint} /> : null}
+			</dt>
 			<dd
 				aria-label={accessibleLabel}
 				className="mt-0.5 truncate font-mono text-sm-md text-settings-label"
