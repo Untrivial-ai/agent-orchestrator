@@ -11,10 +11,12 @@ import {
 	font,
 	frame,
 	labelStyle,
+	lineLimit,
 	opacity,
 	padding,
 	resizable,
 	tint,
+	truncationMode,
 } from "@expo/ui/swift-ui/modifiers";
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text as RNText, View } from "react-native";
@@ -103,7 +105,7 @@ export function SpawnComposerControls({
 						label={
 							<HStack spacing={6}>
 								<HarnessImage uri={logoUris[harness]} harness={harness} />
-								<Text modifiers={[font({ size: 14, weight: "medium" })]}>{harnessLabel}</Text>
+								<Text modifiers={[font({ size: 14, weight: "medium" }), lineLimit(1), truncationMode("tail")]}>{harnessLabel}</Text>
 								<Image systemName="chevron.down" size={iconSize.xs} />
 							</HStack>
 						}
@@ -124,7 +126,7 @@ export function SpawnComposerControls({
 					<Menu
 						label={
 							<HStack spacing={5} modifiers={[frame({ maxWidth: 1000, alignment: "leading" })]}>
-								<Text modifiers={[font({ size: 14, weight: "medium" })]}>{modelLabel}</Text>
+								<Text modifiers={[font({ size: 14, weight: "medium" }), lineLimit(1), truncationMode("tail")]}>{modelLabel}</Text>
 								<Spacer />
 								<Image systemName="chevron.down" size={iconSize.xs} />
 							</HStack>
