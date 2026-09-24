@@ -79,8 +79,8 @@ function RoundButton({ icon, label, onPress, active = false, testID }: {
 			style={({ pressed }) => [
 				styles.action,
 				{
-					backgroundColor: active || pressed ? t.accentTint : t.bgElevated,
-					borderColor: active ? t.accent : t.borderDefault,
+					backgroundColor: pressed ? t.accentTint : t.bgElevatedHover,
+					borderColor: active ? t.accent : t.borderStrong,
 				},
 			]}
 		>
@@ -113,8 +113,8 @@ const styles = StyleSheet.create({
 	},
 	searchClose: { width: 44, height: 44, borderRadius: radius.pill, borderCurve: "continuous", alignItems: "center", justifyContent: "center", marginRight: space.xxs },
 	action: {
-		width: 44,
-		height: 44,
+		width: 52,
+		height: 52,
 		borderRadius: radius.pill, borderCurve: "continuous",
 		borderWidth: StyleSheet.hairlineWidth,
 		alignItems: "center",

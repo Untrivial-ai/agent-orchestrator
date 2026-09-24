@@ -2,7 +2,7 @@ import { Feather } from "./icons";
 import { Pressable, StyleSheet } from "react-native";
 import { useTheme } from "./ThemeProvider";
 import type { NativeHeaderButtonIcon } from "./native-header-button";
-import { iconSize, type } from "./tokens";
+import { iconSize, radius } from "./tokens";
 
 const icons: Record<NativeHeaderButtonIcon, keyof typeof Feather.glyphMap> = {
 	menu: "menu",
@@ -32,7 +32,7 @@ export function NativeHeaderButton({
 			onPress={onPress}
 			style={({ pressed }) => [
 				styles.button,
-				{ backgroundColor: pressed ? t.accentTint : t.bgElevated, borderColor: t.borderDefault },
+				{ backgroundColor: pressed ? t.accentTint : t.bgElevatedHover, borderColor: t.borderStrong },
 			]}
 		>
 			<Feather name={icons[icon]} size={iconSize.lg} color={t.textSecondary} />
@@ -44,7 +44,7 @@ const styles = StyleSheet.create({
 	button: {
 		width: 44,
 		height: 44,
-		borderRadius: 20, borderCurve: "continuous",
+		borderRadius: radius.pill, borderCurve: "continuous",
 		borderWidth: StyleSheet.hairlineWidth,
 		alignItems: "center",
 		justifyContent: "center",
