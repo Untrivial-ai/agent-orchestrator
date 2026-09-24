@@ -527,7 +527,8 @@ func Run() error {
 	}
 	codexOperationGate := codexops.NewGate()
 	codexProxy, err := accountsmanager.New(accountsmanager.Options{
-		DataDir:           cfg.DataDir,
+		StateDir:          cfg.StateDir,
+		LegacyDataDir:     cfg.DataDir,
 		NativeAccountRoot: filepath.Join(cfg.StateDir, "harnesses", "codex", "accounts"),
 	})
 	if err != nil {
@@ -537,6 +538,16 @@ func Run() error {
 			log.Error("cdc pipeline shutdown", "err", cdcErr)
 		}
 		return fmt.Errorf("prepare Codex accounts manager: %w", err)
+	}
+	// Older builds kept the in-flight switch journal in SQLite. Import only
+	// that recovery-critical record once; all new switch state is filesystem
+	// owned by Accounts Manager.
+	if legacySwitch, found, readErr := store.GetActiveCodexAccountSwitch(ctx); readErr != nil {
+		log.Warn("Codex account switch migration deferred", "err", readErr)
+	} else if found {
+		if _, _, importErr := codexProxy.CreateCodexAccountSwitch(ctx, legacySwitch); importErr != nil {
+			log.Warn("Codex account switch migration failed", "err", importErr)
+		}
 	}
 	if err := codexProxy.Start(ctx); err != nil {
 		_ = codexProxy.Close(context.Background())
@@ -560,7 +571,7 @@ func Run() error {
 		CodexPendingRoot:       filepath.Join(cfg.StateDir, "harnesses", "codex", "pending-accounts"),
 		CodexSwitchStagingRoot: filepath.Join(cfg.StateDir, "harnesses", "codex", "switch-staging"),
 		CodexGlobalHome:        codexHome,
-		CodexAccountSwitches:   store,
+		CodexAccountSwitches:   codexProxy,
 		CodexAccounts: codexappserver.NewAccountFactoryWithResolver(func(resolveCtx context.Context) (string, error) {
 			return codexagent.New().ResolveBinary(resolveCtx)
 		}, log),

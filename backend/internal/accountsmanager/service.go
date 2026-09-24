@@ -25,6 +25,7 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	"gopkg.in/yaml.v3"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -39,7 +40,12 @@ const (
 // into the proxy's private auth directory without exposing credentials through
 // the AO API.
 type Options struct {
+	// StateDir is the root for Accounts Manager files. DataDir is retained as
+	// a compatibility fallback for callers and tests from before the state
+	// directory was separated from SQLite data.
+	StateDir          string
 	DataDir           string
+	LegacyDataDir     string
 	NativeAccountRoot string
 }
 
@@ -67,6 +73,7 @@ type Service struct {
 	coreManager *coreauth.Manager
 	routes      *routeState
 	capability  *routeCapability
+	switches    *codexAccountSwitchStore
 
 	nativeMu      sync.Mutex
 	nativeRefs    map[string]string            // AO/native account id -> proxy auth id
@@ -82,11 +89,32 @@ type Service struct {
 // New prepares private state and a ready-to-run upstream service. It does not
 // bind a socket; Start must be called by daemon lifecycle wiring.
 func New(options Options) (*Service, error) {
-	root := strings.TrimSpace(options.DataDir)
+	root := strings.TrimSpace(options.StateDir)
 	if root == "" {
-		return nil, fmt.Errorf("accounts manager data directory is required")
+		root = strings.TrimSpace(options.DataDir)
+	}
+	if root == "" {
+		return nil, fmt.Errorf("accounts manager state directory is required")
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, fmt.Errorf("create accounts manager state directory: %w", err)
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		return nil, fmt.Errorf("protect accounts manager state directory: %w", err)
 	}
 	managerRoot := filepath.Join(root, "accounts-manager")
+	legacyRoot := filepath.Join(strings.TrimSpace(options.LegacyDataDir), "accounts-manager")
+	if strings.TrimSpace(options.LegacyDataDir) != "" && filepath.Clean(legacyRoot) != filepath.Clean(managerRoot) {
+		if _, newErr := os.Stat(managerRoot); errors.Is(newErr, os.ErrNotExist) {
+			if _, oldErr := os.Stat(legacyRoot); oldErr == nil {
+				if err := os.Rename(legacyRoot, managerRoot); err != nil {
+					return nil, fmt.Errorf("migrate accounts manager state: %w", err)
+				}
+			}
+		} else if newErr != nil {
+			return nil, fmt.Errorf("inspect accounts manager state: %w", newErr)
+		}
+	}
 	authDir := filepath.Join(managerRoot, "auth")
 	if err := ensurePrivateDirectory(managerRoot); err != nil {
 		return nil, err
@@ -125,6 +153,10 @@ func New(options Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	switches, err := newCodexAccountSwitchStore(filepath.Join(managerRoot, "switch-state.json"))
+	if err != nil {
+		return nil, err
+	}
 	capability, err := newRouteCapability(routingKey)
 	if err != nil {
 		return nil, err
@@ -142,6 +174,7 @@ func New(options Options) (*Service, error) {
 		coreManager:       coreManager,
 		routes:            routes,
 		capability:        capability,
+		switches:          switches,
 		nativeRefs:        make(map[string]string),
 		nativeDigests:     make(map[string][sha256.Size]byte),
 	}
@@ -392,6 +425,41 @@ func (s *Service) Accounts(ctx context.Context) ([]Account, error) {
 	return accounts, nil
 }
 
+func (s *Service) CreateCodexAccountSwitch(ctx context.Context, record domain.CodexAccountSwitch) (domain.CodexAccountSwitch, bool, error) {
+	if s == nil || s.switches == nil {
+		return domain.CodexAccountSwitch{}, false, ports.ErrCodexProxyUnavailable
+	}
+	return s.switches.CreateCodexAccountSwitch(ctx, record)
+}
+
+func (s *Service) GetCodexAccountSwitch(ctx context.Context, id string) (domain.CodexAccountSwitch, bool, error) {
+	if s == nil || s.switches == nil {
+		return domain.CodexAccountSwitch{}, false, ports.ErrCodexProxyUnavailable
+	}
+	return s.switches.GetCodexAccountSwitch(ctx, id)
+}
+
+func (s *Service) GetCodexAccountSwitchByIdempotency(ctx context.Context, key string) (domain.CodexAccountSwitch, bool, error) {
+	if s == nil || s.switches == nil {
+		return domain.CodexAccountSwitch{}, false, ports.ErrCodexProxyUnavailable
+	}
+	return s.switches.GetCodexAccountSwitchByIdempotency(ctx, key)
+}
+
+func (s *Service) GetActiveCodexAccountSwitch(ctx context.Context) (domain.CodexAccountSwitch, bool, error) {
+	if s == nil || s.switches == nil {
+		return domain.CodexAccountSwitch{}, false, ports.ErrCodexProxyUnavailable
+	}
+	return s.switches.GetActiveCodexAccountSwitch(ctx)
+}
+
+func (s *Service) UpdateCodexAccountSwitch(ctx context.Context, record domain.CodexAccountSwitch, expected domain.CodexAccountSwitchPhase) (bool, error) {
+	if s == nil || s.switches == nil {
+		return false, ports.ErrCodexProxyUnavailable
+	}
+	return s.switches.UpdateCodexAccountSwitch(ctx, record, expected)
+}
+
 func (s *Service) refreshAccounts(ctx context.Context) error {
 	if err := s.syncNativeAccounts(); err != nil {
 		return err
@@ -640,3 +708,4 @@ func accountEmail(auth *coreauth.Auth) string {
 }
 
 var _ ports.CodexRouteProvider = (*Service)(nil)
+var _ ports.CodexAccountSwitchStore = (*Service)(nil)
