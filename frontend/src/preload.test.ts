@@ -294,6 +294,26 @@ describe("preload uiSettings bridge", () => {
 });
 
 describe("preload browser profile bridge", () => {
+	it("sends revisioned bounds and forwards applied acknowledgements", () => {
+		const bridge = exposedBridge();
+		const input = {
+			viewId: "1:worker-1",
+			revision: 7,
+			rect: { x: 10, y: 20, width: 300, height: 200 },
+			visible: true,
+		};
+		bridge.browser.setBounds(input);
+		expect(electronMocks.send).toHaveBeenCalledWith("browser:setBounds", input);
+
+		const listener = vi.fn();
+		const dispose = bridge.browser.onBoundsApplied(listener);
+		const wrapped = electronMocks.listeners.get("browser:boundsApplied");
+		wrapped?.({}, input);
+		expect(listener).toHaveBeenCalledWith(input);
+		dispose();
+		expect(electronMocks.off).toHaveBeenCalledWith("browser:boundsApplied", wrapped);
+	});
+
 	it("routes profile state, native menu, and CRUD calls over IPC", async () => {
 		const bridge = exposedBridge();
 		await bridge.browser.getProfile("1:worker-1");

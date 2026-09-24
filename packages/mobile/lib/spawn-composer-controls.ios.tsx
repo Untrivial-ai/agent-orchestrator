@@ -134,14 +134,14 @@ export function SpawnComposerControls({
 					>
 						<Button
 							label="Automatic"
-							systemImage={modelSelection === "__auto__" ? "checkmark" : "wand.and.stars"}
+							systemImage={modelSelection === "__auto__" ? "checkmark" : undefined}
 							onPress={() => { haptics.select(); onSelectModel("__auto__"); }}
 						/>
 						{models.map((model) => (
 							<Button
 								key={model.id}
 								label={model.label}
-								systemImage={model.id === modelSelection ? "checkmark" : "cpu"}
+								systemImage={model.id === modelSelection ? "checkmark" : undefined}
 								onPress={() => { haptics.select(); onSelectModel(model.id); }}
 							/>
 						))}

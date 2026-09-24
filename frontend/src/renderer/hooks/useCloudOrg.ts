@@ -32,9 +32,15 @@ export function useCloudOrg(): UseCloudOrgResult {
 	const query = useQuery({
 		queryKey: [...cloudOrgQueryKey, baseUrl],
 		enabled: ready,
-		// Get-or-create is safe to re-run (a later /me returns the created org),
-		// but there is no reason to hammer /me: org membership rarely changes.
-		staleTime: 5 * 60_000,
+		// Re-resolve the org eagerly: membership CAN change out from under a live
+		// session (a user is moved to their own org, or removed from a shared one),
+		// and a stale selection strands every org-scoped call on a dead org with a
+		// 403. A short staleTime plus refetch-on-focus keeps the selection current;
+		// a 403 anywhere also invalidates this query (see lib/query-client) so the
+		// app self-heals without a restart. /me is a cheap, deduped read.
+		staleTime: 30_000,
+		refetchOnWindowFocus: true,
+		refetchOnReconnect: true,
 		retry: 1,
 		queryFn: async (): Promise<{ org: CloudCpOrganization; userId: string }> => {
 			const me = await client.me();

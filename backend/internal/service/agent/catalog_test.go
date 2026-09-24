@@ -47,6 +47,14 @@ type countingResolverAgent struct {
 	calls atomic.Int32
 }
 
+type blockingSubsequentResolverAgent struct {
+	fakeAgent
+	calls   atomic.Int32
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
 type startupPresenceAgent struct {
 	fakeAgent
 	normalResolveCalls *atomic.Int32
@@ -683,6 +691,19 @@ func (f *concurrentResolverAgent) ResolveBinary(ctx context.Context) (string, er
 func (f *countingResolverAgent) ResolveBinary(ctx context.Context) (string, error) {
 	f.calls.Add(1)
 	return f.fakeAgent.ResolveBinary(ctx)
+}
+
+func (f *blockingSubsequentResolverAgent) ResolveBinary(ctx context.Context) (string, error) {
+	if f.calls.Add(1) == 1 {
+		return f.fakeAgent.ResolveBinary(ctx)
+	}
+	f.once.Do(func() { close(f.started) })
+	select {
+	case <-f.release:
+		return f.fakeAgent.ResolveBinary(ctx)
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 func (f *mutableInstallAgent) ResolveBinary(context.Context) (string, error) {
@@ -1342,7 +1363,10 @@ func TestModelsCachesDiscoveredCatalogGlobally(t *testing.T) {
 
 func TestModelsReusesCacheWhileBinaryVersionMatches(t *testing.T) {
 	cache := &fakeModelCache{}
-	agent := &countingResolverAgent{}
+	agent := &blockingSubsequentResolverAgent{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
 	discoverer := &fakeModelDiscoverer{version: "v1", catalog: ports.AgentModelCatalog{
 		SelectionMode: ports.ModelSelectionCatalog,
 		Models:        []ports.AgentModelInfo{{ID: "model-one"}},
@@ -1354,6 +1378,12 @@ func TestModelsReusesCacheWhileBinaryVersionMatches(t *testing.T) {
 		Manifest: adapters.Manifest{ID: "codex", Name: "Codex"},
 		Agent:    agent,
 	}}, cache, nil, discoverer)
+	ctx, cancel := context.WithCancel(context.Background())
+	svc.ctx = ctx
+	t.Cleanup(func() {
+		cancel()
+		close(agent.release)
+	})
 
 	_, err := svc.Models(context.Background(), "codex", "proj-1", false)
 	if err != nil {
@@ -1372,13 +1402,14 @@ func TestModelsReusesCacheWhileBinaryVersionMatches(t *testing.T) {
 	record.CatalogJSON = string(data)
 	cache.records["codex\x00"] = record
 
-	resolveCalls := agent.calls.Load()
 	cached, err := svc.Models(context.Background(), "codex", "proj-1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if agent.calls.Load() != resolveCalls {
-		t.Fatalf("cache hit synchronously resolved the binary: calls=%d want=%d", agent.calls.Load(), resolveCalls)
+	select {
+	case <-agent.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for background cache revalidation")
 	}
 	if discoverer.discoverCalls.Load() != 1 {
 		t.Fatalf("discovery calls=%d, want cached result", discoverer.discoverCalls.Load())

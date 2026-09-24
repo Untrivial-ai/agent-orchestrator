@@ -60,6 +60,9 @@ type ActivitySignal struct {
 	// own coordination. Lifecycle persists coordination provenance across the
 	// prompt-submit/Stop boundary; an empty value is an older hook client.
 	ConversationCheckpointOrigin domain.ConversationCheckpointOrigin
+	// CoordinationID identifies an AO-authored semantic prompt. Native hooks
+	// derive it from AO's prompt envelope; raw terminal writes cannot set it.
+	CoordinationID string
 	// ProviderTurnID identifies the main turn reported by a native hook.
 	ProviderTurnID string
 	// SubmissionID identifies AO's per-invocation prompt-hook context attachment.

@@ -80,7 +80,7 @@ export function ChatSettingsSheet({ snapshot, models, options, disabled, refresh
 		<ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 			{fastOption || modelChoices.length || effortChoices.length ? <SettingsGroup title="RESPONSE">
 				{fastOption ? <FastModeRow option={fastOption} disabled={disabled} onOption={onOption} /> : null}
-				{modelChoices.length ? <SettingRow icon="cpu" label="Model" value={modelChoices.find((choice) => choice.value === selectedModel)?.label ?? "Choose"} description="Choose the model for the next message" disabled={disabled} onPress={() => choose("Model", selectedModel, modelChoices, (model) => {
+				{modelChoices.length ? <SettingRow icon="layers" label="Model" value={modelChoices.find((choice) => choice.value === selectedModel)?.label ?? "Choose"} description="Choose the model for the next message" disabled={disabled} onPress={() => choose("Model", selectedModel, modelChoices, (model) => {
 					if (modelOption) onOption(modelOption.id, { value: model });
 					else onSettings({ ...snapshot.settings, model, reasoningEffort: undefined });
 				})} /> : null}
@@ -91,7 +91,7 @@ export function ChatSettingsSheet({ snapshot, models, options, disabled, refresh
 			</SettingsGroup> : null}
 
 			{permissionChoices.length ? <SettingsGroup title="PERMISSIONS">
-				<SettingRow icon="shield" label="Permission mode" value={permissionChoices.find((choice) => choice.value === selectedPermission)?.label ?? "Default"} description={permissionDescription} disabled={disabled} onPress={() => choose("Permission mode", selectedPermission, permissionChoices, (value) => {
+				<SettingRow icon="circle-dashed-check" label="Permission mode" value={permissionChoices.find((choice) => choice.value === selectedPermission)?.label ?? "Default"} description={permissionDescription} disabled={disabled} onPress={() => choose("Permission mode", selectedPermission, permissionChoices, (value) => {
 					if (permissionOption) onOption(permissionOption.id, { value });
 					else onSettings({ ...snapshot.settings, approvalMode: value as TurnSettings["approvalMode"] });
 				})} />
@@ -114,11 +114,11 @@ function SettingsGroup({ title, children }: { title: string; children: ReactNode
 	return <View style={styles.section}><Text style={styles.sectionTitle}>{title}</Text><View style={styles.group}>{children}</View></View>;
 }
 
-function SettingRow({ icon, label, value, description, disabled, onPress }: { icon: keyof typeof Feather.glyphMap; label: string; value: string; description?: string; disabled?: boolean; onPress(): void }) {
+function SettingRow({ icon, label, value, description, disabled, onPress }: { icon?: keyof typeof Feather.glyphMap; label: string; value: string; description?: string; disabled?: boolean; onPress(): void }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	return <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.row, pressed && styles.rowPressed, disabled && styles.disabled]}>
-		<Feather name={icon} size={17} color={t.textSecondary} />
+		<View style={styles.rowIcon}>{icon ? <Feather name={icon} size={17} color={t.textSecondary} /> : null}</View>
 		<View style={styles.rowCopy}><Text numberOfLines={1} style={styles.rowLabel}>{label}</Text>{description ? <Text numberOfLines={2} style={styles.rowDescription}>{description}</Text> : null}</View>
 		<Text numberOfLines={1} style={styles.rowValue}>{value}</Text>
 		<Feather name="chevron-right" size={17} color={t.textFaint} />
@@ -209,6 +209,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	sectionTitle: { fontFamily: "Geist_600SemiBold", paddingHorizontal: space.xxs, color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, letterSpacing: 1.05, fontWeight: "600" },
 	group: { overflow: "hidden", borderRadius: 16, borderCurve: "continuous", backgroundColor: t.bgElevated },
 	row: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: space.md, paddingHorizontal: space.md, paddingVertical: space.sm },
+	rowIcon: { width: 17 },
 	rowPressed: { backgroundColor: t.bgElevatedHover },
 	disabled: { opacity: 0.45 },
 	rowCopy: { flex: 1, minWidth: 0, gap: space.none },

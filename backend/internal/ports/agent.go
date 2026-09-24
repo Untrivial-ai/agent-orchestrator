@@ -370,6 +370,13 @@ type SubmitActivitySignaler interface {
 	EmitsSubmitActivity() bool
 }
 
+// SemanticMessageAcceptanceSignaler is implemented only by TUI adapters whose
+// native prompt hook returns the accepted prompt text to AO. It lets internal
+// durable senders correlate a specific message with provider acceptance.
+type SemanticMessageAcceptanceSignaler interface {
+	EmitsSemanticMessageAcceptance() bool
+}
+
 // BlockedActivitySignaler is an OPTIONAL capability an Agent adapter may
 // implement to report whether its harness emits a decision-pause signal (a
 // permission/approval prompt that flips Activity.State to blocked) AND can

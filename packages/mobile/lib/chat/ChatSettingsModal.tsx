@@ -51,13 +51,13 @@ export function ChatSettingsSheet({
 			<SheetHeader title="Turn settings" subtitle="Changes apply to the next message." right={<Pressable accessibilityRole="button" accessibilityLabel="Refresh turn settings" disabled={refreshing} onPress={() => { haptics.tap(); onRefresh(); }} style={styles.refresh}>{refreshing ? <ActivityIndicator size="small" color={t.accent} /> : <><Feather name="refresh-cw" size={iconSize.xs} color={t.accent} /><Text style={styles.refreshText}>Refresh</Text></>}</Pressable>} />
 					{error ? <View accessibilityRole="alert" style={styles.error}><Feather name="alert-circle" size={iconSize.sm} color={t.red} /><Text style={styles.errorText}>{error}</Text></View> : null}
 					{snapshot.modelReroute ? <View style={styles.reroute}><Feather name="shuffle" size={iconSize.sm} color={t.amber} /><View style={{ flex: 1 }}><Text style={styles.rerouteTitle}>Currently answered by {snapshot.modelReroute.toModel}</Text><Text style={styles.rerouteCopy}>{snapshot.modelReroute.fromModel ? `${snapshot.modelReroute.fromModel} was requested. ` : ""}{snapshot.modelReroute.reason || "The provider selected a fallback model for this conversation."}</Text></View></View> : null}
-					{(!usesProviderOptions || !hasProviderModel) && models.length ? <SettingsSection icon="cpu" title="Model">
+					{(!usesProviderOptions || !hasProviderModel) && models.length ? <SettingsSection icon="layers" title="Model">
 						{models.map((model) => <Choice key={model.id} label={model.displayName} hint={model.description || (model.default ? "Provider default" : undefined)} selected={model.id === selected?.id} disabled={disabled} onPress={() => onSettings({ ...snapshot.settings, model: model.id, reasoningEffort: undefined })} />)}
 					</SettingsSection> : null}
 					{(!usesProviderOptions || !hasProviderModel) && efforts.length ? <SettingsSection icon="activity" title="Reasoning effort">
 						{efforts.map((effort) => <Choice key={effort} label={capitalize(effort)} selected={effort === (snapshot.settings.reasoningEffort ?? selected?.defaultEffort)} disabled={disabled} onPress={() => onSettings({ ...snapshot.settings, reasoningEffort: effort })} />)}
 					</SettingsSection> : null}
-					{(!usesProviderOptions || !hasProviderMode) ? <SettingsSection icon="shield" title="Approvals">
+					{(!usesProviderOptions || !hasProviderMode) ? <SettingsSection icon="circle-dashed-check" title="Approvals">
 						{APPROVALS.map((mode) => <Choice key={mode.id} label={mode.label} hint={mode.hint} selected={mode.id === (snapshot.settings.approvalMode ?? "default")} disabled={disabled} onPress={() => onSettings({ ...snapshot.settings, approvalMode: mode.id })} />)}
 					</SettingsSection> : null}
 					{options.map((option) => <SettingsSection key={option.id} icon={configOptionIcon(option)} title={option.name} description={option.description}>
@@ -78,10 +78,10 @@ function GroupedChoices({ option, disabled, onOption }: { option: ChatConfigOpti
 	return <>{[...groups.entries()].map(([group, choices]) => <View key={group || "default"}>{group ? <Text style={styles.groupLabel}>{group}</Text> : null}{choices.map((choice) => <Choice key={choice.value} label={choice.name} hint={choice.description} selected={choice.value === option.currentValue} disabled={disabled} onPress={() => onOption(option.id, { value: choice.value })} />)}</View>)}</>;
 }
 
-function SettingsSection({ icon, title, description, children }: { icon: keyof typeof Feather.glyphMap; title: string; description?: string; children: React.ReactNode }) {
+function SettingsSection({ icon, title, description, children }: { icon?: keyof typeof Feather.glyphMap; title: string; description?: string; children: React.ReactNode }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
-	return <View style={styles.section}><View style={styles.sectionTitle}><Feather name={icon} size={iconSize.sm} color={t.textTertiary} /><Text style={styles.sectionLabel}>{title}</Text></View>{description ? <Text style={styles.sectionDescription}>{description}</Text> : null}<View style={styles.group}>{children}</View></View>;
+	return <View style={styles.section}><View style={styles.sectionTitle}><View style={styles.sectionIcon}>{icon ? <Feather name={icon} size={iconSize.sm} color={t.textTertiary} /> : null}</View><Text style={styles.sectionLabel}>{title}</Text></View>{description ? <Text style={styles.sectionDescription}>{description}</Text> : null}<View style={styles.group}>{children}</View></View>;
 }
 
 function Choice({ label, hint, selected, disabled, onPress }: { label: string; hint?: string; selected: boolean; disabled?: boolean; onPress(): void }) {
@@ -91,7 +91,14 @@ function Choice({ label, hint, selected, disabled, onPress }: { label: string; h
 }
 
 function capitalize(value: string): string { return value ? value[0].toUpperCase() + value.slice(1) : value; }
-function configOptionIcon(option: ChatConfigOption): keyof typeof Feather.glyphMap { if (option.id === "fast") return "zap"; if (option.id === "agent") return "user"; return option.category === "model" ? "cpu" : option.category === "thought_level" ? "activity" : option.category === "mode" ? "shield" : "sliders"; }
+function configOptionIcon(option: ChatConfigOption): keyof typeof Feather.glyphMap | undefined {
+	if (option.category === "model" || option.id === "model") return "layers";
+	if (option.id === "agent") return undefined;
+	if (option.category === "mode" || option.id === "mode" || option.id.includes("permission") || option.id.includes("approval")) return "circle-dashed-check";
+	if (option.id === "fast") return "zap";
+	if (option.category === "thought_level") return "activity";
+	return "sliders";
+}
 
 const makeStyles = (t: Theme) => StyleSheet.create({
 	screen: { flex: 1, backgroundColor: t.bgSurface },
@@ -105,6 +112,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	rerouteCopy: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, marginTop: space.hair },
 	section: { gap: space.xs },
 	sectionTitle: { flexDirection: "row", alignItems: "center", gap: space.sm },
+	sectionIcon: { width: iconSize.sm },
 	sectionLabel: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.footnote.fontSize, fontWeight: "600" },
 	sectionDescription: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
 	group: { backgroundColor: t.bgElevated, borderWidth: 1, borderColor: t.borderSubtle, borderRadius: 12, borderCurve: "continuous", overflow: "hidden" },

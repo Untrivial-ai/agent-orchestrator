@@ -23,11 +23,13 @@ import {
 	XCircle,
 } from "lucide-react";
 import { useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { components } from "../../api/schema";
 import type { ImportFolderScan } from "../../preload";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudSandboxProviders } from "../hooks/useCloudSandboxProviders";
-import { CoderTemplatePicker } from "./CoderTemplatePicker";
+import { AdditionalRepositoriesPicker, CoderTemplatePicker } from "./CoderTemplatePicker";
+import { SearchablePicker } from "./SearchablePicker";
 import { buildCoderRequestOptions, useCoderSessionOptionsStore } from "../stores/coder-session-options-store";
 import { useCloudGate } from "../hooks/useCloudGate";
 import { useCloudLocalAuth } from "../hooks/useCloudLocalAuth";
@@ -39,6 +41,7 @@ import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { cloudAgentInfos } from "../lib/cloud-agents";
 import { aoBridge } from "../lib/bridge";
 import { CloudCpError } from "../lib/cloud-cp";
+import type { CloudCpGitHubAppRepository } from "../lib/cloud-cp/types";
 import { getGitHubStatus, isGitHubAuthInvalidError, listGitHubRepos, saveGitHubPAT } from "../lib/github-daemon";
 import { useCloudSession } from "../lib/cloud-session";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
@@ -1089,12 +1092,19 @@ function shouldScanCreateFailure(message: string): boolean {
 }
 
 function CreateProjectFlowBackdrop({ open }: { open: boolean }) {
-	return (
-		<Dialog.Root open={open}>
-			<Dialog.Portal>
-				<Dialog.Overlay className="dialog-overlay z-[calc(var(--z-overlay)-1)] data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out" />
-			</Dialog.Portal>
-		</Dialog.Root>
+	return createPortal(
+		<AnimatePresence>
+			{open && (
+				<motion.div
+					aria-hidden="true"
+					className="dialog-overlay z-[calc(var(--z-overlay)-1)]"
+					initial={{ opacity: 0 }}
+					animate={{ opacity: 1, transition: { duration: 0.08 } }}
+					exit={{ opacity: 0, transition: { duration: 0.06 } }}
+				/>
+			)}
+		</AnimatePresence>,
+		document.body,
 	);
 }
 
@@ -1208,6 +1218,26 @@ function CloudSignInPanel({
 			</Button>
 		</div>
 	);
+}
+
+// sleepWithAbort resolves after `ms`, or rejects with an AbortError the moment
+// the signal aborts, so a polling loop can stop immediately on unmount/cancel.
+function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		if (signal.aborted) {
+			reject(new DOMException("Aborted", "AbortError"));
+			return;
+		}
+		const id = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(id);
+			reject(new DOMException("Aborted", "AbortError"));
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
 }
 
 function isHttpsRepositoryUrl(raw: string): boolean {
@@ -1347,6 +1377,8 @@ function CloudProjectCard({
 	const sandboxProviders = useCloudSandboxProviders();
 	const coderAvailable = sandboxProviders.available.includes("coder");
 	const resetCoderOptions = useCoderSessionOptionsStore((s) => s.reset);
+	const extraRepos = useCoderSessionOptionsStore((s) => s.extraRepos);
+	const setExtraRepos = useCoderSessionOptionsStore((s) => s.setExtraRepos);
 	useEffect(() => {
 		resetCoderOptions();
 		return () => resetCoderOptions();
@@ -1370,6 +1402,11 @@ function CloudProjectCard({
 	const [readOnlyWarning, setReadOnlyWarning] = useState(false);
 	const [pendingReadOnlySelection, setPendingReadOnlySelection] = useState<{ workerAgent: string; orchestratorAgent: string } | null>(null);
 	const [isCreating, setIsCreating] = useState(false);
+	// The GitHub App path selects a repository by its numeric id (create goes
+	// through POST /github/projects). The manual PAT path keeps using the repo URL.
+	const [selectedRepoId, setSelectedRepoId] = useState("");
+	const connectAbortRef = useRef<AbortController | null>(null);
+	useEffect(() => () => connectAbortRef.current?.abort(), []);
 
 	const githubStatus = useQuery({
 		queryKey: ["github-status"],
@@ -1419,9 +1456,82 @@ function CloudProjectCard({
 		},
 	});
 
+	// GitHub App connection (the secure, hosted path): the control plane owns the
+	// installation, so connection and repository access are read from it, never
+	// from a desktop-held secret.
+	const githubInstallations = useQuery({
+		queryKey: ["cloud-github-installations", baseUrl, org?.id],
+		enabled: org !== undefined,
+		staleTime: 0,
+		refetchOnMount: "always",
+		refetchInterval: (query) => {
+			const installations = query.state.data ?? [];
+			return installations.some(
+				(installation) => installation.status === "active" && installation.syncStatus !== "ready",
+			)
+				? 2500
+				: false;
+		},
+		queryFn: async () => {
+			if (!org) return [];
+			const { installations } = await client.listGitHubInstallations(org.id);
+			return installations;
+		},
+	});
+	const activeInstallations = githubInstallations.data?.filter((installation) => installation.status === "active") ?? [];
+	const installationNeedingSync =
+		activeInstallations.find((installation) => installation.syncStatus === "retry" || installation.syncStatus === "failed") ??
+		activeInstallations.find((installation) => installation.syncStatus !== "ready");
+	const appConnected = activeInstallations.length > 0;
+	const appRepositoriesReady = activeInstallations.some((installation) => installation.syncStatus === "ready");
+	const allActiveInstallationsReady = appConnected && installationNeedingSync === undefined;
+	const appRepositorySyncFailed = activeInstallations.some(
+		(installation) => installation.syncStatus === "retry" || installation.syncStatus === "failed",
+	);
+	const readyInstallationKey = activeInstallations
+		.filter((installation) => installation.syncStatus === "ready")
+		.map((installation) => installation.id)
+		.sort()
+		.join(":");
+
+	const githubAppRepos = useQuery({
+		queryKey: ["cloud-github-app-repos", baseUrl, org?.id],
+		enabled: appRepositoriesReady && org !== undefined,
+		staleTime: 30_000,
+		queryFn: async ({ signal }) => {
+			if (!org) return [];
+			const repositories: CloudCpGitHubAppRepository[] = [];
+			let cursor: string | undefined;
+			for (;;) {
+				const response = await client.listGitHubRepositories(org.id, { limit: 100, cursor }, { signal });
+				repositories.push(...response.items.filter((repo) => repo.revokedAt === undefined && !repo.isArchived));
+				if (!response.page.hasMore) return repositories;
+				if (!response.page.nextCursor || response.page.nextCursor === cursor) throw new Error("GitHub repository pagination stopped unexpectedly");
+				cursor = response.page.nextCursor;
+			}
+		},
+	});
+	useEffect(() => {
+		if (readyInstallationKey === "") return;
+		void queryClient.invalidateQueries({ queryKey: ["cloud-github-app-repos", baseUrl, org?.id] });
+	}, [baseUrl, org?.id, queryClient, readyInstallationKey]);
+	// The App path is active whenever the user is not in manual-PAT mode and an
+	// installation exists; it drives which create call and repo source we use.
+	const usingApp = appConnected && !useManualPat;
+
+	// If the selected repository disappears from the installation (access revoked,
+	// archived, or removed from the App's repo list), drop the stale selection so
+	// we never submit a githubRepositoryId the installation no longer grants.
+	useEffect(() => {
+		if (!usingApp || selectedRepoId === "" || githubAppRepos.data === undefined) return;
+		if (!githubAppRepos.data.some((repo) => repo.githubRepositoryId === selectedRepoId)) {
+			setSelectedRepoId("");
+			setRepositoryUrl("");
+		}
+	}, [usingApp, selectedRepoId, githubAppRepos.data]);
+
 	const urlError = projectSubmitted && !isHttpsRepositoryUrl(repositoryUrl) ? t("createProject.cloudInvalidUrl") : null;
 	const nameError = nameSubmitted && projectName.trim() === "" ? t("createProject.cloudDisplayNameRequired", { defaultValue: "Project name is required" }) : null;
-	const branchError = projectSubmitted && defaultBranch.trim() === "" ? t("createProject.cloudDefaultBranchRequired") : null;
 
 	const saveGitHubTokenAndContinue = async () => {
 		const secret = githubToken.trim();
@@ -1463,39 +1573,63 @@ function CloudProjectCard({
 		}
 	};
 
+	// connectGitHub runs the secure GitHub App flow: the control plane builds the
+	// install/authorize URL (it holds the client id and secret), the browser
+	// completes it against the CP's own callback, and we poll the CP until the
+	// installation is recorded, then ask it to enumerate the granted
+	// repositories before we read them. No GitHub credential ever touches the
+	// desktop.
 	const connectGitHub = async () => {
 		if (githubOAuthBusy) return;
 		if (!org) {
 			onAuthRequired();
 			return;
 		}
+		const abort = new AbortController();
+		connectAbortRef.current?.abort();
+		connectAbortRef.current = abort;
 		setGithubOAuthBusy(true);
 		setGithubOAuthError(null);
 		try {
-			const result = await aoBridge.cloud.connectProviderAuth({
-				baseUrl,
-				orgId: org.id,
-				provider: "github",
-			});
-			const secret = typeof result === "string" ? result : result?.secret;
-			// For a GitHub App token the result carries refresh material; persist it
-			// on the daemon so the token renews itself instead of expiring in ~8h.
-			const oauth = typeof result === "object" && result ? result : undefined;
-			if (secret) {
-				await Promise.all([
-					saveGitHubPAT(secret, oauth),
-					client.putGitHubPAT({ secret }),
-				]);
+			const { installations: installationsBeforeConnect } = await client.listGitHubInstallations(org.id, { signal: abort.signal });
+			const previousUpdatedAtByID = new Map(
+				installationsBeforeConnect.map((installation) => [installation.id, installation.updatedAt]),
+			);
+			const { installationUrl } = await client.startGitHubInstallation(org.id, { signal: abort.signal });
+			await aoBridge.app.openExternal(installationUrl);
+			// Poll for the installation the CP records once the user finishes in the
+			// browser. Bounded so a browser left open does not spin forever.
+			const deadline = Date.now() + 5 * 60_000;
+			let connectedInstallation;
+			for (;;) {
+				await sleepWithAbort(2500, abort.signal);
+				const { installations } = await client.listGitHubInstallations(org.id, { signal: abort.signal });
+				connectedInstallation = installations.find(
+					(installation) =>
+						installation.status === "active" &&
+						previousUpdatedAtByID.get(installation.id) !== installation.updatedAt,
+				);
+				if (connectedInstallation !== undefined) break;
+				if (Date.now() > deadline) {
+					setGithubOAuthError(
+						t("createProject.githubConnectTimeout", {
+							defaultValue: "GitHub did not finish connecting. Try again, or set up manually.",
+						}),
+					);
+					return;
+				}
 			}
-			await Promise.all([
-				queryClient.invalidateQueries({ queryKey: ["github-status"] }),
-				queryClient.invalidateQueries({ queryKey: ["cloud-user-providers"] }),
-				queryClient.invalidateQueries({ queryKey: ["github-repos"] }),
-			]);
+			// OAuth completion queues a durable sync, but the active installation is
+			// visible before the worker necessarily finishes. Use the authenticated sync
+			// endpoint when needed so the repository query cannot observe empty grants.
+			if (connectedInstallation.syncStatus !== "ready") {
+				await client.syncGitHubInstallation(org.id, connectedInstallation.id, { signal: abort.signal });
+			}
 		} catch (err) {
-			// If the AO Cloud session lapsed mid-connect, saving to the control
-			// plane returns a 401 from its auth middleware. Re-authenticate rather
-			// than reporting it as a GitHub failure.
+			if (abort.signal.aborted) return;
+			// If the AO Cloud session lapsed mid-connect, the control plane returns
+			// a 401 from its auth middleware. Re-authenticate rather than reporting
+			// it as a GitHub failure.
 			if (err instanceof CloudCpError && err.status === 401) {
 				setGithubOAuthError(
 					t("createProject.cloudSessionExpiredForConnect", {
@@ -1507,8 +1641,39 @@ function CloudProjectCard({
 				setGithubOAuthError(err instanceof Error ? err.message : t("createProject.githubAuthFailed", { defaultValue: "GitHub authentication failed" }));
 			}
 		} finally {
+			if (!abort.signal.aborted) {
+				await Promise.allSettled([
+					queryClient.invalidateQueries({ queryKey: ["cloud-github-installations"] }),
+					queryClient.invalidateQueries({ queryKey: ["cloud-github-app-repos"] }),
+				]);
+			}
+			if (connectAbortRef.current === abort) connectAbortRef.current = null;
 			setGithubOAuthBusy(false);
 		}
+	};
+
+	const retryGitHubRepositorySync = async () => {
+		if (!org || !installationNeedingSync || githubOAuthBusy) return;
+		setGithubOAuthBusy(true);
+		setGithubOAuthError(null);
+		try {
+			await client.syncGitHubInstallation(org.id, installationNeedingSync.id);
+		} catch (err) {
+			if (err instanceof CloudCpError && err.status === 401) onAuthRequired();
+			setGithubOAuthError(err instanceof Error ? err.message : t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." }));
+		} finally {
+			await Promise.allSettled([
+				queryClient.invalidateQueries({ queryKey: ["cloud-github-installations"] }),
+				queryClient.invalidateQueries({ queryKey: ["cloud-github-app-repos"] }),
+			]);
+			setGithubOAuthBusy(false);
+		}
+	};
+
+	const cancelConnectGitHub = () => {
+		connectAbortRef.current?.abort();
+		connectAbortRef.current = null;
+		setGithubOAuthBusy(false);
 	};
 
 	const createProject = async (selection: { workerAgent: string; orchestratorAgent: string }, allowReadOnly = false) => {
@@ -1516,7 +1681,11 @@ function CloudProjectCard({
 		setProjectSubmitted(true);
 		setNameSubmitted(true);
 		if (projectName.trim() === "") return;
-		if (!isHttpsRepositoryUrl(repositoryUrl) || defaultBranch.trim() === "") return;
+		if (usingApp) {
+			if (selectedRepoId === "") return;
+		} else if (!isHttpsRepositoryUrl(repositoryUrl) || defaultBranch.trim() === "") {
+			return;
+		}
 		setSubmitError(null);
 		setSubmitIsUnreachable(false);
 		setSubmitIsUnavailable(false);
@@ -1524,29 +1693,44 @@ function CloudProjectCard({
 		setPendingReadOnlySelection(null);
 		setIsCreating(true);
 		try {
-			if (!allowReadOnly) {
-				const result = await client.validateSavedRepositoryAccess({
-					repositoryUrl: repositoryUrl.trim(),
-				});
-				if (!result.writeAccess) {
-					setSubmitError(t("createProject.githubToken.readOnlyToken", { defaultValue: "Your token does not have push access to this repository. Please provide a token with push permissions." }));
-					setReadOnlyWarning(true);
-					setPendingReadOnlySelection(selection);
-					setIsCreating(false);
-					return;
-				}
-			}
 			const coder = buildCoderRequestOptions(useCoderSessionOptionsStore.getState());
-			await client.createProject(org.id, {
-				displayName: projectName.trim(),
-				repositoryUrl: repositoryUrl.trim(),
-				defaultBranch: defaultBranch.trim(),
-				config: {
-					worker: { agent: selection.workerAgent },
-					orchestrator: { agent: selection.orchestratorAgent },
-				},
-				...(coder ? { coder } : {}),
-			});
+			if (usingApp) {
+				// The App path authorizes by repository id and derives the default
+				// branch server-side. Coder config nests under `config.coder`, which
+				// the control plane reads for the dev-kit template and extra repos.
+				await client.createGitHubProject(org.id, {
+					githubRepositoryId: selectedRepoId,
+					displayName: projectName.trim(),
+					config: {
+						worker: { agent: selection.workerAgent },
+						orchestrator: { agent: selection.orchestratorAgent },
+						...(coder ? { coder } : {}),
+					},
+				});
+			} else {
+				if (!allowReadOnly) {
+					const result = await client.validateSavedRepositoryAccess({
+						repositoryUrl: repositoryUrl.trim(),
+					});
+					if (!result.writeAccess) {
+						setSubmitError(t("createProject.githubToken.readOnlyToken", { defaultValue: "Your token does not have push access to this repository. Please provide a token with push permissions." }));
+						setReadOnlyWarning(true);
+						setPendingReadOnlySelection(selection);
+						setIsCreating(false);
+						return;
+					}
+				}
+				await client.createProject(org.id, {
+					displayName: projectName.trim(),
+					repositoryUrl: repositoryUrl.trim(),
+					defaultBranch: defaultBranch.trim(),
+					config: {
+						worker: { agent: selection.workerAgent },
+						orchestrator: { agent: selection.orchestratorAgent },
+					},
+					...(coder ? { coder } : {}),
+				});
+			}
 			await queryClient.invalidateQueries({ queryKey: cloudProjectsQueryKey });
 			onCreated();
 		} catch (err) {
@@ -1621,16 +1805,22 @@ function CloudProjectCard({
 							type="button"
 							className="text-[12px] font-medium text-muted-foreground underline decoration-dotted underline-offset-4 transition-colors hover:text-foreground"
 							onClick={() => {
+								// Reset the fields that belong to the other mode so a value picked
+								// under the App path (repo URL, its default branch, the selected id)
+								// never leaks into the manual path, and vice versa.
 								setUseManualPat((v) => !v);
 								setGithubToken("");
 								setGithubTokenError(null);
+								setSelectedRepoId("");
+								setRepositoryUrl("");
+								setDefaultBranch("main");
 							}}
 						>
 							{useManualPat ? "Auth with GitHub" : "Manually setup"}
 						</button>
 					</div>
 
-					{!useManualPat && !hasGithubConnection ? (
+					{!useManualPat && !appConnected ? (
 						<>
 						<button
 							type="button"
@@ -1643,18 +1833,29 @@ function CloudProjectCard({
 							</span>
 							<span className="min-w-0">
 								<span className="block text-[14px] font-medium text-foreground">
-									{githubOAuthBusy ? "Opening GitHub..." : "Connect GitHub"}
+									{githubOAuthBusy
+										? t("createProject.githubWaiting", { defaultValue: "Waiting for GitHub..." })
+										: t("createProject.connectGitHub", { defaultValue: "Connect GitHub" })}
 								</span>
 								<span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">
 									{githubOAuthBusy
-										? "Complete authorization in your browser"
-										: "Grants access to public and private repos, PRs, and comments"}
+										? t("createProject.githubCompleteInBrowser", { defaultValue: "Install the app on your repositories in the browser, then return here." })
+										: t("createProject.connectGitHubHint", { defaultValue: "Grants access to public and private repos, PRs, and comments" })}
 								</span>
 							</span>
 							{githubOAuthBusy && (
 								<span className="ml-auto size-4 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
 							)}
 						</button>
+						{githubOAuthBusy ? (
+							<button
+								type="button"
+								className="text-[12px] font-medium text-muted-foreground hover:text-foreground transition-colors"
+								onClick={cancelConnectGitHub}
+							>
+								{t("createProject.cancel", { defaultValue: "Cancel" })}
+							</button>
+						) : null}
 						{githubOAuthError ? (
 							<div className="space-y-2">
 								<p className="text-[12px] leading-5 text-destructive" role="alert">
@@ -1675,85 +1876,98 @@ function CloudProjectCard({
 						</>
 					) : (
 						<>
-							{hasGithubConnection && !useManualPat ? (
+							{usingApp ? (
 								<div className="space-y-2">
-									<div className="relative">
-										<span className="pointer-events-none absolute inset-y-0 left-3 flex w-4 items-center justify-center text-[var(--color-text-import-muted)]">
-											<GitHubIcon className="size-4" aria-hidden="true" />
-										</span>
-										<select
-											className="w-full appearance-none rounded-md border border-border bg-[var(--color-bg-import-card)] py-2 pl-10 pr-8 text-[13px] text-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
-											disabled={isCreating || githubRepos.isLoading}
-											value={repositoryUrl}
-											onChange={(event) => {
-												const nextRepositoryUrl = event.target.value;
-												const selectedRepository = githubRepos.data?.find((repo) => repo.cloneUrl === nextRepositoryUrl);
-												setRepositoryUrl(nextRepositoryUrl);
-												if (selectedRepository) {
-													setProjectName(selectedRepository.name);
+									<SearchablePicker
+										ariaLabel={t("createProject.selectRepository", { defaultValue: "Select a repository" })}
+										fixedScroll
+										placeholder={!appRepositoriesReady || githubAppRepos.isLoading
+											? t("createProject.githubReposLoading", { defaultValue: "Loading repositories..." })
+											: t("createProject.selectRepository", { defaultValue: "Select a repository" })}
+										searchPlaceholder={t("createProject.searchRepositories", { defaultValue: "Search repositories" })}
+										disabled={isCreating || !appRepositoriesReady || githubAppRepos.isLoading}
+										value={selectedRepoId}
+										options={(githubAppRepos.data ?? []).map((repo) => ({ value: repo.githubRepositoryId, label: repo.fullName, private: repo.isPrivate }))}
+										onChange={(nextId) => {
+												setSelectedRepoId(nextId);
+												const repo = githubAppRepos.data?.find((candidate) => candidate.githubRepositoryId === nextId);
+												if (repo) {
+													setRepositoryUrl(repo.htmlUrl);
+													setDefaultBranch(repo.defaultBranch !== "" ? repo.defaultBranch : "main");
+													setProjectName(repo.name);
 													if (nameSubmitted) setNameSubmitted(false);
+												} else {
+													setRepositoryUrl("");
 												}
 												if (projectSubmitted) setProjectSubmitted(false);
 											}}
-										>
-											<option value="">
-												{githubRepos.isLoading ? "Loading repos..." : "Select a repository"}
-											</option>
-											{githubRepos.data?.map((repo) => (
-												<option key={repo.fullName} value={repo.cloneUrl}>
-													{repo.private ? "🔒 " : ""}{repo.fullName}
-												</option>
-											))}
-										</select>
-										<span className="pointer-events-none absolute inset-y-0 right-2 flex w-4 items-center justify-center text-muted-foreground">
-											<ChevronRight className="size-3 rotate-90" aria-hidden="true" />
-										</span>
-									</div>
-									{githubRepos.isError ? (
+									/>
+									{githubAppRepos.isError ? (
 										<div className="flex items-center gap-2 text-[12px] leading-5 text-destructive" role="alert">
+											<span>{t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." })}</span>
+											<button type="button" className="underline" disabled={githubAppRepos.isFetching} onClick={() => void githubAppRepos.refetch()}>
+												{t("createProject.retry")}
+											</button>
+										</div>
+									) : null}
+									{!appRepositoriesReady ? (
+										<div className="flex items-center gap-2 text-[12px] leading-5 text-muted-foreground">
 											<span>
-												{isGitHubAuthInvalidError(githubRepos.error)
-													? t("createProject.githubReposUnavailable", { defaultValue: "Couldn't load your GitHub repositories." })
-													: t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." })}
+												{appRepositorySyncFailed
+													? t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." })
+													: t("createProject.githubReposLoading", { defaultValue: "Loading repositories..." })}
 											</span>
-											{isGitHubAuthInvalidError(githubRepos.error) ? (
-												<>
-													{/* Try again first: the stored token is usually still valid, so a
-													    plain refetch clears a transient 401 without a full OAuth round-trip.
-													    Reconnect stays as the fallback for a genuinely revoked token. */}
-													<button
-														type="button"
-														className="underline"
-														disabled={githubRepos.isFetching}
-														onClick={() => void githubRepos.refetch()}
-													>
-														{t("createProject.retry")}
-													</button>
-													<button
-														type="button"
-														className="shrink-0 rounded-md border border-destructive/30 px-2 py-0.5 font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-60"
-														disabled={githubOAuthBusy}
-														onClick={() => void connectGitHub()}
-													>
-														{githubOAuthBusy
-															? t("createProject.openingGitHub", { defaultValue: "Opening GitHub..." })
-															: t("createProject.reconnectGitHub", { defaultValue: "Reconnect GitHub" })}
-													</button>
-												</>
-											) : (
-												<button type="button" className="underline" onClick={() => void githubRepos.refetch()}>
+											{githubOAuthError || appRepositorySyncFailed ? (
+												<button type="button" className="underline" disabled={githubOAuthBusy} onClick={() => void retryGitHubRepositorySync()}>
 													{t("createProject.retry")}
 												</button>
-											)}
+											) : null}
+										</div>
+									) : !allActiveInstallationsReady && !githubAppRepos.isLoading && (githubAppRepos.data?.length ?? 0) === 0 ? (
+										<div className="flex items-center gap-2 text-[12px] leading-5 text-muted-foreground">
+											<span>
+												{appRepositorySyncFailed
+													? t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." })
+													: t("createProject.githubReposLoading", { defaultValue: "Loading repositories..." })}
+											</span>
+											{appRepositorySyncFailed ? (
+												<button type="button" className="underline" disabled={githubOAuthBusy} onClick={() => void retryGitHubRepositorySync()}>
+													{t("createProject.retry")}
+												</button>
+											) : null}
+										</div>
+									) : !githubAppRepos.isLoading && !githubAppRepos.isError && (githubAppRepos.data?.length ?? 0) === 0 ? (
+										<p className="text-[12px] leading-5 text-muted-foreground">
+											{t("createProject.githubNoRepos", { defaultValue: "This installation has no available repositories." })}{" "}
+											<button
+												type="button"
+												className="underline decoration-border underline-offset-2 hover:text-foreground disabled:opacity-60"
+												disabled={githubOAuthBusy}
+												onClick={() => void connectGitHub()}
+											>
+												{t("createProject.githubConfigureRepos", { defaultValue: "Configure repositories" })}
+											</button>
+										</p>
+									) : coderAvailable ? (
+										<button
+											type="button"
+											className="text-[12px] font-medium text-muted-foreground underline decoration-dotted underline-offset-4 transition-colors hover:text-foreground disabled:opacity-60"
+											disabled={isCreating}
+											onClick={() => setExtraRepos([...extraRepos, { url: "", branch: "" }])}
+										>
+											{t("coder.repos.add", { defaultValue: "Add repository" })}
+										</button>
+									) : null}
+									{appRepositoriesReady && appRepositorySyncFailed && (githubAppRepos.data?.length ?? 0) > 0 ? (
+										<div className="flex items-center gap-2 text-[12px] leading-5 text-destructive">
+											<span>{t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." })}</span>
+											<button type="button" className="underline" disabled={githubOAuthBusy} onClick={() => void retryGitHubRepositorySync()}>
+												{t("createProject.retry")}
+											</button>
 										</div>
 									) : null}
 									{githubOAuthError ? (
 										<p className="text-[12px] leading-5 text-destructive" role="alert">{githubOAuthError}</p>
-									) : null}
-									{urlError ? (
-										<p id="cloudRepositoryUrlError" className="text-pretty text-[12px] leading-5 text-destructive" role="alert">
-											{urlError}
-										</p>
 									) : null}
 								</div>
 							) : (
@@ -1785,9 +1999,30 @@ function CloudProjectCard({
 												{urlError}
 											</p>
 										) : null}
+										{coderAvailable && useManualPat ? (
+											<button
+												type="button"
+												className="text-[12px] font-medium text-muted-foreground underline decoration-dotted underline-offset-4 transition-colors hover:text-foreground disabled:opacity-60"
+												disabled={isCreating}
+												onClick={() => setExtraRepos([...extraRepos, { url: "", branch: "" }])}
+											>
+												{t("coder.repos.add", { defaultValue: "Add repository" })}
+											</button>
+										) : null}
 									</div>
 								</>
 							)}
+							{coderAvailable && (usingApp || useManualPat) ? (
+								<AdditionalRepositoriesPicker
+									repos={usingApp
+										? (githubAppRepos.data ?? []).map((repo) => ({ label: repo.fullName, url: repo.htmlUrl, private: repo.isPrivate }))
+										: (githubRepos.data ?? []).map((repo) => ({
+												label: repo.fullName,
+												url: `https://github.com/${repo.fullName}`,
+												private: repo.private,
+											}))}
+								/>
+							) : null}
 							{useManualPat ? (
 								<>
 									<div className="space-y-2">
@@ -1833,56 +2068,20 @@ function CloudProjectCard({
 										</Button>
 									) : null}
 								</>
-							) : (
-								<div className="space-y-2">
-									<Label htmlFor="cloudDefaultBranch" className={onboardingFormLabelClass}>
-										{t("createProject.cloudDefaultBranch", { defaultValue: "Default branch" })}
-									</Label>
-									<div className="relative">
-										<span className="pointer-events-none absolute inset-y-0 left-3 flex w-4 items-center justify-center text-[var(--color-text-import-muted)]">
-											<GitBranch className="size-4" aria-hidden="true" />
-										</span>
-										<Input
-											id="cloudDefaultBranch"
-											autoCapitalize="none"
-											autoComplete="off"
-											aria-describedby={branchError ? "cloudDefaultBranchError" : undefined}
-											aria-invalid={branchError ? true : undefined}
-											className="bg-[var(--color-bg-import-card)] pl-10 font-mono text-[13px]"
-											disabled={isCreating || isValidating}
-											placeholder="main"
-											spellCheck={false}
-											value={defaultBranch}
-											onChange={(event) => setDefaultBranch(event.target.value)}
-										/>
-									</div>
-									{branchError ? (
-										<p id="cloudDefaultBranchError" className="text-pretty text-[12px] leading-5 text-destructive" role="alert">
-											{branchError}
-										</p>
-									) : null}
-								</div>
-							)}
+							) : null}
 						</>
 					)}
 				</div>
 
-				{/* Coder dev kit: template + additional repos + size, stored on the
-					project and inherited by every session. Only when coder is offered. */}
-				{coderAvailable && (hasGithubConnection || useManualPat) ? (
+				{/* Coder template and size are inherited by every session. */}
+				{coderAvailable && (usingApp || useManualPat) ? (
 					<div className="space-y-2">
-						<CoderTemplatePicker
-							orgId={org?.id}
-							repos={(githubRepos.data ?? []).map((repo) => ({
-								label: repo.fullName,
-								url: `https://github.com/${repo.fullName}`,
-							}))}
-						/>
+						<CoderTemplatePicker orgId={org?.id} />
 					</div>
 				) : null}
 
 				{/* Agents — inline */}
-				{(hasGithubConnection || useManualPat) && org !== undefined ? (
+				{((usingApp && selectedRepoId !== "") || useManualPat) && org !== undefined ? (
 					<CloudAgentSetupStep
 						orgId={org.id}
 						repositoryUrl={repositoryUrl.trim()}
@@ -1942,7 +2141,10 @@ function CloudProjectCard({
 					</div>
 				) : null}
 
-				{!(hasGithubConnection || useManualPat) ? (
+				{/* Show Back exactly when the agent step (which carries its own Back)
+					is not shown, so a connected user who has not picked a repo yet is
+					never left without a way back. Mirrors the agent-step gate below. */}
+				{!((usingApp && selectedRepoId !== "") || useManualPat) ? (
 					<div className={onboardingFooterActionsClass}>
 						<Button type="button" variant="outline" onClick={onBack} disabled={isCreating}>
 							{t("createProject.back", { defaultValue: "Back" })}

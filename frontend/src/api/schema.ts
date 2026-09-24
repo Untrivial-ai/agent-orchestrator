@@ -1170,6 +1170,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List persisted project reports without changing delivery state */
+        get: operations["listReports"];
+        put?: never;
+        /** Persist a worker report for later orchestrator delivery */
+        post: operations["createReport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/reviews/{reviewId}/conversation": {
         parameters: {
             query?: never;
@@ -3176,7 +3194,7 @@ export interface components {
             createdAt: string;
             displayName?: string;
             /** @enum {string} */
-            displayStatus: "Working" | "Blocked" | "Exited" | "No signal" | "Awaiting PR" | "Fixing CI failures" | "Addressing comments" | "Needs review" | "Review scheduled" | "Reviewing" | "Review pending" | "Draft" | "CI failing" | "Commented" | "Changes requested" | "Needs human review" | "Mergeable" | "Approved" | "Merged" | "Closed without merge" | "Terminated";
+            displayStatus: "Working" | "Blocked" | "Exited" | "No signal" | "Awaiting PR" | "Fixing CI failures" | "Addressing comments" | "Needs review" | "Review scheduled" | "Reviewing" | "Review failed" | "Review pending" | "Draft" | "CI failing" | "Commented" | "Changes requested" | "Needs human review" | "Mergeable" | "Approved" | "Merged" | "Closed without merge" | "Terminated";
             harness?: string;
             id: string;
             isPinned: boolean;
@@ -3463,6 +3481,17 @@ export interface components {
             outputTokens: number;
             /** Format: int64 */
             totalTokens: number;
+        };
+        CreateReportRequest: {
+            message?: string;
+            note?: string;
+            outputs?: components["schemas"]["ReportOutputRequest"][];
+            sessionId: string;
+            /** @enum {string} */
+            state?: "checkpoint" | "needs_input" | "stuck" | "done";
+        };
+        CreateReportResponse: {
+            id: string;
         };
         DegradedProject: {
             id: string;
@@ -3772,6 +3801,9 @@ export interface components {
         };
         ListProjectsResponse: {
             projects: components["schemas"]["ProjectSummary"][];
+        };
+        ListReportsResponse: {
+            reports: components["schemas"]["ReportResponse"][];
         };
         ListReviewsResponse: {
             /** @enum {string} */
@@ -4087,6 +4119,30 @@ export interface components {
             repoPath: string;
             requiredActions: string[];
         };
+        ReportOutputRequest: {
+            /** @enum {string} */
+            kind: "artifact" | "pr_created" | "pr_reviewed";
+            label?: string;
+            reference: string;
+        };
+        ReportOutputResponse: {
+            kind: string;
+            label?: string;
+            reference: string;
+        };
+        ReportResponse: {
+            /** Format: date-time */
+            createdAt: string;
+            id: string;
+            message?: string;
+            note?: string;
+            outputs?: components["schemas"]["ReportOutputResponse"][];
+            projectId: string;
+            /** Format: int64 */
+            repeatCount: number;
+            sessionId: string;
+            state?: string;
+        };
         ResolveCommentsResponse: {
             ok: boolean;
             resolved: number;
@@ -4349,6 +4405,8 @@ export interface components {
              * @enum {string}
              */
             conversationCheckpointOrigin?: "human" | "coordination";
+            /** @description Opaque identity of an AO-authored semantic prompt accepted by the native agent. */
+            coordinationId?: string;
             /** @description AO hook sub-command that produced this state (e.g. post-tool-use). */
             event?: string;
             /** @description Latest assistant update exposed by the provider hook. */
@@ -8559,6 +8617,116 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listReports: {
+        parameters: {
+            query: {
+                /** @description Stable project identifier. */
+                projectId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListReportsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    createReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateReportRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateReportResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
             };
             /** @description Internal Server Error */
             500: {

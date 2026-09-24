@@ -2,6 +2,7 @@ package workspacewatch
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -246,5 +247,252 @@ func runGit(t *testing.T, dir string, args ...string) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+func TestAddInitialDirectoriesSkipsMissingGitListedDirectories(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "src")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatalf("mkdir existing directory: %v", err)
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	rel, relErr := filepath.Rel(root, existing)
+	if relErr != nil {
+		t.Fatalf("rel: %v", relErr)
+	}
+	git := gitWorkspace{
+		available: true,
+		files:     []string{"missing-dir/file.txt", filepath.ToSlash(rel) + "/main.go"},
+	}
+	limiter := newDirWatchLimiter(watcher, maxWatchedDirectories)
+	if err := addInitialDirectories(context.Background(), limiter, root, git); err != nil {
+		t.Fatalf("addInitialDirectories with a stale git-listed directory: %v", err)
+	}
+}
+
+func TestAddInitialDirectoriesBoundsWatchCount(t *testing.T) {
+	root := t.TempDir()
+	for i := range 8 {
+		if err := os.MkdirAll(filepath.Join(root, fmt.Sprintf("dir-%02d", i), "nested", "deeper"), 0o755); err != nil {
+			t.Fatalf("mkdir tree: %v", err)
+		}
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	previous := maxWatchedDirectories
+	maxWatchedDirectories = 4
+	defer func() { maxWatchedDirectories = previous }()
+
+	limiter := newDirWatchLimiter(watcher, maxWatchedDirectories)
+	if err := addInitialDirectories(context.Background(), limiter, root, gitWorkspace{}); err != nil {
+		t.Fatalf("addInitialDirectories over the watch cap: %v", err)
+	}
+
+	watched := watcher.WatchList()
+	if len(watched) != maxWatchedDirectories {
+		t.Fatalf("watched directories = %d (%v), want exactly cap %d", len(watched), watched, maxWatchedDirectories)
+	}
+	watchedSet := make(map[string]struct{}, len(watched))
+	for _, dir := range watched {
+		watchedSet[dir] = struct{}{}
+	}
+	for _, want := range []string{
+		root,
+		filepath.Join(root, "dir-00"),
+		filepath.Join(root, "dir-01"),
+		filepath.Join(root, "dir-02"),
+	} {
+		if _, ok := watchedSet[want]; !ok {
+			t.Fatalf("watched directories = %v, want shallow directory %q retained", watched, want)
+		}
+	}
+	for _, unexpected := range []string{
+		filepath.Join(root, "dir-00", "nested"),
+		filepath.Join(root, "dir-00", "nested", "deeper"),
+		filepath.Join(root, "dir-03"),
+	} {
+		if _, ok := watchedSet[unexpected]; ok {
+			t.Fatalf("watched directories = %v, did not want capped directory %q retained", watched, unexpected)
+		}
+	}
+}
+
+func TestAddCreatedTreeSharesWatchBudgetWithInitialWalk(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "initial")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatalf("mkdir initial directory: %v", err)
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	limiter := newDirWatchLimiter(watcher, 2)
+	if err := addInitialDirectories(context.Background(), limiter, root, gitWorkspace{}); err != nil {
+		t.Fatalf("addInitialDirectories: %v", err)
+	}
+
+	created := filepath.Join(root, "created")
+	if err := os.Mkdir(created, 0o755); err != nil {
+		t.Fatalf("mkdir created directory: %v", err)
+	}
+	if err := addCreatedTree(context.Background(), limiter, root, gitWorkspace{}, created); err != nil {
+		t.Fatalf("addCreatedTree over the watch cap: %v", err)
+	}
+
+	watched := watcher.WatchList()
+	if len(watched) != 2 {
+		t.Fatalf("watched directories = %d (%v), want total watches bounded by cap 2", len(watched), watched)
+	}
+	watchedSet := make(map[string]struct{}, len(watched))
+	for _, dir := range watched {
+		watchedSet[dir] = struct{}{}
+	}
+	if _, ok := watchedSet[created]; ok {
+		t.Fatalf("watched directories = %v, did not want over-cap created directory %q watched", watched, created)
+	}
+}
+
+func TestChangeInUnwatchedDirectoryStillNotifies(t *testing.T) {
+	root := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	previous := maxWatchedDirectories
+	maxWatchedDirectories = 1
+	defer func() { maxWatchedDirectories = previous }()
+
+	changes, err := Watch(ctx, root)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+
+	// The only watch is the root, so the created directory itself stays
+	// unwatched. Its creation must still surface through the watched root's
+	// Create event so the read model refresh remains reachable even when
+	// per-directory coverage degrades.
+	unwatched := filepath.Join(root, "beyond-cap")
+	if err := os.Mkdir(unwatched, 0o755); err != nil {
+		t.Fatalf("mkdir beyond-cap directory: %v", err)
+	}
+	waitForChange(t, changes)
+}
+
+func TestHandleEventReclaimsWatchBudgetOnRemoveAndRename(t *testing.T) {
+	root := t.TempDir()
+	victim := filepath.Join(root, "victim")
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	limiter := newDirWatchLimiter(watcher, 2)
+	if err := limiter.add(context.Background(), root); err != nil {
+		t.Fatalf("add root: %v", err)
+	}
+	if err := limiter.add(context.Background(), victim); err != nil {
+		t.Fatalf("add victim: %v", err)
+	}
+
+	// Removing a watched directory must free its budget slot.
+	if !handleEvent(context.Background(), limiter, root, gitWorkspace{}, fsnotify.Event{
+		Name: victim,
+		Op:   fsnotify.Remove,
+	}) {
+		t.Fatal("directory removal was not treated as a workspace change")
+	}
+	if limiter.used != 1 {
+		t.Fatalf("limiter budget after Remove = %d, want 1 (released)", limiter.used)
+	}
+	for _, dir := range watcher.WatchList() {
+		if dir == victim {
+			t.Fatalf("watch list still contains removed directory %q", dir)
+		}
+	}
+
+	// Renaming a watched directory must reclaim its slot too.
+	if !handleEvent(context.Background(), limiter, root, gitWorkspace{}, fsnotify.Event{
+		Name: victim,
+		Op:   fsnotify.Rename,
+	}) {
+		t.Fatal("directory rename was not treated as a workspace change")
+	}
+	if limiter.used != 1 {
+		t.Fatalf("limiter budget after Rename = %d, want 1 (already released)", limiter.used)
+	}
+
+	// The freed slot must be reusable by newly created directories.
+	created := filepath.Join(root, "created")
+	if err := os.Mkdir(created, 0o755); err != nil {
+		t.Fatalf("mkdir created directory: %v", err)
+	}
+	if err := addCreatedTree(context.Background(), limiter, root, gitWorkspace{}, created); err != nil {
+		t.Fatalf("addCreatedTree after reclaim: %v", err)
+	}
+	found := false
+	for _, dir := range watcher.WatchList() {
+		if dir == created {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("watch list = %v, want reclaimed budget spent on %q", watcher.WatchList(), created)
+	}
+}
+
+func TestLimiterAddIsIdempotent(t *testing.T) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	limiter := newDirWatchLimiter(watcher, 4096)
+	dir := t.TempDir()
+	if err := limiter.add(context.Background(), dir); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if err := limiter.add(context.Background(), dir); err != nil {
+		t.Fatalf("re-add of an already-watched directory: %v", err)
+	}
+	// Re-adding a watched directory must not consume a second budget slot:
+	// used must always equal the number of distinct watched directories.
+	if limiter.used != len(limiter.watched) || limiter.used != 1 {
+		t.Fatalf("used=%d watched=%d, want 1/1", limiter.used, len(limiter.watched))
+	}
+}
+
+func TestReleaseIgnoresPathsTheLimiterNeverWatched(t *testing.T) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	limiter := newDirWatchLimiter(watcher, 2)
+	// A nil limiter and paths outside the watched set must both be no-ops.
+	limiter.release(filepath.Join(t.TempDir(), "untracked"))
+	var nilLimiter *dirWatchLimiter
+	nilLimiter.release(filepath.Join(t.TempDir(), "untracked"))
+	if limiter.used != 0 {
+		t.Fatalf("limiter budget after releasing unwatched paths = %d, want 0", limiter.used)
 	}
 }
