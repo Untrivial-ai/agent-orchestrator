@@ -901,6 +901,16 @@ func bootstrapCommandForArchive(
 		"else\n" +
 		"  printf '%s\\n' " + shellQuote(strings.TrimSpace(bootstrap.DurableIdentity)) + " | sudo -n tee \"$identity_file\" >/dev/null\nfi\n" +
 		"sudo -n chown -R " + shellQuote(workerUser+":"+workerUser) + " " + shellQuote(layout.Repository) + " " + shellQuote(path.Dir(layout.WorkerData)) + "\n" +
+		// The dev-kit clones each extra repository as a sibling of the primary
+		// checkout (…/repository -> …/<name>), so the worker user must be able to
+		// create new entries directly in the durable root. Coder owns the root as
+		// the coder user and leaves it group-unwritable, which is why extra-repo
+		// clones failed with "could not create work tree dir: Permission denied".
+		// Grant the worker's group write on the root itself (not recursively, so
+		// Coder's own home contents are untouched) without transferring
+		// ownership, so Coder's tooling keeps full owner access.
+		"sudo -n chgrp " + shellQuote(workerUser) + " \"$durable_root\"\n" +
+		"sudo -n chmod g+rwx \"$durable_root\"\n" +
 		binaryPreparation +
 		"sudo -n install -o " + shellQuote(workerUser) + " -g " + shellQuote(workerUser) + " -m 0600 \"$stage/worker.env\" " + shellQuote(workerEnvironment) + "\n" +
 		"sudo -n install -o " + shellQuote(workerUser) + " -g " + shellQuote(workerUser) + " -m 0700 \"$stage/launch.sh\" " + shellQuote(workerLauncher) + "\n" +
