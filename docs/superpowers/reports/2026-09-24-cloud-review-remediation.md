@@ -4,9 +4,38 @@ Date: 2026-09-24
 Baseline: `9a92b900e9641bf75f1f7428edec26491017164d`
 Specification: [review remediation](../specs/2026-09-24-cloud-review-remediation.md)
 
-Status: implementation is local and automated regression checks pass. Native
-desktop interaction evidence and remote-provider validation are outstanding.
-No commit, push, PR update, worker image publication, or deployment was performed.
+Status: remediation committed locally as `432136da5`; publication requested.
+Automated regression checks pass. Native desktop evidence was added during
+publication preparation. Remote-provider validation remains outstanding.
+No worker image publication or deployment was performed.
+
+## Publication preparation
+
+The real Electron app ran from an isolated checkout with scratch data and fresh
+control-plane and worker binaries on Docker. It used development authentication,
+a placeholder harness credential, and a seeded public repository. No real
+provider credential was imported. Provider authentication was not established.
+
+Native paste initially failed: the canvas's default pointer action reclaimed
+focus from the hidden editable input. Canceling that default action preserves
+the input focus. The regression test checks both cancellation and focus.
+Actual desktop Edit Paste then delivered the OS clipboard text to the worker
+page. Text replacement, visible focus, resized frames, and viewer reattachment
+were also observed. Native undo/redo was attempted but not independently
+asserted; its component and worker-side checks remain separate.
+
+[Screenshots and a 43.6-second native recording](../../screenshots/pr-5543/README.md#review-follow-up-2026-09-24)
+show the real application and worker-hosted page. The local images only replace
+application binaries in the cached worker base; they are not published releases.
+
+The focused browser suite passed all 26 tests after the pointer-focus fix.
+The final frontend typecheck and complete suite passed: 341 files, 5,324 tests,
+7 skipped. Logs: `/tmp/ao69-publish-typecheck.log` and
+`/tmp/ao69-publish-frontend-full.log`.
+
+The evidence app, daemon, scratch checkout/profile/home, Docker services,
+workspace volume, local image tags, and ephemeral stack secrets were removed.
+Pre-existing demo services were left untouched.
 
 ## Follow-up review and verification
 
@@ -67,7 +96,7 @@ refresh remained unavailable because the daemon run-file was stale.
 | R4 | Nonblocking bounded CDP event queue, explicit overflow disconnect, command deadlines | Real loopback WebSocket event bursts, overflow, cancellation, and race tests |
 | R5 | Reject stale epochs and invalid/replayed sequences; cache prior control outcomes | Duplicate text executes once; stale epoch, eviction, and safe-integer epoch tests |
 | R6 | Recheck composer attachment ownership after delayed preparation | Close/reopen before creation returns uses one create and no stale detach |
-| R7 | Forward editing shortcuts with virtual key codes; bounded plain-text paste | Component tests plus actual Chromium select-all, replacement, undo, and redo; native desktop paste remains unverified |
+| R7 | Forward editing shortcuts with virtual key codes; bounded plain-text paste; retain editable pointer focus | Component and actual Chromium checks, plus native desktop selection, replacement, focus, and clipboard paste |
 | R8 | Require the matching resized frame to paint before coordinate input | Delayed painting, rapid resize acknowledgements, stale captured frames, and actual Chromium resize reversal |
 | R9 | Serialize first runtime initialization and avoid rewriting successful configuration | Concurrent first-use race test and initialization retry |
 | R10 | Normalize timeout before constructing the process runner | Default/explicit timeout checks and real blocked-process termination by runner and caller deadlines |
@@ -116,9 +145,9 @@ the unsuitable environment are not counted as passing full-suite evidence.
 
 ## Remaining boundaries
 
-- Real Electron selection/paste, focus, reconnect, and interaction captures are
-  still required before publishing these visible changes. Component tests and
-  headless Chromium are not substitutes for desktop evidence.
+- Native Electron input, focus, resize, and reattachment evidence is now attached.
+  Native undo/redo was not independently asserted in that run. Component and
+  worker-side coverage does not establish desktop shortcut behavior.
 - Remote Coder/NodeOps provisioning, provider authentication, and native macOS/
   Windows runners were not exercised here. No current remote CI result is claimed.
 - Copying remote selection into the local clipboard is not implemented.
@@ -142,6 +171,6 @@ compiler directories are removed after verification.
 
 ## Acceptance ledger
 
-Eleven finding gates have automated passing evidence. R7's native desktop
-selection/paste gate remains open, although its component and real Chromium
-checks pass. No gate was silently dropped or counted as a remote-provider pass.
+All finding gates have automated passing evidence. R7 also has native desktop
+selection/paste evidence from publication preparation. Remote-provider and
+native-platform gaps above remain explicit; local evidence does not close them.

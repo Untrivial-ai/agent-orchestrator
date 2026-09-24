@@ -303,6 +303,8 @@ export function CloudBrowserSurface({ model }: { model: CloudBrowserSurfaceModel
 				onKeyDown={(event) => key("keyDown", event)}
 				onKeyUp={(event) => key("keyUp", event)}
 				onPointerDown={(event) => {
+					// Keep native paste and composition focused on the text input.
+					event.preventDefault();
 					event.currentTarget.setPointerCapture(event.pointerId);
 					textInputRef.current?.focus();
 					pointer("pointerDown", event, Math.max(1, event.detail));

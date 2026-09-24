@@ -67,9 +67,10 @@ describe("mapCloudBrowserPoint", () => {
 			left: 100, top: 50, width: 400, height: 300, right: 500, bottom: 350,
 			x: 100, y: 50, toJSON: () => undefined,
 		});
-		fireEvent.pointerDown(canvas, {
+		expect(fireEvent.pointerDown(canvas, {
 			clientX: 300, clientY: 200, button: 0, buttons: 1, pointerId: 7, detail: 1,
-		});
+		})).toBe(false);
+		expect(screen.getByLabelText("Browser text input")).toHaveFocus();
 		expect(send).toHaveBeenCalledWith(expect.objectContaining({
 			type: "input", kind: "pointerDown", x: 400, y: 300, button: "left", buttons: 1,
 		}));
