@@ -17,4 +17,10 @@ describe("AgentAvatar", () => {
 
 		expect(screen.getByRole("img", { name: "omp" })).toHaveAttribute("src", expect.stringContaining("omp.png"));
 	});
+
+	it("renders the Codewhale brand asset", () => {
+		render(<AgentAvatar provider="codewhale" />);
+
+		expect(screen.getByRole("img", { name: "codewhale" })).toHaveAttribute("src", expect.stringContaining("codewhale.svg"));
+	});
 });

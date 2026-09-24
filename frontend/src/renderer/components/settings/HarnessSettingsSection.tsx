@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Download, LoaderCircle, LogIn, Search, TriangleAlert, X } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, LoaderCircle, LogIn, Search, TriangleAlert, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../../api/schema";
@@ -606,6 +606,10 @@ export function HarnessSettingsSection({
 								</div>
 							) : plan?.command ? (
 								<Button size="sm" variant="outline" onClick={() => void copyText(agentId, plan.command!)}>{copiedAgent === agentId ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}{copiedAgent === agentId ? t("settings.harness.copied") : t("settings.harness.copyCommand")}</Button>
+							) : plan?.documentationUrl ? (
+								<Button data-harness-primary-action="" size="sm" variant="outline" onClick={() => void aoBridge.app.openExternal(plan.documentationUrl)}>
+									<ExternalLink aria-hidden="true" />{t("settings.harness.installGuide")}
+								</Button>
 							) : null}
 
 				{!isInstalled && hasDiagnostics ? (

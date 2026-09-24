@@ -1876,6 +1876,7 @@
 	"settings.harness.install": "Install",
 	"settings.harness.installMethod": "Installation method",
 	"settings.harness.installFailed": "Installation failed.",
+	"settings.harness.installGuide": "打开安装指南",
 	"settings.harness.installed": "Installed",
 	"settings.harness.installationUnknown": "安装状态未知",
 	"settings.harness.authorized": "Authorized",

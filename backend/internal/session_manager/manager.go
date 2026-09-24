@@ -1111,6 +1111,10 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnSupervisor, err)
 	}
+	if err := m.prepareRuntimeLaunch(ctx, agent, id, ws.Path, systemPrompt, systemPromptFile, adapterConfig, env); err != nil {
+		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepare, err)
+	}
 	if err := m.lcm.PrepareLaunch(id, launchID); err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepareLaunch, err)
@@ -2593,6 +2597,10 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	if err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
 		return RestoreResult{}, fmt.Errorf("%s %s: supervisor: %w", operation, rec.ID, err)
+	}
+	if err := m.prepareRuntimeLaunch(ctx, agent, rec.ID, ws.Path, systemPrompt, systemPromptFile, agentConfig, env); err != nil {
+		m.cleanupSystemPromptDir(rec.ID)
+		return RestoreResult{}, fmt.Errorf("%s %s: runtime preparation: %w", operation, rec.ID, err)
 	}
 	if err := m.lcm.PrepareLaunch(rec.ID, launchID); err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
@@ -5007,6 +5015,15 @@ type preLauncher interface {
 	PreLaunch(ctx context.Context, cfg ports.LaunchConfig) error
 }
 
+// runtimeLaunchPreparer is an optional Agent capability for configuration that
+// must include AO's freshly assigned runtime generation. It runs after
+// superviseAgentProcess has pinned AO_RUNTIME_LAUNCH_ID and before the runtime
+// starts, so provider callbacks can carry the same stale-process fence used by
+// native AO hooks.
+type runtimeLaunchPreparer interface {
+	PrepareRuntimeLaunch(ctx context.Context, cfg ports.WorkspaceHookConfig) error
+}
+
 // workspaceCleaner is an optional Agent capability for durable agent-side state
 // that should be released only after AO has actually removed the workspace.
 type workspaceCleaner interface {
@@ -5045,6 +5062,22 @@ func (m *Manager) prepareWorkspace(ctx context.Context, agent ports.Agent, id do
 		}
 	}
 	return nil
+}
+
+func (m *Manager) prepareRuntimeLaunch(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath, systemPrompt, systemPromptFile string, agentConfig ports.AgentConfig, env map[string]string) error {
+	preparer, ok := agent.(runtimeLaunchPreparer)
+	if !ok {
+		return nil
+	}
+	return preparer.PrepareRuntimeLaunch(ctx, ports.WorkspaceHookConfig{
+		SessionID:        string(id),
+		WorkspacePath:    workspacePath,
+		DataDir:          m.dataDir,
+		Env:              env,
+		SystemPrompt:     systemPrompt,
+		SystemPromptFile: systemPromptFile,
+		Config:           agentConfig,
+	})
 }
 
 func (m *Manager) cleanupPreparedAgentWorkspace(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string, env map[string]string) {

@@ -107,6 +107,74 @@ func TestSessionsAPI_ActivityContentionRemainsRetryableAndRecordsUsage(t *testin
 	}
 }
 
+func TestSessionsAPI_CodewhaleLifecycleMapsRootEvents(t *testing.T) {
+	tests := []struct {
+		kind      string
+		wantState domain.ActivityState
+		wantEvent string
+		valid     bool
+	}{
+		{"session.started", "", "session-start", false},
+		{"turn.started", domain.ActivityActive, "user-prompt-submit", true},
+		{"turn.completed", domain.ActivityWaitingInput, "stop", true},
+		{"turn.failed", domain.ActivityWaitingInput, "stop", true},
+		{"turn.interrupted", domain.ActivityWaitingInput, "stop", true},
+		{"turn.stalled", domain.ActivityWaitingInput, "stop", true},
+		{"session.ended", domain.ActivityExited, "session-end", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.kind, func(t *testing.T) {
+			recorder := &fakeActivityRecorder{}
+			srv := newActivityTestServer(t, recorder)
+			body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity/codewhale?launchId=launch-7", `{
+				"at":"2026-09-24T10:00:00Z",
+				"event":{"schema_version":1,"seq":3,"event":"native-name","kind":"`+tc.kind+`","thread_id":"sess_native-1","turn_id":"turn-2","timestamp":"2026-09-24T10:00:01Z"}
+			}`)
+			if status != http.StatusOK {
+				t.Fatalf("status=%d body=%s", status, body)
+			}
+			got := recorder.gotSignal
+			if recorder.calls != 1 || got.State != tc.wantState || got.Valid != tc.valid || got.Event != tc.wantEvent || got.AgentSessionID != "sess_native-1" || got.LaunchID != "launch-7" || got.ProviderTurnID != "turn-2" {
+				t.Fatalf("signal = %+v, calls=%d", got, recorder.calls)
+			}
+			if !got.Timestamp.Equal(time.Date(2026, 9, 24, 10, 0, 1, 0, time.UTC)) {
+				t.Fatalf("timestamp = %v", got.Timestamp)
+			}
+		})
+	}
+}
+
+func TestSessionsAPI_CodewhaleLifecycleIgnoresSubagents(t *testing.T) {
+	recorder := &fakeActivityRecorder{}
+	srv := newActivityTestServer(t, recorder)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/activity/codewhale?launchId=launch-7",
+		`{"event":{"schema_version":1,"kind":"subagent.spawned","thread_id":"sess_native-1"}}`)
+	if status != http.StatusOK || recorder.calls != 0 {
+		t.Fatalf("status=%d calls=%d body=%s", status, recorder.calls, body)
+	}
+}
+
+func TestSessionsAPI_CodewhaleLifecycleRequiresGenerationAndSchema(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		url  string
+		body string
+	}{
+		{"missing launch", "/api/v1/sessions/ao-1/activity/codewhale", `{"event":{"schema_version":1,"kind":"turn.started","thread_id":"sess_1"}}`},
+		{"wrong schema", "/api/v1/sessions/ao-1/activity/codewhale?launchId=launch-1", `{"event":{"schema_version":2,"kind":"turn.started","thread_id":"sess_1"}}`},
+		{"missing thread", "/api/v1/sessions/ao-1/activity/codewhale?launchId=launch-1", `{"event":{"schema_version":1,"kind":"turn.started"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &fakeActivityRecorder{}
+			srv := newActivityTestServer(t, recorder)
+			_, status, _ := doRequest(t, srv, "POST", tc.url, tc.body)
+			if status != http.StatusBadRequest || recorder.calls != 0 {
+				t.Fatalf("status=%d calls=%d", status, recorder.calls)
+			}
+		})
+	}
+}
+
 func TestSessionsAPI_ActivitySanitizesAndBoundsUsageMetadata(t *testing.T) {
 	usage := &fakeUsageHookRecorder{}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))

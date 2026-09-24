@@ -1864,6 +1864,7 @@
 	"settings.harness.install": "Install",
 	"settings.harness.installMethod": "Installation method",
 	"settings.harness.installFailed": "Installation failed.",
+	"settings.harness.installGuide": "설치 가이드 열기",
 	"settings.harness.installed": "Installed",
 	"settings.harness.installationUnknown": "설치 상태를 알 수 없음",
 	"settings.harness.authorized": "Authorized",

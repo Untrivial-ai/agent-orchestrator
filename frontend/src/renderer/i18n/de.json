@@ -1864,6 +1864,7 @@
 	"settings.harness.install": "Install",
 	"settings.harness.installMethod": "Installation method",
 	"settings.harness.installFailed": "Installation failed.",
+	"settings.harness.installGuide": "Installationsanleitung öffnen",
 	"settings.harness.installed": "Installed",
 	"settings.harness.installationUnknown": "Installationsstatus unbekannt",
 	"settings.harness.authorized": "Authorized",

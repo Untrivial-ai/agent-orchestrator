@@ -87,6 +87,7 @@ var harnessProbeSpecs = map[string]harnessProbeSpec{
 	"kiro":        {BinaryName: "kiro-cli", VersionArg: "--version"},
 	"kilocode":    {BinaryName: "kilocode", VersionArg: "--version"},
 	"omp":         {BinaryName: "omp", VersionArg: "--version"},
+	"codewhale":   {BinaryName: "codewhale", VersionArg: "--version"},
 	"cursor":      {BinaryName: "cursor-agent"},
 	"continue":    {BinaryName: "cn"},
 }
