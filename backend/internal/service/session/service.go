@@ -1043,7 +1043,7 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Session
 	}
 	out := make([]domain.Session, 0, len(filtered))
 	for _, rec := range filtered {
-		sess, err := s.toSessionWithFacts(rec, prsBySession[rec.ID], runsBySession[rec.ID])
+		sess, err := s.toSessionWithFacts(ctx, rec, prsBySession[rec.ID], runsBySession[rec.ID])
 		if err != nil {
 			return nil, err
 		}
@@ -1129,7 +1129,7 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 	return sess, nil
 }
 
-func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun) (domain.Session, error) {
+func (s *Service) toSessionWithFacts(ctx context.Context, rec domain.SessionRecord, prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun) (domain.Session, error) {
 	// A row created before artifact_dir existed carries it as '' (the
 	// migration's default) even though session_manager always prompts the
 	// agent to write into the deterministic dataDir/artifacts/<id> path.
@@ -1138,14 +1138,34 @@ func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFa
 	// controller) are correct on this read, rather than waiting for
 	// lifecycle.Manager.ReconcileSessionOutputType's next poll tick to
 	// persist the backfill.
+	//
+	// The artifact-output poller skips terminated sessions (nothing more can
+	// happen to a session that is done), so a terminated legacy row would
+	// never get durably repaired through that path alone. Trigger the same
+	// reconcile here, on read, unconditionally of IsTerminated: it is a
+	// one-time self-healing write per legacy row (ArtifactDir is only ever
+	// empty once), not a recurring per-read cost once backfilled.
+	backfilledArtifactDir := false
 	if rec.Metadata.ArtifactDir == "" {
 		if dir := sessionartifacts.Dir(s.dataDir, rec.ID); dir != "" {
 			rec.Metadata.ArtifactDir = dir
+			backfilledArtifactDir = true
 		}
 	}
 	artifactFiles, err := sessionartifacts.List(rec.Metadata.ArtifactDir)
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("artifact files %s: %w", rec.ID, err)
+	}
+	if backfilledArtifactDir {
+		// Reflect the backfill in this response's OutputType too, not just
+		// future ones: the persisted write below lands asynchronously
+		// relative to this read.
+		rec.OutputType = sessionartifacts.DeriveOutputType(len(prs), len(artifactFiles))
+		if s.outputTypeReconciler != nil {
+			if err := s.outputTypeReconciler.ReconcileSessionOutputType(ctx, rec.ID); err != nil && s.logger != nil {
+				s.logger.Warn("backfill artifact_dir: reconcile output type", "session", rec.ID, "err", err)
+			}
+		}
 	}
 	runs = canonicalizeCurrentHeadReviewRuns(prs, runs)
 	prs = deduplicatePRFacts(prs)
@@ -1417,7 +1437,7 @@ func (s *Service) toSession(ctx context.Context, rec domain.SessionRecord) (doma
 	if err != nil {
 		return domain.Session{}, err
 	}
-	return s.toSessionWithFacts(rec, prs, runs)
+	return s.toSessionWithFacts(ctx, rec, prs, runs)
 }
 
 // currentHeadReviewRuns reads the session's AO review passes for the Kanban

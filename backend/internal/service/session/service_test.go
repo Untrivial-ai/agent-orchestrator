@@ -4410,6 +4410,52 @@ func TestGetBackfillsEmptyArtifactDirOnRead(t *testing.T) {
 	if len(got.ArtifactFiles) != 1 || got.ArtifactFiles[0].Name != "report.html" {
 		t.Fatalf("ArtifactFiles = %+v, want [report.html]", got.ArtifactFiles)
 	}
+	if got.OutputType != domain.SessionOutputArtifact {
+		t.Fatalf("OutputType = %q, want %q reflected in this same response, not just a future one", got.OutputType, domain.SessionOutputArtifact)
+	}
+}
+
+// TestGetBackfillsArtifactDirAndReconcilesEvenForTerminatedSessions is the
+// review regression for a gap in the read-triggered backfill above: the
+// artifact-output poller (observe/artifacts.Observer) explicitly skips
+// terminated sessions, so a terminated legacy row (ArtifactDir == "" from
+// before that column existed) could never get its durable OutputType
+// repaired through the poller alone, leaving its real artifact files hidden
+// from anything that filters on OutputType. Get must trigger the durable
+// reconcile unconditionally of IsTerminated.
+func TestGetBackfillsArtifactDirAndReconcilesEvenForTerminatedSessions(t *testing.T) {
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "report.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		IsTerminated: true,
+		Metadata:     domain.SessionMetadata{WorkspacePath: "/ws", ArtifactDir: ""},
+	}
+
+	reconciler := &fakeOutputTypeReconciler{}
+	svc := NewWithDeps(Deps{Store: st, DataDir: dataDir, OutputTypeReconciler: reconciler})
+
+	got, err := svc.Get(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata.ArtifactDir != artifactDir {
+		t.Fatalf("ArtifactDir = %q, want backfilled %q even though the session is terminated", got.Metadata.ArtifactDir, artifactDir)
+	}
+	if got.OutputType != domain.SessionOutputArtifact {
+		t.Fatalf("OutputType = %q, want %q", got.OutputType, domain.SessionOutputArtifact)
+	}
+	if len(reconciler.reconciled) != 1 || reconciler.reconciled[0] != "mer-1" {
+		t.Fatalf("reconciled = %v, want the durable reconcile triggered for the terminated session too", reconciler.reconciled)
+	}
 }
 
 // A reconcile failure must not fail an otherwise-successful claim: the
@@ -5302,7 +5348,7 @@ func TestToSessionWithFactsRemapsTransferredAliasReviewRuns(t *testing.T) {
 		CreatedAt: rec.UpdatedAt,
 	}}
 
-	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
+	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(context.Background(), rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5360,7 +5406,7 @@ func TestToSessionWithFactsCanonicalAliasRunSupersedesOlderAliasRun(t *testing.T
 		},
 	}
 
-	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
+	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(context.Background(), rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
 	if err != nil {
 		t.Fatal(err)
 	}
