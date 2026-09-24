@@ -15,10 +15,12 @@ import {
 	openPRs,
 	mergedPRCount,
 	primaryPR,
+	sessionArtifacts,
 	sortedPRs,
 	type AttentionZone,
 	type PRState,
 	type PullRequestFacts,
+	type SessionArtifact,
 	type SessionStatus,
 	type WorkspaceSession,
 	type WorkspaceSummary,
@@ -325,6 +327,44 @@ describe("PR helpers", () => {
 
 	it("primaryPR is undefined when there are no PRs", () => {
 		expect(primaryPR(sessionWith({ prs: [] }))).toBeUndefined();
+	});
+});
+
+describe("sessionArtifacts", () => {
+	const artifact = (overrides: Partial<SessionArtifact> & { path: string }): SessionArtifact => ({
+		kind: "file",
+		name: overrides.path,
+		size: 0,
+		updatedAt: "2026-01-01T00:00:00Z",
+		...overrides,
+	});
+
+	it("returns the artifact files when outputType is artifact", () => {
+		const session = sessionWith({
+			outputType: "artifact",
+			artifactFiles: [artifact({ path: "report.md", kind: "markdown" })],
+		});
+		expect(sessionArtifacts(session)).toEqual([artifact({ path: "report.md", kind: "markdown" })]);
+	});
+
+	it("is empty when outputType is pr, even if artifactFiles is populated", () => {
+		const session = sessionWith({
+			outputType: "pr",
+			artifactFiles: [artifact({ path: "report.md" })],
+		});
+		expect(sessionArtifacts(session)).toEqual([]);
+	});
+
+	it("returns the artifact files when outputType is pr_artifact (a session with both)", () => {
+		const session = sessionWith({
+			outputType: "pr_artifact",
+			artifactFiles: [artifact({ path: "report.md", kind: "markdown" })],
+		});
+		expect(sessionArtifacts(session)).toEqual([artifact({ path: "report.md", kind: "markdown" })]);
+	});
+
+	it("is empty when outputType is artifact but artifactFiles is absent", () => {
+		expect(sessionArtifacts(sessionWith({ outputType: "artifact" }))).toEqual([]);
 	});
 });
 

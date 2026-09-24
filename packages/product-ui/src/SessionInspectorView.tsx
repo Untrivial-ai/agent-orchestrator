@@ -232,6 +232,8 @@ export function InspectorSection({
 export function SessionInspectorSummaryView({
 	activity,
 	activityTitle,
+	artifactCards,
+	artifactTitle,
 	completion,
 	context,
 	pullRequestCards,
@@ -242,10 +244,14 @@ export function SessionInspectorSummaryView({
 }: {
 	activity: ReactNode;
 	activityTitle: string;
+	/** Omit alongside {@link artifactTitle} to skip the artifacts section entirely. */
+	artifactCards?: ReactNode;
+	artifactTitle?: string;
 	completion?: ReactNode;
 	context?: ReactNode;
-	pullRequestCards: ReactNode;
-	pullRequestTitle: string;
+	/** Omit alongside {@link pullRequestTitle} to skip the PR section entirely (e.g. no known PR output). */
+	pullRequestCards?: ReactNode;
+	pullRequestTitle?: string;
 	reviews?: ReactNode;
 	usage?: ReactNode;
 	/**
@@ -258,9 +264,16 @@ export function SessionInspectorSummaryView({
 		<div role="tabpanel">
 			{workers}
 			{context}
-			<InspectorSection surface={false} title={pullRequestTitle}>
-				<div className="flex flex-col gap-1.5">{pullRequestCards}</div>
-			</InspectorSection>
+			{pullRequestTitle ? (
+				<InspectorSection surface={false} title={pullRequestTitle}>
+					<div className="flex flex-col gap-1.5">{pullRequestCards}</div>
+				</InspectorSection>
+			) : null}
+			{artifactTitle ? (
+				<InspectorSection surface={false} title={artifactTitle}>
+					<div className="flex flex-col gap-1.5">{artifactCards}</div>
+				</InspectorSection>
+			) : null}
 			{reviews}
 			{completion}
 			<InspectorSection title={activityTitle}>{activity}</InspectorSection>

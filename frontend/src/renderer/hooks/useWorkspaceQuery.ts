@@ -17,6 +17,7 @@ import {
 	type AgentSwitchSummary,
 	type PRState,
 	type PullRequestFacts,
+	type SessionArtifact,
 	toAgentProvider,
 	toKanbanColumn,
 	toProjectKind,
@@ -68,6 +69,17 @@ function toPullRequestFacts(pr: components["schemas"]["SessionPRFacts"]): PullRe
 		mergeability: pr.mergeability,
 		reviewComments: pr.reviewComments,
 		updatedAt: pr.updatedAt,
+	};
+}
+
+function toSessionArtifact(artifact: components["schemas"]["SessionArtifact"]): SessionArtifact {
+	return {
+		kind: artifact.kind,
+		name: artifact.name,
+		path: artifact.path,
+		previewUrl: artifact.previewUrl,
+		size: artifact.size,
+		updatedAt: artifact.updatedAt,
 	};
 }
 
@@ -128,6 +140,8 @@ function toWorkspaceSession(
 		isPinned: session.isPinned ?? false,
 		pinnedAt: session.pinnedAt ?? undefined,
 		prs: (session.prs ?? []).map(toPullRequestFacts),
+		outputType: session.outputType,
+		artifactFiles: session.artifactFiles?.map(toSessionArtifact),
 	};
 }
 
@@ -195,6 +209,8 @@ function toLocalWorkspaceSession(
 		isPinned: session.isPinned ?? false,
 		pinnedAt: session.pinnedAt ?? undefined,
 		prs: (session.prs ?? []).map(toPullRequestFacts),
+		outputType: session.outputType,
+		artifactFiles: session.artifactFiles?.map(toSessionArtifact),
 	};
 }
 

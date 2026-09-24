@@ -13075,7 +13075,10 @@ export interface operations {
     };
     getSessionPreviewFile: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description When true, serve Markdown files as raw source instead of rendering them to HTML for Browser preview. */
+                raw?: boolean;
+            };
             header?: never;
             path: {
                 /** @description Session identifier, e.g. project-1. */
