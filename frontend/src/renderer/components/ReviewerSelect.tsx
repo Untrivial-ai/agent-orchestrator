@@ -299,7 +299,7 @@ function ReviewerHarnessOption({
 					return (
 						<OptionMenuItem
 							key={`${option.kind}:${option.value}`}
-								onSelect={() => onSelect(persistHarness, option.kind === "mode" ? { mode: option.value } : { model: option.value })}
+							onSelect={() => onSelect(persistHarness, option.kind === "mode" ? { mode: option.value } : { model: option.value })}
 							active={selected}
 						>
 							<span className="flex min-w-0 items-center justify-between gap-3">
