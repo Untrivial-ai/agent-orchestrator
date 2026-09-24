@@ -151,7 +151,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Start an asynchronous install for one fixed agent harness
+      summary: Start an asynchronous install, update, or uninstall for one fixed agent
+        harness
       tags:
       - agents
   /api/v1/agents/{agent}/models:
@@ -8117,12 +8118,26 @@ components:
           type: string
         reinstallReason:
           type: string
+        uninstallAvailable:
+          type: boolean
+        uninstallCommand:
+          type: string
+        uninstallReason:
+          type: string
+        updateAvailable:
+          type: boolean
+        updateCommand:
+          type: string
+        updateReason:
+          type: string
       required:
       - id
       - label
       - available
       - recommended
       - reinstallAvailable
+      - updateAvailable
+      - uninstallAvailable
       type: object
     AgentInstallPlan:
       properties:
@@ -12978,6 +12993,8 @@ components:
           enum:
           - install
           - reinstall
+          - update
+          - uninstall
           type: string
       type: object
     StartCodexAccountSwitchRequest:
