@@ -682,6 +682,19 @@ type launchArgvAgent struct {
 	argv []string
 }
 
+type runtimePreparingAgent struct {
+	launchArgvAgent
+	got ports.WorkspaceHookConfig
+}
+
+func (a *runtimePreparingAgent) PrepareRuntimeLaunch(_ context.Context, cfg ports.WorkspaceHookConfig) error {
+	a.got = cfg
+	if cfg.Env != nil {
+		cfg.Env["PROVIDER_RUNTIME_PREPARED"] = "1"
+	}
+	return nil
+}
+
 func (a launchArgvAgent) GetLaunchCommand(context.Context, ports.LaunchConfig) ([]string, error) {
 	return a.argv, nil
 }
@@ -1875,6 +1888,30 @@ func TestSpawn_WrapsSupervisedAgentAndPersistsGeneration(t *testing.T) {
 	}
 	if rec.Metadata.RuntimeLaunchID != "launch-7" {
 		t.Fatalf("stored launch id = %q, want launch-7", rec.Metadata.RuntimeLaunchID)
+	}
+}
+
+func TestSpawn_PreparesProviderRuntimeAfterAssigningGeneration(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	rt := &fakeRuntime{}
+	agent := &runtimePreparingAgent{launchArgvAgent: launchArgvAgent{argv: []string{"agent"}}}
+	m := New(Deps{
+		Runtime: rt, Agents: singleAgent{agent: agent}, Workspace: &fakeWorkspace{}, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: &fakeLCM{store: st}, DataDir: "/ao-data", RunFilePath: "/ao-data/running.json",
+		LookPath: func(string) (string, error) { return "/bin/true", nil }, NewLaunchID: func() string { return "launch-7" },
+	})
+	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessCodex}); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.got.Env[EnvRuntimeLaunchID]; got != "launch-7" {
+		t.Fatalf("preparer launch id = %q, want launch-7", got)
+	}
+	if agent.got.DataDir != "/ao-data" || agent.got.SessionID != "mer-1" {
+		t.Fatalf("preparer config = %+v", agent.got)
+	}
+	if rt.lastCfg.Env["PROVIDER_RUNTIME_PREPARED"] != "1" {
+		t.Fatalf("runtime did not receive preparer environment: %+v", rt.lastCfg.Env)
 	}
 }
 

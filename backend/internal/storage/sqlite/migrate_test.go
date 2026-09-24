@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
@@ -722,6 +724,33 @@ func TestMigrateAllowsEveryShippedHarness(t *testing.T) {
 		if !strings.Contains(schema, "'"+string(h)+"'") {
 			t.Errorf("sessions.harness CHECK is missing harness %q — the migration that widens it silently no-opped; schema:\n%s", h, schema)
 		}
+	}
+}
+
+func TestCodewhaleHarnessMigrationDownRestoresConstraint(t *testing.T) {
+	db := openMigratedTestDB(t)
+	if _, err := db.Exec(`
+INSERT INTO projects (id, path, registered_at, config)
+VALUES ('codewhale-project', '/repo/codewhale', ?, '{}');
+INSERT INTO sessions (id, project_id, num, harness, activity_last_at, created_at, updated_at)
+VALUES ('codewhale-project-1', 'codewhale-project', 1, 'codewhale', ?, ?, ?);
+`, time.Unix(100, 0).UTC(), time.Unix(101, 0).UTC(), time.Unix(101, 0).UTC(), time.Unix(101, 0).UTC()); err != nil {
+		t.Fatalf("insert codewhale session: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM change_log WHERE session_id = 'codewhale-project-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM sessions WHERE id = 'codewhale-project-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := goose.DownTo(db, "migrations", 154); err != nil {
+		t.Fatalf("down migration 155: %v", err)
+	}
+	if _, err := db.Exec(`
+INSERT INTO sessions (id, project_id, num, harness, activity_last_at, created_at, updated_at)
+VALUES ('codewhale-project-2', 'codewhale-project', 2, 'codewhale', ?, ?, ?)
+`, time.Unix(102, 0).UTC(), time.Unix(102, 0).UTC(), time.Unix(102, 0).UTC()); err == nil {
+		t.Fatal("codewhale harness remained allowed after migration down")
 	}
 }
 

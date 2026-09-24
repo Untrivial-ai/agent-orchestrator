@@ -34,6 +34,7 @@ function catalogWithInstalled(...installed: string[]) {
 			{ id: "codex", label: "Codex" },
 			{ id: "cursor", label: "Cursor" },
 			{ id: "goose", label: "Goose" },
+			{ id: "codewhale", label: "Codewhale" },
 		].map((agent) => ({
 			...agent,
 			installation: { state: installed.includes(agent.id) ? "installed" : "not_installed", freshness: "fresh", reason: "", reasonCode: "", attemptedAt: null, checkedAt: null },
@@ -76,6 +77,11 @@ const plans = {
 			command: "pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1>",
 			documentationUrl: "https://goose-docs.ai/docs/getting-started/installation/",
 			methods: [{ id: "official-installer", label: "Official installer", available: true, recommended: true, command: "pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <downloaded from https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1>", reinstallAvailable: false, reinstallReason: "No headless reinstall" }],
+		},
+		{
+			agentId: "codewhale", available: false, automatic: false, method: "manual",
+			reason: "AO does not automatically install Codewhale.", documentationUrl: "https://github.com/Hmbown/Codewhale",
+			methods: [{ id: "manual", label: "Manual", available: false, recommended: true, reason: "AO does not automatically install Codewhale.", reinstallAvailable: false }],
 		},
 	],
 };
@@ -217,6 +223,15 @@ describe("HarnessSettingsSection", () => {
 		const login = await within(row).findByRole("button", { name: "Login" });
 		await userEvent.click(login);
 		expect(openExternal).toHaveBeenCalledWith("https://example.test/login");
+	});
+
+	it("opens the installation guide for a manual-only harness", async () => {
+		const openExternal = vi.spyOn(aoBridge.app, "openExternal").mockResolvedValue(undefined);
+		renderSection();
+		const row = (await screen.findByText("Codewhale")).closest('[data-agent="codewhale"]') as HTMLElement;
+		await userEvent.click(await within(row).findByRole("button", { name: "Open installation guide" }));
+
+		expect(openExternal).toHaveBeenCalledWith("https://github.com/Hmbown/Codewhale");
 	});
 
 	it("shows cached readiness while silently refreshing when the page opens", async () => {

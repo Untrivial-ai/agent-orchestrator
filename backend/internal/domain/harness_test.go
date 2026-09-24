@@ -38,3 +38,12 @@ func TestOMPHarnessIsKnown(t *testing.T) {
 		t.Fatal("AllHarnesses does not contain HarnessOMP")
 	}
 }
+
+func TestCodewhaleHarnessIsKnown(t *testing.T) {
+	if HarnessCodewhale != AgentHarness("codewhale") {
+		t.Fatalf("HarnessCodewhale = %q, want codewhale", HarnessCodewhale)
+	}
+	if !HarnessCodewhale.IsKnown() {
+		t.Fatal("HarnessCodewhale.IsKnown() = false, want true")
+	}
+}

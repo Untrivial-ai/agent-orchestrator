@@ -3447,6 +3447,63 @@ paths:
       summary: Report an agent activity-state signal for a session
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/activity/codewhale:
+    post:
+      operationId: setCodewhaleSessionActivity
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CodewhaleLifecycleWebhookRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetActivityResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Service Unavailable
+      summary: Record a Codewhale lifecycle outbox event
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/agent-switches:
     get:
       operationId: listSessionAgentSwitches
@@ -8622,6 +8679,59 @@ components:
       - remoteUrl
       - destinationParent
       type: object
+    CodewhaleLifecycleEvent:
+      properties:
+        created_at:
+          format: date-time
+          type: string
+        event:
+          type: string
+        item_id:
+          type:
+          - "null"
+          - string
+        kind:
+          enum:
+          - session.started
+          - turn.started
+          - turn.completed
+          - turn.failed
+          - turn.interrupted
+          - turn.stalled
+          - session.ended
+          - subagent.spawned
+          - subagent.completed
+          type: string
+        payload: {}
+        schema_version:
+          type: integer
+        seq:
+          minimum: 0
+          type: integer
+        thread_id:
+          type: string
+        timestamp:
+          format: date-time
+          type: string
+        turn_id:
+          type: string
+      required:
+      - schema_version
+      - seq
+      - event
+      - kind
+      - thread_id
+      type: object
+    CodewhaleLifecycleWebhookRequest:
+      properties:
+        at:
+          format: date-time
+          type: string
+        event:
+          $ref: '#/components/schemas/CodewhaleLifecycleEvent'
+      required:
+      - event
+      type: object
     CodexAccountCapabilitiesResponse:
       properties:
         globalSwitch:
@@ -10130,6 +10240,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - codewhale
           - fake
           type: string
         approvalMode:
@@ -10753,6 +10864,7 @@ components:
           - kimchi
           - prime-agent
           - omp
+          - codewhale
           - cloudflared
           type: string
         updatedAt:
@@ -12887,6 +12999,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - codewhale
           type: string
         issueId:
           type: string

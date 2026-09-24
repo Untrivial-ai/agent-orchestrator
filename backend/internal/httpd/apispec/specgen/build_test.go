@@ -256,6 +256,18 @@ func TestBuild_OMPIsPubliclyDelegatable(t *testing.T) {
 	}
 }
 
+func TestBuild_CodewhaleIsPubliclySpawnableAndDelegatable(t *testing.T) {
+	doc := buildSchemas(t)
+	harnesses := doc.Components.Schemas["SpawnSessionRequest"].Properties["harness"].Enum
+	if !slices.Contains(harnesses, "codewhale") {
+		t.Fatalf("SpawnSessionRequest harness enum = %v, want codewhale", harnesses)
+	}
+	agents := doc.Components.Schemas["DelegateTaskRequest"].Properties["agent"].Enum
+	if !slices.Contains(agents, "codewhale") {
+		t.Fatalf("DelegateTaskRequest agent enum = %v, want codewhale", agents)
+	}
+}
+
 type schemaDocument struct {
 	Components struct {
 		Schemas map[string]struct {

@@ -12,6 +12,7 @@ import clineLogo from "../assets/agents/cline.svg";
 import claudeLogo from "../assets/agents/claude.svg";
 import claudeCodeLogo from "../assets/agents/claude-code.svg";
 import codexLogo from "../assets/agents/codex.svg";
+import codewhaleLogo from "../assets/agents/codewhale.svg";
 import continueLogo from "../assets/agents/continue.png";
 import copilotLogo from "../assets/agents/copilot.svg";
 import crushLogo from "../assets/agents/crush.png";
@@ -36,6 +37,7 @@ import vibeLogo from "../assets/agents/vibe.png";
 // Agents without an asset fall back to a lettered tile (fake).
 const LOGOS: AgentLogoSources = {
 	codex: codexLogo,
+	codewhale: codewhaleLogo,
 	"claude-code": claudeCodeLogo,
 	claude: claudeLogo,
 	cursor: cursorLogo,
