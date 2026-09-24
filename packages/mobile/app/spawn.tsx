@@ -3,7 +3,7 @@ import { Feather } from "../lib/icons";
 import BottomSheet, { BottomSheetView } from "@expo/ui/community/bottom-sheet";
 import * as DocumentPicker from "expo-document-picker";
 import { File } from "expo-file-system";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	InteractionManager,
 	Platform,
@@ -26,6 +26,7 @@ import { appendSpawnAttachments, type SpawnAttachment } from "../lib/spawn-attac
 import { SpawnComposerControls } from "../lib/spawn-composer-controls";
 import { SpawnPromptInput } from "../lib/spawn-prompt-input";
 import { useApp } from "../lib/store";
+import { useVoiceInput } from "../lib/voice/useVoiceInput";
 import type { Theme } from "../lib/theme";
 import { useTheme, useThemedStyles } from "../lib/ThemeProvider";
 import { Button } from "../lib/ui";
@@ -63,6 +64,10 @@ export default function SpawnModal() {
 	const [catalogError, setCatalogError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [offerTUI, setOfferTUI] = useState(false);
+	// Spoken text lands in the prompt the way it does in the chat composer:
+	// appended, so dictation can extend what was typed rather than replace it.
+	const voice = useVoiceInput({ onTranscript: useCallback((spoken: string) => setPrompt((old) => old ? `${old} ${spoken}` : spoken), []) });
+	const listening = voice.state === "starting" || voice.state === "recording";
 
 
 
@@ -122,6 +127,8 @@ export default function SpawnModal() {
 		|| catalogError
 		|| modelError
 		|| attachmentError
+		|| listening
+		|| voice.error
 		|| error
 		|| offerTUI,
 	);
@@ -298,6 +305,8 @@ export default function SpawnModal() {
 					{catalogError ? <Text style={styles.warn}>{catalogError}</Text> : null}
 					{modelError ? <Text style={styles.warn}>{modelError}</Text> : null}
 					{attachmentError ? <Text style={styles.warn}>{attachmentError}</Text> : null}
+					{listening ? <View style={styles.voice}><Feather name="mic" size={iconSize.xs} color={t.red} /><Text numberOfLines={2} style={styles.voiceText}>{voice.partial || (voice.state === "starting" ? "Keep holding…" : "Listening…")}</Text></View> : null}
+					{voice.error ? <Text accessibilityRole="alert" style={styles.warn}>{voice.error}</Text> : null}
 					{error ? <Text style={styles.error}>{error}</Text> : null}
 					{offerTUI ? <Button title="Create as Terminal UI instead" variant="ghost" icon="terminal" onPress={() => { selectMode("tui"); setOfferTUI(false); setError(null); }} /> : null}
 				</View> : null}
@@ -323,6 +332,7 @@ export default function SpawnModal() {
 					modelLabel={displayedModelLabel}
 					onSelectModel={selectModel}
 					onAttach={() => { void pickAttachments(); }}
+					voice={{ state: voice.state, mode: voice.mode, onPressIn: voice.pressIn, onPressOut: voice.pressOut }}
 					onSpawn={() => { void onSpawn(); }}
 					busy={busy}
 					disabled={!projectId || !harness || busy || modelLoading || loading}
@@ -379,6 +389,8 @@ const makeStyles = (t: Theme) =>
 		androidContent: { flex: 0, paddingTop: space.md, paddingBottom: space.none },
 		flexSpacer: { flex: 1 },
 		messages: { gap: space.xs },
+		voice: { flexDirection: "row", alignItems: "center", gap: space.xs, backgroundColor: t.tintRed, borderRadius: 8, paddingHorizontal: space.sm, paddingVertical: space.xs },
+		voiceText: { fontFamily: "Geist_400Regular", flex: 1, color: t.textSecondary, fontSize: type.caption2.fontSize },
 		promptHost: { width: "100%", height: 112 },
 		attachments: { gap: space.sm },
 		attachment: { maxWidth: 190, height: 36, flexDirection: "row", alignItems: "center", gap: space.xs, paddingHorizontal: space.sm, borderRadius: 12, borderCurve: "continuous", backgroundColor: t.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderSubtle },

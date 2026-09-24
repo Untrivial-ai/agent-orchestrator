@@ -25,7 +25,6 @@ export function SpawnPromptInput({ value, onChangeText }: SpawnPromptInputProps)
 			selectionColor={t.accent}
 			multiline
 			numberOfLines={3}
-			maxLength={4096}
 			textAlignVertical="top"
 			style={[
 				styles.input,

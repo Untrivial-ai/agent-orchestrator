@@ -22,7 +22,6 @@ export function SpawnPromptInput({ value, onChangeText, height = 112 }: SpawnPro
 				placeholder="What should this worker do?"
 				multiline
 				numberOfLines={3}
-				maxLength={4096}
 				autoFocus
 				style={{ height, paddingHorizontal: space.lg, paddingVertical: space.md }}
 				textStyle={{ fontFamily: "Geist_400Regular", color: t.textPrimary, fontSize: type.callout.fontSize }}

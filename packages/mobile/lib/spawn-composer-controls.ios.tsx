@@ -1,4 +1,4 @@
-import { Host } from "@expo/ui";
+import { Host, RNHostView } from "@expo/ui";
 import { Asset } from "expo-asset";
 import { Button, Group, HStack, Image, Menu, Spacer, Text, VStack } from "@expo/ui/swift-ui";
 import {
@@ -25,6 +25,10 @@ import { haptics } from "./haptics";
 import type { SpawnComposerControlsProps, SpawnComposerOption } from "./spawn-composer-controls.types";
 import { useTheme, useThemeState } from "./ThemeProvider";
 import { iconSize, press, space, type } from "./tokens";
+import { MicKey } from "./voice/MicKey";
+
+// The paperclip's frame, so the rail's two icon buttons match.
+const MIC_KEY_SIZE = 38;
 
 export function SpawnComposerControls({
 	projects,
@@ -38,6 +42,7 @@ export function SpawnComposerControls({
 	modelLabel,
 	onSelectModel,
 	onAttach,
+	voice,
 	onSpawn,
 	busy,
 	disabled,
@@ -146,6 +151,24 @@ export function SpawnComposerControls({
 							/>
 						))}
 					</Menu>
+
+					{/* Hold-to-talk needs press-in and press-out, which a SwiftUI
+					    Button doesn't expose, so the mic is the React Native key
+					    hosted inside the rail. Plain, like the paperclip: the rail's
+					    glass is the material, and a second disc would compete with it. */}
+					<RNHostView matchContents>
+						<View style={styles.micSlot}>
+							<MicKey
+								variant="plain"
+								size={MIC_KEY_SIZE}
+								glyphSize={iconSize.md}
+								state={voice.state}
+								mode={voice.mode}
+								onPressIn={voice.onPressIn}
+								onPressOut={voice.onPressOut}
+							/>
+						</View>
+					</RNHostView>
 				</HStack>
 
 				</VStack>
@@ -175,6 +198,7 @@ export function SpawnComposerControls({
 const styles = StyleSheet.create({
 	stack: { width: "100%", height: 150, gap: space.hair },
 	controlsHost: { width: "100%", height: 104 },
+	micSlot: { width: MIC_KEY_SIZE, height: MIC_KEY_SIZE, alignItems: "center", justifyContent: "center" },
 	spawnButton: {
 		height: 44,
 		borderRadius: 16,
