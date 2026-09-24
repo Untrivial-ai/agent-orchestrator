@@ -46,6 +46,7 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 		{"kimchi", "Log in to Kimchi", "kimchi", "Native browser login flow", "https://docs.kimchi.dev/docs/service-keys", "", ActionLogin, []string{"kimchi", "login"}},
 		{"prime-agent", "Log in to Prime Agent", "prime-agent", "Select Open login after Prime Agent finishes starting", "https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/quickstart.md", "/login\r", ActionLogin, []string{"prime-agent"}},
 		{"omp", "Log in to OMP", "omp", "Select Open login after OMP finishes starting", "https://github.com/can1357/oh-my-pi", "/login\r", ActionLogin, []string{"omp"}},
+		{"command-code", "Log in to Command Code", "cmd", "Native browser flow; an API key can be pasted in the terminal", "https://commandcode.ai/docs/quickstart", "", ActionLogin, []string{"cmd", "login"}},
 	}
 
 	svc := New(foundExecutables(cases), nil)
@@ -78,7 +79,7 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(data), "command") || strings.Contains(string(data), "terminalInput") || strings.Contains(string(data), "initialInput") {
+		if strings.Contains(string(data), `"command":`) || strings.Contains(string(data), `"terminalInput":`) || strings.Contains(string(data), `"initialInput":`) {
 			t.Fatalf("plan %q serialized trusted command data: %s", want.id, data)
 		}
 	}

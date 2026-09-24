@@ -22,7 +22,7 @@ func TestDeriverTokensAreKnownHarnesses(t *testing.T) {
 }
 
 func TestSupportsHarness(t *testing.T) {
-	for _, h := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode, domain.HarnessGrok, domain.HarnessMuse, domain.HarnessOpenCode, domain.HarnessKimi, domain.HarnessVibe, domain.HarnessPrimeAgent, domain.HarnessAmp, domain.HarnessPi, domain.HarnessAuggie, domain.HarnessContinue, domain.HarnessAider, domain.HarnessOMP} {
+	for _, h := range []domain.AgentHarness{domain.HarnessCodex, domain.HarnessClaudeCode, domain.HarnessGrok, domain.HarnessMuse, domain.HarnessOpenCode, domain.HarnessKimi, domain.HarnessVibe, domain.HarnessPrimeAgent, domain.HarnessAmp, domain.HarnessPi, domain.HarnessAuggie, domain.HarnessContinue, domain.HarnessAider, domain.HarnessOMP, domain.HarnessCommandCode} {
 		if !SupportsHarness(h) {
 			t.Errorf("SupportsHarness(%q) = false, want true", h)
 		}
@@ -72,6 +72,7 @@ func TestSignalCoverageForHarness(t *testing.T) {
 		{domain.HarnessClaudeCode, SignalCoverageComplete},
 		{domain.HarnessContinue, SignalCoveragePartial},
 		{domain.HarnessAider, SignalCoveragePartial},
+		{domain.HarnessCommandCode, SignalCoveragePartial},
 		{domain.HarnessCrush, SignalCoverageNone},
 	}
 
@@ -79,6 +80,25 @@ func TestSignalCoverageForHarness(t *testing.T) {
 		t.Run(string(tt.harness), func(t *testing.T) {
 			if got := CoverageForHarness(tt.harness); got != tt.want {
 				t.Fatalf("CoverageForHarness(%q) = %v, want %v", tt.harness, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCommandCodeDispatchesAvailableLifecycleSignals(t *testing.T) {
+	for _, tc := range []struct {
+		event string
+		want  domain.ActivityState
+	}{
+		{event: "session-start", want: domain.ActivityActive},
+		{event: "pre-tool-use", want: domain.ActivityActive},
+		{event: "post-tool-use", want: domain.ActivityActive},
+		{event: "stop", want: domain.ActivityIdle},
+	} {
+		t.Run(tc.event, func(t *testing.T) {
+			got, ok := Derive("command-code", tc.event, []byte(`{"session_id":"native-1"}`))
+			if !ok || got != tc.want {
+				t.Fatalf("Derive(command-code, %q) = (%q, %v), want (%q, true)", tc.event, got, ok, tc.want)
 			}
 		})
 	}

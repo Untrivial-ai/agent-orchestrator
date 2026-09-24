@@ -178,6 +178,7 @@ func TestOMPAndHelpBackedAgentsUseDocumentedDiscoveryCommands(t *testing.T) {
 		{agent: "copilot", want: []string{"help", "config"}},
 		{agent: "droid", want: []string{"exec", "--help"}},
 		{agent: "crush", want: []string{"models"}},
+		{agent: "command-code", want: []string{"--list-models"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.agent, func(t *testing.T) {
@@ -469,6 +470,36 @@ gpt-oss-120b-medium  GPT-OSS 120B (Medium)
 		{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6 (Thinking)"},
 		{ID: "gemini-3.7-flash-high", Label: "Gemini 3.7 Flash (High)"},
 		{ID: "gpt-oss-120b-medium", Label: "GPT-OSS 120B (Medium)"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("models = %#v, want %#v", got, want)
+	}
+}
+
+func TestCommandCodeCatalogParsesTabularModelList(t *testing.T) {
+	got, err := commandSpecs["command-code"].parser([]byte(`Available models  ·  3 models
+
+Anthropic
+
+anthropic/claude-opus-4-1  Claude Opus 4.1
+anthropic/claude-sonnet-4-6  FREE Claude Sonnet 4.6 (default)
+
+OpenAI
+
+openai/gpt-5.4  GPT-5.4
+
+Pass the full id, or just the short name after the last "/":
+cmd --model openai/gpt-5.4
+
+Docs:  https://commandcode.ai/docs/models
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ports.AgentModelInfo{
+		{ID: "anthropic/claude-opus-4-1", Label: "Claude Opus 4.1"},
+		{ID: "anthropic/claude-sonnet-4-6", Label: "FREE Claude Sonnet 4.6 (default)"},
+		{ID: "openai/gpt-5.4", Label: "GPT-5.4"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("models = %#v, want %#v", got, want)
