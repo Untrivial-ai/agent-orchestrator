@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -382,42 +383,64 @@ func TestSanitizeRemotePayloadDropsUnlistedReviewKeys(t *testing.T) {
 	}
 }
 
-// Person profiles are only written by the handle-carrying $set, so it must carry
-// the running version too, or the profile keeps a version from months ago.
-func TestPersonSetCarriesCurrentVersion(t *testing.T) {
-	sink := &PostHogSink{appVersion: "0.13.1-nightly.202609232348"}
-	props := sink.properties(ports.TelemetryEvent{
-		Name:    "ao.session.spawned",
-		Source:  "session_service",
-		Payload: map[string]any{"github_actor": "octocat"},
-	})
-	set, ok := props["$set"].(map[string]any)
-	if !ok {
-		t.Fatalf("properties.$set type = %T, want map[string]any", props["$set"])
-	}
-	for key, want := range map[string]string{
-		"github_actor":    "octocat",
-		"app_version":     "0.13.1-nightly.202609232348",
-		"ao_version":      "0.13.1-nightly.202609232348",
-		"version_channel": "nightly",
-	} {
-		if set[key] != want {
-			t.Errorf("$set.%s = %#v, want %q", key, set[key], want)
+// Older renderer builds wrote per-build values to person profiles, and nothing
+// refreshed them, so a profile kept showing a months-old version. The one
+// identified update clears them on the wire; later events stay anonymous.
+func TestPostHogSinkClearsStalePersonProperties(t *testing.T) {
+	requests := make(chan map[string]any, 2)
+	sink, err := NewPostHogSink(t.TempDir(), "phc_test", "https://us.i.posthog.com", "0.13.1-nightly.202609232348", "", roundTripClient(func(req *http.Request) (*http.Response, error) {
+		defer req.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
 		}
+		requests <- body
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"status":1}`))}, nil
+	}), nil)
+	if err != nil {
+		t.Fatalf("NewPostHogSink: %v", err)
 	}
-}
+	for range 2 {
+		sink.Emit(context.Background(), ports.TelemetryEvent{
+			Name:    "ao.session.spawned",
+			Source:  "session_service",
+			Payload: map[string]any{"github_actor": "octocat"},
+		})
+	}
+	if err := sink.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	close(requests)
 
-// A dev build with no version stamps no version, rather than an empty string
-// that would overwrite a real one on the profile.
-func TestPersonSetOmitsVersionWhenUnknown(t *testing.T) {
-	props := (&PostHogSink{}).properties(ports.TelemetryEvent{
-		Name:    "ao.session.spawned",
-		Payload: map[string]any{"github_actor": "octocat"},
-	})
-	set, _ := props["$set"].(map[string]any)
-	for _, key := range []string{"app_version", "ao_version", "version_channel"} {
-		if _, ok := set[key]; ok {
-			t.Errorf("$set.%s present with no app version: %#v", key, set[key])
+	var bodies []map[string]any
+	for body := range requests {
+		bodies = append(bodies, body)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("sent %d requests, want 2", len(bodies))
+	}
+	first, _ := bodies[0]["properties"].(map[string]any)
+	unset, ok := first["$unset"].([]any)
+	if !ok {
+		t.Fatalf("first event $unset = %#v, want a list", first["$unset"])
+	}
+	got := map[string]bool{}
+	for _, k := range unset {
+		got[k.(string)] = true
+	}
+	for _, want := range []string{"ao_version", "app_version", "build_mode", "platform", "surface"} {
+		if !got[want] {
+			t.Errorf("$unset missing %q: %v", want, unset)
 		}
+	}
+	if first["ao_version"] != "0.13.1-nightly.202609232348" {
+		t.Errorf("event ao_version = %#v, want the running build", first["ao_version"])
+	}
+	second, _ := bodies[1]["properties"].(map[string]any)
+	if _, ok := second["$unset"]; ok {
+		t.Errorf("second event touched the profile again: %#v", second["$unset"])
+	}
+	if second["$process_person_profile"] != false {
+		t.Errorf("second event $process_person_profile = %#v, want false", second["$process_person_profile"])
 	}
 }

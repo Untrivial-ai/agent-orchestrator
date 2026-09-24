@@ -476,22 +476,22 @@ func (s *PostHogSink) properties(ev ports.TelemetryEvent) map[string]any {
 	// re-sending $set on every spawn would only multiply identified-event cost
 	// (see $process_person_profile above) against the 200 spawns/day the limiter
 	// allows. github_actor still rides every spawn as an event property, so
-	// activity breakdowns stay complete. The version rides the same $set because
-	// person profiles are otherwise never updated: without it the profile keeps
-	// whatever version an install reported before profiles were turned off. Once
-	// per process is enough, since an update restarts the daemon.
+	// activity breakdowns stay complete.
 	if actor, ok := props["github_actor"]; ok && s.personProfileSet.CompareAndSwap(false, true) {
-		set := map[string]any{"github_actor": actor}
-		for _, key := range []string{"app_version", "ao_version", "version_channel"} {
-			if v, ok := props[key]; ok {
-				set[key] = v
-			}
-		}
-		props["$set"] = set
+		props["$set"] = map[string]any{"github_actor": actor}
+		props["$unset"] = stalePersonProperties
 		props["$process_person_profile"] = true
 	}
 	return props
 }
+
+// stalePersonProperties are per-build values that older renderer builds wrote to
+// person profiles before profiles were turned off. Nothing refreshes them, so an
+// install running 0.13.1 still showed 0.10.4 on its profile. They are cleared
+// rather than refreshed: every event carries the current value, and a profile
+// copy would go stale again on the next update. Read versions from event
+// properties, never the person.
+var stalePersonProperties = []string{"ao_version", "app_version", "build_mode", "platform", "surface"}
 
 func remoteEventName(name string) string {
 	if alias, ok := remoteEventNameAliases[name]; ok {
