@@ -18,6 +18,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/pricing"
+	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 )
 
 type activityCapture struct {
@@ -1817,6 +1818,58 @@ func TestHooks_CursorTerminalFailureReportsCorrelatedCompletion(t *testing.T) {
 			}
 			if req.State != "active" || req.Event != tt.wantEvent || req.ToolName != tt.wantTool {
 				t.Fatalf("terminal-failure activity = %+v, want state=active event=%q toolName=%q", req, tt.wantEvent, tt.wantTool)
+			}
+		})
+	}
+}
+
+func TestHooks_DaemonNotRunningStaysOutOfStderr(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, cfg testConfig)
+		alive func(int) bool
+	}{
+		{
+			name: "stale run-file",
+			setup: func(t *testing.T, cfg testConfig) {
+				if err := runfile.Write(cfg.runFile, runfile.Info{
+					PID: 999999, Port: 3001, StartedAt: time.Unix(100, 0).UTC(),
+				}); err != nil {
+					t.Fatalf("write run-file: %v", err)
+				}
+			},
+			alive: func(int) bool { return false },
+		},
+		{
+			name:  "no run-file",
+			setup: func(t *testing.T, cfg testConfig) {},
+			alive: func(int) bool { return true },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AO_SESSION_ID", "ao-7")
+			cfg := setConfigEnv(t)
+			tc.setup(t, cfg)
+
+			_, errOut, err := executeCLI(t, Deps{
+				In:           strings.NewReader(`{"reason":"logout"}`),
+				ProcessAlive: tc.alive,
+			}, "hooks", "claude-code", "session-end")
+			if err != nil {
+				t.Fatalf("hooks must exit 0 when the daemon is down, got: %v", err)
+			}
+			if errOut != "" {
+				t.Errorf("daemon-down must not reach the agent's stderr, got %q", errOut)
+			}
+
+			logged, err := os.ReadFile(filepath.Join(cfg.dataDir, hooksLogName))
+			if err != nil {
+				t.Fatalf("daemon-down must still be recorded in hooks.log: %v", err)
+			}
+			if !strings.Contains(string(logged), "daemon is not running") {
+				t.Errorf("hooks.log missing the daemon-down notice, got %q", logged)
 			}
 		})
 	}

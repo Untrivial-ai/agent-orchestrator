@@ -75,7 +75,7 @@ export function SpawnComposerControls({
 				<View style={styles.divider} />
 				<SelectorButton label={harnessLabel} icon="terminal" harness={harness} onPress={() => setOpenMenu("harness")} style={styles.railButton} />
 				<View style={styles.divider} />
-				<SelectorButton label={modelLabel} icon="cpu" onPress={() => setOpenMenu("model")} style={styles.railButton} />
+				<SelectorButton label={modelLabel} onPress={() => setOpenMenu("model")} style={styles.railButton} />
 			</View>
 
 			<Pressable
@@ -98,7 +98,7 @@ export function SpawnComposerControls({
 
 function SelectorButton({ label, icon, harness, onPress, style }: {
 	label: string;
-	icon: keyof typeof Feather.glyphMap;
+	icon?: keyof typeof Feather.glyphMap;
 	harness?: string;
 	onPress: () => void;
 	style?: object;
@@ -113,7 +113,7 @@ function SelectorButton({ label, icon, harness, onPress, style }: {
 			onPress={onPress}
 			style={[styles.selector, style]}
 		>
-			{harness ? <AgentLogo harness={harness} size={20} /> : <Feather name={icon} size={15} color={t.textSecondary} />}
+			{harness ? <AgentLogo harness={harness} size={20} /> : icon ? <Feather name={icon} size={15} color={t.textSecondary} /> : null}
 			<Text numberOfLines={1} style={styles.selectorLabel}>{label}</Text>
 			<Feather name="chevron-down" size={15} color={t.textTertiary} />
 		</Pressable>

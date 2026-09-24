@@ -1,7 +1,6 @@
 @import "tailwindcss";
-@import "../../../landing/packages/ui/src/globals.css";
-@import "../../../site-theme/tokens.css";
-@import "../../../site-theme/prose.css";
+@import "../styles/tokens.css";
+@import "../styles/prose.css";
 @import "fumadocs-ui/style.css";
 @import "fumadocs-ui/css/shadcn.css";
 

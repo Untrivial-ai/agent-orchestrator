@@ -7,6 +7,9 @@ const config = {
   output: "export",
   reactStrictMode: true,
   trailingSlash: true,
+  turbopack: {
+    root: import.meta.dirname,
+  },
   images: {
     unoptimized: true,
   },

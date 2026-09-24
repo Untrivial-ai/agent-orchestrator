@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +16,36 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestRecheckAgentLogsFailure(t *testing.T) {
+	var logs lockedBuffer
+	svc := NewWithDeps(Deps{Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	svc.RecheckAgent("not-a-real-agent")
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(logs.String(), "readiness recheck failed") {
+		time.Sleep(time.Millisecond)
+	}
+	if !strings.Contains(logs.String(), "readiness recheck failed") {
+		t.Fatalf("log = %q, want readiness failure", logs.String())
+	}
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.Write(data)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.String()
+}
 
 type readinessTestAgent struct {
 	resolveCalls atomic.Int32
@@ -905,5 +938,40 @@ func TestReadinessCoordinatorRejectsInvalidPurposeAndUnknownAgent(t *testing.T) 
 		if !errors.As(err, &unsupported) {
 			t.Fatalf("unknown agent error = %T, want unsupportedAgentError", err)
 		}
+	}
+}
+
+// A credential AO could not validate must sit between the two definite
+// answers: it is not ready, so nothing renders green, and it is not not_ready,
+// so nothing is blocked. The old behaviour collapsed it into authorized, which
+// is how a revoked key rendered as a working agent.
+func TestReadinessCoordinatorTreatsConfiguredAsUnverified(t *testing.T) {
+	t.Parallel()
+	agent := &readinessTestAgent{
+		resolve: func(context.Context) (string, error) { return "/bin/claude", nil },
+		auth: func(context.Context) (ports.AgentAuthStatus, error) {
+			return ports.AgentAuthStatusConfigured, nil
+		},
+	}
+	coordinator := newReadinessCoordinator(readinessCoordinatorConfig{
+		Agents: []agentregistry.HarnessAgent{readinessHarness("claude-code", "Claude Code", agent)},
+	})
+
+	items, err := coordinator.Ensure(context.Background(), nil, domain.AgentReadinessPurposeDisplay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := items[0].Authentication.State; got != domain.AgentAuthenticationConfigured {
+		t.Fatalf("authentication state = %q, want %q", got, domain.AgentAuthenticationConfigured)
+	}
+	if got := items[0].Authentication.ReasonCode; got != domain.AgentReadinessReasonAuthConfigured {
+		t.Fatalf("reason code = %q, want %q", got, domain.AgentReadinessReasonAuthConfigured)
+	}
+	if got := items[0].EffectiveReadiness; got != domain.AgentReadinessUnknown {
+		t.Fatalf("effective readiness = %q, want %q — an unverified credential is neither ready nor blocked", got, domain.AgentReadinessUnknown)
+	}
+	// Recorded as an observation, not a failure, so it is not retried as one.
+	if items[0].Authentication.CheckedAt == nil {
+		t.Fatal("a configured verdict is a definite observation and must be marked checked")
 	}
 }

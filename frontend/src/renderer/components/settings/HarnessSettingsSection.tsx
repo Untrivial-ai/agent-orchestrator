@@ -42,6 +42,7 @@ const AUTH_STATE_RANK = {
 	authorized: 0,
 	not_applicable: 0,
 	unauthorized: 1,
+	configured: 2,
 	unknown: 2,
 } as const;
 const INSTALL_STATE_RANK = {
