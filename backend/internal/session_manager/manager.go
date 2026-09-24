@@ -1998,6 +1998,7 @@ func (m *Manager) LastArchiveNotice(id domain.SessionID) (preserved, saveFailed 
 	m.archiveNoticeMu.Lock()
 	defer m.archiveNoticeMu.Unlock()
 	notice := m.archiveNotices[id]
+	delete(m.archiveNotices, id)
 	return notice.Preserved, notice.SaveFailed
 }
 
@@ -3436,16 +3437,16 @@ func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecor
 	defer releaseWorkspaceGate()
 
 	// Check the shutdown-saved marker: is there a session_worktrees row?
-	rows, err := m.store.ListSessionWorktrees(ctx, rec.ID)
+	worktreeRows, err := m.store.ListSessionWorktrees(ctx, rec.ID)
 	if err != nil {
 		m.logger.Error("restore-all: list worktrees failed", "sessionID", rec.ID, "error", err)
 		return
 	}
-	if len(rows) == 0 {
+	if len(worktreeRows) == 0 {
 		// No marker: this session was killed by the user before shutdown.
 		return
 	}
-	rows = restorableWorktreeRows(rows)
+	rows := restorableWorktreeRows(worktreeRows)
 	if len(rows) == 0 {
 		return
 	}
@@ -3500,8 +3501,9 @@ func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecor
 	}
 
 	// Step 2: replay preserve ref when one was recorded.
+	var preservedApplied map[string]bool
 	if restoredWorkspaceProject {
-		m.applyWorkspaceProjectPreserved(ctx, projectRows)
+		preservedApplied = m.applyWorkspaceProjectPreserved(ctx, projectRows, rows)
 	} else {
 		var preserveRef string
 		for _, r := range rows {
@@ -3543,11 +3545,30 @@ func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecor
 	// One-shot: drop the consumed marker so it never outlives one restart
 	// (#2319). A still-live session re-acquires it at the next quit.
 	if restoredWorkspaceProject {
+		markersByRepo := make(map[string]domain.SessionWorktreeRecord, len(rows))
+		for _, marker := range rows {
+			markersByRepo[marker.RepoName] = marker
+		}
+		recordedRepos := make(map[string]struct{}, len(worktreeRows))
+		for _, row := range worktreeRows {
+			recordedRepos[row.RepoName] = struct{}{}
+		}
 		for _, row := range projectRows {
-			// Shutdown restore already applied the snapshot. Clear it so the
-			// one-shot marker cannot be applied again. Interactive archive rows
-			// are not in this loop: they are state active, not removed.
-			if err := m.writeWorkspaceProjectRowState(ctx, row, "active", false); err != nil {
+			_, shutdownMarker := markersByRepo[row.RepoName]
+			// A successful replay consumes its ref. On conflict or failure,
+			// retain the ref so the user can retry it after startup.
+			keepPreserved := shutdownMarker && !preservedApplied[row.RepoName]
+			if !shutdownMarker {
+				// The one-marker fallback reconstructs the workspace repo list.
+				// Persist newly discovered inventory rows, but do not replay or
+				// rewrite existing non-marker rows (which may hold active archive
+				// refs that must wait for explicit reapply).
+				if _, alreadyRecorded := recordedRepos[row.RepoName]; alreadyRecorded {
+					continue
+				}
+				keepPreserved = false
+			}
+			if err := m.writeWorkspaceProjectRowState(ctx, row, "active", keepPreserved); err != nil {
 				m.logger.Warn("restore-all: marking workspace repo active failed", "sessionID", rec.ID, "repo", row.RepoName, "error", err)
 			}
 		}
@@ -3874,32 +3895,30 @@ func (m *Manager) restoreWorkspaceProjectRows(ctx context.Context, rows []ports.
 	return root, nil
 }
 
-func (m *Manager) applyWorkspaceProjectPreserved(ctx context.Context, rows []ports.WorkspaceRepoInfo) {
-	for _, row := range rows {
-		var preserveRef string
-		sessionRows, err := m.store.ListSessionWorktrees(ctx, row.SessionID)
-		if err != nil {
-			m.logger.Error("restore-all: list worktrees failed", "sessionID", row.SessionID, "error", err)
+func (m *Manager) applyWorkspaceProjectPreserved(ctx context.Context, projectRows []ports.WorkspaceRepoInfo, markers []domain.SessionWorktreeRecord) map[string]bool {
+	applied := make(map[string]bool, len(markers))
+	for _, marker := range markers {
+		if marker.PreservedRef == "" {
 			continue
 		}
-		for _, sessionRow := range sessionRows {
-			if sessionRow.RepoName == row.RepoName {
-				preserveRef = sessionRow.PreservedRef
-				break
+		for _, row := range projectRows {
+			if row.RepoName != marker.RepoName {
+				continue
 			}
-		}
-		if preserveRef == "" {
-			continue
-		}
-		if applyErr := m.workspace.ApplyPreserved(ctx, workspaceInfoFromRepoInfo(row), preserveRef); applyErr != nil {
-			if errors.Is(applyErr, ports.ErrPreservedConflict) {
-				m.logger.Warn("restore-all: apply preserved produced conflicts; agent relaunched with conflict markers in place",
-					"sessionID", row.SessionID, "repo", row.RepoName, "ref", preserveRef, "error", applyErr)
+			if applyErr := m.workspace.ApplyPreserved(ctx, workspaceInfoFromRepoInfo(row), marker.PreservedRef); applyErr != nil {
+				if errors.Is(applyErr, ports.ErrPreservedConflict) {
+					m.logger.Warn("restore-all: apply preserved produced conflicts; agent relaunched with conflict markers in place",
+						"sessionID", row.SessionID, "repo", row.RepoName, "ref", marker.PreservedRef, "error", applyErr)
+				} else {
+					m.logger.Error("restore-all: apply preserved failed", "sessionID", row.SessionID, "repo", row.RepoName, "error", applyErr)
+				}
 			} else {
-				m.logger.Error("restore-all: apply preserved failed", "sessionID", row.SessionID, "repo", row.RepoName, "error", applyErr)
+				applied[marker.RepoName] = true
 			}
+			break
 		}
 	}
+	return applied
 }
 
 // Send delivers a message to a running session's agent through the guarded

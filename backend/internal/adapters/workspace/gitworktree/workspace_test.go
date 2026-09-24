@@ -380,6 +380,7 @@ func TestRestoreRefusesMissingLocalBranch(t *testing.T) {
 	}
 	missing := exec.Command("sh", "-c", "exit 1")
 	missingErr := missing.Run()
+	branchChecks := 0
 	ws.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		joined := strings.Join(args, " ")
 		switch {
@@ -388,6 +389,7 @@ func TestRestoreRefusesMissingLocalBranch(t *testing.T) {
 		case strings.Contains(joined, "worktree list --porcelain"):
 			return nil, nil
 		case strings.Contains(joined, "rev-parse --verify --quiet refs/heads/ao/proj-1"):
+			branchChecks++
 			return nil, missingErr
 		case strings.Contains(joined, "worktree add"):
 			t.Fatalf("Restore built a branch from a base ref: %v", args)
@@ -400,6 +402,9 @@ func TestRestoreRefusesMissingLocalBranch(t *testing.T) {
 	_, err = ws.Restore(context.Background(), cfg)
 	if !errors.Is(err, ports.ErrSessionBranchMissing) {
 		t.Fatalf("Restore err = %v, want missing local branch", err)
+	}
+	if branchChecks != 1 {
+		t.Fatalf("Restore checked local branch %d times, want exactly once", branchChecks)
 	}
 }
 

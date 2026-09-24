@@ -3400,6 +3400,20 @@ func TestKill_DirtyWorkspaceSnapshotsThenRemoves(t *testing.T) {
 	}
 }
 
+func TestLastArchiveNoticeConsumesNotice(t *testing.T) {
+	m, _, _, _ := newManager()
+	m.noteArchive("mer-1", archiveNotice{Preserved: true})
+
+	preserved, saveFailed := m.LastArchiveNotice("mer-1")
+	if !preserved || saveFailed {
+		t.Fatalf("first archive notice preserved=%v saveFailed=%v, want preserved", preserved, saveFailed)
+	}
+	preserved, saveFailed = m.LastArchiveNotice("mer-1")
+	if preserved || saveFailed {
+		t.Fatalf("second archive notice preserved=%v saveFailed=%v, want empty notice", preserved, saveFailed)
+	}
+}
+
 // TestKill_DirtyWorkspaceStaysWhenSnapshotFails: a failed snapshot must not
 // remove the folder. The session still terminates.
 func TestKill_DirtyWorkspaceStaysWhenSnapshotFails(t *testing.T) {
@@ -8763,6 +8777,67 @@ func TestRestoreAll_WorkspaceProjectRootOnlyMarkerRestoresRegisteredChildren(t *
 	}
 	if states[domain.RootWorkspaceRepoName] != "active" || states["api"] != "active" {
 		t.Fatalf("workspace project row states = %v, want active root and child", states)
+	}
+}
+
+func TestRestoreAll_OneChildMarkerLeavesOtherArchiveUntouched(t *testing.T) {
+	m, st, rt, ws := newLifecycleManager()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{
+		{Name: "api", RelativePath: "api"},
+		{Name: "web", RelativePath: "web"},
+	}
+	ws.applyErr = ports.ErrPreservedConflict
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:           "mer-1",
+		ProjectID:    "mer",
+		Kind:         domain.KindWorker,
+		Harness:      domain.HarnessClaudeCode,
+		IsTerminated: true,
+		Metadata:     domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1", AgentSessionID: "agent-w"},
+		Activity:     domain.Activity{State: domain.ActivityExited},
+	}
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
+		{SessionID: "mer-1", RepoName: "web", Branch: "ao/mer-1", WorktreePath: "/ws/mer-1/web", PreservedRef: "refs/ao/preserved/mer-1--web", State: "removed"},
+		{SessionID: "mer-1", RepoName: "api", Branch: "ao/mer-1", WorktreePath: "/ws/mer-1/api", PreservedRef: "refs/ao/preserved/mer-1--api", State: "active"},
+	}
+
+	if err := m.RestoreAll(ctx); err != nil {
+		t.Fatalf("RestoreAll err = %v", err)
+	}
+
+	if rt.created != 1 {
+		t.Fatalf("runtime.Create calls = %d, want 1", rt.created)
+	}
+	apiApplied := false
+	webApplied := false
+	for _, call := range ws.calls {
+		if strings.HasPrefix(call, "ApplyPreserved:api:") {
+			apiApplied = true
+		}
+		if call == "ApplyPreserved:web:refs/ao/preserved/mer-1--web" {
+			webApplied = true
+		}
+	}
+	if apiApplied {
+		t.Fatalf("active child archive snapshot was replayed: calls=%v", ws.calls)
+	}
+	if !webApplied {
+		t.Fatalf("shutdown marker snapshot was not replayed: calls=%v", ws.calls)
+	}
+	rows, err := st.ListSessionWorktrees(ctx, "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byRepo := make(map[string]domain.SessionWorktreeRecord, len(rows))
+	for _, row := range rows {
+		byRepo[row.RepoName] = row
+	}
+	if web := byRepo["web"]; web.State != "active" || web.PreservedRef != "refs/ao/preserved/mer-1--web" {
+		t.Fatalf("conflicted shutdown marker = %+v, want active with retryable ref", web)
+	}
+	if child := byRepo["api"]; child.State != "active" || child.PreservedRef != "refs/ao/preserved/mer-1--api" {
+		t.Fatalf("active child archive = %+v, want ref retained and not consumed", child)
 	}
 }
 

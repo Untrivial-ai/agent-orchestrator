@@ -298,7 +298,7 @@ func (w *Workspace) Create(ctx context.Context, cfg ports.WorkspaceConfig) (port
 		info.BaseRef = refs.baseRef
 		return info, nil
 	}
-	baseRef, err := w.addWorktree(ctx, repo, path, cfg.Branch, cfg.BaseBranch, cfg.BaseRef, true)
+	baseRef, err := w.addWorktree(ctx, repo, path, cfg.Branch, cfg.BaseBranch, cfg.BaseRef, true, false)
 	if err != nil {
 		return ports.WorkspaceInfo{}, err
 	}
@@ -954,16 +954,17 @@ func (w *Workspace) ApplyPreserved(ctx context.Context, info ports.WorkspaceInfo
 	// cherry-pick computes the diff between the preserve commit and its parent
 	// (the HEAD at save time) and 3-way-merges it onto the current working tree.
 	// On conflict it leaves textual conflict markers in the affected files and
-	// exits non-zero WITHOUT committing or moving HEAD. Conflict detection uses
-	// the exit code only (not output text) to stay locale-independent.
-	before, _ := w.gitCombined(ctx, statusPorcelainArgs(info.Path))
+	// exits non-zero WITHOUT committing or moving HEAD. Inspect the index only
+	// after failure: unmerged entries identify a content conflict, while an
+	// empty result means cherry-pick refused to start because of overlapping
+	// unstaged edits and the dirty-worktree merge fallback can handle it.
 	applyErr := w.runCherryPickNoCommit(ctx, info.Path, commitSHA)
 	if applyErr != nil {
-		after, _ := w.gitCombined(ctx, statusPorcelainArgs(info.Path))
-		// A content conflict updates the worktree. An unstaged overlap makes
-		// cherry-pick refuse before it writes anything, which would otherwise
-		// be reported as a conflict while leaving the saved edit out of the file.
-		if strings.TrimSpace(before) != strings.TrimSpace(after) {
+		unmerged, err := w.gitCombined(ctx, []string{"-C", info.Path, "ls-files", "--unmerged"})
+		if err != nil {
+			return fmt.Errorf("%w: inspect index after cherry-pick: %w (cherry-pick: %w)", ErrPreservedConflict, err, applyErr)
+		}
+		if strings.TrimSpace(unmerged) != "" {
 			return fmt.Errorf("%w: %w", ErrPreservedConflict, applyErr)
 		}
 		if err := w.applyPreservedOntoDirty(ctx, info.Path, commitSHA); err != nil {
@@ -1273,16 +1274,9 @@ func (w *Workspace) Restore(ctx context.Context, cfg ports.WorkspaceConfig) (por
 	if err := w.validateBranch(ctx, repo, recreateBranch); err != nil {
 		return ports.WorkspaceInfo{}, err
 	}
-	// The local branch has to already exist. Creating one from BaseRef or from
-	// a preserved snapshot would put the person on work they did not ask to reopen.
-	localBranch, err := w.refExists(ctx, repo, "refs/heads/"+recreateBranch)
-	if err != nil {
-		return ports.WorkspaceInfo{}, err
-	}
-	if !localBranch {
-		return ports.WorkspaceInfo{}, fmt.Errorf("%w: %q", ports.ErrSessionBranchMissing, recreateBranch)
-	}
-	baseRef, err := w.addWorktree(ctx, repo, path, recreateBranch, cfg.BaseBranch, cfg.BaseRef, false)
+	// addWorktree requires the local branch to exist before choosing its
+	// existing-vs-new branch path, so Restore never recreates a missing branch.
+	baseRef, err := w.addWorktree(ctx, repo, path, recreateBranch, cfg.BaseBranch, cfg.BaseRef, false, true)
 	if err != nil {
 		return ports.WorkspaceInfo{}, err
 	}
@@ -1375,7 +1369,7 @@ func registeredWorktreeDirMissing(rec worktreeRecord) (bool, error) {
 	return false, nil
 }
 
-func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBranch, baseRef string, resolveExistingBase bool) (string, error) {
+func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBranch, baseRef string, resolveExistingBase, requireExistingBranch bool) (string, error) {
 	// Refuse early if the branch is already checked out in another worktree:
 	// `git worktree add` will fail, but its stderr leaks through as an opaque
 	// 500. A typed sentinel lets the HTTP layer surface a 409.
@@ -1399,6 +1393,9 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 	localBranch, err := w.refExists(ctx, repo, "refs/heads/"+branch)
 	if err != nil {
 		return "", err
+	}
+	if requireExistingBranch && !localBranch {
+		return "", fmt.Errorf("%w: %q", ports.ErrSessionBranchMissing, branch)
 	}
 	if localBranch {
 		// Create needs a freshly resolved base for accurate initial diffs even
@@ -1444,7 +1441,6 @@ func (w *Workspace) addWorktree(ctx context.Context, repo, path, branch, baseBra
 	}
 
 	// Create reaches this path when the local branch does not exist yet.
-	// Restore refuses a missing local branch before it calls addWorktree.
 	if err := w.addNewBranchWorktree(ctx, repo, branch, path, seedRef, force); err != nil {
 		return "", fmt.Errorf("gitworktree: worktree add branch %q from %q: %w", branch, seedRef, err)
 	}
