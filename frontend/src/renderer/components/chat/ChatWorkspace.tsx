@@ -126,6 +126,7 @@ import {
 	queuedTurnIds,
 	type ConversationPlan,
 	type ConversationSnapshot,
+	type ConversationTurn,
 	type ControllerState,
 	type ChatConfigOption,
 	type ChatConfigOptionValue,
@@ -1427,10 +1428,7 @@ function ChatWorkspaceContent({
 									commandError={queueDraftError ?? (queueEdit && !queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId) ? "chat.draft.queueMissing" : commandError)}
 									settings={composerSettings}
 									busy={busy}
-									// Queueing is what happens behind a turn in flight. With the
-									// queue held after a failure the daemon dispatches the next
-									// message straight away, so promising otherwise is a lie.
-									willQueue={turn?.state === "running"}
+									willQueue={Boolean(workingTurn(snapshot))}
 									disabled={(snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}
 									// Switch/reconnect status is the topbar spinner beside ⋮ — not composer text.
 									disabledPlaceholder={
@@ -2057,6 +2055,7 @@ function Timeline({
 		useUiStore.getState().inspectorSessions[snapshot.sessionId]?.isOpen ?? true,
 	);
 	const turn = activeTurn(snapshot);
+	const inFlightTurn = workingTurn(snapshot);
 	const [scrollbar, setScrollbar] = useState({
 		visible: false,
 		top: 0,
@@ -2907,11 +2906,8 @@ function Timeline({
 							</div>
 						);
 					})}
-					{/* Only a running turn is working. A queue held behind a failed turn
-					    keeps an active turn in the snapshot with nothing in flight, and a
-					    Working bar there counts up forever against work nobody is doing. */}
-					{turn?.state === "running" && !groups.some((group) => group.turnId === turn.id) ? (
-						<TurnLiveStatus startedAt={turn.startedAt ?? turn.requestedAt} />
+					{inFlightTurn && !groups.some((group) => group.turnId === inFlightTurn.id) ? (
+						<TurnLiveStatus startedAt={inFlightTurn.startedAt ?? inFlightTurn.requestedAt} />
 					) : null}
 					{messageEdit && !editedMessageVisible ? (
 						<div className="flex justify-end" data-chat-scroll-anchor="">
@@ -3521,6 +3517,24 @@ function useStableCallback<Args extends unknown[], Result>(
 	// Only ever called from an event handler, which runs after the commit that
 	// updated the ref — there is no render-phase caller to read a stale closure.
 	return useCallback((...args: Args) => latest.current?.(...args), []);
+}
+
+/** Queued also means dispatching until the provider accepts the send. */
+function workingTurn(snapshot: ConversationSnapshot): ConversationTurn | undefined {
+	const turn = activeTurn(snapshot);
+	if (!turn || turn.state === "running") return turn;
+	const finished = snapshot.turns.reduce<ConversationTurn | undefined>((latest, candidate) => {
+		if (candidate.rolledBack || candidate.state === "cancelled" || !candidate.completedAt) return latest;
+		return !latest?.completedAt || Date.parse(candidate.completedAt) >= Date.parse(latest.completedAt)
+			? candidate : latest;
+	}, undefined);
+	if (!finished?.completedAt || (finished.state !== "failed" && finished.state !== "recovered")) return turn;
+	// Only the queue already present at failure is held. A fresh send bypasses
+	// that queue and must still show working during its own dispatch window.
+	const heldAt = Date.parse(finished.completedAt);
+	return snapshot.turns.find((candidate) =>
+		candidate.state === "queued" && Date.parse(candidate.requestedAt) > heldAt,
+	);
 }
 
 /** Retain an unchanged JSON-shaped value across snapshot refreshes. */

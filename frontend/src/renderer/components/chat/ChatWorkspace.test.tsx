@@ -587,19 +587,25 @@ describe("ChatWorkspace timeline", () => {
 		expect(onInterrupt).toHaveBeenCalledOnce();
 	});
 
-	it("does not call a queue held behind a failed turn working, and still offers stop", async () => {
+	it.each(["failed", "recovered"] as const)("does not call a queue held behind a %s turn working, and still offers stop", async (state) => {
 		const user = userEvent.setup();
 		const onInterrupt = vi.fn();
 		// A turn that fails holds its queue instead of draining it into the same
 		// outage, so the conversation sits with queued work and nothing in flight.
 		const snapshot: ConversationSnapshot = {
-			...idleSnapshot(chatFixtureSettled),
+			...chatFixtureEmpty,
 			turns: [
+				{
+					id: "turn-finished",
+					state,
+					requestedAt: "2026-08-08T00:00:00Z",
+					completedAt: "2026-08-08T00:00:02Z",
+				},
 				{
 					id: "turn-held",
 					state: "queued",
 					providerTurnId: "",
-					requestedAt: "2026-08-08T00:00:00Z",
+					requestedAt: "2026-08-08T00:00:01Z",
 				},
 			],
 		};
@@ -614,6 +620,35 @@ describe("ChatWorkspace timeline", () => {
 
 		await user.click(screen.getByRole("button", { name: "Stop turn" }));
 		expect(onInterrupt).toHaveBeenCalledOnce();
+	});
+
+	it.each([undefined, "completed", "interrupted", "failed", "recovered"] as const)("shows working and queue hints during a fresh dispatch after %s", (state) => {
+		const snapshot: ConversationSnapshot = {
+			...chatFixtureEmpty,
+			turns: [
+				...(state ? [{
+					id: "turn-finished",
+					state,
+					requestedAt: "2026-08-08T00:00:00Z",
+					completedAt: "2026-08-08T00:00:02Z",
+				}, {
+					id: "turn-older-queued",
+					state: "queued" as const,
+					requestedAt: "2026-08-08T00:00:01Z",
+				}] : []),
+				{
+					id: "turn-dispatching",
+					state: "queued",
+					requestedAt: "2026-08-08T00:00:03Z",
+				},
+			],
+		};
+
+		render(<ChatWorkspace snapshot={snapshot} onInterrupt={vi.fn()} />);
+
+		expect(screen.getByTestId("live-turn-status")).toHaveTextContent(/^Working for /);
+		expect(screen.getByText("Agent is working — this sends when it finishes")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Stop turn" })).toBeInTheDocument();
 	});
 
 	it("replaces the generic working label with Claude's live retry count and backoff", () => {
