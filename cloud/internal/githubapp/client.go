@@ -731,18 +731,22 @@ func (c *Client) repositoryToken(
 
 // resolveInstallationRepositoryIDs maps declared extra-repository full names
 // ("owner/repo") to their numeric IDs, but only for repositories the
-// installation actually has access to. It first enumerates the installation's
-// repositories; any declared name that the enumeration does not cover is retried
-// with a direct GET /repos/{owner}/{repo} using the installation token. That
-// fallback matters because the installation listing is eventually consistent: a
-// repository the App can access may not appear in the paginated list for a short
-// window after it is granted or flipped to private, and without the retry a
-// (typically private) extra would be dropped from the checkout scope even though
-// the App can read it. A repository the installation genuinely cannot access
-// returns 404 on that GET and is reported as unresolved rather than force-added,
-// so every returned ID is still one the installation can mint a token for and a
-// broadened checkout token never 422s. The result preserves input order, contains
-// no duplicates, and returns the declared names that could not be resolved.
+// installation can actually mint a token for. It first enumerates the
+// installation's repositories; any declared name the enumeration does not cover
+// is retried with a direct GET /repos/{owner}/{repo} and then confirmed grantable
+// by minting a single-repo token. The GET matters because the installation
+// listing is eventually consistent: a repository the App can access may not
+// appear in the paginated list for a short window after it is granted or flipped
+// to private, and without the retry a (typically private) extra would be dropped
+// from the checkout scope even though the App can read it. The mint confirmation
+// matters because GET /repos answers 200 for ANY public repository, including ones
+// outside this installation that it cannot scope a token to; adding such an ID
+// would 422 the whole broadened checkout token and fail the primary clone too. A
+// repository that is not grantable (404 on the GET, or a failed confirming mint)
+// is reported as unresolved rather than force-added, so every returned ID is still
+// one the installation can mint a token for and a broadened checkout token never
+// 422s. The result preserves input order, contains no duplicates, and returns the
+// declared names that could not be resolved.
 func (c *Client) resolveInstallationRepositoryIDs(
 	ctx context.Context,
 	installationID int64,
@@ -787,6 +791,17 @@ func (c *Client) resolveInstallationRepositoryIDs(
 			}
 			resolvedID, resolveErr := c.installationRepositoryID(ctx, fallbackToken, normalized)
 			if resolveErr != nil {
+				unresolved = append(unresolved, normalized)
+				continue
+			}
+			// GET /repos returns 200 for any public repo, including one outside
+			// this installation, but the installation can only scope a token to a
+			// repo it was granted. Confirm the repo is grantable before adding it,
+			// so a declared public extra outside the installation is dropped here
+			// instead of 422ing the whole checkout token mint (which would fail the
+			// primary clone). This keeps every returned ID one the installation can
+			// mint, exactly as the listing-only path guaranteed.
+			if _, mintErr := c.repositoryToken(ctx, installationID, resolvedID); mintErr != nil {
 				unresolved = append(unresolved, normalized)
 				continue
 			}

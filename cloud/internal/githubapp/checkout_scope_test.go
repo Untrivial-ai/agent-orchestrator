@@ -84,6 +84,7 @@ func newAppTestClient(t *testing.T, baseURL string, httpClient *http.Client) *Cl
 type installationRepositoryServer struct {
 	repos             []Repository
 	directRepos       map[string]Repository // fullName -> repo, resolvable only via GET /repos
+	notMintable       map[int64]bool        // repo IDs that read (GET 200) but 422 on a scoped mint
 	mintedRepoIDs     []int64
 	mintedPermissions map[string]string
 	tokenCalls        int
@@ -101,6 +102,15 @@ func (h *installationRepositoryServer) handler(t *testing.T) http.HandlerFunc {
 				Permissions   map[string]string `json:"permissions"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			// A repo the installation cannot scope a token to (e.g. a public repo
+			// outside the installation) fails the mint with 422, even though GET
+			// /repos answered 200 for it.
+			for _, id := range body.RepositoryIDs {
+				if h.notMintable[id] {
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					return
+				}
+			}
 			// The read-scoped checkout mint is the one that carries permissions;
 			// the installation-wide list mint sends an empty body.
 			if len(body.Permissions) > 0 {
@@ -295,6 +305,38 @@ func TestIssueCheckoutGrantResolvesExtraViaDirectFallback(t *testing.T) {
 	}
 	if backend.directGetCalls != 1 {
 		t.Fatalf("direct GET calls = %d, want 1 (octo/private)", backend.directGetCalls)
+	}
+}
+
+func TestIssueCheckoutGrantExcludesReadableButUnmintableExtra(t *testing.T) {
+	backend := &installationRepositoryServer{
+		repos: []Repository{{ID: 1, FullName: "octo/app"}},
+		// A PUBLIC repo outside the installation: GET /repos answers 200 (GitHub
+		// lets an installation token read any public repo), but the installation
+		// cannot scope a token to it, so the mint 422s. It must be dropped from the
+		// scope, not force-added, or the whole checkout token would 422 and fail
+		// the primary clone too.
+		directRepos: map[string]Repository{"public/external": {ID: 9, FullName: "public/external"}},
+		notMintable: map[int64]bool{9: true},
+	}
+	server := httptest.NewServer(backend.handler(t))
+	defer server.Close()
+	client := newAppTestClient(t, server.URL, server.Client())
+	store := &checkoutStubStore{
+		primary: primaryContext(),
+		extras:  []domain.RepoRef{{URL: "https://github.com/public/external"}},
+	}
+	svc := newCheckoutTestService(t, store, client)
+
+	grant, err := svc.IssueCheckoutGrant(context.Background(), "org-1", "sess-1")
+	if err != nil {
+		t.Fatalf("IssueCheckoutGrant must not fail when an extra is readable but unmintable: %v", err)
+	}
+	if grant.Token == "" {
+		t.Fatal("expected a primary checkout token")
+	}
+	if len(backend.mintedRepoIDs) != 1 || backend.mintedRepoIDs[0] != 1 {
+		t.Fatalf("minted repository_ids = %v, want [1] (unmintable public extra dropped, primary intact)", backend.mintedRepoIDs)
 	}
 }
 
