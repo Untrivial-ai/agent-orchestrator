@@ -490,7 +490,7 @@ func (c *SessionsController) PreviewOrigin(w http.ResponseWriter, r *http.Reques
 		envelope.WriteError(w, r, err)
 		return true
 	}
-	entry, ok := previewOriginEntry(sess)
+	entry, ok := previewOriginEntry(sess, r.URL.Path)
 	if !ok {
 		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "NO_PREVIEW_ENTRY", "No preview entry point found in session workspace", nil)
 		return true
@@ -506,7 +506,13 @@ func (c *SessionsController) PreviewOrigin(w http.ResponseWriter, r *http.Reques
 	return true
 }
 
-func previewOriginEntry(sess domain.Session) (previewutil.StoredEntry, bool) {
+func previewOriginEntry(sess domain.Session, requestPath string) (previewutil.StoredEntry, bool) {
+	requested := strings.TrimPrefix(path.Clean("/"+requestPath), "/")
+	if rel, ok := previewutil.ArtifactEntryRelative(requested); ok {
+		if _, exists := previewutil.EntryAtPath(sess.Metadata.ArtifactDir, rel); exists {
+			return previewutil.StoredEntry{Scope: previewutil.StoredEntryScopeArtifact, Path: rel}, true
+		}
+	}
 	if entry, ok := previewutil.StoredEntryFromPreview(sess.Metadata.PreviewURL, sess.ID); ok {
 		switch entry.Scope {
 		case previewutil.StoredEntryScopeArtifact:

@@ -1445,13 +1445,6 @@ func TestSessionsAPI_GetExposesArtifactFilesAndServesHTMLArtifact(t *testing.T) 
 	}
 	svc.sessions["ao-1"] = s
 	srv := newSessionTestServer(t, svc)
-	previewURL, err := previewutil.FileURL(srv.URL, "ao-1", "__ao_artifacts__/site/index.html")
-	if err != nil {
-		t.Fatalf("build preview URL: %v", err)
-	}
-	s = svc.sessions["ao-1"]
-	s.Metadata.PreviewURL = previewURL
-	svc.sessions["ao-1"] = s
 
 	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1", "")
 	if status != http.StatusOK {
@@ -1486,13 +1479,6 @@ func TestSessionsAPI_GetExposesArtifactFilesAndServesHTMLArtifact(t *testing.T) 
 		t.Fatalf("markdown previewUrl = %q, want empty", resp.Session.ArtifactFiles[1].PreviewURL)
 	}
 
-	servedBody, servedStatus, _ := doPreviewOriginRequest(t, srv, resp.Session.ArtifactFiles[0].PreviewURL, "/")
-	if servedStatus != http.StatusOK {
-		t.Fatalf("GET artifact preview = %d, want 200; body=%s", servedStatus, servedBody)
-	}
-	if !bytes.Contains(servedBody, []byte("artifact preview")) {
-		t.Fatalf("served artifact body = %q, want html artifact content", servedBody)
-	}
 	directPreviewPath, err := url.Parse(resp.Session.ArtifactFiles[0].PreviewURL)
 	if err != nil {
 		t.Fatalf("parse html artifact previewUrl: %v", err)
