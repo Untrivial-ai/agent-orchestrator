@@ -183,13 +183,13 @@ func (p *Plugin) binary(ctx context.Context) (string, error) {
 
 // appendPermissionFlags maps AO permission modes onto Command Code's flags.
 // Command Code has no separate "auto" tier, so accept-edits and auto both use
-// `--permission-mode auto-accept`; bypass uses `--yolo`.
+// `--permission-mode accept-edits`; bypass uses `--yolo`.
 func appendPermissionFlags(cmd *[]string, permissions ports.PermissionMode) {
 	switch ports.NormalizePermissionMode(permissions) {
 	case ports.PermissionModeDefault:
 		// No flag: defer to Command Code's own default (or user config).
 	case ports.PermissionModeAcceptEdits, ports.PermissionModeAuto:
-		*cmd = append(*cmd, "--permission-mode", "auto-accept")
+		*cmd = append(*cmd, "--permission-mode", "accept-edits")
 	case ports.PermissionModeBypassPermissions:
 		*cmd = append(*cmd, "--yolo")
 	}

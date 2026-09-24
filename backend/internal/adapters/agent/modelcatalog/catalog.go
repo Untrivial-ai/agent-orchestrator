@@ -117,7 +117,7 @@ var commandSpecs = map[string]commandSpec{
 	"copilot":      {args: []string{"help", "config"}, parser: parseCopilotConfigModels},
 	"droid":        {args: []string{"exec", "--help"}, parser: parseDroidHelpModels},
 	"crush":        {args: []string{"models"}, parser: parseIDLines},
-	"command-code": {args: []string{"--list-models"}, parser: parseIDLines},
+	"command-code": {args: []string{"--list-models"}, parser: parseAgyModels},
 }
 
 // Base returns the picker behavior AO can provide without executing a CLI.

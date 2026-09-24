@@ -476,6 +476,36 @@ gpt-oss-120b-medium  GPT-OSS 120B (Medium)
 	}
 }
 
+func TestCommandCodeCatalogParsesTabularModelList(t *testing.T) {
+	got, err := commandSpecs["command-code"].parser([]byte(`Available models  ·  3 models
+
+Anthropic
+
+anthropic/claude-opus-4-1  Claude Opus 4.1
+anthropic/claude-sonnet-4-6  FREE Claude Sonnet 4.6 (default)
+
+OpenAI
+
+openai/gpt-5.4  GPT-5.4
+
+Pass the full id, or just the short name after the last "/":
+cmd --model openai/gpt-5.4
+
+Docs:  https://commandcode.ai/docs/models
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ports.AgentModelInfo{
+		{ID: "anthropic/claude-opus-4-1", Label: "Claude Opus 4.1"},
+		{ID: "anthropic/claude-sonnet-4-6", Label: "FREE Claude Sonnet 4.6 (default)"},
+		{ID: "openai/gpt-5.4", Label: "GPT-5.4"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("models = %#v, want %#v", got, want)
+	}
+}
+
 func TestParseGrokModelsIgnoresAuthAndDefaultStatus(t *testing.T) {
 	got, err := parseGrokModels([]byte(`You are not authenticated.
 

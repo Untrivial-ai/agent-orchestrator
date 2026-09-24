@@ -57,12 +57,12 @@ Permission modes map as follows:
 | AO permission mode | Command Code flags |
 | --- | --- |
 | default | none (uses Command Code's configured default) |
-| accept-edits | `--permission-mode auto-accept` |
-| auto | `--permission-mode auto-accept` |
+| accept-edits | `--permission-mode accept-edits` |
+| auto | `--permission-mode accept-edits` |
 | bypass-permissions | `--yolo` |
 
 Command Code has no separate "auto" tier, so accept-edits and auto both use
-`--permission-mode auto-accept`.
+`--permission-mode accept-edits`.
 
 ## Activity Tracking
 

@@ -85,20 +85,20 @@ func TestGetLaunchCommandAcceptEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"cmd", "--skip-onboarding", "--no-auto-update", "--trust", "--permission-mode", "auto-accept"}
+	want := []string{"cmd", "--skip-onboarding", "--no-auto-update", "--trust", "--permission-mode", "accept-edits"}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("cmd = %#v, want %#v", cmd, want)
 	}
 }
 
-func TestGetLaunchCommandAutoUsesAutoAccept(t *testing.T) {
+func TestGetLaunchCommandAutoUsesAcceptEdits(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "cmd"}
 	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{Permissions: ports.PermissionModeAuto})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsPair(cmd, "--permission-mode", "auto-accept") {
-		t.Fatalf("cmd = %#v, want --permission-mode auto-accept", cmd)
+	if !containsPair(cmd, "--permission-mode", "accept-edits") {
+		t.Fatalf("cmd = %#v, want --permission-mode accept-edits", cmd)
 	}
 }
 
