@@ -58,11 +58,10 @@
 // ambiguous result all lead to a full fetch rather than a claim of freshness
 // the transport cannot back.
 //
-// The two guards are not equally strong, and the difference is documented on
-// each method. RepoPRListGuard's token is sound — every change to a pull
-// request bumps its last-activity date, so the newest request's identity and
-// timestamp cannot stay fixed across a change. CommitChecksGuard's is an
-// optimisation only: OneDev has no per-commit build lookup AO can rely on (the
+// RepoPRListGuard always reports changed: a matching leading row cannot
+// account for tied activity timestamps or changes to non-leading rows.
+// CommitChecksGuard remains an optimisation only: OneDev has no per-commit
+// build lookup AO can rely on (the
 // global build query's "Commit" criterion answers HTTP 404 "Unable to find
 // revision" even for commits that exist) and builds carry no last-activity
 // field, so the guard hashes a bounded window of the project's recent builds.

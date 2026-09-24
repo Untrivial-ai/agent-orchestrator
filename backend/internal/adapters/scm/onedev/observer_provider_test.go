@@ -295,12 +295,6 @@ func TestListPRsByRepoToleratesMissingAuthor(t *testing.T) {
 // Guards — the absent-ETag path
 // ---------------------------------------------------------------------------
 
-// TestRepoPRListGuardSynthesisesValidatorWithoutETag is the regression test for
-// the guard fallback. OneDev sends neither ETag nor Last-Modified, so the
-// guard must synthesise its own token rather than depend on a validator that
-// never arrives: with no header at all it still reports changed on a cold
-// cache, unchanged when the project's newest activity is identical, and
-// changed again the moment that activity moves.
 func TestRepoPRListGuardSynthesisesValidatorWithoutETag(t *testing.T) {
 	activity := mustTime(t, "2026-08-22T16:55:46Z")
 	later := activity.Add(time.Hour)
@@ -337,17 +331,16 @@ func TestRepoPRListGuardSynthesisesValidatorWithoutETag(t *testing.T) {
 		t.Error("NotModified = true on a cold cache, want false")
 	}
 
-	// Same data, token round-tripped: nothing can have changed.
+	// The leading row cannot account for tied activity or non-leading deletions.
 	second, err := p.RepoPRListGuard(context.Background(), repo, first.ETag)
 	if err != nil {
 		t.Fatalf("RepoPRListGuard: %v", err)
 	}
-	if !second.NotModified || second.ETag != first.ETag {
-		t.Errorf("unchanged data = %+v, want NotModified with the same token", second)
+	if second.NotModified || second.ETag != first.ETag {
+		t.Errorf("unchanged leading row = %+v, want refresh with the same token", second)
 	}
 
-	// Any change bumps the newest request's last-activity date, which is
-	// exactly what makes the synthesised token move.
+	// Moving the leading activity still changes the diagnostic token.
 	mu.Lock()
 	newest = []restPullRequest{{ID: 241, Number: 106, Status: "OPEN", LastActivity: &restLastActivity{Date: &later}}}
 	mu.Unlock()

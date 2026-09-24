@@ -29,11 +29,8 @@ const (
 	// prListPageSize is the per-page count for PR listings. The client clamps
 	// to OneDev's ceiling, above which the server answers HTTP 406.
 	prListPageSize = 100
-	// prBuildsPageCount bounds how many of a pull request's builds are
-	// considered when assembling its CI snapshot. Only the builds matching the
-	// PR's current build commit survive the filter, and OneDev submits one
-	// build per job per commit, so this is generous even for a PR that has
-	// been retried repeatedly.
+	// prBuildsPageCount bounds the CI query. A full window is partial even
+	// when filtering stale commits leaves fewer current jobs.
 	prBuildsPageCount = 50
 	// checksGuardWindow is how many of a project's most recent builds
 	// CommitChecksGuard hashes. See that method for why the window exists and
@@ -210,8 +207,7 @@ func webURL(h allowedHost, projectPath, view string, number int) string {
 //     differently from every other provider AO talks to.
 //   - The project criterion is "Target Project", matched on the project's full
 //     path.
-//   - Results are ordered by last activity descending, which is also what
-//     makes RepoPRListGuard's synthesised token sound.
+//   - Results are ordered by last activity descending.
 func (p *Provider) ListPRsByRepo(ctx context.Context, repo ports.SCMRepo, updatedAfter time.Time) ([]ports.SCMPRObservation, error) {
 	client, err := p.clientForRepo(repo)
 	if err != nil {
@@ -232,7 +228,7 @@ func (p *Provider) ListPRsByRepo(ctx context.Context, repo ports.SCMRepo, update
 	}
 
 	var result []ports.SCMPRObservation
-	_, err = client.doGETPaginated(ctx, "/pulls", q, func(body []byte) (int, error) {
+	truncated, err := client.doGETPaginated(ctx, "/pulls", q, func(body []byte) (int, error) {
 		var page []restPullRequest
 		if err := json.Unmarshal(body, &page); err != nil {
 			return 0, fmt.Errorf("onedev scm: unmarshal pull request list: %w", err)
@@ -246,6 +242,9 @@ func (p *Provider) ListPRsByRepo(ctx context.Context, repo ports.SCMRepo, update
 	})
 	if err != nil {
 		return nil, err
+	}
+	if truncated {
+		return nil, errors.New("onedev scm: pull request listing truncated; discovery cursor must not advance")
 	}
 	return result, nil
 }
@@ -427,14 +426,8 @@ func (p *Provider) resolveProjectPath(ctx context.Context, client *Client, host 
 // pull request in the project and hashes that request's identity and activity
 // timestamp into a token.
 //
-// That token is sound for this endpoint. Every change to any pull request in
-// the project (opening, updating, commenting, merging, discarding) bumps that
-// request's last-activity date, which makes it the newest and so changes the
-// hash. A tie or a deletion changes the identity half of the hash, which
-// errs towards reporting a change.
-//
-// A guard with no prior token always reports changed, so a cold start does a
-// full listing.
+// A matching leading row cannot prove the repository is unchanged: ties and
+// changes to non-leading rows are inconclusive. Always request a refresh.
 func (p *Provider) RepoPRListGuard(ctx context.Context, repo ports.SCMRepo, etag string) (ports.SCMGuardResult, error) {
 	client, err := p.clientForRepo(repo)
 	if err != nil {
@@ -467,13 +460,15 @@ func (p *Provider) RepoPRListGuard(ctx context.Context, repo ports.SCMRepo, etag
 			activity.UTC().Format(time.RFC3339Nano),
 		)
 	}
-	return guardResult(etag, parts), nil
+	guard := guardResult(etag, parts)
+	guard.NotModified = false
+	return guard, nil
 }
 
 // CommitChecksGuard reports whether a commit's CI state can have changed since
 // the caller's token.
 //
-// This guard is weaker than RepoPRListGuard's and deliberately so. OneDev has
+// Unlike the repository guard, this is only a refresh optimisation. OneDev has
 // no queryable per-commit build lookup that AO can rely on: the global build
 // query's "Commit" criterion resolves the revision against no project context
 // and answers HTTP 404 "Unable to find revision" even for a commit that
@@ -794,16 +789,19 @@ func (p *Provider) fetchCI(ctx context.Context, client *Client, host allowedHost
 		}
 	}
 
+	partial := len(builds) >= prBuildsPageCount
+	summary := ciSummary(checks)
+	if partial {
+		summary = domain.CIUnknown
+	}
 	return ports.SCMCIObservation{
-		Summary:           string(ciSummary(checks)),
+		Summary:           string(summary),
 		HeadSHA:           headSHA,
 		FailedFingerprint: failedFingerprint(headSHA, failed),
 		Checks:            checks,
 		FailedChecks:      failed,
-		// The build query is bounded by prBuildsPageCount but narrowed to one
-		// build per job name at the current commit, so the snapshot is
-		// complete for the commit rather than a truncated window.
-		Partial: false,
+		// A full page may omit jobs even after filtering stale builds.
+		Partial: partial,
 	}, nil
 }
 

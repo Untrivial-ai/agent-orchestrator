@@ -17,7 +17,9 @@ import (
 // the observer silently fell back to branch-based PR discovery.
 func TestProviderSatisfiesIdentityResolvers(t *testing.T) {
 	p := newTestProvider(t, []string{"od.test:6610"})
-	var _ ports.SCMIdentityResolver = p
+	var _ interface {
+		AuthenticatedIdentity(context.Context) (ports.SCMIdentity, error)
+	} = p
 	var _ interface {
 		AuthenticatedIdentityForHost(context.Context, string) (ports.SCMIdentity, error)
 	} = p
