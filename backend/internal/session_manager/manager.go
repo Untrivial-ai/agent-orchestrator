@@ -23,6 +23,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
+	"github.com/aoagents/agent-orchestrator/backend/internal/sessionartifacts"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
@@ -4977,10 +4978,7 @@ func (m *Manager) systemPromptDir(id domain.SessionID) string {
 }
 
 func (m *Manager) artifactDir(id domain.SessionID) string {
-	if strings.TrimSpace(m.dataDir) == "" {
-		return ""
-	}
-	return filepath.Join(m.dataDir, "artifacts", string(id))
+	return sessionartifacts.Dir(m.dataDir, id)
 }
 
 func (m *Manager) reserveArtifactDir(id domain.SessionID) string {

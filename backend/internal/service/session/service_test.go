@@ -4377,6 +4377,41 @@ func TestClaimPRReconcilesOutputTypeImmediately(t *testing.T) {
 	}
 }
 
+// TestGetBackfillsEmptyArtifactDirOnRead covers the review-flagged gap: a
+// session row created before artifact_dir existed carries it as ” (the
+// migration's default), even though session_manager always prompts the
+// agent to write into the deterministic dataDir/artifacts/<id> path. Get
+// must fall back to that derived path immediately, rather than showing no
+// artifacts (and a broken preview root) until the artifact poller's next
+// tick persists the backfill.
+func TestGetBackfillsEmptyArtifactDirOnRead(t *testing.T) {
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "report.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws", ArtifactDir: ""},
+	}
+
+	got, err := (&Service{store: st, dataDir: dataDir}).Get(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata.ArtifactDir != artifactDir {
+		t.Fatalf("ArtifactDir = %q, want backfilled %q", got.Metadata.ArtifactDir, artifactDir)
+	}
+	if len(got.ArtifactFiles) != 1 || got.ArtifactFiles[0].Name != "report.html" {
+		t.Fatalf("ArtifactFiles = %+v, want [report.html]", got.ArtifactFiles)
+	}
+}
+
 // A reconcile failure must not fail an otherwise-successful claim: the
 // artifact-output poller still corrects OutputType on its next tick.
 func TestClaimPRSucceedsWhenOutputTypeReconcileFails(t *testing.T) {

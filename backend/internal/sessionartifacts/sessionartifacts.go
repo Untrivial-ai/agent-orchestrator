@@ -17,6 +17,19 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+// Dir returns the canonical artifact directory for a session under dataDir.
+// It is a pure, deterministic path computation (dataDir + "artifacts" + id),
+// so callers can derive the correct directory even for a session row whose
+// stored ArtifactDir is empty — notably rows created before that column
+// existed, which migration 0155 backfilled with ” rather than a real path.
+func Dir(dataDir string, id domain.SessionID) string {
+	dataDir = strings.TrimSpace(dataDir)
+	if dataDir == "" {
+		return ""
+	}
+	return filepath.Join(dataDir, "artifacts", string(id))
+}
+
 // List walks a session's artifact directory and returns its regular files,
 // sorted by path.
 func List(dir string) ([]domain.SessionArtifactFile, error) {

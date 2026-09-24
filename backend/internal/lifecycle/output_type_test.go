@@ -61,6 +61,60 @@ func TestReconcileSessionOutputType_PRAndArtifactFilesCombine(t *testing.T) {
 	}
 }
 
+// TestReconcileSessionOutputType_BackfillsEmptyArtifactDir covers the
+// critical-risk gap flagged in review: a session row created before
+// artifact_dir existed carries it as ” (migration 0155's default), even
+// though session_manager always prompts the agent to write into the
+// deterministic dataDir/artifacts/<id> path regardless of what is stored.
+// The very first reconcile after upgrade must derive and persist that path
+// so the session stops silently under-reporting artifacts it actually has.
+func TestReconcileSessionOutputType_BackfillsEmptyArtifactDir(t *testing.T) {
+	dataDir := t.TempDir()
+	m, st, _ := newManager(WithDataDir(dataDir))
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "report.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:       "mer-1",
+		Metadata: domain.SessionMetadata{ArtifactDir: ""},
+	}
+
+	if err := m.ReconcileSessionOutputType(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	got := st.sessions["mer-1"]
+	if got.Metadata.ArtifactDir != artifactDir {
+		t.Fatalf("artifactDir = %q, want backfilled %q", got.Metadata.ArtifactDir, artifactDir)
+	}
+	if got.OutputType != domain.SessionOutputArtifact {
+		t.Fatalf("outputType = %q, want %q", got.OutputType, domain.SessionOutputArtifact)
+	}
+}
+
+// TestReconcileSessionOutputType_NoOpWithoutDataDirConfigured covers a nil
+// WithDataDir wiring (e.g. a test manager built without it): the backfill
+// must not panic or write a bogus empty-dataDir path, it must simply leave
+// ArtifactDir empty and behave as before.
+func TestReconcileSessionOutputType_NoOpWithoutDataDirConfigured(t *testing.T) {
+	m, st, _ := newManager()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:         "mer-1",
+		OutputType: domain.SessionOutputNone,
+	}
+
+	if err := m.ReconcileSessionOutputType(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	got := st.sessions["mer-1"]
+	if got.Metadata.ArtifactDir != "" {
+		t.Fatalf("artifactDir = %q, want still empty without a configured dataDir", got.Metadata.ArtifactDir)
+	}
+}
+
 func TestReconcileSessionOutputType_NoOpWhenUnchanged(t *testing.T) {
 	m, st, _ := newManager()
 	st.sessions["mer-1"] = domain.SessionRecord{

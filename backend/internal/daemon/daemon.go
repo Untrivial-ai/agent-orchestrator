@@ -371,7 +371,7 @@ func Run() error {
 		return fmt.Errorf("wire agent resolver: %w", err)
 	}
 
-	lcStack := startLifecycle(ctx, store, runtimeAdapter, lifecycleMessenger, notificationWriter, telemetrySink, agents, log)
+	lcStack := startLifecycle(ctx, store, runtimeAdapter, lifecycleMessenger, notificationWriter, telemetrySink, agents, cfg.DataDir, log)
 
 	// Wire the controller-facing session service over the same store + LCM, the
 	// selected runtime, routed git/scratch workspaces, the per-session agent

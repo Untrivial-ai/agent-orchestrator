@@ -466,9 +466,16 @@ func (c *SessionsController) previewFile(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	// __ao_artifacts__/ is a reserved marker AO itself prepends when it builds
+	// an artifact preview link (see ArtifactEntryPath), but it was a valid
+	// workspace-relative path before artifact previews existed. A real
+	// workspace file at that exact path must keep winning, so only route to
+	// the artifact directory when no such workspace file actually exists.
 	if rel, ok := previewutil.ArtifactEntryRelative(assetPath); ok {
-		c.serveRootedPreviewFile(w, r, sess.Metadata.ArtifactDir, rel)
-		return
+		if _, existsInWorkspace := previewutil.EntryAtPath(sess.Metadata.WorkspacePath, assetPath); !existsInWorkspace {
+			c.serveRootedPreviewFile(w, r, sess.Metadata.ArtifactDir, rel)
+			return
+		}
 	}
 	c.serveRootedPreviewFile(w, r, sess.Metadata.WorkspacePath, assetPath)
 }

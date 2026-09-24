@@ -1130,6 +1130,19 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 }
 
 func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun) (domain.Session, error) {
+	// A row created before artifact_dir existed carries it as '' (the
+	// migration's default) even though session_manager always prompts the
+	// agent to write into the deterministic dataDir/artifacts/<id> path.
+	// Fall back to that derived path here so the file listing and preview
+	// root (sess.Metadata.ArtifactDir, read directly by the preview
+	// controller) are correct on this read, rather than waiting for
+	// lifecycle.Manager.ReconcileSessionOutputType's next poll tick to
+	// persist the backfill.
+	if rec.Metadata.ArtifactDir == "" {
+		if dir := sessionartifacts.Dir(s.dataDir, rec.ID); dir != "" {
+			rec.Metadata.ArtifactDir = dir
+		}
+	}
 	artifactFiles, err := sessionartifacts.List(rec.Metadata.ArtifactDir)
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("artifact files %s: %w", rec.ID, err)
