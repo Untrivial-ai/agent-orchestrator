@@ -485,12 +485,6 @@ func (s *PostHogSink) properties(ev ports.TelemetryEvent) map[string]any {
 	return props
 }
 
-// stalePersonProperties are per-build values that older renderer builds wrote to
-// person profiles before profiles were turned off. Nothing refreshes them, so an
-// install running 0.13.1 still showed 0.10.4 on its profile. They are cleared
-// rather than refreshed: every event carries the current value, and a profile
-// copy would go stale again on the next update. Read versions from event
-// properties, never the person.
 var stalePersonProperties = []string{"ao_version", "app_version", "build_mode", "platform", "surface"}
 
 func remoteEventName(name string) string {
