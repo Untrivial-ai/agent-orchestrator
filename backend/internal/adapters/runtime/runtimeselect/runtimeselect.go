@@ -21,6 +21,7 @@ type Runtime interface {
 	ports.Runtime // Create, Destroy, IsAlive
 	ports.RuntimeChildInspector
 	ports.FencedRuntimeProber
+	ports.ExactSupervisedProcessInspector
 	ports.Attacher
 	Interrupt(ctx context.Context, handle ports.RuntimeHandle) error
 	SendInput(ctx context.Context, handle ports.RuntimeHandle, input string) error

@@ -5,14 +5,19 @@ vi.mock("expo-secure-store", () => ({ getItemAsync: vi.fn(), setItemAsync: vi.fn
 vi.mock("expo/fetch", () => ({ fetch: vi.fn() }));
 
 import { fetch as expoFetch } from "expo/fetch";
-import { ApiError, apiRequest, delegateTask, getAgentModels, getPreview, getSessions, getSettings, launchOrchestrator, mobileReachablePreviewURL, pinSession, renameSession, restoreSession, resumeSessionAgent, spawnSession, unpinSession } from "./api";
+import { ApiError, apiRequest, delegateTask, getAgentModels, getPreview, getSessions, getSettings, launchOrchestrator, mobileReachablePreviewURL, pinSession, renameSession, restoreSession, resumeSessionAgent, setSessionAutoInjectCI, setSessionAutoInjectReview, setSessionAutoReview, spawnSession, unpinSession } from "./api";
 import * as chatApi from "./chat/api";
 import type { ServerConfig } from "./config";
 
 const {
 	acknowledgeSessionInterfaceTransitionNotice,
 	getConversationPage,
+	getReviewerConversationPage,
 	getWorkspacePaths,
+	interruptReviewerConversation,
+	resolveReviewerApproval,
+	resolveReviewerInput,
+	sendReviewerConversationMessage,
 } = chatApi;
 
 const cfg: ServerConfig = { host: "ao.test", httpPort: "3011", muxPort: "3011", secure: false, password: "secret12" };
@@ -48,6 +53,59 @@ describe("mobile Chat API boundaries", () => {
 			.mockResolvedValueOnce(response({ projects: [] }));
 		const result = await getSessions(cfg);
 		expect(result.sessions[0]).toMatchObject({ isPinned: true, pinnedAt: "2026-08-09T10:00:00Z", lastActivityAt: "2026-08-08T10:00:00Z" });
+	});
+
+	it("preserves review automation policies from the session read model", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response({ sessions: [{
+				id: "w-1", projectId: "p-1", mode: "chat",
+				autoReviewEnabled: true, autoInjectReview: false, autoInjectCI: false,
+			}] }))
+			.mockResolvedValueOnce(response({ sessions: [] }))
+			.mockResolvedValueOnce(response({ projects: [] }));
+
+		const result = await getSessions(cfg);
+
+		expect(result.sessions[0]).toMatchObject({
+			autoReviewEnabled: true,
+			autoInjectReview: false,
+			autoInjectCI: false,
+		});
+	});
+
+	it("uses safe review automation defaults with an older daemon", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response({ sessions: [{ id: "w-1", projectId: "p-1", mode: "chat" }] }))
+			.mockResolvedValueOnce(response({ sessions: [] }))
+			.mockResolvedValueOnce(response({ projects: [] }));
+
+		const result = await getSessions(cfg);
+
+		expect(result.sessions[0]).toMatchObject({
+			autoReviewEnabled: false,
+			autoInjectReview: true,
+			autoInjectCI: true,
+		});
+	});
+
+	it("updates all three review automation policies through their daemon routes", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response({ session: { id: "worker/7", autoReviewEnabled: true } }))
+			.mockResolvedValueOnce(response({ session: { id: "worker/7", autoInjectReview: false } }))
+			.mockResolvedValueOnce(response({ session: { id: "worker/7", autoInjectCI: false } }));
+
+		const autoReview = await setSessionAutoReview(cfg, "worker/7", true);
+		const injectReview = await setSessionAutoInjectReview(cfg, "worker/7", false);
+		const injectCI = await setSessionAutoInjectCI(cfg, "worker/7", false);
+
+		expect(vi.mocked(fetch).mock.calls.map(([url, init]) => [url, init?.method, init?.body])).toEqual([
+			["http://ao.test:3011/api/v1/sessions/worker%2F7/auto-review", "PUT", JSON.stringify({ enabled: true })],
+			["http://ao.test:3011/api/v1/sessions/worker%2F7/auto-inject-review", "PATCH", JSON.stringify({ autoInjectReview: false })],
+			["http://ao.test:3011/api/v1/sessions/worker%2F7/auto-inject-ci", "PATCH", JSON.stringify({ autoInjectCI: false })],
+		]);
+		expect(autoReview.autoReviewEnabled).toBe(true);
+		expect(injectReview.autoInjectReview).toBe(false);
+		expect(injectCI.autoInjectCI).toBe(false);
 	});
 
 	it("uses the session actions API to rename and pin workers", async () => {
@@ -263,6 +321,33 @@ describe("mobile Chat API boundaries", () => {
 		expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual([
 			"http://ao.test:3011/api/v1/sessions/w-1/conversation?limit=50",
 			"http://ao.test:3011/api/v1/sessions/w-1/conversation?limit=200&beforeSequence=100",
+		]);
+	});
+
+	it("uses reviewer-owned conversation routes for mobile review chat", async () => {
+		const wire = {
+			conversationId: "review-chat-1", sessionId: "w-1", harness: "codex", mode: "chat", controller: "ready",
+			latestSequence: 0, oldestSequence: 0, hasMoreBefore: false, settings: {}, turns: [], messages: [], activities: [],
+			capabilities: ["steer", "rollback", "config_options"],
+		};
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response(wire))
+			.mockResolvedValueOnce(response({ turnId: "turn-1", duplicate: false }, 202))
+			.mockResolvedValue(response({}));
+
+		const page = await getReviewerConversationPage(cfg, "review/1");
+		await sendReviewerConversationMessage(cfg, "review/1", { text: "fix this", clientMessageId: "mobile-1" });
+		await resolveReviewerApproval(cfg, "review/1", "request/1", "accept");
+		await resolveReviewerInput(cfg, "review/1", "input/1", "accept", { answer: "yes" });
+		await interruptReviewerConversation(cfg, "review/1");
+
+		expect(page.capabilities).toEqual([]);
+		expect(vi.mocked(fetch).mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+			["http://ao.test:3011/api/v1/reviews/review%2F1/conversation?limit=50", undefined],
+			["http://ao.test:3011/api/v1/reviews/review%2F1/conversation/messages", "POST"],
+			["http://ao.test:3011/api/v1/reviews/review%2F1/conversation/approvals/request%2F1/resolve", "POST"],
+			["http://ao.test:3011/api/v1/reviews/review%2F1/conversation/inputs/input%2F1/resolve", "POST"],
+			["http://ao.test:3011/api/v1/reviews/review%2F1/conversation/interrupt", "POST"],
 		]);
 	});
 

@@ -383,6 +383,7 @@ type Notification struct {
 	CreatedAt   time.Time
 	ResolvedAt  sql.NullTime
 	DismissedAt sql.NullTime
+	SourceKey   string
 }
 
 type PR struct {

@@ -414,7 +414,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	persistedAgentSessionID := launchAgentSessionID
 	handleID := ""
 	if !hasConfigOverride && reviewRow.ReviewerHandleID != "" && reviewerPaneReusable(reviewRow, hadRunningReviewer) {
-		alive, err := e.launcher.Alive(ctx, reviewRow.ReviewerHandleID)
+		alive, err := e.launcher.Alive(ctx, reviewRow.ReviewerHandleID, reviewRow.ReviewerLaunchID)
 		if err != nil {
 			return TriggerResult{}, failRuns(0, err)
 		}
@@ -697,7 +697,7 @@ func (e *Engine) restoreRecoverableChatReviewer(ctx stdctx.Context, review domai
 
 func (e *Engine) restorePersistedChatReviewerLocked(ctx stdctx.Context, worker domain.SessionRecord, review domain.Review, previousRuns []domain.ReviewRun) (RestoreReviewerResult, error) {
 	if review.ReviewerHandleID != "" {
-		alive, err := e.launcher.Alive(ctx, review.ReviewerHandleID)
+		alive, err := e.launcher.Alive(ctx, review.ReviewerHandleID, review.ReviewerLaunchID)
 		if err != nil {
 			return RestoreReviewerResult{}, err
 		}
@@ -751,7 +751,7 @@ func (e *Engine) restoreReviewerLocked(
 		return RestoreReviewerResult{}, nil
 	}
 	if hasReview && reviewRow.ReviewerHandleID != "" {
-		alive, err := e.launcher.Alive(ctx, reviewRow.ReviewerHandleID)
+		alive, err := e.launcher.Alive(ctx, reviewRow.ReviewerHandleID, reviewRow.ReviewerLaunchID)
 		if err != nil {
 			return RestoreReviewerResult{}, err
 		}
@@ -909,7 +909,7 @@ func (e *Engine) cancelStaleRunningRuns(ctx stdctx.Context, workerID domain.Sess
 		}
 		return true, nil
 	}
-	alive, err := e.launcher.Alive(ctx, reviewRow.ReviewerHandleID)
+	alive, err := e.launcher.Alive(ctx, reviewRow.ReviewerHandleID, reviewRow.ReviewerLaunchID)
 	if err != nil {
 		return false, err
 	}
@@ -1022,6 +1022,9 @@ func (e *Engine) List(ctx stdctx.Context, workerID domain.SessionID) (SessionRev
 	if workerID == "" {
 		return SessionReviews{}, fmt.Errorf("%w: worker session id is required", ErrInvalid)
 	}
+	unlock := e.lockWorker(workerID)
+	defer unlock()
+
 	worker, ok, err := e.sessions.GetSession(ctx, workerID)
 	if err != nil {
 		return SessionReviews{}, err
@@ -1054,6 +1057,14 @@ func (e *Engine) listLocked(ctx stdctx.Context, workerID domain.SessionID, selec
 		reviewRow = review
 		reviewerHarness = review.Harness
 	}
+	if changed, err := e.reconcileExitedReviewer(ctx, &reviewRow, runs); err != nil {
+		return SessionReviews{}, err
+	} else if changed {
+		runs, err = e.store.ListReviewRunsBySession(ctx, workerID)
+		if err != nil {
+			return SessionReviews{}, err
+		}
+	}
 	prs, err := e.prs.ListPRsBySession(ctx, workerID)
 	if err != nil {
 		return SessionReviews{}, err
@@ -1066,6 +1077,49 @@ func (e *Engine) listLocked(ctx stdctx.Context, workerID domain.SessionID, selec
 		Reviews:               Plan(prs, runs),
 		ReviewerSurface:       reviewerSurface(reviewRow),
 	}, nil
+}
+
+const reviewerExitedBeforeSubmission = "reviewer process exited before submitting a result"
+
+// reconcileExitedReviewer converts a definitively dead active reviewer into
+// durable failed-run facts. Probe errors are intentionally ignored: an unknown
+// runtime state is not proof that the reviewer exited.
+func (e *Engine) reconcileExitedReviewer(ctx stdctx.Context, review *domain.Review, runs []domain.ReviewRun) (bool, error) {
+	if review.ID == "" || review.ReviewerHandleID == "" || review.ReviewerActivityState != domain.ActivityActive {
+		return false, nil
+	}
+	hasRunning := false
+	for _, run := range runs {
+		if run.ReviewID == review.ID && run.Status == domain.ReviewRunRunning {
+			hasRunning = true
+			break
+		}
+	}
+	if !hasRunning {
+		return false, nil
+	}
+	alive, err := e.launcher.Alive(ctx, review.ReviewerHandleID, review.ReviewerLaunchID)
+	if err != nil {
+		// An unavailable probe is unknown, not evidence that the reviewer died.
+		alive = true
+	}
+	if alive {
+		return false, nil
+	}
+	for _, run := range runs {
+		if run.ReviewID != review.ID || run.Status != domain.ReviewRunRunning {
+			continue
+		}
+		if _, err := e.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunFailed, domain.VerdictNone, reviewerExitedBeforeSubmission, "", run.AutoInjectReview); err != nil {
+			return false, err
+		}
+	}
+	review.ReviewerActivityState = domain.ActivityExited
+	review.UpdatedAt = e.clock()
+	if err := e.store.UpsertReview(ctx, *review); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func reviewerSurface(review domain.Review) domain.ReviewerSurface {
@@ -1137,7 +1191,7 @@ func (e *Engine) Cancel(ctx stdctx.Context, workerID domain.SessionID) (CancelRe
 		return CancelResult{}, fmt.Errorf("%w: reviewer for worker session %q", ErrNotFound, workerID)
 	}
 	if err := e.launcher.Cancel(ctx, review.ReviewerHandleID, review.Harness); err != nil {
-		alive, aliveErr := e.launcher.Alive(ctx, review.ReviewerHandleID)
+		alive, aliveErr := e.launcher.Alive(ctx, review.ReviewerHandleID, review.ReviewerLaunchID)
 		if aliveErr != nil {
 			return CancelResult{}, err
 		}

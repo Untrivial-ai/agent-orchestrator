@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { conversationActionError, conversationActionUnsupported, conversationErrorCode } from "./conversationErrors";
+import { conversationActionError, conversationActionUnsupported, conversationErrorCode, conversationErrorIsPermanent } from "./conversationErrors";
 
 describe("mobile conversation action errors", () => {
+	it("keeps reviewer startup errors retryable", () => {
+		expect(conversationErrorIsPermanent("CHAT_CONTROLLER_NOT_READY")).toBe(true);
+		expect(conversationErrorIsPermanent("CHAT_CONTROLLER_NOT_READY", true)).toBe(false);
+		expect(conversationErrorIsPermanent("CHAT_DRIVER_UNAVAILABLE", true)).toBe(true);
+	});
 	it("turns protocol codes into instructions the user can act on", () => {
 		expect(conversationActionError(Object.assign(new Error("conflict"), { code: "CHAT_NO_ACTIVE_TURN" })))
 			.toContain("Queue it as a new message");

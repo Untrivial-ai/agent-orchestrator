@@ -11294,6 +11294,8 @@ components:
           - ready_to_merge
           - pr_merged
           - pr_closed_unmerged
+          - review_completed
+          - review_changes_requested
           type: string
       required:
       - id

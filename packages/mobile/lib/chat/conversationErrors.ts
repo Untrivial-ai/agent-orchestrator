@@ -4,6 +4,21 @@ export function conversationErrorCode(error: unknown): string | undefined {
 	return code || undefined;
 }
 
+export function conversationErrorIsPermanent(code: string | undefined, reviewer = false): boolean {
+	if (!code) return false;
+	if (reviewer && code === "CHAT_CONTROLLER_NOT_READY") return false;
+	return new Set([
+		"SESSION_MODE_MISMATCH",
+		"SESSION_NOT_FOUND",
+		"SESSION_MODE_UNSUPPORTED",
+		"CHAT_DRIVER_UNAVAILABLE",
+		"CHAT_DRIVER_INCOMPATIBLE",
+		"CHAT_AUTH_REQUIRED",
+		"CHAT_RESUME_FAILED",
+		"CHAT_CONTROLLER_NOT_READY",
+	]).has(code);
+}
+
 /** Stable, user-actionable copy for conversation protocol failures. */
 export function conversationActionError(error: unknown): string {
 	const code = conversationErrorCode(error);

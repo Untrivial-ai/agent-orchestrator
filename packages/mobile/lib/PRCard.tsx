@@ -52,8 +52,8 @@ export function PRCard({
 			onPress={() => {
 				haptics.tap();
 				router.push({
-					pathname: "/session/[id]",
-					params: { id: session.id, projectId: session.projectId },
+					pathname: "/review/[sessionId]",
+					params: { sessionId: session.id, prNumber: String(pr.number), prUrl: pr.url },
 				});
 			}}
 			style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}

@@ -4,10 +4,10 @@ import { darkTheme } from "./theme";
 
 describe("notificationVisual", () => {
 	it("gives every known type its own label", () => {
-		const labels = ["needs_input", "ready_to_merge", "pr_merged", "pr_closed_unmerged"].map(
+		const labels = ["needs_input", "ready_to_merge", "pr_merged", "pr_closed_unmerged", "review_completed", "review_changes_requested"].map(
 			(t) => notificationVisual(darkTheme, t).label,
 		);
-		expect(new Set(labels).size).toBe(4);
+		expect(new Set(labels).size).toBe(6);
 	});
 
 	// The renderer draws these with GitHub's own vocabulary, and merged has its own
@@ -54,6 +54,18 @@ describe("notificationTarget", () => {
 	it("sends PR notifications to the PRs tab", () => {
 		expect(notificationTarget({ type: "ready_to_merge", sessionId: "abc" })).toBe("/prs");
 		expect(notificationTarget({ type: "pr_merged", sessionId: "abc" })).toBe("/prs");
+	});
+
+	it("opens the matching review result when the payload identifies its pull request", () => {
+		expect(notificationTarget({ type: "review_completed", sessionId: "session 1", prUrl: "https://github.com/acme/repo/pull/42" }))
+			.toBe("/review/session%201?prUrl=https%3A%2F%2Fgithub.com%2Facme%2Frepo%2Fpull%2F42");
+		expect(notificationTarget({ type: "review_changes_requested", sessionId: "s1", prUrl: "https://github.com/acme/repo/pull/43" }))
+			.toBe("/review/s1?prUrl=https%3A%2F%2Fgithub.com%2Facme%2Frepo%2Fpull%2F43");
+	});
+
+	it("falls back to the PR list when a review result payload is incomplete", () => {
+		expect(notificationTarget({ type: "review_completed", sessionId: "s1" })).toBe("/prs");
+		expect(notificationTarget({ type: "review_changes_requested", prUrl: "https://github.com/acme/repo/pull/43" })).toBe("/prs");
 	});
 
 	// A tray payload carries no guarantee of a type field, and PushManager passes
@@ -148,5 +160,20 @@ describe("notificationAction", () => {
 	it("sends a session-less PR notification to the PR list", () => {
 		expect(notificationAction({ type: "ready_to_merge" }, ready)).toEqual({ kind: "prs" });
 		expect(notificationAction({ type: "needs_input" }, ready)).toEqual({ kind: "none" });
+	});
+
+	it("opens review results directly without waiting for the session board", () => {
+		const notification = { type: "review_completed", sessionId: "s1", prUrl: "https://github.com/acme/repo/pull/42" };
+		expect(notificationAction(notification, { terminated: false, sessionsReady: false })).toEqual({
+			kind: "review",
+			sessionId: "s1",
+			prUrl: notification.prUrl,
+		});
+	});
+
+	it("sends incomplete review result notifications to the PR list", () => {
+		expect(notificationAction({ type: "review_completed", sessionId: "s1" }, ready)).toEqual({ kind: "prs" });
+		expect(notificationAction({ type: "review_changes_requested", prUrl: "https://github.com/acme/repo/pull/42" }, ready))
+			.toEqual({ kind: "prs" });
 	});
 });
