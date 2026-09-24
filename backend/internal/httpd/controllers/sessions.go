@@ -527,6 +527,16 @@ func (c *SessionsController) PreviewOrigin(w http.ResponseWriter, r *http.Reques
 func previewOriginEntry(sess domain.Session, requestPath string) (previewutil.StoredEntry, bool) {
 	requested := strings.TrimPrefix(path.Clean("/"+requestPath), "/")
 	if rel, ok := previewutil.ArtifactEntryRelative(requested); ok {
+		// __ao_artifacts__/ is a reserved marker AO itself prepends when it
+		// builds an artifact preview link (see ArtifactEntryPath), but it was
+		// a valid workspace-relative path before artifact previews existed.
+		// A real workspace file at that exact literal request path must keep
+		// winning over the artifact directory, mirroring the same collision
+		// guard below for the stored-PreviewURL path and previewFile's guard
+		// for the legacy /preview/files route.
+		if _, existsInWorkspace := previewutil.EntryAtPath(sess.Metadata.WorkspacePath, requested); existsInWorkspace {
+			return previewutil.StoredEntry{Scope: previewutil.StoredEntryScopeWorkspace, Path: requested}, true
+		}
 		if _, exists := previewutil.EntryAtPath(sess.Metadata.ArtifactDir, rel); exists {
 			return previewutil.StoredEntry{Scope: previewutil.StoredEntryScopeArtifact, Path: rel}, true
 		}

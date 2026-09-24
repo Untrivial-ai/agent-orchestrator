@@ -1609,6 +1609,53 @@ func TestSessionsAPI_PreviewOriginWorkspaceFileWinsOverArtifactNamespaceCollisio
 	}
 }
 
+// TestSessionsAPI_PreviewOriginArtifactLinkRequestPathWorkspaceFileWins covers
+// the fast path in previewOriginEntry that decodes __ao_artifacts__/ directly
+// from the incoming request path (added for the Summary panel's artifact
+// links, which are built via previewutil.FileURL and navigated to directly —
+// independent of any stored session.Metadata.PreviewURL). The sibling test
+// above only exercises requestPath "/" against a stored PreviewURL and does
+// not reach this fast path at all, so it could not have caught this: a real
+// workspace file at the literal requested __ao_artifacts__/ path must still
+// win over the artifact directory here too.
+func TestSessionsAPI_PreviewOriginArtifactLinkRequestPathWorkspaceFileWins(t *testing.T) {
+	workspace := t.TempDir()
+	collidingPath := filepath.Join(workspace, "__ao_artifacts__", "index.html")
+	if err := os.MkdirAll(filepath.Dir(collidingPath), 0o755); err != nil {
+		t.Fatalf("mkdir workspace collision dir: %v", err)
+	}
+	if err := os.WriteFile(collidingPath, []byte("workspace content"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+
+	artifactDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(artifactDir, "index.html"), []byte("artifact content"), 0o644); err != nil {
+		t.Fatalf("write artifact file: %v", err)
+	}
+
+	svc := newFakeSessionService()
+	s := svc.sessions["ao-1"]
+	s.Metadata.WorkspacePath = workspace
+	s.Metadata.ArtifactDir = artifactDir
+	// No PreviewURL stored: an artifact-panel link navigates directly to the
+	// origin with the scope encoded in the request path itself.
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	linkURL, err := previewutil.FileURL(srv.URL, "ao-1", "__ao_artifacts__/index.html")
+	if err != nil {
+		t.Fatalf("build artifact link URL: %v", err)
+	}
+
+	body, status, _ := doPreviewOriginRequest(t, srv, linkURL, "/__ao_artifacts__/index.html")
+	if status != http.StatusOK {
+		t.Fatalf("GET artifact link = %d, want 200; body=%s", status, body)
+	}
+	if !bytes.Contains(body, []byte("workspace content")) {
+		t.Fatalf("served body = %q, want the colliding workspace file's content, not the artifact directory's", body)
+	}
+}
+
 func TestSessionsAPI_SetReviewerAllowsConfigWithoutHarness(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
