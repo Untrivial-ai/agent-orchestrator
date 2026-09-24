@@ -426,10 +426,10 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	},
 	sessionRowPressed: { backgroundColor: t.bgSubtle },
 	sessionText: { flex: 1, minWidth: 0 },
-	sessionTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "600" },
-	sessionMetaRow: { marginTop: space.xxs, flexDirection: "row", alignItems: "center", gap: space.xs },
+	sessionTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "600", includeFontPadding: false },
+	sessionMetaRow: { marginTop: 2, flexDirection: "row", alignItems: "center", gap: space.xs },
 	statusDot: { width: 6, height: 6, borderRadius: 4 },
-	sessionMeta: { fontFamily: "Geist_400Regular", flex: 1, color: t.textTertiary, fontSize: type.caption1.fontSize },
+	sessionMeta: { fontFamily: "Geist_400Regular", flex: 1, color: t.textTertiary, fontSize: type.caption1.fontSize, includeFontPadding: false },
 	sidebarActions: {
 		position: "absolute",
 		left: 28,
