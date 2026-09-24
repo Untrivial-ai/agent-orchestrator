@@ -10,17 +10,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// A Chat spawn can answer the API before its worktree and controller exist, so
-// the session is on screen and typeable while it is still being built. The
-// durable turn queue — not a client-side buffer and not a second intake path —
-// is what holds those messages: NextQueuedTurn is keyed on the conversation, so
-// a turn recorded before any controller existed is drained by the controller
-// that arrives later, in the order the user typed it.
-
-// ErrNotProvisioning reports a queue-without-controller attempt against a
-// session that is not starting up. Such a session has a real reason for having
-// no controller (stopped, switching interfaces, failed), and silently accepting
-// a message it will never dispatch would be worse than refusing it.
+// ErrNotProvisioning refuses intake when no controller is starting.
 var ErrNotProvisioning = errors.New("session is not provisioning")
 
 // QueueUserMessage records a turn for a session whose controller does not exist
@@ -116,9 +106,7 @@ func (s *Service) ensureConversation(
 	return conversation, nil
 }
 
-// DrainQueued dispatches whatever was queued while the session had no
-// controller. Called once the controller is live; a session with an empty queue
-// is a no-op.
+// DrainQueued dispatches messages saved before the controller started.
 func (s *Service) DrainQueued(ctx context.Context, id domain.SessionID) error {
 	controller, err := s.Controller(id)
 	if err != nil {

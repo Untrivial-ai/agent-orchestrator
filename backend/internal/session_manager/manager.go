@@ -4693,7 +4693,6 @@ func spawnAttachmentName(index int, attachment ports.SpawnAttachment) string {
 func spawnAttachmentRefs(attachments []ports.SpawnAttachment) []string {
 	refs := make([]string, 0, len(attachments))
 	for i, a := range attachments {
-		// Worktree-relative reference, always forward-slashed for the prompt.
 		refs = append(refs, attachmentsDir+"/"+spawnAttachmentName(i, a))
 	}
 	return refs

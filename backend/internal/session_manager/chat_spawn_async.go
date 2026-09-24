@@ -10,24 +10,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// Asynchronous Chat spawn.
-//
-// A synchronous spawn holds the API open for everything a session needs: a
-// remote fetch, a worktree checkout, and the provider's own session/new. On a
-// real repository that is seconds of staring at a spinner before the session
-// the user just described is even visible.
-//
-// This path answers as soon as the two things the user interacts with exist —
-// the session row and its conversation — and finishes the rest in the
-// background. The opening prompt is recorded as a queued turn rather than sent,
-// which is also what makes the in-between typeable: everything the user writes
-// before the controller arrives lands in the same durable queue, in order, and
-// the controller drains it when it starts.
-//
-// Only worker sessions take this path. An orchestrator owns a project-scoped
-// narrative whose rebinding must stay ordered with its controller.
-
-// asyncChatSpawn is the resolved spawn state handed to the background half.
 type asyncChatSpawn struct {
 	cfg               ports.SpawnConfig
 	project           domain.ProjectRecord
@@ -121,9 +103,7 @@ func (m *Manager) beginAsyncChatSpawn(ctx context.Context, in asyncChatSpawn) (d
 // failed session the user can act on rather than a permanent "starting".
 const asyncChatSpawnBudget = 10 * time.Minute
 
-// completeAsyncChatSpawn builds everything the early answer skipped. Failures
-// mark the session failed instead of deleting it: the user is already looking
-// at the session, and their queued messages live in it.
+// completeAsyncChatSpawn keeps the visible session and queue on failure.
 func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn) {
 	id := in.record.ID
 	totalStarted := time.Now()
@@ -264,9 +244,7 @@ func (m *Manager) logAsyncChatSpawnStage(id domain.SessionID, stage string, star
 	)
 }
 
-// failAsyncChatSpawn records why a background start stopped. The row, its
-// conversation, and its queue survive so the failure is something the user can
-// read and retry rather than a session that silently disappeared.
+// failAsyncChatSpawn preserves the visible row and queue for retry.
 func (m *Manager) failAsyncChatSpawn(ctx context.Context, id domain.SessionID, cause error) {
 	m.logger.Error("spawn: asynchronous chat start failed", "sessionID", id, "error", cause)
 	cleanupCtx, cancel := spawnRollbackContext(ctx)

@@ -47,9 +47,6 @@ func (m *Manager) StageAttachments(
 	// completeAsyncChatSpawn materializes it as soon as the worktree exists.
 	provisioning := rec.ProvisionState.IsProvisioning()
 	if rec.Metadata.WorkspacePath == "" && !provisioning {
-		// Nothing to write into, and nothing on the way. Refusing beats writing
-		// somewhere the agent cannot reach and then telling the user their image
-		// was attached.
 		return nil, fmt.Errorf("session %s has no workspace", id)
 	}
 	if rec.Metadata.WorkspacePath != "" {

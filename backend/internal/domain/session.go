@@ -223,16 +223,15 @@ type SessionProvisionState string
 // session id as its value.
 type TaskPreparationToken string
 
-// Provision states.
 const (
-	// SessionProvisionProvisioning: the row and its conversation exist; the
+	// SessionProvisionProvisioning means the row and its conversation exist; the
 	// worktree, the agent controller, or both do not yet. Messages sent now are
 	// queued and dispatched by the controller when it arrives.
 	SessionProvisionProvisioning SessionProvisionState = "provisioning"
-	// SessionProvisionReady: the session owns everything a spawn creates. This is
+	// SessionProvisionReady means the session owns everything a spawn creates. This is
 	// the zero value's meaning, so rows predating asynchronous spawn are ready.
 	SessionProvisionReady SessionProvisionState = "ready"
-	// SessionProvisionFailed: the start did not complete. The row, its
+	// SessionProvisionFailed means the start did not complete. The row, its
 	// conversation, and anything queued into it survive so the user can retry.
 	SessionProvisionFailed SessionProvisionState = "failed"
 )
