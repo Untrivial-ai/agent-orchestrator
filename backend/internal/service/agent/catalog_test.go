@@ -128,12 +128,20 @@ type fakeModelDiscoverer struct {
 	fingerprintRequests    atomic.Int32
 	lastFingerprintRequest atomic.Pointer[ports.AgentModelDiscoveryRequest]
 	delay                  time.Duration
+	discoverGate           <-chan struct{}
 	active                 atomic.Int32
 	maxActive              atomic.Int32
 	overlap                atomic.Bool
 }
 
 func (f *fakeModelDiscoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
+	if f.discoverGate != nil {
+		select {
+		case <-f.discoverGate:
+		case <-ctx.Done():
+			return ports.AgentModelCatalog{AgentID: request.AgentID, Models: []ports.AgentModelInfo{}}, ctx.Err()
+		}
+	}
 	f.discoverCalls.Add(1)
 	active := f.active.Add(1)
 	for {
@@ -1845,6 +1853,9 @@ func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 	}
 	record.CatalogJSON = string(data)
 	cache.records["opencode\x00"] = record
+	discoverGate := make(chan struct{})
+	defer close(discoverGate)
+	discoverer.discoverGate = discoverGate
 
 	// A CLI-backed catalog can drift with no change to the binary or its config,
 	// so an aged cache hit is what replaces the manual "Refresh models" button.

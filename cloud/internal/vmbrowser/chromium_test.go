@@ -15,9 +15,8 @@ import (
 )
 
 type fakeProcess struct {
-	mu      sync.Mutex
-	stopped bool
-	exit    chan struct{}
+	exitOnce sync.Once
+	exit     chan struct{}
 }
 
 func (f *fakeProcess) Wait() error {
@@ -26,14 +25,12 @@ func (f *fakeProcess) Wait() error {
 }
 
 func (f *fakeProcess) Stop() error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.stopped {
-		return nil
-	}
-	f.stopped = true
-	close(f.exit)
+	f.exitOnce.Do(func() { close(f.exit) })
 	return nil
+}
+
+func (f *fakeProcess) crash() {
+	f.exitOnce.Do(func() { close(f.exit) })
 }
 
 type fakeSpawner struct {
@@ -141,7 +138,7 @@ func TestChromiumRestartsAfterCrash(t *testing.T) {
 			proc := &fakeProcess{exit: make(chan struct{})}
 			// Simulate immediate crash.
 			go func() {
-				close(proc.exit)
+				proc.crash()
 				_ = os.Remove(filepath.Join(spec.Dir, "DevToolsActivePort"))
 			}()
 			return proc
