@@ -88,7 +88,7 @@ func (s *Service) queueWithoutController(
 	// after a prior drain found the queue empty. Kicking the same serialized drain
 	// here closes both races; NextQueuedTurn still owns ordering.
 	if controller, controllerErr := s.Controller(record.ID); controllerErr == nil {
-		controller.drain(ctx)
+		_ = controller.drain(ctx) // The message is already accepted; drain logs failures.
 	}
 	return turn, nil
 }

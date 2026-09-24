@@ -1910,7 +1910,10 @@ func (c *Controller) BeginHandoff(
 		// A queued row can exist in the narrow gap after a completion was
 		// projected and before its drain ran. Claim it now so drain mode cannot
 		// report quiescent while accepted work is still waiting.
-		c.drain(ctx)
+		if err := c.drain(ctx); err != nil {
+			c.AbortHandoff()
+			return fmt.Errorf("drain queued turns before handoff: %w", err)
+		}
 	}
 
 	ticker := time.NewTicker(50 * time.Millisecond)
@@ -1935,7 +1938,11 @@ func (c *Controller) BeginHandoff(
 				c.AbortHandoff()
 				return fmt.Errorf("check queued turns before handoff: %w", err)
 			case policy == domain.SessionInterfaceTransitionDrain:
-				c.drainLocked(ctx, true)
+				if err := c.drainLocked(ctx, true); err != nil {
+					c.sendMu.Unlock()
+					c.AbortHandoff()
+					return fmt.Errorf("drain queued turns during handoff: %w", err)
+				}
 			}
 		}
 		c.sendMu.Unlock()
@@ -1990,7 +1997,9 @@ func (c *Controller) AbortHandoff() {
 		close(branchHandoffDone)
 	}
 	if resumeDispatch {
-		go c.drain(context.WithoutCancel(context.Background()))
+		go func() {
+			_ = c.drain(context.Background()) // drain logs failures; no caller waits on abort.
+		}()
 	}
 }
 
@@ -2285,8 +2294,7 @@ func (c *Controller) reconcileDurableTurnsLocked(
 	c.reportActivity(ctx, domain.ActivityIdle, "chat.interrupt.reconciled", now)
 	// drainLocked consumes cancelQueuedAt, cancels only the pre-Stop queue, and
 	// immediately dispatches the oldest surviving post-Stop prompt.
-	c.drainLocked(ctx, true)
-	return nil
+	return c.drainLocked(ctx, true)
 }
 
 // awaitAcknowledgedTurn returns the turn to interrupt once the provider has
@@ -3118,7 +3126,7 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		c.reportActivity(ctx, activityState, activityEvent, now)
 		// Only a completed turn releases queued work; a failed or recovered one holds
 		// the queue so it cannot cascade through the same outage (issue #4861).
-		c.drainLocked(ctx, settledTurnState(event) == domain.TurnStateCompleted)
+		_ = c.drainLocked(ctx, settledTurnState(event) == domain.TurnStateCompleted) // drain logs failures.
 	case ports.ChatEventApprovalRequested:
 		c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.approval.requested", now)
 	case ports.ChatEventApprovalResolved:
