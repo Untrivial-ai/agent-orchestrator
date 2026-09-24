@@ -32,6 +32,7 @@ import {
 	clearTerminateSessionState,
 	useTerminateSessionState,
 } from "../hooks/useTerminateSession";
+import { useReapplyPreservedEdits } from "../hooks/useReapplyPreservedEdits";
 import { cn } from "../lib/utils";
 import { AgentAvatar } from "./AgentAvatar";
 import { ProductExternalLink } from "./ProductExternalLink";
@@ -111,16 +112,38 @@ export function ArchivedSessionCardAdapter({
 	session: WorkspaceSession;
 	usage?: SessionUsageSummary;
 }) {
+	const { t } = useTranslation();
+	const reapply = useReapplyPreservedEdits();
+	const [puttingBack, setPuttingBack] = useState(false);
 	const branch = session.branch ?? "";
+	const putEditsBack = (event: MouseEvent<HTMLButtonElement>) => {
+		event.stopPropagation();
+		if (puttingBack || isRestoreDisabled) return;
+		setPuttingBack(true);
+		void reapply(session.id).finally(() => setPuttingBack(false));
+	};
 	return (
 		<DesktopSessionCard
 			action={
-				<ArchiveRestoreButton
-					isDisabled={isRestoreDisabled}
-					isRestoring={isRestoring}
-					label={`Restore ${session.title}`}
-					onClick={restoreAction}
-				/>
+				<span className="inline-flex items-center gap-1">
+					{session.hasPreservedEdits ? (
+						<button
+							aria-label={t("shell.putEditsBackNamed", { title: session.title })}
+							className="inline-flex h-control-board-sm items-center rounded-md px-2 text-2xs text-passive transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50 disabled:cursor-not-allowed disabled:opacity-35"
+							disabled={puttingBack || isRestoreDisabled}
+							onClick={putEditsBack}
+							type="button"
+						>
+							{puttingBack ? t("shell.puttingEditsBack") : t("shell.putEditsBack")}
+						</button>
+					) : null}
+					<ArchiveRestoreButton
+						isDisabled={isRestoreDisabled || puttingBack}
+						isRestoring={isRestoring}
+						label={`Restore ${session.title}`}
+						onClick={restoreAction}
+					/>
+				</span>
 			}
 			branchAction={branch ? <CopyActionButton label={`branch ${branch}`} value={branch} /> : undefined}
 			footer={<ArchiveRestoreError message={restoreError} />}

@@ -373,9 +373,9 @@ func TestSpawnPRKillRoundTrip(t *testing.T) {
 	if got.Status != domain.StatusCIFailed {
 		t.Fatalf("want ci_failed, got %q", got.Status)
 	}
-	freed, err := st.sm.Kill(ctx, sess.ID)
-	if err != nil || !freed {
-		t.Fatalf("kill freed=%v err=%v", freed, err)
+	outcome, err := st.sm.Kill(ctx, sess.ID)
+	if err != nil || !outcome.Freed {
+		t.Fatalf("kill freed=%v err=%v", outcome.Freed, err)
 	}
 	rec, _, _ = st.store.GetSession(ctx, sess.ID)
 	if !rec.IsTerminated {

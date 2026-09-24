@@ -18,6 +18,7 @@ const (
 	agentOperationResume            agentOperationKind = "resume"
 	agentOperationKill              agentOperationKind = "kill"
 	agentOperationRestore           agentOperationKind = "restore"
+	agentOperationReapply           agentOperationKind = "reapply"
 	agentOperationRetire            agentOperationKind = "retire"
 	agentOperationReconcile         agentOperationKind = "reconcile"
 	agentOperationInterfaceRecovery agentOperationKind = "interface_recovery"

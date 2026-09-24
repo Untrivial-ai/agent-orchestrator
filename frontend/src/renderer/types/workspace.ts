@@ -117,6 +117,8 @@ export type WorkspaceSession = {
 	/** Whether the cloud worker has a current control-plane connection. */
 	runtimeConnected?: boolean;
 	chatProviderPreserved?: boolean;
+	/** Unfinished edits saved apart from the branch. They return only when asked. */
+	hasPreservedEdits?: boolean;
 	/** User preference to tear down this session when its PR set completes through a merge. */
 	terminateOnPrMerge?: boolean;
 	/** Whether SCM review feedback is automatically injected into the worker. */

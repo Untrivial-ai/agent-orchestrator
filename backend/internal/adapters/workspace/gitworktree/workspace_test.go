@@ -361,6 +361,48 @@ func TestRestoreRecreatesMissingRegisteredWorktreeWithForce(t *testing.T) {
 	assertNoDestructiveRegistrationCleanup(t, "Restore", got)
 }
 
+func TestRestoreRefusesMissingLocalBranch(t *testing.T) {
+	root := t.TempDir()
+	repo := t.TempDir()
+	ws, err := New(Options{ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	path := filepath.Join(ws.managedRoot, "proj", "worker", "proj-1")
+	cfg := ports.WorkspaceConfig{
+		ProjectID:     "proj",
+		SessionID:     "proj-1",
+		Kind:          domain.KindWorker,
+		SessionPrefix: "proj",
+		Branch:        "ao/proj-1",
+		BaseRef:       "refs/remotes/origin/main",
+		Path:          path,
+	}
+	missing := exec.Command("sh", "-c", "exit 1")
+	missingErr := missing.Run()
+	ws.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.Contains(joined, "check-ref-format"):
+			return nil, nil
+		case strings.Contains(joined, "worktree list --porcelain"):
+			return nil, nil
+		case strings.Contains(joined, "rev-parse --verify --quiet refs/heads/ao/proj-1"):
+			return nil, missingErr
+		case strings.Contains(joined, "worktree add"):
+			t.Fatalf("Restore built a branch from a base ref: %v", args)
+		default:
+			t.Fatalf("unexpected git invocation: %v", args)
+		}
+		return nil, nil
+	}
+
+	_, err = ws.Restore(context.Background(), cfg)
+	if !errors.Is(err, ports.ErrSessionBranchMissing) {
+		t.Fatalf("Restore err = %v, want missing local branch", err)
+	}
+}
+
 // TestRestoreRecreatesOnRegisteredBranchNotCfgBranch is the regression test
 // for the real #2775 case: session agent-orchestrator-78 had its worktree
 // registered on a child branch (ao/agent-orchestrator-78/gh-pages-landing),

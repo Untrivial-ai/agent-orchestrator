@@ -131,6 +131,24 @@ func cherryPickNoCommitArgs(worktree, commitSHA string) []string {
 	return []string{"-C", worktree, "cherry-pick", "--no-commit", commitSHA}
 }
 
+// stashCreateUntrackedArgs writes the dirty worktree, including untracked
+// files, to a commit object and prints its SHA. It does not update refs/stash.
+func stashCreateUntrackedArgs(worktree string) []string {
+	return []string{"-C", worktree, "stash", "create", "--include-untracked"}
+}
+
+// mergeTreeWriteArgs merges ours and theirs and prints the result tree. Exit 1
+// means the tree contains conflicts. The worktree itself is not modified.
+func mergeTreeWriteArgs(worktree, ours, theirs string) []string {
+	return []string{"-C", worktree, "merge-tree", "--write-tree", ours, theirs}
+}
+
+// readTreeResetArgs replaces the index with tree and updates the worktree to
+// match it. Ignored files that are not in the tree stay on disk.
+func readTreeResetArgs(worktree, tree string) []string {
+	return []string{"-C", worktree, "read-tree", "--reset", "-u", tree}
+}
+
 // ignoredCountArgs lists files skipped because of .gitignore (dry-run, no mutation).
 func ignoredCountArgs(worktree string) []string {
 	return []string{"-C", worktree, "status", "--ignored", "--porcelain"}

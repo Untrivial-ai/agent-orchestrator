@@ -22,6 +22,7 @@ vi.mock("./useCloudCp", () => ({
 
 vi.mock("../lib/telemetry", () => ({ captureRendererEvent: vi.fn() }));
 
+import { useUiStore } from "../stores/ui-store";
 import { useTerminateSession } from "./useTerminateSession";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 
@@ -78,6 +79,30 @@ beforeEach(() => {
 });
 
 describe("useTerminateSession", () => {
+	it("says when unfinished edits were saved apart from the branch", async () => {
+		postMock.mockResolvedValue({ data: { ok: true, preserved: true, freed: true }, error: undefined });
+		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+		const { result } = renderHook(() => useTerminateSession(), { wrapper: wrapper(queryClient) });
+
+		await act(async () => result.current.mutateAsync(localSession));
+
+		expect(useUiStore.getState().globalToasts.map((toast) => toast.title)).toContain(
+			"Unfinished edits were saved on this machine, apart from the branch. They come back only when you ask.",
+		);
+	});
+
+	it("says when the folder stayed because the save failed", async () => {
+		postMock.mockResolvedValue({ data: { ok: true, saveFailed: true }, error: undefined });
+		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+		const { result } = renderHook(() => useTerminateSession(), { wrapper: wrapper(queryClient) });
+
+		await act(async () => result.current.mutateAsync(localSession));
+
+		expect(useUiStore.getState().globalToasts.map((toast) => toast.title)).toContain(
+			"The worktree folder was kept because those edits could not be saved.",
+		);
+	});
+
 	it("routes local sessions to the local daemon", async () => {
 		const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
 		const { result } = renderHook(() => useTerminateSession(), { wrapper: wrapper(queryClient) });

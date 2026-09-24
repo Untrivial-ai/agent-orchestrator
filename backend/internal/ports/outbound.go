@@ -459,6 +459,10 @@ var (
 	// conflict markers for manual resolution. Adapters wrap this sentinel via
 	// fmt.Errorf so callers can match it with errors.Is.
 	ErrPreservedConflict = errors.New("workspace: preserved apply produced conflicts")
+	// ErrSessionBranchMissing is returned by Restore when the session's local
+	// branch is gone. Restore must not invent a branch from a base ref or from
+	// a preserved snapshot. The snapshot stays until that branch exists again.
+	ErrSessionBranchMissing = errors.New("workspace: session branch is missing")
 	// ErrRuntimePrerequisite reports a missing host prerequisite for the selected
 	// runtime before a session can be created.
 	ErrRuntimePrerequisite = errors.New("runtime: prerequisite missing")
@@ -520,6 +524,10 @@ type WorkspaceInfo struct {
 	// when the normal workspace lifecycle primitives operate on one child repo
 	// inside a workspace project.
 	RepoPath string
+	// PreserveKey names the private snapshot ref for this worktree. Empty uses
+	// the session id, which is the single-worktree ref. A workspace project
+	// sets a per-repo key so two repos in one session do not share one ref.
+	PreserveKey string
 }
 
 // WorkspaceProjectConfig describes a multi-repo workspace session. RootRepoPath

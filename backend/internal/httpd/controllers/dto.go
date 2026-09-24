@@ -901,9 +901,20 @@ type InterfaceTransitionNoticeAckResponse struct {
 
 // KillSessionResponse is the body of POST /api/v1/sessions/{sessionId}/kill.
 type KillSessionResponse struct {
+	OK         bool             `json:"ok"`
+	SessionID  domain.SessionID `json:"sessionId"`
+	Freed      bool             `json:"freed,omitempty"`
+	Preserved  bool             `json:"preserved,omitempty"`
+	SaveFailed bool             `json:"saveFailed,omitempty"`
+}
+
+// ReapplyEditsResponse is the body of POST /api/v1/sessions/{sessionId}/reapply-edits.
+// Conflicts is true when some edits did not apply cleanly. Those stay in the
+// worktree, and no commit is created.
+type ReapplyEditsResponse struct {
 	OK        bool             `json:"ok"`
 	SessionID domain.SessionID `json:"sessionId"`
-	Freed     bool             `json:"freed,omitempty"`
+	Conflicts bool             `json:"conflicts,omitempty"`
 }
 
 // RollbackSessionResponse is the body of POST /api/v1/sessions/{sessionId}/rollback.

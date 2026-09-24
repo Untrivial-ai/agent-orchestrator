@@ -91,7 +91,8 @@ type SessionService interface {
 	RecoverAgentSwitch(ctx context.Context, id domain.SessionID, switchID domain.AgentSwitchID) (domain.AgentSwitch, error)
 	ListAgentSwitches(ctx context.Context, id domain.SessionID) ([]domain.AgentSwitch, error)
 	SubmitAgentHandoff(ctx context.Context, id domain.SessionID, switchID domain.AgentSwitchID, sourceGenerationID domain.AgentGenerationID, handoff json.RawMessage) (domain.AgentSwitch, error)
-	Kill(ctx context.Context, id domain.SessionID) (bool, error)
+	Kill(ctx context.Context, id domain.SessionID) (sessionsvc.KillOutcome, error)
+	ReapplyPreservedEdits(ctx context.Context, id domain.SessionID) (sessionsvc.ReapplyOutcome, error)
 	RollbackSpawn(ctx context.Context, id domain.SessionID) (sessionsvc.RollbackOutcome, error)
 	Cleanup(ctx context.Context, project domain.ProjectID) (sessionsvc.CleanupOutcome, error)
 	Rename(ctx context.Context, id domain.SessionID, displayName string) error
@@ -210,6 +211,7 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Delete("/sessions/{sessionId}/interface-transition", c.cancelInterfaceTransition)
 	r.Put("/sessions/{sessionId}/interface-transition/{transitionId}/notice-acknowledgement", c.acknowledgeInterfaceTransitionNotice)
 	r.Post("/sessions/{sessionId}/kill", c.kill)
+	r.Post("/sessions/{sessionId}/reapply-edits", c.reapplyEdits)
 	r.Post("/sessions/{sessionId}/rollback", c.rollback)
 	r.Post("/sessions/{sessionId}/send", c.send)
 	r.Post("/sessions/{sessionId}/activity", c.activity)
@@ -1506,12 +1508,31 @@ func (c *SessionsController) kill(w http.ResponseWriter, r *http.Request) {
 		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/kill")
 		return
 	}
-	freed, err := c.Svc.Kill(r.Context(), sessionID(r))
+	out, err := c.Svc.Kill(r.Context(), sessionID(r))
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, KillSessionResponse{OK: true, SessionID: sessionID(r), Freed: freed})
+	envelope.WriteJSON(w, http.StatusOK, KillSessionResponse{
+		OK:         true,
+		SessionID:  sessionID(r),
+		Freed:      out.Freed,
+		Preserved:  out.Preserved,
+		SaveFailed: out.SaveFailed,
+	})
+}
+
+func (c *SessionsController) reapplyEdits(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/reapply-edits")
+		return
+	}
+	out, err := c.Svc.ReapplyPreservedEdits(r.Context(), sessionID(r))
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, ReapplyEditsResponse{OK: true, SessionID: sessionID(r), Conflicts: out.Conflicts})
 }
 
 // rollback undoes a partially-completed spawn: if the session row is still in

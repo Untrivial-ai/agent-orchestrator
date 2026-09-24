@@ -23,22 +23,23 @@ type TerminateSessionOptions = {
 
 export const terminateSessionMutationKey = ["terminate-session"] as const;
 
-async function terminateSession(queryClient: QueryClient, session: WorkspaceSession): Promise<void> {
+async function terminateSession(queryClient: QueryClient, session: WorkspaceSession) {
 	if (session.cloud) {
 		const settings = queryClient.getQueryData<Settings>(settingsQueryKey);
 		const baseUrl = settings?.cloudControlPlaneUrl ?? "";
 		if (baseUrl === "") throw new Error("The cloud control plane is not configured.");
 		await createRendererCloudCpClient(baseUrl).deleteSession(session.cloud.orgId, session.id);
-		return;
+		return undefined;
 	}
 
-	const { error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/kill", {
+	const { data, error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/kill", {
 		params: { path: { sessionId: session.id } },
 	});
 	if (error) {
 		const fallback = response ? `Failed to terminate session (${response.status})` : "Failed to terminate session";
 		throw new Error(apiErrorMessage(error, fallback));
 	}
+	return data;
 }
 
 // The merged board recomputes cloud cards from cloudSessionsQueryKey, NOT from
@@ -108,7 +109,7 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 			const toastTitle = appI18n.t("shell.killingNamed", { title: session.branch || session.workspaceName || "Session" });
 			useUiStore.getState().showGlobalToast(toastTitle, undefined, "info");
 
-			await terminateSession(queryClient, session);
+			return terminateSession(queryClient, session);
 		},
 		// Navigate and archive the card on the click, not on the round trip: the
 		// delete is slow (daemon kill or CP delete + sandbox teardown), and a row
@@ -142,8 +143,19 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 			}
 			return { workspace, cloud };
 		},
-		onSuccess: async (_data, session) => {
+		onSuccess: async (data, session) => {
 			void captureRendererEvent("ao.renderer.session_kill_succeeded", { project_id: session.workspaceId });
+			if (!session.cloud && data?.saveFailed) {
+				useUiStore.getState().showGlobalToast(
+					"The worktree folder was kept because those edits could not be saved.",
+					undefined,
+					"error",
+				);
+			} else if (!session.cloud && data?.preserved) {
+				useUiStore.getState().showGlobalToast(
+					"Unfinished edits were saved on this machine, apart from the branch. They come back only when you ask.",
+				);
+			}
 			// Reinforce before refresh; keep the optimistic id until this refetch finishes.
 			queryClient.setQueryData<WorkspaceSummary[]>(workspaceQueryKey, (workspaces) =>
 				applyTerminatedSession(workspaces, session.id),

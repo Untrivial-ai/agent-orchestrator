@@ -936,6 +936,8 @@ type fakeWorkspace struct {
 	stashErr        error
 	applyErr        error
 	forceDestroyErr error
+	restoreErr      error
+	stashInfos      []ports.WorkspaceInfo
 	// stashCalls counts StashUncommitted invocations.
 	stashCalls int
 	stashHook  func()
@@ -1088,6 +1090,9 @@ func (w *fakeWorkspace) DestroyWorkspaceProject(context.Context, ports.Workspace
 func (w *fakeWorkspace) Restore(ctx context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
 	w.lastCfg = cfg
 	w.restoreConfigs = append(w.restoreConfigs, cfg)
+	if w.restoreErr != nil {
+		return ports.WorkspaceInfo{}, w.restoreErr
+	}
 	if cfg.RepoPath != "" {
 		entry := "Restore:" + fakeWorkspaceRepoName(ports.WorkspaceInfo{
 			Path:      cfg.Path,
@@ -1115,6 +1120,7 @@ func (w *fakeWorkspace) StashUncommitted(_ context.Context, info ports.Workspace
 		w.stashHook()
 	}
 	w.stashCalls++
+	w.stashInfos = append(w.stashInfos, info)
 	entry := "StashUncommitted:" + string(info.SessionID)
 	if info.RepoPath != "" {
 		entry = "StashUncommitted:" + fakeWorkspaceRepoName(info)
@@ -3344,26 +3350,132 @@ func TestKill_TerminatesIncompleteHandle(t *testing.T) {
 	}
 }
 
-// TestKill_DirtyWorkspacePreservesAndTerminates: a workspace teardown
-// refused because of uncommitted work must NOT force-remove the worktree. Kill
-// succeeds with freed=false and still marks the session terminated; cleanup can
-// reclaim the preserved worktree after the user resolves the dirty state.
-func TestKill_DirtyWorkspacePreservesAndTerminates(t *testing.T) {
+// TestKill_DirtyWorkspaceSnapshotsThenRemoves: uncommitted work is stored in
+// the session's private snapshot, then the worktree is removed. The session
+// is terminated, and no shutdown-restore row is left behind.
+func TestKill_DirtyWorkspaceSnapshotsThenRemoves(t *testing.T) {
 	m, st, rt, ws := newManager()
 	st.sessions["mer-1"] = mkLive("mer-1")
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
+		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, WorktreePath: "/ws/mer-1", State: "active"},
+	}
 	ws.destroyErr = fmt.Errorf("gitworktree: refusing to remove: %w", ports.ErrWorkspaceDirty)
+	ws.stashRef = "refs/ao/preserved/mer-1"
+
 	freed, err := m.Kill(ctx, "mer-1")
 	if err != nil {
 		t.Fatalf("kill dirty workspace err = %v, want nil", err)
 	}
-	if freed {
-		t.Fatal("freed = true, want false for preserved workspace")
+	if !freed {
+		t.Fatal("freed = false, want true after the snapshot is stored")
 	}
 	if rt.destroyed != 1 {
 		t.Fatal("runtime should be destroyed")
 	}
 	if !st.sessions["mer-1"].IsTerminated {
-		t.Fatal("session should be terminated even when the workspace is preserved")
+		t.Fatal("session should be terminated")
+	}
+	if ws.stashCalls != 1 {
+		t.Fatalf("stash calls = %d, want 1", ws.stashCalls)
+	}
+	stashAt, forceAt := -1, -1
+	for i, call := range ws.calls {
+		switch call {
+		case "StashUncommitted:mer-1":
+			stashAt = i
+		case "ForceDestroy:mer-1":
+			forceAt = i
+		}
+	}
+	if stashAt < 0 || forceAt < 0 || stashAt > forceAt {
+		t.Fatalf("calls = %v, want stash before force destroy", ws.calls)
+	}
+	rows := st.worktrees["mer-1"]
+	if len(rows) != 1 || rows[0].PreservedRef != "refs/ao/preserved/mer-1" || rows[0].State != "active" {
+		t.Fatalf("snapshot = %+v, want one active row so reboot does not reapply", rows)
+	}
+	preserved, saveFailed := m.LastArchiveNotice("mer-1")
+	if !preserved || saveFailed {
+		t.Fatalf("archive notice preserved=%v saveFailed=%v, want preserved", preserved, saveFailed)
+	}
+}
+
+// TestKill_DirtyWorkspaceStaysWhenSnapshotFails: a failed snapshot must not
+// remove the folder. The session still terminates.
+func TestKill_DirtyWorkspaceStaysWhenSnapshotFails(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.sessions["mer-1"] = mkLive("mer-1")
+	ws.destroyErr = fmt.Errorf("gitworktree: refusing to remove: %w", ports.ErrWorkspaceDirty)
+	ws.stashErr = errors.New("commit-tree failed")
+
+	freed, err := m.Kill(ctx, "mer-1")
+	if err != nil {
+		t.Fatalf("kill dirty workspace err = %v, want nil", err)
+	}
+	if freed {
+		t.Fatal("freed = true, want false when the snapshot cannot be stored")
+	}
+	for _, call := range ws.calls {
+		if strings.HasPrefix(call, "ForceDestroy:") {
+			t.Fatalf("calls = %v, want no force destroy", ws.calls)
+		}
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session should be terminated even when the folder stays")
+	}
+	_, saveFailed := m.LastArchiveNotice("mer-1")
+	if !saveFailed {
+		t.Fatal("archive notice saveFailed = false, want true")
+	}
+}
+
+func TestKill_DirtyWorkspaceKeepsPreviousSnapshotWhenSaveFails(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.sessions["mer-1"] = mkLive("mer-1")
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{{
+		SessionID:    "mer-1",
+		RepoName:     domain.RootWorkspaceRepoName,
+		PreservedRef: "refs/ao/preserved/previous",
+		State:        "removed",
+		WorktreePath: "/ws/mer-1",
+	}}
+	ws.destroyErr = fmt.Errorf("gitworktree: refusing to remove: %w", ports.ErrWorkspaceDirty)
+	ws.stashErr = errors.New("commit-tree failed")
+
+	freed, err := m.Kill(ctx, "mer-1")
+	if err != nil {
+		t.Fatalf("kill dirty workspace err = %v, want nil", err)
+	}
+	if freed {
+		t.Fatal("freed = true, want false when the snapshot cannot be stored")
+	}
+	rows := st.worktrees["mer-1"]
+	if len(rows) != 1 || rows[0].PreservedRef != "refs/ao/preserved/previous" || rows[0].State != "active" {
+		t.Fatalf("snapshot = %+v, want the previous ref kept as an active row", rows)
+	}
+}
+
+// TestKill_DirtyWorkspaceStaysWhenRemovalFails: a stored snapshot is not a
+// reason to report the folder gone when the removal itself fails.
+func TestKill_DirtyWorkspaceStaysWhenRemovalFails(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.sessions["mer-1"] = mkLive("mer-1")
+	ws.destroyErr = fmt.Errorf("gitworktree: refusing to remove: %w", ports.ErrWorkspaceDirty)
+	ws.stashRef = "refs/ao/preserved/mer-1"
+	ws.forceDestroyErr = errors.New("prune failed")
+
+	freed, err := m.Kill(ctx, "mer-1")
+	if err != nil {
+		t.Fatalf("kill dirty workspace err = %v, want nil", err)
+	}
+	if freed {
+		t.Fatal("freed = true, want false when removal fails after the snapshot")
+	}
+	if ws.stashCalls != 1 {
+		t.Fatalf("stash calls = %d, want 1", ws.stashCalls)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session should be terminated even when the folder stays")
 	}
 }
 
@@ -3531,9 +3643,10 @@ func TestKill_WorkspaceProjectFailsClosedOnUnregisteredChildRows(t *testing.T) {
 	}
 }
 
-func TestKill_WorkspaceProjectDirtyRowRefusesRemoval(t *testing.T) {
+func TestKill_WorkspaceProjectDirtyRowSnapshotsThenRemoves(t *testing.T) {
 	m, st, _, ws := newManager()
 	ws.destroyErr = fmt.Errorf("dirty: %w", ports.ErrWorkspaceDirty)
+	ws.stashRef = "refs/ao/preserved/mer-1"
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
 	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api"}}
 	st.sessions["mer-1"] = domain.SessionRecord{
@@ -3548,15 +3661,83 @@ func TestKill_WorkspaceProjectDirtyRowRefusesRemoval(t *testing.T) {
 	}
 
 	freed, err := m.Kill(ctx, "mer-1")
-	if err != nil || freed {
-		t.Fatalf("freed=%v err=%v, want dirty row to preserve workspace", freed, err)
+	if err != nil || !freed {
+		t.Fatalf("freed=%v err=%v, want both repos snapshotted and removed", freed, err)
 	}
-	want := []string{"Destroy:api"}
+	want := []string{
+		"Destroy:api", "StashUncommitted:api", "ForceDestroy:api",
+		"Destroy:__root__", "StashUncommitted:__root__", "ForceDestroy:__root__",
+	}
 	if got := ws.calls; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("calls = %v, want %v", got, want)
 	}
 	if !st.sessions["mer-1"].IsTerminated {
-		t.Fatal("session should be terminated even when dirty workspace cleanup is deferred")
+		t.Fatal("session should be terminated")
+	}
+	preserved, saveFailed := m.LastArchiveNotice("mer-1")
+	if !preserved || saveFailed {
+		t.Fatalf("archive notice preserved=%v saveFailed=%v", preserved, saveFailed)
+	}
+	refs := map[string]string{}
+	for _, row := range st.worktrees["mer-1"] {
+		if row.State == "removed" {
+			t.Fatalf("row %+v is a shutdown restore marker", row)
+		}
+		refs[row.RepoName] = row.PreservedRef
+	}
+	if refs["api"] == "" || refs[domain.RootWorkspaceRepoName] == "" || refs["api"] == refs[domain.RootWorkspaceRepoName] {
+		t.Fatalf("snapshot refs = %v, want a distinct ref per repo", refs)
+	}
+	var apiKey string
+	for _, info := range ws.stashInfos {
+		if strings.HasSuffix(info.Path, "/api") {
+			apiKey = info.PreserveKey
+		}
+	}
+	if apiKey != "mer-1--api" {
+		t.Fatalf("api preserve key = %q, want mer-1--api", apiKey)
+	}
+}
+
+func TestKill_WorkspaceProjectStashFailureLeavesFolder(t *testing.T) {
+	m, st, _, ws := newManager()
+	ws.destroyErr = fmt.Errorf("dirty: %w", ports.ErrWorkspaceDirty)
+	ws.stashErr = errors.New("commit-tree failed")
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api"}}
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Metadata:  domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1", RuntimeHandleID: "h1"},
+		Activity:  domain.Activity{State: domain.ActivityActive},
+	}
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{
+		{SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName, Branch: "ao/mer-1", WorktreePath: "/ws/mer-1", PreservedRef: "refs/ao/preserved/root-old", State: "active"},
+		{SessionID: "mer-1", RepoName: "api", Branch: "ao/mer-1", WorktreePath: "/ws/mer-1/api", PreservedRef: "refs/ao/preserved/api-old", State: "active"},
+	}
+
+	freed, err := m.Kill(ctx, "mer-1")
+	if err != nil || freed {
+		t.Fatalf("freed=%v err=%v, want folders kept when the snapshot cannot be stored", freed, err)
+	}
+	for _, call := range ws.calls {
+		if strings.HasPrefix(call, "ForceDestroy:") {
+			t.Fatalf("calls = %v, want no force destroy", ws.calls)
+		}
+	}
+	_, saveFailed := m.LastArchiveNotice("mer-1")
+	if !saveFailed {
+		t.Fatal("archive notice saveFailed = false, want true")
+	}
+	refs := map[string]string{}
+	for _, row := range st.worktrees["mer-1"] {
+		refs[row.RepoName] = row.PreservedRef
+		if row.State == "removed" {
+			t.Fatalf("row %+v must not be a shutdown restore marker", row)
+		}
+	}
+	if refs["api"] != "refs/ao/preserved/api-old" || refs[domain.RootWorkspaceRepoName] != "refs/ao/preserved/root-old" {
+		t.Fatalf("snapshot refs = %v, want the previous refs kept", refs)
 	}
 }
 
@@ -3627,6 +3808,132 @@ func TestRestore_ReopensTerminal(t *testing.T) {
 	}
 	if rt.created != 1 {
 		t.Fatal("restore should relaunch")
+	}
+}
+
+func TestRestore_DoesNotReapplyPreservedEdits(t *testing.T) {
+	m, st, rt, ws := newManager()
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "b", AgentSessionID: "agent-x"})
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{{
+		SessionID:    "mer-1",
+		RepoName:     domain.RootWorkspaceRepoName,
+		Branch:       "b",
+		WorktreePath: "/ws/mer-1",
+		PreservedRef: "refs/ao/preserved/mer-1",
+		State:        "active",
+	}}
+
+	if _, err := m.RestoreWithMode(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+	if rt.created != 1 {
+		t.Fatal("restore should relaunch the agent on the branch")
+	}
+	for _, call := range ws.calls {
+		if strings.Contains(call, "ApplyPreserved") {
+			t.Fatalf("calls = %v, restore must not put saved edits back", ws.calls)
+		}
+	}
+}
+
+func TestReapply_AppliesWithoutRelaunchOrCommit(t *testing.T) {
+	m, st, rt, ws := newManager()
+	rec := mkLive("mer-1")
+	rec.Metadata.Branch = "ao/mer-1"
+	rec.IsTerminated = true
+	st.sessions["mer-1"] = rec
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{{
+		SessionID:    "mer-1",
+		RepoName:     domain.RootWorkspaceRepoName,
+		Branch:       "ao/mer-1",
+		WorktreePath: "/ws/mer-1",
+		PreservedRef: "refs/ao/preserved/mer-1",
+		State:        "active",
+	}}
+
+	out, err := m.ReapplyPreservedEdits(ctx, "mer-1")
+	if err != nil || out.Conflicts {
+		t.Fatalf("reapply = %+v err=%v, want a clean apply", out, err)
+	}
+	if rt.created != 0 {
+		t.Fatal("reapply must not relaunch the agent")
+	}
+	applied := false
+	for _, call := range ws.calls {
+		if strings.HasPrefix(call, "ApplyPreserved:") {
+			applied = true
+		}
+	}
+	if !applied {
+		t.Fatalf("calls = %v, want ApplyPreserved", ws.calls)
+	}
+	if st.worktrees["mer-1"][0].PreservedRef != "" {
+		t.Fatal("clean apply must clear the snapshot ref")
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("reapply must leave the session terminated")
+	}
+}
+
+func TestReapply_ConflictLeavesMarkersAndKeepsSnapshot(t *testing.T) {
+	m, st, rt, ws := newManager()
+	rec := mkLive("mer-1")
+	rec.Metadata.Branch = "ao/mer-1"
+	st.sessions["mer-1"] = rec
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{{
+		SessionID:    "mer-1",
+		RepoName:     domain.RootWorkspaceRepoName,
+		Branch:       "ao/mer-1",
+		WorktreePath: "/ws/mer-1",
+		PreservedRef: "refs/ao/preserved/mer-1",
+		State:        "active",
+	}}
+	ws.applyErr = fmt.Errorf("conflict: %w", ports.ErrPreservedConflict)
+
+	out, err := m.ReapplyPreservedEdits(ctx, "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Conflicts {
+		t.Fatal("conflicts = false, want true")
+	}
+	if rt.created != 0 {
+		t.Fatal("a conflict must not relaunch the agent or create a commit")
+	}
+	if st.worktrees["mer-1"][0].PreservedRef != "refs/ao/preserved/mer-1" {
+		t.Fatal("conflict must keep the snapshot")
+	}
+}
+
+func TestReapply_MissingBranchLeavesSnapshot(t *testing.T) {
+	m, st, rt, ws := newManager()
+	rec := mkLive("mer-1")
+	rec.Metadata.Branch = "ao/mer-1"
+	st.sessions["mer-1"] = rec
+	st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{{
+		SessionID:    "mer-1",
+		RepoName:     domain.RootWorkspaceRepoName,
+		Branch:       "ao/mer-1",
+		WorktreePath: "/ws/mer-1",
+		PreservedRef: "refs/ao/preserved/mer-1",
+		State:        "active",
+	}}
+	ws.restoreErr = fmt.Errorf("gone: %w", ports.ErrSessionBranchMissing)
+
+	_, err := m.ReapplyPreservedEdits(ctx, "mer-1")
+	if !errors.Is(err, ports.ErrSessionBranchMissing) {
+		t.Fatalf("err = %v, want missing branch", err)
+	}
+	if rt.created != 0 {
+		t.Fatal("a missing branch must not relaunch or build a branch from the snapshot")
+	}
+	for _, call := range ws.calls {
+		if strings.Contains(call, "ApplyPreserved") {
+			t.Fatalf("calls = %v, want no apply", ws.calls)
+		}
+	}
+	if st.worktrees["mer-1"][0].PreservedRef != "refs/ao/preserved/mer-1" {
+		t.Fatal("missing branch must leave the snapshot")
 	}
 }
 

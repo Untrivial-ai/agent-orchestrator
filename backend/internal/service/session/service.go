@@ -764,11 +764,48 @@ func restoreModeView(mode sessionmanager.RestoreMode) RestoreModeView {
 	}
 }
 
+// KillOutcome is the interactive archive result. Freed reports that the
+// worktree folder was removed. Preserved reports that unfinished edits were
+// stored apart from the branch. SaveFailed reports that the folder stayed
+// because those edits could not be stored.
+type KillOutcome struct {
+	Freed      bool
+	Preserved  bool
+	SaveFailed bool
+}
+
+// ReapplyOutcome is the result of putting a private snapshot back on request.
+type ReapplyOutcome struct {
+	Conflicts bool
+}
+
 // Kill delegates terminal intent and teardown to the internal manager.
-func (s *Service) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
+func (s *Service) Kill(ctx context.Context, id domain.SessionID) (KillOutcome, error) {
 	s.cancelTitleRefinement(id)
 	freed, err := s.manager.Kill(ctx, id)
-	return freed, toAPIError(err)
+	out := KillOutcome{Freed: freed}
+	if notice, ok := s.manager.(interface {
+		LastArchiveNotice(domain.SessionID) (bool, bool)
+	}); ok {
+		out.Preserved, out.SaveFailed = notice.LastArchiveNotice(id)
+	}
+	return out, toAPIError(err)
+}
+
+// ReapplyPreservedEdits puts the session's private snapshot onto its worktree
+// when the person asks. It is not part of restore or agent start.
+func (s *Service) ReapplyPreservedEdits(ctx context.Context, id domain.SessionID) (ReapplyOutcome, error) {
+	reapplier, ok := s.manager.(interface {
+		ReapplyPreservedEdits(context.Context, domain.SessionID) (sessionmanager.ReapplyResult, error)
+	})
+	if !ok {
+		return ReapplyOutcome{}, apierr.NotImplemented("REAPPLY_UNAVAILABLE", "Putting saved edits back is not available")
+	}
+	out, err := reapplier.ReapplyPreservedEdits(ctx, id)
+	if err != nil {
+		return ReapplyOutcome{}, toAPIError(err)
+	}
+	return ReapplyOutcome{Conflicts: out.Conflicts}, nil
 }
 
 // RollbackSpawn deletes a seed-state session row, or falls back to a Kill if
@@ -1022,6 +1059,7 @@ func (s *Service) List(ctx context.Context, filter ListFilter) ([]domain.Session
 		if agentSwitch, ok := activeBySession[rec.ID]; ok {
 			sess.ActiveAgentSwitch = &agentSwitch
 		}
+		s.markPreservedEdits(ctx, &sess)
 		out = append(out, sess)
 	}
 	if s.statusRecoveryRevision() != recoveryRevision {
@@ -1092,7 +1130,21 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 	if s.statusRecoveryRevision() != recoveryRevision {
 		sess.StatusReadiness = "checking"
 	}
+	s.markPreservedEdits(ctx, &sess)
 	return sess, nil
+}
+
+func (s *Service) markPreservedEdits(ctx context.Context, sess *domain.Session) {
+	rows, err := s.store.ListSessionWorktrees(ctx, sess.ID)
+	if err != nil {
+		return
+	}
+	for _, row := range rows {
+		if row.PreservedRef != "" {
+			sess.HasPreservedEdits = true
+			return
+		}
+	}
 }
 
 func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun) (domain.Session, error) {
@@ -1136,6 +1188,10 @@ func mapSessionError(err error) error {
 		return nil
 	case errors.Is(err, sessionmanager.ErrNotFound):
 		return apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	case errors.Is(err, sessionmanager.ErrNoPreservedEdits):
+		return apierr.Conflict("NO_PRESERVED_EDITS", "This session has no saved edits to put back.", nil)
+	case errors.Is(err, ports.ErrSessionBranchMissing):
+		return apierr.Conflict("SESSION_BRANCH_MISSING", "The branch for this session is gone, so the saved edits stay saved until that branch exists again.", nil)
 	case errors.Is(err, sessionmanager.ErrNotRestorable):
 		return apierr.Conflict("SESSION_NOT_RESTORABLE", "Session is not restorable", nil)
 	case errors.Is(err, sessionmanager.ErrTerminated):

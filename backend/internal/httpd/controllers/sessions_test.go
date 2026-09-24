@@ -440,12 +440,16 @@ func (f *fakeSessionService) SubmitAgentHandoff(
 	return record, nil
 }
 
-func (f *fakeSessionService) Kill(_ context.Context, id domain.SessionID) (bool, error) {
+func (f *fakeSessionService) Kill(_ context.Context, id domain.SessionID) (sessionsvc.KillOutcome, error) {
 	s := f.sessions[id]
 	s.IsTerminated = true
 	s.Status = domain.StatusTerminated
 	f.sessions[id] = s
-	return true, nil
+	return sessionsvc.KillOutcome{Freed: true}, nil
+}
+
+func (f *fakeSessionService) ReapplyPreservedEdits(context.Context, domain.SessionID) (sessionsvc.ReapplyOutcome, error) {
+	return sessionsvc.ReapplyOutcome{}, nil
 }
 
 func (f *fakeSessionService) RollbackSpawn(_ context.Context, id domain.SessionID) (sessionsvc.RollbackOutcome, error) {

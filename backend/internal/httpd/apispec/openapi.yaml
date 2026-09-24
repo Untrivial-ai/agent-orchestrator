@@ -6125,6 +6125,45 @@ paths:
         preview
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/reapply-edits:
+    post:
+      operationId: reapplySessionEdits
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReapplyEditsResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Put a session's saved unfinished edits back onto its worktree
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/restore:
     post:
       operationId: restoreSession
@@ -9247,6 +9286,8 @@ components:
           type: string
         harness:
           type: string
+        hasPreservedEdits:
+          type: boolean
         id:
           type: string
         isPinned:
@@ -10785,6 +10826,10 @@ components:
           type: boolean
         ok:
           type: boolean
+        preserved:
+          type: boolean
+        saveFailed:
+          type: boolean
         sessionId:
           type: string
       required:
@@ -11631,6 +11676,18 @@ components:
           type: integer
       required:
       - pat
+      type: object
+    ReapplyEditsResponse:
+      properties:
+        conflicts:
+          type: boolean
+        ok:
+          type: boolean
+        sessionId:
+          type: string
+      required:
+      - ok
+      - sessionId
       type: object
     RegisterPushDeviceRequest:
       properties:
