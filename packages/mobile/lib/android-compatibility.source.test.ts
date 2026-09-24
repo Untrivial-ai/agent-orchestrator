@@ -57,8 +57,11 @@ describe("Android native compatibility boundaries", () => {
 		// that moves in step with it inside a native form sheet.
 		expect(spawn).toContain("KeyboardStickyView");
 		expect(spawn).not.toContain("androidGrabber");
-		expect(spawn).toContain('Platform.OS === "ios" ? <View style={styles.flexSpacer} /> : null');
-		expect(spawn).toContain('promptHost: { width: "100%", height: 112 }');
+		// Only iOS's prompt flexes to fill the sheet; Android's sheet sizes to its
+		// content, so a flexing child there would have nothing to fill.
+		expect(spawn).toContain('Platform.OS === "ios" && styles.promptHostFill');
+		expect(spawn).toContain("const PROMPT_MIN_HEIGHT = 112;");
+		expect(spawn).toContain('promptHost: { width: "100%", height: PROMPT_MIN_HEIGHT }');
 		expect(source("../app/_layout.tsx")).toContain('presentation: Platform.OS === "ios" ? "formSheet" : "transparentModal"');
 	});
 

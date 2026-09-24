@@ -14,6 +14,11 @@ export function SpawnPromptInput({ value, onChangeText, height = 112 }: SpawnPro
 		if (nativeValue.value !== value) nativeValue.value = value;
 	}, [nativeValue, value]);
 
+	// `numberOfLines` becomes SwiftUI's `lineLimit(n, reservesSpace: true)`: the
+	// field is exactly n lines tall and scrolls past them. At a fixed 3 it stayed a
+	// 3-line strip however much room it had, so the count follows the height.
+	const lines = Math.max(3, Math.floor((height - space.md * 2) / type.callout.lineHeight));
+
 	return (
 		<Host style={{ flex: 1, height }} colorScheme={scheme} seedColor={t.accent}>
 			<TextInput
@@ -21,7 +26,7 @@ export function SpawnPromptInput({ value, onChangeText, height = 112 }: SpawnPro
 				onChangeText={onChangeText}
 				placeholder="What should this worker do?"
 				multiline
-				numberOfLines={3}
+				numberOfLines={lines}
 				autoFocus
 				style={{ height, paddingHorizontal: space.lg, paddingVertical: space.md }}
 				textStyle={{ fontFamily: "Geist_400Regular", color: t.textPrimary, fontSize: type.callout.fontSize }}
