@@ -168,7 +168,6 @@ func (c *conversation) pump() {
 			} else if incoming.Version != protocolVersion {
 				versionErr := fmt.Errorf("unreal agent protocol version %d is incompatible with AO version %d", incoming.Version, protocolVersion)
 				if !readyDelivered {
-					readyDelivered = true
 					c.ready <- versionErr
 				}
 				c.fail(versionErr)
