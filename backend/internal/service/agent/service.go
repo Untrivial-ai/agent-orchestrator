@@ -320,7 +320,14 @@ func (s *Service) Models(ctx context.Context, agentID, _ string, refresh bool) (
 		if err != nil {
 			return ports.AgentModelCatalog{}, err
 		}
-		if ok && agentID != "claude-code" {
+		if ok {
+			// Claude provider model IDs are credential-scoped. Check its local
+			// discovery inputs before serving a cache hit so switching provider or
+			// credentials cannot briefly expose IDs from the previous provider.
+			// The check is local; provider discovery remains cache-first.
+			if agentID == "claude-code" && s.modelCatalogInputsChanged(ctx, agentID, cached.BinaryVersion) {
+				return s.coalesceModelLoad(ctx, agentID, modelLoadCached)
+			}
 			cached.Catalog = applyCustomModelEntryPolicy(cached.Catalog, s.discoverer.Manual(agentID))
 			due := catalogNeedsRevalidation(catalogLastSuccess(cached.Catalog), s.now())
 			needsRecovery := cached.RefreshState == "refreshing"
@@ -345,25 +352,29 @@ func (s *Service) revalidateChangedInputs(agentID, cachedFingerprint string) {
 	if s.ctx.Err() != nil {
 		return
 	}
+	if s.modelCatalogInputsChanged(s.ctx, agentID, cachedFingerprint) {
+		_, _ = s.RevalidateModels(s.ctx, agentID, "")
+	}
+}
+
+func (s *Service) modelCatalogInputsChanged(ctx context.Context, agentID, cachedFingerprint string) bool {
 	item, ok := s.agent(agentID)
 	if !ok {
-		return
+		return false
 	}
 	var binary string
 	if resolver, ok := item.Agent.(ports.AgentBinaryResolver); ok {
 		lock := s.resolverMu[agentID]
 		lock.Lock()
-		resolved, err := resolver.ResolveBinary(s.ctx)
+		resolved, err := resolver.ResolveBinary(ctx)
 		lock.Unlock()
 		if err != nil {
-			return
+			return false
 		}
 		binary = resolved
 	}
 	request := ports.AgentModelDiscoveryRequest{AgentID: agentID, Binary: binary}
-	if s.discoverer.CatalogFingerprint(s.ctx, request) != cachedFingerprint {
-		_, _ = s.RevalidateModels(s.ctx, agentID, "")
-	}
+	return s.discoverer.CatalogFingerprint(ctx, request) != cachedFingerprint
 }
 
 // RevalidateModels rediscovers a cache-first catalog after the normal read path
@@ -500,7 +511,7 @@ func (s *Service) loadModels(ctx context.Context, agentID string, mode modelLoad
 	version := s.discoverer.CatalogFingerprint(ctx, request)
 	inputsChanged := hasCached && cached.BinaryVersion != version
 	explicitlyInvalidated := hasCached && (cached.RefreshState == "queued" || cached.RefreshState == "refreshing")
-	if hasCached && mode == modelLoadCached && cached.BinaryVersion == version && agentID != "claude-code" {
+	if hasCached && mode == modelLoadCached && cached.BinaryVersion == version {
 		// A command-backed catalog can drift without the binary or its config
 		// changing (a provider adds a model), which no fingerprint can see. Ask
 		// cache-first clients to revalidate in the background once the catalog is

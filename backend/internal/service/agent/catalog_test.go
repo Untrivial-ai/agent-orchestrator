@@ -1723,8 +1723,8 @@ func TestModelsKeepsFullerCacheWhenRefreshReturnsPartialCatalog(t *testing.T) {
 	}
 }
 
-func TestClaudeModelsRevalidateMatchingProviderCacheAndKeepItOnFailure(t *testing.T) {
-	validatedAt := time.Now().Add(-time.Hour)
+func TestClaudeModelsUsesMatchingProviderCache(t *testing.T) {
+	validatedAt := time.Now()
 	cached := ports.AgentModelCatalog{
 		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
 		Models: []ports.AgentModelInfo{{ID: "us.anthropic.claude-opus-v1", Efforts: []string{"high"}}},
@@ -1750,6 +1750,49 @@ func TestClaudeModelsRevalidateMatchingProviderCacheAndKeepItOnFailure(t *testin
 	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, nil, discoverer)
 
 	got, err := svc.Models(context.Background(), "claude-code", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discoverer.discoverCalls.Load() != 0 {
+		t.Fatalf("discovery calls = %d, want matching provider cache", discoverer.discoverCalls.Load())
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "us.anthropic.claude-opus-v1" || got.Stale {
+		t.Fatalf("catalog = %#v, want fresh provider cache", got)
+	}
+}
+
+func TestClaudeModelsRevalidationKeepsMatchingProviderCacheOnFailure(t *testing.T) {
+	validatedAt := time.Now().Add(-24 * time.Hour)
+	lastSuccessAt := validatedAt
+	cached := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models:        []ports.AgentModelInfo{{ID: "us.anthropic.claude-opus-v1", Efforts: []string{"high"}}},
+		Source:        "provider",
+		FetchedAt:     validatedAt,
+		ValidatedAt:   validatedAt,
+		LastSuccessAt: &lastSuccessAt,
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00": {
+			AgentID: "claude-code", BinaryVersion: "same-fingerprint", CatalogJSON: string(data),
+			LastSuccessAt: lastSuccessAt,
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "same-fingerprint",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{{ID: "sonnet"}, {ID: "opus"}}, Source: "catalog",
+		},
+		err: errors.New("provider unavailable"),
+	}
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, nil, discoverer)
+
+	got, err := svc.RevalidateModels(context.Background(), "claude-code", "")
 	if err != nil {
 		t.Fatal(err)
 	}
