@@ -106,6 +106,7 @@
 	"browser.cloud.agentControlling": "L’agent contrôle",
 	"browser.cloud.canvas": "Navigateur cloud",
 	"browser.cloud.dismissDialog": "Ignorer",
+	"browser.cloud.pasteTooLarge": "Le collage est limité à 8192 octets.",
 	"browser.cloud.reconnecting": "Reconnexion",
 	"browser.cloud.requestId": "ID de requête : {{id}}",
 	"browser.cloud.retry": "Réessayer",

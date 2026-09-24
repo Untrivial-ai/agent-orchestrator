@@ -106,6 +106,7 @@
 	"browser.cloud.agentControlling": "Agent steuert",
 	"browser.cloud.canvas": "Cloud-Browser",
 	"browser.cloud.dismissDialog": "Ablehnen",
+	"browser.cloud.pasteTooLarge": "Einfügen ist auf 8192 Bytes begrenzt.",
 	"browser.cloud.reconnecting": "Verbindung wird wiederhergestellt",
 	"browser.cloud.requestId": "Anfrage-ID: {{id}}",
 	"browser.cloud.retry": "Erneut versuchen",

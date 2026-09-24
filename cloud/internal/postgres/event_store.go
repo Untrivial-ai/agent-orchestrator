@@ -295,6 +295,20 @@ func appendUserMessage(
 		WHERE terminal.org_id = $1 AND terminal.session_id = $2 AND terminal.kind = 'agent'
 		  AND terminal.state = 'open' AND terminal.expires_at > now()
 		  AND session.activity_state <> 'active'
+		  AND EXISTS (
+			SELECT 1 FROM ao_worker_connections connection
+			JOIN ao_events ready ON ready.org_id = connection.org_id
+			  AND ready.session_id = connection.session_id AND ready.type = 'agent.ready'
+			  AND ready.payload->>'epoch' = connection.epoch::text
+			  AND ready.payload->>'workerId' = connection.worker_id
+			WHERE connection.org_id = terminal.org_id AND connection.session_id = terminal.session_id
+			  AND connection.epoch = terminal.worker_epoch AND connection.disconnected_at IS NULL
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM ao_turns pending
+			WHERE pending.org_id = terminal.org_id AND pending.session_id = terminal.session_id
+			  AND pending.state IN ('queued', 'provisioning', 'running', 'cancel_requested')
+		  )
 		ORDER BY terminal.created_at DESC
 		LIMIT 1`,
 		orgID, sessionID,

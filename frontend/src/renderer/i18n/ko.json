@@ -106,6 +106,7 @@
 	"browser.cloud.agentControlling": "에이전트가 제어 중",
 	"browser.cloud.canvas": "클라우드 브라우저",
 	"browser.cloud.dismissDialog": "닫기",
+	"browser.cloud.pasteTooLarge": "붙여넣기는 8192바이트로 제한됩니다.",
 	"browser.cloud.reconnecting": "다시 연결 중",
 	"browser.cloud.requestId": "요청 ID: {{id}}",
 	"browser.cloud.retry": "다시 시도",

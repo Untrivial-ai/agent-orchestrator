@@ -145,7 +145,7 @@ function setLease(entry: PreparationEntry, lease: CloudSessionPreparationLease):
 function detachEntry(entry: PreparationEntry): Promise<void> {
 	if (entry.detachInFlight) return entry.detachInFlight;
 	entry.detachInFlight = ensureReady(entry).then((sessionId) => {
-		if (entry.generation === undefined) return;
+		if (entry.generation === undefined || (entry.attachments > 0 && entry.phase !== "invalidated")) return;
 		return entry.registration.detach(sessionId, entry.clientInstanceId, entry.generation);
 	}).finally(() => {
 		entry.detachInFlight = undefined;

@@ -106,6 +106,7 @@
 	"browser.cloud.agentControlling": "Agente no controle",
 	"browser.cloud.canvas": "Navegador na nuvem",
 	"browser.cloud.dismissDialog": "Dispensar",
+	"browser.cloud.pasteTooLarge": "A colagem é limitada a 8192 bytes.",
 	"browser.cloud.reconnecting": "Reconectando",
 	"browser.cloud.requestId": "ID da solicitação: {{id}}",
 	"browser.cloud.retry": "Tentar novamente",

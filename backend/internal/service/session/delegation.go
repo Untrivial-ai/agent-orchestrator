@@ -100,13 +100,16 @@ func (s *Service) delegateTaskIdempotently(
 		return DelegateTaskOutcome{}, apierr.Internal("TASK_DELEGATION_IDEMPOTENCY_UNAVAILABLE", "Task delegation idempotency is unavailable")
 	}
 	now := s.now()
-	record, created, err := st.ReserveTaskDelegation(ctx, domain.TaskDelegation{
+	record, _, err := st.ReserveTaskDelegation(ctx, domain.TaskDelegation{
 		IdempotencyKey:     in.IdempotencyKey,
 		RequestFingerprint: fingerprint,
 		State:              domain.TaskDelegationPending,
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	})
+	if errors.Is(err, domain.ErrTaskDelegationRecoveryRequired) {
+		return DelegateTaskOutcome{}, apierr.Conflict("TASK_DELEGATION_RECOVERY_REQUIRED", "An earlier task attempt needs session recovery before it can be retried", nil)
+	}
 	if errors.Is(err, domain.ErrTaskDelegationIdempotencyConflict) {
 		return DelegateTaskOutcome{}, apierr.Conflict("TASK_DELEGATION_IDEMPOTENCY_CONFLICT", "idempotencyKey was already used for a different task", nil)
 	}
@@ -116,11 +119,11 @@ func (s *Service) delegateTaskIdempotently(
 		}
 		return DelegateTaskOutcome{}, apierr.Unavailable("TASK_DELEGATION_RESERVATION_FAILED", "Task delegation could not be reserved")
 	}
-	if !created {
-		if record.State == domain.TaskDelegationCompleted && record.WorkerID != "" {
-			return DelegateTaskOutcome{WorkerID: record.WorkerID}, nil
-		}
-		return DelegateTaskOutcome{}, apierr.Conflict("TASK_DELEGATION_IN_PROGRESS", "Task creation for this request is still in progress", nil)
+	if record.Ready() {
+		return DelegateTaskOutcome{WorkerID: record.WorkerID}, nil
+	}
+	if record.StartupState == domain.TaskDelegationStartupStarting {
+		return DelegateTaskOutcome{}, apierr.Conflict("TASK_DELEGATION_RECOVERY_REQUIRED", "Task startup has an uncertain outcome; inspect the existing session before retrying", map[string]any{"workerId": record.WorkerID})
 	}
 
 	out, err := s.spawnDelegatedTask(ctx, in)
@@ -130,7 +133,7 @@ func (s *Service) delegateTaskIdempotently(
 	commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), delegatedTaskCommitTimeout)
 	defer cancel()
 	completed, err := st.CompleteTaskDelegation(commitCtx, in.IdempotencyKey, fingerprint, out.WorkerID, s.now())
-	if err != nil || completed.State != domain.TaskDelegationCompleted || completed.WorkerID != out.WorkerID {
+	if err != nil || !completed.Ready() || completed.WorkerID != out.WorkerID {
 		if err == nil {
 			err = fmt.Errorf("unexpected completed task delegation: state=%s worker=%s", completed.State, completed.WorkerID)
 		}
@@ -148,13 +151,19 @@ func (s *Service) spawnDelegatedTask(ctx context.Context, in DelegateTaskInput) 
 		prompt = ""
 	}
 
+	var fingerprint domain.TaskDelegationRequestFingerprint
+	if in.IdempotencyKey != "" {
+		fingerprint = delegatedTaskRequestFingerprint(in)
+	}
 	effort, effortOverride := optionalTuningValue(in.Effort)
 	worker, _, _, err := s.manager.Spawn(ctx, ports.SpawnConfig{
-		ProjectID:   in.ProjectID,
-		Kind:        domain.KindWorker,
-		Harness:     in.RequestedAgent,
-		Prompt:      prompt,
-		DisplayName: delegatedTaskDisplayName(in.Brief),
+		TaskDelegationKey:         in.IdempotencyKey,
+		TaskDelegationFingerprint: fingerprint,
+		ProjectID:                 in.ProjectID,
+		Kind:                      domain.KindWorker,
+		Harness:                   in.RequestedAgent,
+		Prompt:                    prompt,
+		DisplayName:               delegatedTaskDisplayName(in.Brief),
 		AgentConfig: ports.AgentConfig{
 			Model:       strings.TrimSpace(in.Model),
 			Effort:      effort,
@@ -165,6 +174,9 @@ func (s *Service) spawnDelegatedTask(ctx context.Context, in DelegateTaskInput) 
 		Attachments:    in.Attachments,
 	})
 	if err != nil {
+		if errors.Is(err, domain.ErrTaskDelegationRecoveryRequired) {
+			return DelegateTaskOutcome{}, apierr.Conflict("TASK_DELEGATION_RECOVERY_REQUIRED", "Task startup needs recovery before it can be retried", nil)
+		}
 		return DelegateTaskOutcome{}, toSpawnAPIError(err)
 	}
 

@@ -25,6 +25,7 @@ const (
 	maxViewerWidth      = 1440
 	maxViewerHeight     = 900
 	viewerControlBuffer = 64
+	viewerInputHistory  = 128
 )
 
 type chromiumStarter interface {
@@ -50,46 +51,50 @@ type ViewerController struct {
 }
 
 type viewerSession struct {
-	ctx            context.Context
-	cancel         context.CancelFunc
-	cdp            cdpConnection
-	control        chan browserstream.Control
-	frames         *browserstream.Latest
-	writeMu        sync.Mutex
-	opMu           sync.Mutex
-	sessionID      string
-	targetID       string
-	width          int
-	height         int
-	sequence       uint64
-	epoch          uint64
-	started        time.Time
-	rateMu         sync.Mutex
-	rateStart      time.Time
-	rateCount      int
-	loading        bool
-	dialogOpen     bool
-	dialogType     string
-	dialogText     string
-	dialogPrompt   string
-	quality        int
-	fps            int
-	captureWidth   int
-	captureHeight  int
-	lastFrame      time.Time
-	deferredFrame  *deferredViewerFrame
-	deferredFlush  bool
-	saturatedSince time.Time
-	stableSince    time.Time
-	attachStarted  time.Time
-	chromiumReady  time.Duration
-	framesCaptured atomic.Uint64
-	framesReplaced atomic.Uint64
-	framesSent     atomic.Uint64
-	bytesSent      atomic.Uint64
-	inputRejected  atomic.Uint64
+	ctx               context.Context
+	cancel            context.CancelFunc
+	cdp               cdpConnection
+	control           chan browserstream.Control
+	frames            *browserstream.Latest
+	writeMu           sync.Mutex
+	opMu              sync.Mutex
+	sessionID         string
+	targetID          string
+	width             int
+	height            int
+	sequence          uint64
+	epoch             uint64
+	started           time.Time
+	rateMu            sync.Mutex
+	rateStart         time.Time
+	rateCount         int
+	loading           bool
+	dialogOpen        bool
+	dialogType        string
+	dialogText        string
+	dialogPrompt      string
+	quality           int
+	fps               int
+	captureWidth      int
+	captureHeight     int
+	lastFrame         time.Time
+	viewportChangedAt time.Time
+	deferredFrame     *deferredViewerFrame
+	deferredFlush     bool
+	saturatedSince    time.Time
+	stableSince       time.Time
+	attachStarted     time.Time
+	chromiumReady     time.Duration
+	framesCaptured    atomic.Uint64
+	framesReplaced    atomic.Uint64
+	framesSent        atomic.Uint64
+	bytesSent         atomic.Uint64
+	inputRejected     atomic.Uint64
 	// Chromium targets and browser command tabs use different identifier namespaces.
 	engineTabIDs map[string]string
+	lastInputSeq uint64
+	inputResults map[uint64][]browserstream.Control
+	inputOrder   []uint64
 }
 
 type deferredViewerFrame struct {
@@ -111,7 +116,7 @@ func NewViewerController(opts ViewerControllerOptions) *ViewerController {
 		opts.Logger = slog.Default()
 	}
 	controller := &ViewerController{opts: opts}
-	controller.epoch.Store(uint64(time.Now().UnixNano()))
+	controller.epoch.Store(uint64(time.Now().UnixMicro()))
 	return controller
 }
 
@@ -444,13 +449,18 @@ func (v *ViewerController) acceptScreencastFrame(state *viewerSession, event cdp
 	var params struct {
 		Data      string `json:"data"`
 		SessionID int    `json:"sessionId"`
+		Metadata  struct {
+			Width     float64 `json:"deviceWidth"`
+			Height    float64 `json:"deviceHeight"`
+			Timestamp float64 `json:"timestamp"`
+		} `json:"metadata"`
 	}
 	if json.Unmarshal(event.Params, &params) != nil || params.Data == "" || params.SessionID <= 0 {
 		return
 	}
 	// Ack before any relay work. The latest-frame slot bounds memory if every
 	// downstream viewer is slower than Chromium.
-	if err := state.cdp.Call(state.ctx, state.sessionID, "Page.screencastFrameAck", map[string]any{
+	if err := state.cdp.Call(state.ctx, activeSession, "Page.screencastFrameAck", map[string]any{
 		"sessionId": params.SessionID,
 	}, nil); err != nil {
 		return
@@ -465,6 +475,12 @@ func (v *ViewerController) acceptScreencastFrame(state *viewerSession, event cdp
 	}
 	now := time.Now()
 	state.opMu.Lock()
+	if state.sessionID != activeSession || (!state.viewportChangedAt.IsZero() &&
+		(params.Metadata.Width != float64(state.width) || params.Metadata.Height != float64(state.height) ||
+			params.Metadata.Timestamp < float64(state.viewportChangedAt.UnixMicro())/1e6)) {
+		state.opMu.Unlock()
+		return
+	}
 	pending := &deferredViewerFrame{
 		jpeg: append([]byte(nil), jpeg...), capturedAt: now,
 		targetID: state.targetID, width: state.width, height: state.height,
@@ -625,16 +641,66 @@ func (v *ViewerController) readViewerControls(conn *websocket.Conn, state *viewe
 }
 
 func (v *ViewerController) handleControl(state *viewerSession, control browserstream.Control) {
-	if control.Type != "ping" && control.Type != "detach" && !allowViewerInput(state, time.Now()) {
+	if control.Type == "ping" {
+		v.enqueue(state, browserstream.Control{Type: "pong", Version: browserstream.Version, StreamEpoch: state.epoch})
+		return
+	}
+	if control.Type == "detach" {
+		state.cancel()
+		return
+	}
+	reject := func(code string) {
+		state.inputRejected.Add(1)
 		v.enqueue(state, browserstream.Control{
+			Type: "input_rejected", Version: browserstream.Version, StreamEpoch: state.epoch,
+			InputSeq: control.InputSeq, Code: code, Owner: string(v.opts.Arbiter.Owner()),
+		})
+	}
+	if control.StreamEpoch != state.epoch {
+		reject("BROWSER_STALE_EPOCH")
+		return
+	}
+	if control.InputSeq == 0 || control.InputSeq > (1<<53)-1 {
+		reject("BROWSER_INVALID_INPUT_SEQUENCE")
+		return
+	}
+	if result, ok := state.inputResults[control.InputSeq]; ok {
+		for _, response := range result {
+			v.enqueue(state, response)
+		}
+		return
+	}
+	if control.InputSeq <= state.lastInputSeq {
+		reject("BROWSER_STALE_INPUT_SEQUENCE")
+		return
+	}
+	state.lastInputSeq = control.InputSeq
+	var responses []browserstream.Control
+	respond := func(response browserstream.Control) {
+		responses = append(responses, response)
+		v.enqueue(state, response)
+	}
+	defer func() {
+		if state.inputResults == nil {
+			state.inputResults = make(map[uint64][]browserstream.Control)
+		}
+		if len(state.inputOrder) == viewerInputHistory {
+			delete(state.inputResults, state.inputOrder[0])
+			state.inputOrder = state.inputOrder[1:]
+		}
+		state.inputOrder = append(state.inputOrder, control.InputSeq)
+		state.inputResults[control.InputSeq] = responses
+	}()
+	if !allowViewerInput(state, time.Now()) {
+		respond(browserstream.Control{
 			Type: "input_rejected", Version: browserstream.Version, StreamEpoch: state.epoch,
 			InputSeq: control.InputSeq, Code: "BROWSER_INPUT_RATE_EXCEEDED",
 		})
 		return
 	}
 	active := control.Type != "input" || control.Kind != "pointerMove" || control.Buttons != 0
-	if control.Type != "ping" && !v.opts.Arbiter.TryUser(active) {
-		v.enqueue(state, browserstream.Control{
+	if !v.opts.Arbiter.TryUser(active) {
+		respond(browserstream.Control{
 			Type: "input_rejected", Version: browserstream.Version, StreamEpoch: state.epoch,
 			InputSeq: control.InputSeq, Code: "BROWSER_AGENT_CONTROL_ACTIVE", Owner: string(ControlAgent),
 		})
@@ -648,15 +714,12 @@ func (v *ViewerController) handleControl(state *viewerSession, control browserst
 	}
 	var err error
 	switch control.Type {
-	case "ping":
-		v.enqueue(state, browserstream.Control{Type: "pong", Version: browserstream.Version, StreamEpoch: state.epoch})
-		return
 	case "viewport":
 		err = v.resize(state, control.Width, control.Height)
 		if err == nil {
-			v.enqueue(state, browserstream.Control{
+			respond(browserstream.Control{
 				Type: "viewport_ack", Version: browserstream.Version, StreamEpoch: state.epoch,
-				Width: state.width, Height: state.height,
+				Width: control.Width, Height: control.Height, InputSeq: control.InputSeq, MinFrameSeq: minFrame,
 			})
 		}
 	case "input":
@@ -667,15 +730,12 @@ func (v *ViewerController) handleControl(state *viewerSession, control browserst
 		err = v.tabOperation(state, control)
 	case "dialog":
 		err = v.dialogOperation(state, control)
-	case "detach":
-		state.cancel()
-		return
 	default:
 		err = errors.New("unsupported browser viewer control type")
 	}
 	if err != nil {
 		state.inputRejected.Add(1)
-		v.enqueue(state, browserstream.Control{
+		respond(browserstream.Control{
 			Type: "input_rejected", Version: browserstream.Version, StreamEpoch: state.epoch,
 			InputSeq: control.InputSeq, Code: "BROWSER_INPUT_REJECTED", Message: "Browser input could not be applied.",
 		})
@@ -683,7 +743,7 @@ func (v *ViewerController) handleControl(state *viewerSession, control browserst
 		return
 	}
 	if control.InputSeq > 0 {
-		v.enqueue(state, browserstream.Control{
+		respond(browserstream.Control{
 			Type: "input_ack", Version: browserstream.Version, StreamEpoch: state.epoch,
 			InputSeq: control.InputSeq, MinFrameSeq: minFrame, Accepted: true,
 		})
@@ -712,6 +772,8 @@ func (v *ViewerController) resize(state *viewerSession, width, height int) error
 	}
 	state.opMu.Lock()
 	defer state.opMu.Unlock()
+	state.viewportChangedAt = time.Now()
+	state.deferredFrame = nil
 	state.width, state.height = width, height
 	if err := v.applyViewportLocked(state); err != nil {
 		return err
@@ -755,8 +817,11 @@ func (v *ViewerController) dispatchInput(state *viewerSession, input browserstre
 		}
 		method = "Input.dispatchKeyEvent"
 		params["type"], params["key"], params["code"] = input.Kind, input.Key, input.CodeValue
+		params["windowsVirtualKeyCode"] = virtualKeyCode(input.Key)
 		if input.Text != "" {
 			params["text"] = input.Text
+		} else if input.Kind == "keyDown" {
+			params["type"] = "rawKeyDown"
 		}
 	case "text", "compositionCommit":
 		if len(input.Text) > 8<<10 {
@@ -784,6 +849,24 @@ func (v *ViewerController) dispatchInput(state *viewerSession, input browserstre
 	}
 	params["type"] = "mouseReleased"
 	return state.cdp.Call(state.ctx, state.sessionID, method, params, nil)
+}
+
+func virtualKeyCode(key string) int {
+	if len(key) == 1 {
+		value := key[0]
+		if value >= 'a' && value <= 'z' {
+			value -= 'a' - 'A'
+		}
+		if value >= 'A' && value <= 'Z' || value >= '0' && value <= '9' || value == ' ' {
+			return int(value)
+		}
+	}
+	return map[string]int{
+		"Backspace": 8, "Tab": 9, "Enter": 13, "Shift": 16, "Control": 17, "Alt": 18,
+		"Escape": 27, "PageUp": 33, "PageDown": 34, "End": 35, "Home": 36,
+		"ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40,
+		"Insert": 45, "Delete": 46, "Meta": 91,
+	}[key]
 }
 
 func (v *ViewerController) navigate(state *viewerSession, control browserstream.Control) error {

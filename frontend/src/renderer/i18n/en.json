@@ -68,6 +68,7 @@
 	"browser.cloud.agentControlling": "Agent controlling",
 	"browser.cloud.canvas": "Cloud browser",
 	"browser.cloud.dismissDialog": "Dismiss",
+	"browser.cloud.pasteTooLarge": "Paste is limited to 8192 bytes.",
 	"browser.cloud.reconnecting": "Reconnecting",
 	"browser.cloud.requestId": "Request ID: {{id}}",
 	"browser.cloud.retry": "Retry",

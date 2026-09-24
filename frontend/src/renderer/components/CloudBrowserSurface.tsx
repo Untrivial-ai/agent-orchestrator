@@ -4,6 +4,7 @@ import {
 	useLayoutEffect,
 	useRef,
 	useState,
+	type ClipboardEvent,
 	type CompositionEvent,
 	type KeyboardEvent,
 	type MouseEvent,
@@ -82,6 +83,7 @@ export function CloudBrowserSurface({ model }: { model: CloudBrowserSurfaceModel
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const textInputRef = useRef<HTMLTextAreaElement>(null);
 	const [hostSize, setHostSize] = useState<Size>({ width: 0, height: 0 });
+	const [inputError, setInputError] = useState("");
 	const [dialogPrompt, setDialogPrompt] = useState("");
 	const moveTimerRef = useRef<number | undefined>(undefined);
 	const pendingMoveRef = useRef<{ x: number; y: number; buttons: number; modifiers: number } | undefined>(undefined);
@@ -183,7 +185,7 @@ export function CloudBrowserSurface({ model }: { model: CloudBrowserSurfaceModel
 		if ((snapshot.status === "waiting" || snapshot.status === "ready") && hostSize.width > 0 && hostSize.height > 0) {
 			setViewport(hostSize.width, hostSize.height);
 		}
-	}, [hostSize.height, hostSize.width, setViewport, snapshot.status, snapshot.streamEpoch]);
+	}, [hostSize.height, hostSize.width, setViewport, snapshot.status, snapshot.streamEpoch, snapshot.owner]);
 
 	const frameAspect = snapshot.frameWidth > 0 && snapshot.frameHeight > 0
 		? snapshot.frameWidth / snapshot.frameHeight
@@ -241,19 +243,36 @@ export function CloudBrowserSurface({ model }: { model: CloudBrowserSurfaceModel
 	}, [inputEnabled, point, send]);
 
 	const key = useCallback((kind: "keyDown" | "keyUp", event: KeyboardEvent<HTMLElement>) => {
-		if (!inputEnabled || event.nativeEvent.isComposing || event.metaKey || event.ctrlKey) return;
+		if (!inputEnabled || event.nativeEvent.isComposing) return;
+		const shortcut = event.metaKey || event.ctrlKey;
+		if (shortcut && !["a", "z", "y", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Backspace", "Delete", "Home", "End"].includes(event.key.length === 1 ? event.key.toLowerCase() : event.key)) return;
 		event.preventDefault();
 		event.stopPropagation();
 		send({
 			type: "input", kind, key: event.key, codeValue: event.code,
-			text: kind === "keyDown" && event.key.length === 1 ? event.key : undefined,
-			modifiers: modifiers(event),
+			text: kind === "keyDown" && !shortcut && event.key.length === 1 ? event.key : undefined,
+			modifiers: shortcut ? (modifiers(event) & ~4) | 2 : modifiers(event),
 		});
 	}, [inputEnabled, send]);
+
+	const paste = useCallback((event: ClipboardEvent<HTMLElement>) => {
+		event.preventDefault();
+		event.stopPropagation();
+		if (!inputEnabled) return;
+		const text = event.clipboardData.getData("text/plain");
+		if (new TextEncoder().encode(text).byteLength > 8 * 1024) {
+			setInputError(t("browser.cloud.pasteTooLarge"));
+			return;
+		}
+		setInputError("");
+		if (text) send({ type: "input", kind: "text", text });
+		if (textInputRef.current) textInputRef.current.value = "";
+	}, [inputEnabled, send, t]);
 
 	const composition = useCallback((kind: string, event: CompositionEvent<HTMLElement>) => {
 		if (!inputEnabled) return;
 		send({ type: "input", kind, text: event.data });
+		if (kind === "compositionCommit" && textInputRef.current) textInputRef.current.value = "";
 	}, [inputEnabled, send]);
 
 	const blankPage = !snapshot.frameUrl && (!snapshot.url || snapshot.url === "about:blank");
@@ -280,6 +299,7 @@ export function CloudBrowserSurface({ model }: { model: CloudBrowserSurfaceModel
 					snapshot.status === "reconnecting" && "opacity-60",
 				)}
 				onContextMenu={(event) => event.preventDefault()}
+				onPaste={paste}
 				onKeyDown={(event) => key("keyDown", event)}
 				onKeyUp={(event) => key("keyUp", event)}
 				onPointerDown={(event) => {
@@ -301,10 +321,12 @@ export function CloudBrowserSurface({ model }: { model: CloudBrowserSurfaceModel
 				onCompositionEnd={(event) => composition("compositionCommit", event)}
 				onCompositionStart={(event) => composition("compositionStart", event)}
 				onCompositionUpdate={(event) => composition("compositionUpdate", event)}
+				onPaste={paste}
 				onKeyDown={(event) => key("keyDown", event)}
 				onKeyUp={(event) => key("keyUp", event)}
 				ref={textInputRef}
 			/>
+			{inputError ? <p role="alert" className="absolute bottom-2 rounded bg-background p-2 text-xs text-destructive">{inputError}</p> : null}
 			{statusLabel ? (
 				<div className={cn(
 					"absolute inset-0 grid place-items-center bg-background/55 p-5 text-center font-mono text-xs text-passive",

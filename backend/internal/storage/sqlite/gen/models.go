@@ -692,6 +692,8 @@ type TaskDelegation struct {
 	State              string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	Recoverable        int64
+	StartupState       string
 }
 
 type TelemetryEvent struct {

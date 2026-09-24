@@ -140,3 +140,10 @@ type WorkerLaunch struct {
 	RepositoryURL   string
 	DefaultBranch   string
 }
+
+// SandboxCreation retains an unresolved provider operation across lease loss.
+type SandboxCreation struct {
+	ID            string
+	Generation    int64
+	EnvironmentID string
+}

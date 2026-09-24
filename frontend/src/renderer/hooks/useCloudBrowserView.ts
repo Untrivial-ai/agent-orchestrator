@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { BrowserViewModel, CloudBrowserSurfaceModel } from "./useBrowserView";
 import {
 	CloudBrowserStream,
+	EMPTY_CLOUD_BROWSER_SNAPSHOT,
 	type CloudBrowserControl,
-	type CloudBrowserSnapshot,
 } from "../lib/cloud-browser-stream";
 import { useCloudCp } from "./useCloudCp";
 
@@ -39,30 +39,7 @@ export function useCloudBrowserView(options: {
 		}
 		return current;
 	}, [baseUrl, client, key, options.orgId, options.sessionId]);
-	const empty = useMemo<CloudBrowserSnapshot>(() => ({
-		status: "idle",
-		frameUrl: "",
-		frameWidth: 0,
-		frameHeight: 0,
-		frameSequence: 0,
-		streamEpoch: 0,
-		url: "",
-		title: "",
-		tabs: [],
-		activeTabId: "",
-		owner: "idle",
-		canOperate: false,
-		canGoBack: false,
-		canGoForward: false,
-		isLoading: false,
-		dialogOpen: false,
-		dialogType: "",
-		dialogText: "",
-		dialogPrompt: "",
-		viewportPending: true,
-		error: "",
-		errorRequestId: "",
-	}), []);
+	const empty = EMPTY_CLOUD_BROWSER_SNAPSHOT;
 	const snapshot = useSyncExternalStore(
 		stream?.subscribe ?? (() => () => undefined),
 		stream?.getSnapshot ?? (() => empty),

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { EMPTY_CLOUD_BROWSER_SNAPSHOT } from "../lib/cloud-browser-stream";
 import { CloudBrowserSurface, mapCloudBrowserPoint, paintCloudBrowserFrame } from "./CloudBrowserSurface";
 
 afterEach(() => {
@@ -93,6 +94,34 @@ describe("mapCloudBrowserPoint", () => {
 		expect(send).toHaveBeenCalledWith({ type: "input", kind: "compositionStart", text: "n" });
 		expect(send).toHaveBeenCalledWith({ type: "input", kind: "compositionUpdate", text: "na" });
 		expect(send).toHaveBeenCalledWith({ type: "input", kind: "compositionCommit", text: "name" });
+	});
+
+	it("routes editing shortcuts and bounded paste without intercepting application shortcuts", () => {
+		const send = vi.fn(() => true);
+		const model = {
+			snapshot: { ...EMPTY_CLOUD_BROWSER_SNAPSHOT, status: "ready" as const, canOperate: true, viewportPending: false },
+			send, setViewport: vi.fn(), reportPaint: vi.fn(), retry: vi.fn(),
+		};
+		const view = render(createElement(CloudBrowserSurface, { model }));
+		const input = screen.getByLabelText("Browser text input");
+		for (const modifier of ["ctrlKey", "metaKey"]) {
+			for (const key of ["a", "z", "y"]) {
+				expect(fireEvent.keyDown(input, { key, code: `Key${key.toUpperCase()}`, [modifier]: true })).toBe(false);
+				expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "keyDown", key, modifiers: 2, text: undefined }));
+			}
+		}
+		send.mockClear();
+		expect(fireEvent.keyDown(input, { key: "l", ctrlKey: true })).toBe(true);
+		expect(send).not.toHaveBeenCalled();
+		fireEvent.paste(input, { clipboardData: { getData: () => "remote text" } });
+		expect(send).toHaveBeenLastCalledWith({ type: "input", kind: "text", text: "remote text" });
+		send.mockClear();
+		fireEvent.paste(input, { clipboardData: { getData: () => "é".repeat(4097) } });
+		expect(send).not.toHaveBeenCalled();
+		expect(screen.getByRole("alert")).toHaveTextContent("8192 bytes");
+		view.rerender(createElement(CloudBrowserSurface, { model: { ...model, snapshot: { ...model.snapshot, canOperate: false } } }));
+		fireEvent.paste(input, { clipboardData: { getData: () => "read only" } });
+		expect(send).not.toHaveBeenCalled();
 	});
 
 	it("shows a request ID and retries a fatal connection", () => {

@@ -17,6 +17,16 @@ import (
 	"github.com/coder/websocket"
 )
 
+func TestViewerVirtualKeyCodes(t *testing.T) {
+	for key, expected := range map[string]int{"a": 65, "Z": 90, "1": 49, " ": 32, "Backspace": 8, "ArrowLeft": 37, "End": 35, "Unidentified": 0} {
+		t.Run(key, func(t *testing.T) {
+			if actual := virtualKeyCode(key); actual != expected {
+				t.Fatalf("key code=%d want=%d", actual, expected)
+			}
+		})
+	}
+}
+
 type viewerTestChromium struct{}
 
 func (viewerTestChromium) EnsureRunning(context.Context) (Endpoint, error) {
@@ -263,7 +273,7 @@ func TestViewerLoopbackStreamsFrameAndSharesInputWithAgentEngine(t *testing.T) {
 	}
 
 	click, _ := json.Marshal(browserstream.Control{
-		Type: "input", Version: browserstream.Version, InputSeq: 1,
+		Type: "input", Version: browserstream.Version, StreamEpoch: viewer.epoch.Load(), InputSeq: 1,
 		Kind: "pointerDown", X: 20, Y: 30, Button: "left", Buttons: 1,
 	})
 	if err := connection.Write(ctx, websocket.MessageText, click); err != nil {
@@ -274,7 +284,7 @@ func TestViewerLoopbackStreamsFrameAndSharesInputWithAgentEngine(t *testing.T) {
 		t.Fatalf("click min frame = %d, want 2", clickAck.MinFrameSeq)
 	}
 	input, _ := json.Marshal(browserstream.Control{
-		Type: "input", Version: browserstream.Version, InputSeq: 2,
+		Type: "input", Version: browserstream.Version, StreamEpoch: viewer.epoch.Load(), InputSeq: 2,
 		Kind: "text", Text: "shared",
 	})
 	if err := connection.Write(ctx, websocket.MessageText, input); err != nil {
@@ -544,5 +554,93 @@ func TestViewerDialogIsAllowlistedAndCrashResetsControl(t *testing.T) {
 	}
 	if !foundRestart {
 		t.Fatal("browser crash did not publish a restart signal")
+	}
+}
+
+func TestViewerFencesAndDeduplicatesInput(t *testing.T) {
+	cdp := &viewerTestCDP{engine: &viewerTestEngine{}}
+	viewer := NewViewerController(ViewerControllerOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := &viewerSession{ctx: ctx, cancel: cancel, cdp: cdp, epoch: 7,
+		sessionID: "cdp-session-1", width: 800, height: 600,
+		control: make(chan browserstream.Control, 8),
+	}
+	apply := func(epoch, sequence uint64) browserstream.Control {
+		t.Helper()
+		state.rateCount = 0
+		viewer.handleControl(state, browserstream.Control{Type: "input", Kind: "text", Text: "x", StreamEpoch: epoch, InputSeq: sequence})
+		var result browserstream.Control
+		for len(state.control) > 0 {
+			control := <-state.control
+			if control.Type == "input_ack" || control.Type == "input_rejected" {
+				result = control
+			}
+		}
+		return result
+	}
+	if result := apply(6, 1); result.Code != "BROWSER_STALE_EPOCH" {
+		t.Fatalf("stale: %+v", result)
+	}
+	if result := apply(7, 0); result.Code != "BROWSER_INVALID_INPUT_SEQUENCE" {
+		t.Fatalf("zero: %+v", result)
+	}
+	first := apply(7, 1)
+	if first.Type != "input_ack" {
+		t.Fatalf("first: %+v", first)
+	}
+	if replay := apply(7, 1); replay.InputSeq != first.InputSeq || replay.MinFrameSeq != first.MinFrameSeq || replay.Type != first.Type {
+		t.Fatalf("replay: %+v", replay)
+	}
+	if cdp.engine.text != "x" {
+		t.Fatalf("duplicate input: %q", cdp.engine.text)
+	}
+	for sequence := uint64(2); sequence <= viewerInputHistory+1; sequence++ {
+		apply(7, sequence)
+	}
+	if result := apply(7, 1); result.Code != "BROWSER_STALE_INPUT_SEQUENCE" {
+		t.Fatalf("evicted: %+v", result)
+	}
+	if len(state.inputResults) != viewerInputHistory {
+		t.Fatalf("history=%d", len(state.inputResults))
+	}
+	if epoch := viewer.epoch.Load(); epoch == 0 || epoch > (1<<53)-1 {
+		t.Fatalf("epoch is not a positive safe integer: %d", epoch)
+	}
+}
+
+func TestViewerDropsFramesCapturedBeforeResize(t *testing.T) {
+	cdp := &viewerTestCDP{engine: &viewerTestEngine{}}
+	viewer := NewViewerController(ViewerControllerOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := &viewerSession{ctx: ctx, cancel: cancel, cdp: cdp, epoch: 1,
+		sessionID: "cdp-session-1", targetID: "tab-1", width: 800, height: 600,
+		control: make(chan browserstream.Control, 8), frames: browserstream.NewLatest(),
+		quality: 70, fps: 15, started: time.Now(),
+	}
+	defer state.frames.Close()
+	before := time.Now().Add(-time.Second)
+	if err := viewer.resize(state, 1000, 800); err != nil {
+		t.Fatal(err)
+	}
+	if err := viewer.resize(state, 800, 600); err != nil {
+		t.Fatal(err)
+	}
+	emit := func(width, height int, captured time.Time) {
+		params, _ := json.Marshal(map[string]any{
+			"sessionId": 1, "data": base64.StdEncoding.EncodeToString([]byte{0xff, 0xd8, 0xff, 0xd9}),
+			"metadata": map[string]any{"deviceWidth": width, "deviceHeight": height, "timestamp": float64(captured.UnixMicro()) / 1e6},
+		})
+		viewer.acceptScreencastFrame(state, cdpEvent{Method: "Page.screencastFrame", SessionID: state.sessionID, Params: params})
+	}
+	emit(800, 600, before)
+	emit(1000, 800, time.Now())
+	if state.sequence != 0 {
+		t.Fatalf("stale frames published=%d", state.sequence)
+	}
+	emit(800, 600, time.Now())
+	if state.sequence != 1 {
+		t.Fatalf("fresh frames published=%d", state.sequence)
 	}
 }

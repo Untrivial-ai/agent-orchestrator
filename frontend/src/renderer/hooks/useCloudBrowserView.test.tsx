@@ -65,7 +65,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	resetCloudBrowserStreamsForTest();
+	act(() => resetCloudBrowserStreamsForTest());
 	vi.unstubAllGlobals();
 });
 
@@ -81,7 +81,19 @@ describe("useCloudBrowserView", () => {
 		act(() => {
 			socket.open();
 			socket.message({ type: "state", version: 1, streamEpoch: 1 });
-			socket.message({ type: "viewport_ack", version: 1, streamEpoch: 1 });
+		});
+		vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:frame");
+		vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+		act(() => {
+			result.current.cloudSurface!.setViewport(800, 600);
+			const viewport = JSON.parse(socket.sent.at(-1)!);
+			socket.message({ ...viewport, type: "viewport_ack", minFrameSeq: 1 });
+			const bytes = new Uint8Array(40);
+			bytes.set(new TextEncoder().encode("AOBR")); bytes[4] = 1; bytes[5] = 1; bytes[34] = 1; bytes[35] = 116;
+			const header = new DataView(bytes.buffer);
+			header.setBigUint64(6, 1n); header.setBigUint64(14, 1n); header.setUint16(22, 800); header.setUint16(24, 600);
+			socket.onmessage?.(new MessageEvent("message", { data: bytes.buffer }));
+			result.current.cloudSurface!.reportPaint(1, 0, 0);
 		});
 
 		let close!: Promise<void>;

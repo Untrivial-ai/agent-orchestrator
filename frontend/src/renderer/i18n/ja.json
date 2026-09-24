@@ -106,6 +106,7 @@
 	"browser.cloud.agentControlling": "エージェントが操作中",
 	"browser.cloud.canvas": "クラウドブラウザ",
 	"browser.cloud.dismissDialog": "閉じる",
+	"browser.cloud.pasteTooLarge": "貼り付けは8192バイトまでです。",
 	"browser.cloud.reconnecting": "再接続中",
 	"browser.cloud.requestId": "リクエスト ID: {{id}}",
 	"browser.cloud.retry": "再試行",

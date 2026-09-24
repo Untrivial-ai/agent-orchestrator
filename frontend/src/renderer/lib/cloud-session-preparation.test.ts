@@ -126,6 +126,19 @@ describe("cloud session preparation", () => {
 		expect(create.mock.calls[1]?.[0]).toBe(create.mock.calls[2]?.[0]);
 	});
 
+	it("does not detach a composer reopened before creation resolves", async () => {
+		let resolveCreate!: (value: { lease: ReturnType<typeof lease>; sessionId: string }) => void;
+		const options = registration({ create: vi.fn(() => new Promise<{ lease: ReturnType<typeof lease>; sessionId: string }>((resolve) => { resolveCreate = resolve; })) });
+		const first = startCloudSessionPreparation(options);
+		first.release();
+		const second = startCloudSessionPreparation(options);
+		resolveCreate({ lease: lease(), sessionId: "session-1" });
+		await flushPromises();
+		expect(options.create).toHaveBeenCalledOnce();
+		expect(options.detach).not.toHaveBeenCalled();
+		await expect(second.commit({ displayName: "Reopen", prompt: "Continue" })).resolves.toBe("session-1");
+	});
+
 	it("renews after a close that happens before create resolves", async () => {
 		let resolveCreate!: (value: { lease: ReturnType<typeof lease>; sessionId: string }) => void;
 		const create = vi.fn(() => new Promise<{ lease: ReturnType<typeof lease>; sessionId: string }>((resolve) => {

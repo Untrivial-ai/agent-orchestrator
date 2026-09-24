@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,12 +18,57 @@ import (
 )
 
 type lifecycleStore struct {
-	acceptedPause bool
-	acceptCalls   int
-	observations  []string
-	renewError    error
+	creationMu     sync.Mutex
+	acceptedPause  bool
+	acceptCalls    int
+	observations   []string
+	renewError     error
+	creations      []domain.SandboxCreation
+	creationStates map[string]string
 }
 
+func (s *lifecycleStore) BeginSandboxCreation(_ context.Context, _ string, record domain.Sandbox, id string) error {
+	s.creationMu.Lock()
+	defer s.creationMu.Unlock()
+	s.creations = append(s.creations, domain.SandboxCreation{ID: id, Generation: record.PreparationGeneration})
+	return nil
+}
+func (s *lifecycleStore) RecordSandboxCreationResult(ctx context.Context, _, _, id, environmentID string) error {
+	s.creationMu.Lock()
+	defer s.creationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for index := range s.creations {
+		if s.creations[index].ID == id {
+			s.creations[index].EnvironmentID = environmentID
+		}
+	}
+	return nil
+}
+func (s *lifecycleStore) ListSandboxCreations(context.Context, string, string) ([]domain.SandboxCreation, error) {
+	s.creationMu.Lock()
+	defer s.creationMu.Unlock()
+	return append([]domain.SandboxCreation(nil), s.creations...), nil
+}
+func (s *lifecycleStore) ResolveSandboxCreation(ctx context.Context, _, _, id, state string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.creationMu.Lock()
+	defer s.creationMu.Unlock()
+	if s.creationStates == nil {
+		s.creationStates = map[string]string{}
+	}
+	s.creationStates[id] = state
+	for index := range s.creations {
+		if s.creations[index].ID == id {
+			s.creations = append(s.creations[:index], s.creations[index+1:]...)
+			break
+		}
+	}
+	return nil
+}
 func (s *lifecycleStore) ClaimSandboxes(context.Context, string, int, time.Duration) ([]domain.Sandbox, error) {
 	return nil, nil
 }
@@ -88,7 +134,7 @@ func (p *lateCreateProvider) Delete(context.Context, sandbox.ID) error {
 	return nil
 }
 
-func TestProvisionDeletesCreateResultAfterPreparationGenerationIsFenced(t *testing.T) {
+func TestProvisionPersistsCreateResultAfterPreparationGenerationIsFenced(t *testing.T) {
 	store := &lifecycleStore{renewError: postgres.ErrSandboxLeaseLost}
 	provider := &lateCreateProvider{lifecycleProvider: &lifecycleProvider{
 		environment: sandbox.Environment{ID: "environment-1", State: sandbox.StateProvisioning},
@@ -106,8 +152,8 @@ func TestProvisionDeletesCreateResultAfterPreparationGenerationIsFenced(t *testi
 	if !errors.Is(err, postgres.ErrSandboxLeaseLost) {
 		t.Fatalf("provision error = %v", err)
 	}
-	if provider.deleteCalls != 1 {
-		t.Fatalf("delete calls = %d, want 1", provider.deleteCalls)
+	if provider.deleteCalls != 0 || len(store.creations) != 1 || store.creations[0].EnvironmentID != "environment-1" {
+		t.Fatalf("late result was not retained: deletes=%d creations=%+v", provider.deleteCalls, store.creations)
 	}
 	if got := provider.createdSpec.Labels["ao.preparation_generation"]; got != "7" {
 		t.Fatalf("preparation generation label = %q", got)
@@ -482,7 +528,7 @@ func TestCoderRestoreBootstrapRequiresDurableIdentity(t *testing.T) {
 
 // pausePathStore spies on the two store calls the pause path makes.
 type pausePathStore struct {
-	Store
+	lifecycleStore
 	disconnected int
 	observed     string
 }
@@ -659,5 +705,113 @@ func TestReconcilePauseAlreadyStoppedSkipsDisconnect(t *testing.T) {
 	}
 	if store.disconnected != 0 {
 		t.Fatalf("DisconnectSessionWorkers called %d times on an already-stopped env, want 0", store.disconnected)
+	}
+}
+
+type recoveryProvider struct {
+	*lateCreateProvider
+	cancel    context.CancelFunc
+	deleteErr error
+	createErr error
+	absent    bool
+	found     bool
+}
+
+func (p *recoveryProvider) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Environment, error) {
+	if p.cancel != nil {
+		p.cancel()
+	}
+	if p.createErr != nil {
+		return p.environment, p.createErr
+	}
+	return p.lifecycleProvider.Create(ctx, spec)
+}
+
+func TestCanceledCapacityRejectionResolvesCreation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &lifecycleStore{}
+	provider := &recoveryProvider{
+		lateCreateProvider: &lateCreateProvider{lifecycleProvider: &lifecycleProvider{}},
+		cancel:             cancel, createErr: sandbox.ErrAtCapacity,
+	}
+	record := domain.Sandbox{OrgID: "org", SessionID: "session", Provider: sandbox.ProviderDocker}
+	_ = testReconciler(store, provider).provision(ctx, record, provider)
+	if len(store.creations) != 0 || len(store.creationStates) != 1 {
+		t.Fatalf("definitive rejection remained unresolved: %+v", store.creations)
+	}
+}
+func (p *recoveryProvider) Get(context.Context, sandbox.ID) (sandbox.Environment, error) {
+	if p.absent {
+		return sandbox.Environment{}, sandbox.ErrNotFound
+	}
+	return p.environment, nil
+}
+func (p *recoveryProvider) FindBySession(context.Context, string) (sandbox.Environment, bool, error) {
+	return p.environment, p.found, nil
+}
+func (p *recoveryProvider) Delete(context.Context, sandbox.ID) error {
+	p.deleteCalls++
+	if p.deleteErr != nil {
+		return p.deleteErr
+	}
+	p.absent = true
+	return nil
+}
+
+func TestLateCreationSurvivesCancellationAndDeleteFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &lifecycleStore{renewError: context.Canceled}
+	provider := &recoveryProvider{lateCreateProvider: &lateCreateProvider{lifecycleProvider: &lifecycleProvider{
+		environment: sandbox.Environment{ID: "late", State: sandbox.StateRunning},
+	}}, cancel: cancel, deleteErr: errors.New("provider unavailable")}
+	record := domain.Sandbox{OrgID: "org", SessionID: "session", Provider: sandbox.ProviderDocker, PreparationGeneration: 1}
+	if err := testReconciler(store, provider).provision(ctx, record, provider); !errors.Is(err, context.Canceled) {
+		t.Fatalf("provision=%v", err)
+	}
+	if len(store.creations) != 1 || store.creations[0].EnvironmentID != "late" {
+		t.Fatalf("lost late result: %+v", store.creations)
+	}
+	creationID := store.creations[0].ID
+	record.PreparationGeneration++
+	record.DesiredState = domain.SandboxDesiredDeleted
+	// Each pass may run in a replacement reconciler process.
+	_, _ = testReconciler(store, provider).reconcileCreations(context.Background(), record, provider)
+	if len(store.creations) != 1 || provider.deleteCalls != 1 {
+		t.Fatalf("failed deletion was discarded: %+v", store.creations)
+	}
+	provider.deleteErr = nil
+	_, err := testReconciler(store, provider).reconcileCreations(context.Background(), record, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = testReconciler(store, provider).reconcileCreations(context.Background(), record, provider)
+	if err != nil || len(store.creations) != 0 || store.creationStates[creationID] != "deleted" {
+		t.Fatalf("cleanup=%+v err=%v", store.creations, err)
+	}
+}
+
+func TestUnresolvedCreationPreventsDeletionAndReplacement(t *testing.T) {
+	store := &lifecycleStore{creations: []domain.SandboxCreation{{ID: "in-flight", Generation: 1}}}
+	provider := &recoveryProvider{lateCreateProvider: &lateCreateProvider{lifecycleProvider: &lifecycleProvider{}}}
+	for _, desired := range []string{domain.SandboxDesiredDeleted, domain.SandboxDesiredRunning} {
+		record := domain.Sandbox{SessionID: "session", OrgID: "org", DesiredState: desired, PreparationGeneration: 2}
+		handled, err := testReconciler(store, provider).reconcileCreations(context.Background(), record, provider)
+		if err != nil || !handled || len(store.creations) != 1 {
+			t.Fatalf("desired=%s handled=%v err=%v", desired, handled, err)
+		}
+	}
+}
+
+func TestLateCreationDoesNotReplaceCurrentMachine(t *testing.T) {
+	store := &lifecycleStore{creations: []domain.SandboxCreation{{ID: "old-create", Generation: 1, EnvironmentID: "old"}}}
+	provider := &recoveryProvider{lateCreateProvider: &lateCreateProvider{lifecycleProvider: &lifecycleProvider{
+		environment: sandbox.Environment{ID: "old", State: sandbox.StateRunning},
+	}}}
+	record := domain.Sandbox{SessionID: "session", OrgID: "org", PreparationGeneration: 2, ProviderEnvironmentID: "current", DesiredState: domain.SandboxDesiredRunning}
+	handled, err := testReconciler(store, provider).reconcileCreations(context.Background(), record, provider)
+	if err != nil || !handled || provider.deleteCalls != 1 || store.creationStates["old-create"] == "adopted" {
+		t.Fatalf("handled=%v err=%v states=%v", handled, err, store.creationStates)
 	}
 }

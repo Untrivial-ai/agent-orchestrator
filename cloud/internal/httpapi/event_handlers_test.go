@@ -61,9 +61,29 @@ func TestSendMessageAcceptsPositiveClientSequence(t *testing.T) {
 	}
 }
 
+func TestSendMessageAcceptsLegacyPayload(t *testing.T) {
+	store := &messageSequenceStore{}
+	response := httptest.NewRecorder()
+	testServer(store).sendMessage(response, userMessageRequest(`{"text":"hello"}`))
+	if response.Code != http.StatusAccepted || store.called != 1 || store.clientSequence != 0 {
+		t.Fatalf("status=%d calls=%d sequence=%d", response.Code, store.called, store.clientSequence)
+	}
+}
+
+func TestSendMessageRejectsMalformedClientSequence(t *testing.T) {
+	for _, sequence := range []string{`1.5`, `"7"`, `true`} {
+		store := &messageSequenceStore{}
+		response := httptest.NewRecorder()
+		testServer(store).sendMessage(response, userMessageRequest(`{"text":"hello","clientSequence":`+sequence+`}`))
+		if response.Code != http.StatusBadRequest || store.called != 0 {
+			t.Fatalf("sequence=%s status=%d calls=%d", sequence, response.Code, store.called)
+		}
+	}
+}
+
 func TestSendMessageRejectsInvalidClientSequence(t *testing.T) {
 	for _, body := range []string{
-		`{"text":"hello"}`,
+		`{"text":"hello","clientSequence":null}`,
 		`{"text":"hello","clientSequence":0}`,
 		`{"text":"hello","clientSequence":-1}`,
 		`{"text":"hello","clientSequence":9007199254740992}`,

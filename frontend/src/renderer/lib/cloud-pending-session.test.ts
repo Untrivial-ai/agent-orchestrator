@@ -124,6 +124,7 @@ describe("cloud pending session", () => {
 		);
 		const firstKey = getCloudPendingSession(pending.attemptId)?.messages[0]?.idempotencyKey;
 		fail = false;
+		markCloudPendingSessionReady("session-1");
 		retryCloudPendingMessage(pending.attemptId, firstId);
 		await vi.waitFor(() =>
 			expect(getCloudPendingSession(pending.attemptId)?.messages.map((message) => message.state)).toEqual([
@@ -132,6 +133,20 @@ describe("cloud pending session", () => {
 			]),
 		);
 		expect(calls).toEqual([`1:${firstKey}`, `1:${firstKey}`, expect.stringMatching(/^2:/)]);
+	});
+
+	it("delivers a draft submitted after the terminal becomes ready", async () => {
+		const send = vi.fn(async () => undefined);
+		const pending = registerCloudPendingSession({
+			attempt: beginCloudStartupAttempt("ready-draft", 100),
+			orgId: "org-1", projectId: "project-1", initialPrompt: "Initial task",
+			create: async () => "session-1", send,
+		});
+		await createCloudPendingSession(pending.attemptId);
+		markCloudPendingSessionReady("session-1");
+		queueCloudPendingMessage(pending.attemptId, "Finish this draft");
+		await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+		expect(getCloudPendingSession("session-1")?.messages[0]?.state).toBe("queued");
 	});
 
 	it("bounds local input and releases the startup layer only once", async () => {

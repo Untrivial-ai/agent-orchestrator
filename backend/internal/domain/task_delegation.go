@@ -37,6 +37,15 @@ func (f TaskDelegationRequestFingerprint) Valid() bool {
 // a worker session.
 type TaskDelegationState string
 
+type TaskDelegationStartupState string
+
+const (
+	TaskDelegationStartupLegacy   TaskDelegationStartupState = "legacy"
+	TaskDelegationStartupSeeded   TaskDelegationStartupState = "seeded"
+	TaskDelegationStartupStarting TaskDelegationStartupState = "starting"
+	TaskDelegationStartupReady    TaskDelegationStartupState = "ready"
+)
+
 // Task delegation states distinguish a reserved request from one with a durable worker.
 const (
 	TaskDelegationPending   TaskDelegationState = "pending"
@@ -50,11 +59,18 @@ type TaskDelegation struct {
 	RequestFingerprint TaskDelegationRequestFingerprint
 	WorkerID           SessionID
 	State              TaskDelegationState
+	StartupState       TaskDelegationStartupState
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
 
+func (d TaskDelegation) Ready() bool {
+	return d.State == TaskDelegationCompleted && d.WorkerID != "" &&
+		(d.StartupState == TaskDelegationStartupReady || d.StartupState == TaskDelegationStartupLegacy)
+}
+
 var (
+	ErrTaskDelegationRecoveryRequired = errors.New("domain: task delegation needs recovery")
 	// ErrTaskDelegationIdempotencyConflict means a key was reused for a
 	// materially different request.
 	ErrTaskDelegationIdempotencyConflict = errors.New("domain: task delegation idempotency conflict")

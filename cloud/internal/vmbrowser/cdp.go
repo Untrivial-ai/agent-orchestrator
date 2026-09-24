@@ -7,11 +7,18 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 )
 
-const maxCDPMessageBytes = 2 << 20
+const (
+	maxCDPMessageBytes = 2 << 20
+	maxCDPQueuedEvents = 256
+	cdpCommandTimeout  = 10 * time.Second
+)
+
+var errCDPEventOverflow = errors.New("CDP event queue overflow")
 
 type cdpEvent struct {
 	Method    string
@@ -38,14 +45,14 @@ type cdpConnection interface {
 type cdpDialer func(context.Context, string) (cdpConnection, error)
 
 type websocketCDP struct {
-	conn    *websocket.Conn
-	nextID  atomic.Int64
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	pending map[int64]chan cdpResponse
-	events  chan cdpEvent
-	done    chan struct{}
-	once    sync.Once
+	conn     *websocket.Conn
+	nextID   atomic.Int64
+	mu       sync.Mutex
+	pending  map[int64]chan cdpResponse
+	events   chan cdpEvent
+	done     chan struct{}
+	once     sync.Once
+	closeErr error
 }
 
 func dialWebsocketCDP(ctx context.Context, endpoint string) (cdpConnection, error) {
@@ -58,7 +65,7 @@ func dialWebsocketCDP(ctx context.Context, endpoint string) (cdpConnection, erro
 	conn.SetReadLimit(maxCDPMessageBytes)
 	client := &websocketCDP{
 		conn: conn, pending: make(map[int64]chan cdpResponse),
-		events: make(chan cdpEvent, 16), done: make(chan struct{}),
+		events: make(chan cdpEvent, maxCDPQueuedEvents), done: make(chan struct{}),
 	}
 	go client.readLoop()
 	return client, nil
@@ -70,6 +77,8 @@ func (c *websocketCDP) Call(ctx context.Context, sessionID, method string, param
 	if method == "" {
 		return errors.New("CDP method is required")
 	}
+	ctx, cancel := context.WithTimeout(ctx, cdpCommandTimeout)
+	defer cancel()
 	id := c.nextID.Add(1)
 	request := map[string]any{"id": id, "method": method}
 	if sessionID != "" {
@@ -86,16 +95,15 @@ func (c *websocketCDP) Call(ctx context.Context, sessionID, method string, param
 	c.mu.Lock()
 	select {
 	case <-c.done:
+		err := c.closeErr
 		c.mu.Unlock()
-		return errors.New("CDP connection is closed")
+		return err
 	default:
 	}
 	c.pending[id] = response
 	c.mu.Unlock()
 
-	c.writeMu.Lock()
 	err = c.conn.Write(ctx, websocket.MessageText, payload)
-	c.writeMu.Unlock()
 	if err != nil {
 		c.removePending(id)
 		return fmt.Errorf("write CDP command %s: %w", method, err)
@@ -105,7 +113,10 @@ func (c *websocketCDP) Call(ctx context.Context, sessionID, method string, param
 		c.removePending(id)
 		return ctx.Err()
 	case <-c.done:
-		return errors.New("CDP connection closed while awaiting " + method)
+		c.mu.Lock()
+		err := c.closeErr
+		c.mu.Unlock()
+		return fmt.Errorf("CDP connection closed while awaiting %s: %w", method, err)
 	case reply := <-response:
 		if reply.Error != nil {
 			return fmt.Errorf("CDP %s failed (%d): %s", method, reply.Error.Code, reply.Error.Message)
@@ -126,7 +137,8 @@ func (c *websocketCDP) removePending(id int64) {
 }
 
 func (c *websocketCDP) readLoop() {
-	defer c.shutdown()
+	defer close(c.events)
+	defer c.shutdown(errors.New("CDP connection closed"))
 	for {
 		_, payload, err := c.conn.Read(context.Background())
 		if err != nil {
@@ -160,22 +172,25 @@ func (c *websocketCDP) readLoop() {
 		case c.events <- cdpEvent{Method: envelope.Method, SessionID: envelope.SessionID, Params: envelope.Params}:
 		case <-c.done:
 			return
+		default:
+			c.shutdown(errCDPEventOverflow)
+			return
 		}
 	}
 }
 
-func (c *websocketCDP) shutdown() {
+func (c *websocketCDP) shutdown(err error) {
 	c.once.Do(func() {
-		close(c.done)
-		close(c.events)
 		c.mu.Lock()
+		c.closeErr = err
 		c.pending = make(map[int64]chan cdpResponse)
+		close(c.done)
 		c.mu.Unlock()
+		_ = c.conn.CloseNow()
 	})
 }
 
 func (c *websocketCDP) Close() error {
-	err := c.conn.Close(websocket.StatusNormalClosure, "browser viewer closed")
-	c.shutdown()
-	return err
+	c.shutdown(errors.New("CDP connection closed"))
+	return nil
 }

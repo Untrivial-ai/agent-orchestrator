@@ -95,8 +95,8 @@ export function CloudPendingSession({ attempt, session }: CloudPendingSessionPro
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const progress = useCloudStartupProgress(attempt, session, retryToken);
 	const elapsedMs = useElapsedMs(attempt.startedAtMs);
-	const failedMessage = attempt.messages.some((message) => message.state === "failed");
-	const canRevealTerminal = progress.phase === "ready" && draft.trim() === "" && !failedMessage;
+	const unacknowledgedMessage = attempt.messages.some((message) => message.state !== "queued");
+	const canRevealTerminal = progress.phase === "ready" && draft.trim() === "" && !unacknowledgedMessage;
 	const startupFailed = progress.phase === "failed" || attempt.createState === "failed";
 
 	useEffect(() => {

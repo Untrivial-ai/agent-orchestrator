@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -60,16 +61,18 @@ type Engine struct {
 	// limit, and a path derived from the full session id (a UUID in the VM)
 	// overflows it. A short /tmp prefix mirrors the Electron runtime's
 	// socket-dir aliasing for the same reason.
-	socketDir string
+	socketDir    string
+	runtimeMu    sync.Mutex
+	runtimeReady bool
 }
 
 // NewEngine creates the engine. runner == nil uses the exec-based runner.
 func NewEngine(chromium *Chromium, runner Runner, opts EngineOptions) *Engine {
-	if runner == nil {
-		runner = execRunner{binary: opts.BinaryPath, timeout: opts.CommandTimeout}
-	}
 	if opts.CommandTimeout <= 0 {
 		opts.CommandTimeout = defaultCommandTimeout
+	}
+	if runner == nil {
+		runner = execRunner{binary: opts.BinaryPath, timeout: opts.CommandTimeout}
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
@@ -120,6 +123,8 @@ var nativeEnvAllowlist = map[string]struct{}{
 }
 
 func (e *Engine) environment(endpoint Endpoint) ([]string, error) {
+	e.runtimeMu.Lock()
+	defer e.runtimeMu.Unlock()
 	runDir := filepath.Join(e.opts.Root, "run")
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		return nil, fmt.Errorf("prepare agent-browser runtime dir: %w", err)
@@ -129,8 +134,11 @@ func (e *Engine) environment(endpoint Endpoint) ([]string, error) {
 		return nil, err
 	}
 	configPath := filepath.Join(runDir, "config.json")
-	if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil && !errors.Is(err, os.ErrExist) {
-		return nil, fmt.Errorf("write agent-browser config: %w", err)
+	if !e.runtimeReady {
+		if err := os.WriteFile(configPath, []byte("{}\n"), 0o600); err != nil {
+			return nil, fmt.Errorf("write agent-browser config: %w", err)
+		}
+		e.runtimeReady = true
 	}
 
 	environment := []string{}

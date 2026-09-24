@@ -106,6 +106,7 @@
 	"browser.cloud.agentControlling": "代理正在控制",
 	"browser.cloud.canvas": "云浏览器",
 	"browser.cloud.dismissDialog": "关闭",
+	"browser.cloud.pasteTooLarge": "粘贴内容不能超过 8192 字节。",
 	"browser.cloud.reconnecting": "正在重新连接",
 	"browser.cloud.requestId": "请求 ID：{{id}}",
 	"browser.cloud.retry": "重试",

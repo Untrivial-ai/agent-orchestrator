@@ -331,3 +331,99 @@ func TestEngineNamespaceStaysShortForUUIDSessionIDs(t *testing.T) {
 		t.Fatalf("derived socket path would be %d bytes (max 103)", socketPathLen)
 	}
 }
+
+func TestEngineNormalizesRunnerTimeout(t *testing.T) {
+	for _, timeout := range []time.Duration{0, -1, time.Second} {
+		engine := NewEngine(nil, nil, EngineOptions{CommandTimeout: timeout})
+		want := timeout
+		if want <= 0 {
+			want = defaultCommandTimeout
+		}
+		if got := engine.runner.(execRunner).timeout; got != want {
+			t.Fatalf("timeout=%s, want=%s", got, want)
+		}
+	}
+}
+
+func TestExecRunnerStopsBlockedProcess(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, callerDeadline := range []bool{false, true} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		runner := execRunner{binary: binary, timeout: time.Second}
+		if callerDeadline {
+			cancel()
+			ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+			runner.timeout = 5 * time.Second
+		}
+		started := time.Now()
+		stdout, _, code, err := runner.Run(ctx, append(os.Environ(), "AO_TEST_BLOCK_BROWSER_COMMAND=1"), "-test.run=^TestBlockedBrowserCommandProcess$")
+		cancel()
+		if err != nil || code == 0 || !strings.Contains(stdout, "process ready") || time.Since(started) > 4*time.Second {
+			t.Fatalf("caller deadline=%v code=%d output=%q err=%v elapsed=%s", callerDeadline, code, stdout, err, time.Since(started))
+		}
+	}
+}
+
+func TestBlockedBrowserCommandProcess(t *testing.T) {
+	if os.Getenv("AO_TEST_BLOCK_BROWSER_COMMAND") != "1" {
+		return
+	}
+	_, _ = io.WriteString(os.Stdout, "process ready\n")
+	time.Sleep(time.Minute)
+}
+
+func TestEngineConcurrentRuntimeInitialization(t *testing.T) {
+	engine, _ := newTestEngine(t, &fakeRunner{})
+	var group sync.WaitGroup
+	environments := make(chan []string, 32)
+	for range 32 {
+		group.Go(func() {
+			env, err := engine.environment(Endpoint{})
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			environments <- env
+		})
+	}
+	group.Wait()
+	close(environments)
+	defer os.RemoveAll(engine.socketDir)
+	for env := range environments {
+		if got := envValue(env, "AGENT_BROWSER_SOCKET_DIR"); got != engine.socketDir {
+			t.Errorf("socket=%s, want=%s", got, engine.socketDir)
+		}
+	}
+	configPath := filepath.Join(engine.opts.Root, "run", "config.json")
+	if err := os.WriteFile(configPath, []byte("sentinel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.environment(Endpoint{}); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(configPath)
+	if err != nil || string(content) != "sentinel" {
+		t.Fatalf("config rewritten: %q %v", content, err)
+	}
+}
+
+func TestEngineRuntimeInitializationRetries(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.WriteFile(root, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(nil, &fakeRunner{}, EngineOptions{Root: root})
+	if _, err := engine.environment(Endpoint{}); err == nil {
+		t.Fatal("expected directory error")
+	}
+	if err := os.Remove(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.environment(Endpoint{}); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(engine.socketDir)
+}

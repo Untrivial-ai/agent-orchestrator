@@ -33,6 +33,7 @@ func (s *Store) ReserveTaskDelegation(ctx context.Context, rec domain.TaskDelega
 		return domain.TaskDelegation{}, false, fmt.Errorf("reserve task delegation: %w", err)
 	}
 	if n > 0 {
+		rec.StartupState = domain.TaskDelegationStartupSeeded
 		return rec, true, nil
 	}
 
@@ -46,6 +47,9 @@ func (s *Store) ReserveTaskDelegation(ctx context.Context, rec domain.TaskDelega
 	existing := taskDelegationFromGen(row)
 	if existing.RequestFingerprint != rec.RequestFingerprint {
 		return existing, false, fmt.Errorf("reserve task delegation: %w", domain.ErrTaskDelegationIdempotencyConflict)
+	}
+	if row.State == string(domain.TaskDelegationPending) && row.Recoverable == 0 {
+		return existing, false, domain.ErrTaskDelegationRecoveryRequired
 	}
 	return existing, false, nil
 }
@@ -83,7 +87,7 @@ func (s *Store) CompleteTaskDelegation(
 	if rec.RequestFingerprint != fingerprint || (rec.State == domain.TaskDelegationCompleted && rec.WorkerID != workerID) {
 		return rec, fmt.Errorf("complete task delegation: %w", domain.ErrTaskDelegationIdempotencyConflict)
 	}
-	if n == 0 && rec.State != domain.TaskDelegationCompleted {
+	if n == 0 && !rec.Ready() {
 		return rec, fmt.Errorf("complete task delegation: %w", domain.ErrTaskDelegationInProgress)
 	}
 	return rec, nil
@@ -110,6 +114,7 @@ func taskDelegationFromGen(row gen.TaskDelegation) domain.TaskDelegation {
 		IdempotencyKey:     row.IdempotencyKey,
 		RequestFingerprint: domain.TaskDelegationRequestFingerprint(row.RequestFingerprint),
 		State:              domain.TaskDelegationState(row.State),
+		StartupState:       domain.TaskDelegationStartupState(row.StartupState),
 		CreatedAt:          row.CreatedAt,
 		UpdatedAt:          row.UpdatedAt,
 	}
@@ -117,4 +122,88 @@ func taskDelegationFromGen(row gen.TaskDelegation) domain.TaskDelegation {
 		rec.WorkerID = *row.WorkerID
 	}
 	return rec
+}
+
+// CreateTaskDelegationSession commits the spawn identity before runtime side effects.
+func (s *Store) CreateTaskDelegationSession(ctx context.Context, seed domain.SessionRecord, key string, fingerprint domain.TaskDelegationRequestFingerprint) (domain.SessionRecord, bool, error) {
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return domain.SessionRecord{}, false, err
+	}
+	defer s.writeMu.Unlock()
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.SessionRecord{}, false, err
+	}
+	defer tx.Rollback()
+	q := s.qw.WithTx(tx)
+	reservation, err := q.GetTaskDelegation(ctx, key)
+	if err != nil {
+		return domain.SessionRecord{}, false, fmt.Errorf("load spawn reservation: %w", err)
+	}
+	if reservation.RequestFingerprint != string(fingerprint) {
+		return domain.SessionRecord{}, false, domain.ErrTaskDelegationIdempotencyConflict
+	}
+	if reservation.WorkerID != nil {
+		row, err := q.GetSession(ctx, *reservation.WorkerID)
+		if err != nil {
+			return domain.SessionRecord{}, false, fmt.Errorf("load reserved worker: %w", err)
+		}
+		return rowToRecord(row), false, nil
+	}
+	if reservation.Recoverable == 0 {
+		return domain.SessionRecord{}, false, domain.ErrTaskDelegationRecoveryRequired
+	}
+	rec, err := createSession(ctx, q, seed)
+	if err != nil {
+		return domain.SessionRecord{}, false, err
+	}
+	count, err := q.BindTaskDelegationWorker(ctx, gen.BindTaskDelegationWorkerParams{
+		WorkerID: &rec.ID, UpdatedAt: rec.UpdatedAt, IdempotencyKey: key, RequestFingerprint: string(fingerprint),
+	})
+	if err != nil {
+		return domain.SessionRecord{}, false, fmt.Errorf("bind reserved worker: %w", err)
+	}
+	if count != 1 {
+		return domain.SessionRecord{}, false, domain.ErrTaskDelegationInProgress
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.SessionRecord{}, false, fmt.Errorf("commit reserved worker: %w", err)
+	}
+	return rec, true, nil
+}
+
+func (s *Store) ClaimTaskDelegationStartup(ctx context.Context, key string, fingerprint domain.TaskDelegationRequestFingerprint, workerID domain.SessionID) (bool, error) {
+	if err := s.writeMu.LockContext(ctx); err != nil {
+		return false, err
+	}
+	defer s.writeMu.Unlock()
+	n, err := s.qw.ClaimTaskDelegationStartup(ctx, gen.ClaimTaskDelegationStartupParams{
+		IdempotencyKey: key, RequestFingerprint: string(fingerprint), WorkerID: &workerID,
+	})
+	if err != nil || n == 1 {
+		return n == 1, err
+	}
+	row, err := s.qw.GetTaskDelegation(ctx, key)
+	if err != nil {
+		return false, fmt.Errorf("read startup claim: %w", err)
+	}
+	rec := taskDelegationFromGen(row)
+	if rec.RequestFingerprint != fingerprint || rec.WorkerID != workerID {
+		return false, domain.ErrTaskDelegationIdempotencyConflict
+	}
+	if rec.Ready() {
+		return false, nil
+	}
+	return false, domain.ErrTaskDelegationRecoveryRequired
+}
+
+func (s *Store) TaskDelegationStartupForWorker(ctx context.Context, id domain.SessionID) (domain.TaskDelegationStartupState, error) {
+	state, err := s.qr.TaskDelegationStartupForWorker(ctx, &id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read worker startup checkpoint: %w", err)
+	}
+	return domain.TaskDelegationStartupState(state), nil
 }

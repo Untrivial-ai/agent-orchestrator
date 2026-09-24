@@ -773,7 +773,10 @@ func (s *Store) CompleteSandboxDeletion(
 			WHERE session_id = $1
 				AND org_id = $3
 				AND reconcile_lease_owner = $2
-				AND reconcile_lease_until > now()`,
+				AND reconcile_lease_until > now()
+				AND NOT EXISTS (SELECT 1 FROM ao_sandbox_creations creation
+					WHERE creation.org_id = $3 AND creation.session_id = $1
+					AND creation.state IN ('creating', 'created'))`,
 			sessionID,
 			owner,
 			orgID,

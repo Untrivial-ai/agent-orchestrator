@@ -133,7 +133,7 @@ function pendingMessageBytes(record: PendingRecord): number {
 
 async function flushMessages(record: PendingRecord): Promise<void> {
 	const sessionId = record.snapshot.durableSessionId;
-	if (!sessionId || record.snapshot.createState !== "accepted") return;
+	if (!sessionId || !["accepted", "ready"].includes(record.snapshot.createState)) return;
 	for (;;) {
 		const next = record.snapshot.messages.find((message) => message.state !== "queued");
 		if (!next || next.state === "failed" || next.state === "sending") return;

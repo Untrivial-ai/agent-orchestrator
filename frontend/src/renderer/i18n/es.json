@@ -106,6 +106,7 @@
 	"browser.cloud.agentControlling": "El agente tiene el control",
 	"browser.cloud.canvas": "Navegador en la nube",
 	"browser.cloud.dismissDialog": "Descartar",
+	"browser.cloud.pasteTooLarge": "El texto pegado está limitado a 8192 bytes.",
 	"browser.cloud.reconnecting": "Reconectando",
 	"browser.cloud.requestId": "ID de solicitud: {{id}}",
 	"browser.cloud.retry": "Reintentar",

@@ -12,14 +12,61 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+const bindTaskDelegationWorker = `-- name: BindTaskDelegationWorker :execrows
+UPDATE task_delegations SET worker_id = ?, state = 'completed', updated_at = ?
+WHERE idempotency_key = ? AND request_fingerprint = ?
+  AND state = 'pending'
+`
+
+type BindTaskDelegationWorkerParams struct {
+	WorkerID           *domain.SessionID
+	UpdatedAt          time.Time
+	IdempotencyKey     string
+	RequestFingerprint string
+}
+
+func (q *Queries) BindTaskDelegationWorker(ctx context.Context, arg BindTaskDelegationWorkerParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, bindTaskDelegationWorker,
+		arg.WorkerID,
+		arg.UpdatedAt,
+		arg.IdempotencyKey,
+		arg.RequestFingerprint,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const claimTaskDelegationStartup = `-- name: ClaimTaskDelegationStartup :execrows
+UPDATE task_delegations SET startup_state = 'starting'
+WHERE idempotency_key = ? AND request_fingerprint = ? AND worker_id = ?
+  AND startup_state = 'seeded'
+`
+
+type ClaimTaskDelegationStartupParams struct {
+	IdempotencyKey     string
+	RequestFingerprint string
+	WorkerID           *domain.SessionID
+}
+
+func (q *Queries) ClaimTaskDelegationStartup(ctx context.Context, arg ClaimTaskDelegationStartupParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, claimTaskDelegationStartup, arg.IdempotencyKey, arg.RequestFingerprint, arg.WorkerID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const completeTaskDelegation = `-- name: CompleteTaskDelegation :execrows
 UPDATE task_delegations SET
     worker_id = ?1,
     state = 'completed',
+    startup_state = 'ready',
     updated_at = ?2
 WHERE idempotency_key = ?3
   AND request_fingerprint = ?4
-  AND state = 'pending'
+  AND (state = 'pending' OR (worker_id = ?1 AND startup_state = 'starting'))
 `
 
 type CompleteTaskDelegationParams struct {
@@ -43,7 +90,7 @@ func (q *Queries) CompleteTaskDelegation(ctx context.Context, arg CompleteTaskDe
 }
 
 const getTaskDelegation = `-- name: GetTaskDelegation :one
-SELECT idempotency_key, request_fingerprint, worker_id, state, created_at, updated_at
+SELECT idempotency_key, request_fingerprint, worker_id, state, created_at, updated_at, recoverable, startup_state
 FROM task_delegations
 WHERE idempotency_key = ?
 `
@@ -58,14 +105,16 @@ func (q *Queries) GetTaskDelegation(ctx context.Context, idempotencyKey string) 
 		&i.State,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Recoverable,
+		&i.StartupState,
 	)
 	return i, err
 }
 
 const insertTaskDelegation = `-- name: InsertTaskDelegation :execrows
 INSERT INTO task_delegations (
-    idempotency_key, request_fingerprint, state, created_at, updated_at
-) VALUES (?, ?, 'pending', ?, ?)
+    idempotency_key, request_fingerprint, state, created_at, updated_at, recoverable, startup_state
+) VALUES (?, ?, 'pending', ?, ?, 1, 'seeded')
 ON CONFLICT DO NOTHING
 `
 
@@ -87,4 +136,15 @@ func (q *Queries) InsertTaskDelegation(ctx context.Context, arg InsertTaskDelega
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const taskDelegationStartupForWorker = `-- name: TaskDelegationStartupForWorker :one
+SELECT startup_state FROM task_delegations WHERE worker_id = ?
+`
+
+func (q *Queries) TaskDelegationStartupForWorker(ctx context.Context, workerID *domain.SessionID) (string, error) {
+	row := q.db.QueryRowContext(ctx, taskDelegationStartupForWorker, workerID)
+	var startup_state string
+	err := row.Scan(&startup_state)
+	return startup_state, err
 }

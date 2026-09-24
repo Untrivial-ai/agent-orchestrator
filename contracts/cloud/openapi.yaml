@@ -2614,7 +2614,7 @@ components:
     UserSendMessageInput:
       type: object
       additionalProperties: false
-      required: [text, clientSequence]
+      required: [text]
       properties:
         text:
           type: string

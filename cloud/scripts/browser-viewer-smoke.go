@@ -45,10 +45,12 @@ type controlResult struct {
 }
 
 type smokeViewer struct {
-	connection *websocket.Conn
-	messages   <-chan wireMessage
-	lastFrame  browserstream.Frame
-	lastState  browserstream.Control
+	connection    *websocket.Conn
+	messages      <-chan wireMessage
+	lastFrame     browserstream.Frame
+	lastState     browserstream.Control
+	epoch         uint64
+	inputSequence uint64
 }
 
 func main() {
@@ -95,11 +97,11 @@ func main() {
 	attachToFirstFrame := time.Since(started)
 
 	if err := viewer.send(ctx, browserstream.Control{
-		Type: "navigate", InputSeq: 1, Operation: "open", URL: "http://localhost:3000",
+		Type: "navigate", InputSeq: 2, Operation: "open", URL: "http://localhost:3000",
 	}); err != nil {
 		fatal(err)
 	}
-	navigationAck, err := viewer.waitInputAck(ctx, 1)
+	navigationAck, err := viewer.waitInputAck(ctx, 2)
 	if err != nil {
 		fatal(err)
 	}
@@ -119,11 +121,11 @@ func main() {
 		fatal(errors.New("viewer state did not report the fixture tab"))
 	}
 	if err := viewer.send(ctx, browserstream.Control{
-		Type: "tab", InputSeq: 2, Operation: "new", URL: "http://localhost:3000/?second=1",
+		Type: "tab", InputSeq: 3, Operation: "new", URL: "http://localhost:3000/?second=1",
 	}); err != nil {
 		fatal(err)
 	}
-	if _, err := viewer.waitInputAck(ctx, 2); err != nil {
+	if _, err := viewer.waitInputAck(ctx, 3); err != nil {
 		fatal(fmt.Errorf("open viewer tab: %w", err))
 	}
 	newTabState, err := viewer.waitControl(ctx, func(control browserstream.Control) bool {
@@ -135,11 +137,11 @@ func main() {
 	}
 	newTabID := newTabState.ActiveTabID
 	if err := viewer.send(ctx, browserstream.Control{
-		Type: "tab", InputSeq: 3, Operation: "select", TabID: originalTabID,
+		Type: "tab", InputSeq: 4, Operation: "select", TabID: originalTabID,
 	}); err != nil {
 		fatal(err)
 	}
-	if _, err := viewer.waitInputAck(ctx, 3); err != nil {
+	if _, err := viewer.waitInputAck(ctx, 4); err != nil {
 		fatal(fmt.Errorf("select viewer tab: %w", err))
 	}
 	if _, err := viewer.waitControl(ctx, func(control browserstream.Control) bool {
@@ -148,11 +150,11 @@ func main() {
 		fatal(fmt.Errorf("wait for selected viewer tab: %w", err))
 	}
 	if err := viewer.send(ctx, browserstream.Control{
-		Type: "tab", InputSeq: 4, Operation: "close", TabID: newTabID,
+		Type: "tab", InputSeq: 5, Operation: "close", TabID: newTabID,
 	}); err != nil {
 		fatal(err)
 	}
-	if _, err := viewer.waitInputAck(ctx, 4); err != nil {
+	if _, err := viewer.waitInputAck(ctx, 5); err != nil {
 		fatal(fmt.Errorf("close viewer tab: %w", err))
 	}
 	if _, err := viewer.waitControl(ctx, func(control browserstream.Control) bool {
@@ -163,7 +165,7 @@ func main() {
 	}
 
 	inputStarted := time.Now()
-	sequence := uint64(5)
+	sequence := uint64(6)
 	for _, control := range []browserstream.Control{
 		{Type: "input", InputSeq: sequence, Kind: "pointerDown", X: 80, Y: 40, Button: "left", Buttons: 1, ClickCount: 1},
 		{Type: "input", InputSeq: sequence + 1, Kind: "pointerUp", X: 80, Y: 40, Button: "left", ClickCount: 1},
@@ -454,6 +456,15 @@ func readMessages(ctx context.Context, connection *websocket.Conn) <-chan wireMe
 
 func (v *smokeViewer) send(ctx context.Context, control browserstream.Control) error {
 	control.Version = browserstream.Version
+	control.StreamEpoch = v.epoch
+	if control.Type != "ping" && control.Type != "detach" {
+		if control.InputSeq == 0 {
+			v.inputSequence++
+			control.InputSeq = v.inputSequence
+		} else {
+			v.inputSequence = control.InputSeq
+		}
+	}
 	payload, err := json.Marshal(control)
 	if err != nil {
 		return err
@@ -481,6 +492,9 @@ func (v *smokeViewer) waitControl(ctx context.Context, match func(browserstream.
 				continue
 			}
 			if message.control != nil {
+				if message.control.StreamEpoch > 0 {
+					v.epoch = message.control.StreamEpoch
+				}
 				if message.control.Type == "state" {
 					v.lastState = *message.control
 				}
@@ -521,6 +535,9 @@ func (v *smokeViewer) waitFrame(ctx context.Context, minimum uint64) error {
 				return message.err
 			}
 			if message.control != nil {
+				if message.control.StreamEpoch > 0 {
+					v.epoch = message.control.StreamEpoch
+				}
 				if message.control.Type == "state" {
 					v.lastState = *message.control
 				}

@@ -8,6 +8,7 @@ const FRAME_MAGIC = "AOBR";
 const MAX_FRAME_BYTES = 1024 * 1024 + 512;
 const RETRY_DELAYS = [250, 500, 1000, 2000, 5000] as const;
 const FIRST_FRAME_TIMEOUT_MS = 30_000;
+const WORKER_UPGRADE_REQUIRED = "This worker uses an unsupported browser protocol. Restart the cloud session with an updated worker image.";
 
 export type CloudBrowserStatus = "idle" | "connecting" | "waiting" | "ready" | "reconnecting" | "fatal";
 
@@ -115,7 +116,7 @@ type PendingFrame = {
 	reconnect: boolean;
 };
 
-const EMPTY_SNAPSHOT: CloudBrowserSnapshot = {
+export const EMPTY_CLOUD_BROWSER_SNAPSHOT: CloudBrowserSnapshot = {
 	status: "idle",
 	frameUrl: "",
 	frameWidth: 0,
@@ -150,7 +151,7 @@ export function cloudBrowserViewerUrl(baseUrl: string, orgId: string, sessionId:
 }
 
 export class CloudBrowserStream {
-	private snapshot: CloudBrowserSnapshot = { ...EMPTY_SNAPSHOT };
+	private snapshot: CloudBrowserSnapshot = { ...EMPTY_CLOUD_BROWSER_SNAPSHOT };
 	private readonly listeners = new Set<() => void>();
 	private socket: BrowserSocket | null = null;
 	private refs = 0;
@@ -163,6 +164,8 @@ export class CloudBrowserStream {
 	private connectingGeneration = 0;
 	private missedPongs = 0;
 	private inputSeq = 0;
+	private viewport: { width: number; height: number; inputSeq: number; minFrameSeq?: number } | null = null;
+	private paintedFrame: { sequence: number; width: number; height: number } | null = null;
 	private readonly retiredEpochs = new Set<number>();
 	private readonly pendingInputs = new Map<number, PendingInput>();
 	private readonly pendingRequests = new Map<number, PendingRequest>();
@@ -211,7 +214,7 @@ export class CloudBrowserStream {
 		this.releaseTimer = undefined;
 		this.disconnect();
 		if (this.snapshot.frameUrl) URL.revokeObjectURL(this.snapshot.frameUrl);
-		this.snapshot = { ...EMPTY_SNAPSHOT };
+		this.snapshot = { ...EMPTY_CLOUD_BROWSER_SNAPSHOT };
 		this.emit();
 	}
 
@@ -223,6 +226,8 @@ export class CloudBrowserStream {
 		this.retryTimer = undefined;
 		this.stopPing();
 		this.stopFirstFrameTimer();
+		this.viewport = null;
+		this.paintedFrame = null;
 		if (this.socket?.readyState === WebSocket.OPEN) {
 			this.socket.send(JSON.stringify({ type: "detach", version: PROTOCOL_VERSION }));
 		}
@@ -263,10 +268,10 @@ export class CloudBrowserStream {
 		if (control.type === "input" || control.type === "navigate" || control.type === "tab" || control.type === "dialog") {
 			if (!this.snapshot.canOperate || this.snapshot.viewportPending) return false;
 		}
-		const inputSeq = control.type === "input" || control.type === "navigate" || control.type === "tab" || control.type === "dialog"
+		const inputSeq = control.type !== "ping" && control.type !== "detach"
 			? ++this.inputSeq
 			: undefined;
-		if (inputSeq !== undefined) {
+		if (inputSeq !== undefined && control.type !== "viewport") {
 			if (this.pendingInputs.size >= 128) {
 				const oldest = this.pendingInputs.keys().next().value;
 				if (oldest !== undefined) this.pendingInputs.delete(oldest);
@@ -294,6 +299,8 @@ export class CloudBrowserStream {
 		const pending = this.pendingFrame;
 		if (!pending || pending.sequence !== frameSequence) return;
 		this.pendingFrame = null;
+		this.paintedFrame = { sequence: frameSequence, width: pending.timing.width, height: pending.timing.height };
+		this.acceptPaintedViewport();
 		const paintedAt = this.now();
 		if (pending.timing.firstForConnection) {
 			this.capture("ao.renderer.cloud_browser_first_frame", {
@@ -320,9 +327,19 @@ export class CloudBrowserStream {
 	setViewport(width: number, height: number): void {
 		const boundedWidth = Math.min(1440, Math.max(320, Math.round(width)));
 		const boundedHeight = Math.min(900, Math.max(240, Math.round(height)));
-		if (boundedWidth === this.snapshot.frameWidth && boundedHeight === this.snapshot.frameHeight && !this.snapshot.viewportPending) return;
+		if (this.viewport?.width === boundedWidth && this.viewport.height === boundedHeight) return;
 		this.update({ viewportPending: true });
-		this.send({ type: "viewport", width: boundedWidth, height: boundedHeight });
+		const inputSeq = this.sendControl({ type: "viewport", width: boundedWidth, height: boundedHeight });
+		if (inputSeq !== false) this.viewport = { width: boundedWidth, height: boundedHeight, inputSeq };
+	}
+
+	private acceptPaintedViewport(): void {
+		const viewport = this.viewport;
+		const frame = this.paintedFrame;
+		if (viewport?.minFrameSeq !== undefined && frame && frame.sequence >= viewport.minFrameSeq &&
+			frame.width === viewport.width && frame.height === viewport.height) {
+			this.update({ viewportPending: false });
+		}
 	}
 
 	private async connect(): Promise<void> {
@@ -403,6 +420,8 @@ export class CloudBrowserStream {
 		this.retryTimer = undefined;
 		this.stopPing();
 		this.stopFirstFrameTimer();
+		this.viewport = null;
+		this.paintedFrame = null;
 		if (this.socket?.readyState === WebSocket.OPEN) {
 			this.socket.send(JSON.stringify({ type: "detach", version: PROTOCOL_VERSION }));
 		}
@@ -416,6 +435,7 @@ export class CloudBrowserStream {
 	}
 
 	private receive(data: unknown): void {
+		if (this.snapshot.status === "fatal") return;
 		if (data instanceof ArrayBuffer) {
 			this.receiveFrame(data);
 			return;
@@ -427,8 +447,17 @@ export class CloudBrowserStream {
 		} catch {
 			return;
 		}
-		if (control.version !== PROTOCOL_VERSION) return;
+		if (control.version !== PROTOCOL_VERSION) {
+			this.failConnection(WORKER_UPGRADE_REQUIRED);
+			return;
+		}
+		if (control.streamEpoch !== undefined && control.streamEpoch > Number.MAX_SAFE_INTEGER) {
+			this.failConnection(WORKER_UPGRADE_REQUIRED);
+			return;
+		}
 		if (control.streamEpoch !== undefined && control.streamEpoch !== this.snapshot.streamEpoch) {
+			if (!Number.isSafeInteger(control.streamEpoch) || control.streamEpoch <= 0 || this.retiredEpochs.has(control.streamEpoch)) return;
+			if (!["hello", "attached", "state"].includes(control.type)) return;
 			this.changeEpoch(control.streamEpoch);
 		}
 		switch (control.type) {
@@ -456,7 +485,12 @@ export class CloudBrowserStream {
 				});
 				break;
 			case "viewport_ack":
-				this.update({ viewportPending: false });
+				if (this.viewport && control.inputSeq === this.viewport.inputSeq &&
+					control.width === this.viewport.width && control.height === this.viewport.height &&
+					Number.isSafeInteger(control.minFrameSeq) && (control.minFrameSeq ?? 0) > 0) {
+					this.viewport.minFrameSeq = control.minFrameSeq;
+					this.acceptPaintedViewport();
+				}
 				break;
 			case "control_owner":
 				this.update({ owner: normalizeOwner(control.owner) });
@@ -481,6 +515,13 @@ export class CloudBrowserStream {
 			case "input_rejected": {
 				const inputSeq = control.inputSeq ?? 0;
 				const message = browserControlErrorMessage(control);
+				if (this.viewport?.inputSeq === inputSeq) {
+					this.viewport = null;
+					if (control.code !== "BROWSER_AGENT_CONTROL_ACTIVE") {
+						this.failConnection(`${message} Reconnect the browser to retry resizing.`);
+						return;
+					}
+				}
 				this.pendingInputs.delete(inputSeq);
 				this.rejectPendingRequest(inputSeq, new Error(message));
 				this.update({ owner: normalizeOwner(control.owner), error: message });
@@ -501,9 +542,17 @@ export class CloudBrowserStream {
 	private receiveFrame(buffer: ArrayBuffer): void {
 		if (buffer.byteLength < FRAME_HEADER_BYTES + 2 || buffer.byteLength > MAX_FRAME_BYTES) return;
 		const bytes = new Uint8Array(buffer);
-		if (String.fromCharCode(...bytes.subarray(0, 4)) !== FRAME_MAGIC || bytes[4] !== PROTOCOL_VERSION || bytes[5] !== 1) return;
+		if (String.fromCharCode(...bytes.subarray(0, 4)) !== FRAME_MAGIC || bytes[5] !== 1) return;
+		if (bytes[4] !== PROTOCOL_VERSION) {
+			this.failConnection(WORKER_UPGRADE_REQUIRED);
+			return;
+		}
 		const view = new DataView(buffer);
 		const epoch = Number(view.getBigUint64(6));
+		if (epoch > Number.MAX_SAFE_INTEGER) {
+			this.failConnection(WORKER_UPGRADE_REQUIRED);
+			return;
+		}
 		const sequence = Number(view.getBigUint64(14));
 		const width = view.getUint16(22);
 		const height = view.getUint16(24);
@@ -511,7 +560,7 @@ export class CloudBrowserStream {
 		const jpegOffset = FRAME_HEADER_BYTES + targetBytes;
 		const jpegBytes = buffer.byteLength - jpegOffset;
 		if (
-			epoch <= 0 || sequence <= 0 || width <= 0 || height <= 0 || targetBytes <= 0 ||
+			!Number.isSafeInteger(epoch) || !Number.isSafeInteger(sequence) || epoch <= 0 || sequence <= 0 || width <= 0 || height <= 0 || targetBytes <= 0 ||
 			targetBytes > 128 || jpegBytes <= 0 || jpegBytes > 1024 * 1024
 		) return;
 		try {
@@ -555,6 +604,11 @@ export class CloudBrowserStream {
 		this.emit();
 	}
 
+	private failConnection(message: string): void {
+		this.disconnect();
+		this.update({ status: "fatal", canOperate: false, error: message });
+	}
+
 	private changeEpoch(epoch: number): void {
 		if (this.snapshot.streamEpoch > 0) {
 			this.retiredEpochs.add(this.snapshot.streamEpoch);
@@ -566,6 +620,8 @@ export class CloudBrowserStream {
 		this.pendingInputs.clear();
 		this.rejectPendingRequests(new Error("The browser viewer restarted."));
 		this.pendingFrame = null;
+		this.paintedFrame = null;
+		this.viewport = null;
 		this.update({ streamEpoch: epoch, frameSequence: 0, viewportPending: true });
 	}
 

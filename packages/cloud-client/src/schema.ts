@@ -1464,7 +1464,7 @@ export interface components {
         };
         UserSendMessageInput: {
             text: string;
-            clientSequence: number;
+            clientSequence?: number;
         };
         WorkerWorkspaceListPayload: {
             path: string;
