@@ -78,9 +78,9 @@ func TestExactRouteSelectorFollowsMutableSessionPin(t *testing.T) {
 		{ID: "account-b", Provider: "codex", Status: coreauth.StatusActive},
 	}
 	selector := newExactRouteSelector(capability, routes, nil)
-	selected, err := selector.Pick(context.Background(), "codex", "gpt-5", opts, auths)
+	selected, err := selector.Pick(context.Background(), "mixed", "gpt-5", opts, auths)
 	if err != nil || selected == nil || selected.ID != "account-a" {
-		t.Fatalf("first Pick = (%v, %v), want account-a", selected, err)
+		t.Fatalf("mixed-provider Pick = (%v, %v), want account-a", selected, err)
 	}
 	if err := routes.setAccountForSession("session-1", "account-b"); err != nil {
 		t.Fatalf("switch route pin: %v", err)

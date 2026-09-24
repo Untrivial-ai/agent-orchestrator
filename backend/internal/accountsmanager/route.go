@@ -187,7 +187,11 @@ func (s *exactRouteSelector) Pick(ctx context.Context, provider, model string, o
 	}
 	scope, _ := opts.Metadata[coreexecutor.CallerScopeMetadataKey].(string)
 	if sessionID, ok := s.capability.sessionForScope(scope); ok {
-		if !strings.EqualFold(strings.TrimSpace(provider), "codex") {
+		provider = strings.TrimSpace(provider)
+		// The Responses endpoint asks the CLIProxy conductor to select from
+		// the mixed provider pool even when every registered credential is
+		// Codex. A scoped route is still restricted to the pinned Codex auth.
+		if !strings.EqualFold(provider, "codex") && !strings.EqualFold(provider, "mixed") {
 			return nil, ports.ErrCodexProxyAccountUnavailable
 		}
 		accountID, ok := s.routes.accountForSession(sessionID)
