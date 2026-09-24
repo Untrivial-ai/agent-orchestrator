@@ -23,6 +23,7 @@ import {
 	XCircle,
 } from "lucide-react";
 import { useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { components } from "../../api/schema";
 import type { ImportFolderScan } from "../../preload";
 import { useCloudCp } from "../hooks/useCloudCp";
@@ -1089,12 +1090,19 @@ function shouldScanCreateFailure(message: string): boolean {
 }
 
 function CreateProjectFlowBackdrop({ open }: { open: boolean }) {
-	return (
-		<Dialog.Root open={open}>
-			<Dialog.Portal>
-				<Dialog.Overlay className="dialog-overlay z-[calc(var(--z-overlay)-1)] data-[state=open]:animate-overlay-in data-[state=closed]:animate-overlay-out" />
-			</Dialog.Portal>
-		</Dialog.Root>
+	return createPortal(
+		<AnimatePresence>
+			{open && (
+				<motion.div
+					aria-hidden="true"
+					className="dialog-overlay z-[calc(var(--z-overlay)-1)]"
+					initial={{ opacity: 0 }}
+					animate={{ opacity: 1, transition: { duration: 0.08 } }}
+					exit={{ opacity: 0, transition: { duration: 0.06 } }}
+				/>
+			)}
+		</AnimatePresence>,
+		document.body,
 	);
 }
 
