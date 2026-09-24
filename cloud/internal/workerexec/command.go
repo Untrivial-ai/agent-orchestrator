@@ -176,7 +176,7 @@ func (b HarnessBuilder) BuildInteractive(
 		Path: argv[0],
 		Args: argv[1:],
 		Dir:  workspace,
-		Env:  map[string]string{},
+		Env:  map[string]string{"AO_CLOUD_SOURCE_INTERFACE": "tui"},
 	}
 	if err := b.configureCredential(&command, launch.Harness, credential); err != nil {
 		if command.Cleanup != nil {
@@ -209,14 +209,11 @@ func (b HarnessBuilder) interactiveRestoreIdentity(
 	if launch.Harness != "claude-code" {
 		return strings.TrimSpace(launch.AgentSessionID)
 	}
-	if identity := strings.TrimSpace(launch.AgentSessionID); b.claudeConversationAvailable(identity) {
-		return identity
+	identity := strings.TrimSpace(launch.AgentSessionID)
+	if identity == "" || !b.claudeConversationAvailable(identity) {
+		return ""
 	}
-	identity := agentruntime.ClaudeSessionID(launch.SessionID)
-	if b.claudeConversationAvailable(identity) {
-		return identity
-	}
-	return ""
+	return identity
 }
 
 func (b HarnessBuilder) claudeConfigDir() (string, error) {
@@ -434,7 +431,7 @@ func updateJSONFile(path string, update func(map[string]any)) error {
 }
 
 func claudeArgs(turn worker.Turn) ([]string, error) {
-	args := []string{"--print", "--output-format", "stream-json"}
+	args := []string{"--print", "--output-format", "stream-json", "--verbose"}
 	switch turn.Mode {
 	case "read-only":
 		args = append(args, "--permission-mode", "plan")
@@ -470,19 +467,19 @@ func codexArgs(turn worker.Turn) ([]string, error) {
 	if len(turn.DeniedCommands) > 0 {
 		return nil, fmt.Errorf("%w: Codex has no exact denied-command primitive", ErrUnsupportedPolicy)
 	}
-	args := []string{"exec", "--json", "--skip-git-repo-check"}
+	args := []string{"exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-hook-trust"}
 	switch turn.Mode {
 	case "read-only":
-		args = append(args, "--sandbox", "read-only")
+		args = append(args, "--sandbox", "read-only", "--ask-for-approval", "on-request")
 	case "standard":
-		args = append(args, "--sandbox", "workspace-write")
+		args = append(args, "--sandbox", "workspace-write", "--ask-for-approval", "on-request", "-c", `approvals_reviewer="auto_review"`)
 	case "trusted":
-		args = append(args, "--sandbox", "danger-full-access")
+		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
 	if turn.AgentSessionID != "" {
 		args = append(args, "resume", turn.AgentSessionID)
 	}
-	return append(args, turn.Prompt), nil
+	return append(args, "--", turn.Prompt), nil
 }
 
 func cursorArgs(turn worker.Turn) ([]string, error) {

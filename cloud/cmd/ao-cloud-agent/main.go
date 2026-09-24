@@ -139,6 +139,12 @@ func runHook(ctx context.Context, c *client, args []string, input io.Reader) err
 	if !ok {
 		return nil
 	}
+	activity.SourceInterface = strings.TrimSpace(os.Getenv("AO_CLOUD_SOURCE_INTERFACE"))
+	if activity.Harness == "codex" && activity.Event == "stop" && activity.LatestAssistantUpdate == "" {
+		activity.LatestAssistantUpdate = latestCodexAssistantMessage(
+			strings.TrimSpace(os.Getenv("CODEX_HOME")), activity.AgentSessionID,
+		)
+	}
 	hookCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 	_ = c.request(

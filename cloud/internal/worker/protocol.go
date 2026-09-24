@@ -19,6 +19,7 @@ type LaunchContext struct {
 	Branch         string `json:"branch"`
 	Prompt         string `json:"prompt,omitempty"`
 	AgentSessionID string `json:"agentSessionId,omitempty"`
+	Interface      string `json:"interface"`
 	// ParentSessionID is the orchestrator that spawned this session; empty for
 	// top-level sessions.
 	ParentSessionID string   `json:"parentSessionId,omitempty"`
@@ -324,7 +325,8 @@ type TerminalOutputRequest struct {
 }
 
 type TerminalExitRequest struct {
-	ExitCode int `json:"exitCode"`
+	ExitCode         int  `json:"exitCode"`
+	InterfaceHandoff bool `json:"interfaceHandoff,omitempty"`
 }
 
 type AgentTerminalResponse struct {
