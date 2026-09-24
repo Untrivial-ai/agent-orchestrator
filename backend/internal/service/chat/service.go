@@ -671,6 +671,34 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			return nil, err
 		}
 	}
+	if cfg.Harness == domain.HarnessClaudeCode {
+		if configurer, ok := conv.(ports.ChatConfigOptionController); ok {
+			options, err := configurer.ListConfigOptions(ctx)
+			if err == nil {
+				options, err = materializeClaudeDefaults(ctx, configurer, options, conversation.Settings.Model, conversation.Settings.ReasoningEffort)
+			}
+			if err != nil {
+				_ = cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
+				return nil, fmt.Errorf("select Claude session options: %w", err)
+			}
+			if len(options) > 0 {
+				settings, _ := settingsFromConfigOptions(conversation.Settings, options)
+				if settings.Model == "default" {
+					settings.Model = ""
+				}
+				if settings.ReasoningEffort == "default" {
+					settings.ReasoningEffort = ""
+				}
+				if settings != conversation.Settings {
+					if err := s.store.SetConversationSettings(ctx, conversation.ID, settings, s.now()); err != nil {
+						_ = cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
+						return nil, fmt.Errorf("record Claude session options: %w", err)
+					}
+					conversation.Settings = settings
+				}
+			}
+		}
+	}
 	var liveRows ConversationRows
 	if liveReconnect {
 		if s.reader == nil {
@@ -1800,6 +1828,12 @@ func (s *Service) SetConfigOption(
 	if err != nil {
 		return nil, err
 	}
+	if record.Harness == domain.HarnessClaudeCode && configID == "model" {
+		options, err = materializeClaudeDefaults(ctx, configurer, options, "", "")
+		if err != nil {
+			return nil, err
+		}
+	}
 	options = permissionConfigOptions(record.Harness, options)
 	settings, _ := settingsFromConfigOptions(previous, options)
 	if record.Harness == domain.HarnessOpenCode && configID == "mode" {
@@ -1838,6 +1872,113 @@ func restoreOpenCodeMode(ctx context.Context, conv ports.ChatConversation, mode 
 		}
 	}
 	return fmt.Errorf("restore OpenCode mode %q: provider did not confirm selected mode", mode)
+}
+
+// Claude's ACP catalog reports "default" but not the effective effort. Apply
+// concrete offered choices so the provider and AO's durable settings agree.
+func materializeClaudeDefaults(
+	ctx context.Context,
+	configurer ports.ChatConfigOptionController,
+	options []ports.ChatConfigOption,
+	storedModel, storedEffort string,
+) ([]ports.ChatConfigOption, error) {
+	set := func(id, value string) error {
+		updated, err := configurer.SetConfigOption(ctx, id, ports.ChatConfigOptionValue{Select: value})
+		if err != nil {
+			return fmt.Errorf("set Claude %s %q: %w", id, value, err)
+		}
+		if option := claudeOption(updated, id); option == nil || option.Current.Select != value {
+			return fmt.Errorf("set Claude %s %q: provider did not confirm selected value", id, value)
+		}
+		options = updated
+		return nil
+	}
+	if model := claudeOption(options, "model"); model != nil && model.Current.Select == "default" {
+		choice := storedModel
+		if !claudeOffers(model, choice) {
+			choice = ""
+			if implicit := claudeChoice(model, "default"); implicit != nil {
+				for _, candidate := range model.Choices {
+					if candidate.Value != "default" && strings.EqualFold(strings.TrimSpace(candidate.Name), strings.TrimSpace(implicit.Description)) {
+						choice = candidate.Value
+						break
+					}
+				}
+			}
+		}
+		if choice != "" {
+			if err := set("model", choice); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if effort := claudeOption(options, "effort"); effort != nil && effort.Current.Select == "default" {
+		choice := storedEffort
+		if !claudeOffers(effort, choice) {
+			choice = ""
+			model := claudeOption(options, "model")
+			if model != nil {
+				selected := claudeChoice(model, model.Current.Select)
+				if selected != nil && selected.Value == "default" {
+					for i := range model.Choices {
+						if model.Choices[i].Value != "default" && strings.EqualFold(strings.TrimSpace(model.Choices[i].Name), strings.TrimSpace(selected.Description)) {
+							selected = &model.Choices[i]
+							break
+						}
+					}
+				}
+				if selected != nil {
+					choice = strings.ToLower(selected.Name + " " + selected.Description)
+				}
+			}
+			// ponytail: ACP omits effective effort; use Claude Code's documented
+			// model defaults until the provider reports the resolved level.
+			preferred := "high"
+			switch {
+			case strings.Contains(choice, "opus 5.5"):
+				preferred = "medium"
+			case strings.Contains(choice, "opus 4.7"):
+				preferred = "xhigh"
+			}
+			for _, candidate := range []string{preferred, "high", "medium", "low", "xhigh"} {
+				if claudeOffers(effort, candidate) {
+					choice = candidate
+					break
+				}
+			}
+		}
+		if claudeOffers(effort, choice) {
+			if err := set("effort", choice); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return options, nil
+}
+
+func claudeOption(options []ports.ChatConfigOption, id string) *ports.ChatConfigOption {
+	for i := range options {
+		if options[i].ID == id {
+			return &options[i]
+		}
+	}
+	return nil
+}
+
+func claudeChoice(option *ports.ChatConfigOption, value string) *ports.ChatConfigOptionChoice {
+	if option == nil {
+		return nil
+	}
+	for i := range option.Choices {
+		if option.Choices[i].Value == value {
+			return &option.Choices[i]
+		}
+	}
+	return nil
+}
+
+func claudeOffers(option *ports.ChatConfigOption, value string) bool {
+	return value != "" && value != "default" && claudeChoice(option, value) != nil
 }
 
 func settingsFromConfigOptions(
@@ -2065,7 +2206,7 @@ func permissionConfigOptions(harness domain.AgentHarness, options []ports.ChatCo
 func openCodeApprovalTier(value string) (domain.PermissionMode, string, bool) {
 	switch value {
 	case "ao-default":
-		return domain.PermissionModeDefault, "Default approvals", true
+		return domain.PermissionModeDefault, "Use agent permissions", true
 	case "ao-accept-edits":
 		return domain.PermissionModeAcceptEdits, "Accept edits", true
 	case "ao-auto":

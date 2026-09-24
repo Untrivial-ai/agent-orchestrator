@@ -43,7 +43,7 @@ type Project = components["schemas"]["Project"];
 type ProjectConfig = components["schemas"]["ProjectConfig"];
 type TrackerIntakeConfig = components["schemas"]["TrackerIntakeConfig"];
 
-const PERMISSION_MODE_VALUES = ["default", "accept-edits", "auto", "bypass-permissions"] as const;
+const PERMISSION_MODE_VALUES = ["auto", "accept-edits", "bypass-permissions"] as const;
 const DEFAULT_BRANCH_AUTO = "auto";
 
 const projectQueryKey = (id: string) => ["project", id] as const;
@@ -189,6 +189,8 @@ function SettingsBody({
 		}));
 	const effectiveIntakeRepo = form.intakeRepo.trim() || deriveRepoPath(project.repo);
 	const reviewerWarning = reviewerTrustWarning(form.reviewerHarness);
+	const defaultReviewerHarness = ["claude-code", "codex", "opencode", "muse", "kimchi"].includes(form.workerAgent)
+		? form.workerAgent : "claude-code";
 	const mutation = useMutation({
 		mutationFn: async () => {
 			void captureRendererEvent("ao.renderer.settings_save_requested", { project_id: projectId });
@@ -516,13 +518,14 @@ function SettingsBody({
 								<PermissionModeSelect
 									ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.workerRole") })}
 									value={form.workerPermissions}
+									agentId={form.workerAgent}
 									onChange={(v) => setForm((f) => ({ ...f, workerPermissions: v }))}
 								/>
 							),
 							label: t("settings.project.roleApproval", { role: t("settings.models.workerRole") }),
 						}}
 						orchestratorPermissions={{
-							control: <PermissionModeSelect ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.orchestratorRole") })} value={form.orchestratorPermissions} onChange={(v) => setForm((f) => ({ ...f, orchestratorPermissions: v }))} />,
+							control: <PermissionModeSelect ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.orchestratorRole") })} value={form.orchestratorPermissions} agentId={form.orchestratorAgent} onChange={(v) => setForm((f) => ({ ...f, orchestratorPermissions: v }))} />,
 							label: t("settings.project.roleApproval", { role: t("settings.models.orchestratorRole") }),
 						}}
 						missingRequiredMessage={
@@ -554,8 +557,7 @@ function SettingsBody({
 								}
 								ariaLabel={t("settings.project.defaultReviewer")}
 								agents={agentCatalog?.agents}
-								defaultOptionLabel={t("settings.project.default")}
-								defaultTriggerLabel={t("settings.project.default")}
+								defaultHarness={defaultReviewerHarness}
 								disabled={agentsQuery.isFetching && agentCatalog === undefined}
 							/>
 						</SettingsRow>
@@ -577,6 +579,7 @@ function SettingsBody({
 							<PermissionModeSelect
 								ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.reviewerRole") })}
 								value={form.reviewerPermissions}
+								agentId={form.reviewerHarness || defaultReviewerHarness}
 								onChange={(reviewerPermissions) => setForm((f) => ({ ...f, reviewerPermissions }))}
 							/>
 						</SettingsRow>
@@ -733,21 +736,25 @@ function AgentModelField({
 	}
 
 	if (isMode) {
-		const options = [
-			{ value: "__default__", label: t("settings.models.agentDefault") },
-			...(catalog.models ?? []).map((item) => ({ value: item.id, label: item.label })),
-		];
+		const defaultMode = catalog?.models?.find((item) => item.isDefault && item.id.toLowerCase() !== "default")?.id;
+		const selectedMode = mode.toLowerCase() === "default" ? "" : mode;
+		const options = (catalog.models ?? []).filter((item) => item.id && item.id.toLowerCase() !== "default").map((item) => ({
+			value: item.id,
+			label: /^default(?:\s*\([^)]*\))?$/i.test(item.label.trim()) ? item.id : item.label,
+		}));
 		return (
 			<>
 				<SettingsRow label={label}>
 					<div className="flex min-w-0 items-center gap-2">
 						<SettingsOptionMenu
 							aria-label={label}
-							value={mode || "__default__"}
+							value={selectedMode || defaultMode || ""}
 							options={options}
+							placeholder={t("settings.models.modeNotReported")}
 							triggerClassName="justify-end"
+							disabled={options.length === 0}
 							onChange={(value) => {
-								onModeChange(value === "__default__" ? "" : value);
+								onModeChange(value === defaultMode ? "" : value);
 								onModelChange("");
 							}}
 						/>
@@ -806,29 +813,25 @@ function AgentModelField({
 	);
 }
 
-function PermissionModeSelect({ ariaLabel, value, onChange }: { ariaLabel: string; value: string; onChange: (value: string) => void }) {
+function PermissionModeSelect({ ariaLabel, value, agentId, onChange }: { ariaLabel: string; value: string; agentId: string; onChange: (value: string) => void }) {
 	const { t } = useTranslation();
-	const options = [
-		{ value: "__default__", label: `${t("settings.project.permissionAuto")} (${t("settings.project.default")})` },
-		...PERMISSION_MODE_VALUES.map((value) => ({
-			value,
-			label:
-				value === "default"
-					? t("settings.project.permissionDefault")
-					: value === "accept-edits"
-						? t("settings.project.permissionAcceptEdits")
-						: value === "auto"
-							? t("settings.project.permissionAuto")
-							: t("settings.project.permissionBypass"),
-		})),
-	];
+	const options = PERMISSION_MODE_VALUES.map((value) => ({
+		value,
+		label:
+			value === "accept-edits"
+				? t("settings.project.permissionAcceptEdits")
+				: value === "auto"
+					? t("settings.project.permissionAuto")
+					: t("settings.project.permissionBypass"),
+	}));
 
 	return (
 		<SettingsOptionMenu
 			aria-label={ariaLabel}
-			value={value || "__default__"}
+			value={value === "default" && agentId === "codex" ? "bypass-permissions" : value}
 			options={options}
-			onChange={(v) => onChange(v === "__default__" ? "" : v)}
+			placeholder={value === "" || value === "default" ? t("settings.project.permissionNotReported") : undefined}
+			onChange={onChange}
 		/>
 	);
 }

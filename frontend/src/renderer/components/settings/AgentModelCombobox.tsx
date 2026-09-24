@@ -75,7 +75,6 @@ export function AgentModelCombobox({
 	renderTrigger,
 	recentScope,
 	compact = false,
-	requireSelection = false,
 	tuning,
 	disabled = false,
 	"aria-label": ariaLabel,
@@ -92,17 +91,15 @@ export function AgentModelCombobox({
 	retryAt?: string | null;
 	onChange: (value: string) => void;
 	onCustom: (value: string) => void;
-	/** Names what happens with no override, e.g. "Use codex's default". */
+	/** Shown when the agent does not report a concrete model. */
 	emptyLabel?: string;
-	/** Hide the empty "agent default" row so a concrete model must stay selected. */
-	requireSelection?: boolean;
 	triggerLabel?: string;
 	triggerClassName?: string;
 	menuAlign?: "start" | "center" | "end";
 	renderTrigger?: (label: string) => ReactNode;
-	/** Persists explicit model choices for this agent and pins them below defaults. */
+	/** Persists explicit model choices for this agent and pins them below the current model. */
 	recentScope?: string;
-	/** Flat "no override" + plain model names with no groups or badges.
+	/** Flat model names with no groups or badges.
 	 *  Search still shows once the catalog passes MODEL_SEARCH_THRESHOLD,
 	 *  same as non-compact mode; only the grouping/decoration is stripped. For
 	 *  contexts where the menu should read like a simple choice, not a
@@ -114,16 +111,25 @@ export function AgentModelCombobox({
 	"aria-label": string;
 }) {
 	const { t } = useTranslation();
+	const concreteModels = useMemo(
+		() => models.filter((model) => model.id && model.id.toLowerCase() !== "default"),
+		[models],
+	);
+	const explicitModel = value.toLowerCase() === "default" ? "" : value;
 	const { selected: effortModel, invalidEffort } = useModelTuning({
-		models,
-		model: value,
+		models: concreteModels,
+		model: explicitModel,
 		effort: tuning?.effort ?? "",
 		onEffortChange: tuning?.onEffortChange ?? ignoreEffortChange,
 		onEffortReset: tuning?.onEffortReset,
 		onValidityChange: tuning?.onValidityChange,
 	});
-	const showEffort = Boolean(tuning && (effortModel?.efforts?.length || tuning.effort));
-	const currentEffortLabel = tuning?.effort ? effortLabel(tuning.effort) : t("settings.models.providerDefault");
+	const effortOptions = effortModel?.efforts?.filter((effort) => effort && effort.toLowerCase() !== "default") ?? [];
+	const explicitEffort = tuning?.effort?.toLowerCase() === "default" ? "" : tuning?.effort;
+	const showEffort = Boolean(tuning && (effortOptions.length || explicitEffort));
+	const providerEffort = effortModel?.defaultEffort;
+	const effectiveEffort = explicitEffort || (providerEffort && effortOptions.includes(providerEffort) ? providerEffort : "");
+	const currentEffortLabel = effectiveEffort ? effortLabel(effectiveEffort) : t("settings.models.effortNotReported");
 	const entryMode = customModelEntry ?? (allowCustom ? "direct" : "none");
 	const allowDirectCustom = entryMode === "direct";
 	const [search, setSearch] = useState("");
@@ -137,43 +143,43 @@ export function AgentModelCombobox({
 	const storedRecentModels = useMemo(() => readRecentModels(recentScope), [recentScope]);
 	const recentModelIDs = recentScope ? (sessionRecentModels[recentKey] ?? storedRecentModels) : [];
 	const normalizedSearch = normalizeSearch(search);
-	const searchIndex = useMemo(() => buildModelSearchIndex(models), [models]);
-	const selected = searchIndex.byID.get(normalizeSearch(value));
-	const showSearch = allowDirectCustom || models.length >= MODEL_SEARCH_THRESHOLD;
+	const searchIndex = useMemo(() => buildModelSearchIndex(concreteModels), [concreteModels]);
+	const effectiveModel = explicitModel || concreteModels.find((model) => model.isDefault)?.id || "";
+	const selected = searchIndex.byID.get(normalizeSearch(effectiveModel));
+	const showSearch = allowDirectCustom || concreteModels.length >= MODEL_SEARCH_THRESHOLD;
 	const hasMultipleProviders = useMemo(
 		() =>
 			new Set(
-				models
+				concreteModels
 					.map((model) => model.provider?.trim().toLocaleLowerCase())
 					.filter((provider): provider is string => Boolean(provider)),
 			).size > 1,
-		[models],
+		[concreteModels],
 	);
 
 	const rankedModels = useMemo(() => {
 		if (!normalizedSearch) {
 			// Compact mode reads as a plain, stable list — picking a model
 			// shouldn't reorder it to the top on the next open.
-			return compact ? searchIndex.models : rankInitialModels(searchIndex.models, value, recentModelIDs);
+			return compact ? searchIndex.models : rankInitialModels(searchIndex.models, effectiveModel, recentModelIDs);
 		}
 		return searchModelIndex(searchIndex, normalizedSearch).models;
-	}, [compact, normalizedSearch, recentModelIDs, searchIndex, value]);
+	}, [compact, effectiveModel, normalizedSearch, recentModelIDs, searchIndex]);
 
 	const visibleModels = rankedModels.slice(0, MAX_VISIBLE_MODELS);
 	const groups = useMemo(
 		() =>
 			compact
 				? [{ key: "all", label: "", kind: "provider" as const, models: visibleModels }]
-				: groupModels(visibleModels, normalizedSearch === "", value, recentModelIDs, {
+				: groupModels(visibleModels, normalizedSearch === "", effectiveModel, recentModelIDs, {
 						pinned: t("settings.models.currentDefaults"),
 						recent: t("settings.models.recent"),
 					}),
-		[compact, normalizedSearch, recentModelIDs, t, value, visibleModels],
+		[compact, effectiveModel, normalizedSearch, recentModelIDs, t, visibleModels],
 	);
 	const customSearchValue = search.trim();
 	const showCustomSearchAction = allowDirectCustom && customSearchValue !== "" && rankedModels.length === 0;
-	const noOverrideLabel = emptyLabel ?? t("settings.models.agentDefault");
-	const currentLabel = (triggerLabel ?? selected?.label ?? value) || noOverrideLabel;
+	const currentLabel = (triggerLabel ?? selected?.label ?? explicitModel) || emptyLabel || t("settings.models.modelNotReported");
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const effortTriggerRef = useRef<HTMLDivElement>(null);
 	const [canScrollDown, setCanScrollDown] = useState(false);
@@ -202,7 +208,7 @@ export function AgentModelCombobox({
 		onChange(modelID);
 	};
 	const selectCatalogModel = (event: Event, item: IndexedModel) => {
-		const openEffort = Boolean(tuning && item.model.efforts?.length);
+		const openEffort = Boolean(tuning && item.model.efforts?.some((effort) => effort && effort.toLowerCase() !== "default"));
 		if (openEffort) event.preventDefault();
 		selectModel(item.id);
 		setSearch("");
@@ -212,7 +218,7 @@ export function AgentModelCombobox({
 	};
 	const refreshBusy = refreshing || refreshingLocal;
 	const showManualRefresh = Boolean(
-		onRefresh && (models.length === 0 || (normalizedSearch !== "" && rankedModels.length === 0)),
+		onRefresh && (concreteModels.length === 0 || (normalizedSearch !== "" && rankedModels.length === 0)),
 	);
 	const runRefresh = () => {
 		if (!onRefresh || refreshBusy) return;
@@ -339,13 +345,6 @@ export function AgentModelCombobox({
 						className="model-menu-scroll min-h-0 overflow-y-auto overscroll-contain"
 						onScroll={updateScrollCue}
 					>
-						{normalizedSearch === "" && !requireSelection && (
-							<DropdownMenuItem onSelect={() => onChange("")} className={modelItemClass(value === "")} aria-current={tuning && value === "" ? true : undefined}>
-								{noOverrideLabel}
-								{tuning && value === "" && <Check className="ml-auto size-icon-sm shrink-0" aria-hidden="true" />}
-							</DropdownMenuItem>
-						)}
-
 						{groups.map((group, groupIndex) => (
 							<div key={group.key}>
 								{!compact && (groupIndex > 0 || normalizedSearch === "") && <DropdownMenuSeparator />}
@@ -355,28 +354,21 @@ export function AgentModelCombobox({
 										<DropdownMenuItem
 											key={item.id}
 											onSelect={(event) => selectCatalogModel(event, item)}
-											className={modelItemClass(item.id === value)}
-											aria-current={tuning && item.id === value ? true : undefined}
+											className={modelItemClass(item.id === effectiveModel)}
+											aria-current={tuning && item.id === effectiveModel ? true : undefined}
 										>
 											<span className="truncate text-settings-label">{item.label}</span>
-											{tuning && item.id === value && <Check className="ml-auto size-icon-sm shrink-0" aria-hidden="true" />}
+											{tuning && item.id === effectiveModel && <Check className="ml-auto size-icon-sm shrink-0" aria-hidden="true" />}
 										</DropdownMenuItem>
 									) : (
 										<DropdownMenuItem
 											key={item.id}
 											onSelect={(event) => selectCatalogModel(event, item)}
-											className={modelItemClass(item.id === value)}
+											className={modelItemClass(item.id === effectiveModel)}
 										>
-											<div className="flex min-w-0 flex-1 items-center gap-3">
-												<div className="min-w-0 flex-1">
-													<div className="flex items-center gap-2">
-														<span className="truncate text-settings-label">{item.label}</span>
-														{item.model.isDefault && (
-															<span className="rounded-full bg-settings-menu-selected px-1.5 py-0.5 text-micro text-settings-muted">
-																{t("settings.models.default")}
-															</span>
-														)}
-													</div>
+										<div className="flex min-w-0 flex-1 items-center gap-3">
+											<div className="min-w-0 flex-1">
+												<span className="truncate text-settings-label">{item.label}</span>
 													{shouldShowModelID(item, visibleModels, normalizedSearch) && (
 														<p className="truncate text-xs text-settings-muted">{item.id}</p>
 													)}
@@ -458,16 +450,16 @@ export function AgentModelCombobox({
 								setEffortMenuOpen(false);
 								effortTriggerRef.current?.focus();
 							}}>
-								{["", ...(effortModel?.efforts ?? [])].map((effort) => (
-									<OptionMenuItem key={effort} role="menuitemradio" aria-checked={effort === tuning.effort}
-										active={effort === tuning.effort} onSelect={() => {
+								{effortOptions.map((effort) => (
+									<OptionMenuItem key={effort} role="menuitemradio" aria-checked={effort === effectiveEffort}
+										active={effort === effectiveEffort} onSelect={() => {
 											tuning.onEffortChange(effort);
 											setEffortMenuOpen(false);
 											setAwaitingEffort(false);
 											setMenuOpen(false);
 										}} className="gap-3 text-xs">
-										{effort ? effortLabel(effort) : t("settings.models.providerDefault")}
-										{effort === tuning.effort && <Check className="ml-auto size-icon-sm shrink-0" aria-hidden="true" />}
+										{effortLabel(effort)}
+										{effort === effectiveEffort && <Check className="ml-auto size-icon-sm shrink-0" aria-hidden="true" />}
 									</OptionMenuItem>
 								))}
 							</OptionMenuSubContent>
@@ -552,7 +544,7 @@ function providerFromModelID(modelID: string): string {
 
 export function buildModelSearchIndex(models: AgentModel[]): ModelSearchIndex {
 	const indexedModels = models.map((model, index) => {
-		const label = model.label || model.id;
+		const label = /^default(?:\s*\([^)]*\))?$/i.test(model.label.trim()) ? model.id : model.label || model.id;
 		const provider = model.provider?.trim() || providerFromModelID(model.id) || "Other";
 		return {
 			model,

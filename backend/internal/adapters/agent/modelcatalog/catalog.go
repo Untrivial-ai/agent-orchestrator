@@ -992,6 +992,13 @@ func normalize(models []ports.AgentModelInfo) []ports.AgentModelInfo {
 		if strings.TrimSpace(item.Label) == "" {
 			item.Label = item.ID
 		}
+		if strings.HasSuffix(strings.ToLower(item.Label), " (default)") {
+			item.Label = strings.TrimSpace(item.Label[:len(item.Label)-len(" (default)")])
+			item.IsDefault = true
+		} else if strings.EqualFold(item.Label, "default") || strings.EqualFold(item.Label, "default (recommended)") {
+			item.Label = item.ID
+			item.IsDefault = true
+		}
 		if previous, ok := byID[item.ID]; ok {
 			if previous.Label == previous.ID && item.Label != item.ID {
 				previous.Label = item.Label

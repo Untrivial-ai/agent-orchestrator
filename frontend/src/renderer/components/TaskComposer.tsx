@@ -394,31 +394,30 @@ export function TaskComposer({
 				selectionMode: modelCatalogQuery.data.selectionMode,
 			}
 		: undefined;
-	// Prefer the project worker setup, then the catalog's marked default, then
-	// the first listed model/mode — never leave the picker on an empty
-	// "let the agent choose" row, which is not a spawnable selection.
-	const catalogModels = modelCatalogQuery.data?.models ?? [];
+	// Only send a catalog choice when the provider identifies it as the default.
+	// An unmarked first row is not evidence of what the provider will run.
+	const catalogModels = modelCatalogQuery.data?.models.filter((item) => item.id && item.id.toLowerCase() !== "default") ?? [];
 	const catalogDefaultOption =
-		catalogModels.find((item) => item.isDefault)?.id ?? catalogModels[0]?.id ?? "";
+		catalogModels.find((item) => item.isDefault)?.id ?? "";
 	const catalogUsesModes = modelCatalogQuery.data?.selectionMode === "mode";
 	const rememberedConfigForSelectedAgent = agentDrafts[selectedAgent];
 	const rememberedModel = rememberedConfigForSelectedAgent?.model ?? "";
 	const rememberedMode = rememberedConfigForSelectedAgent?.mode ?? "";
 	const rememberedModelIsValid =
-		rememberedModel !== "" &&
+		rememberedModel !== "" && rememberedModel.toLowerCase() !== "default" &&
 		Boolean(
 			modelCatalogQuery.data &&
 				(modelCatalogQuery.data.allowCustom || catalogModels.some((item) => item.id === rememberedModel)),
 		);
 	const rememberedModeIsValid =
-		rememberedMode !== "" && catalogModels.some((item) => item.id === rememberedMode);
+		rememberedMode !== "" && rememberedMode.toLowerCase() !== "default" && catalogModels.some((item) => item.id === rememberedMode);
 	const defaultModelForSelectedAgent =
 		(rememberedModelIsValid ? rememberedModel : "") ||
-		projectModelForSelectedAgent ||
+		(projectModelForSelectedAgent.toLowerCase() === "default" ? "" : projectModelForSelectedAgent) ||
 		(catalogUsesModes ? "" : catalogDefaultOption);
 	const defaultModeForSelectedAgent =
 		(rememberedModeIsValid ? rememberedMode : "") ||
-		projectModeForSelectedAgent ||
+		(projectModeForSelectedAgent.toLowerCase() === "default" ? "" : projectModeForSelectedAgent) ||
 		(catalogUsesModes ? catalogDefaultOption : "");
 	const selectedModel = model || defaultModelForSelectedAgent;
 	const selectedMode = mode || defaultModeForSelectedAgent;
@@ -438,7 +437,7 @@ export function TaskComposer({
 		onEffortChange: setEffort,
 		onEffortReset: setEffort,
 	});
-	const effortOptions = effortModel?.efforts ?? [];
+	const effortOptions = effortModel?.efforts?.filter((option) => option && option.toLowerCase() !== "default") ?? [];
 
 	const selectedAgentLabel = agentCatalog?.agents.find((item) => item.id === selectedAgent)?.label || selectedAgent;
 	const requiresTuiFallback =
@@ -673,7 +672,7 @@ export function TaskComposer({
 				onSubmit: (brief) => void submitTask(brief, requiresTuiFallback ? "tui" : undefined),
 			}}
 			renderAgentControl={(control) => <DesktopAgentControl {...control} manageAgents={!isCloudProject} />}
-			renderEffortControl={(control) => <TaskEffortPicker {...control} />}
+			renderEffortControl={(control) => <TaskEffortPicker {...control} defaultEffort={effortModel?.defaultEffort} />}
 			renderModelControl={(control) => <TaskModelPicker {...control} onRefresh={refreshSelectedModels} />}
 			showEffort={!requiresTuiFallback && effortOptions.length > 0}
 		/>
@@ -684,20 +683,19 @@ function selectedAgentLabelFor(agent: string, catalog?: Array<{ id: string; labe
 	return catalog?.find((item) => item.id === agent)?.label ?? agent;
 }
 
-function TaskEffortPicker({ disabled, label, onChange, options, value }: TaskComposerEffortControl) {
+function TaskEffortPicker({ disabled, label, onChange, options, value, defaultEffort }: TaskComposerEffortControl & { defaultEffort?: string }) {
 	const { t } = useTranslation();
-	const defaultLabel = t("settings.models.default");
-	const visibleLabel = value ? formatEffortLabel(value) : defaultLabel;
+	const explicitEffort = value.toLowerCase() === "default" ? "" : value;
+	const effectiveEffort = explicitEffort || (defaultEffort && options.includes(defaultEffort) ? defaultEffort : "");
+	const visibleLabel = effectiveEffort ? formatEffortLabel(effectiveEffort) : t("settings.models.effortNotReported");
 
 	return (
 		<SettingsOptionMenu
 			aria-label={label}
 			disabled={disabled}
-			value={value || "__default__"}
-			options={[
-				{ value: "__default__", label: defaultLabel },
-				...options.map((option) => ({ value: option, label: formatEffortLabel(option) })),
-			]}
+			value={effectiveEffort}
+			options={options.map((option) => ({ value: option, label: formatEffortLabel(option) }))}
+			placeholder={visibleLabel}
 			triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
 			menuAlign="end"
 			renderTrigger={() => (
@@ -705,7 +703,7 @@ function TaskEffortPicker({ disabled, label, onChange, options, value }: TaskCom
 					{visibleLabel}
 				</span>
 			)}
-			onChange={(nextEffort) => onChange(nextEffort === "__default__" ? "" : nextEffort)}
+			onChange={onChange}
 		/>
 	);
 }
@@ -730,7 +728,6 @@ function TaskModelPicker({
 	agentLabel,
 	catalog,
 	disabled,
-	fetching,
 	loading,
 	value,
 	mode,
@@ -739,11 +736,6 @@ function TaskModelPicker({
 	onRefresh,
 }: TaskComposerModelControl & { onRefresh: () => Promise<void> }) {
 	const { t } = useTranslation();
-
-	// Says what happens with no override, rather than labelling it "Agent default".
-	const noOverrideLabel = agentLabel
-		? t("newTask.letAgentChoose", { agent: agentLabel })
-		: t("settings.models.agentDefault");
 
 	// No agent selected: there is nothing loading and no model to choose yet, so
 	// show a clear "select an agent" placeholder, never a spinner. This returns
@@ -780,15 +772,18 @@ function TaskModelPicker({
 	}
 
 	if (catalog?.selectionMode === "mode") {
-		const options = (catalog.models ?? []).map((item) => ({ value: item.id, label: item.label }));
-		const visibleModeLabel = mode
-			? (options.find((option) => option.value === mode)?.label ?? mode)
-			: (options[0]?.label ?? noOverrideLabel);
+		const options = (catalog.models ?? []).filter((item) => item.id && item.id.toLowerCase() !== "default").map((item) => ({
+			value: item.id,
+			label: /^default(?:\s*\([^)]*\))?$/i.test(item.label.trim()) ? item.id : item.label,
+		}));
+		const explicitMode = mode.toLowerCase() === "default" ? "" : mode;
+		const effectiveMode = explicitMode || catalog.models?.find((item) => item.isDefault && item.id.toLowerCase() !== "default")?.id || "";
+		const visibleModeLabel = options.find((option) => option.value === effectiveMode)?.label ?? t("settings.models.modeNotReported");
 		return (
 			<SettingsOptionMenu
 				aria-label={t("newTask.model")}
 				disabled={disabled || options.length === 0}
-				value={mode || options[0]?.value || ""}
+				value={effectiveMode}
 				options={options}
 				triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
 				menuAlign="start"
@@ -828,22 +823,14 @@ function TaskModelPicker({
 			refreshError={catalog?.refreshError}
 			retryAt={catalog?.retryAt}
 			disabled={disabled || agentId === ""}
-			emptyLabel={fetching && !catalog ? t("settings.models.loading") : noOverrideLabel}
-			requireSelection
+			emptyLabel={t("settings.models.modelNotReported")}
 			onChange={selectCatalogModel}
 			onCustom={selectCustomModel}
 			compact
 			recentScope={agentId}
 			triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
 			menuAlign="start"
-			renderTrigger={(label) => {
-				const visibleLabel = value ? label : (displayModels[0]?.label ?? noOverrideLabel);
-				return (
-					<span className="min-w-0 truncate text-control text-foreground" title={visibleLabel}>
-						{visibleLabel}
-					</span>
-				);
-			}}
+			renderTrigger={(label) => <span className="min-w-0 truncate text-control text-foreground" title={label}>{label}</span>}
 		/>
 	);
 }

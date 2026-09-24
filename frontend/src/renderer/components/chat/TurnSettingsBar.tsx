@@ -43,14 +43,13 @@ import type {
 
 /** AO's generic approval modes, used by harnesses without a native vocabulary. */
 const APPROVAL_COPY: Record<ApprovalMode, { label: string }> = {
-	default: { label: "Default approvals" },
+	default: { label: "Use agent permissions" },
 	"accept-edits": { label: "Accept edits" },
 	auto: { label: "Auto-approve" },
 	"bypass-permissions": { label: "Bypass permissions" },
 };
 
 const APPROVAL_ORDER: ApprovalMode[] = [
-	"default",
 	"accept-edits",
 	"auto",
 	"bypass-permissions",
@@ -128,7 +127,7 @@ export function TurnSettingsBar({
 	// A catalog miss must not relabel an explicit choice or borrow another model's
 	// effort settings. Custom or newly available models may not be listed yet.
 	const chosenLabel =
-		selected?.displayName ?? settings.model ?? fallback?.displayName ?? "Provider default";
+		selected?.displayName ?? settings.model ?? fallback?.displayName ?? "Choose a model";
 	const rerouted = reroute
 		? models.find((model) => model.id === reroute.toModel)?.displayName ?? reroute.toModel
 		: undefined;
@@ -149,6 +148,11 @@ export function TurnSettingsBar({
 		void Promise.resolve(onChangeConfigOption(optionId, value)).catch(() => {});
 	};
 	const modeOption = grouped.mode;
+	const visibleModeOption = modeOption && {
+		...modeOption,
+		choices: modeOption.choices.filter((choice) => !isImplicitApprovalChoice(choice)),
+	};
+	const currentModeChoice = modeOption?.choices.find((choice) => choice.value === modeOption.currentValue);
 	const inlineExecutionMode =
 		grouped.executionMode && isPlanBinary(grouped.executionMode) ? grouped.executionMode : undefined;
 	const standaloneExecutionMode =
@@ -234,11 +238,12 @@ export function TurnSettingsBar({
 				{showRightDropdown || children ? (
 					<div className="flex h-7 shrink-0 items-center gap-1">
 						{children}
-						{!planning && modeOption && onChangeConfigOption ? (
+						{!planning && visibleModeOption && onChangeConfigOption ? (
 							<ConfigOptionPicker
-								option={modeOption}
-								disabled={optionDisabled}
-								onChange={(value) => applyOption(modeOption.id, value)}
+								option={visibleModeOption}
+								label={currentModeChoice && isImplicitApprovalChoice(currentModeChoice) ? "Agent permissions not reported" : undefined}
+								disabled={optionDisabled || visibleModeOption.choices.length === 0}
+								onChange={(value) => applyOption(visibleModeOption.id, value)}
 								footer={rememberAction}
 							/>
 						) : onChange ? (
@@ -275,7 +280,7 @@ export function TurnSettingsBar({
 			</div>
 			{rememberPermissionsPending || (rememberedPermissionMode !== undefined && rememberedPermissionMode === rememberMode && !planning && !configPending) ? (
 				<p role="status" className="px-1 text-[11px] text-muted-foreground">
-					{rememberPermissionsPending ? "Saving project default…" : "Permission mode saved for new sessions in this project."}
+					{rememberPermissionsPending ? "Saving project permissions…" : "Permission mode saved for new sessions in this project."}
 				</p>
 			) : null}
 			{rememberPermissionsError ? (
@@ -342,7 +347,7 @@ function ModelEffortPicker({
 					}
 					className={TRIGGER_CLASS}
 				>
-					<span className="min-w-0 max-w-[22ch] truncate">{groupLabel}</span>
+					<span className="min-w-0 max-w-[38ch] truncate">{groupLabel}</span>
 					{reroute ? (
 						// A mark, not a second name. Two truncated model names side by side is
 						// less legible than one readable name plus a flag that says it is not
@@ -471,7 +476,7 @@ function ClubbedConfigPicker({
 					title="Model and reasoning effort for the next turn"
 					className={TRIGGER_CLASS}
 				>
-					<span className="min-w-0 max-w-[22ch] truncate">{groupLabel}</span>
+					<span className="min-w-0 max-w-[38ch] truncate">{groupLabel}</span>
 				</OptionMenuTrigger>
 			<OptionMenuContent align="start" className={CHAT_MENU_CLASS}>
 				{modelOptions.map((option) => (
@@ -655,12 +660,14 @@ function OptionSubmenu({
 
 function ConfigOptionPicker({
 	option,
+	label,
 	title,
 	onChange,
 	disabled,
 	footer,
 }: {
 	option: ChatConfigOption;
+	label?: string;
 	title?: string;
 	onChange: (value: ChatConfigOptionValue) => void;
 	disabled?: boolean;
@@ -668,7 +675,7 @@ function ConfigOptionPicker({
 }) {
 	return (
 		<Picker
-			label={optionCurrentLabel(option)}
+			label={label ?? optionCurrentLabel(option)}
 			title={title || option.description || option.name}
 			disabled={disabled}
 			onFocus={isModelOption(option) ? focusModelSearch : undefined}
@@ -866,6 +873,13 @@ export function hasProviderPermissionMode(options: ChatConfigOption[]): boolean 
 	return Boolean(partitionConfigOptions(options).mode);
 }
 
+function isImplicitApprovalChoice(choice: ChatConfigOption["choices"][number]): boolean {
+	return choice.permissionMode === "default" && (
+		choice.value === "ao-default" ||
+		/^(?:default(?:\s*\([^)]*\))?|use agent permissions)$/i.test(choice.name.trim())
+	);
+}
+
 function partitionConfigOptions(options: ChatConfigOption[]): {
 	model: ChatConfigOption[];
 	effort: ChatConfigOption[];
@@ -883,7 +897,9 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 	const extra: ChatConfigOption[] = [];
 	let executionMode: ChatConfigOption | undefined;
 	let mode: ChatConfigOption | undefined;
-	for (const option of options) {
+	for (const rawOption of options) {
+		const option = rawOption.type === "select" ? resolveImplicitChoice(rawOption) : rawOption;
+		if (option.type === "select" && option.choices.length === 0) continue;
 		if (isAgentOption(option)) continue;
 		if (isModelOption(option)) {
 			if (option.category === "model" || option.id === "model") primaryModel.push(option);
@@ -917,6 +933,25 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 		extra.push(option);
 	}
 	return { model: [...primaryModel, ...otherModel], effort, executionMode, toggles, mode, extra };
+}
+
+// ACP may expose an implicit choice whose description names a concrete option.
+// Select that option when known; otherwise leave the effective choice unreported.
+function resolveImplicitChoice(option: ChatConfigOption): ChatConfigOption {
+	const implicit = option.choices.find((choice) =>
+		choice.value === "default" && (
+			!isModeOption(option) || /^(?:default(?:\s*\([^)]*\))?|use agent permissions)$/i.test(choice.name.trim())
+		),
+	);
+	if (!implicit) return option;
+	const concrete = option.choices.find((choice) =>
+		choice.value !== implicit.value && choice.name.toLowerCase() === implicit.description?.trim().toLowerCase(),
+	);
+	return {
+		...option,
+		currentValue: option.currentValue === implicit.value && concrete ? concrete.value : option.currentValue,
+		choices: option.choices.filter((choice) => choice !== implicit),
+	};
 }
 
 /** Ask is an execution mode only when the same option advertises Agent; otherwise it is an approval policy. */
@@ -1000,6 +1035,11 @@ function withChoices(
 
 function optionCurrentLabel(option: ChatConfigOption): string {
 	if (option.type === "boolean") return option.currentBoolean ? "On" : "Off";
+	if (option.currentValue === "default" && !option.choices.some((choice) => choice.value === "default")) {
+		if (isEffortOption(option)) return "Effort not reported";
+		if (isModelOption(option)) return "Model not reported";
+		return "Selection not reported";
+	}
 	return option.choices.find((choice) => choice.value === option.currentValue)?.name
 		?? option.currentValue
 		?? option.name;

@@ -46,11 +46,11 @@ describe("CloudProviderSection", () => {
 		expect(screen.getByText(/sign in to ao cloud/i)).toBeInTheDocument();
 	});
 
-	it("shows a selector defaulting to the control plane default provider", () => {
+	it("selects the control plane provider by name", () => {
 		render(<CloudProviderSection />);
-		// The section renders, and the trigger shows the default-marked provider.
 		expect(screen.getByTestId("settings-section")).toHaveAttribute("data-section", "cloud-provider");
-		expect(screen.getByText("NodeOps (default)")).toBeInTheDocument();
+		expect(screen.getByText("NodeOps")).toBeInTheDocument();
+		expect(screen.queryByText(/default/i)).not.toBeInTheDocument();
 	});
 
 	it("reflects the persisted selection over the default", () => {

@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, Repeat2, TriangleAlert, X } from "lucide-react";
 import { type FormEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -18,6 +18,7 @@ import {
 	useRecoverAgentSwitch,
 	useSwitchAgentState,
 } from "../hooks/useSwitchAgent";
+import { agentModelsQueryOptions } from "../hooks/useAgentModelsQuery";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { AGENT_LABELS, AGENT_OPTIONS, agentLabel } from "../lib/agent-options";
 import type { AgentSwitchSummary, WorkspaceSession } from "../types/workspace";
@@ -197,6 +198,9 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 	const [targetHarness, setTargetHarness] = useState<SwitchAgentHarness>(defaultTargetHarness);
 	const [model, setModel] = useState("");
 	const [mode, setMode] = useState("");
+	const modelCatalog = useQuery(agentModelsQueryOptions(targetHarness, session.workspaceId)).data;
+	const selectedModel = model.trim() || mode.trim() ||
+		modelCatalog?.models?.find((item) => item.isDefault && item.id.toLowerCase() !== "default")?.id || "";
 	const [modelWarning, setModelWarning] = useState<string | undefined>();
 	const switchAgent = useSwitchAgent();
 	const recoverAgentSwitch = useRecoverAgentSwitch();
@@ -265,7 +269,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 			{
 				session,
 				targetHarness,
-				model: model.trim() || mode.trim(),
+				model: selectedModel,
 				idempotencyKey: createSwitchAgentIdempotencyKey(),
 			},
 			{ onSuccess: () => onOpenChange(false) },

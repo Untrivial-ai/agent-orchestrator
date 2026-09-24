@@ -203,15 +203,13 @@ describe("SwitchAgentDialog", () => {
 		);
 
 		await waitFor(() =>
-			expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent(
-				"Use Claude Code's default",
-			),
+			expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Claude Opus 4.6"),
 		);
 		await userEvent.click(screen.getByRole("button", { name: "Switch" }));
 		expect(switchMocks.mutate).toHaveBeenLastCalledWith(
 			{
 				idempotencyKey: "idempotency-1",
-				model: "",
+				model: "claude-opus-4-6",
 				session: switchedSession,
 				targetHarness: "claude-code",
 			},

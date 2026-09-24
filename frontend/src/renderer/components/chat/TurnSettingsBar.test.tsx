@@ -243,6 +243,79 @@ describe.each(["native", "ACP submenu", "ACP standalone"] as const)("%s model se
 });
 
 describe("ACP session config options", () => {
+	it("hides a mode with only an implicit default choice", () => {
+		const mode: ChatConfigOption = {
+			id: "mode", name: "Mode", category: "mode", type: "select", currentValue: "default",
+			choices: [{ value: "default", name: "Default", description: "The default mode." }],
+		};
+		expect(hasProviderPermissionMode([mode])).toBe(false);
+		render(<TurnSettingsBar models={[]} settings={{}} configOptions={[mode]} onChangeConfigOption={vi.fn()} />);
+		expect(screen.queryByText("Default")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Mode" })).not.toBeInTheDocument();
+	});
+
+	it("omits an implicit extra choice while retaining concrete choices", async () => {
+		const user = userEvent.setup();
+		const onChange = vi.fn();
+		render(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange} configOptions={[{
+			id: "profile", name: "Profile", type: "select", currentValue: "default",
+			choices: [
+				{ value: "default", name: "Default" },
+				{ value: "fast", name: "Fast" },
+			],
+		}]} />);
+		await user.click(screen.getByRole("button", { name: "Profile" }));
+		expect(screen.getByText("Selection not reported")).toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Default" })).not.toBeInTheDocument();
+		await user.click(screen.getByRole("menuitemradio", { name: "Fast" }));
+		expect(onChange).toHaveBeenCalledWith("profile", { value: "fast" });
+	});
+
+	it("omits an unreported effort choice without claiming a concrete level", async () => {
+		const user = userEvent.setup();
+		const onChange = vi.fn();
+		render(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange} configOptions={[{
+			id: "effort", name: "Effort", category: "thought_level", type: "select", currentValue: "default",
+			choices: [
+				{ value: "default", name: "Default" },
+				{ value: "low", name: "Low" },
+				{ value: "high", name: "High" },
+			],
+		}]} />);
+
+		const picker = screen.getByRole("button", { name: "Effort" });
+		expect(picker).toHaveTextContent("Effort not reported");
+		await user.click(picker);
+		expect(screen.queryByRole("menuitemradio", { name: "Default" })).not.toBeInTheDocument();
+		await user.click(screen.getByRole("menuitemradio", { name: "High" }));
+		expect(onChange).toHaveBeenCalledWith("effort", { value: "high" });
+	});
+
+	it("shows the concrete recommended model selected without a duplicate default option", async () => {
+		const user = userEvent.setup();
+		const onChange = vi.fn();
+		render(<TurnSettingsBar models={[]} settings={{}} onChangeConfigOption={onChange} configOptions={[{
+			id: "model",
+			name: "Model",
+			category: "model",
+			type: "select",
+			currentValue: "default",
+			choices: [
+				{ value: "default", name: "Default (recommended)", description: "Opus" },
+				{ value: "opus", name: "Opus" },
+				{ value: "sonnet", name: "Sonnet" },
+			],
+		}]} />);
+
+		const picker = screen.getByRole("button", { name: "Model" });
+		expect(picker).toHaveTextContent("Opus");
+		await user.click(picker);
+		expect(screen.queryByRole("menuitemradio", { name: /Default/i })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Opus", checked: true })).toBeInTheDocument();
+		await user.click(screen.getByRole("menuitemradio", { name: "Sonnet" }));
+		expect(onChange).toHaveBeenCalledWith("model", { value: "sonnet" });
+	});
+
 	it("searches visible model names without matching hidden choice values", async () => {
 		const user = userEvent.setup();
 		const choices = [
@@ -672,7 +745,7 @@ describe("remember project permissions", () => {
 		const props = { models: [], settings: {}, onChange: vi.fn(), onRememberPermissions: vi.fn() };
 		const { rerender } = render(<TurnSettingsBar {...props} rememberPermissionsPending />);
 		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toBeDisabled();
-		expect(screen.getByRole("status")).toHaveTextContent("Saving project default");
+		expect(screen.getByRole("status")).toHaveTextContent("Saving project permissions");
 		rerender(<TurnSettingsBar {...props} rememberPermissionsError="Could not save project default" />);
 		expect(screen.getByRole("alert")).toHaveTextContent("Could not save project default");
 		expect(screen.getByRole("button", { name: "Approval policy for the next turn" })).toBeEnabled();
@@ -848,7 +921,7 @@ describe("Cursor Ask and Agent chat modes", () => {
 		await user.click(approvals);
 		expect(screen.queryByRole("menuitemradio", { name: "Ask" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("menuitemradio", { name: "Agent" })).not.toBeInTheDocument();
-		expect(screen.getByRole("menuitemradio", { name: "Default approvals" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Use agent permissions" })).not.toBeInTheDocument();
 		expect(screen.getByRole("menuitemradio", { name: "Accept edits" })).toBeInTheDocument();
 		expect(screen.getByRole("menuitemradio", { name: "Auto-approve" })).toBeInTheDocument();
 		expect(screen.getByRole("menuitemradio", { name: "Bypass permissions" })).toBeInTheDocument();
@@ -1154,7 +1227,7 @@ describe("OpenCode's live permission tiers", () => {
 		type: "select",
 		currentValue: "ao-default",
 		choices: [
-			{ value: "ao-default", name: "Default approvals", permissionMode: "default" },
+			{ value: "ao-default", name: "Use agent permissions", permissionMode: "default" },
 			{ value: "ao-accept-edits", name: "Accept edits", permissionMode: "accept-edits" },
 			{ value: "ao-auto", name: "Auto-approve", permissionMode: "auto" },
 			{ value: "ao-bypass", name: "Bypass permissions", permissionMode: "bypass-permissions" },
@@ -1196,8 +1269,9 @@ describe("OpenCode's live permission tiers", () => {
 
 		expect(hasProviderPermissionMode([OPENCODE_MODES])).toBe(true);
 		const approvals = screen.getByRole("button", { name: "Session Mode" });
-		expect(approvals).toHaveTextContent("Default approvals");
+		expect(approvals).toHaveTextContent("Agent permissions not reported");
 		await user.click(approvals);
+		expect(screen.queryByRole("menuitemradio", { name: "Use agent permissions" })).not.toBeInTheDocument();
 		await user.click(screen.getByRole("menuitemradio", { name: "Bypass permissions" }));
 		expect(onChangeConfigOption).toHaveBeenCalledWith("mode", { value: "ao-bypass" });
 
@@ -1206,6 +1280,34 @@ describe("OpenCode's live permission tiers", () => {
 		expect(screen.getByRole("switch", { name: "Plan Mode" })).toBeInTheDocument();
 		expect(screen.queryByRole("menuitemradio", { name: "Agent Mode" })).not.toBeInTheDocument();
 	});
+});
+
+it("keeps Claude's concrete Manual mode even though its wire value is default", async () => {
+	const user = userEvent.setup();
+	const onChangeConfigOption = vi.fn();
+	render(<TurnSettingsBar
+		harness="claude-code"
+		models={[]}
+		settings={{ approvalMode: "default" }}
+		configOptions={[{
+			id: "mode",
+			name: "Permission mode",
+			category: "mode",
+			type: "select",
+			currentValue: "default",
+			choices: [
+				{ value: "default", name: "Manual", permissionMode: "default", description: "Standard behavior, prompts for dangerous operations" },
+				{ value: "auto", name: "Auto", permissionMode: "auto" },
+			],
+		}]}
+		onChangeConfigOption={onChangeConfigOption}
+	/>);
+	const picker = screen.getByRole("button", { name: "Permission mode" });
+	expect(picker).toHaveTextContent("Manual");
+	await user.click(picker);
+	expect(screen.getByRole("menuitemradio", { name: "Manual" })).toHaveAttribute("aria-checked", "true");
+	await user.click(screen.getByRole("menuitemradio", { name: "Manual" }));
+	expect(onChangeConfigOption).toHaveBeenCalledWith("mode", { value: "default" });
 });
 
 describe("OpenCode-style execution modes", () => {
@@ -1241,8 +1343,9 @@ describe("OpenCode-style execution modes", () => {
 		);
 
 		const approvals = screen.getByRole("button", { name: "Approval policy for the next turn" });
-		expect(approvals).toHaveTextContent("Default approvals");
+		expect(approvals).toHaveTextContent("Use agent permissions");
 		await user.click(approvals);
+		expect(screen.queryByRole("menuitemradio", { name: "Use agent permissions" })).not.toBeInTheDocument();
 		await user.click(screen.getByRole("menuitemradio", { name: "Bypass permissions" }));
 		expect(onChange).toHaveBeenCalledWith({ approvalMode: "bypass-permissions" });
 	});

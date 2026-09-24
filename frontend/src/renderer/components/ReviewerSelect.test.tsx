@@ -24,14 +24,18 @@ describe("ReviewerSelect", () => {
 		await waitFor(() => expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "harness", focusAgentId: "codex" }));
 		expect(onChange).not.toHaveBeenCalled();
 	});
-	it("keeps the project-default reset available when its resolved reviewer needs setup", async () => {
+	it("shows the resolved reviewer while keeping the inherited selection", async () => {
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		render(<QueryClientProvider client={client}><ReviewerSelect
 			ariaLabel="Reviewer" value="" defaultHarness="codex" defaultOptionLabel="Project default" onChange={() => undefined}
 			agents={[agentReadiness("codex", "Codex", { authentication: "unauthorized" })]}
 		/></QueryClientProvider>);
-		await userEvent.click(screen.getByRole("button", { name: "Reviewer" }));
-		expect(screen.getByRole("menuitem", { name: /Project default/ })).toBeInTheDocument();
+		const trigger = screen.getByRole("button", { name: "Reviewer" });
+		expect(trigger).toHaveTextContent("Codex");
+		expect(trigger).not.toHaveTextContent("default");
+		await userEvent.click(trigger);
+		expect(screen.getByRole("menuitem", { name: /Codex/ })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: /Project default/ })).not.toBeInTheDocument();
 		expect(screen.queryByText("No agents ready")).not.toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: "Manage agents…" })).toBeInTheDocument();
 	});
@@ -47,6 +51,38 @@ describe("ReviewerSelect", () => {
 		await userEvent.click(trigger);
 		expect(screen.getByRole("menuitem", { name: /Claude Code/ })).toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: /Codex/ })).toBeInTheDocument();
+	});
+
+	it("shows the catalog's concrete model for an inherited reviewer", () => {
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		client.setQueryData(["agent-models", "codex", ""], {
+			agentId: "codex", selectionMode: "catalog", models: [
+				{ id: "gpt-test", label: "GPT Test", isDefault: true },
+			],
+		});
+		render(<QueryClientProvider client={client}><ReviewerSelect
+			ariaLabel="Reviewer" value="" defaultHarness="codex" onChange={() => undefined}
+		/></QueryClientProvider>);
+		expect(screen.getByRole("button", { name: "Reviewer" })).toHaveTextContent("Codex · GPT Test");
+	});
+
+	it("requires a concrete reviewer model when the catalog reports no default", async () => {
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		client.setQueryData(["agent-models", "codex", ""], {
+			agentId: "codex", selectionMode: "catalog", models: [{ id: "gpt-test", label: "GPT Test" }],
+		});
+		const onConfigChange = vi.fn();
+		render(<QueryClientProvider client={client}><ReviewerSelect
+			ariaLabel="Reviewer" value="codex" onChange={() => undefined} onConfigChange={onConfigChange}
+		/></QueryClientProvider>);
+
+		const trigger = screen.getByRole("button", { name: "Reviewer" });
+		expect(trigger).toHaveTextContent("Model not reported");
+		await userEvent.click(trigger);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Codex/ }));
+		expect(screen.queryByRole("menuitem", { name: "Agent choice" })).not.toBeInTheDocument();
+		await userEvent.click(screen.getByRole("menuitem", { name: "GPT Test" }));
+		expect(onConfigChange).toHaveBeenCalledWith("codex", { model: "gpt-test" });
 	});
 
 });

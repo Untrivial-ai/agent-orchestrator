@@ -64,9 +64,6 @@ export function AgentModelPicker({
 	}, [onWarningChange, warning]);
 	useEffect(() => () => onWarningChange(undefined), [onWarningChange]);
 
-	const noOverrideLabel = agentLabel
-		? t("newTask.letAgentChoose", { agent: agentLabel })
-		: t("settings.models.agentDefault");
 	const catalogLoading = agentId !== "" && query.isFetching && catalog === undefined;
 	const refreshCatalog = async () => {
 		const refreshed = await refreshAgentModels(agentId, projectId);
@@ -88,17 +85,20 @@ export function AgentModelPicker({
 	}
 
 	if (catalog?.selectionMode === "mode") {
-		const options = [
-			{ value: "__default__", label: noOverrideLabel },
-			...(catalog.models ?? []).map((item) => ({ value: item.id, label: item.label })),
-		];
-		const visibleModeLabel = mode ? (options.find((option) => option.value === mode)?.label ?? mode) : noOverrideLabel;
+		const options = (catalog.models ?? []).filter((item) => item.id && item.id.toLowerCase() !== "default").map((item) => ({
+			value: item.id,
+			label: /^default(?:\s*\([^)]*\))?$/i.test(item.label.trim()) ? item.id : item.label,
+		}));
+		const explicitMode = mode.toLowerCase() === "default" ? "" : mode;
+		const effectiveMode = explicitMode || catalog.models?.find((item) => item.isDefault && item.id.toLowerCase() !== "default")?.id || "";
+		const visibleModeLabel = options.find((option) => option.value === effectiveMode)?.label ?? (explicitMode || t("settings.models.modeNotReported"));
 		return (
 			<SettingsOptionMenu
 				aria-label={t("newTask.model")}
-				value={mode || "__default__"}
+				value={effectiveMode}
 				options={options}
-				disabled={disabled || agentId === "" || (query.isFetching && catalog === undefined)}
+				placeholder={t("settings.models.modeNotReported")}
+				disabled={disabled || agentId === "" || options.length === 0}
 				triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
 				menuAlign="start"
 				renderTrigger={() => (
@@ -106,7 +106,7 @@ export function AgentModelPicker({
 						{visibleModeLabel}
 					</span>
 				)}
-				onChange={(nextMode) => onModeChange(nextMode === "__default__" ? "" : nextMode)}
+				onChange={onModeChange}
 			/>
 		);
 	}
@@ -137,21 +137,14 @@ export function AgentModelPicker({
 			refreshError={catalog?.refreshError}
 			retryAt={catalog?.retryAt}
 			disabled={disabled || agentId === ""}
-			emptyLabel={query.isFetching && !catalog ? t("settings.models.loading") : noOverrideLabel}
+			emptyLabel={t("settings.models.modelNotReported")}
 			onChange={selectCatalogModel}
 			onCustom={selectCustomModel}
 			compact
 			recentScope={agentId}
 			triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
 			menuAlign="start"
-			renderTrigger={(label) => {
-				const visibleLabel = value ? label : noOverrideLabel;
-				return (
-					<span className="min-w-0 truncate text-control text-foreground" title={visibleLabel}>
-						{visibleLabel}
-					</span>
-				);
-			}}
+			renderTrigger={(label) => <span className="min-w-0 truncate text-control text-foreground" title={label}>{label}</span>}
 		/>
 	);
 }

@@ -55,7 +55,7 @@ export function ReviewerSelect({
 	mode = "",
 	projectId,
 	triggerClassName,
-	ariaLabel = "Default reviewer agent",
+	ariaLabel,
 	defaultHarness,
 	defaultOptionLabel,
 	defaultTriggerLabel,
@@ -83,6 +83,7 @@ export function ReviewerSelect({
 	excludedHarness?: string;
 }) {
 	const { t } = useTranslation();
+	const reviewerAriaLabel = ariaLabel ?? t("settings.project.defaultReviewer");
 	const queryClient = useQueryClient();
 	const [menuOpen, setMenuOpen] = useState(false);
 	// Until the daemon's catalog arrives these entries carry the whole menu, so
@@ -104,6 +105,8 @@ export function ReviewerSelect({
 		if (showDefaultOption && defaultHarness && agent.id === defaultHarness) return false;
 		return true;
 	});
+	const catalogDefaultLabel = options.find((agent) => agent.id === defaultHarness)?.label;
+	const defaultHarnessLabel = catalogDefaultLabel && catalogDefaultLabel !== defaultHarness ? catalogDefaultLabel : agentLabel(defaultHarness ?? "");
 	const effectiveHarness = value || defaultHarness || "";
 	const needsSetup = agents !== undefined && Boolean(effectiveHarness && !options.some((agent) => agent.id === effectiveHarness && isReadyAgent(agent)));
 	const management = useAgentManagementMenu(needsSetup ? effectiveHarness : undefined);
@@ -122,8 +125,8 @@ export function ReviewerSelect({
 			void queryClient.prefetchQuery(agentModelsQueryOptions(harness, menuProjectID));
 		}
 	}, [defaultHarness, menuOpen, menuProjectID, queryClient, selectableOptions]);
-	const selectedModelLabel = modelOrModeLabel(triggerCatalog.data, model, mode, t("settings.models.agentDefault"));
-	const triggerLabel = [value ? agentLabel(value) : (defaultTriggerLabel ?? defaultOptionLabel ?? defaultHarness), selectedModelLabel]
+	const selectedModelLabel = modelOrModeLabel(triggerCatalog.data, model, mode, t("settings.models.modelNotReported"));
+	const triggerLabel = [value ? agentLabel(value) : (defaultHarness ? defaultHarnessLabel : (defaultTriggerLabel ?? defaultOptionLabel)), selectedModelLabel]
 		.filter(Boolean)
 		.join(" · ");
 
@@ -136,7 +139,7 @@ export function ReviewerSelect({
 					contentAlign === "end" && "justify-end text-right",
 					triggerClassName,
 				)}
-				aria-label={ariaLabel}
+				aria-label={reviewerAriaLabel}
 				disabled={disabled}
 			>
 				<span className="flex min-w-0 items-center gap-2">
@@ -146,9 +149,9 @@ export function ReviewerSelect({
 				</span>
 			</OptionMenuTrigger>
 			<OptionMenuContent onCloseAutoFocus={management.onCloseAutoFocus} align={contentAlign === "end" ? "end" : "start"} className="reviews-agent-menu-surface w-[18rem]">
-				{showDefaultOption && defaultOptionLabel ? (
+				{showDefaultOption && (defaultHarness || defaultOptionLabel) ? (
 					<ReviewerHarnessOption
-						agent={{ id: "__default__", label: defaultOptionLabel, disabled: false, status: "", statusTone: "success" }}
+						agent={{ id: "__default__", label: defaultHarness ? defaultHarnessLabel : (defaultOptionLabel ?? ""), disabled: false, status: "", statusTone: "success" }}
 						currentHarness={value}
 						currentModel={model}
 						currentMode={mode}
@@ -181,7 +184,7 @@ export function ReviewerSelect({
 						closeMenu={() => setMenuOpen(false)}
 					/>
 				))}
-				{selectableOptions.length === 0 && !(showDefaultOption && defaultOptionLabel) && <p className="px-3 py-2 text-xs text-muted-foreground">{t("agentSelector.noneReady")}</p>}
+				{selectableOptions.length === 0 && !(showDefaultOption && (defaultHarness || defaultOptionLabel)) && <p className="px-3 py-2 text-xs text-muted-foreground">{t("agentSelector.noneReady")}</p>}
 				<OptionMenuItem className="mt-1 border-t border-border" onSelect={management.requestManagement}>{t("agentSelector.manage")}</OptionMenuItem>
 			</OptionMenuContent>
 		</OptionMenu>
@@ -221,7 +224,12 @@ function ReviewerHarnessOption({
 	const effectivePersistHarness = persistHarness || resolvedHarness || "";
 	const isCurrentHarness = effectiveCurrentHarness !== "" && effectiveCurrentHarness === effectivePersistHarness;
 	const isCurrentDefaultSelection = isCurrentHarness && currentModel === "" && currentMode === "";
-	const selectDefault = () => onSelect(persistHarness, {});
+	const hasChoices = hasModelChoices(catalog);
+	const catalogKnown = catalogQuery.data !== undefined || catalogQuery.isFetched;
+	const defaultModel = catalog?.models?.find((item) => item.isDefault && item.id.toLowerCase() !== "default")?.id;
+	const selectDefault = () => onSelect(persistHarness, defaultModel
+		? catalog?.selectionMode === "mode" ? { mode: defaultModel } : { model: defaultModel }
+		: {});
 
 	if (!resolvedHarness) {
 		return (
@@ -233,9 +241,6 @@ function ReviewerHarnessOption({
 			</OptionMenuItem>
 		);
 	}
-
-	const hasChoices = hasModelChoices(catalog);
-	const catalogKnown = catalogQuery.data !== undefined || catalogQuery.isFetched;
 
 	if (catalogKnown && !hasChoices) {
 		return (
@@ -265,7 +270,7 @@ function ReviewerHarnessOption({
 				disabled={agent.disabled}
 				aria-label={agent.status ? `${agent.label}${agent.status}` : agent.label}
 				onClick={(event) => {
-					if (!isCurrentHarness) {
+					if (!isCurrentHarness && defaultModel) {
 						event.preventDefault();
 						closeMenu();
 						selectDefault();
@@ -282,15 +287,6 @@ function ReviewerHarnessOption({
 				/>
 			</OptionMenuSubTrigger>
 			<OptionMenuSubContent className="w-[15rem]">
-				<OptionMenuItem
-					onSelect={selectDefault}
-					active={isCurrentDefaultSelection}
-				>
-					<span className="flex min-w-0 items-center justify-between gap-3">
-						<span>{t("settings.models.agentDefault")}</span>
-						{isCurrentDefaultSelection ? <Check aria-hidden="true" className="size-4" /> : null}
-					</span>
-				</OptionMenuItem>
 				{!catalogKnown ? (
 					<OptionMenuItem disabled>{t("common.loading", { defaultValue: "Loading…" })}</OptionMenuItem>
 				) : null}
@@ -298,11 +294,12 @@ function ReviewerHarnessOption({
 					const selected =
 						isCurrentHarness &&
 						((option.kind === "mode" && currentMode === option.value) ||
-							(option.kind === "model" && currentModel === option.value));
+							(option.kind === "model" && currentModel === option.value) ||
+							(isCurrentDefaultSelection && option.value === defaultModel));
 					return (
 						<OptionMenuItem
 							key={`${option.kind}:${option.value}`}
-							onSelect={() => onSelect(persistHarness, option.kind === "mode" ? { mode: option.value } : { model: option.value })}
+								onSelect={() => onSelect(persistHarness, option.kind === "mode" ? { mode: option.value } : { model: option.value })}
 							active={selected}
 						>
 							<span className="flex min-w-0 items-center justify-between gap-3">
@@ -324,16 +321,17 @@ function hasModelChoices(catalog?: AgentModelCatalog): boolean {
 function modelOptions(catalog?: AgentModelCatalog): Array<{ kind: "model" | "mode"; label: string; value: string }> {
 	if (!catalog) return [];
 	if (catalog.selectionMode !== "catalog" && catalog.selectionMode !== "mode" && catalog.selectionMode !== "text") return [];
-	return (catalog.models ?? []).map((item) => ({
+	return (catalog.models ?? []).filter((item) => item.id && item.id.toLowerCase() !== "default").map((item) => ({
 		kind: catalog.selectionMode === "mode" ? "mode" : "model",
-		label: item.label,
+		label: /^default(?:\s*\([^)]*\))?$/i.test(item.label.trim()) ? item.id : item.label,
 		value: item.id,
 	}));
 }
 
 function modelOrModeLabel(catalog: AgentModelCatalog | undefined, model: string, mode: string, emptyLabel: string): string {
-	const value = mode || model;
-	if (!value) return emptyLabel;
-	const match = catalog?.models?.find((item) => item.id === value);
-	return match?.label || value;
+	const configured = mode || model;
+	const value = configured.toLowerCase() === "default" ? "" : configured;
+	const effective = value || catalog?.models?.find((item) => item.isDefault && item.id.toLowerCase() !== "default")?.id || "";
+	if (!effective) return emptyLabel;
+	return modelOptions(catalog).find((item) => item.value === effective)?.label || effective;
 }
