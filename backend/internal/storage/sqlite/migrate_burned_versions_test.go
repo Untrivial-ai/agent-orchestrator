@@ -155,7 +155,9 @@ var shippedMigrations = map[int64]string{
 	150: "0150_agent_model_catalog_cache_state.sql",
 	151: "0151_global_agent_model_catalog_cdc.sql",
 	152: "0152_session_effort.sql",
-	153: "0153_conversation_cdc_sequence.sql",
+	153: "0153_reports.sql",
+	154: "0154_report_delivery.sql",
+	155: "0155_conversation_cdc_sequence.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

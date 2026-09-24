@@ -3309,7 +3309,13 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		// cleanup committed. Otherwise a rollback can say "stopped" in memory while
 		// SQLite still contains live work.
 		c.mu.Lock()
-		c.state = event.ControllerState
+		// ACP initialization queues a generic ready notification before live
+		// reconnect restores ownership of a durable running turn. That stale
+		// notification must not release the reconstructed busy state: only the
+		// matching committed turn completion may release pendingTurnID.
+		if event.ControllerState != ports.ChatControllerReady || c.pendingTurnID == "" {
+			c.state = event.ControllerState
+		}
 		suppressStoppedActivity := c.suppressStoppedActivity
 		c.mu.Unlock()
 		if event.ControllerState == ports.ChatControllerStopped && !suppressStoppedActivity {
@@ -3411,6 +3417,14 @@ func (c *Controller) applyAccount(
 	update ports.ChatAccount,
 	now time.Time,
 ) error {
+	if update.ReauthRecovered {
+		c.mu.Lock()
+		reauthPending := c.account.ReauthRequiredAt != nil
+		c.mu.Unlock()
+		if !reauthPending {
+			return nil
+		}
+	}
 	if err := c.recordAccount(ctx, update, now); err != nil {
 		return err
 	}
@@ -3454,6 +3468,9 @@ func (c *Controller) recordAccount(
 		at := now
 		c.account.ReauthRequiredAt = &at
 		c.account.ReauthReason = update.ReauthReason
+	} else if update.ReauthRecovered {
+		c.account.ReauthRequiredAt = nil
+		c.account.ReauthReason = ""
 	}
 	account := c.account
 	c.mu.Unlock()

@@ -335,7 +335,7 @@ describe("NewTaskDialog", () => {
 
 		// Plain Enter submits the task.
 		await user.keyboard("{Enter}");
-		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(delegateCalls()).toHaveLength(1));
 	});
 
 	it.each([
@@ -348,9 +348,14 @@ describe("NewTaskDialog", () => {
 			message: "task start failed",
 		},
 	])("displays daemon start errors for $code", async ({ code, message }) => {
-		postMock.mockResolvedValueOnce({
-			data: undefined,
-			error: { code, message },
+		postMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/agents/readiness/ensure") {
+				return { data: agentInventory, error: undefined };
+			}
+			return {
+				data: undefined,
+				error: { code, message },
+			};
 		});
 		renderDialog();
 		const user = userEvent.setup();

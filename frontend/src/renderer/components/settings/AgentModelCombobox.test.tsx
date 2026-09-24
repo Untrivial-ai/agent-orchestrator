@@ -1,11 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentModelCombobox, buildModelSearchIndex, searchModelIndex } from "./AgentModelCombobox";
 
 function renderCombobox(
-	models: Array<{ id: string; label: string; provider?: string; isDefault?: boolean }>,
+	models: React.ComponentProps<typeof AgentModelCombobox>["models"],
 	overrides: Partial<React.ComponentProps<typeof AgentModelCombobox>> = {},
 ) {
 	const onChange = vi.fn();
@@ -27,7 +27,7 @@ function renderCombobox(
 describe("AgentModelCombobox", () => {
 	beforeEach(() => window.localStorage.clear());
 
-	it("keeps effort selection with the model and clears unsupported effort after switching models", async () => {
+	it("opens effort after selecting a model and closes after selecting both", async () => {
 		function Picker() {
 			const [model, setModel] = useState("capable");
 			const [effort, setEffort] = useState("high");
@@ -46,12 +46,61 @@ describe("AgentModelCombobox", () => {
 		expect(screen.getByRole("menuitem", { name: "Capable" })).toHaveAttribute("aria-current", "true");
 		await userEvent.click(screen.getByRole("menuitem", { name: "Plain" }));
 		expect(picker).toHaveTextContent("Plain · Provider default");
-		await userEvent.click(picker);
-		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
 		expect(screen.queryByRole("menuitemradio", { name: "High" })).not.toBeInTheDocument();
-		expect(screen.getByRole("menuitemradio", { name: "Provider default" })).toHaveAttribute("aria-checked", "true");
+		const providerDefault = screen.getByRole("menuitemradio", { name: "Provider default" });
+		expect(providerDefault).toHaveAttribute("aria-checked", "true");
+		await userEvent.hover(screen.getByRole("menuitem", { name: "Capable" }));
+		expect(screen.getByRole("menuitemradio", { name: "Low" })).toBeInTheDocument();
+		await userEvent.hover(providerDefault);
+		expect(screen.getByRole("menuitemradio", { name: "Low" })).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
 		expect(picker).toHaveTextContent("Plain · Low");
+		expect(screen.queryByRole("menuitem", { name: "Plain" })).not.toBeInTheDocument();
+	});
+
+	it("closes only the effort submenu on Escape", async () => {
+		renderCombobox(
+			[{ id: "capable", label: "Capable", efforts: ["low", "high"] }],
+			{
+				value: "capable",
+				compact: true,
+				tuning: { effort: "high", onEffortChange: vi.fn() },
+			},
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		const effortTrigger = screen.getByRole("menuitem", { name: /Reasoning effort/ });
+		act(() => effortTrigger.focus());
+		await userEvent.keyboard("{ArrowRight}");
+		const lowEffort = screen.getByRole("menuitemradio", { name: "Low" });
+		const effortMenu = lowEffort.closest('[role="menu"]');
+		await waitFor(() => expect(effortMenu).toContainElement(document.activeElement as HTMLElement));
+
+		await userEvent.keyboard("{Escape}");
+
+		await waitFor(() => {
+			expect(screen.queryByRole("menuitemradio", { name: "Low" })).not.toBeInTheDocument();
+		});
+		expect(screen.getByRole("menuitem", { name: "Capable" })).toBeInTheDocument();
+		expect(effortTrigger).toHaveFocus();
+	});
+
+	it("closes immediately after selecting a model without effort choices", async () => {
+		function Picker() {
+			const [model, setModel] = useState("");
+			const [effort, setEffort] = useState("");
+			return <AgentModelCombobox aria-label="Worker model" value={model}
+				models={[{ id: "plain", label: "Plain" }]}
+				onChange={setModel} onCustom={setModel} compact
+				tuning={{ effort, onEffortChange: setEffort }} />;
+		}
+		render(<Picker />);
+		const picker = screen.getByRole("button", { name: "Worker model" });
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: "Plain" }));
+
+		expect(picker).toHaveTextContent("Plain");
+		expect(screen.queryByRole("menuitem", { name: "Plain" })).not.toBeInTheDocument();
 	});
 
 	it("keeps the model menu closed while its owning operation is pending", async () => {

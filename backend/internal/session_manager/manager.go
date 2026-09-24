@@ -31,13 +31,14 @@ import (
 // Sentinel errors returned by the Session Manager; callers match them with
 // errors.Is.
 var (
-	ErrNotFound            = errors.New("session: not found")
-	ErrNotRestorable       = errors.New("session: not restorable (not terminal)")
-	ErrTerminated          = errors.New("session: terminated")
-	ErrAgentExited         = errors.New("session: agent exited")
-	ErrAgentNotExited      = errors.New("session: agent has not exited")
-	ErrAgentExitInProgress = errors.New("session: agent exit is already in progress")
-	ErrIncompleteHandle    = errors.New("session: incomplete teardown handle")
+	ErrNotFound                      = errors.New("session: not found")
+	ErrSemanticAcceptanceUnsupported = errors.New("session: semantic message acceptance unsupported")
+	ErrNotRestorable                 = errors.New("session: not restorable (not terminal)")
+	ErrTerminated                    = errors.New("session: terminated")
+	ErrAgentExited                   = errors.New("session: agent exited")
+	ErrAgentNotExited                = errors.New("session: agent has not exited")
+	ErrAgentExitInProgress           = errors.New("session: agent exit is already in progress")
+	ErrIncompleteHandle              = errors.New("session: incomplete teardown handle")
 	// ErrProjectNotResolvable means the spawn's project has no usable repo
 	// (unregistered, archived, or missing a path). The API maps it to a 400.
 	ErrProjectNotResolvable = errors.New("session: project repo not resolvable")
@@ -908,12 +909,6 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if err := validateSpawnModel(cfg.Harness, agentConfig.Model); err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: %s", ErrUnsupportedModel, err.Error())
 	}
-	// Adapters whose model picker is an agent-owned mode list (e.g. Amp) keep
-	// their selectable values in AgentConfig.Mode. Normalize a copy for the
-	// adapter so `ao spawn --agent amp --model high` launches Amp with `--mode
-	// high`, while metadata keeps the original resolved Model for the API view.
-	adapterConfig := normalizeAgentConfigForHarness(cfg.Harness, agentConfig)
-
 	// Resolve the controller mode here, before anything durable is created, for
 	// the same reason an unknown harness is rejected above: an explicit Chat
 	// request AO cannot honor should cost nothing, not leave a terminated row and
@@ -943,7 +938,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			mode = domain.SessionModeTUI
 		}
 		if mode == domain.SessionModeChat {
-			resolved, err := m.resolveChatAgentConfig(ctx, cfg, project.Config)
+			resolved, err := m.resolveAgentConfig(ctx, cfg, project.Config)
 			if err != nil {
 				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
 			}
@@ -951,7 +946,22 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			cfg.AgentConfigResolved = true
 		}
 	}
+	if mode == domain.SessionModeTUI && cfg.Harness == domain.HarnessClaudeCode {
+		resolved, err := m.resolveAgentConfig(ctx, cfg, project.Config)
+		if err != nil {
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+		}
+		cfg.AgentConfig = resolved
+		cfg.AgentConfigResolved = true
+		agentConfig = resolved
+	}
 	cfg.RequestedMode = mode
+
+	// Adapters whose model picker is an agent-owned mode list (e.g. Amp) keep
+	// their selectable values in AgentConfig.Mode. Normalize a copy for the
+	// adapter so `ao spawn --agent amp --model high` launches Amp with `--mode
+	// high`, while metadata keeps the original resolved Model for the API view.
+	adapterConfig := normalizeAgentConfigForHarness(cfg.Harness, agentConfig)
 
 	// A chat session runs no agent inside a terminal runtime, so the terminal
 	// prerequisites are not its concern.
@@ -1055,6 +1065,16 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	m.augmentAgentRuntimeEnv(agent, env)
 	pinRuntimePermissionEnv(env, adapterConfig.Permissions)
+	if validator, ok := agent.(ports.AgentLaunchAuthValidator); ok {
+		status, authErr := validator.ValidateLaunchAuth(ctx, ws.Path, env)
+		if authErr != nil {
+			m.logger.Debug("spawn: launch authentication probe inconclusive; continuing",
+				"sessionID", id, "harness", cfg.Harness, "error", authErr)
+		} else if status == ports.AgentAuthStatusUnauthorized {
+			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: %w", id, ports.ErrAgentAuthRequired)
+		}
+	}
 	if err := m.prepareWorkspace(ctx, agent, id, ws.Path, systemPrompt, systemPromptFile, adapterConfig, env); err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, false)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepare, err)
@@ -1164,28 +1184,40 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	return rec, promptBytes, systemPromptBytes, nil
 }
 
-func (m *Manager) resolveChatAgentConfig(ctx context.Context, cfg ports.SpawnConfig, project domain.ProjectConfig) (ports.AgentConfig, error) {
+func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig, project domain.ProjectConfig) (ports.AgentConfig, error) {
 	base := effectiveAgentConfig(cfg.Harness, cfg.Kind, project)
 	requested := cfg.AgentConfig
 	resolved := applySpawnAgentConfig(base, requested)
+	modelChangedWithoutExplicitEffort := requested.Model != "" && requested.Model != base.Model &&
+		!cfg.EffortOverride && requested.Effort == ""
 	if cfg.EffortOverride {
 		resolved.Effort = requested.Effort
 	}
-	if cfg.Harness != domain.HarnessCodex {
+	if cfg.Harness != domain.HarnessCodex && cfg.Harness != domain.HarnessClaudeCode {
 		resolved.Effort = ""
 		return resolved, nil
 	}
+	modelID := strings.TrimSpace(resolved.Model)
+	validateClaudeModel := cfg.Harness == domain.HarnessClaudeCode && modelID != ""
+	if resolved.Effort == "" && !validateClaudeModel {
+		return resolved, nil
+	}
 	if m.modelCatalog == nil {
+		if validateClaudeModel {
+			return ports.AgentConfig{}, fmt.Errorf("%w: model catalog is unavailable", ports.ErrModelCapabilitiesUnavailable)
+		}
 		return resolved, nil
 	}
 	catalog, err := m.modelCatalog.Models(ctx, string(cfg.Harness), string(cfg.ProjectID), true)
 	if err != nil {
-		if resolved.Effort != "" {
+		if modelChangedWithoutExplicitEffort {
+			resolved.Effort = ""
+		}
+		if validateClaudeModel || resolved.Effort != "" {
 			return ports.AgentConfig{}, fmt.Errorf("%w: %w", ports.ErrModelCapabilitiesUnavailable, err)
 		}
 		return resolved, nil
 	}
-	modelID := resolved.Model
 	if modelID == "" {
 		for _, item := range catalog.Models {
 			if item.IsDefault {
@@ -1194,6 +1226,9 @@ func (m *Manager) resolveChatAgentConfig(ctx context.Context, cfg ports.SpawnCon
 			}
 		}
 	}
+	if catalog.Stale && validateClaudeModel {
+		return ports.AgentConfig{}, fmt.Errorf("%w for model %q: catalog is stale", ports.ErrModelCapabilitiesUnavailable, modelID)
+	}
 	var selected *ports.AgentModelInfo
 	for i := range catalog.Models {
 		if catalog.Models[i].ID == modelID {
@@ -1201,8 +1236,11 @@ func (m *Manager) resolveChatAgentConfig(ctx context.Context, cfg ports.SpawnCon
 			break
 		}
 	}
-	if requested.Model != "" && requested.Model != base.Model {
-		if !cfg.EffortOverride && requested.Effort == "" && (selected == nil || !containsString(selected.Efforts, base.Effort)) {
+	if validateClaudeModel && selected == nil {
+		return ports.AgentConfig{}, fmt.Errorf("%w: model %q is not in the active provider catalog", ErrUnsupportedModel, modelID)
+	}
+	if modelChangedWithoutExplicitEffort {
+		if selected == nil || !containsString(selected.Efforts, base.Effort) {
 			resolved.Effort = ""
 		}
 	}
@@ -1718,6 +1756,7 @@ func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) por
 	merged := effectiveAgentConfig(rec.Harness, rec.Kind, cfg)
 	if rec.Harness == domain.HarnessClaudeCode {
 		merged.Model = rec.Metadata.Model
+		merged.Effort = rec.Metadata.Effort
 	}
 	return merged
 }
@@ -2587,6 +2626,15 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	}
 	m.augmentAgentRuntimeEnv(agent, env)
 	pinRuntimePermissionEnv(env, agentConfig.Permissions)
+	if validator, ok := agent.(ports.AgentLaunchAuthValidator); ok {
+		status, authErr := validator.ValidateLaunchAuth(ctx, ws.Path, env)
+		if authErr != nil {
+			m.logger.Debug("restore: launch authentication probe inconclusive; continuing",
+				"sessionID", rec.ID, "harness", rec.Harness, "error", authErr)
+		} else if status == ports.AgentAuthStatusUnauthorized {
+			return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ports.ErrAgentAuthRequired)
+		}
+	}
 	if err := m.prepareWorkspace(ctx, agent, rec.ID, ws.Path, systemPrompt, systemPromptFile, agentConfig, env); err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
 	}
@@ -3718,6 +3766,98 @@ func (m *Manager) Send(ctx context.Context, id domain.SessionID, message string,
 	return m.send(ctx, id, message, "")
 }
 
+// SendSemantic delivers an internal message and returns only after the target
+// agent has accepted that exact message. Chat uses its native accepted-turn
+// boundary. Supported TUIs correlate the durable id through UserPromptSubmit;
+// a successful pane write alone never satisfies this method.
+func (m *Manager) SendSemantic(ctx context.Context, id domain.SessionID, message, clientMessageID string) error {
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotFound
+	}
+	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+		handled, sendErr := m.sendChat(ctx, id, message, clientMessageID)
+		if !handled {
+			return ErrSemanticAcceptanceUnsupported
+		}
+		return sendErr
+	}
+	if !m.harnessSemanticAcceptance(rec.Harness) {
+		return ErrSemanticAcceptanceUnsupported
+	}
+	if semanticMessageAccepted(rec, clientMessageID) {
+		return nil
+	}
+	wrapped := domain.WrapReportDelivery(clientMessageID, message)
+	if err := m.send(ctx, id, wrapped, clientMessageID); err != nil {
+		return err
+	}
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(m.sendConfirm.pollInterval)
+	defer ticker.Stop()
+	for {
+		current, found, readErr := m.store.GetSession(ctx, id)
+		if readErr != nil {
+			return readErr
+		}
+		if !found || current.IsTerminated || current.Activity.State == domain.ActivityExited {
+			return ErrTerminated
+		}
+		if semanticMessageAccepted(current, clientMessageID) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("%w: prompt submission was not observed", ErrSemanticAcceptanceUnsupported)
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *Manager) harnessSemanticAcceptance(harness domain.AgentHarness) bool {
+	if m.agents == nil {
+		return false
+	}
+	agent, ok := m.agents.Agent(harness)
+	if !ok {
+		return false
+	}
+	signaler, ok := agent.(ports.SemanticMessageAcceptanceSignaler)
+	return ok && signaler.EmitsSemanticMessageAcceptance()
+}
+
+func semanticMessageAccepted(rec domain.SessionRecord, clientMessageID string) bool {
+	return clientMessageID != "" &&
+		rec.Metadata.ConversationCheckpointState == domain.ConversationCheckpointCoordination &&
+		rec.Metadata.ConversationCheckpointGeneration == rec.Metadata.RuntimeLaunchID &&
+		rec.Metadata.ConversationCheckpointTurnID == clientMessageID
+}
+
+// InterruptTUI requests cancellation through the session's owned runtime.
+func (m *Manager) InterruptTUI(ctx context.Context, id domain.SessionID) error {
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotFound
+	}
+	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat || !m.harnessSemanticAcceptance(rec.Harness) {
+		return ErrSemanticAcceptanceUnsupported
+	}
+	interrupter, ok := m.runtime.(runtimeInterrupter)
+	if !ok || rec.Metadata.RuntimeHandleID == "" {
+		return ErrSemanticAcceptanceUnsupported
+	}
+	return interrupter.Interrupt(ctx, ports.RuntimeHandle{ID: rec.Metadata.RuntimeHandleID})
+}
+
 // send carries an optional idempotency key used by durable transition-message
 // retries. Ordinary callers leave it empty; the outbox preserves the key across
 // restart, rollback, and even a second overlapping handoff.
@@ -3745,7 +3885,8 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 		return err
 	}
 	var afterWrite func(context.Context) error
-	if strings.TrimSpace(message) != "" {
+	_, internalReportDelivery := domain.ReportDeliveryID(message)
+	if strings.TrimSpace(message) != "" && !internalReportDelivery {
 		if recorder, ok := m.store.(latestUserPromptRecorder); ok {
 			afterWrite = func(writeCtx context.Context) error {
 				if _, recordErr := recorder.RecordSessionLatestUserPrompt(writeCtx, id, boundedConversationFact(message), m.clock()); recordErr != nil {
