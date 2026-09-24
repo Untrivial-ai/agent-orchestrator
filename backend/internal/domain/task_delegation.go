@@ -37,6 +37,7 @@ func (f TaskDelegationRequestFingerprint) Valid() bool {
 // a worker session.
 type TaskDelegationState string
 
+// Task delegation states distinguish a reserved request from one with a durable worker.
 const (
 	TaskDelegationPending   TaskDelegationState = "pending"
 	TaskDelegationCompleted TaskDelegationState = "completed"
