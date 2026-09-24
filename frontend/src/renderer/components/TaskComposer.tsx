@@ -292,6 +292,15 @@ export function TaskComposer({
 				agentConfig?: { model?: string; mode?: string; effort?: string };
 		  }
 		| undefined;
+	// A cloud project's execution context should list every repo it spans (the
+	// primary plus the coder dev-kit extra repos), not just the primary — so
+	// multi-repo projects read as multi-repo. Narrows the untyped config safely.
+	const cloudRepositories = (() => {
+		if (!cloudProject) return [] as string[];
+		const coder = (cloudProject.config as { coder?: { extraRepos?: Array<{ url?: string }> } } | undefined)?.coder;
+		const extras = (coder?.extraRepos ?? []).map((repo) => repo?.url).filter((url): url is string => Boolean(url));
+		return [...new Set([cloudProject.repositoryUrl, ...extras].filter(Boolean))];
+	})();
 	const projectWorkerAgent = projectConfig?.worker?.agent ?? "";
 	const globalDefaultAgent = projectQuery.data?.agent ?? "";
 	const configuredProjectAgent = projectWorkerAgent || globalDefaultAgent;
@@ -482,7 +491,7 @@ export function TaskComposer({
 			orchestratorAgent={projectQuery.data?.config?.orchestrator?.agent ? selectedAgentLabelFor(projectQuery.data.config.orchestrator.agent, agentCatalog?.agents) : undefined}
 			path={projectQuery.data?.path}
 			projectName={projectQuery.data?.name ?? cloudProject?.displayName ?? projectId}
-			repositories={projectQuery.data ? projectRepositories(projectQuery.data) : cloudProject ? [cloudProject.repositoryUrl] : []}
+			repositories={projectQuery.data ? projectRepositories(projectQuery.data) : cloudRepositories}
 			variant="compact"
 			workerAgent={projectWorkerAgent ? selectedAgentLabelFor(projectWorkerAgent, agentCatalog?.agents) : undefined}
 		/>
