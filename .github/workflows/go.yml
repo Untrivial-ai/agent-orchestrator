@@ -114,6 +114,10 @@ jobs:
 
   cloud-build-test:
     runs-on: ubuntu-latest
+    # The Cloud Dockerfile builds this module outside the monorepo. Keep this
+    # job honest by never inheriting the repository-level go.work file.
+    env:
+      GOWORK: off
     defaults:
       run:
         working-directory: cloud
@@ -134,7 +138,7 @@ jobs:
             exit 1
           fi
 
-      - name: Build
+      - name: Build standalone Cloud module
         run: go build ./...
 
       - name: Vet

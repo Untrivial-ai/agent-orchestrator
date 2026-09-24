@@ -88,7 +88,7 @@ func (s *Store) ClaimWorkerTurn(
 			SELECT claimed.id, claimed.session_id, event.payload->>'text',
 				session.mode, session.denied_commands, session.harness,
 				claimed.attempt_count, claimed.worker_epoch,
-				claimed.state, session.agent_session_id,
+				claimed.state, session.agent_session_id, session.model, session.reasoning_effort,
 				claimed.user_message_sequence,
 				COALESCE(claimed_turn.mode_cap, ''), COALESCE(claimed_turn.denied_commands, ARRAY[]::text[])
 			FROM claimed
@@ -114,6 +114,8 @@ func (s *Store) ClaimWorkerTurn(
 			&turn.WorkerEpoch,
 			&state,
 			&turn.AgentSessionID,
+			&turn.Model,
+			&turn.ReasoningEffort,
 			&turn.UserEventSequence,
 			&turnModeCap,
 			&turnDeniedCommands,
@@ -186,6 +188,82 @@ func (s *Store) RequestTurnCancellation(
 			"turnId": turnID,
 		})
 	})
+}
+
+// SteerTurn records guidance against the currently acknowledged provider turn.
+// It deliberately does not cancel or enqueue a replacement turn: steering is
+// advice for work already in flight, and every retry resolves the same durable
+// receipt before it can mutate the turn again.
+func (s *Store) SteerTurn(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID, turnID, idempotencyKey, text, model, reasoningEffort string,
+) (domain.ClientEvent, error) {
+	var event domain.ClientEvent
+	err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, access sessionAccess) error {
+		if access.Role == "viewer" {
+			return ErrForbidden
+		}
+		payload, err := json.Marshal(map[string]string{
+			"turnId": turnID, "text": text, "model": strings.TrimSpace(model), "reasoningEffort": strings.TrimSpace(reasoningEffort),
+		})
+		if err != nil {
+			return err
+		}
+		var commandID string
+		err = tx.QueryRow(ctx, `INSERT INTO ao_commands (
+			org_id, session_id, idempotency_key, kind, payload
+		) VALUES ($1, $2, $3, 'turn.steer', $4)
+		ON CONFLICT (org_id, idempotency_key) DO NOTHING
+		RETURNING id`, orgID, sessionID, idempotencyKey, payload).Scan(&commandID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return loadIdempotentSteer(ctx, tx, orgID, sessionID, idempotencyKey, payload, &event)
+		}
+		if err != nil {
+			return normalizeConstraintError(err)
+		}
+		var state string
+		if err := tx.QueryRow(ctx, `SELECT state FROM ao_turns
+			WHERE org_id = $1 AND session_id = $2 AND id = $3 FOR UPDATE`, orgID, sessionID, turnID).Scan(&state); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if state != "running" {
+			return ErrTurnFinished
+		}
+		if err := appendTypedEvent(ctx, tx, orgID, sessionID, "chat.turn_steered", map[string]any{
+			"turnId": turnID, "text": text, "clientMessageId": idempotencyKey,
+		}); err != nil {
+			return err
+		}
+		if err := scanClientEvent(tx.QueryRow(ctx, `SELECT session_id, sequence, type, payload, created_at
+			FROM ao_events WHERE org_id = $1 AND session_id = $2
+			ORDER BY sequence DESC LIMIT 1`, orgID, sessionID), &event); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE ao_commands
+			SET status = 'succeeded', result = jsonb_build_object('eventSequence', $1::bigint), updated_at = now()
+			WHERE id = $2`, event.Sequence, commandID)
+		return err
+	})
+	return event, err
+}
+
+func loadIdempotentSteer(ctx context.Context, tx pgx.Tx, orgID, sessionID, idempotencyKey string, payload []byte, event *domain.ClientEvent) error {
+	var storedPayload []byte
+	var storedSessionID, kind, status string
+	var sequence int64
+	if err := tx.QueryRow(ctx, `SELECT session_id, kind, status, payload, (result->>'eventSequence')::bigint
+		FROM ao_commands WHERE org_id = $1 AND idempotency_key = $2`, orgID, idempotencyKey).Scan(&storedSessionID, &kind, &status, &storedPayload, &sequence); err != nil {
+		return err
+	}
+	if storedSessionID != sessionID || kind != "turn.steer" || status != "succeeded" || !jsonEqual(storedPayload, payload) {
+		return ErrIdempotencyMismatch
+	}
+	return scanClientEvent(tx.QueryRow(ctx, `SELECT session_id, sequence, type, payload, created_at
+		FROM ao_events WHERE org_id = $1 AND session_id = $2 AND sequence = $3`, orgID, sessionID, sequence), event)
 }
 
 // WorkerTurnCancellationRequested observes cancellation only when the caller

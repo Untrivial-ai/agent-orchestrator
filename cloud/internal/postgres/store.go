@@ -72,10 +72,10 @@ func (s *Store) ValidateRuntimeRole(ctx context.Context) error {
 type tenantFn func(pgx.Tx) error
 
 // withService runs fn in a transaction that carries the control-plane service
-// context. Only ao_sandboxes grants this context, and only so the reconciler
-// can scan due sandboxes across organizations. Every write that follows a claim
-// must run through withOrg instead, so row-level security still confines it to
-// a single tenant.
+// context. It is used only to claim cross-tenant reconciliation work. A
+// follow-up write must normally run through withOrg; the interface-transition
+// completion path first resolves and sets its one transition's org_id inside
+// this transaction so queue delivery remains atomic with the service claim.
 func (s *Store) withService(ctx context.Context, fn tenantFn) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {

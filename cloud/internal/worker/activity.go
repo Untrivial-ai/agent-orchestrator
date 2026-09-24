@@ -8,12 +8,18 @@ import (
 
 // ActivityEvent is an explicit lifecycle signal emitted by a coding-agent hook.
 type ActivityEvent struct {
-	Harness        string                 `json:"harness"`
-	Event          string                 `json:"event"`
-	State          contract.ActivityState `json:"state"`
-	ToolName       string                 `json:"toolName,omitempty"`
-	ToolUseID      string                 `json:"toolUseId,omitempty"`
-	AgentSessionID string                 `json:"agentSessionId,omitempty"`
+	Harness string                 `json:"harness"`
+	Event   string                 `json:"event"`
+	State   contract.ActivityState `json:"state"`
+	// SourceInterface identifies facts emitted by the interactive TUI hook.
+	// Headless Chat activity intentionally leaves this empty because its
+	// controller writes typed chat events directly.
+	SourceInterface       string `json:"sourceInterface,omitempty"`
+	ToolName              string `json:"toolName,omitempty"`
+	ToolUseID             string `json:"toolUseId,omitempty"`
+	AgentSessionID        string `json:"agentSessionId,omitempty"`
+	LatestUserPrompt      string `json:"latestUserPrompt,omitempty"`
+	LatestAssistantUpdate string `json:"latestAssistantUpdate,omitempty"`
 }
 
 const maxActivityCorrelationLength = 256
@@ -44,12 +50,14 @@ func ActivityEventFromHook(
 	payload []byte,
 ) (ActivityEvent, bool) {
 	var native struct {
-		ToolName            string `json:"tool_name"`
-		ToolUseID           string `json:"tool_use_id"`
-		SessionID           string `json:"session_id"`
-		SessionIDCamel      string `json:"sessionId"`
-		ConversationID      string `json:"conversation_id"`
-		ConversationIDCamel string `json:"conversationId"`
+		ToolName              string `json:"tool_name"`
+		ToolUseID             string `json:"tool_use_id"`
+		SessionID             string `json:"session_id"`
+		SessionIDCamel        string `json:"sessionId"`
+		ConversationID        string `json:"conversation_id"`
+		ConversationIDCamel   string `json:"conversationId"`
+		LatestUserPrompt      string `json:"prompt"`
+		LatestAssistantUpdate string `json:"lastAssistantMessage"`
 	}
 	_ = json.Unmarshal(payload, &native)
 	if len(native.ToolName) > maxActivityCorrelationLength {
@@ -72,21 +80,35 @@ func ActivityEventFromHook(
 		return ActivityEvent{}, false
 	}
 	return ActivityEvent{
-		Harness:        harness,
-		Event:          event,
-		State:          state,
-		ToolName:       native.ToolName,
-		ToolUseID:      native.ToolUseID,
-		AgentSessionID: agentSessionID,
+		Harness:               harness,
+		Event:                 event,
+		State:                 state,
+		ToolName:              native.ToolName,
+		ToolUseID:             native.ToolUseID,
+		AgentSessionID:        agentSessionID,
+		LatestUserPrompt:      boundedConversationText(native.LatestUserPrompt),
+		LatestAssistantUpdate: boundedConversationText(native.LatestAssistantUpdate),
 	}, true
+}
+
+func boundedConversationText(value string) string {
+	if len(value) > 16<<10 {
+		return ""
+	}
+	return value
 }
 
 // ValidActivityEvent ensures workers cannot pair a real hook name with an
 // impossible state when reporting activity to the control plane.
 func ValidActivityEvent(event ActivityEvent) bool {
+	if event.SourceInterface != "" && event.SourceInterface != "tui" {
+		return false
+	}
 	if len(event.ToolName) > maxActivityCorrelationLength ||
 		len(event.ToolUseID) > maxActivityCorrelationLength ||
-		len(event.AgentSessionID) > maxActivityCorrelationLength {
+		len(event.AgentSessionID) > maxActivityCorrelationLength ||
+		len(event.LatestUserPrompt) > 16<<10 ||
+		len(event.LatestAssistantUpdate) > 16<<10 {
 		return false
 	}
 	switch event.Harness {

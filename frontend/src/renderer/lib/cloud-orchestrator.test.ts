@@ -84,6 +84,7 @@ describe("spawnCloudOrchestrator", () => {
 			harness: "claude-code",
 			displayName: "Orchestrator",
 			prompt: "",
+			interfaceMode: "chat",
 		});
 	});
 

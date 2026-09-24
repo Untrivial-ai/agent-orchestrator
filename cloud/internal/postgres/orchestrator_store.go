@@ -176,7 +176,7 @@ func (s *Store) SendOrchestratorChildMessage(
 			return ErrForbidden
 		}
 		event, err = sendMessageTx(
-			ctx, tx, orgID, childSessionID, idempotencyKey, text, "", orchestratorSessionID,
+			ctx, tx, orgID, childSessionID, idempotencyKey, text, "", "", "", orchestratorSessionID,
 			"", nil,
 		)
 		return err
@@ -219,7 +219,7 @@ func (s *Store) ReportToOrchestrator(
 			"[from worker %s %q] %s", shortSessionID(childSessionID), childName, text,
 		)
 		event, err = sendMessageTx(
-			ctx, tx, orgID, parentID, idempotencyKey, prefixed, "", childSessionID,
+			ctx, tx, orgID, parentID, idempotencyKey, prefixed, "", "", "", childSessionID,
 			"", nil,
 		)
 		return err

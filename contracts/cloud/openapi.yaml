@@ -428,6 +428,78 @@ paths:
                 $ref: "#/components/schemas/DeleteSessionResponse"
         default:
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/interface-transition:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: getSessionInterfaceTransition
+      tags: [Sessions]
+      responses:
+        "200":
+          description: Interface-switch readiness and the active transition, if any.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInterfaceTransitionStatus"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      operationId: startSessionInterfaceTransition
+      tags: [Sessions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartSessionInterfaceTransitionInput"
+      responses:
+        "202":
+          description: Interface switch accepted for asynchronous processing.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transition]
+                properties:
+                  transition:
+                    $ref: "#/components/schemas/SessionInterfaceTransition"
+        default:
+          $ref: "#/components/responses/Error"
+    delete:
+      operationId: cancelSessionInterfaceTransition
+      tags: [Sessions]
+      responses:
+        "200":
+          description: Interface switch cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerOKResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/interface-transition/{transitionId}/notice-acknowledgement:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+      - name: transitionId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    put:
+      operationId: acknowledgeSessionInterfaceTransitionNotice
+      tags: [Sessions]
+      responses:
+        "200":
+          description: Interface-switch failure or recovery notice acknowledged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerOKResponse"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/children:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -534,6 +606,35 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkerOKResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/turns/{turnId}/steer:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/TurnId"
+    post:
+      operationId: steerTurn
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageInput"
+      responses:
+        "202":
+          description: Active turn interrupted and replacement prompt accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [event]
+                properties:
+                  event:
+                    $ref: "#/components/schemas/UserMessageEvent"
         default:
           $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/chat-events:
@@ -2153,6 +2254,7 @@ components:
         - branch
         - prompt
         - mode
+        - interfaceMode
         - deniedCommands
         - repositoryUrl
         - defaultBranch
@@ -2178,6 +2280,8 @@ components:
           maxLength: 256
         mode:
           $ref: "#/components/schemas/SessionMode"
+        interfaceMode:
+          $ref: "#/components/schemas/SessionInterfaceMode"
         deniedCommands:
           type: array
           items:
@@ -2862,6 +2966,76 @@ components:
             desiredState:
               type: string
               const: deleted
+    SessionInterfaceMode:
+      type: string
+      enum: [tui, chat]
+    SessionInterfaceTransitionPolicy:
+      type: string
+      enum: [drain, interrupt]
+    SessionInterfaceTransitionPhase:
+      type: string
+      enum: [requested, preflighting, draining, source_stopping, source_stopped, target_starting, activating, completed, failed, cancelled, recovery_required]
+    SessionInterfaceTransition:
+      type: object
+      additionalProperties: false
+      required: [id, sessionId, sourceMode, targetMode, policy, phase, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sessionId:
+          type: string
+          format: uuid
+        sourceMode:
+          $ref: "#/components/schemas/SessionInterfaceMode"
+        targetMode:
+          $ref: "#/components/schemas/SessionInterfaceMode"
+        policy:
+          $ref: "#/components/schemas/SessionInterfaceTransitionPolicy"
+        phase:
+          $ref: "#/components/schemas/SessionInterfaceTransitionPhase"
+        nativeConversationId:
+          type: string
+        errorCode:
+          type: string
+        errorDetail:
+          type: string
+        noticeAcknowledgedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+    SessionInterfaceTransitionStatus:
+      type: object
+      additionalProperties: false
+      required: [supported, targetMode]
+      properties:
+        supported:
+          type: boolean
+        targetMode:
+          $ref: "#/components/schemas/SessionInterfaceMode"
+        reasonCode:
+          type: string
+        reason:
+          type: string
+        transition:
+          $ref: "#/components/schemas/SessionInterfaceTransition"
+    StartSessionInterfaceTransitionInput:
+      type: object
+      additionalProperties: false
+      required: [targetMode, policy]
+      properties:
+        targetMode:
+          $ref: "#/components/schemas/SessionInterfaceMode"
+        policy:
+          $ref: "#/components/schemas/SessionInterfaceTransitionPolicy"
     Session:
       type: object
       additionalProperties: false
@@ -2950,6 +3124,9 @@ components:
         prompt:
           type: string
           maxLength: 65536
+        interfaceMode:
+          $ref: "#/components/schemas/SessionInterfaceMode"
+          default: tui
         mode:
           $ref: "#/components/schemas/SessionMode"
           default: trusted
@@ -3366,6 +3543,9 @@ components:
           properties:
             text:
               type: string
+            turnId:
+              type: string
+              format: uuid
         createdAt:
           type: string
           format: date-time
@@ -3525,6 +3705,34 @@ components:
         createdAt:
           type: string
           format: date-time
+    TurnSteeredEvent:
+      type: object
+      additionalProperties: false
+      required: [sessionId, sequence, type, payload, createdAt]
+      properties:
+        sessionId:
+          type: string
+        sequence:
+          type: integer
+          format: int64
+          maximum: 9007199254740991
+        type:
+          const: chat.turn_steered
+        payload:
+          type: object
+          additionalProperties: false
+          required: [turnId, text, clientMessageId]
+          properties:
+            turnId:
+              type: string
+              format: uuid
+            text:
+              type: string
+            clientMessageId:
+              type: string
+        createdAt:
+          type: string
+          format: date-time
     ClientEvent:
       oneOf:
         - $ref: "#/components/schemas/UserMessageEvent"
@@ -3534,6 +3742,7 @@ components:
         - $ref: "#/components/schemas/TurnInterruptedEvent"
         - $ref: "#/components/schemas/TurnAbortedEvent"
         - $ref: "#/components/schemas/InterruptRequestedEvent"
+        - $ref: "#/components/schemas/TurnSteeredEvent"
     ClientEventPage:
       type: object
       additionalProperties: false

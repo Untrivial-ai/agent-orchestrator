@@ -324,9 +324,9 @@ const SummaryView = memo(function SummaryView({
 	session: WorkspaceSession;
 }) {
 	const { t } = useTranslation();
-	const query = useSessionScmSummary(session.id);
+	const query = useSessionScmSummary(session.id, !session.cloud);
 	const developerMode = useUiStore((state) => state.developerMode);
-	const usageQuery = useSessionUsage(session.id, developerMode);
+	const usageQuery = useSessionUsage(session.id, developerMode && !session.cloud);
 	const showUsage =
 		developerMode &&
 		!usageQuery.isLoading &&
@@ -1107,10 +1107,10 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 		const workspaces = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey) ?? [];
 		const workspace = workspaces.find((w) => w.id === session.workspaceId);
 		const nextNav = resolveNextNavigationAfterSessionKill(workspace, session.id);
-		
+
 		setConfirmOpen(false);
 		terminate.mutate(session);
-		
+
 		if (nextNav.target === "session") {
 			void navigate({
 				to: "/projects/$projectId/sessions/$sessionId",
@@ -1646,7 +1646,7 @@ function ReviewsSection({
 	});
 	const reviewStates = reviewsQuery.data?.reviews ?? [];
 	const autoReviewEnabled = session.autoReviewEnabled === true;
-	const scmSummary = useSessionScmSummary(session.id);
+	const scmSummary = useSessionScmSummary(session.id, !session.cloud);
 	const prSummaries = sessionPRDisplaySummaries(session, scmSummary.data);
 	const githubReviews = prSummaries.filter(
 		(pr) =>

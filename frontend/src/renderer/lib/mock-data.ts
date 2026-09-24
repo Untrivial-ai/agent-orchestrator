@@ -610,6 +610,7 @@ const demoChild = (
 	projectId: "ao-demo",
 	kind: "worker",
 	harness: "claude-code",
+	interfaceMode: "tui",
 	displayName,
 	branch: `ao/${id.slice(0, 8)}`,
 	mode: "trusted",

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -119,6 +120,22 @@ func TestCreateSessionLeavesWorkerStandaloneWithoutOrchestrator(t *testing.T) {
 	}
 	if store.captured.Provider != sandbox.ProviderNodeOps {
 		t.Fatalf("worker provider = %q, want %q (client selection)", store.captured.Provider, sandbox.ProviderNodeOps)
+	}
+}
+
+func TestCreateSessionAcceptsChatFirstInterface(t *testing.T) {
+	t.Parallel()
+	store := &stubAutolinkStore{orchFound: false}
+	srv := newChildServer(store, bothProviderProvisioning(sandbox.ProviderNodeOps), sandbox.ProviderNodeOps)
+	req := createSessionRequestHTTP(t, "worker", sandbox.ProviderNodeOps)
+	req.Body = io.NopCloser(strings.NewReader(`{"projectId":"` + autolinkProjectID + `","kind":"worker","harness":"claude-code","displayName":"chat-first","prompt":"do the work","mode":"trusted","interfaceMode":"chat"}`))
+	rec := httptest.NewRecorder()
+	srv.createSession(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body = %s", rec.Code, rec.Body.String())
+	}
+	if store.captured.Interface != domain.SessionInterfaceChat {
+		t.Fatalf("interface = %q, want chat", store.captured.Interface)
 	}
 }
 
