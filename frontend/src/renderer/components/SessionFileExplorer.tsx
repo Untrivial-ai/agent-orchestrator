@@ -41,6 +41,7 @@ type SessionFileExplorerProps = {
 	sessionId: string;
 	isMaximized?: boolean;
 	onOpenFile?: (path: string, options?: FileOpenOptions) => void;
+	onRevealRequestConsumed?: (key: number) => void;
 	onSplitChange?: (split: boolean) => void;
 	onToggleMaximized?: (next: boolean) => void;
 	revealRequest?: { feedback?: boolean; path: string; key: number; source?: "artifact" } | null;
@@ -52,6 +53,7 @@ export function SessionFileExplorer({
 	sessionId,
 	isMaximized = false,
 	onOpenFile,
+	onRevealRequestConsumed,
 	onSplitChange,
 	onToggleMaximized,
 	revealRequest,
@@ -288,6 +290,7 @@ export function SessionFileExplorer({
 					filter={filter}
 					isMaximized={isMaximized}
 					onBack={() => setSelectedArtifactPath(null)}
+					onFeedbackRequestConsumed={onRevealRequestConsumed}
 					onSelect={handleSelectArtifact}
 					selectedPath={selectedArtifactPath}
 					sessionId={sessionId}
@@ -354,6 +357,7 @@ function ArtifactFilesPanel({
 	filter,
 	isMaximized,
 	onBack,
+	onFeedbackRequestConsumed,
 	onSelect,
 	selectedPath,
 	sessionId,
@@ -364,6 +368,7 @@ function ArtifactFilesPanel({
 	filter: string;
 	isMaximized: boolean;
 	onBack: () => void;
+	onFeedbackRequestConsumed?: (key: number) => void;
 	onSelect: (node: TreeNode) => void;
 	selectedPath: string | null;
 	sessionId: string;
@@ -388,6 +393,7 @@ function ArtifactFilesPanel({
 						<ArtifactFileView
 							artifactName={artifact.name}
 							feedbackRequestKey={feedbackRequestKey}
+							onFeedbackRequestConsumed={onFeedbackRequestConsumed}
 							path={artifact.path}
 							sessionId={sessionId}
 						/>
@@ -416,6 +422,7 @@ function ArtifactFilesPanel({
 				<ArtifactFileView
 					artifactName={artifact.name}
 					feedbackRequestKey={feedbackRequestKey}
+					onFeedbackRequestConsumed={onFeedbackRequestConsumed}
 					path={artifact.path}
 					sessionId={sessionId}
 				/>

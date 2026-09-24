@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useFileAnnotation } from "../hooks/useFileAnnotation";
 import { FileContentPane, type FileViewMode } from "./FileContentPane";
 
@@ -27,22 +27,26 @@ function initialModeFor(path: string): FileViewMode {
 export function ArtifactFileView({
 	artifactName,
 	feedbackRequestKey,
+	onFeedbackRequestConsumed,
 	path,
 	sessionId,
 }: {
 	artifactName: string;
 	feedbackRequestKey?: number;
+	onFeedbackRequestConsumed?: (key: number) => void;
 	path: string;
 	sessionId: string;
 }) {
 	const annotation = useFileAnnotation(sessionId, { source: artifactName });
-	const consumedFeedbackRequestRef = useRef<number | undefined>(undefined);
 
 	useEffect(() => {
-		if (feedbackRequestKey === undefined || consumedFeedbackRequestRef.current === feedbackRequestKey) return;
-		consumedFeedbackRequestRef.current = feedbackRequestKey;
+		if (feedbackRequestKey === undefined) return;
 		annotation.begin({ path, side: "file", surface: "focused" });
-	}, [annotation, feedbackRequestKey, path]);
+		onFeedbackRequestConsumed?.(feedbackRequestKey);
+		// This effect is intentionally keyed to the external one-shot request,
+		// not the annotation model object, which changes when the composer opens.
+		// The SessionView owner clears the feedback bit after this callback.
+	}, [feedbackRequestKey, onFeedbackRequestConsumed, path]);
 
 	return (
 		<div className="flex h-full min-h-0 flex-col bg-background">

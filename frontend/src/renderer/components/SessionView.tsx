@@ -1784,6 +1784,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		},
 		[browserOnly, prepareFilesInspector, sessionId],
 	);
+	const handleFilePreviewRequestConsumed = useCallback((key: number) => {
+		setFilePreviewRequestsBySession((current) => {
+			const request = current[sessionId];
+			if (!request || request.key !== key || !request.feedback) return current;
+			return {
+				...current,
+				[sessionId]: { ...request, feedback: undefined },
+			};
+		});
+	}, [sessionId]);
 
 	const handleToggleFilesPopOut = useCallback(
 		(next: boolean) => {
@@ -2199,6 +2209,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 										<SessionFileExplorer
 											artifacts={session.artifactFiles ?? []}
 											onOpenFile={openCenterFile}
+											onRevealRequestConsumed={handleFilePreviewRequestConsumed}
 											onSplitChange={setFilesSplit}
 											onToggleMaximized={handleToggleFilesPopOut}
 											revealRequest={filePreviewRequestsBySession[sessionId] ?? null}
