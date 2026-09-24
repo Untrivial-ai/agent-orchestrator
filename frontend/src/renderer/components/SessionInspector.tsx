@@ -2,7 +2,7 @@ import { AppLink } from "./AppLink";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "@tanstack/react-router";
-import { memo, useCallback, useEffect, useId, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useId, useState, type MouseEvent, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -35,6 +35,7 @@ import {
 	Play,
 	Trash2,
 	Loader2,
+	MessageSquarePlus,
 	MessageSquare,
 	X,
 } from "lucide-react";
@@ -190,7 +191,7 @@ export const SessionInspector = memo(function SessionInspector({
 	browserAnnotationQueue?: BrowserAnnotationQueueModel;
 	isInspectorVisible?: boolean;
 	onToggleBrowserPopOut?: (next: boolean) => void;
-	onOpenArtifact?: (target: { path: string }) => void;
+	onOpenArtifact?: (target: { feedback?: boolean; path: string }) => void;
 	onOpenFiles?: () => void;
 	onOpenReviewFile?: (target: { line?: number; path: string }) => void;
 	onOpenReviewerChat?: (reviewId: string) => void;
@@ -333,7 +334,7 @@ const SummaryView = memo(function SummaryView({
 	session,
 }: {
 	canOpenReviews: boolean;
-	onOpenArtifact?: (target: { path: string }) => void;
+	onOpenArtifact?: (target: { feedback?: boolean; path: string }) => void;
 	onOpenReviews: () => void;
 	session: WorkspaceSession;
 }) {
@@ -1332,7 +1333,7 @@ function ArtifactSummaryCard({
 	session,
 }: {
 	artifact: SessionArtifact;
-	onOpenArtifact?: (target: { path: string }) => void;
+	onOpenArtifact?: (target: { feedback?: boolean; path: string }) => void;
 	session: WorkspaceSession;
 }) {
 	const openInAOBrowser = useSessionBrowserLink(session);
@@ -1343,19 +1344,42 @@ function ArtifactSummaryCard({
 		}
 		onOpenArtifact?.({ path: artifact.path });
 	};
+	const handleFeedback = (event: MouseEvent<HTMLButtonElement>) => {
+		event.stopPropagation();
+		onOpenArtifact?.({ feedback: true, path: artifact.path });
+	};
 	return (
-		<button
-			className="flex w-full min-w-0 items-center gap-2 rounded-md border border-(--color-border-settings-input) px-2.5 py-1.5 text-left text-xs outline-none transition-colors hover:bg-interactive-hover focus-visible:bg-interactive-hover focus-visible:ring-1 focus-visible:ring-ring"
-			onClick={handleOpen}
-			type="button"
-		>
-			{artifact.kind === "html" ? (
-				<Globe aria-hidden="true" className="size-icon-sm shrink-0 text-settings-muted" />
-			) : (
-				<FilesIcon aria-hidden="true" className="size-icon-sm shrink-0 text-settings-muted" />
-			)}
-			<span className="min-w-0 flex-1 truncate">{artifact.name}</span>
-		</button>
+		<div className="flex w-full min-w-0 items-center rounded-md border border-(--color-border-settings-input) text-xs transition-colors hover:bg-interactive-hover focus-within:bg-interactive-hover focus-within:ring-1 focus-within:ring-ring">
+			<button
+				className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left outline-none"
+				onClick={handleOpen}
+				type="button"
+			>
+				{artifact.kind === "html" ? (
+					<Globe aria-hidden="true" className="size-icon-sm shrink-0 text-settings-muted" />
+				) : (
+					<FilesIcon aria-hidden="true" className="size-icon-sm shrink-0 text-settings-muted" />
+				)}
+				<span className="min-w-0 flex-1 truncate">{artifact.name}</span>
+			</button>
+			{onOpenArtifact ? (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							aria-label={`${appI18n.t("files.addFeedback")}: ${artifact.name}`}
+							className="mr-1 size-6 shrink-0"
+							onClick={handleFeedback}
+							size="icon-sm"
+							type="button"
+							variant="ghost"
+						>
+							<MessageSquarePlus aria-hidden="true" className="size-icon-sm" />
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent side="bottom">{appI18n.t("files.addFeedback")}</TooltipContent>
+				</Tooltip>
+			) : null}
+		</div>
 	);
 }
 

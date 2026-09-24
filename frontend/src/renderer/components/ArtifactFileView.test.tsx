@@ -1,11 +1,18 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArtifactFileView } from "./ArtifactFileView";
 import { TooltipProvider } from "./ui/tooltip";
 
-vi.mock("../lib/api-client", () => ({ getApiBaseUrl: () => "http://127.0.0.1:3001" }));
+const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
+
+vi.mock("../lib/api-client", () => ({
+	apiClient: { POST: postMock },
+	apiErrorMessage: (error: unknown, fallback?: string) => error instanceof Error ? error.message : fallback ?? "error",
+	getApiBaseUrl: () => "http://127.0.0.1:3001",
+}));
 vi.mock("../hooks/usePierreFileHighlight", () => ({ usePierreFileHighlightReady: () => true }));
 vi.mock("./ReadOnlyFileView", () => ({
 	ReadOnlyFileView: ({ detail }: { detail: { binary: boolean; content: string; contentTruncated: boolean; size: number } }) => (
@@ -42,6 +49,7 @@ describe("ArtifactFileView", () => {
 
 	afterEach(() => {
 		fetchMock.mockReset();
+		postMock.mockReset();
 		vi.unstubAllGlobals();
 	});
 
@@ -117,5 +125,27 @@ describe("ArtifactFileView", () => {
 		renderWithQuery(<ArtifactFileView artifactName="notes.txt" path="notes.txt" sessionId="sess-1" />);
 
 		await waitFor(() => expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument());
+	});
+
+	it("opens whole-artifact feedback from a reveal request and sends it to the worker", async () => {
+		fetchMock.mockResolvedValue(new Response("content", { status: 200 }));
+		postMock.mockResolvedValue({ data: { status: "ok" } });
+
+		renderWithQuery(<ArtifactFileView artifactName="notes.txt" feedbackRequestKey={1} path="notes.txt" sessionId="sess-1" />);
+
+		const textbox = await screen.findByRole("textbox", { name: /Feedback for notes\.txt/ });
+		await userEvent.type(textbox, "Please tighten this artifact.");
+		await userEvent.click(screen.getByRole("button", { name: "Send feedback" }));
+
+		await waitFor(() =>
+			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
+				params: { path: { sessionId: "sess-1" } },
+				body: { message: expect.stringContaining("Please tighten this artifact.") },
+			}),
+		);
+		expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
+			params: { path: { sessionId: "sess-1" } },
+			body: { message: expect.stringContaining("notes.txt") },
+		});
 	});
 });

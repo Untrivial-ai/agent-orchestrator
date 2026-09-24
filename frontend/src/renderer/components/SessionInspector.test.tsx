@@ -980,6 +980,27 @@ describe("SessionInspector Artifacts section", () => {
       expect.anything(),
     );
   });
+
+  it("opens artifact feedback through the artifact viewer flow", async () => {
+    const onOpenArtifact = vi.fn();
+    renderWithQuery(
+      <SessionInspector
+        onOpenArtifact={onOpenArtifact}
+        session={session([], {
+          outputType: "artifact",
+          artifactFiles: [artifact({ path: "report.html", name: "report.html", kind: "html", previewUrl: "http://sess-1.localhost:3001/report.html" })],
+        })}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Add feedback: report.html" }));
+
+    expect(onOpenArtifact).toHaveBeenCalledWith({ feedback: true, path: "report.html" });
+    expect(postMock).not.toHaveBeenCalledWith(
+      "/api/v1/sessions/{sessionId}/preview",
+      expect.anything(),
+    );
+  });
 });
 
 describe("SessionInspector usage", () => {

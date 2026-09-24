@@ -35,6 +35,7 @@ const interfaceTransitionState = vi.hoisted(() => ({
 const reviewGetMock = vi.hoisted(() => vi.fn());
 const inspectorVisibilityRenders = vi.hoisted(() => [] as boolean[]);
 const chatSurfaceRenders = vi.hoisted(() => [] as string[]);
+const artifactFeedbackConsumes = vi.hoisted(() => [] as number[]);
 const chatSurfaceWorkState = vi.hoisted(() => ({
 	controllerBusy: false,
 	hasRunningTurn: false,
@@ -435,6 +436,7 @@ vi.mock("./SessionFileExplorer", () => ({
 	SessionFileExplorer: ({
 		isMaximized,
 		onOpenFile,
+		onRevealRequestConsumed,
 		onSplitChange,
 		onToggleMaximized,
 		revealRequest,
@@ -442,14 +444,20 @@ vi.mock("./SessionFileExplorer", () => ({
 	}: {
 		isMaximized?: boolean;
 		onOpenFile?: (path: string, options?: { editing?: boolean; mode?: "diff" | "file" | "rendered" }) => void;
+		onRevealRequestConsumed?: (key: number) => void;
 		onSplitChange?: (split: boolean) => void;
 		onToggleMaximized?: (next: boolean) => void;
-		revealRequest?: { path: string; key: number } | null;
+		revealRequest?: { feedback?: boolean; path: string; key: number; source?: "artifact" } | null;
 		split?: boolean;
 	}) => {
 		useEffect(() => {
 			if (!isMaximized && revealRequest) onOpenFile?.(revealRequest.path, { mode: "file" });
 		}, [isMaximized, onOpenFile, revealRequest]);
+		useEffect(() => {
+			if (!revealRequest?.feedback) return;
+			artifactFeedbackConsumes.push(revealRequest.key);
+			onRevealRequestConsumed?.(revealRequest.key);
+		}, [onRevealRequestConsumed, revealRequest]);
 		return <div>
 			<button type="button" onClick={() => onToggleMaximized?.(!isMaximized)}>
 				{isMaximized ? "files center" : "files rail"}
@@ -461,6 +469,7 @@ vi.mock("./SessionFileExplorer", () => ({
 				<>
 					<span>file tree</span>
 					{revealRequest ? <span>{`selected ${revealRequest.path}`}</span> : null}
+					{revealRequest?.feedback ? <span>{`feedback request ${revealRequest.key}`}</span> : null}
 					<button type="button" onClick={() => onOpenFile("src/App.tsx", { mode: "file" })}>
 						select src/App.tsx
 					</button>
@@ -542,6 +551,7 @@ vi.mock("./SessionInspector", () => ({
 	SessionInspector: ({
 		filesView,
 		isInspectorVisible = true,
+		onOpenArtifact,
 		onOpenFiles,
 		onOpenReviewFile,
 		onOpenReviewerChat,
@@ -552,6 +562,7 @@ vi.mock("./SessionInspector", () => ({
 	}: {
 		filesView?: ReactNode;
 		isInspectorVisible?: boolean;
+		onOpenArtifact?: (target: { feedback?: boolean; path: string }) => void;
 		onOpenFiles?: () => void;
 		onOpenReviewFile?: (target: { line?: number; path: string }) => void;
 		onOpenReviewerChat?: (reviewId: string) => void;
@@ -583,6 +594,9 @@ vi.mock("./SessionInspector", () => ({
 				</div>
 				<button type="button" onClick={onOpenFiles}>
 					open files
+				</button>
+				<button type="button" onClick={() => onOpenArtifact?.({ feedback: true, path: "report.html" })}>
+					open artifact feedback
 				</button>
 				<button type="button" onClick={() => onOpenReviewFile?.({ path: "src/panel.tsx", line: 42 })}>
 					view review file
@@ -711,6 +725,7 @@ describe("SessionView", () => {
 		routeBlockerState.options = undefined;
 		inspectorVisibilityRenders.length = 0;
 		chatSurfaceRenders.length = 0;
+		artifactFeedbackConsumes.length = 0;
 		nativeFullScreenMock.mockReturnValue(false);
 		window.localStorage.clear();
 		for (const session of workspaces.flatMap((workspace) => workspace.sessions)) {
@@ -784,6 +799,24 @@ describe("SessionView", () => {
 			}
 			return { data: { reviewerHandleId: "", reviews: [], runs: [] }, error: undefined };
 		});
+	});
+
+	it("does not replay consumed artifact feedback when Files remounts", async () => {
+		render(<SessionView sessionId="sess-1" />);
+
+		fireEvent.click(screen.getByRole("button", { name: "open artifact feedback" }));
+
+		await waitFor(() => expect(artifactFeedbackConsumes).toEqual([1]));
+		await waitFor(() => expect(screen.queryByText("feedback request 1")).not.toBeInTheDocument());
+		expect(screen.getByText("selected report.html")).toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("tab", { name: "Summary" }));
+		expect(screen.queryByText("selected report.html")).not.toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: "open files" }));
+		expect(screen.getByText("selected report.html")).toBeInTheDocument();
+		expect(screen.queryByText("feedback request 1")).not.toBeInTheDocument();
+		expect(artifactFeedbackConsumes).toEqual([1]);
 	});
 
 	// Regression: shell terminals are an app-wide list, so without a per-session
