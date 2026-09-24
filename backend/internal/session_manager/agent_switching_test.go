@@ -575,6 +575,9 @@ type switchTestAgent struct {
 	available           map[string]ports.NativeSessionAvailability
 	authStatus          ports.AgentAuthStatus
 	authErr             error
+	launchAuthStatus    ports.AgentAuthStatus
+	launchAuthErr       error
+	launchAuthCalls     int
 	locateTranscript    func(ports.NativeSessionRef) (string, bool, error)
 	onHooks             func()
 	hookCalls           int
@@ -825,6 +828,11 @@ func (a *switchTestAgent) AuthStatus(ctx context.Context) (ports.AgentAuthStatus
 		return ports.AgentAuthStatusUnknown, a.authErr
 	}
 	return a.authStatus, a.authErr
+}
+
+func (a *switchTestAgent) ValidateLaunchAuth(context.Context, string, map[string]string) (ports.AgentAuthStatus, error) {
+	a.launchAuthCalls++
+	return a.launchAuthStatus, a.launchAuthErr
 }
 
 func (a *switchTestAgent) preflightCallCount() int {
@@ -3036,6 +3044,29 @@ func TestSwitchAgentRejectsDefinitelyUnauthenticatedTargetBeforeStoppingSource(t
 	}
 	if got := store.sessions["proj-1"].Harness; got != domain.HarnessClaudeCode {
 		t.Fatalf("session harness = %q, want source harness", got)
+	}
+}
+
+func TestSwitchAgentRejectsUnauthorizedLaunchContextBeforeStoppingSource(t *testing.T) {
+	runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, runtime)
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+	target.launchAuthStatus = ports.AgentAuthStatusUnauthorized
+
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{
+		TargetHarness: domain.HarnessCodex, IdempotencyKey: "launch-context-unauthenticated",
+	})
+	if !errors.Is(err, ErrTargetAgentUnauthorized) {
+		t.Fatalf("switch error = %v, want ErrTargetAgentUnauthorized", err)
+	}
+	if sw.State != domain.AgentSwitchFailed || target.launchAuthCalls != 1 {
+		t.Fatalf("switch=%+v launch auth calls=%d, want failed/1", sw, target.launchAuthCalls)
+	}
+	if runtime.restarted != 0 || runtime.destroyed != 0 || runtime.created != 0 {
+		t.Fatalf("source runtime changed: restarts=%d destroys=%d creates=%d", runtime.restarted, runtime.destroyed, runtime.created)
+	}
+	if got := store.sessions["proj-1"].Harness; got != domain.HarnessClaudeCode {
+		t.Fatalf("source harness changed to %q", got)
 	}
 }
 

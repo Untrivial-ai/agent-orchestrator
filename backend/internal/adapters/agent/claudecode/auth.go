@@ -235,14 +235,17 @@ func InvalidateAuthCache() { claudeAuthCache.invalidate() }
 // claudeAuthReport is the parsed shape of `claude auth status --json`. Only
 // LoggedIn drives the verdict; the rest is diagnostics.
 type claudeAuthReport struct {
-	LoggedIn    bool   `json:"loggedIn"`
+	LoggedIn    *bool  `json:"loggedIn"`
 	APIProvider string `json:"apiProvider"`
 }
 
 // verdict maps a CLI report onto a verdict. loggedIn:true is credentials
 // present, not credentials valid — hence configured, never authorized.
 func (r claudeAuthReport) status() ports.AgentAuthStatus {
-	if r.LoggedIn {
+	if r.LoggedIn == nil {
+		return ports.AgentAuthStatusUnknown
+	}
+	if *r.LoggedIn {
 		return ports.AgentAuthStatusConfigured
 	}
 	// A CLI that positively reports signed out is evidence, not a guess: it
@@ -295,6 +298,9 @@ func claudeAuthReportFromOutput(out []byte) (claudeAuthReport, bool) {
 	}
 	var report claudeAuthReport
 	if json.Unmarshal(out[start:end+1], &report) != nil {
+		return claudeAuthReport{}, false
+	}
+	if report.LoggedIn == nil {
 		return claudeAuthReport{}, false
 	}
 	return report, true
@@ -364,6 +370,24 @@ func claudeConfigAuthStatus(ctx context.Context, path string) (ports.AgentAuthSt
 
 var claudeModelAuthReport = func(ctx context.Context, binary, workingDir string, env map[string]string) (claudeAuthReport, bool) {
 	return (&Plugin{}).claudeCLIAuthReport(ctx, binary, workingDir, env)
+}
+
+// ProviderCatalogFingerprint returns the local identity inputs that scope a
+// Claude provider catalog. It includes the CLI-reported provider and the
+// resolved credential identity without exposing the credential itself.
+func ProviderCatalogFingerprint(ctx context.Context, binary, workingDir string, env map[string]string) string {
+	probeCtx, cancel := context.WithTimeout(ctx, claudeAuthProbeTimeout)
+	defer cancel()
+	resolved := (&Plugin{}).resolveProviderContext(probeCtx, binary, workingDir, env, claudeModelAuthReport)
+	reported := ""
+	if resolved.cliOK {
+		reported = strings.TrimSpace(resolved.report.APIProvider)
+	}
+	credential := ""
+	if resolved.found {
+		credential = resolved.credential.Fingerprint()
+	}
+	return string(resolved.provider) + "\x00" + reported + "\x00" + credential
 }
 
 // ProviderModels returns the Claude model IDs the configured provider actually

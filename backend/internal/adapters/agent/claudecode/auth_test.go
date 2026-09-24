@@ -340,8 +340,14 @@ func TestClaudeAuthReportIgnoresStderrJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	report, ok := (&Plugin{}).claudeCLIAuthReport(context.Background(), binary, project, nil)
-	if !ok || !report.LoggedIn || report.APIProvider != "vertex" {
+	if !ok || report.LoggedIn == nil || !*report.LoggedIn || report.APIProvider != "vertex" {
 		t.Fatalf("stdout auth report was lost: %#v, parsed %v", report, ok)
+	}
+}
+
+func TestClaudeAuthReportRejectsMissingLoggedIn(t *testing.T) {
+	if report, ok := claudeAuthReportFromOutput([]byte(`{"apiProvider":"firstParty"}`)); ok {
+		t.Fatalf("report = %#v, want unfamiliar schema rejected", report)
 	}
 }
 
@@ -376,9 +382,8 @@ func TestRelativeClaudeConfigDirectoryUsesProjectContext(t *testing.T) {
 	}
 	options.WorkingDir, options.CommandEnv = projectDir, explicitEnv
 	resolved := options.WithClaudeSettings(context.Background())
-	credential, ok := agentcreds.ResolveLocal(context.Background(), agentcreds.ProviderGateway, resolved)
-	if !ok || credential.Secret != "project-fixture-token" || credential.Source != "credentials-file" {
-		t.Error("credentials reader did not select the project credential file")
+	if _, ok := agentcreds.ResolveLocal(context.Background(), agentcreds.ProviderGateway, resolved); ok {
+		t.Error("workspace gateway inherited a credential from its repository-controlled config directory")
 	}
 	if resolved.CommandEnv["CLAUDE_CONFIG_DIR"] != wantConfigDir {
 		t.Error("child command environment did not use the same absolute config directory")
@@ -402,7 +407,7 @@ printf '%s\n' '{"loggedIn":true,"apiProvider":"gateway"}'
 		t.Fatal(err)
 	}
 	report, parsed := (&Plugin{}).claudeCLIAuthReport(context.Background(), binary, resolved.WorkingDir, resolved.CommandEnv)
-	if !parsed || !report.LoggedIn || report.APIProvider != "gateway" {
+	if !parsed || report.LoggedIn == nil || !*report.LoggedIn || report.APIProvider != "gateway" {
 		t.Error("auth-status child did not read the same project settings and credentials")
 	}
 	if explicitEnv["CLAUDE_CONFIG_DIR"] != ".claude-custom" {
@@ -476,7 +481,8 @@ func TestProviderModelsUsesMergedProjectSettings(t *testing.T) {
 		if _, ok := env["SECRET"]; ok {
 			t.Error("unapproved settings env escaped")
 		}
-		return claudeAuthReport{LoggedIn: false, APIProvider: "firstParty"}, true
+		loggedIn := false
+		return claudeAuthReport{LoggedIn: &loggedIn, APIProvider: "firstParty"}, true
 	}
 	t.Cleanup(func() { claudeModelAuthReport = previous })
 	env := map[string]string{"ANTHROPIC_API_KEY": "session-key", "CLOUDSDK_CONFIG": "/fixture/gcloud", "LAUNCH_ONLY": "preserved"}

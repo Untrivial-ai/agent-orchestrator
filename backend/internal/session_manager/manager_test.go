@@ -3644,6 +3644,27 @@ func TestRestore_ReopensTerminal(t *testing.T) {
 	}
 }
 
+func TestRestoreRejectsUnauthorizedLaunchContext(t *testing.T) {
+	m, st, rt, _ := newManager()
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "b", AgentSessionID: "agent-x"})
+	project := st.projects["mer"]
+	project.Config.Env = map[string]string{"ANTHROPIC_BASE_URL": "https://gateway.example"}
+	st.projects["mer"] = project
+	agent := &launchAuthAgent{recordingAgent: &recordingAgent{}, status: ports.AgentAuthStatusUnauthorized}
+	m.agents = singleAgent{agent: agent}
+
+	_, err := m.RestoreWithMode(ctx, "mer-1")
+	if !errors.Is(err, ports.ErrAgentAuthRequired) {
+		t.Fatalf("restore error = %v, want ErrAgentAuthRequired", err)
+	}
+	if agent.workingDir != "/ws/mer-1" || agent.env["ANTHROPIC_BASE_URL"] != "https://gateway.example" {
+		t.Fatalf("launch auth context = cwd %q env %#v", agent.workingDir, agent.env)
+	}
+	if rt.created != 0 {
+		t.Fatalf("runtime created %d times after rejected auth", rt.created)
+	}
+}
+
 func TestRestore_RestoresReviewerWithoutTerminating(t *testing.T) {
 	m, st, rt, _ := newManager()
 	reviewer := &fakeReviewerTerminator{err: errors.New("reviewer still alive")}

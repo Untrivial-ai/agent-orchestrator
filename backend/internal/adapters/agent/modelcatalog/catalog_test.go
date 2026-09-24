@@ -640,6 +640,7 @@ func TestCatalogFingerprintTracksClaudeProviderInputs(t *testing.T) {
 	}
 	changes := map[string]string{
 		"CLAUDE_CODE_USE_BEDROCK":     "",
+		"CLAUDE_CODE_USE_FOUNDRY":     "1",
 		"ANTHROPIC_BASE_URL":          "https://other.example",
 		"AWS_REGION":                  "eu-west-1",
 		"ANTHROPIC_VERTEX_PROJECT_ID": "project-b",
@@ -657,6 +658,23 @@ func TestCatalogFingerprintTracksClaudeProviderInputs(t *testing.T) {
 				t.Fatalf("fingerprint unchanged after %s changed", key)
 			}
 		})
+	}
+}
+
+func TestClaudeCatalogFingerprintIncludesProviderIdentity(t *testing.T) {
+	request := claudeRequest(t)
+	identity := "firstParty\x00account-a"
+	discoverer := Discoverer{ClaudeFingerprint: func(context.Context, ports.AgentModelDiscoveryRequest) string {
+		return identity
+	}}
+	first := discoverer.CatalogFingerprint(context.Background(), request)
+	identity = "firstParty\x00account-b"
+	if got := discoverer.CatalogFingerprint(context.Background(), request); got == first {
+		t.Fatal("fingerprint unchanged after provider account identity changed")
+	}
+	identity = "gateway\x00account-b"
+	if got := discoverer.CatalogFingerprint(context.Background(), request); got == first {
+		t.Fatal("fingerprint unchanged after CLI provider changed")
 	}
 }
 

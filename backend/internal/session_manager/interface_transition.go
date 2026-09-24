@@ -816,6 +816,18 @@ func (m *Manager) preflightInterfaceTarget(
 		return err
 	}
 	config := restoredAgentConfig(rec, project.Config)
+	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	pinRuntimePermissionEnv(env, config.Permissions)
+	m.augmentAgentRuntimeEnv(agent, env)
+	if validator, ok := agent.(ports.AgentLaunchAuthValidator); ok {
+		status, authErr := validator.ValidateLaunchAuth(ctx, rec.Metadata.WorkspacePath, env)
+		if authErr != nil {
+			m.logger.Debug("interface transition: launch authentication probe inconclusive; continuing",
+				"sessionID", rec.ID, "harness", rec.Harness, "error", authErr)
+		} else if status == ports.AgentAuthStatusUnauthorized {
+			return ports.ErrAgentAuthRequired
+		}
+	}
 	var cmd []string
 	if transition.NativeConversationID == "" {
 		cmd, _, _, err = freshLaunchArgv(ctx, agent, rec.ID, rec.Metadata.WorkspacePath,
@@ -1703,7 +1715,7 @@ func interfaceTransitionErrorCode(err error) string {
 		return "TARGET_UNAVAILABLE"
 	case errors.Is(err, ports.ErrChatDriverIncompatible):
 		return "TARGET_INCOMPATIBLE"
-	case errors.Is(err, ports.ErrChatAuthRequired):
+	case errors.Is(err, ports.ErrChatAuthRequired), errors.Is(err, ports.ErrAgentAuthRequired):
 		return "TARGET_AUTH_REQUIRED"
 	case errors.Is(err, ErrInterfaceProviderHistoryRecoveryUnavailable):
 		return "PROVIDER_HISTORY_RECOVERY_UNAVAILABLE"

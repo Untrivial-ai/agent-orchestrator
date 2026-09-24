@@ -105,6 +105,14 @@ func TestClaudeACPLaunchEnvAdvertisesSelectedModelWithoutProviderCatalog(t *test
 	}
 }
 
+func TestClaudeACPLaunchEnvPreservesNativePickerWithoutProviderCatalog(t *testing.T) {
+	t.Setenv("CLAUDE_MODEL_CONFIG", "")
+	env := claudeACPLaunchEnv(nil, "/opt/claude", "sonnet", nil)
+	if got := env["CLAUDE_MODEL_CONFIG"]; got != "" {
+		t.Fatalf("CLAUDE_MODEL_CONFIG = %q, want native ACP picker preserved", got)
+	}
+}
+
 func TestClaudeACPLaunchEnvAddsSelectedProviderModelAsCustomOption(t *testing.T) {
 	t.Setenv("CLAUDE_MODEL_CONFIG", "")
 	t.Setenv("ANTHROPIC_CUSTOM_MODEL_OPTION", "")

@@ -51,6 +51,10 @@ type ResolveOptions struct {
 	// resolving Claude settings and explicit provider selection.
 	WorkingDir string
 	CommandEnv map[string]string
+	// DisableStoredCredentials prevents gateway configuration read from a
+	// workspace from inheriting a subscription token from the user's keychain or
+	// credentials file. Explicit launch credentials remain eligible.
+	DisableStoredCredentials bool
 }
 
 // WithClaudeSettings applies the shared settings resolver to the launch context.
@@ -68,6 +72,9 @@ func (o ResolveOptions) WithClaudeSettings(ctx context.Context) ResolveOptions {
 		merged[key] = value
 	}
 	o.CommandEnv = merged
+	if settings.WorkspaceProviderRouting {
+		o.DisableStoredCredentials = true
+	}
 	o.Env = func(key string) string {
 		if value, ok := merged[key]; ok {
 			return value
@@ -174,6 +181,9 @@ func resolveFirstParty(ctx context.Context, opts ResolveOptions) (Credential, bo
 				Kind: source.kind, Secret: secret, Source: source.env, Provider: ProviderFirstParty,
 			}, true
 		}
+	}
+	if opts.DisableStoredCredentials {
+		return Credential{}, false
 	}
 	// Source 5: the subscription login, stored in the keychain on macOS and in
 	// a plain file everywhere else.

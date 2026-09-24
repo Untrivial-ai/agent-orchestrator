@@ -1368,6 +1368,15 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
 	pinRuntimePermissionEnv(env, config.Permissions)
 	m.augmentAgentRuntimeEnv(agent, env)
+	if validator, ok := agent.(ports.AgentLaunchAuthValidator); ok {
+		status, authErr := validator.ValidateLaunchAuth(ctx, rec.Metadata.WorkspacePath, env)
+		if authErr != nil {
+			m.logger.Warn("agent switch: target launch auth probe failed; launch remains authoritative",
+				"sessionID", rec.ID, "harness", harness, "error", authErr)
+		} else if status == ports.AgentAuthStatusUnauthorized {
+			return preparedTargetActivation{}, ErrTargetAgentUnauthorized
+		}
+	}
 	configDir, err := nativeConfigDir(ctx, agent, env)
 	if err != nil {
 		return preparedTargetActivation{}, err

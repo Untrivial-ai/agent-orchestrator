@@ -1497,7 +1497,7 @@ func TestModelsLeaderCancellationDoesNotCancelCoalescedLoad(t *testing.T) {
 	}
 }
 
-func TestModelsDoesNotResolveProjectWorkingDirectory(t *testing.T) {
+func TestModelsResolvesProjectWorkingDirectory(t *testing.T) {
 	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
 		"proj-1": {ID: "proj-1", Path: "/work/project"},
 	}}
@@ -1508,12 +1508,12 @@ func TestModelsDoesNotResolveProjectWorkingDirectory(t *testing.T) {
 	if _, err := svc.Models(context.Background(), "codex", "proj-1", false); err != nil {
 		t.Fatal(err)
 	}
-	if projects.gotID != "" {
-		t.Fatalf("project lookup id = %q, want no project lookup", projects.gotID)
+	if projects.gotID != "proj-1" {
+		t.Fatalf("project lookup id = %q, want proj-1", projects.gotID)
 	}
 }
 
-func TestModelsDoesNotPassProjectEnvironmentToDiscovery(t *testing.T) {
+func TestModelsPassesProjectEnvironmentToDiscovery(t *testing.T) {
 	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
 		"proj-1": {
 			ID:   "proj-1",
@@ -1536,8 +1536,32 @@ func TestModelsDoesNotPassProjectEnvironmentToDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Models) != 1 || discoverer.lastRequest.WorkingDir != "" || len(discoverer.lastRequest.Env) != 0 {
-		t.Fatalf("catalog=%#v request=%#v, want global discovery", got, discoverer.lastRequest)
+	if len(got.Models) != 1 || discoverer.lastRequest.WorkingDir != "/work/project" || discoverer.lastRequest.Env["OPENCODE_CONFIG"] != "/work/project/opencode.json" {
+		t.Fatalf("catalog=%#v request=%#v, want project discovery", got, discoverer.lastRequest)
+	}
+}
+
+func TestModelsCachesProjectScopesIndependently(t *testing.T) {
+	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
+		"proj-a": {ID: "proj-a", Path: "/work/a", Config: domain.ProjectConfig{Env: map[string]string{"ANTHROPIC_MODEL": "model-a"}}},
+		"proj-b": {ID: "proj-b", Path: "/work/b", Config: domain.ProjectConfig{Env: map[string]string{"ANTHROPIC_MODEL": "model-b"}}},
+	}}
+	cache := &fakeModelCache{}
+	discoverer := successfulModelDiscoverer()
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, projects, discoverer)
+
+	for _, projectID := range []string{"proj-a", "proj-b"} {
+		if _, err := svc.Models(context.Background(), "claude-code", projectID, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := discoverer.discoverCalls.Load(); got != 2 {
+		t.Fatalf("discoveries = %d, want one per project scope", got)
+	}
+	for _, projectID := range []string{"proj-a", "proj-b"} {
+		if _, ok, err := cache.GetAgentModelCatalog(context.Background(), "claude-code", projectID); err != nil || !ok {
+			t.Fatalf("cache scope %s = found %v err %v", projectID, ok, err)
+		}
 	}
 }
 
@@ -1923,7 +1947,7 @@ func TestInvalidateAgentInstallationInvalidatesAdapterBinary(t *testing.T) {
 	}
 }
 
-func TestModelsFingerprintsTheSameGlobalInputsDiscoveryReads(t *testing.T) {
+func TestModelsFingerprintsTheSameProjectInputsDiscoveryReads(t *testing.T) {
 	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
 		"proj-1": {
 			ID:     "proj-1",
@@ -1943,7 +1967,7 @@ func TestModelsFingerprintsTheSameGlobalInputsDiscoveryReads(t *testing.T) {
 	if _, err := svc.Models(context.Background(), "claude-code", "proj-1", false); err != nil {
 		t.Fatal(err)
 	}
-	// Fingerprinting and discovery must use the same global inputs.
+	// Fingerprinting and discovery must use the same project inputs.
 	fingerprinted := discoverer.lastFingerprintRequest.Load()
 	if fingerprinted == nil {
 		t.Fatal("catalog fingerprint was never requested")
@@ -1951,8 +1975,8 @@ func TestModelsFingerprintsTheSameGlobalInputsDiscoveryReads(t *testing.T) {
 	if !reflect.DeepEqual(*fingerprinted, discoverer.lastRequest) {
 		t.Fatalf("fingerprint request = %#v, want the discovery request %#v", *fingerprinted, discoverer.lastRequest)
 	}
-	if fingerprinted.WorkingDir != "" || len(fingerprinted.Env) != 0 {
-		t.Fatalf("fingerprint request = %#v, want project-independent inputs", *fingerprinted)
+	if fingerprinted.WorkingDir != "/work/project" || fingerprinted.Env["ANTHROPIC_MODEL"] != "opus" {
+		t.Fatalf("fingerprint request = %#v, want project inputs", *fingerprinted)
 	}
 }
 

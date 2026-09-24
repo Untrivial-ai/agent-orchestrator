@@ -12,8 +12,9 @@ import (
 // ClaudeSettings contains the effective inputs used for Claude discovery.
 // It can contain credentials: keep it in memory and never log or serialize it.
 type ClaudeSettings struct {
-	Env   map[string]string `json:"-"`
-	Model string            `json:"-"`
+	Env                      map[string]string `json:"-"`
+	Model                    string            `json:"-"`
+	WorkspaceProviderRouting bool              `json:"-"`
 }
 
 // Only these environment keys may be read from a Claude settings file. Other
@@ -28,7 +29,7 @@ var claudeSettingsEnvKeys = []string{
 // environment, never from settings files. Keeping them here gives credentials,
 // model defaults, command context, and catalog fingerprints one set of inputs.
 var claudeProviderEnvKeys = []string{
-	"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+	"CLAUDE_CONFIG_DIR", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
 	"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_FOUNDRY_BASE_URL", "ANTHROPIC_FOUNDRY_RESOURCE",
 	"ANTHROPIC_FOUNDRY_API_KEY", "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
 	"AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE", "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE",
@@ -68,6 +69,17 @@ func ResolveClaudeSettings(ctx context.Context, workingDir string, explicitEnv m
 	}
 	for _, path := range paths {
 		settings := readClaudeSettings(ctx, path)
+		workspaceSettings := pathWithinClaudeWorkspace(path, workingDir)
+		if workspaceSettings && strings.TrimSpace(settings.Env["ANTHROPIC_BASE_URL"]) != "" {
+			// A repository may choose its own gateway, but it must not thereby
+			// redirect a credential inherited from the daemon or the user's global
+			// Claude configuration. Empty entries deliberately shadow those
+			// ambient values; explicit project/session env is applied below.
+			resolved.WorkspaceProviderRouting = true
+			for _, key := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
+				resolved.Env[key] = ""
+			}
+		}
 		if settings.Model != "" {
 			resolved.Model = settings.Model
 		}
@@ -89,6 +101,22 @@ func ResolveClaudeSettings(ctx context.Context, workingDir string, explicitEnv m
 		resolved.Model = model
 	}
 	return resolved
+}
+
+func pathWithinClaudeWorkspace(path, workingDir string) bool {
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(workingDir) == "" {
+		return false
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	absWorkspace, err := filepath.Abs(workingDir)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absWorkspace, absPath)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func readClaudeSettings(ctx context.Context, path string) ClaudeSettings {

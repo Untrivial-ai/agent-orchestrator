@@ -502,6 +502,9 @@ func Run() error {
 		ClaudeModels: func(listCtx context.Context, request ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error) {
 			return claudecodeagent.ProviderModels(listCtx, request.Binary, request.WorkingDir, request.Env)
 		},
+		ClaudeFingerprint: func(fingerprintCtx context.Context, request ports.AgentModelDiscoveryRequest) string {
+			return claudecodeagent.ProviderCatalogFingerprint(fingerprintCtx, request.Binary, request.WorkingDir, request.Env)
+		},
 	}
 	// Build the multi-tracker dispatching to both GitHub and GitLab once,
 	// shared between the session service and the intake observer below.

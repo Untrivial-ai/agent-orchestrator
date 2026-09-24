@@ -218,6 +218,12 @@ func claudeACPLaunchEnv(
 		seen[id] = struct{}{}
 		ids = append(ids, id)
 	}
+	// With no provider catalog, leave native aliases to claude-agent-acp. An
+	// availableModels list containing only the selected alias would replace its
+	// full built-in picker with that single model.
+	if len(ids) == 0 && isClaudeNativeModelAlias(selected) {
+		return env
+	}
 	if selected != "" {
 		if _, exists := seen[selected]; !exists {
 			ids = append(ids, selected)

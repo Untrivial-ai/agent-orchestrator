@@ -133,9 +133,10 @@ func customModelEntryMode(agentID string) ports.CustomModelEntryMode {
 
 // Discoverer implements the model-discovery port for production daemon wiring.
 type Discoverer struct {
-	CodexModels  CodexModelListFunc
-	ClineOptions ClineConfigOptionListFunc
-	ClaudeModels ClaudeModelListFunc
+	CodexModels       CodexModelListFunc
+	ClineOptions      ClineConfigOptionListFunc
+	ClaudeModels      ClaudeModelListFunc
+	ClaudeFingerprint ClaudeFingerprintFunc
 }
 
 // CodexModelListFunc obtains Codex's account-scoped app-server catalog without
@@ -151,6 +152,10 @@ type ClineConfigOptionListFunc func(context.Context, ports.AgentModelDiscoveryRe
 // whenever the provider could not be asked; discovery then falls back to the
 // static alias list rather than emptying the picker.
 type ClaudeModelListFunc func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.AgentModelInfo, error)
+
+// ClaudeFingerprintFunc supplies account/provider identity that is not present
+// in settings files, such as subscription credentials and apiProvider.
+type ClaudeFingerprintFunc func(context.Context, ports.AgentModelDiscoveryRequest) string
 
 // Discover uses the agent-owned model surface configured for this adapter.
 func (d Discoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
@@ -289,8 +294,14 @@ func applyClaudeConfiguredDefault(models []ports.AgentModelInfo, configured stri
 // installed agent binary plus the configuration this adapter reads to build the
 // catalog. Folding configuration in is what lets a settings edit invalidate a
 // cached catalog, since the binary alone does not change when settings do.
-func (Discoverer) CatalogFingerprint(ctx context.Context, request ports.AgentModelDiscoveryRequest) string {
-	return CatalogFingerprint(ctx, request.AgentID, request.Binary, request.WorkingDir, request.Env)
+func (d Discoverer) CatalogFingerprint(ctx context.Context, request ports.AgentModelDiscoveryRequest) string {
+	fingerprint := CatalogFingerprint(ctx, request.AgentID, request.Binary, request.WorkingDir, request.Env)
+	if request.AgentID != "claude-code" || d.ClaudeFingerprint == nil {
+		return fingerprint
+	}
+	extra := d.ClaudeFingerprint(ctx, request)
+	hash := sha256.Sum256([]byte(fingerprint + "\x00" + extra))
+	return fmt.Sprintf("%x", hash[:8])
 }
 
 // Manual returns the manual-entry fallback catalog for an agent.
