@@ -33,6 +33,13 @@ The final frontend typecheck and complete suite passed: 341 files, 5,324 tests,
 7 skipped. Logs: `/tmp/ao69-publish-typecheck.log` and
 `/tmp/ao69-publish-frontend-full.log`.
 
+The workflow-pinned backend linter initially found six missing exported-contract
+comments and an unchecked deferred rollback. After those fixes, the full linter
+reported zero issues. Backend build/vet and the complete domain/store race suites
+passed again. E2E typecheck and shared UI typecheck/tests also passed (133 tests).
+Logs: `/tmp/ao69-publish-lint.log`, `/tmp/ao69-publish-store-final.log`, and
+`/tmp/ao69-publish-product-ui.log`.
+
 The evidence app, daemon, scratch checkout/profile/home, Docker services,
 workspace volume, local image tags, and ephemeral stack secrets were removed.
 Pre-existing demo services were left untouched.

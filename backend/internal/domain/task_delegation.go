@@ -37,8 +37,10 @@ func (f TaskDelegationRequestFingerprint) Valid() bool {
 // a worker session.
 type TaskDelegationState string
 
+// TaskDelegationStartupState separates durable identity from runtime readiness.
 type TaskDelegationStartupState string
 
+// Startup checkpoints prevent replay from repeating uncertain runtime effects.
 const (
 	TaskDelegationStartupLegacy   TaskDelegationStartupState = "legacy"
 	TaskDelegationStartupSeeded   TaskDelegationStartupState = "seeded"
@@ -64,12 +66,14 @@ type TaskDelegation struct {
 	UpdatedAt          time.Time
 }
 
+// Ready accepts legacy completed records but never unfinished runtime startup.
 func (d TaskDelegation) Ready() bool {
 	return d.State == TaskDelegationCompleted && d.WorkerID != "" &&
 		(d.StartupState == TaskDelegationStartupReady || d.StartupState == TaskDelegationStartupLegacy)
 }
 
 var (
+	// ErrTaskDelegationRecoveryRequired prevents retrying an uncertain startup.
 	ErrTaskDelegationRecoveryRequired = errors.New("domain: task delegation needs recovery")
 	// ErrTaskDelegationIdempotencyConflict means a key was reused for a
 	// materially different request.

@@ -134,7 +134,7 @@ func (s *Store) CreateTaskDelegationSession(ctx context.Context, seed domain.Ses
 	if err != nil {
 		return domain.SessionRecord{}, false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	q := s.qw.WithTx(tx)
 	reservation, err := q.GetTaskDelegation(ctx, key)
 	if err != nil {
@@ -172,6 +172,7 @@ func (s *Store) CreateTaskDelegationSession(ctx context.Context, seed domain.Ses
 	return rec, true, nil
 }
 
+// ClaimTaskDelegationStartup fences runtime startup across independent daemons.
 func (s *Store) ClaimTaskDelegationStartup(ctx context.Context, key string, fingerprint domain.TaskDelegationRequestFingerprint, workerID domain.SessionID) (bool, error) {
 	if err := s.writeMu.LockContext(ctx); err != nil {
 		return false, err
@@ -197,6 +198,7 @@ func (s *Store) ClaimTaskDelegationStartup(ctx context.Context, key string, fing
 	return false, domain.ErrTaskDelegationRecoveryRequired
 }
 
+// TaskDelegationStartupForWorker returns an empty state for nondelegated sessions.
 func (s *Store) TaskDelegationStartupForWorker(ctx context.Context, id domain.SessionID) (domain.TaskDelegationStartupState, error) {
 	state, err := s.qr.TaskDelegationStartupForWorker(ctx, &id)
 	if errors.Is(err, sql.ErrNoRows) {
