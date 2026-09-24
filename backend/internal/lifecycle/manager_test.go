@@ -5470,3 +5470,153 @@ func TestPRObservation_ReviewCommentNudgesDedupPerComment(t *testing.T) {
 			len(msg.msgs)-sent, msg.msgs[sent:])
 	}
 }
+
+func TestApplyReviewBatchPreventsDuplicateDeliveryViaSCMObservation(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = working("mer-1")
+	msg := &fakeMessenger{}
+	m := New(st, msg)
+
+	prURL := "https://github.com/o/r/pull/1"
+	st.signatures = map[string]string{
+		prURL: `{"seen":{"ci:https://github.com/o/r/pull/1":"failed"},"attempts":{"ci:https://github.com/o/r/pull/1":1}}`,
+	}
+	results := []ReviewResult{
+		{
+			RunID:          "run-1",
+			BatchID:        "batch-1",
+			WorkerID:       "mer-1",
+			PRURL:          prURL,
+			TargetSHA:      "sha1",
+			Verdict:        domain.VerdictChangesRequested,
+			Body:           "address review findings",
+			GithubReviewID: "rev-101",
+		},
+	}
+
+	// 1. Deliver direct via ApplyReviewBatch
+	outcome, err := m.ApplyReviewBatch(ctx, "mer-1", "batch-1", results)
+	if err != nil {
+		t.Fatalf("ApplyReviewBatch: %v", err)
+	}
+	if outcome != ReviewDeliverySent || len(msg.msgs) != 1 {
+		t.Fatalf("outcome/messages = %q/%v, want sent once", outcome, msg.msgs)
+	}
+	// Verify that the preexisting CI signature was preserved and the review key was recorded
+	sigPayload := st.signatures[prURL]
+	if !strings.Contains(sigPayload, "ci:https://github.com/o/r/pull/1") {
+		t.Fatalf("expected preexisting CI signature to be preserved, got %s", sigPayload)
+	}
+	if !strings.Contains(sigPayload, "review:https://github.com/o/r/pull/1:rev-101") {
+		t.Fatalf("expected review signature to be persisted, got %s", sigPayload)
+	}
+
+	// 2. SCM observation polls GitHub and sees the same review
+	obs := ports.SCMObservation{
+		Fetched: true,
+		PR: ports.SCMPRObservation{
+			URL:     prURL,
+			HeadSHA: "sha1",
+		},
+		Review: ports.SCMReviewObservation{
+			Decision: string(domain.ReviewChangesRequest),
+		},
+	}
+	st.reviews[prURL] = []domain.PullRequestReview{
+		{
+			ID:               "rev-101",
+			URL:              prURL,
+			Author:           "ao-reviewer",
+			State:            domain.ReviewChangesRequest,
+			Body:             "address review findings",
+			AutoInjectReview: true,
+		},
+	}
+
+	if err := m.ApplySCMObservation(ctx, "mer-1", obs); err != nil {
+		t.Fatalf("ApplySCMObservation: %v", err)
+	}
+
+	if len(msg.msgs) != 1 {
+		t.Fatalf("expected exactly 1 delivery (deduped), got %d deliveries (duplicate re-delivery!)", len(msg.msgs))
+	}
+}
+
+func TestReviewNudgesCappedAndFramedWithTrustBoundary(t *testing.T) {
+	oversizedBody := strings.Repeat("x", 25000)
+
+	// 1. formatReviewCommentsMessage
+	msgComments := formatReviewCommentsMessage([]ports.PRCommentObservation{
+		{
+			Body:   oversizedBody,
+			Author: "reviewer",
+			File:   "main.go",
+			Line:   10,
+		},
+	})
+	if len(msgComments) > 15000 {
+		t.Fatalf("formatReviewCommentsMessage length = %d, want <= 15000", len(msgComments))
+	}
+	if !strings.Contains(msgComments, domain.ReviewTrustBoundary) {
+		t.Fatalf("formatReviewCommentsMessage missing trust boundary: %s", msgComments)
+	}
+	if !strings.Contains(msgComments, "\n\n... (truncated)") {
+		t.Fatalf("formatReviewCommentsMessage missing truncation notice: %s", msgComments)
+	}
+
+	// 2. formatReviewChangesRequestedMessage
+	msgReview := formatReviewChangesRequestedMessage(domain.PullRequestReview{
+		Author: "reviewer",
+		Body:   oversizedBody,
+	})
+	if len(msgReview) > 15000 {
+		t.Fatalf("formatReviewChangesRequestedMessage length = %d, want <= 15000", len(msgReview))
+	}
+	if !strings.Contains(msgReview, domain.ReviewTrustBoundary) {
+		t.Fatalf("formatReviewChangesRequestedMessage missing trust boundary: %s", msgReview)
+	}
+
+	// 3. formatCIFailureMessage
+	msgCI := formatCIFailureMessage([]ports.PRCheckObservation{
+		{
+			Name:    "build",
+			Status:  domain.PRCheckFailed,
+			LogTail: oversizedBody,
+		},
+	})
+	if len(msgCI) > 15000 {
+		t.Fatalf("formatCIFailureMessage length = %d, want <= 15000", len(msgCI))
+	}
+	if !strings.Contains(msgCI, domain.CITrustBoundary) {
+		t.Fatalf("formatCIFailureMessage missing trust boundary: %s", msgCI)
+	}
+
+	// 4. ApplyReviewBatch
+	st := newFakeStore()
+	st.sessions["mer-1"] = working("mer-1")
+	msg := &fakeMessenger{}
+	m := New(st, msg)
+	_, err := m.ApplyReviewBatch(ctx, "mer-1", "batch-1", []ReviewResult{
+		{
+			RunID:     "run-1",
+			BatchID:   "batch-1",
+			WorkerID:  "mer-1",
+			PRURL:     "https://github.com/o/r/pull/1",
+			TargetSHA: "sha1",
+			Verdict:   domain.VerdictChangesRequested,
+			Body:      oversizedBody,
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyReviewBatch: %v", err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("msgs count = %d, want 1", len(msg.msgs))
+	}
+	if len(msg.msgs[0]) > 15000 {
+		t.Fatalf("ApplyReviewBatch message length = %d, want <= 15000", len(msg.msgs[0]))
+	}
+	if !strings.Contains(msg.msgs[0], domain.ReviewTrustBoundary) {
+		t.Fatalf("ApplyReviewBatch message missing trust boundary: %s", msg.msgs[0])
+	}
+}
