@@ -57,37 +57,44 @@ type signInCheck struct {
 // opens the browser sign-in page when Kiro is signed out.
 var kiroSignIn = &signInCheck{args: []string{"whoami", "--format", "json"}, envKeys: []string{"KIRO_API_KEY"}}
 
-// signInCheckTimeout bounds the status probe. A probe that times out is not a
-// confirmed login, so discovery is skipped rather than risking the sign-in page.
-const signInCheckTimeout = 5 * time.Second
+// signInCheckTimeout bounds the status probe; tests shorten it.
+var signInCheckTimeout = 5 * time.Second
 
 // signInProbe runs the status command; tests replace it.
 var signInProbe = func(ctx context.Context, binary string, args []string, workingDir string, env map[string]string) ([]byte, error) {
 	return modelCommand(ctx, binary, args, workingDir, env).CombinedOutput()
 }
 
-// signedIn fails closed: only an explicit credential, a recognized signed-in
-// response, or a clean exit with no signed-out text counts as a login.
-func (c *signInCheck) signedIn(ctx context.Context, binary, workingDir string, env map[string]string) bool {
+// check returns nil when the model command may run. A clear signed-out answer
+// returns ErrAgentModelDiscoverySignInRequired. A cancellation returns the
+// context error, and an inconclusive probe (timeout, or a failed exit without
+// recognizable status text) returns an ordinary discovery error so the caller
+// records and retries it. The model command never runs unless check returns nil.
+func (c *signInCheck) check(ctx context.Context, agentID, binary, workingDir string, env map[string]string) error {
 	for _, key := range c.envKeys {
 		if strings.TrimSpace(env[key]) != "" || strings.TrimSpace(os.Getenv(key)) != "" {
-			return true
+			return nil
 		}
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, signInCheckTimeout)
 	defer cancel()
 	output, err := signInProbe(probeCtx, binary, c.args, workingDir, env)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("%s sign-in check canceled: %w", agentID, ctxErr)
+	}
 	if probeCtx.Err() != nil {
-		return false
+		return fmt.Errorf("%s sign-in check timed out after %s", agentID, signInCheckTimeout)
 	}
 	switch authprobe.StatusFromText(string(output)) {
 	case ports.AgentAuthStatusAuthorized:
-		return true
+		return nil
 	case ports.AgentAuthStatusUnauthorized:
-		return false
-	default:
-		return err == nil
+		return fmt.Errorf("%s model discovery: %w", agentID, ports.ErrAgentModelDiscoverySignInRequired)
 	}
+	if err != nil {
+		return fmt.Errorf("%s sign-in check failed: %w", agentID, err)
+	}
+	return nil
 }
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[[:alpha:]]`)
@@ -293,8 +300,10 @@ func Discover(ctx context.Context, agentID, binary, workingDir string, env map[s
 	if strings.TrimSpace(binary) == "" {
 		return base, errors.New("agent binary is not installed")
 	}
-	if spec.signIn != nil && !spec.signIn.signedIn(ctx, binary, workingDir, env) {
-		return base, fmt.Errorf("%s model discovery: %w", agentID, ports.ErrAgentModelDiscoverySignInRequired)
+	if spec.signIn != nil {
+		if err := spec.signIn.check(ctx, agentID, binary, workingDir, env); err != nil {
+			return base, err
+		}
 	}
 	runCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()

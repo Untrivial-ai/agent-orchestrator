@@ -1979,6 +1979,9 @@ func TestSignInRequiredDiscoveryStoresAnIdlePlaceholderThatLoadsAfterSignIn(t *t
 	if !read.RefreshRecommended {
 		t.Fatal("signed-out placeholder does not ask readers to revalidate")
 	}
+	if !strings.Contains(read.Warning, "Kiro is not signed in") {
+		t.Fatalf("cache-first warning = %q, want the sign-in warning", read.Warning)
+	}
 
 	discoverer.signIn(ports.AgentModelInfo{ID: "model-one"})
 	got, err = svc.RevalidateModels(context.Background(), "kiro", "")
@@ -1999,6 +2002,14 @@ func TestSignInRequiredDiscoveryKeepsTheCachedCatalogAndRetryBudget(t *testing.T
 		t.Fatal(err)
 	}
 
+	// An earlier ordinary failure leaves the cached list stale with its error.
+	discoverer.mu.Lock()
+	discoverer.err = errors.New("kiro model discovery timed out after 20s")
+	discoverer.mu.Unlock()
+	if failed, err := svc.Models(context.Background(), "kiro", "", true); err != nil || !failed.Stale {
+		t.Fatalf("failed refresh = %#v, %v; want a stale cached catalog", failed, err)
+	}
+
 	discoverer.signOut()
 	// More skipped attempts than the failure retry budget allows.
 	for range modelCatalogMaxRetries + 2 {
@@ -2010,6 +2021,14 @@ func TestSignInRequiredDiscoveryKeepsTheCachedCatalogAndRetryBudget(t *testing.T
 			t.Fatalf("signed-out refresh = %#v, want the cached model-one catalog, not stale", got)
 		}
 		assertIdleWithoutRetries(t, cache, "kiro")
+	}
+	// Cache-first reads show the sign-in state, not the earlier timeout.
+	read, err := svc.Models(context.Background(), "kiro", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Stale || !strings.Contains(read.Warning, "Kiro is not signed in") || strings.Contains(read.Warning, "timed out") {
+		t.Fatalf("cache-first read = stale %t warning %q, want the sign-in warning only", read.Stale, read.Warning)
 	}
 
 	discoverer.signIn(ports.AgentModelInfo{ID: "model-two"})

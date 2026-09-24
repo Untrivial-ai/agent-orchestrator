@@ -590,30 +590,29 @@ func (s *Service) loadModels(ctx context.Context, agentID string, mode modelLoad
 	return discovered, nil
 }
 
-// keepCatalogUntilSignIn handles discovery skipped because the agent is not
-// signed in. That is not a failure: a cached catalog stays as it was (not stale,
-// no retry budget spent, no retry timer), and a first load stores an idle
-// placeholder. Either record is left due for revalidation, so the next picker
-// read, daemon start, or post-login auth probe (InvalidateModelCatalogs) loads
-// the real models once the agent reports a login.
+// keepCatalogUntilSignIn handles discovery skipped because the agent is
+// clearly signed out. That is not a failure: no retry budget is spent and no
+// retry timer is set. A cached catalog keeps its models but loses any earlier
+// failure marker, and a first load stores an idle placeholder. Both carry the
+// sign-in warning, so cache-first reads show it too. The record's last success
+// is unchanged, so it stays due for revalidation and the next picker read,
+// daemon start, or post-login auth probe (InvalidateModelCatalogs) loads the
+// real models once the agent reports a login.
 func (s *Service) keepCatalogUntilSignIn(ctx context.Context, agentName string, cached decodedCatalog, hasCached bool, policy ports.AgentModelCatalog, version string, generation int64) ports.AgentModelCatalog {
-	warning := agentName + " is not signed in; sign in to load its models"
 	catalog := cached.Catalog
 	if !hasCached {
 		catalog = policy
 		catalog.BinaryVersion = version
 		catalog.InputFingerprint = version
-		catalog.Warning = warning
 	}
+	catalog.Stale = false
+	catalog.Warning = agentName + " is not signed in; sign in to load its models"
 	catalog.RefreshState = "idle"
 	catalog.RefreshError = ""
 	catalog.RetryAt = nil
 	catalog.RefreshRecommended = false
 	if err := s.saveCatalog(ctx, catalog, generation, 0); err != nil {
 		catalog.Warning = appendCacheWarning(catalog.Warning)
-	}
-	if hasCached {
-		catalog.Warning = warning
 	}
 	return catalog
 }
