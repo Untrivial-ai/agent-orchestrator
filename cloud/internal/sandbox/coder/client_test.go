@@ -296,9 +296,10 @@ func TestBootstrapWorkerStreamsArchiveWithoutSecretsInURL(t *testing.T) {
 				"kill -0",
 				"chmod o+x",
 				// The worker must be able to create extra-repo sibling dirs in the
-				// durable root, so it is granted group write on the root itself.
+				// durable root, so it is granted group write+traverse (not read)
+				// on the root itself.
 				"chgrp",
-				"chmod g+rwx",
+				"chmod g+wx",
 				"sudo -n -b -u",
 			} {
 				if !strings.Contains(command, expected) {

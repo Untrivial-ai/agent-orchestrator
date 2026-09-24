@@ -298,7 +298,8 @@ export function TaskComposer({
 	const cloudRepositories = (() => {
 		if (!cloudProject) return [] as string[];
 		const coder = (cloudProject.config as { coder?: { extraRepos?: Array<{ url?: string }> } } | undefined)?.coder;
-		const extras = (coder?.extraRepos ?? []).map((repo) => repo?.url).filter((url): url is string => Boolean(url));
+		const declared = Array.isArray(coder?.extraRepos) ? coder?.extraRepos ?? [] : [];
+		const extras = declared.map((repo) => repo?.url).filter((url): url is string => Boolean(url));
 		return [...new Set([cloudProject.repositoryUrl, ...extras].filter(Boolean))];
 	})();
 	const projectWorkerAgent = projectConfig?.worker?.agent ?? "";
