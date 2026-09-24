@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -2058,6 +2059,180 @@ func TestRevalidateModelsRediscoversAnAgedCatalog(t *testing.T) {
 	}
 	if got.RefreshRecommended {
 		t.Fatal("revalidated catalog still recommends refresh")
+	}
+}
+
+func signInRequiredDiscoverer() *fakeModelDiscoverer {
+	return &fakeModelDiscoverer{
+		version: "v1",
+		err:     fmt.Errorf("kiro model discovery: %w", ports.ErrAgentModelDiscoverySignInRequired),
+	}
+}
+
+func (f *fakeModelDiscoverer) signIn(models ...ports.AgentModelInfo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = nil
+	f.catalog = ports.AgentModelCatalog{SelectionMode: ports.ModelSelectionCatalog, Models: models, Source: "cli"}
+}
+
+func (f *fakeModelDiscoverer) signOut() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = fmt.Errorf("kiro model discovery: %w", ports.ErrAgentModelDiscoverySignInRequired)
+}
+
+func assertIdleWithoutRetries(t *testing.T, cache *fakeModelCache, agentID string) {
+	t.Helper()
+	record, ok, _ := cache.GetAgentModelCatalog(context.Background(), agentID, "")
+	if !ok {
+		t.Fatal("no catalog record was stored")
+	}
+	if record.RefreshState != "idle" || record.RefreshError != "" || record.RetryCount != 0 || !record.RetryAt.IsZero() {
+		t.Fatalf("record = state %q error %q retries %d retryAt %s, want idle with no retry scheduled",
+			record.RefreshState, record.RefreshError, record.RetryCount, record.RetryAt)
+	}
+}
+
+func TestSignInRequiredDiscoveryStoresAnIdlePlaceholderThatLoadsAfterSignIn(t *testing.T) {
+	cache := &fakeModelCache{}
+	discoverer := signInRequiredDiscoverer()
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("kiro", "Kiro", nil)}, cache, nil, discoverer)
+
+	got, err := svc.Models(context.Background(), "kiro", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 0 || got.Stale || got.RefreshState != "idle" || !strings.Contains(got.Warning, "Kiro is not signed in") {
+		t.Fatalf("signed-out catalog = %#v, want an idle, non-stale placeholder with a sign-in warning", got)
+	}
+	assertIdleWithoutRetries(t, cache, "kiro")
+
+	// The placeholder has never succeeded, so cache-first readers are told to
+	// revalidate; that is how the models appear once the user signs in.
+	read, err := svc.Models(context.Background(), "kiro", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.RefreshRecommended {
+		t.Fatal("signed-out placeholder does not ask readers to revalidate")
+	}
+	if !strings.Contains(read.Warning, "Kiro is not signed in") {
+		t.Fatalf("cache-first warning = %q, want the sign-in warning", read.Warning)
+	}
+
+	discoverer.signIn(ports.AgentModelInfo{ID: "model-one"})
+	got, err = svc.RevalidateModels(context.Background(), "kiro", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "model-one" || got.Warning != "" {
+		t.Fatalf("catalog after sign-in = %#v, want model-one", got)
+	}
+}
+
+func TestSignInRequiredDiscoveryKeepsTheCachedCatalogAndRetryBudget(t *testing.T) {
+	cache := &fakeModelCache{}
+	discoverer := signInRequiredDiscoverer()
+	discoverer.signIn(ports.AgentModelInfo{ID: "model-one"})
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("kiro", "Kiro", nil)}, cache, nil, discoverer)
+	if _, err := svc.Models(context.Background(), "kiro", "", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// An earlier ordinary failure leaves the cached list stale with its error.
+	discoverer.mu.Lock()
+	discoverer.err = errors.New("kiro model discovery timed out after 20s")
+	discoverer.mu.Unlock()
+	if failed, err := svc.Models(context.Background(), "kiro", "", true); err != nil || !failed.Stale {
+		t.Fatalf("failed refresh = %#v, %v; want a stale cached catalog", failed, err)
+	}
+
+	discoverer.signOut()
+	// More skipped attempts than the failure retry budget allows.
+	for range modelCatalogMaxRetries + 2 {
+		got, err := svc.Models(context.Background(), "kiro", "", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Models) != 1 || got.Models[0].ID != "model-one" || got.Stale || got.RefreshState != "idle" {
+			t.Fatalf("signed-out refresh = %#v, want the cached model-one catalog, not stale", got)
+		}
+		assertIdleWithoutRetries(t, cache, "kiro")
+	}
+	// Cache-first reads show the sign-in state, not the earlier timeout.
+	read, err := svc.Models(context.Background(), "kiro", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Stale || !strings.Contains(read.Warning, "Kiro is not signed in") || strings.Contains(read.Warning, "timed out") {
+		t.Fatalf("cache-first read = stale %t warning %q, want the sign-in warning only", read.Stale, read.Warning)
+	}
+
+	discoverer.signIn(ports.AgentModelInfo{ID: "model-two"})
+	got, err := svc.RevalidateModels(context.Background(), "kiro", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "model-two" {
+		t.Fatalf("catalog after signing back in = %#v, want model-two", got)
+	}
+}
+
+func TestSignInOutsideAOReloadsACatalogThatLoadedEarlierTheSameDay(t *testing.T) {
+	cache := &fakeModelCache{}
+	discoverer := signInRequiredDiscoverer()
+	discoverer.signIn(ports.AgentModelInfo{ID: "model-one"})
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("kiro", "Kiro", nil)}, cache, nil, discoverer)
+	noon := time.Date(2026, 9, 24, 12, 0, 0, 0, time.Local)
+	svc.now = func() time.Time { return noon }
+
+	// Models load in the morning, then the user signs out and a refresh is skipped.
+	if _, err := svc.Models(context.Background(), "kiro", "", true); err != nil {
+		t.Fatal(err)
+	}
+	discoverer.signOut()
+	if _, err := svc.Models(context.Background(), "kiro", "", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// The user signs back in from a terminal; AO's auth probe is never called.
+	discoverer.signIn(ports.AgentModelInfo{ID: "model-two"})
+	noon = noon.Add(time.Hour)
+	read, err := svc.Models(context.Background(), "kiro", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.RefreshRecommended {
+		t.Fatal("same-day catalog skipped for sign-in is not due for revalidation")
+	}
+	// The cache-first read revalidates in the background.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, err := svc.Models(context.Background(), "kiro", "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Models) == 1 && got.Models[0].ID == "model-two" && got.Warning == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("catalog after signing in outside AO = %#v, want model-two without the sign-in warning", got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestOrdinaryDiscoveryFailureStillSpendsTheRetryBudget(t *testing.T) {
+	cache := &fakeModelCache{}
+	discoverer := &fakeModelDiscoverer{version: "v1", err: errors.New("kiro model discovery: exit status 1")}
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("kiro", "Kiro", nil)}, cache, nil, discoverer)
+	if _, err := svc.Models(context.Background(), "kiro", "", true); err != nil {
+		t.Fatal(err)
+	}
+	record, _, _ := cache.GetAgentModelCatalog(context.Background(), "kiro", "")
+	if record.RefreshState != "error" || record.RetryCount != 1 {
+		t.Fatalf("record = state %q retries %d, want an error with one retry spent", record.RefreshState, record.RetryCount)
 	}
 }
 
