@@ -225,7 +225,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 	const catalogDefault = modelCatalog?.models?.find((item) => item.isDefault && isConcreteModelID(item.id))?.id || "";
 	const visibleChoice = modelTouched ? model || mode || catalogDefault || inheritedChoice : inheritedChoice;
 	const requestedModel = !projectKnown
-		? (modelTouched ? model || mode || catalogDefault : "")
+		? model || mode
 		: modelTouched && visibleChoice && visibleChoice !== inheritedChoice &&
 			(visibleChoice !== catalogDefault || Boolean(inheritedChoice)) ? visibleChoice : "";
 	const [modelWarning, setModelWarning] = useState<string | undefined>();

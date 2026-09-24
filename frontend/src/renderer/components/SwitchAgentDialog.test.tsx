@@ -294,7 +294,14 @@ describe("SwitchAgentDialog", () => {
 		await userEvent.click(screen.getByRole("menuitem", { name: "GPT-5.4" }));
 		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
 		expect(switchMocks.mutate).toHaveBeenLastCalledWith(
-			expect.objectContaining({ model: "gpt-5.4", targetHarness: "codex" }),
+			expect.objectContaining({ model: "", targetHarness: "codex" }),
+			expect.any(Object),
+		);
+		await userEvent.click(within(dialog).getByRole("button", { name: "Model" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "GPT-5.4 Mini" }));
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenLastCalledWith(
+			expect.objectContaining({ model: "gpt-5.4-mini", targetHarness: "codex" }),
 			expect.any(Object),
 		);
 	});
@@ -314,7 +321,7 @@ describe("SwitchAgentDialog", () => {
 		await userEvent.click(screen.getByRole("menuitem", { name: "GPT-5.4" }));
 		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
 		expect(switchMocks.mutate).toHaveBeenLastCalledWith(
-			expect.objectContaining({ model: "gpt-5.4", targetHarness: "codex" }),
+			expect.objectContaining({ model: "", targetHarness: "codex" }),
 			expect.any(Object),
 		);
 	});
