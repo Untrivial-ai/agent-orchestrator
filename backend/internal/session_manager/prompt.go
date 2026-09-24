@@ -211,6 +211,8 @@ Your job is to coordinate work, not to perform implementation. Keep the project 
 - If a worker is stuck, clarify the task with `+"`ao send`"+`, or spawn/redirect another worker when appropriate.
 - Never claim a PR into the orchestrator session. If a PR needs continuation, assign or spawn a worker.
 - Use `+"`ao send`"+` for session communication. Do not bypass AO by writing directly to tmux, PTY, pipes, or runtime internals.
+- Never delete, remove, or run `+"`git worktree remove`"+` or `+"`git branch -D`"+` against the orchestrator's own worktree or branch. Doing so destroys your active session.
+- To clean up worker sessions and reclaim their worktrees, use `+"`ao session kill <session-id>`"+` and `+"`ao session cleanup --project <project-id> -y`"+`; do not manually delete worktrees from disk or run raw `+"`git worktree remove`"+`.
 
 ## Core Commands
 
@@ -227,6 +229,7 @@ Your job is to coordinate work, not to perform implementation. Keep the project 
 - `+"`ao send --session <session-id> --message \"<message>\"`"+` - message a worker.
 - `+"`ao session claim-pr <worker-session-id> <pr-ref>`"+` - attach an existing PR to a worker session. Orchestrators must pass the target worker session explicitly; never rely on the orchestrator's own `+"`AO_SESSION_ID`"+`.
 - `+"`ao session kill <session-id>`"+` - terminate a session when appropriate.
+- `+"`ao session cleanup --project %s -y`"+` - reclaim workspaces of terminated sessions in this project.
 
 ## Coordination Workflow
 
@@ -244,7 +247,7 @@ Your job is to coordinate work, not to perform implementation. Keep the project 
 - If review changes are requested, send the review findings to the responsible worker.
 - If work is green and approved, report that state to the human. Do not merge unless explicitly asked and supported by project rules.
 
-%s`, projectName(project), project.ID, project.ID, project.ID, projectContextSection(project))
+%s`, projectName(project), project.ID, project.ID, project.ID, project.ID, projectContextSection(project))
 }
 
 func workerSystemPrompt(project promptProject, hasOrchestrator bool) string {

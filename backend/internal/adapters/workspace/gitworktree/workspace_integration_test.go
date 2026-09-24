@@ -1171,6 +1171,80 @@ func TestWorkspaceIntegrationCanonicalBaseRefAvoidsRemoteNameCollision(t *testin
 	}
 }
 
+func TestWorkspaceIntegrationOrchestratorWorktreeLockedAndProtected(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, tmp)
+	root := filepath.Join(tmp, "managed")
+	ws, err := New(Options{Binary: git, ManagedRoot: root, RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	ctx := context.Background()
+	cfg := ports.WorkspaceConfig{
+		ProjectID: "proj",
+		SessionID: "orch-sess",
+		Kind:      domain.KindOrchestrator,
+		Branch:    "ao/orch-protect",
+	}
+
+	info, err := ws.Create(ctx, cfg)
+	if err != nil {
+		t.Fatalf("create orchestrator worktree: %v", err)
+	}
+
+	// 1. Verify git worktree list --porcelain shows locked with reason.
+	porcelain := gitOutput(t, git, repo, "worktree", "list", "--porcelain")
+	if !strings.Contains(porcelain, "locked active AO orchestrator workspace") {
+		t.Fatalf("worktree porcelain output missing lock reason, got:\n%s", porcelain)
+	}
+
+	// 2. Verify git worktree remove and git worktree remove --force are rejected by git.
+	cmd := exec.Command(git, "-C", repo, "worktree", "remove", info.Path)
+	out, removeErr := cmd.CombinedOutput()
+	if removeErr == nil {
+		t.Fatalf("expected git worktree remove to fail on locked worktree, but succeeded: %s", string(out))
+	}
+	if !strings.Contains(string(out), "locked") {
+		t.Fatalf("expected locked error message, got: %s", string(out))
+	}
+
+	cmdForce := exec.Command(git, "-C", repo, "worktree", "remove", "--force", info.Path)
+	outForce, forceRemoveErr := cmdForce.CombinedOutput()
+	if forceRemoveErr == nil {
+		t.Fatalf("expected git worktree remove --force to fail on locked worktree, but succeeded: %s", string(outForce))
+	}
+	if !strings.Contains(string(outForce), "locked") {
+		t.Fatalf("expected locked error message on forced removal, got: %s", string(outForce))
+	}
+
+	// 3. Verify that Destroy cleanly unregisters and removes the worktree when legitimately torn down.
+	if err := ws.Destroy(ctx, info); err != nil {
+		t.Fatalf("Destroy failed on orchestrator worktree: %v", err)
+	}
+	if _, err := os.Stat(info.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worktree path after destroy stat err = %v, want not exist", err)
+	}
+
+	// 4. Also test ForceDestroy on a newly created locked orchestrator worktree.
+	cfg2 := ports.WorkspaceConfig{
+		ProjectID: "proj",
+		SessionID: "orch-sess-2",
+		Kind:      domain.KindOrchestrator,
+		Branch:    "ao/orch-protect-2",
+	}
+	info2, err := ws.Create(ctx, cfg2)
+	if err != nil {
+		t.Fatalf("create orchestrator worktree 2: %v", err)
+	}
+	if err := ws.ForceDestroy(ctx, info2); err != nil {
+		t.Fatalf("ForceDestroy failed on orchestrator worktree: %v", err)
+	}
+	if _, err := os.Stat(info2.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worktree path after force destroy stat err = %v, want not exist", err)
+	}
+}
+
 func requireGit(t *testing.T) string {
 	t.Helper()
 	git, err := exec.LookPath("git")

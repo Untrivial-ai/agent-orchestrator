@@ -40,6 +40,9 @@ func TestCommandArgs(t *testing.T) {
 		{"remove", worktreeRemoveArgs(repo, path), []string{"-C", repo, "worktree", "remove", path}},
 		{"prune", worktreePruneArgs(repo), []string{"-C", repo, "worktree", "prune"}},
 		{"list", worktreeListPorcelainArgs(repo), []string{"-C", repo, "worktree", "list", "--porcelain"}},
+		{"lock without reason", worktreeLockArgs(repo, path, ""), []string{"-C", repo, "worktree", "lock", path}},
+		{"lock with reason", worktreeLockArgs(repo, path, "orchestrator"), []string{"-C", repo, "worktree", "lock", "--reason", "orchestrator", path}},
+		{"unlock", worktreeUnlockArgs(repo, path), []string{"-C", repo, "worktree", "unlock", path}},
 		{"status", statusPorcelainArgs(path), []string{"-C", path, "status", "--porcelain"}},
 	}
 	for _, tc := range cases {
@@ -263,6 +266,8 @@ func TestCreateRecreatesMissingRegisteredWorktreeWithForce(t *testing.T) {
 		case strings.Contains(joined, "rev-parse --verify --quiet"):
 			return []byte("sha\n"), nil
 		case strings.Contains(joined, "worktree add --force "+path+" ao/proj-orchestrator"):
+			return nil, nil
+		case strings.Contains(joined, "worktree lock"):
 			return nil, nil
 		default:
 			t.Fatalf("unexpected git invocation: %v", args)

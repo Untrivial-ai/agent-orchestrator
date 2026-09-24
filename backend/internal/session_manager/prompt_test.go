@@ -101,6 +101,8 @@ func TestBuildSystemPrompt_OrchestratorRequiresConfirmationAndAOOnlyDelegation(t
 		"Add `--model <id>` when the human or task explicitly requests a specific model",
 		"Never drop an explicitly requested `--model` or substitute another model automatically",
 		"ask the human to choose an alternative",
+		"Never delete, remove, or run `git worktree remove` or `git branch -D` against the orchestrator's own worktree or branch",
+		"ao session cleanup --project mer -y",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("orchestrator prompt missing %q:\n%s", want, got)

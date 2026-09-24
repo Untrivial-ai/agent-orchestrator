@@ -5087,6 +5087,8 @@ func TestSpawnOrchestrator_UsesCoordinatorPrompt(t *testing.T) {
 		"Use `ao send` for session communication",
 		"`ao session ls --project mer`",
 		"`ao session get <worker-session-id>`",
+		"`ao session cleanup --project mer -y`",
+		"Never delete, remove, or run `git worktree remove` or `git branch -D` against the orchestrator's own worktree or branch",
 		"Delegate implementation, fixes, tests, and PR ownership to worker sessions",
 		filepath.ToSlash(filepath.Join("skills", "using-ao", "SKILL.md")),
 		"AO desktop Browser panel",
