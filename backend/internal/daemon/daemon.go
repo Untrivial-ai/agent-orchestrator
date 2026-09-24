@@ -539,15 +539,14 @@ func Run() error {
 		}
 		return fmt.Errorf("prepare Codex accounts manager: %w", err)
 	}
-	// Older builds kept the in-flight switch journal in SQLite. Import only
-	// that recovery-critical record once; all new switch state is filesystem
-	// owned by Accounts Manager.
-	if legacySwitch, found, readErr := store.GetActiveCodexAccountSwitch(ctx); readErr != nil {
-		log.Warn("Codex account switch migration deferred", "err", readErr)
-	} else if found {
-		if _, _, importErr := codexProxy.CreateCodexAccountSwitch(ctx, legacySwitch); importErr != nil {
-			log.Warn("Codex account switch migration failed", "err", importErr)
-		}
+	// Older builds kept the switch journal in SQLite. Import it before wiring
+	// the agent service, then remove the legacy table; all new switch state is
+	// filesystem-owned by Accounts Manager.
+	if err := store.MigrateLegacyCodexAccountSwitch(ctx, codexProxy); err != nil {
+		_ = codexProxy.Close(context.Background())
+		stop()
+		lcStack.Stop()
+		return fmt.Errorf("migrate Codex account switch state: %w", err)
 	}
 	if err := codexProxy.Start(ctx); err != nil {
 		_ = codexProxy.Close(context.Background())
