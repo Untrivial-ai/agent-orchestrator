@@ -38,6 +38,11 @@ describe("availabilityOf", () => {
 		const known = catalog({ installed: [{ id: "amp", label: "Amp", authStatus: "unknown" }] });
 		expect(availabilityOf(agent("amp"), known)).toBe("auth-unknown");
 	});
+
+	it("treats configured credentials as unverified", () => {
+		const c = catalog({ installed: [{ id: "claude-code", label: "Claude Code", authStatus: "configured" }] });
+		expect(availabilityOf(agent("claude-code"), c)).toBe("auth-unknown");
+	});
 });
 
 describe("isSelectable", () => {

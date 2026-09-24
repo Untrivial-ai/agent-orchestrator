@@ -816,12 +816,18 @@ func (m *Manager) preflightInterfaceTarget(
 	if err != nil {
 		return err
 	}
-	config := effectiveAgentConfig(rec.Harness, rec.Kind, project.Config)
-	// Refresh the model from the session's own persisted selection so the
-	// preflight validates the exact restore command the rebuild will run
-	// (ChatUI model changes must survive the handoff).
-	if model := strings.TrimSpace(rec.Metadata.Model); model != "" {
-		config.Model = model
+	config := restoredAgentConfig(rec, project.Config)
+	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	pinRuntimePermissionEnv(env, config.Permissions)
+	m.augmentAgentRuntimeEnv(agent, env)
+	if validator, ok := agent.(ports.AgentLaunchAuthValidator); ok {
+		status, authErr := validator.ValidateLaunchAuth(ctx, rec.Metadata.WorkspacePath, env)
+		if authErr != nil {
+			m.logger.Debug("interface transition: launch authentication probe inconclusive; continuing",
+				"sessionID", rec.ID, "harness", rec.Harness, "error", authErr)
+		} else if status == ports.AgentAuthStatusUnauthorized {
+			return ports.ErrAgentAuthRequired
+		}
 	}
 	var cmd []string
 	if transition.NativeConversationID == "" {
@@ -1713,7 +1719,7 @@ func interfaceTransitionErrorCode(err error) string {
 		return "TARGET_UNAVAILABLE"
 	case errors.Is(err, ports.ErrChatDriverIncompatible):
 		return "TARGET_INCOMPATIBLE"
-	case errors.Is(err, ports.ErrChatAuthRequired):
+	case errors.Is(err, ports.ErrChatAuthRequired), errors.Is(err, ports.ErrAgentAuthRequired):
 		return "TARGET_AUTH_REQUIRED"
 	case errors.Is(err, ErrInterfaceProviderHistoryRecoveryUnavailable):
 		return "PROVIDER_HISTORY_RECOVERY_UNAVAILABLE"

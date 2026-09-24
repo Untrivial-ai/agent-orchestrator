@@ -1327,18 +1327,21 @@ func (m *Manager) preserveCurrentNativeSession(ctx context.Context, store ports.
 
 func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.AgentSwitchStore, rec domain.SessionRecord, project domain.ProjectRecord, agent ports.Agent, caps ports.ContinuationCapabilities, sw domain.AgentSwitch, modelOverride string) (preparedTargetActivation, error) {
 	harness := sw.TargetHarness
+	// Claude may select a different effective provider from project settings,
+	// which these device-global probes cannot see. Its launch is authoritative.
+	unscopedAuthCanReject := harness != domain.HarnessClaudeCode
 	if m.agentReadiness != nil {
 		readiness, readinessErr := m.agentReadiness.EnsureAgentReadiness(ctx, string(harness), domain.AgentReadinessPurposeLaunch)
 		if readinessErr != nil {
 			m.logger.Warn("agent switch: target readiness check failed; launch remains authoritative", "sessionID", rec.ID, "harness", harness, "error", readinessErr)
-		} else if readiness.Authentication.State == domain.AgentAuthenticationUnauthorized {
+		} else if unscopedAuthCanReject && readiness.Authentication.State == domain.AgentAuthenticationUnauthorized {
 			return preparedTargetActivation{}, ErrTargetAgentUnauthorized
 		}
 	} else if checker, ok := agent.(ports.AgentAuthChecker); ok {
 		status, authErr := checker.AuthStatus(ctx)
 		if authErr != nil {
 			m.logger.Warn("agent switch: target auth probe failed; launch remains authoritative", "sessionID", rec.ID, "harness", harness, "error", authErr)
-		} else if status == ports.AgentAuthStatusUnauthorized {
+		} else if unscopedAuthCanReject && status == ports.AgentAuthStatusUnauthorized {
 			return preparedTargetActivation{}, ErrTargetAgentUnauthorized
 		}
 	}
@@ -1351,13 +1354,29 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 	if err != nil {
 		return preparedTargetActivation{}, fmt.Errorf("system prompt file: %w", err)
 	}
-	config := effectiveAgentConfig(harness, rec.Kind, project.Config)
-	if model := strings.TrimSpace(modelOverride); model != "" {
-		config.Model = model
+	config, err := m.resolveAgentConfig(ctx, ports.SpawnConfig{
+		ProjectID: rec.ProjectID,
+		Kind:      rec.Kind,
+		Harness:   harness,
+		AgentConfig: ports.AgentConfig{
+			Model: strings.TrimSpace(modelOverride),
+		},
+	}, project.Config)
+	if err != nil {
+		return preparedTargetActivation{}, fmt.Errorf("target config: %w", err)
 	}
 	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
 	pinRuntimePermissionEnv(env, config.Permissions)
 	m.augmentAgentRuntimeEnv(agent, env)
+	if validator, ok := agent.(ports.AgentLaunchAuthValidator); ok {
+		status, authErr := validator.ValidateLaunchAuth(ctx, rec.Metadata.WorkspacePath, env)
+		if authErr != nil {
+			m.logger.Warn("agent switch: target launch auth probe failed; launch remains authoritative",
+				"sessionID", rec.ID, "harness", harness, "error", authErr)
+		} else if status == ports.AgentAuthStatusUnauthorized {
+			return preparedTargetActivation{}, ErrTargetAgentUnauthorized
+		}
+	}
 	configDir, err := nativeConfigDir(ctx, agent, env)
 	if err != nil {
 		return preparedTargetActivation{}, err

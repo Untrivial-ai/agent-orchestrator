@@ -1533,6 +1533,20 @@ func TestSessionsAPI_SpawnPassesModelToService(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_SpawnPassesEffortToService(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions",
+		`{"kind":"worker","harness":"codex","prompt":"fix","displayName":"my worker","effort":"high"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("POST session = %d, want 201; body=%s", status, body)
+	}
+	if svc.lastSpawn.AgentConfig.Effort != "high" {
+		t.Fatalf("service AgentConfig.Effort = %q, want high", svc.lastSpawn.AgentConfig.Effort)
+	}
+}
+
 func TestSessionsAPI_SpawnPassesParentSessionToService(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)

@@ -777,7 +777,9 @@ func (c *commandContext) emitSessionStartContext(agent, event, sessionID string)
 // $AO_DATA_DIR/hooks.log so the failure can be diagnosed after the fact.
 func (c *commandContext) reportHookFailure(agent, event, sessionID string, cause error) {
 	msg := fmt.Sprintf("ao hooks %s %s: %v", agent, event, cause)
-	_, _ = fmt.Fprintln(c.deps.Err, msg)
+	if !errors.Is(cause, errDaemonNotRunning) {
+		_, _ = fmt.Fprintln(c.deps.Err, msg)
+	}
 	dataDir := strings.TrimSpace(os.Getenv("AO_DATA_DIR"))
 	if dataDir == "" {
 		return

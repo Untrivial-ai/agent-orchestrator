@@ -800,7 +800,28 @@ describe("Sidebar", () => {
 		expect(document.querySelector(`li[data-project-id="${STANDALONE_WORKSPACE_ID}"]`)).toBeNull();
 		const section = document.querySelector("[data-scratchpad-section]")!;
 		expect(section).toContainElement(screen.getByText("baby"));
+		expect(section).toHaveClass("mb-2", "shrink-0");
+		expect(screen.queryByRole("button", { name: /show (more|fewer) agents/i })).not.toBeInTheDocument();
 		expect(screen.getByTestId("sidebar-projects-scroller")).not.toContainElement(screen.getByText("baby"));
+	});
+
+	it("optically centers the Project and Scratchpad header add icons", () => {
+		renderSidebar({
+			workspaces: [
+				workspace,
+				{
+					id: STANDALONE_WORKSPACE_ID,
+					name: "Scratchpad",
+					kind: STANDALONE_PROJECT_KIND,
+					path: "",
+					sessions: [],
+				},
+			],
+		});
+
+		for (const label of ["New project", "Open a new agent"]) {
+			expect(screen.getByRole("button", { name: label }).querySelector("svg")).toHaveClass("translate-y-px");
+		}
 	});
 
 	it("opens an ad hoc agent on its own session route", async () => {
@@ -847,7 +868,7 @@ describe("Sidebar", () => {
 		expect(screen.getByText("baby")).toBeInTheDocument();
 	});
 
-	it("caps the ad hoc agent list at 10 inside its own capped scroller", async () => {
+	it("caps the ad hoc agent list at 10 and lets the section grow to half the available height", async () => {
 		const user = userEvent.setup();
 		renderSidebar({
 			workspaces: [
@@ -874,14 +895,63 @@ describe("Sidebar", () => {
 
 		const scroller = screen.getByTestId("sidebar-scratchpad-scroller");
 		expect(scroller).toHaveClass("overflow-y-auto");
-		const capped = scroller.style.maxHeight;
+		expect(scroller.style.height).toBe("");
+		expect(scroller.style.maxHeight).toBe("");
+		expect(document.querySelector("[data-scratchpad-section]")).toHaveStyle({ maxHeight: "calc(50cqh - var(--space-2))" });
 
 		await user.click(screen.getByRole("button", { name: "Show 3 more agents" }));
 
 		expect(screen.getByText("Agent 11")).toBeInTheDocument();
 		expect(screen.getByText("Agent 13")).toBeInTheDocument();
-		expect(Number.parseInt(scroller.style.maxHeight, 10)).toBeGreaterThan(Number.parseInt(capped, 10));
-		expect(screen.queryByRole("button", { name: /more agents/ })).not.toBeInTheDocument();
+		expect(scroller.style.maxHeight).toBe("");
+		expect(screen.getByRole("button", { name: "Show fewer agents" })).toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "Show fewer agents" }));
+
+		expect(screen.queryByText("Agent 11")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Show 3 more agents" })).toBeInTheDocument();
+	});
+
+	it("shows scroll-edge fades on project and Scratchpad sections as they scroll", () => {
+		renderSidebar({
+			workspaces: [
+				...Array.from({ length: 2 }, (_, index) => ({
+					...workspace,
+					id: `proj-${index + 1}`,
+					name: `Project ${index + 1}`,
+				})),
+				{
+					id: STANDALONE_WORKSPACE_ID,
+					name: "Scratchpad",
+					kind: STANDALONE_PROJECT_KIND,
+					path: "",
+					sessions: [{ ...session, id: "adhoc-1", title: "baby", workspaceId: STANDALONE_WORKSPACE_ID, workspaceName: "Scratchpad" }],
+				},
+			],
+		});
+
+		for (const testId of ["sidebar-projects-scroller", "sidebar-scratchpad-scroller"]) {
+			const scroller = screen.getByTestId(testId);
+			Object.defineProperties(scroller, {
+				scrollHeight: { configurable: true, value: 200 },
+				clientHeight: { configurable: true, value: 100 },
+				scrollTop: { configurable: true, writable: true, value: 0 },
+			});
+
+			fireEvent.scroll(scroller);
+			expect(scroller.parentElement?.querySelector(".sidebar-section-scroll-fade--bottom")).toBeInTheDocument();
+			expect(scroller.parentElement?.querySelector(".sidebar-section-scroll-fade--top")).not.toBeInTheDocument();
+
+			scroller.scrollTop = 50;
+			fireEvent.scroll(scroller);
+			expect(scroller.parentElement?.querySelector(".sidebar-section-scroll-fade--top")).toBeInTheDocument();
+			expect(scroller.parentElement?.querySelector(".sidebar-section-scroll-fade--bottom")).toBeInTheDocument();
+
+			scroller.scrollTop = 100;
+			fireEvent.scroll(scroller);
+			expect(scroller.parentElement?.querySelector(".sidebar-section-scroll-fade--top")).toBeInTheDocument();
+			expect(scroller.parentElement?.querySelector(".sidebar-section-scroll-fade--bottom")).not.toBeInTheDocument();
+		}
 	});
 
 	it("offers ad hoc agent creation from the project add flow before the ad hoc row exists", async () => {
@@ -2049,16 +2119,21 @@ describe("Sidebar", () => {
 
 		expect(screen.getByText("Project 10")).toBeInTheDocument();
 		expect(screen.queryByText("Project 11")).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Show 4 more projects" })).toBeVisible();
+		expect(screen.getByRole("button", { name: "Show 4 more projects" })).toBeInTheDocument();
 
 		await user.click(screen.getByRole("button", { name: "Show 4 more projects" }));
 
 		expect(screen.getByText("Project 11")).toBeInTheDocument();
 		expect(screen.getByText("Project 14")).toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: /more projects/ })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Show fewer projects" })).toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "Show fewer projects" }));
+
+		expect(screen.queryByText("Project 11")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Show 4 more projects" })).toBeInTheDocument();
 	});
 
-	it("scrolls the project list inside its own capped section body", async () => {
+	it("fits the project list to content up to the full available height", async () => {
 		const user = userEvent.setup();
 		const manyProjects = Array.from({ length: 14 }, (_, index) => ({
 			...workspace,
@@ -2071,11 +2146,15 @@ describe("Sidebar", () => {
 		const scroller = screen.getByTestId("sidebar-projects-scroller");
 		expect(scroller).toHaveClass("overflow-y-auto");
 		expect(scroller).toContainElement(screen.getByText("Project 1"));
-		const capped = scroller.style.maxHeight;
+		expect(scroller.style.height).toBe("");
+		expect(scroller.style.maxHeight).toContain("100cqh");
+		expect(scroller.style.maxHeight).toContain("--sidebar-scratchpad-reserved-height");
 
-		// Show more raises the cap instead of letting the list grow unbounded.
-		await user.click(screen.getByRole("button", { name: "Show 4 more projects" }));
-		expect(Number.parseInt(scroller.style.maxHeight, 10)).toBeGreaterThan(Number.parseInt(capped, 10));
+		// Show more stays directly beneath the project list and reveals the remainder.
+		const showMore = screen.getByRole("button", { name: "Show 4 more projects" });
+		expect(showMore.parentElement).toBe(scroller.parentElement?.parentElement);
+		await user.click(showMore);
+		expect(scroller.style.maxHeight).toContain("100cqh");
 		expect(scroller).toHaveClass("overflow-y-auto");
 	});
 
@@ -2084,10 +2163,15 @@ describe("Sidebar", () => {
 		renderSidebar();
 
 		await user.click(screen.getByRole("button", { name: "Projects" }));
+		expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "false");
+		expect(screen.queryByTestId("sidebar-projects-scroller")).not.toBeInTheDocument();
 		expect(screen.queryByText("Project One")).not.toBeInTheDocument();
 
 		await user.click(screen.getByRole("button", { name: "Projects" }));
+		expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "true");
 		expect(screen.getByText("Project One")).toBeInTheDocument();
+		expect(screen.getByTestId("sidebar-projects-scroller")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /Show (more|fewer) projects/ })).not.toBeInTheDocument();
 	});
 
 	it("shows the full project list in the collapsed icon rail without Show more", () => {

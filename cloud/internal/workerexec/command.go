@@ -109,10 +109,12 @@ func (b HarnessBuilder) BuildInteractive(
 	if projectPrompt := strings.TrimSpace(launch.SystemPrompt); projectPrompt != "" {
 		systemPrompt += "\n\n" + projectPrompt
 	}
-	// Multi-repo dev kit: tell the agent about the additional repositories the
-	// worker checked out beside the primary repo, and where to find them. Without
-	// this the agent has no way to know they exist. Orchestrators coordinate and
-	// have no workspace checkout, so they never get this note.
+	// Multi-repo dev kit: tell a worker about the additional repositories checked
+	// out beside its primary repo, and where to find them, so it can edit them
+	// directly. This concrete sibling-path note is worker-only: an orchestrator
+	// codes nothing itself, so it gets multi-repo awareness from the shared
+	// project context (roleprompt) instead — enough to coordinate work across the
+	// repos without being pointed at sibling directories to edit.
 	if launch.Kind != "orchestrator" {
 		if note := extraReposPromptNote(workspace, launch.ExtraRepos); note != "" {
 			systemPrompt += "\n\n" + note

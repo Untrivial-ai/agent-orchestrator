@@ -31,7 +31,7 @@ export function ChatTurnSettingsControl({ snapshot, models, options, disabled, o
 			>
 				<Section title="Turn settings">
 					{rows.map((row) => (
-						<Menu key={row.id} label={`${row.label} · ${row.value}`} systemImage={settingSymbol(row)}>
+						<Menu key={row.id} label={isApprovalRow(row) ? <ApprovalRowLabel row={row} /> : `${row.label} · ${row.value}`} systemImage={settingSymbol(row)}>
 							{choicesFor(row).map((choice) => (
 								<Button key={choice.value} label={choice.label} systemImage={choice.selected ? "checkmark" : undefined} onPress={() => choose(row, choice.value)} />
 							))}
@@ -43,6 +43,17 @@ export function ChatTurnSettingsControl({ snapshot, models, options, disabled, o
 	);
 }
 
+function ApprovalRowLabel({ row }: { row: TurnSettingRow }) {
+	// A single native asset stays crisp at every display scale; SwiftUI menu rows
+	// discard the second image when the ring and check are separate symbols.
+	return <HStack spacing={12}><Image assetName="CircleDashedCheck" /><Text>{`${row.label} · ${row.value}`}</Text></HStack>;
+}
+
+function isApprovalRow(row: TurnSettingRow): boolean {
+	const id = row.id.toLowerCase();
+	return row.providerKind === "permissions" || (!id.includes("model") && (id.includes("mode") || id.includes("approval")));
+}
+
 function choicesFor(row: TurnSettingRow) {
 	if (row.kind !== "boolean") return row.choices;
 	return [
@@ -51,10 +62,11 @@ function choicesFor(row: TurnSettingRow) {
 	];
 }
 
-function settingSymbol(row: TurnSettingRow): string {
+function settingSymbol(row: TurnSettingRow): string | undefined {
 	const id = row.id.toLowerCase();
-	if (id.includes("mode") || id.includes("approval")) return "shield";
-	if (id.includes("model") || id.includes("agent")) return "cpu";
+	if (row.providerKind === "model" || id.includes("model")) return "square.stack.3d.up";
+	if (id.includes("agent")) return undefined;
+	if (isApprovalRow(row)) return undefined;
 	if (id.includes("effort") || id.includes("thought") || id.includes("reason")) return "gauge.with.dots.needle.67percent";
 	if (id.includes("fast")) return "bolt";
 	return "slider.horizontal.3";
