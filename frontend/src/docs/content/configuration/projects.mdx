@@ -133,6 +133,8 @@ Use `worktree` unless your repository has tooling that behaves badly with git wo
 
 Use `symlinks` for files agents need but should not be copied or committed:
 
+You can configure these paths from the project's **Settings → Workflow → Worktree setup** section. Add each repository-relative path explicitly; AO never links `.env` files implicitly. Because linked files can expose local secrets to worker sessions, only add paths you trust the worker to access.
+
 ```yaml
 symlinks:
   - .env

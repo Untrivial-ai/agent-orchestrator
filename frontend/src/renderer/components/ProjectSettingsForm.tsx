@@ -12,7 +12,7 @@ import {
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useEffect, useState } from "react";
-import { Info, Pencil } from "lucide-react";
+import { Info, Pencil, Plus, Trash2 } from "lucide-react";
 import type { components } from "../../api/schema";
 import {
 	agentModelsQueryKey,
@@ -154,7 +154,8 @@ function SettingsBody({
 		reviewerModel: config.reviewers?.[0]?.agentConfig?.model ?? config.agentConfig?.model ?? "",
 		reviewerMode: config.reviewers?.[0]?.agentConfig?.mode ?? config.agentConfig?.mode ?? "",
 		reviewerEffort: config.reviewers?.[0]?.agentConfig?.effort ?? config.agentConfig?.effort ?? "",
-		reviewerPermissions: config.reviewers?.[0]?.agentConfig?.permissions ?? config.agentConfig?.permissions ?? "",
+		 reviewerPermissions: config.reviewers?.[0]?.agentConfig?.permissions ?? config.agentConfig?.permissions ?? "",
+		symlinks: config.symlinks ?? [],
 		autoReview: config.autoReview ?? false,
 		intakeEnabled: intake.enabled ?? false,
 		intakeRepo: intake.repo ?? "",
@@ -234,6 +235,7 @@ function SettingsBody({
 								? undefined
 								: form.defaultBranch || undefined,
 						sessionPrefix: form.sessionPrefix || undefined,
+						symlinks: form.symlinks.map((path) => path.trim()).filter(Boolean),
 						worker: {
 							...config.worker,
 							agent: form.workerAgent,
@@ -404,6 +406,10 @@ function SettingsBody({
 				}
 				if (!tuningValidity.worker || !tuningValidity.orchestrator || !tuningValidity.reviewer) {
 					setValidationError(t("settings.project.tuningInvalid"));
+					return;
+				}
+				if (form.symlinks.some((path) => !isValidSymlinkPath(path))) {
+					setValidationError(t("settings.project.symlinkPathInvalid"));
 					return;
 				}
 				setValidationError(null);
@@ -645,6 +651,43 @@ function SettingsBody({
 									}),
 								}}
 							/>
+							<ProjectSettingsSection title={t("settings.project.worktreeSetup")} grouped>
+								<div className="px-3 py-2 text-xs text-settings-muted">
+									{t("settings.project.symlinksDescription")}
+								</div>
+								{form.symlinks.map((path, index) => (
+									<div className="settings-row-bar" key={`${index}-${path}`}>
+										<input
+											aria-label={t("settings.project.symlinkPath", { index: index + 1 })}
+											className="settings-inline-edit-input min-w-0 flex-1"
+											value={path}
+											onChange={(event) =>
+												setForm((f) => ({
+													...f,
+													symlinks: f.symlinks.map((item, i) => (i === index ? event.target.value : item)),
+												}))
+											}
+											placeholder=".env"
+										/>
+										<button
+											type="button"
+											className="ml-2 rounded p-1 text-settings-muted hover:text-error"
+											aria-label={t("settings.project.removeSymlink")}
+											onClick={() => setForm((f) => ({ ...f, symlinks: f.symlinks.filter((_, i) => i !== index) }))}
+										>
+											<Trash2 className="size-icon-sm" aria-hidden="true" />
+										</button>
+									</div>
+								))}
+								<button
+									type="button"
+									className="flex items-center gap-1 px-3 py-2 text-xs text-settings-muted hover:text-settings-label"
+									onClick={() => setForm((f) => ({ ...f, symlinks: [...f.symlinks, ""] }))}
+								>
+									<Plus className="size-icon-sm" aria-hidden="true" />
+									{t("settings.project.addSymlink")}
+								</button>
+							</ProjectSettingsSection>
 						</>
 					) : (
 						<p className="px-1 text-xs text-settings-muted">{t("settings.project.workflow")}</p>
@@ -866,12 +909,19 @@ function repositoryHref(repository: string): string {
 function scratchSupportedConfig(config: ProjectConfig): ProjectConfig {
 	const {
 		defaultBranch: _defaultBranch,
+		symlinks: _symlinks,
 		reviewers: _reviewers,
 		autoReview: _legacyAutoReview,
 		trackerIntake: _trackerIntake,
 		...supported
 	} = config as ProjectConfig;
 	return supported;
+}
+
+function isValidSymlinkPath(value: string): boolean {
+	const path = value.trim().replaceAll("\\", "/");
+	if (!path || path.startsWith("/") || /^[A-Za-z]:\//.test(path)) return false;
+	return !path.split("/").some((part) => part === "..");
 }
 
 function blankToUndefined<T extends object>(obj: T): T | undefined {
