@@ -98,8 +98,8 @@ to a session epoch. Minting or reconnecting with a ticket is not lifecycle
 activity. Actual terminal input renews the short interaction lease; merely
 retaining a hidden WebSocket does not. The WebSocket itself is normally a
 stateless bridge: input becomes a durable worker request and output is replayed
-from PostgreSQL by sequence. Local relay experiments
-(`AO_CLOUD_TERMINAL_RELAY=1`, with terminal streaming also enabled) retain the
+from PostgreSQL by sequence. The terminal relay
+(`AO_CLOUD_TERMINAL_RELAY=1`, with terminal streaming also enabled) retains the
 same ticket and sequence contract but forward a worker frame to an attached
 browser first, then mirror that exact frame to PostgreSQL in order. Durable
 storage remains the reconnect/replay source and the original queue path is the

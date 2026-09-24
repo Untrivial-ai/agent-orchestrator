@@ -240,7 +240,7 @@ describe("chat unavailable alert", () => {
 			outcome: "failed",
 			error: "Network request failed",
 		});
-		expect(alert.title).toBe("Could not reach AO");
+		expect(alert.title).toBe("Couldn't reach AO");
 		expect(alert.message).toContain("Network request failed");
 		expect(alert.message).not.toMatch(/compatible native conversation handoff/);
 	});

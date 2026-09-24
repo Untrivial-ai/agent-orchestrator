@@ -1,4 +1,7 @@
-import { autoUpdater } from "electron-updater";
+import { autoUpdater as stockAutoUpdater } from "electron-updater";
+import { MacDifferentialV2Updater } from "./mac-differential-v2-updater";
+import macV2TrustedKeys from "../../scripts/mac-differential-v2-trust.json";
+import macDifferentialRollout from "../../scripts/mac-differential-rollout.json";
 import { CancellationToken } from "builder-util-runtime";
 import { app, dialog, autoUpdater as nativeAutoUpdater } from "electron";
 import { startMacUpdateProgress } from "./mac-update-progress";
@@ -12,6 +15,7 @@ import { AO_BUNDLE_ID } from "./stale-app-copies";
 import type { RequestOptions } from "node:http";
 import {
   readUpdateSettings,
+  macDifferentialUpdatesEnabled,
   updateUpdateSettings,
   writeUpdateSettings,
   UPDATE_SETTINGS_FILE_NAME,
@@ -26,10 +30,100 @@ import {
   isNetErrorMessage,
   normalizeReleaseNotes,
   updateFailureOutcome,
+  updateFailureCategory,
   type UpdateOutcome,
   type UpdatePhase,
   type UpdateTrigger,
 } from "../shared/update-telemetry";
+
+// Current AO uses the stock full-ZIP path. A future compatible build explicitly
+// selects the v2 subclass; old clients never learn its metadata or map URLs.
+const autoUpdater = process.platform === "darwin" && macDifferentialRollout.enabled === true
+  ? new MacDifferentialV2Updater({ trustedKeys: macV2TrustedKeys })
+  : stockAutoUpdater;
+
+const FAIL_CLOSED_UPDATE_SETTINGS: UpdateSettings = {
+  enabled: false,
+  channel: "latest",
+  nightlyAck: false,
+  feature: null,
+  macDifferentialUpdates: false,
+};
+let lastAppliedUpdateSettings: UpdateSettings = FAIL_CLOSED_UPDATE_SETTINGS;
+let developerModeHydrated = false;
+let developerModeRequested = false;
+let differentialEligible = false;
+let pendingTargetBytes: number | undefined;
+let offeredUpdateVersion: string | undefined;
+let offeredMacFiles: Array<{ url: string; size?: number }> = [];
+
+function selectMacTargetBytes(arm64: boolean): void {
+  const hasArm64 = offeredMacFiles.some(file => file.url.includes("arm64"));
+  const file = offeredMacFiles.find(file =>
+    /\.zip(?:$|[?#])/i.test(file.url) && file.url.includes("arm64") === (arm64 && hasArm64));
+  pendingTargetBytes = typeof file?.size === "number" && Number.isFinite(file.size) && file.size >= 0
+    ? file.size : undefined;
+}
+let transferObservation = {
+  eligible: false,
+  attemptedDifferential: false,
+  fallback: false,
+  transferred: undefined as number | undefined,
+};
+let updaterLoggerWired = false;
+
+// electron-updater defaults this flag to false on macOS. Override it before
+// any renderer or settings hydration can race an update operation.
+if (process.platform === "darwin") autoUpdater.disableDifferentialDownload = true;
+
+export function applyUpdaterPolicy(
+  settings: UpdateSettings,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  lastAppliedUpdateSettings = settings;
+  // Keep this gate closed until the dependency and older-client feed isolation
+  // contracts pass. This repository never generates macOS release sidecars.
+  const eligible = macDifferentialRollout.enabled === true && developerModeHydrated && macDifferentialUpdatesEnabled({ platform, settings });
+  differentialEligible = eligible;
+  if (platform === "darwin") autoUpdater.disableDifferentialDownload = !eligible;
+  console.info("[auto-updater] mac differential policy", {
+    eligible,
+    platform,
+    channel: settings.channel,
+    featurePinned: settings.feature !== null,
+    developerMode: settings.macDifferentialUpdates === true,
+  });
+}
+
+// This observes the pinned dependency's phase messages, never its raw URLs,
+// paths, HTTP headers or error stacks. Unknown messages cannot leak credentials.
+function wireUpdaterLogger(): void {
+  if (updaterLoggerWired || process.platform !== "darwin" || macDifferentialRollout.enabled !== true) return;
+  updaterLoggerWired = true;
+  const base = autoUpdater.logger ?? console;
+  const observe = (level: "info" | "warn" | "error" | "debug", first: unknown) => {
+    const message = typeof first === "string" ? first : "";
+    if (message === "Checked for macOS Rosetta environment (isRosetta=true)" ||
+        message === "Checked 'uname -a': arm64=true") {
+      selectMacTargetBytes(true);
+    }
+    if (message.startsWith("Download block maps") || message.startsWith("Differential download:")) {
+      transferObservation.attemptedDifferential = true;
+      base.info("[auto-updater] differential transfer attempted");
+    } else if (/(?:fall(?:ing)? back|fallback) to full download/i.test(message)) {
+      transferObservation.fallback = true;
+      base.warn("[auto-updater] differential transfer fell back to full download");
+    } else if (level === "warn" || level === "error") {
+      base[level](`[auto-updater] ${updateFailureCategory(message)}`);
+    }
+  };
+  autoUpdater.logger = {
+    info: (first: unknown) => observe("info", first),
+    warn: (first: unknown) => observe("warn", first),
+    error: (first: unknown) => observe("error", first),
+    debug: (first: unknown) => observe("debug", first),
+  };
+}
 
 // reconcileAndPersist clears a pinned feature build whose PR has been retired
 // (merged/closed/deleted/expired) and persists the change, so the next check
@@ -324,8 +418,20 @@ let stagedEscalated = false;
 let stagedRequestId: string | undefined;
 let escalationTimer: ReturnType<typeof setInterval> | undefined;
 let escalationStateDir: string | undefined;
-const STABLE_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
-const NIGHTLY_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+// Automatic re-check cadence for a long-running session. A fresh check also
+// runs on every launch (startAutoUpdates), so most users are current the moment
+// they open the app; this interval only governs sessions left open for a long
+// stretch. Kept to once a day on every channel: 15-minute nightly polling and
+// hourly stable polling were redundant background work and, on a cold network,
+// a source of launch-time check errors. Trade-off: the failing-checks nudge
+// needs consecutive automatic failures, and every launch supplies one, so users
+// who restart still trip it quickly; but a session left open continuously on a
+// broken updater now waits days rather than hours before the nudge appears.
+// Feature pins (a pr<N> channel) are the case a daily interval bites hardest: a
+// new build pushed to that PR is not noticed until relaunch, and the 30-minute
+// retirement poll only catches the PR closing, not a fresh build on it. Accepted
+// deliberately, since a pinned session is short-lived and relaunch re-checks.
+const AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 let automaticUpdateTimer: ReturnType<typeof setInterval> | undefined;
 let automaticUpdateTimerIntervalMs: number | undefined;
 type UpdaterOperation =
@@ -455,6 +561,16 @@ function sendToRenderer(channel: string, payload: unknown): void {
 // from "updates:status", so suppressing a status for UI reasons (as the
 // automatic path does) never suppresses the telemetry for it.
 function emitUpdateOutcome(outcome: UpdateOutcome): void {
+  if (outcome.phase === "download" && process.platform === "darwin") {
+    outcome = {
+      ...outcome,
+      differential_eligible: transferObservation.eligible,
+      transfer_mode: transferObservation.attemptedDifferential ? "differential" : "full",
+      fallback: transferObservation.fallback,
+      ...(transferObservation.transferred === undefined ? {} : { transferred_bytes: transferObservation.transferred }),
+      ...(pendingTargetBytes === undefined ? {} : { target_bytes: pendingTargetBytes }),
+    };
+  }
   sendToRenderer("updates:telemetry", outcome);
 }
 
@@ -989,7 +1105,16 @@ async function checkForUpdatesWithDeadline(): Promise<UpdateCheckOutcome> {
   };
   const timer = setTimeout(() => {
     timedOut = true;
-    broadcast(withActiveRequest({ state: "error", message: UPDATE_CHECK_TIMEOUT_MESSAGE }));
+    // Automatic checks suppress their own transient failures in the UI (see the
+    // "error the user never asked for" note in the error handler). Surfacing the
+    // timeout here would defeat that and strand a red error on the Settings panel
+    // after a slow launch-time check the user never requested. The throw below
+    // still routes an automatic timeout through the suppression + failing-checks
+    // nudge path. Manual and return-home checks are user-initiated, so they still
+    // get the error immediately at the deadline.
+    if (activeUpdaterOperation !== "automatic-check") {
+      broadcast(withActiveRequest({ state: "error", message: UPDATE_CHECK_TIMEOUT_MESSAGE }));
+    }
     // Cancellation aborts the request AND rejects its promise. Do not race the
     // check: electron-updater must clear its cached promise before AO retries.
     for (const token of tokens) token.cancel();
@@ -1114,7 +1239,7 @@ async function runSerializedUpdaterOperation(
     activeUpdaterOperation = operation;
     activeUpdaterRequestId = requestId;
     activeUpdaterPhase = operation === "manual-download" ? "download" : "check";
-    pendingUpdateVersion = undefined;
+    pendingUpdateVersion = operation === "manual-download" ? offeredUpdateVersion : undefined;
     if (operation === "automatic-check") {
       automaticCheckNetFailureCounted = false;
       automaticCheckFailureCounted = false;
@@ -1183,6 +1308,7 @@ async function runRetirementPoll(stateDir: string): Promise<void> {
       if (settings.feature === null || settings.feature === undefined) {
         // Pin was cleared: drop the now-dead pr<N> channel right away instead of
         // waiting for the next manual or launch-time check to notice.
+        applyUpdaterPolicy(settings);
         configureFeed(settings);
       }
     });
@@ -1526,6 +1652,7 @@ function installE2EUpdateSentinel(): void {
 // to the renderer as an UpdateStatus. Idempotent: safe to call on every entry
 // point (launch auto-check and manual check).
 function wireUpdaterEvents(): void {
+  wireUpdaterLogger();
   if (eventsWired) return;
   eventsWired = true;
   if (process.platform === "darwin") {
@@ -1576,6 +1703,15 @@ function wireUpdaterEvents(): void {
     broadcastUpdaterStatus({ state: "checking" });
   });
   autoUpdater.on("update-available", (info) => {
+    offeredMacFiles = Array.isArray(info?.files) ? info.files : [];
+    offeredUpdateVersion = info?.version;
+    selectMacTargetBytes(process.arch === "arm64");
+    transferObservation = {
+      eligible: differentialEligible,
+      attemptedDifferential: false,
+      fallback: false,
+      transferred: undefined,
+    };
     // A successful check proves the network stack is healthy.
     consecutiveAutomaticNetFailures = 0;
     consecutiveAutomaticCheckFailures = 0;
@@ -1626,13 +1762,18 @@ function wireUpdaterEvents(): void {
     consecutiveAutomaticCheckFailures = 0;
     failingChecksPublished = false;
     activeUpdaterPhase = "download";
+    const transferred = Number.isFinite(p?.transferred) && p.transferred >= 0 ? p.transferred : undefined;
+    const total = Number.isFinite(p?.total) && p.total >= 0 ? p.total : undefined;
+    const bytesPerSecond = Number.isFinite(p?.bytesPerSecond) && p.bytesPerSecond >= 0 ? p.bytesPerSecond : undefined;
+    transferObservation.transferred = transferred;
     if (p?.transferred === undefined || p.transferred !== lastStatus.transferred) armDownloadStallWatchdog();
     return broadcastUpdaterStatus({
       state: p?.percent >= 100 ? "preparing" : "downloading",
       version: pendingUpdateVersion,
       percent: Math.max(0, Math.min(100, Math.floor(p?.percent ?? 0))),
-      transferred: p?.transferred,
-      total: p?.total,
+      ...(transferred === undefined ? {} : { transferred }),
+      ...(total === undefined ? {} : { total }),
+      ...(bytesPerSecond === undefined ? {} : { bytesPerSecond }),
     });
   });
   autoUpdater.on("update-downloaded", (info) => {
@@ -1684,8 +1825,8 @@ function wireUpdaterEvents(): void {
     // process open on quit.
     void runEscalationCheck();
     // Re-arming on a re-stage would push the next evaluation out by another 30
-    // minutes every time, and the nightly channel re-stages every 15 — the loop
-    // would never get a turn. Leave the running timer alone in that case.
+    // minutes every time a background check re-stages the same build, so the
+    // loop would never get a turn. Leave the running timer alone in that case.
     if (!restaged || escalationTimer === undefined) {
       stopEscalationTimer();
       escalationTimer = setInterval(
@@ -1872,10 +2013,15 @@ export function getUpdateStatus(): UpdateStatus {
   };
 }
 
-function automaticUpdateCheckInterval(settings: UpdateSettings): number {
-  return settings.channel === "nightly" && settings.feature === null
-    ? NIGHTLY_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS
-    : STABLE_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
+// The cadence is one number for every channel today, so this ignores its
+// argument. Kept as a settings-taking seam on purpose: it is the single place a
+// future per-channel cadence (for example a shorter interval for feature pins)
+// would branch, and the scheduler already carries the interval through
+// runAutomaticUpdateCheck's return value and re-arms when it changes, so
+// reintroducing a variable cadence stays a one-function change. The _settings
+// underscore is the signal that the parameter is deliberately unused for now.
+function automaticUpdateCheckInterval(_settings: UpdateSettings): number {
+  return AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
 }
 
 /**
@@ -1919,7 +2065,7 @@ async function runAutomaticUpdateCheck(
   stateDir: string,
 ): Promise<number> {
   let nextIntervalMs =
-    automaticUpdateTimerIntervalMs ?? STABLE_AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
+    automaticUpdateTimerIntervalMs ?? AUTOMATIC_UPDATE_CHECK_INTERVAL_MS;
   try {
     await runSerializedUpdaterOperation("automatic-check", async () => {
       const settings = await reconcileAndPersist(
@@ -1930,6 +2076,7 @@ async function runAutomaticUpdateCheck(
 
       escalationStateDir = stateDir;
       wireUpdaterEvents();
+      applyUpdaterPolicy(settings);
       configureFeed(settings);
       // Discovery is always on for the selected release channel. This preference
       // controls only whether electron-updater downloads the discovered build or
@@ -1939,9 +2086,9 @@ async function runAutomaticUpdateCheck(
       // electron-updater does not treat "already in the cache" as done: a cache
       // hit still runs the download task's completion path, which on macOS copies
       // the whole zip to update.zip and hands Squirrel a fresh install request.
-      // With autoDownload on, that repeated for every check for as long as the
-      // user went without quitting — 175 MB of copying and a ShipIt spawn every
-      // 15 minutes on nightly. Anything genuinely newer than the staged build is
+      // With autoDownload on, that repeated on every check for as long as the
+      // user went without quitting: 175 MB of copying and a ShipIt spawn on each
+      // automatic check. Anything genuinely newer than the staged build is
       // still fetched, below.
       // A staged build from a channel the user has left is already armed with
       // the OS installer; the replacement must be fetched even when automatic
@@ -2073,13 +2220,26 @@ export async function startAutoUpdates(stateDir: string): Promise<void> {
     schedulePeriodicAutomaticUpdateCheck(stateDir, intervalMs);
 }
 
+// The mirror belongs to Developer Mode IPC. A stale settings form must not
+// restore an old value when changing channel or automatic-download preference.
+async function persistRendererUpdateSettings(
+  stateDir: string,
+  settings: UpdateSettings,
+): Promise<UpdateSettings> {
+  return updateUpdateSettings(stateDir, current => ({
+    ...settings,
+    macDifferentialUpdates: current.macDifferentialUpdates === true,
+  }));
+}
+
 async function persistUpdaterSettings(
   stateDir: string,
   settings: UpdateSettings,
 ): Promise<void> {
-  await writeUpdateSettings(stateDir, settings);
-  configureFeed(settings);
-  reconcileAutomaticUpdateSchedule(stateDir, settings);
+  const next = await persistRendererUpdateSettings(stateDir, settings);
+  applyUpdaterPolicy(next);
+  configureFeed(next);
+  reconcileAutomaticUpdateSchedule(stateDir, next);
 }
 
 /** Persist settings and reconcile the live updater feed/timer as one updater operation. */
@@ -2134,12 +2294,11 @@ export async function checkForUpdatesNow(
     await runSerializedUpdaterOperation(
       "manual-check",
       async () => {
-        if (options.settings)
-          await writeUpdateSettings(stateDir, options.settings);
-        const settings = await reconcileAndPersist(
-          stateDir,
-          options.settings ?? (await readUpdateSettings(stateDir)),
-        );
+        const requested = options.settings
+          ? await persistRendererUpdateSettings(stateDir, options.settings)
+          : await readUpdateSettings(stateDir);
+        const settings = await reconcileAndPersist(stateDir, requested);
+        applyUpdaterPolicy(settings);
         reconcileAutomaticUpdateSchedule(stateDir, settings);
         configureFeed(settings);
         // Same reason as the automatic path: a channel switch leaves the old
@@ -2242,6 +2401,7 @@ export async function returnToHome(
           current.feature ? { ...current, feature: null } : current,
         );
         const settings = await reconcileAndPersist(stateDir, cleared);
+        applyUpdaterPolicy(settings);
         reconcileAutomaticUpdateSchedule(stateDir, settings);
         configureFeed(settings);
         // Leaving a pinned PR build is the same class of switch: its build is
@@ -2309,6 +2469,8 @@ export async function downloadUpdateNow(requestId?: string): Promise<void> {
         pendingUpdateVersion = lastStatus.version ?? version;
         broadcastUpdaterStatus({ state: "downloading", version: pendingUpdateVersion });
         activeDownloadCancellation = token;
+        applyUpdaterPolicy(lastAppliedUpdateSettings);
+        transferObservation = { eligible: differentialEligible, attemptedDifferential: false, fallback: false, transferred: undefined };
         armDownloadStallWatchdog();
         await autoUpdater.downloadUpdate(token);
       },
@@ -2340,6 +2502,29 @@ export async function downloadUpdateNow(requestId?: string): Promise<void> {
     manualDownloadPending = false;
     clearDownloadStallWatchdog();
   }
+}
+
+/** Persist the narrow Developer Mode mirror and apply its fail-closed policy. */
+export async function setMacDifferentialUpdates(
+  stateDir: string,
+  enabled: boolean,
+): Promise<void> {
+  if (typeof enabled !== "boolean") return;
+  developerModeRequested = enabled;
+  // Revoke eligibility synchronously, even while a previous operation is busy.
+  // An already-started dependency download retains its captured options.
+  if (!enabled) {
+    developerModeHydrated = false;
+    applyUpdaterPolicy(FAIL_CLOSED_UPDATE_SETTINGS);
+  }
+  await runSerializedUpdaterOperation("settings-write", async () => {
+    const settings = await updateUpdateSettings(stateDir, (current) => ({
+      ...current,
+      macDifferentialUpdates: enabled,
+    }));
+    developerModeHydrated = enabled && developerModeRequested;
+    applyUpdaterPolicy(settings);
+  });
 }
 
 // getMacInstallBlocker is the macOS install preflight. An app launched straight

@@ -723,6 +723,77 @@ func (c *Client) repositoryToken(
 	return response, nil
 }
 
+// resolveInstallationRepositoryIDs maps declared extra-repository full names
+// ("owner/repo") to their numeric IDs, but only for repositories the
+// installation actually has access to. Enumerating the installation's
+// repositories (rather than fetching each by name) guarantees every returned ID
+// is one the installation can mint a token for, so a broadened checkout token
+// never 422s on an extra repository that lives outside the installation.
+// Unmatched extras are silently skipped; the result preserves input order and
+// contains no duplicates.
+func (c *Client) resolveInstallationRepositoryIDs(
+	ctx context.Context,
+	installationID int64,
+	fullNames []string,
+) ([]int64, error) {
+	if installationID <= 0 || len(fullNames) == 0 {
+		return nil, nil
+	}
+	repositories, err := c.ListRepositories(ctx, installationID)
+	if err != nil {
+		return nil, err
+	}
+	byName := make(map[string]int64, len(repositories))
+	for _, repository := range repositories {
+		byName[strings.ToLower(strings.Trim(repository.FullName, "/"))] = repository.ID
+	}
+	ids := make([]int64, 0, len(fullNames))
+	seen := make(map[int64]bool, len(fullNames))
+	for _, fullName := range fullNames {
+		id, ok := byName[strings.ToLower(strings.Trim(strings.TrimSpace(fullName), "/"))]
+		if !ok || id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// repositoryReadTokenForRepos mints a short-lived installation token scoped to a
+// set of repositories with read-only contents access. It backs a checkout that
+// clones the project's primary repository plus any declared extra repositories;
+// repositoryToken remains the single-repository path used by capability
+// redemption. The scope is exactly the given IDs — nothing is granted
+// installation-wide.
+func (c *Client) repositoryReadTokenForRepos(
+	ctx context.Context,
+	installationID int64,
+	repositoryIDs []int64,
+) (installationAccessToken, error) {
+	if installationID <= 0 || len(repositoryIDs) == 0 {
+		return installationAccessToken{}, errors.New("GitHub installation token scope is invalid")
+	}
+	for _, id := range repositoryIDs {
+		if id <= 0 {
+			return installationAccessToken{}, errors.New("GitHub installation token scope is invalid")
+		}
+	}
+	response, err := c.createInstallationToken(ctx, installationID, map[string]any{
+		"repository_ids": repositoryIDs,
+		"permissions": map[string]string{
+			"contents": "read",
+		},
+	})
+	if err != nil {
+		return installationAccessToken{}, err
+	}
+	if response.ExpiresAt.IsZero() || !response.ExpiresAt.After(c.now()) {
+		return installationAccessToken{}, errors.New("GitHub returned an expired installation token")
+	}
+	return response, nil
+}
+
 // repositoryWriteToken mints a short-lived installation token scoped to one
 // repository with write access to its contents and pull requests. Unlike
 // repositoryToken (contents:read, used for checkout), this is minted only

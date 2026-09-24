@@ -3,6 +3,7 @@ import type {
 	IpcMain,
 	IpcMainEvent,
 	IpcMainInvokeEvent,
+	NativeImage,
 	Rectangle,
 	Session,
 	View,
@@ -140,6 +141,7 @@ type InternalBrowserDevToolsOperation = BrowserDevToolsInput["operation"] | "tog
 
 type BrowserBoundsInput = {
 	viewId: string;
+	revision: number;
 	rect: BrowserRect;
 	visible: boolean;
 };
@@ -392,12 +394,14 @@ type BrowserSessionEntry = {
 	rendererBounds: BrowserRect;
 	zoomFactor: number;
 	visible: boolean;
+	layoutRevision: number;
 	networkTabId?: string;
 	agentBrowserCommands: number;
 	browserOperations: number;
 	profileSwitching: boolean;
 	profileSwitchTargetId: BrowserProfileId | null;
 	nativeActiveTabId?: string;
+	snapshotDeltaBaseline?: { tabId: string; interactive: boolean; revision: number };
 	nativeOperationQueue: Promise<void>;
 	devtoolsPlacement: BrowserDevToolsPlacement;
 	// Bounded browser diagnostics exposed only through an explicit errors query.
@@ -832,6 +836,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				rendererBounds: OFFSCREEN_BOUNDS,
 				zoomFactor: 1,
 				visible: false,
+				layoutRevision: 0,
 				agentBrowserCommands: 0,
 				browserOperations: 0,
 				profileSwitching: false,
@@ -1174,6 +1179,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				agentBrowserTargets(session),
 			);
 			session.nativeActiveTabId = session.activeTabId;
+			session.snapshotDeltaBaseline = undefined;
 			return listTabs(session);
 		});
 	};
@@ -1197,6 +1203,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				return closeTab(session, tabId);
 			}
 			session.nativeActiveTabId = undefined;
+			session.snapshotDeltaBaseline = undefined;
 			await ensureNativeActiveTab(session);
 			return listTabs(session);
 		});
@@ -1471,9 +1478,10 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		}
 	}
 
-	const setBounds = ({ viewId, rect, visible }: BrowserBoundsInput, zoomFactor = 1): void => {
+	const setBounds = ({ viewId, revision, rect, visible }: BrowserBoundsInput, zoomFactor = 1): BrowserBoundsInput | undefined => {
 		const session = entries.get(viewId);
-		if (!session) return;
+		if (!session || !Number.isSafeInteger(revision) || revision <= session.layoutRevision) return;
+		session.layoutRevision = revision;
 		const effectiveZoomFactor = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
 		session.zoomFactor = effectiveZoomFactor;
 		if (!visible) {
@@ -1483,7 +1491,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 			// Hiding the native surface (blank tab, transient measure) must not drop
 			// the browser shortcut target — the panel chrome is still the context.
 			forgetNativeFocus(viewId);
-			return;
+			return { viewId, revision, rect: session.bounds, visible: false };
 		}
 		// The renderer measures the slot in page-zoomed CSS pixels, while
 		// WebContentsView bounds are window coordinates. Convert before clamping so
@@ -1502,6 +1510,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		// becomes visible. Remember that active panel too, so the DevTools shortcut
 		// still targets the browser even when the native page itself is not focused.
 		lastFocusedViewId = viewId;
+		return { viewId, revision, rect: session.bounds, visible: true };
 	};
 
 	const navigate = async ({ viewId, url }: BrowserNavigateInput): Promise<BrowserNavState> => {
@@ -1558,11 +1567,11 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		});
 	};
 
-	// Best-effort full-viewport capture for a browser-annotation submit. Bounded
-	// by ANNOTATION_SNAPSHOT_TIMEOUT_MS so a slow/hung capturePage() can never
-	// delay the send — on timeout, error, or an empty frame this resolves
-	// undefined and the caller proceeds with a text-only message.
-	const captureAnnotationSnapshot = async (entry: BrowserEntry): Promise<BrowserAnnotationSnapshot | undefined> => {
+	// Best-effort full-viewport page image shared by submit-time snapshots and
+	// annotation screenshot copies. Bounded by ANNOTATION_SNAPSHOT_TIMEOUT_MS so
+	// a slow/hung capturePage() can never block its caller — on timeout, error,
+	// or an empty frame this resolves undefined.
+	const capturePageImage = async (entry: BrowserEntry): Promise<NativeImage | undefined> => {
 		try {
 			const timedOut = Symbol("annotation-snapshot-timeout");
 			const image = await Promise.race([
@@ -1572,20 +1581,29 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				}),
 			]);
 			if (image === timedOut || image.isEmpty()) return undefined;
-			const { width, height } = image.getSize();
-			const longestEdge = Math.max(width, height);
-			const resized =
-				longestEdge > ANNOTATION_SNAPSHOT_MAX_DIMENSION
-					? image.resize(
-							width >= height
-								? { width: ANNOTATION_SNAPSHOT_MAX_DIMENSION }
-								: { height: ANNOTATION_SNAPSHOT_MAX_DIMENSION },
-						)
-					: image;
-			return { mimeType: "image/png", data: resized.toPNG().toString("base64") };
+			return image;
 		} catch {
 			return undefined;
 		}
+	};
+
+	// Best-effort full-viewport capture for a browser-annotation submit. On
+	// timeout, error, or an empty frame this resolves undefined and the caller
+	// proceeds with a text-only message.
+	const captureAnnotationSnapshot = async (entry: BrowserEntry): Promise<BrowserAnnotationSnapshot | undefined> => {
+		const image = await capturePageImage(entry);
+		if (!image) return undefined;
+		const { width, height } = image.getSize();
+		const longestEdge = Math.max(width, height);
+		const resized =
+			longestEdge > ANNOTATION_SNAPSHOT_MAX_DIMENSION
+				? image.resize(
+						width >= height
+							? { width: ANNOTATION_SNAPSHOT_MAX_DIMENSION }
+							: { height: ANNOTATION_SNAPSHOT_MAX_DIMENSION },
+					)
+				: image;
+		return { mimeType: "image/png", data: resized.toPNG().toString("base64") };
 	};
 
 	const destroy = (viewId: string): void => {
@@ -1639,6 +1657,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		session.activeTabId = "";
 		session.networkTabId = undefined;
 		session.nativeActiveTabId = undefined;
+		session.snapshotDeltaBaseline = undefined;
 	};
 
 	const savedTabsForSession = (session: BrowserSessionEntry): SavedBrowserTab[] =>
@@ -1872,6 +1891,15 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		if (!browserSession) return;
 		assertProfileStable(browserSession);
 		const entry = activeEntry(browserSession);
+		if (!input.enabled) {
+			// Drop the open composer when leaving annotation mode. Keep saved
+			// batch annotations/markers so they reappear on the next entry.
+			const stored = annotationSessionFor(entry);
+			if (stored?.draft) {
+				delete stored.draft;
+				pushAnnotationState(options, entry, stored);
+			}
+		}
 		entry.annotationEnabled = input.enabled;
 		if (input.theme) entry.annotationTheme = input.theme;
 		const annotationSession = annotationSessionFor(entry);
@@ -1941,9 +1969,17 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		shellWebContents.send("browser:annotation:canceled", forwarded);
 	};
 
-	const captureAnnotation = (event: IpcMainInvokeEvent): Promise<BrowserAnnotationSnapshot | undefined> => {
+	// The annotation toolbar's screenshot button copies the capture to the
+	// user's system clipboard instead of queueing an attachment for the next
+	// agent batch. Resolves true only when the image actually reached the
+	// clipboard, so the page can surface a failure instead of a false "copied".
+	const captureAnnotation = async (event: IpcMainInvokeEvent): Promise<boolean> => {
 		const entry = tabsByWebContentsId.get(event.sender.id);
-		return entry ? captureAnnotationSnapshot(entry) : Promise.resolve(undefined);
+		if (!entry || !options.clipboard) return false;
+		const image = await capturePageImage(entry);
+		if (!image) return false;
+		options.clipboard.writeImage(image);
+		return true;
 	};
 
 	const discardAnnotationSession = (entry: BrowserEntry): void => {
@@ -2013,7 +2049,9 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		return pushNavState(options, activeEntry(session));
 	});
 	on("browser:setBounds", (event, input: BrowserBoundsInput) => {
-		if (isRendererOwned(event, input.viewId)) setBounds(input, event.sender.getZoomFactor());
+		if (!input || !isRendererOwned(event, input.viewId)) return;
+		const applied = setBounds(input, event.sender.getZoomFactor());
+		if (applied) event.sender.send("browser:boundsApplied", applied);
 	});
 	handle("browser:navigate", (event, input: BrowserNavigateInput) =>
 		isRendererOwned(event, input.viewId) ? navigate(input) : emptyNavState(input.viewId),
@@ -2170,6 +2208,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				return closeTab(session, input.tabId);
 			}
 			session.nativeActiveTabId = undefined;
+			session.snapshotDeltaBaseline = undefined;
 			await ensureNativeActiveTab(session);
 			return listTabs(session);
 		});
@@ -2269,6 +2308,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 					if (nativeAction === "tab-new" || nativeAction === "tab-close") {
 						session.nativeActiveTabId = undefined;
 					}
+					if (nativeAction.startsWith("tab-") || nativeAction === "frame") session.snapshotDeltaBaseline = undefined;
 					if (nativeAction.startsWith("tab-")) await ensureNativeActiveTab(session, signal);
 					return result;
 				});
@@ -2280,7 +2320,40 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 					return agentNavState(pushNavState(options, activeEntry(session)));
 				}
 				case "snapshot": {
-					const result = await runNative(action, { interactive: Boolean(args.interactive) });
+					const interactive = Boolean(args.interactive);
+					if (args.delta === true) {
+						const tabId = session.activeTabId;
+						const baseline = session.snapshotDeltaBaseline;
+						const current =
+							baseline && baseline.tabId === tabId && baseline.interactive === interactive ? baseline : undefined;
+						const request = async (full: boolean) => {
+							const result = await runNative(action, { interactive, delta: true, ...(full ? { full: true } : {}) });
+							return { delta: parseSnapshotDelta(result.snapshot), boundary: result._boundary };
+						};
+						let full = args.full === true || !current;
+						let response = await request(full);
+						if (!full && response.delta.kind !== "full" && response.delta.baseRevision !== current?.revision) {
+							full = true;
+							response = await request(true);
+						}
+						if (full && response.delta.kind !== "full") {
+							throw browserError("BROWSER_AUTOMATION_INVALID_OUTPUT", "Browser snapshot delta output was invalid");
+						}
+						// Anything that invalidated the baseline while this snapshot was in
+						// flight (a background tab closing, a profile switch) must win over
+						// a response captured before it.
+						session.snapshotDeltaBaseline =
+							session.activeTabId === tabId && session.snapshotDeltaBaseline === baseline
+								? { tabId, interactive, revision: response.delta.revision }
+								: undefined;
+						return {
+							...response.delta,
+							...(response.boundary ? { _boundary: response.boundary } : {}),
+							untrustedExternalContent: true,
+						};
+					}
+					session.snapshotDeltaBaseline = undefined;
+					const result = await runNative(action, { interactive });
 					if (typeof result.snapshot !== "string") {
 						throw browserError("BROWSER_AUTOMATION_INVALID_OUTPUT", "Browser snapshot output was invalid");
 					}
@@ -2310,13 +2383,18 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 						}
 						return { text: result.snapshot, refs: result.refs };
 					};
-					const unresolved = (outcome: "ambiguous" | "no-match", candidates: unknown, snapshot: string) => ({
-						outcome,
-						instruction,
-						...(outcome === "ambiguous" ? { candidates } : {}),
-						snapshot,
-						untrustedExternalContent: true as const,
-					});
+					const unresolved = (outcome: "ambiguous" | "no-match", candidates: unknown, snapshot: string) => {
+						// These outcomes hand the agent a tree of their own, so a later
+						// delta must not be measured against the one it replaced.
+						session.snapshotDeltaBaseline = undefined;
+						return {
+							outcome,
+							instruction,
+							...(outcome === "ambiguous" ? { candidates } : {}),
+							snapshot,
+							untrustedExternalContent: true as const,
+						};
+					};
 
 					const snapshot1 = await snapshotOnce();
 					const match1 = matchInstruction(instruction, snapshot1.refs, { nth });
@@ -2362,6 +2440,11 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 					}
 				}
 				case "click":
+					if (args.human === true) assertPanelPainted(session);
+					return runNative(action, {
+						ref: stringArg(args, "ref", "REFERENCE_REQUIRED", "ref is required"),
+						...(args.human === true ? { human: true } : {}),
+					});
 				case "dblclick":
 				case "focus":
 				case "hover":
@@ -2379,9 +2462,11 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				case "press":
 					return runNative(action, { key: stringArg(args, "key", "INVALID_ARGUMENT", "key is required") });
 				case "drag":
+					if (args.human === true) assertPanelPainted(session);
 					return runNative(action, {
 						ref: stringArg(args, "ref", "REFERENCE_REQUIRED", "ref is required"),
 						targetRef: stringArg(args, "targetRef", "REFERENCE_REQUIRED", "target ref is required"),
+						...(args.human === true ? { human: true } : {}),
 					});
 				case "unhighlight":
 					return agentURLResult(await unhighlightEntry(entry));
@@ -2448,7 +2533,9 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 						throw browserError("BROWSER_AUTOMATION_UNAVAILABLE", "Browser automation runtime is unavailable");
 					}
 					await activeEntry(session).ready;
-					return options.agentBrowserRuntime.screenshot(sessionId, agentBrowserTargets(session), signal);
+					return options.agentBrowserRuntime.screenshot(sessionId, agentBrowserTargets(session), signal, {
+						annotate: args.annotate === true,
+					});
 				case "network-start":
 					return startNetworkCapture(
 						session,
@@ -2687,6 +2774,41 @@ function agentTabsResult(session: BrowserSessionEntry): BrowserTabsState & { unt
 		tabs: [...session.tabs.values()].map((entry) => agentTabResult(entry, entry.tabId === session.activeTabId)),
 		untrustedExternalContent: true,
 	};
+}
+
+type SnapshotDelta =
+	| { kind: "full"; revision: number; text: string; refs: unknown }
+	| { kind: "unchanged"; revision: number; baseRevision: number }
+	| { kind: "delta"; revision: number; baseRevision: number; changes: unknown[]; treeChange: unknown };
+
+// Curved pointer movement needs painted frames: an offscreen panel would take
+// the command to the request deadline instead of failing with something the
+// agent can act on.
+function assertPanelPainted(session: BrowserSessionEntry): void {
+	if (session.visible) return;
+	throw browserError(
+		"BROWSER_PANEL_HIDDEN",
+		"Human pointer movement needs the Browser panel visible on screen. Ask the user to open it, or retry without --human.",
+	);
+}
+
+function parseSnapshotDelta(value: unknown): SnapshotDelta {
+	const invalid = () =>
+		browserError("BROWSER_AUTOMATION_INVALID_OUTPUT", "Browser snapshot delta output was invalid");
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
+	const snapshot = value as Record<string, unknown>;
+	const { kind, revision, baseRevision } = snapshot;
+	if (typeof revision !== "number" || !Number.isInteger(revision)) throw invalid();
+	if (kind === "full") {
+		if (typeof snapshot.tree !== "string") throw invalid();
+		return { kind, revision, text: snapshot.tree, refs: snapshot.refs };
+	}
+	if (typeof baseRevision !== "number" || !Number.isInteger(baseRevision)) throw invalid();
+	if (kind === "unchanged") return { kind, revision, baseRevision };
+	if (kind === "delta" && Array.isArray(snapshot.changes)) {
+		return { kind, revision, baseRevision, changes: snapshot.changes, treeChange: snapshot.treeChange };
+	}
+	throw invalid();
 }
 
 function agentNavState(state: BrowserNavState): BrowserNavState {

@@ -184,9 +184,13 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		"user":          toUserResponse(principal),
 		"organizations": toOrganizations(memberships),
 		// sandboxProviders lets the client render a provider selector limited to
-		// what this control plane offers, defaulting to the deployment default.
+		// what this control plane offers AND what the active organization is
+		// entitled to (e.g. coder is filtered out unless the org has the
+		// capability), defaulting to the deployment default. The server enforces
+		// the same filter on create, so the UI never offers a provider that would
+		// be refused.
 		"sandboxProviders": map[string]any{
-			"available": s.availableSandboxProviders,
+			"available": s.providersForOrg(principal, s.availableSandboxProviders),
 			"default":   s.sandboxProvider,
 		},
 	})

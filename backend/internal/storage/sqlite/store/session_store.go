@@ -58,6 +58,21 @@ func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) err
 	return s.qw.UpdateSession(ctx, recordToUpdate(rec))
 }
 
+// UpdateSessionModel changes only the selected model, leaving concurrent
+// lifecycle and controller ownership updates intact.
+func (s *Store) UpdateSessionModel(ctx context.Context, id domain.SessionID, model string) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.UpdateSessionModel(ctx, gen.UpdateSessionModelParams{
+		ID:    id,
+		Model: model,
+	})
+	if err != nil {
+		return false, fmt.Errorf("update session model for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // UpdateBrowserCapabilityVerifier rotates only the verifier when the caller's
 // controller-owner snapshot is still current. It deliberately leaves every
 // other mutable session field, including user-visible recency, untouched.
@@ -185,6 +200,28 @@ func (s *Store) RenameSession(ctx context.Context, id domain.SessionID, displayN
 	})
 	if err != nil {
 		return false, fmt.Errorf("rename session %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+// RenameSessionIfDisplayName applies a generated title only while the session
+// still carries AO's provisional name, so a concurrent human rename wins.
+func (s *Store) RenameSessionIfDisplayName(
+	ctx context.Context,
+	id domain.SessionID,
+	currentDisplayName, displayName string,
+	updatedAt time.Time,
+) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.RenameSessionIfDisplayName(ctx, gen.RenameSessionIfDisplayNameParams{
+		ID:                 id,
+		CurrentDisplayName: currentDisplayName,
+		DisplayName:        displayName,
+		UpdatedAt:          updatedAt,
+	})
+	if err != nil {
+		return false, fmt.Errorf("rename session %s if unchanged: %w", id, err)
 	}
 	return rows > 0, nil
 }
@@ -506,6 +543,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 			ProviderConversationID:           row.ProviderConversationID,
 			ControllerGeneration:             row.ControllerGeneration,
 			Model:                            row.Model,
+			Effort:                           row.Effort,
 			Permissions:                      domain.PermissionMode(row.SessionPermissions),
 		},
 		CleanupGeneration: row.CleanupGeneration,
@@ -578,6 +616,7 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		ProviderConversationID:           rec.Metadata.ProviderConversationID,
 		ControllerGeneration:             rec.Metadata.ControllerGeneration,
 		Model:                            rec.Metadata.Model,
+		Effort:                           rec.Metadata.Effort,
 		SessionPermissions:               string(rec.Metadata.Permissions),
 		CreatedAt:                        rec.CreatedAt,
 		UpdatedAt:                        rec.UpdatedAt,
@@ -635,6 +674,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		ProviderConversationID:           rec.Metadata.ProviderConversationID,
 		ControllerGeneration:             rec.Metadata.ControllerGeneration,
 		Model:                            rec.Metadata.Model,
+		Effort:                           rec.Metadata.Effort,
 		UpdatedAt:                        rec.UpdatedAt,
 	}
 }

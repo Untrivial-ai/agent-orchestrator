@@ -1,8 +1,10 @@
 package controllers_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -36,6 +38,11 @@ func (f *fakeUsageSummaryService) Get(_ context.Context, sessionID domain.Sessio
 func newUsageTestServer(t *testing.T, svc *fakeUsageSummaryService) *httptest.Server {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return newUsageTestServerWithLogger(t, svc, log)
+}
+
+func newUsageTestServerWithLogger(t *testing.T, svc *fakeUsageSummaryService, log *slog.Logger) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{UsageSummary: svc}, httpd.ControlDeps{}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -194,5 +201,22 @@ func TestUsageAPIShowsDetailedEstimatedCostAndProviderAttribution(t *testing.T) 
 		got.Harnesses[0].Models[0].Totals.EstimatedCost.Coverage != "complete" ||
 		got.Harnesses[0].Models[0].Totals.EstimatedCost.ProviderAttribution != "observed" {
 		t.Fatalf("response = %+v", got)
+	}
+}
+
+func TestUsageAPILogsServiceErrors(t *testing.T) {
+	var logs bytes.Buffer
+	srv := newUsageTestServerWithLogger(t, &fakeUsageSummaryService{err: errors.New("usage unavailable")}, slog.New(slog.NewTextHandler(&logs, nil)))
+
+	for _, path := range []string{"/api/v1/usage/sessions?projectId=reverb", "/api/v1/usage/sessions/reverb-12"} {
+		body, status, _ := doRequest(t, srv, http.MethodGet, path, "")
+		if status != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500; body=%s", status, body)
+		}
+	}
+	for _, message := range []string{"failed to list compact session usage", "failed to get session usage"} {
+		if !strings.Contains(logs.String(), message) {
+			t.Fatalf("logs = %q, want %q", logs.String(), message)
+		}
 	}
 }

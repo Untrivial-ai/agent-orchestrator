@@ -1,6 +1,11 @@
 package agentauth
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/kimi"
+	"github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
+)
 
 // plans is the code-reviewed authentication allowlist in stable Harness
 // settings order. Commands must be added here, never supplied by clients.
@@ -10,14 +15,14 @@ import "strings"
 const qwenAuthInput = "i\x7f/auth\r"
 
 var plans = []Plan{
-	plan("claude-code", ActionLogin, "Log in to Claude Code", []string{"claude", "auth", "login"}, "Native browser/device flow", "https://code.claude.com/docs/en/installation"),
-	plan("codex", ActionLogin, "Log in to Codex", []string{"codex", "login"}, "Native browser/device-code flow", "https://github.com/openai/codex"),
+	loginMenuPlan("claude-code", "claude-login", nil, "Log in to Claude Code", []string{"claude", "auth", "login"}, "Choose Claude subscription, Anthropic Console, or SSO", "https://code.claude.com/docs/en/installation"),
+	loginMenuPlan("codex", "codex-login", []string{"--use-default-credential-store"}, "Log in to Codex", []string{"codex", "login"}, "Choose ChatGPT, device code, API key, or access token", "https://github.com/openai/codex"),
 	plan("cursor", ActionLogin, "Log in to Cursor", []string{"cursor-agent", "login"}, "Native browser flow", "https://docs.cursor.com/en/cli/installation"),
 	plan("opencode", ActionLogin, "Log in to OpenCode", []string{"opencode", "auth", "login"}, "Native provider chooser", "https://github.com/anomalyco/opencode"),
 	documentationPlan("aider", ActionSetup, "Set up Aider", "Configure provider credentials using Aider's documented environment or configuration-file options", "https://aider.chat/docs/config/api-keys.html"),
 	plan("copilot", ActionLogin, "Log in to GitHub Copilot", []string{"copilot", "login"}, "Native GitHub device/browser flow", "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli"),
 	plan("grok", ActionLogin, "Log in to Grok", []string{"grok", "login"}, "Native login; device-auth remains available inside the CLI", "https://docs.x.ai/build/overview"),
-	plan("kimi", ActionLogin, "Log in to Kimi", []string{"kimi", "login"}, "Native browser flow", "https://moonshotai.github.io/kimi-code/en/"),
+	kimiLoginPlan(),
 	terminalInputPlan("pi", ActionLogin, "Log in to Pi", []string{"pi"}, "/login\r", "Select Open login after Pi finishes starting", "https://github.com/earendil-works/pi"),
 	plan("amp", ActionLogin, "Log in to Amp", []string{"amp", "login"}, "Native browser flow", "https://ampcode.com/manual"),
 	plan("auggie", ActionLogin, "Log in to Auggie", []string{"auggie", "login"}, "Native browser flow", "https://docs.augmentcode.com/cli/overview"),
@@ -46,9 +51,33 @@ func terminalInputPlan(agentID string, action Action, title string, command []st
 	return p
 }
 
+// kimiLoginPlan opens Kimi's TUI and injects /login so the native platform
+// picker (Kimi Code browser login and Kimi Platform API keys) is offered;
+// the bare `kimi login` subcommand only runs the device-code flow. The input
+// is sent automatically once Kimi renders its unauthenticated ready message,
+// without relying on a fixed startup delay. initialInput carries no trailing
+// Enter because terminal delivery
+// (SendMessage) presses it. Kimi's first-run "Trust this folder?" dialog would
+// swallow that input in AO's private auth workspace, so the workspace trust
+// record is seeded first.
+func kimiLoginPlan() Plan {
+	p := plan("kimi", ActionLogin, "Log in to Kimi", []string{"kimi"}, "Kimi opens its login picker automatically", "https://moonshotai.github.io/kimi-code/en/")
+	p.initialInput = "/login"
+	p.initialInputReadyStates = []shellterm.InitialInputReadyState{{Text: "Run /login or /provider to get started."}}
+	p.prepareWorkspace = kimi.EnsureWorkspaceTrusted
+	return p
+}
+
 func documentationPlan(agentID string, action Action, title, guidance, docs string) Plan {
 	p := plan(agentID, action, title, nil, guidance, docs)
 	p.LaunchMode = LaunchDocumentation
+	return p
+}
+
+func loginMenuPlan(agentID, launcher string, launcherArgs []string, title string, command []string, guidance, docs string) Plan {
+	p := plan(agentID, ActionLogin, title, command, guidance, docs)
+	p.launcher = launcher
+	p.launcherArgs = launcherArgs
 	return p
 }
 

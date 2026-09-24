@@ -266,7 +266,7 @@ func newSessionRestoreCommand(ctx *commandContext) *cobra.Command {
 	var opts sessionOptions
 	cmd := &cobra.Command{
 		Use:   "restore <id>",
-		Short: "Relaunch a terminated session",
+		Short: "Restore a terminated session or resume an exited agent",
 		Args:  oneSessionIDArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := normalizeSessionID(args[0])
@@ -358,7 +358,8 @@ func newSessionClaimPRCommand(ctx *commandContext) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "claim-pr [<session-id>] <pr-ref>",
 		Short: "Attach an existing PR to a session",
-		Long:  "Attach an existing PR to a session. When session-id is omitted, the current session is read from AO_SESSION_ID.",
+		Long: "Attach an existing PR to a session. When session-id is omitted, the current session is read from AO_SESSION_ID.\n\n" +
+			"Claiming updates PR ownership metadata only; it does not check out the PR branch. Verify the workspace branch and HEAD before editing.",
 		Example: `  # From inside an AO worker session
   ao session claim-pr 88
 
@@ -462,21 +463,19 @@ func (c *commandContext) fetchProjectDetails(ctx context.Context, id string) (pr
 func writeClaimPRResult(cmd *cobra.Command, res claimPRResponse) error {
 	out := cmd.OutOrStdout()
 	if len(res.PRs) == 0 {
-		_, err := fmt.Fprintf(out, "session %s claimed PR\n", res.SessionID)
-		return err
+		if _, err := fmt.Fprintf(out, "session %s claimed PR\n", res.SessionID); err != nil {
+			return err
+		}
+	} else {
+		pr := res.PRs[0]
+		if _, err := fmt.Fprintf(out, "session %s claimed PR #%d\n", res.SessionID, pr.Number); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(out, "  pr:       %s\n", pr.URL); err != nil {
+			return err
+		}
 	}
-	pr := res.PRs[0]
-	if _, err := fmt.Fprintf(out, "session %s claimed PR #%d\n", res.SessionID, pr.Number); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(out, "  pr:       %s\n", pr.URL); err != nil {
-		return err
-	}
-	checkout := "already on PR branch"
-	if res.BranchChanged {
-		checkout = "switched to PR branch"
-	}
-	if _, err := fmt.Fprintf(out, "  checkout: %s\n", checkout); err != nil {
+	if err := writeClaimPRCheckout(out, res.BranchChanged); err != nil {
 		return err
 	}
 	for _, owner := range res.TakenOverFrom {
@@ -624,10 +623,12 @@ func (c *commandContext) killSession(ctx context.Context, cmd *cobra.Command, id
 }
 
 func (c *commandContext) restoreSession(ctx context.Context, cmd *cobra.Command, id string, opts sessionOptions) error {
-	if opts.project != "" {
-		if _, err := c.fetchScopedSession(ctx, id, opts.project); err != nil {
-			return err
-		}
+	sess, err := c.fetchScopedSession(ctx, id, opts.project)
+	if err != nil {
+		return err
+	}
+	if !sess.IsTerminated && sess.Activity.State == "exited" {
+		return c.resumeSessionAgent(ctx, cmd, id, sessionOptions{})
 	}
 	var res restoreSessionResponse
 	if err := c.postJSON(ctx, "sessions/"+url.PathEscape(id)+"/restore", struct{}{}, &res); err != nil {
@@ -923,12 +924,12 @@ func writeSessionList(cmd *cobra.Command, sessions []sessionDTO, summaries map[s
 				if _, err := fmt.Fprintf(table, "%s:\n", currentProject); err != nil {
 					return err
 				}
-				if _, err := fmt.Fprintln(table, "  SESSION\tBRANCH\tPR\tCI\tREVIEW\tTHREADS\tACTIVITY\tAGE"); err != nil {
+				if _, err := fmt.Fprintln(table, "  SESSION\tROLE\tBRANCH\tPR\tCI\tREVIEW\tTHREADS\tACTIVITY\tAGE"); err != nil {
 					return err
 				}
 			}
 			pr, ci, review, threads := sessionPRColumns(sess, summaries[sess.ID])
-			if _, err := fmt.Fprintf(table, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sess.ID, emptyDash(sess.Branch), pr, ci, review, threads, emptyDash(sess.Activity.State), sessionAge(now, sess.Activity.LastActivityAt)); err != nil {
+			if _, err := fmt.Fprintf(table, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sess.ID, sessionRole(sess), emptyDash(sess.Branch), pr, ci, review, threads, emptyDash(sess.Activity.State), sessionAge(now, sess.Activity.LastActivityAt)); err != nil {
 				return err
 			}
 		}

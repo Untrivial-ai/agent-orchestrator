@@ -76,6 +76,17 @@ describe("preload repository branch bridge", () => {
 	});
 });
 
+describe("preload Developer Mode updater bridge", () => {
+	it("sends only the updater eligibility boolean to the main process", async () => {
+		await exposedBridge().updateSettings.setMacDifferentialUpdates(true);
+
+		expect(electronMocks.invoke).toHaveBeenCalledWith(
+			"updateSettings:setMacDifferentialUpdates",
+			true,
+		);
+	});
+});
+
 describe("preload telemetry generation bridge", () => {
 	it("tags captures with the latest broadcast generation without a renderer reload", async () => {
 		telemetryPolicyBroadcastListener?.({}, { eventsEnabled: false, consentGeneration: "generation-off", updatedAt: "2026-08-28T10:15:30.000Z", acknowledged: true, state: "applied", environmentVeto: false, durabilitySupported: true });
@@ -283,6 +294,26 @@ describe("preload uiSettings bridge", () => {
 });
 
 describe("preload browser profile bridge", () => {
+	it("sends revisioned bounds and forwards applied acknowledgements", () => {
+		const bridge = exposedBridge();
+		const input = {
+			viewId: "1:worker-1",
+			revision: 7,
+			rect: { x: 10, y: 20, width: 300, height: 200 },
+			visible: true,
+		};
+		bridge.browser.setBounds(input);
+		expect(electronMocks.send).toHaveBeenCalledWith("browser:setBounds", input);
+
+		const listener = vi.fn();
+		const dispose = bridge.browser.onBoundsApplied(listener);
+		const wrapped = electronMocks.listeners.get("browser:boundsApplied");
+		wrapped?.({}, input);
+		expect(listener).toHaveBeenCalledWith(input);
+		dispose();
+		expect(electronMocks.off).toHaveBeenCalledWith("browser:boundsApplied", wrapped);
+	});
+
 	it("routes profile state, native menu, and CRUD calls over IPC", async () => {
 		const bridge = exposedBridge();
 		await bridge.browser.getProfile("1:worker-1");

@@ -16,6 +16,11 @@ type Principal struct {
 	ExternalOrgID string
 	OrgName       string
 	OrgRole       string
+	// OrgCapabilities are entitlement flags for the active organization, seeded
+	// from WorkOS organization metadata (metadata.capabilities). They gate
+	// optional features such as the coder sandbox provider. Empty for personal or
+	// local organizations.
+	OrgCapabilities []string
 }
 
 type Membership struct {
@@ -120,6 +125,58 @@ type CreateSession struct {
 	// orchestrator, a standalone worker, or a worker created for a project that
 	// has no active orchestrator.
 	ParentSessionID string
+}
+
+// RepoRef is one additional repository (beyond the project's primary repo) to
+// clone into a session's workspace, optionally at a specific branch. Configured
+// on the project (its Config carries the coder dev-kit config) and inherited by
+// every session of that project.
+type RepoRef struct {
+	URL    string `json:"url"`
+	Branch string `json:"branch,omitempty"`
+}
+
+// ProjectCoderConfig is the coder dev-kit configuration chosen when the project
+// is set up. It is stored under the project's Config as {"coder": {...}} and
+// inherited by every coder session of the project. An absent/empty config keeps
+// the deployment default template and single-repo behavior.
+type ProjectCoderConfig struct {
+	TemplateID    string    `json:"templateId,omitempty"`
+	Size          string    `json:"size,omitempty"`
+	StartupScript string    `json:"startupScript,omitempty"`
+	ExtraRepos    []RepoRef `json:"extraRepos,omitempty"`
+}
+
+// DecodeProjectCoderConfig extracts the coder dev-kit config from a project's
+// Config json. ok is false when the project has no coder config.
+func DecodeProjectCoderConfig(config json.RawMessage) (cfg ProjectCoderConfig, ok bool) {
+	if len(config) == 0 {
+		return ProjectCoderConfig{}, false
+	}
+	var envelope struct {
+		Coder *ProjectCoderConfig `json:"coder"`
+	}
+	if err := json.Unmarshal(config, &envelope); err != nil || envelope.Coder == nil {
+		return ProjectCoderConfig{}, false
+	}
+	return *envelope.Coder, true
+}
+
+// MergeProjectCoderConfig stores the coder dev-kit config under the "coder" key
+// of a project's Config, preserving any other keys the config already carries.
+func MergeProjectCoderConfig(config json.RawMessage, coder ProjectCoderConfig) (json.RawMessage, error) {
+	merged := map[string]json.RawMessage{}
+	if len(config) > 0 {
+		if err := json.Unmarshal(config, &merged); err != nil {
+			return nil, err
+		}
+	}
+	encoded, err := json.Marshal(coder)
+	if err != nil {
+		return nil, err
+	}
+	merged["coder"] = encoded
+	return json.Marshal(merged)
 }
 
 type ClientEvent struct {

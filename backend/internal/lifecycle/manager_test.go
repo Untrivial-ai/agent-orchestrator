@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -490,6 +492,18 @@ func working(id domain.SessionID) domain.SessionRecord {
 	}
 }
 
+// exited seeds a session whose agent has genuinely QUIESCED (ActivityExited) —
+// the agent came down and is provably resting/idle, not mid-climb. This is the
+// fixture the merged-PR termination contract is meant to be exercised against:
+// flag-termination of a session is legitimate only when the agent has actually
+// stopped working (quiesced), NOT while it is still ActivityActive (#2879).
+// Here the merged lane's sessionComplete must still terminate an agent that
+// merged its PR and then genuinely exited.
+func exited(id domain.SessionID) domain.SessionRecord {
+	rec := working(id)
+	rec.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: time.Now()}
+	return rec
+}
 func TestRuntimeObservation_ConfirmedRuntimeDeathTerminates(t *testing.T) {
 	m, st, _ := newManager()
 	rec := working("mer-1")
@@ -1206,6 +1220,28 @@ func TestActivity_StaleUserPromptDoesNotResumeExitedWorkload(t *testing.T) {
 	}
 }
 
+func TestActivity_CurrentChatControllerResumesExitedWorkload(t *testing.T) {
+	signals := []ports.ActivitySignal{
+		{Valid: true, State: domain.ActivityActive, Event: "chat.turn.started", ControllerGeneration: "gen-current"},
+		{Valid: true, State: domain.ActivityIdle, Event: "chat.turn.completed", ControllerGeneration: "gen-current"},
+		{Valid: true, State: domain.ActivityWaitingInput, Event: "chat.input.requested", ControllerGeneration: "gen-current"},
+	}
+	for _, signal := range signals {
+		m, st, _ := newManager()
+		st.sessions["mer-1"] = domain.SessionRecord{
+			ID: "mer-1", ProjectID: "mer", Mode: domain.SessionModeChat,
+			Metadata: domain.SessionMetadata{ControllerGeneration: "gen-current"},
+			Activity: domain.Activity{State: domain.ActivityExited},
+		}
+		if err := m.ApplyActivitySignal(ctx, "mer-1", signal); err != nil {
+			t.Fatalf("event %q: %v", signal.Event, err)
+		}
+		if got := st.sessions["mer-1"].Activity.State; got != signal.State {
+			t.Fatalf("event %q left state %q, want %q", signal.Event, got, signal.State)
+		}
+	}
+}
+
 func TestActivity_StaleLaunchSignalIsIgnored(t *testing.T) {
 	m, st, _ := newManager()
 	rec := working("mer-1")
@@ -1600,6 +1636,7 @@ func TestActivity_CoordinationPromptFollowedByPromptlessStopDoesNotAdvanceCheckp
 		LaunchID: "terminal-generation", AgentSessionID: "native-1",
 		Timestamp:                    coordinationPromptAt,
 		ConversationCheckpointOrigin: domain.ConversationCheckpointOriginCoordination,
+		CoordinationID:               "report-batch:abc123",
 	}); err != nil {
 		t.Fatalf("apply coordination prompt boundary: %v", err)
 	}
@@ -1616,7 +1653,8 @@ func TestActivity_CoordinationPromptFollowedByPromptlessStopDoesNotAdvanceCheckp
 	if got.LatestUserPrompt != rec.Metadata.LatestUserPrompt ||
 		!got.LatestUserPromptAt.Equal(previousPromptAt) ||
 		got.LatestAssistantUpdate != rec.Metadata.LatestAssistantUpdate ||
-		got.ConversationCheckpointState != domain.ConversationCheckpointCoordination {
+		got.ConversationCheckpointState != domain.ConversationCheckpointCoordination ||
+		got.ConversationCheckpointTurnID != "report-batch:abc123" {
 		t.Fatalf("coordination turn advanced user checkpoint: got %+v, want prior human facts at %s",
 			got, previousPromptAt)
 	}
@@ -2658,6 +2696,47 @@ func TestPRObservation_ReviewCommentsNudgeAgent(t *testing.T) {
 	}
 }
 
+func TestPRObservation_AnchoredBotReviewNudgesAgent(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	st.comments["pr1"] = []domain.PullRequestComment{
+		{ID: "bot-1", ThreadID: "thread-1", Author: "react-doctor[bot]", IsBot: true, File: "src/App.tsx", Line: 42, Body: "avoid this pattern", AutoInjectReview: true},
+		{ID: "bot-2", ThreadID: "thread-2", Author: "react-doctor[bot]", IsBot: true, Body: "summary chatter", AutoInjectReview: true},
+	}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("want one actionable bot nudge, got %v", msg.msgs)
+	}
+	if !strings.Contains(msg.msgs[0], "src/App.tsx:42 (@react-doctor[bot]):") || !strings.Contains(msg.msgs[0], "avoid this pattern") {
+		t.Fatalf("anchored bot feedback missing from nudge: %q", msg.msgs[0])
+	}
+	if strings.Contains(msg.msgs[0], "summary chatter") {
+		t.Fatalf("unanchored bot chatter was injected: %q", msg.msgs[0])
+	}
+}
+
+func TestPRObservation_HumanReplyInBotThreadStillNudgesAgent(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	st.comments["pr1"] = []domain.PullRequestComment{
+		{ID: "bot-1", ThreadID: "thread-1", Author: "review-bot[bot]", IsBot: true, Body: "automated summary", AutoInjectReview: true},
+		{ID: "human-1", ThreadID: "thread-1", Author: "alice", Body: "i agree, please fix this", AutoInjectReview: true},
+	}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 || !strings.Contains(msg.msgs[0], "i agree, please fix this") {
+		t.Fatalf("human reply was not delivered: %v", msg.msgs)
+	}
+	if strings.Contains(msg.msgs[0], "automated summary") {
+		t.Fatalf("unanchored bot comment was injected with human reply: %q", msg.msgs[0])
+	}
+}
+
 func TestPRObservation_ReviewFeedbackNotInjectedWhenDisabled(t *testing.T) {
 	m, st, msg := newManager()
 	rec := working("mer-1")
@@ -3435,7 +3514,7 @@ func TestPRObservation_MergedUsesConfiguredTerminator(t *testing.T) {
 	m, st, _ := newManager()
 	terminator := &fakeCompletionTerminator{}
 	m.SetCompletionTerminator(terminator)
-	rec := working("mer-1")
+	rec := exited("mer-1")
 	rec.TerminateOnPRMerge = true
 	st.sessions["mer-1"] = rec
 	st.prs["mer-1"] = []domain.PullRequest{{URL: "pr1", Merged: true}}
@@ -3445,6 +3524,35 @@ func TestPRObservation_MergedUsesConfiguredTerminator(t *testing.T) {
 	}
 	if terminator.calls != 1 {
 		t.Fatalf("terminator calls = %d, want 1", terminator.calls)
+	}
+}
+
+// TestPRObservation_MergedOnStillWorkingAgentDoesNotTerminate is the RED test
+// for #2879: an agent STILL CLIMBING (ActivityActive / `working`) with one PR
+// merged must NOT be flag-terminated. The merge may be PR #1 of several and
+// the agent is mid-traversal — likely about to push PR #2 in the same session.
+// Flag-terminating here (is_terminated=true, #2811) drops the session from the
+// SCM observer roster, so that follow-up PR is never attributed, never
+// enriched, never nudged. Termination must wait until the agent has actually
+// quiesced (ActivityExited or provably-idle). This test intentionally fails on
+// current code, which terminates on PR-state alone (≥1 merged ∧ none open).
+func TestPRObservation_MergedOnStillWorkingAgentDoesNotTerminate(t *testing.T) {
+	m, st, _ := newManager()
+	terminator := &fakeCompletionTerminator{}
+	m.SetCompletionTerminator(terminator)
+	rec := working("mer-1") // ActivityActive: agent is STILL climbing (#2879)
+	rec.TerminateOnPRMerge = true
+	st.sessions["mer-1"] = rec
+	st.prs["mer-1"] = []domain.PullRequest{{URL: "pr1", Merged: true}}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1", Merged: true}); err != nil {
+		t.Fatal(err)
+	}
+	if st.sessions["mer-1"].IsTerminated {
+		t.Fatalf("merged PR must NOT terminate a session whose agent is still ActivityActive (working), got %+v", st.sessions["mer-1"])
+	}
+	if terminator.calls != 0 {
+		t.Fatalf("terminator calls = %d, want 0 while the agent is still working", terminator.calls)
 	}
 }
 
@@ -3470,7 +3578,7 @@ func TestPRObservation_MergedTeardownFailureStaysLiveForRetry(t *testing.T) {
 	m, st, _ := newManager()
 	terminator := &fakeCompletionTerminator{err: errors.New("transient teardown failure")}
 	m.SetCompletionTerminator(terminator)
-	rec := working("mer-1")
+	rec := exited("mer-1")
 	rec.TerminateOnPRMerge = true
 	st.sessions["mer-1"] = rec
 	st.prs["mer-1"] = []domain.PullRequest{{URL: "pr1", Merged: true}}
@@ -3486,7 +3594,7 @@ func TestPRObservation_MergedTeardownFailureStaysLiveForRetry(t *testing.T) {
 
 func TestPRObservation_MergedRequiresConfiguredTerminator(t *testing.T) {
 	m, st, _ := newManager()
-	rec := working("mer-1")
+	rec := exited("mer-1")
 	rec.TerminateOnPRMerge = true
 	st.sessions["mer-1"] = rec
 	st.prs["mer-1"] = []domain.PullRequest{{URL: "pr1", Merged: true}}
@@ -3529,7 +3637,7 @@ func TestPRObservation_LastMergeTerminatesSession(t *testing.T) {
 	m, st, _ := newManager()
 	terminator := &fakeCompletionTerminator{}
 	m.SetCompletionTerminator(terminator)
-	rec := working("mer-1")
+	rec := exited("mer-1")
 	rec.TerminateOnPRMerge = true
 	st.sessions["mer-1"] = rec
 	st.prs["mer-1"] = []domain.PullRequest{
@@ -4456,6 +4564,135 @@ func TestSCMObservation_Notifications(t *testing.T) {
 	}
 }
 
+func TestSCMObservation_AnchoredBotReviewSuppressesReadyNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	st.sessions["mer-1"] = working("mer-1")
+	obs := ports.SCMObservation{
+		Fetched: true,
+		PR:      ports.SCMPRObservation{URL: "https://github.com/o/r/pull/1", Number: 1},
+		CI:      ports.SCMCIObservation{Summary: string(domain.CIPassing)},
+		Review: ports.SCMReviewObservation{
+			Decision: string(domain.ReviewNone),
+			Threads: []ports.SCMReviewThreadObservation{{
+				ID: "thread-1", Path: "src/App.tsx", Line: 42, IsBot: true,
+				Comments: []ports.SCMReviewCommentObservation{{ID: "bot-1", Author: "react-doctor[bot]", IsBot: true, Body: "avoid this pattern"}},
+			}},
+		},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)},
+	}
+
+	if err := m.ApplySCMObservation(ctx, "mer-1", obs); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 0 {
+		t.Fatalf("ready notification raced actionable bot feedback: %+v", sink.intents)
+	}
+}
+
+func TestSCMObservation_PersistedAnchoredBotReviewSuppressesReadyNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	st.sessions["mer-1"] = working("mer-1")
+	prURL := "https://github.com/o/r/pull/1"
+	st.comments[prURL] = []domain.PullRequestComment{{
+		ID: "bot-1", ThreadID: "thread-1", Author: "react-doctor[bot]", IsBot: true,
+		File: "src/App.tsx", Line: 42, Body: "avoid this pattern", AutoInjectReview: true,
+	}}
+	obs := ports.SCMObservation{
+		Fetched:      true,
+		PR:           ports.SCMPRObservation{URL: prURL, Number: 1},
+		CI:           ports.SCMCIObservation{Summary: string(domain.CIPassing)},
+		Review:       ports.SCMReviewObservation{Decision: string(domain.ReviewApproved)},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeMergeable)},
+	}
+
+	if err := m.ApplySCMObservation(ctx, "mer-1", obs); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 0 {
+		t.Fatalf("ready notification ignored persisted actionable bot feedback: %+v", sink.intents)
+	}
+	if len(sink.resolutions) != 1 || sink.resolutions[0].Type != domain.NotificationReadyToMerge {
+		t.Fatalf("ready notification was not resolved from persisted actionable bot feedback: %+v", sink.resolutions)
+	}
+}
+
+func TestSCMObservation_AnchoredBotReviewResolvesExistingReadyNotification(t *testing.T) {
+	st := newFakeStore()
+	sink := &fakeNotificationSink{}
+	m := New(st, nil, WithNotificationSink(sink))
+	st.sessions["mer-1"] = working("mer-1")
+	prURL := "https://github.com/o/r/pull/1"
+	ready := ports.SCMObservation{
+		Fetched: true,
+		PR:      ports.SCMPRObservation{URL: prURL, Number: 1},
+		CI:      ports.SCMCIObservation{Summary: string(domain.CIPassing)},
+		Review:  ports.SCMReviewObservation{Decision: string(domain.ReviewApproved)},
+		Mergeability: ports.SCMMergeabilityObservation{
+			State: string(domain.MergeMergeable),
+		},
+	}
+	if err := m.ApplySCMObservation(ctx, "mer-1", ready); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 || sink.intents[0].Type != domain.NotificationReadyToMerge {
+		t.Fatalf("initial intents = %+v, want one ready-to-merge notification", sink.intents)
+	}
+
+	st.comments[prURL] = []domain.PullRequestComment{{
+		ID: "bot-1", ThreadID: "thread-1", Author: "react-doctor[bot]", IsBot: true,
+		File: "src/App.tsx", Line: 42, Body: "avoid this pattern", AutoInjectReview: true,
+	}}
+	blocked := ready
+	blocked.Review = ports.SCMReviewObservation{
+		Decision: string(domain.ReviewApproved),
+		Threads: []ports.SCMReviewThreadObservation{{
+			ID: "thread-1", Path: "src/App.tsx", Line: 42, IsBot: true,
+			Comments: []ports.SCMReviewCommentObservation{{ID: "bot-1", Author: "react-doctor[bot]", IsBot: true, Body: "avoid this pattern"}},
+		}},
+	}
+	if err := m.ApplySCMObservation(ctx, "mer-1", blocked); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.intents) != 1 {
+		t.Fatalf("bot feedback emitted a competing intent: %+v", sink.intents)
+	}
+	if len(sink.resolutions) != 1 {
+		t.Fatalf("resolutions = %+v, want existing ready notification resolved", sink.resolutions)
+	}
+	got := sink.resolutions[0]
+	if got.Type != domain.NotificationReadyToMerge || got.SessionID != "mer-1" || got.PRURL != prURL {
+		t.Fatalf("resolution = %+v", got)
+	}
+}
+
+func TestSCMObservation_AnchoredBotReviewNudgesAgent(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	st.comments["pr1"] = []domain.PullRequestComment{{
+		ID: "bot-1", ThreadID: "thread-1", Author: "react-doctor[bot]", IsBot: true,
+		File: "src/App.tsx", Line: 42, Body: "avoid this pattern", AutoInjectReview: true,
+	}}
+	obs := ports.SCMObservation{
+		Fetched: true,
+		PR:      ports.SCMPRObservation{URL: "pr1"},
+		Review: ports.SCMReviewObservation{Threads: []ports.SCMReviewThreadObservation{{
+			ID: "thread-1", Path: "src/App.tsx", Line: 42, IsBot: true,
+			Comments: []ports.SCMReviewCommentObservation{{ID: "bot-1", Author: "react-doctor[bot]", IsBot: true, Body: "avoid this pattern"}},
+		}}},
+	}
+
+	if err := m.ApplySCMObservation(ctx, "mer-1", obs); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != 1 || !strings.Contains(msg.msgs[0], "src/App.tsx:42") || !strings.Contains(msg.msgs[0], "avoid this pattern") {
+		t.Fatalf("anchored bot feedback was not delivered through scm lifecycle: %v", msg.msgs)
+	}
+}
+
 // Merging the PR is what resolves a ready-to-merge ping. So is the PR ceasing
 // to be mergeable — either way there is nothing left for the user to merge.
 func TestSCMObservation_ResolvesReadyToMergeWhenNoLongerReady(t *testing.T) {
@@ -5187,5 +5424,49 @@ func TestEmitTelemetryStampsRequestID(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Each unresolved comment gets its own dedup slot. Sharing one key per PR made
+// every poll re-send whichever comments were not the most recent signature
+// written, and made them share the reviewMaxNudge budget so a PR with more
+// comments than that could never deliver the last of them.
+func TestPRObservation_ReviewCommentNudgesDedupPerComment(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	comments := make([]domain.PullRequestComment, 0, reviewMaxNudge+2)
+	for i := range reviewMaxNudge + 2 {
+		id := fmt.Sprintf("%d", i+1)
+		// Every comment shares one thread: the observer expands a thread into
+		// one row per comment, so this is the routine shape whenever a worker
+		// replies to a review comment without resolving it. Keying on the
+		// thread would collapse them all back into one dedup slot.
+		comments = append(comments, domain.PullRequestComment{
+			ID: id, ThreadID: "T1", Author: "alice", File: "foo.go", Line: i + 1,
+			Body: "finding " + id, AutoInjectReview: true,
+		})
+	}
+	st.comments["pr1"] = comments
+	o := ports.PRObservation{Fetched: true, URL: "pr1", Review: domain.ReviewChangesRequest}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != len(comments) {
+		t.Fatalf("first poll sent %d nudges, want one per comment (%d)", len(msg.msgs), len(comments))
+	}
+	for _, c := range comments {
+		if !slices.ContainsFunc(msg.msgs, func(m string) bool { return strings.Contains(m, "finding "+c.ID) }) {
+			t.Fatalf("comment %s never nudged; the attempt budget is shared", c.ID)
+		}
+	}
+
+	sent := len(msg.msgs)
+	if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != sent {
+		t.Fatalf("second poll re-sent %d nudges for unchanged comments:\n%v",
+			len(msg.msgs)-sent, msg.msgs[sent:])
 	}
 }

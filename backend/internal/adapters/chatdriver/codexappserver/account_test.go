@@ -35,6 +35,7 @@ func TestAccountFactoryUsesManagedHomeAndFileCredentialStore(t *testing.T) {
 	if err := os.Chmod(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	protectManagedHomeForTest(t, home)
 	client, err := factory.Open(context.Background(), ports.CodexAccountContext{Home: home, Managed: true})
 	if err != nil {
 		t.Fatal(err)

@@ -1,19 +1,26 @@
 import { useMemo, useState } from "react";
-import { ActivityIndicator, Platform, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Platform, RefreshControl, SectionList, StyleSheet, View } from "react-native";
+import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { Theme } from "../../lib/theme";
 import { classifyConnectionFailure, describeConnectionFailure } from "../../lib/connectionError";
 import { haptics } from "../../lib/haptics";
 import { PRCard } from "../../lib/PRCard";
+import { PRFilterDock } from "../../lib/pr-filter-dock";
 import { ProjectSwitcher } from "../../lib/ProjectSwitcher";
-import { comparePRs, prLifecycle } from "../../lib/prView";
+import { prLifecycle, prListSections, type PRListFilter } from "../../lib/prView";
+import { StaleBanner } from "../../lib/StaleBanner";
 import { useApp, usePRs } from "../../lib/store";
+import { UnpairedState } from "../../lib/UnpairedState";
 import { usePRSummaries } from "../../lib/usePRSummaries";
 import { useTabScrollToTop } from "../../lib/useTabScrollToTop";
-import { Button, EmptyState, Pill, ScreenHeader } from "../../lib/ui";
+import { Button, EmptyState, HeaderIconButton, ListSectionHeader, ScreenHeader } from "../../lib/ui";
 import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
+import { space } from "../../lib/tokens";
 
-type Filter = "open" | "merged" | "all";
+export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";
+
+type Filter = PRListFilter;
 
 // Drafts are open PRs — they belong in the Open bucket even though the card
 // labels them "draft". Before, `state` had already folded draft into "open", so
@@ -28,19 +35,18 @@ export default function PRsScreen() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const insets = useSafeAreaInsets();
-	const { configured, loading, error, errorStatus, connection, config, refresh } = useApp();
+	const router = useRouter();
+	const { configured, loading, error, errorStatus, connection, config, refresh, notificationsUnread } = useApp();
 	const prs = usePRs();
 	const [filter, setFilter] = useState<Filter>("open");
 	const [refreshing, setRefreshing] = useState(false);
 
-	const scrollRef = useTabScrollToTop<ScrollView>();
+	const scrollRef = useTabScrollToTop<SectionList>();
 
-	// Sorted, which this list never was — PRs arrived in whatever order the
-	// daemon returned them, so the one you could act on could be anywhere.
-	const filtered = useMemo(
-		() => prs.filter(({ pr }) => inBucket(filter, prLifecycle(pr))).sort((a, b) => comparePRs(a.pr, b.pr)),
-		[prs, filter],
-	);
+	// Grouped around the user's next action, matching the Workers board rather
+	// than presenting a flat stream in daemon order.
+	const filtered = useMemo(() => prs.filter(({ pr }) => inBucket(filter, prLifecycle(pr))), [prs, filter]);
+	const sections = useMemo(() => prListSections(prs, filter), [prs, filter]);
 
 	// The rich per-PR detail the cards show lives on a separate endpoint, fetched
 	// once per session and cached — see usePRSummaries. Pull-to-refresh is the
@@ -69,7 +75,11 @@ export default function PRsScreen() {
 		return (
 			<View style={styles.screen}>
 				<View style={{ height: insets.top }} />
-				<EmptyState icon="git-pull-request" title="No server" message="Connect to AO in Settings." />
+				{/* Workers and Projects both keep their header in the unpaired state; this
+				    screen dropped it, so the tab lost its title and connection lamp exactly
+				    when a user most needs to know what they are looking at. */}
+				<ScreenHeader title="Pull Requests" />
+				<UnpairedState />
 			</View>
 		);
 	}
@@ -83,57 +93,60 @@ export default function PRsScreen() {
 	return (
 		<View style={styles.screen}>
 			<View style={{ height: insets.top }} />
-			<ScreenHeader title="Pull Requests" status={connection} />
-			<ProjectSwitcher />
-
-			<View style={styles.filters}>
-				{(["open", "merged", "all"] as Filter[]).map((f) => (
-					<Pill
-						key={f}
-						label={`${f[0].toUpperCase() + f.slice(1)} ${counts[f]}`}
-						active={filter === f}
-						onPress={() => setFilter(f)}
+			<ScreenHeader
+				title="Pull Requests"
+				right={
+					<HeaderIconButton
+						icon="bell"
+						label="Notifications"
+						badge={notificationsUnread}
+						onPress={() => router.navigate("/notifications")}
 					/>
-				))}
-			</View>
+				}
+			/>
+			<ProjectSwitcher />
+			<StaleBanner error={!!error} onRetry={onRefresh} />
 
 			{loading && prs.length === 0 ? (
 				<View style={styles.center}>
-					<ActivityIndicator color={t.blue} />
+					<ActivityIndicator color={t.accent} />
 				</View>
 			) : (
-				<ScrollView
+				<SectionList
 					ref={scrollRef}
-					contentContainerStyle={{ paddingBottom: 110, paddingTop: 4 }}
-					refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.blue} />}
-				>
-					{filtered.length === 0 ? (
-						error ? (
-							<EmptyState
-								icon="wifi-off"
-								title={failure.title}
-								message={failure.message}
-								action={<Button title="Retry" icon="refresh-cw" variant="ghost" onPress={onRefresh} />}
-							/>
-						) : (
-							<EmptyState
-								icon="git-pull-request"
-								title="No pull requests"
-								message={filter === "open" ? "No open PRs right now." : "Nothing here yet."}
-							/>
-						)
-					) : (
-						filtered.map(({ pr, session }) => (
-							<PRCard
-								key={`${session.projectId}#${pr.number}`}
-								pr={pr}
-								session={session}
-								summary={summaries.summaryFor(session.id, pr.number)}
-							/>
-						))
+					sections={sections}
+					keyExtractor={({ pr, session }) => `${session.projectId}#${pr.number}`}
+					contentContainerStyle={{ paddingBottom: 110 }}
+					stickySectionHeadersEnabled={false}
+					refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.accent} />}
+					renderSectionHeader={({ section }) => <ListSectionHeader label={section.label} />}
+					renderItem={({ item: { pr, session } }) => (
+						<PRCard pr={pr} session={session} summary={summaries.summaryFor(session.id, pr.number)} />
 					)}
-				</ScrollView>
+					ListEmptyComponent={
+						filtered.length === 0 ? (
+							error ? (
+								<EmptyState
+									icon="wifi-off"
+									title={failure.title}
+									message={failure.message}
+									action={<Button title="Retry" icon="refresh-cw" variant="ghost" onPress={onRefresh} />}
+								/>
+							) : (
+								<EmptyState
+									icon="git-pull-request"
+									title="No pull requests"
+									message={filter === "open" ? "No open PRs right now." : "Nothing here yet."}
+								/>
+							)
+						) : null
+					}
+				/>
 			)}
+
+			<View style={[styles.dock, { bottom: Math.max(insets.bottom, 12) }]}>
+				<PRFilterDock filter={filter} counts={counts} onChange={setFilter} />
+			</View>
 		</View>
 	);
 }
@@ -142,5 +155,14 @@ const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgBase },
 		center: { flex: 1, alignItems: "center", justifyContent: "center" },
-		filters: { flexDirection: "row", gap: 8, paddingHorizontal: 16, paddingBottom: 12 },
+		dock: {
+			position: "absolute",
+			left: 16,
+			right: 16,
+			height: 52,
+			flexDirection: "row",
+			alignItems: "center",
+			justifyContent: "center",
+			gap: space.sm,
+		},
 	});

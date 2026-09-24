@@ -2,7 +2,13 @@ import { act, fireEvent, render as rtlRender, renderHook, screen, waitFor, withi
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { BrowserPanel, BrowserPanelView, BrowserTopTabDragOverlay, useBrowserAnnotationQueue } from "./BrowserPanel";
+import {
+	BrowserPanel,
+	BrowserPanelView,
+	BrowserTopTabDragOverlay,
+	restrictBrowserTopTabDragToTabStrip,
+	useBrowserAnnotationQueue,
+} from "./BrowserPanel";
 import { reorderBrowserTabs } from "../lib/browser-tab-order";
 import { useBrowserView, type BrowserNavState } from "../hooks/useBrowserView";
 import { useUiStore } from "../stores/ui-store";
@@ -114,6 +120,22 @@ const session: WorkspaceSession = {
 it("reorders browser tabs around the drop target", () => {
 	expect(reorderBrowserTabs(["t1", "t2", "t3"], "t1", "t3")).toEqual(["t2", "t3", "t1"]);
 	expect(reorderBrowserTabs(["t1", "t2", "t3"], "t2", "missing")).toBeNull();
+});
+
+it("keeps a dragged browser tab inside the current tab strip bounds", () => {
+	const activeNodeRect = { left: 650, right: 850 };
+	const constrain = (left: number, right: number, x: number) =>
+		restrictBrowserTopTabDragToTabStrip({
+			activeNodeRect,
+			containerNodeRect: { left, right },
+			transform: { x, y: 24, scaleX: 1, scaleY: 1 },
+		} as Parameters<typeof restrictBrowserTopTabDragToTabStrip>[0]);
+
+	expect(constrain(600, 900, -300)).toMatchObject({ x: -50, y: 0 });
+	expect(constrain(600, 900, 300)).toMatchObject({ x: 50, y: 0 });
+	// A dock/resize transition can move the inspector while a drag is active.
+	// Use the newly measured strip rather than the window, so the chip follows it.
+	expect(constrain(760, 1060, -300)).toMatchObject({ x: 110, y: 0 });
 });
 
 function annotationPayload(
@@ -607,6 +629,38 @@ describe("BrowserPanel", () => {
 
 		await waitFor(() => expect(openExternal).toHaveBeenCalledWith(url));
 		openExternal.mockRestore();
+	});
+
+	it("copies the full current URL from the address bar and confirms it", async () => {
+		const url = "https://www.google.com/search?q=agent+orchestrator";
+		hookState.navState = { ...hookState.navState, url };
+		const writeText = vi.spyOn(window.ao!.clipboard, "writeText").mockResolvedValue(undefined);
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+
+		// The compact address bar displays only the host, but copy must retain the
+		// path and query from the underlying navigation state.
+		expect(screen.getByRole("textbox", { name: /browser url/i })).toHaveValue("google.com");
+		await userEvent.click(screen.getByRole("button", { name: "Copy URL" }));
+
+		expect(writeText).toHaveBeenCalledExactlyOnceWith(url);
+		expect(screen.getByRole("button", { name: "URL copied" })).toBeInTheDocument();
+		expect(useUiStore.getState().globalToast).toBeNull();
+		writeText.mockRestore();
+	});
+
+	it("keeps the copy action at the trailing edge when no external action is available", () => {
+		hookState.navState = { ...hookState.navState, url: "localhost:5173" };
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+
+		expect(screen.getByRole("button", { name: "Copy URL" })).toHaveClass("browser-panel__url-copy--only");
+		expect(screen.queryByRole("button", { name: /open in system browser/i })).not.toBeInTheDocument();
+	});
+
+	it("does not show URL actions on a blank browser tab", () => {
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+
+		expect(screen.queryByRole("button", { name: "Copy URL" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /open in system browser/i })).not.toBeInTheDocument();
 	});
 
 	it("keeps secondary browser controls compact until device presets are requested", async () => {
@@ -1207,17 +1261,25 @@ describe("BrowserPanel", () => {
 		expect(screen.getByRole("button", { name: /annotate/i })).toBeDisabled();
 	});
 
-	it("replaces the current browser chrome row with annotation batch controls", async () => {
+	it("adds an annotation control row below the tab row while keeping tabs visible", async () => {
 		hookState.navState = { ...hookState.navState, url: "https://example.test/docs" };
 		hookState.annotationMode = true;
 		hookState.annotationState = { count: 2, screenshotCount: 1, hasDraft: false };
 
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 
-		expect(screen.getByTestId("browser-toolbar")).toHaveClass("browser-panel__toolbar--annotation");
-		expect(screen.queryByTestId("browser-tab-bar")).not.toBeInTheDocument();
-		expect(screen.getByText("example.test")).toBeInTheDocument();
+		expect(screen.getByTestId("browser-tab-bar")).toBeInTheDocument();
+		expect(screen.getByTestId("browser-toolbar")).toBeInTheDocument();
+		const annotationToolbar = screen.getByTestId("browser-annotation-toolbar");
+		expect(annotationToolbar.querySelector(".browser-panel__toolbar--annotation")).not.toBeNull();
+		expect(screen.queryByRole("button", { name: "Exit annotation mode" })).not.toBeInTheDocument();
+		expect(screen.getByText("2 annotations")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Send annotations" })).toHaveTextContent("2");
+		expect(screen.getByRole("button", { name: "Send annotations" })).toHaveClass(
+			"browser-panel__annotation-send",
+			"bg-primary",
+			"text-primary-foreground",
+		);
 
 		await userEvent.click(screen.getByRole("button", { name: "Take a screenshot" }));
 		expect(hookState.annotationAction).toHaveBeenCalledWith("capture");

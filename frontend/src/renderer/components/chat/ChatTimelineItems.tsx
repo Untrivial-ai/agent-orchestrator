@@ -9,6 +9,11 @@ import { AppLink } from "../AppLink";
  */
 
 import { stagedAttachmentParts, attachmentName, attachmentURL, IMAGE_ATTACHMENT_PATH } from "./messageAttachments";
+import {
+	ACCENT_ACTION_SEGMENT,
+	ACCENT_ACTION_SHELL,
+	QUIET_ACTION_PILL,
+} from "./action-pill";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
@@ -470,6 +475,16 @@ function formatMessageTimestamp(iso: string, now = new Date()): string {
 /* -------------------------------------------------------------------------- */
 
 /** What the user typed. Right-aligned and enclosed so it reads as theirs. */
+const WORKER_REPORT_OPEN = "<ao-worker-reports>";
+const WORKER_REPORT_CLOSE = "</ao-worker-reports>";
+
+export function humanVisibleText(text: string): string {
+	if (!text.endsWith(WORKER_REPORT_CLOSE)) return text;
+	const reportStart = text.lastIndexOf(`\n\n${WORKER_REPORT_OPEN}\n`);
+	if (reportStart < 0) return text;
+	return text.slice(0, reportStart);
+}
+
 export function HumanMessage({
 	message,
 	sessionId,
@@ -521,14 +536,15 @@ export function HumanMessage({
 	activateBranchPending?: boolean;
 	activateBranchError?: string;
 }) {
-	const { body, attachments } = stagedAttachmentParts(message.text);
+	const visibleMessageText = humanVisibleText(message.text);
+	const { body, attachments } = stagedAttachmentParts(visibleMessageText);
 	return (
 		<div className="group/message flex flex-col items-end gap-1">
 			{/* A queued message reads as not-yet-sent rather than as sent-and-ignored:
 			    the agent has not seen it, and the timeline should not imply it has. */}
 			{editing ? (
 				<HumanMessageEditor
-					text={editText ?? message.text}
+					text={editText ?? visibleMessageText}
 					content={message.content ?? []}
 					pending={editPending}
 					locked={Boolean(editRecoveryLabel)}
@@ -547,6 +563,9 @@ export function HumanMessage({
 				/>
 			) : (
 				<div
+					/* Themes draw sent and queued differently; light theme needs to tell them
+					   apart in CSS because it paints an enclosure only around a sent one. */
+					data-queued={queued ? "" : undefined}
 					className={cn(
 						"cursor-chat-human-message w-fit max-w-[min(78%,560px)] rounded-[10px] px-3 py-2.5 text-sm leading-[1.55]",
 						animateIn && "chat-human-message-enter",
@@ -590,7 +609,7 @@ export function HumanMessage({
 							</Tooltip>
 						) : null}
 						<CopyButton
-							text={message.text}
+							text={visibleMessageText}
 							label="Copy user message"
 							compact
 							className="size-7 justify-center rounded-md px-0 py-0 transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
@@ -2281,7 +2300,7 @@ export function ApprovalCard({
 					{denyDecision ? (
 						<button
 							type="button"
-							className="inline-flex h-7 items-center gap-1.5 rounded-full border border-border-strong bg-background/20 px-2.5 text-[12.5px] text-foreground/90 transition-colors hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50"
+							className={QUIET_ACTION_PILL}
 							disabled={busy}
 							onClick={() => onDecide?.(requestId, denyDecision.id)}
 						>
@@ -2295,10 +2314,10 @@ export function ApprovalCard({
 					) : null}
 
 					{allowOnceDecision ? (
-						<div className="flex h-7 overflow-hidden rounded-full bg-logo-accent text-logo-accent-foreground shadow-sm">
+						<div className={ACCENT_ACTION_SHELL}>
 							<button
 								type="button"
-								className="inline-flex items-center gap-1.5 px-2.5 text-[12.5px] transition-colors hover:bg-logo-accent-bright focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+								className={ACCENT_ACTION_SEGMENT}
 								disabled={busy}
 								onClick={() => onDecide?.(requestId, allowOnceDecision.id)}
 							>
@@ -2344,7 +2363,7 @@ export function ApprovalCard({
 						<button
 							key={decision.id}
 							type="button"
-							className="inline-flex h-7 items-center rounded-full border border-border-strong bg-background/20 px-2.5 text-[12.5px] text-foreground/90 transition-colors hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 disabled:pointer-events-none disabled:opacity-50"
+							className={QUIET_ACTION_PILL}
 							disabled={busy}
 							onClick={() => onDecide?.(requestId, decision.id)}
 						>

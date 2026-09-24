@@ -69,7 +69,7 @@ import { HomePage } from "../components/HomePage";
 const standaloneSession = (overrides: Partial<WorkspaceSession>): WorkspaceSession => ({
 	id: "standalone-1",
 	workspaceId: STANDALONE_WORKSPACE_ID,
-	workspaceName: "Ad hoc agents",
+	workspaceName: "Scratchpad",
 	title: "Ad hoc task",
 	provider: "codex",
 	kind: "worker",
@@ -157,9 +157,9 @@ describe("shell index route", () => {
 		routeMocks.workspaces = [
 			{
 				id: STANDALONE_WORKSPACE_ID,
-				name: "Ad hoc agents",
+				name: "Scratchpad",
 				kind: STANDALONE_PROJECT_KIND,
-				path: "Ad hoc agents",
+				path: "Scratchpad",
 				sessions: [
 					standaloneSession({
 						id: "standalone-oldest",
@@ -186,7 +186,7 @@ describe("shell index route", () => {
 
 		render(<HomePage />);
 
-		fireEvent.click(screen.getByRole("button", { name: /Ad hoc agents/ }));
+		fireEvent.click(screen.getByRole("button", { name: /Scratchpad/ }));
 		expect(routeMocks.navigate).toHaveBeenCalledWith({
 			to: "/sessions/$sessionId",
 			params: { sessionId: "standalone-newest-active" },

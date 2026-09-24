@@ -1,8 +1,6 @@
 package sqlite
 
 import (
-	"database/sql"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -152,7 +150,14 @@ var shippedMigrations = map[int64]string{
 	145: "0145_native_checkpoint_evidence.sql",
 	146: "0146_codex_account_management_simplification.sql",
 	147: "0147_native_history_provenance.sql",
-	148: "0148_allow_junie_harness.sql",
+	148: "0148_notification_dismissal.sql",
+	149: "0149_reviewer_chat_conversations.sql",
+	150: "0150_agent_model_catalog_cache_state.sql",
+	151: "0151_global_agent_model_catalog_cdc.sql",
+	152: "0152_session_effort.sql",
+	153: "0153_reports.sql",
+	154: "0154_report_delivery.sql",
+	155: "0155_allow_junie_harness.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they
@@ -230,13 +235,7 @@ func TestMigrationVersionLedger(t *testing.T) {
 // records a version they never shipped. goose runs with WithAllowMissing, which
 // is what makes the resulting gap harmless.
 func TestMigrationsApplyOverAForeignInterleavedVersion(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	upTo(t, db, 103)
+	db := openMigratedDatabaseCopy(t, 103)
 
 	// Stand in for the other branch's migration: applied here, absent from this
 	// tree, and numbered below everything this branch adds.
@@ -273,13 +272,7 @@ SELECT COUNT(*) FROM (
 // columns. Startup schema reconciliation must repair the physical schema so
 // the session list works instead of returning 500 INTERNAL_ERROR.
 func TestSessionListSucceedsOnBurnedMigrationHistory(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
-	if err != nil {
-		t.Fatalf("open sqlite: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
-	upTo(t, db, 39) // the real 0040 has not run; diff-base columns are absent
+	db := openMigratedDatabaseCopy(t, 39) // the real 0040 has not run; diff-base columns are absent
 	for v := 40; v <= 51; v++ {
 		if _, err := db.Exec(
 			`INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`, v,

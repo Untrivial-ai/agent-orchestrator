@@ -46,6 +46,10 @@ func New() *Plugin {
 // launch. See ports.SubmitActivitySignaler.
 func (p *Plugin) EmitsSubmitActivity() bool { return true }
 
+// EmitsSemanticMessageAcceptance reports that the Codex prompt hook includes
+// the accepted prompt, allowing AO delivery ids to be correlated semantically.
+func (p *Plugin) EmitsSemanticMessageAcceptance() bool { return true }
+
 // EmitsBlockedActivity is false: codex reports permission prompts as
 // waiting_input — it installs no post-tool-use hook, so a blocked state could
 // never be cleared mid-turn. confirmActive must not nudge it (an Enter could
@@ -74,6 +78,7 @@ var _ ports.AgentInterfaceHandoffHistoryProbe = (*Plugin)(nil)
 var _ ports.TerminalActivityDetector = (*Plugin)(nil)
 var _ ports.EmptyComposerDetector = (*Plugin)(nil)
 var _ ports.TerminalSurfaceInspector = (*Plugin)(nil)
+var _ ports.AgentBinaryResolutionInvalidator = (*Plugin)(nil)
 
 // ComposerIsEmpty recognizes Codex's blank composer or its dim placeholder.
 // Normal text after the prompt marker is treated as a human draft and causes
@@ -458,6 +463,15 @@ func (p *Plugin) codexBinary(ctx context.Context) (string, error) {
 	}
 	p.resolvedBinary = binary
 	return binary, nil
+}
+
+// InvalidateBinaryResolution makes the next operation resolve Codex again.
+// Installers can replace a CLI in place or make a different compatible
+// installation visible on PATH while the daemon remains running.
+func (p *Plugin) InvalidateBinaryResolution() {
+	p.binaryMu.Lock()
+	p.resolvedBinary = ""
+	p.binaryMu.Unlock()
 }
 
 // DoctorLaunchProbes returns argv tails `ao doctor` runs against the installed

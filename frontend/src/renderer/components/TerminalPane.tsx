@@ -15,7 +15,8 @@ import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { terminalTargetBelongsToSession, type TerminalTarget } from "../types/terminal";
-import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
+import { sessionAgentExited, sessionIsActive, type WorkspaceSession } from "../types/workspace";
+import { ResumeAgentControl } from "./ResumeAgentControl";
 import type { Theme } from "../stores/ui-store";
 import {
 	useTerminalSession,
@@ -165,8 +166,16 @@ function cacheDescriptor(
 	// against session.terminalGeneration — so a restore does not look like a
 	// generation change that would dispose the fresh terminal on the next render.
 	const nonce = terminalResetNonce(session.id);
+	// The worker epoch is deliberately NOT in the cache key. A fresh cloud session
+	// attaches optimistically before its worker is up, when the epoch is still
+	// unknown; the moment the worker comes online the polled epoch flips from
+	// undefined to its first value, and folding that into the key would evict the
+	// just-attached terminal and remount it (connected -> blank -> terminal). The
+	// reconcile loop instead disposes a worker terminal when its epoch moves
+	// BETWEEN two known values (a genuine re-provision), and a restore rebuilds via
+	// the nonce, so the key only needs the restore nonce to force a clean re-mint.
 	return {
-		cacheKey: `${ownerKey}|handle:${handleId}|generation:${generation}|reset:${nonce}`,
+		cacheKey: `${ownerKey}|handle:${handleId}|reset:${nonce}`,
 		generation,
 		handleId,
 		kind: "worker",
@@ -527,14 +536,35 @@ export function TerminalCacheProvider({
 				removeEntry(entry.cacheKey);
 				continue;
 			}
-			if (
-				entry.kind === "worker" &&
-				session &&
-				(session.terminalHandleId !== entry.handleId ||
-					(session.terminalGeneration ?? "") !== (entry.generation ?? ""))
-			) {
-				removeEntry(entry.cacheKey);
-				continue;
+			if (entry.kind === "worker" && session) {
+				const sessionGen = session.terminalGeneration ?? "";
+				const entryGen = entry.generation ?? "";
+				if (session.terminalHandleId !== entry.handleId) {
+					// A different handle is a different logical terminal: dispose. The
+					// handle is in the cache key, so the pane re-activates a fresh
+					// entry on its own.
+					removeEntry(entry.cacheKey);
+					continue;
+				}
+				const epochReprovisioned = entryGen !== "" && sessionGen !== "" && entryGen !== sessionGen;
+				if (epochReprovisioned) {
+					// The worker epoch moved BETWEEN two known values: a genuine
+					// re-provision (idle-resume or a silent restart). Bump the reset
+					// nonce so the pane rebuilds its cache entry and mux against the
+					// live box with a fresh cursor, exactly as a user restore does.
+					// Update the entry's recorded epoch first so this does not fire
+					// again on the next reconcile before the rebuild lands.
+					entry.generation = sessionGen;
+					useTerminalResetStore.getState().advanceEpoch(entry.sessionId ?? session.id);
+					continue;
+				}
+				if (entryGen === "" && sessionGen !== "") {
+					// Unknown -> first-known: the worker just came online for the SAME
+					// terminal. Adopt the epoch in place. The cache key does not carry
+					// the epoch, so this does NOT remount the just-attached pane (which
+					// would blank it: connected -> blank -> terminal).
+					entry.generation = sessionGen;
+				}
 			}
 			if (session && entry.props.session !== session) {
 				entry.props = { ...entry.props, session };
@@ -911,11 +941,11 @@ function bannerText(
 	error?: string,
 ): string | undefined {
 	// Cloud only: before the first successful open (the sandbox worker is still
-	// coming up), show a calm "Connecting…" rather than the alarming
-	// "disconnected — reattaching". A local terminal keeps its original wording
-	// verbatim, so local behavior is unchanged.
+	// coming up), the centered connecting cover owns the "Connecting" message, so
+	// suppress the top-left banner entirely to avoid a second overlapping loader.
+	// A local terminal keeps its original "disconnected — reattaching" wording.
 	if (state === "reattaching") {
-		return isCloud && !hasAttached ? t("terminal.connecting") : t("terminal.reattaching");
+		return isCloud && !hasAttached ? undefined : t("terminal.reattaching");
 	}
 	if (state === "error") return t("terminal.error", { error: error ?? t("terminal.connectionFailed") });
 	return undefined;
@@ -1151,7 +1181,40 @@ function AttachedTerminal({
 	// a terminal they cannot type into, and it never flickers back once the new
 	// epoch attaches (the epoch only moves forward). Cloud only.
 	const isBoxComingUp = Boolean(session?.cloud) && isReconnecting;
-	const showEndedState = (state === "exited" || canRestoreSession) && !isBoxComingUp;
+	// The single connecting state for a cloud terminal: ONE opaque centered
+	// "Connecting" cover from first connect (or a restore box coming up) until the
+	// pane has been fully revealed once (attached AND its replay painted). It is
+	// LATCHED on that first reveal so a later transient reconnect (hasAttached
+	// briefly flips back to false) never flashes the cover back over an
+	// already-visible terminal. The latch resets when the terminal identity
+	// changes (a new session) so a fresh box connects cleanly again. It is keyed
+	// on the handle only, NOT the worker epoch: the epoch flips from unknown to its
+	// first value the instant the worker comes online, and keying on it would reset
+	// the latch and re-show the cover over an already-revealed pane (the second
+	// blank). A real re-provision (idle-resume or restore) remounts this component
+	// outright, giving a fresh latch anyway. Cloud only; local panes keep their
+	// existing messageless replay cover and reattaching banner. The top-right timer
+	// lives in SessionView's CloudLifecycleStatus.
+	const cloudTerminalIdentity = `${handleId ?? ""}`;
+	const cloudRevealedIdentityRef = useRef(cloudTerminalIdentity);
+	const cloudRevealedRef = useRef(false);
+	if (cloudRevealedIdentityRef.current !== cloudTerminalIdentity) {
+		cloudRevealedIdentityRef.current = cloudTerminalIdentity;
+		cloudRevealedRef.current = false;
+	}
+	if (hasAttached && replaySettled && !replayPaintPending) cloudRevealedRef.current = true;
+	// Also when the agent exited but its pane survived on a keep-alive: the mux
+	// never reports "exited" there, so without this the strip — and the resume
+	// action on it — stays hidden in exactly the state that needs it (#3875).
+	const showEndedStatePreview =
+		state === "exited" || canRestoreSession || (terminalTarget?.kind === "worker" && sessionAgentExited(session));
+	const isCloudConnecting =
+		Boolean(attachSession?.cloud) &&
+		!isCloudConnectError &&
+		!showEmptyState &&
+		!showEndedStatePreview &&
+		!cloudRevealedRef.current;
+	const showEndedState = showEndedStatePreview && !isBoxComingUp;
 	const emptyStateTitle = session ? t("terminal.startingSession") : "Agent Orchestrator";
 	const emptyStateMessage = session
 		? session.kind === "orchestrator"
@@ -1167,6 +1230,7 @@ function AttachedTerminal({
 					error={restoreError}
 					isRestoring={isRestoring}
 					onRestore={restoreSession}
+					session={session}
 					variant={
 						terminalTarget?.kind === "reviewer" ? "reviewer" : terminalTarget?.kind === "shell" ? "shell" : "session"
 					}
@@ -1201,14 +1265,19 @@ function AttachedTerminal({
 						</div>
 					</div>
 				)}
-				{isBoxComingUp && !showReplayCover && (
-					<div className="terminal-surface absolute inset-0 grid place-items-center font-mono text-control">
+				{isCloudConnecting && (
+					<div
+						className="terminal-surface absolute inset-0 grid place-items-center font-mono text-control"
+						data-testid="terminal-connecting-cover"
+					>
 						<div className="text-terminal">{t("terminal.connecting")}</div>
 					</div>
 				)}
-				{showReplayCover && <ReplayCover message={attachSession?.cloud ? t("terminal.connecting") : undefined} />}
+				{showReplayCover && !isCloudConnecting && (
+					<ReplayCover message={attachSession?.cloud ? t("terminal.connecting") : undefined} />
+				)}
 				{isCloudConnectError && <CloudConnectError onRetry={handleRetry} />}
-				{banner && (
+				{banner && !showEndedState && (
 					<div className="absolute inset-x-3 top-2 rounded-md border border-border bg-surface/95 px-3 py-1.5 font-mono text-caption text-muted-foreground">
 						{banner}
 					</div>
@@ -1273,10 +1342,11 @@ type TerminalEndedStripProps = {
 	error?: string;
 	isRestoring: boolean;
 	onRestore: () => void;
+	session?: WorkspaceSession;
 	variant: "reviewer" | "session" | "shell";
 };
 
-function TerminalEndedStrip({ canRestore, error, isRestoring, onRestore, variant }: TerminalEndedStripProps) {
+function TerminalEndedStrip({ canRestore, error, isRestoring, onRestore, session, variant }: TerminalEndedStripProps) {
 	const { t } = useTranslation();
 	const message = canRestore
 		? t("terminal.restoreToContinue")
@@ -1296,6 +1366,7 @@ function TerminalEndedStrip({ canRestore, error, isRestoring, onRestore, variant
 					<div className="mt-0.5 truncate text-xs text-muted-foreground">{message}</div>
 				</div>
 				{error && <div className="max-w-content-max truncate text-xs text-destructive">{error}</div>}
+				{variant === "session" && session ? <ResumeAgentControl session={session} /> : null}
 				{canRestore && (
 					<Tooltip>
 						<TooltipTrigger asChild>

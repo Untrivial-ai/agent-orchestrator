@@ -49,6 +49,7 @@ type Store interface {
 	ApplyGitHubInstallationEvent(context.Context, string, string, string) error
 	WorkerGitHubCheckoutContext(context.Context, string, string) (domain.GitHubCheckoutContext, error)
 	WorkerRemoteGitHubCheckoutContext(context.Context, string, string) (domain.RemoteGitHubCheckoutContext, error)
+	WorkerSessionExtraRepos(context.Context, string, string) ([]domain.RepoRef, error)
 	CreatePullRequestRecord(
 		ctx context.Context,
 		orgID, sessionID string,
@@ -342,14 +343,115 @@ func (s *Service) ListRepositories(
 }
 
 // IssueCheckoutGrant first resolves the worker's durable session-to-repository
-// authorization, then asks GitHub for a token restricted to that one repository
-// with read-only contents permission. Installation-token issuance is kept
-// private to this service so callers cannot bypass the PostgreSQL grant check.
+// authorization, then asks GitHub for a token with read-only contents permission
+// restricted to the project's primary repository plus any declared extra
+// repositories that resolve within the same installation. Installation-token
+// issuance is kept private to this service so callers cannot bypass the
+// PostgreSQL grant check.
 func (s *Service) IssueCheckoutGrant(
 	ctx context.Context,
 	orgID, sessionID string,
 ) (CheckoutGrant, error) {
-	return s.issueGrant(ctx, orgID, sessionID, s.client.repositoryToken)
+	authorization, err := s.resolveWorkerCheckoutAuthorization(ctx, orgID, sessionID)
+	if err != nil {
+		return CheckoutGrant{}, err
+	}
+	repositoryIDs := s.checkoutRepositoryIDs(ctx, orgID, sessionID, authorization)
+	access, err := s.client.repositoryReadTokenForRepos(
+		ctx,
+		authorization.GitHubInstallationID,
+		repositoryIDs,
+	)
+	if err != nil {
+		return CheckoutGrant{}, err
+	}
+	if access.ExpiresAt.After(time.Now().UTC().Add(2 * time.Hour)) {
+		return CheckoutGrant{}, errors.New("GitHub returned an unexpectedly long-lived installation token")
+	}
+	return CheckoutGrant{
+		CloneURL:  authorization.CloneURL,
+		Token:     access.Token,
+		ExpiresAt: access.ExpiresAt,
+	}, nil
+}
+
+// checkoutRepositoryIDs returns the repository IDs a checkout token should be
+// scoped to: always the session's primary repository, plus any of the project's
+// declared extra repositories that resolve within the same installation. It is
+// deliberately failure-tolerant — any error loading the extras or resolving them
+// against the installation falls back to the primary repository alone, so
+// broadening the scope can never regress the primary checkout that already
+// worked. Extra repositories outside the primary's installation cannot be minted
+// into one installation token and are simply left out.
+func (s *Service) checkoutRepositoryIDs(
+	ctx context.Context,
+	orgID, sessionID string,
+	authorization domain.GitHubCheckoutContext,
+) []int64 {
+	primary := authorization.GitHubRepositoryID
+	extras, err := s.store.WorkerSessionExtraRepos(ctx, orgID, sessionID)
+	if err != nil {
+		s.logger.Warn("load session extra repositories for checkout scope",
+			"error", err, "org_id", orgID, "session_id", sessionID)
+		return []int64{primary}
+	}
+	primaryFullName := strings.Trim(authorization.FullName, "/")
+	fullNames := make([]string, 0, len(extras))
+	for _, extra := range extras {
+		fullName, ok := gitHubRepositoryFullName(extra.URL)
+		if !ok || strings.EqualFold(fullName, primaryFullName) {
+			continue
+		}
+		fullNames = append(fullNames, fullName)
+	}
+	if len(fullNames) == 0 {
+		return []int64{primary}
+	}
+	extraIDs, err := s.client.resolveInstallationRepositoryIDs(
+		ctx,
+		authorization.GitHubInstallationID,
+		fullNames,
+	)
+	if err != nil {
+		s.logger.Warn("resolve extra repositories for checkout scope",
+			"error", err, "org_id", orgID, "session_id", sessionID)
+		return []int64{primary}
+	}
+	ids := make([]int64, 0, len(extraIDs)+1)
+	ids = append(ids, primary)
+	for _, id := range extraIDs {
+		if id > 0 && id != primary {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// gitHubRepositoryFullName extracts "owner/repo" from a github.com repository
+// URL (with or without a trailing .git). It returns ok=false for anything that
+// is not a plain https github.com repository URL, so a malformed or non-GitHub
+// extra repository is skipped rather than scoped.
+func gitHubRepositoryFullName(repoURL string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(repoURL))
+	if err != nil ||
+		parsed.Scheme != "https" ||
+		!strings.EqualFold(parsed.Hostname(), "github.com") ||
+		parsed.Port() != "" ||
+		parsed.User != nil ||
+		parsed.RawQuery != "" ||
+		parsed.Fragment != "" {
+		return "", false
+	}
+	path, err := url.PathUnescape(parsed.EscapedPath())
+	if err != nil {
+		return "", false
+	}
+	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
+	owner, repo, ok := strings.Cut(path, "/")
+	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		return "", false
+	}
+	return owner + "/" + repo, true
 }
 
 // IssuePushGrant is IssueCheckoutGrant's write-scoped counterpart: the token

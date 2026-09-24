@@ -87,7 +87,10 @@ describe("browser URL sanitization", () => {
 });
 
 type InvokeHandler = (event: unknown, ...args: unknown[]) => unknown;
-type EventHandler = (event: { sender: { id: number; getZoomFactor?: () => number } }, ...args: unknown[]) => unknown;
+type EventHandler = (
+	event: { sender: { id: number; getZoomFactor?: () => number; send?: (channel: string, payload: unknown) => void } },
+	...args: unknown[]
+) => unknown;
 
 function annotationDraft(url = "http://localhost:4173/"): BrowserAnnotationDraft {
 	return {
@@ -192,7 +195,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 		canGoBack: () => false,
 		canGoForward: () => false,
 		capturePage: vi.fn(async () => ({
-			isEmpty: () => false,
+			isEmpty: (): boolean => false,
 			toJPEG: () => Buffer.from("snapshot"),
 			toPNG: () => Buffer.from("png-snapshot"),
 			getSize: () => ({ width: 640, height: 480 }),
@@ -324,7 +327,7 @@ function setupHost(agentBrowserRuntime?: import("./agent-browser-runtime").Agent
 	const invokeFromTab = (channel: string, senderId: number, ...args: unknown[]) =>
 		handlers.get(channel)!({ sender: { id: senderId } }, ...args);
 	const emit = (channel: string, zoomFactor: number, ...args: unknown[]) =>
-		eventHandlers.get(channel)!({ sender: { id: 1, getZoomFactor: () => zoomFactor } }, ...args);
+		eventHandlers.get(channel)!({ sender: { id: 1, getZoomFactor: () => zoomFactor, send: shellSend } }, ...args);
 	const send = (channel: string, senderId: number, ...args: unknown[]) =>
 		eventHandlers.get(channel)!({ sender: { id: senderId } }, ...args);
 	const emitBeforeInput = (input: {
@@ -423,6 +426,36 @@ describe("browser screenshots", () => {
 	});
 });
 
+describe("annotation screenshots", () => {
+	it("copies an annotation capture to the system clipboard", async () => {
+		const { invoke, invokeFromTab, webContents, writeImage } = setupHost();
+		await invoke("browser:ensure", "sess-1");
+
+		const copied = await invokeFromTab("browser:annotation:capture", 99);
+
+		expect(copied).toBe(true);
+		expect(webContents.capturePage).toHaveBeenCalledOnce();
+		expect(writeImage).toHaveBeenCalledWith(expect.objectContaining({ isEmpty: expect.any(Function) }));
+	});
+
+	it("resolves false without touching the clipboard when the page cannot be captured", async () => {
+		const { invoke, invokeFromTab, webContents, writeImage } = setupHost();
+		await invoke("browser:ensure", "sess-1");
+		webContents.capturePage.mockResolvedValueOnce({
+			isEmpty: () => true,
+			toJPEG: () => Buffer.from("snapshot"),
+			toPNG: () => Buffer.from("png-snapshot"),
+			getSize: () => ({ width: 640, height: 480 }),
+			resize: vi.fn(() => ({ toPNG: () => Buffer.from("resized-png") })),
+		});
+
+		const copied = await invokeFromTab("browser:annotation:capture", 99);
+
+		expect(copied).toBe(false);
+		expect(writeImage).not.toHaveBeenCalled();
+	});
+});
+
 describe("browser shortcut matching", () => {
 	it("matches contextual browser shortcuts with platform-native primary modifiers", () => {
 		const input = { control: true, meta: false, shift: false, alt: false, type: "keyDown" };
@@ -514,6 +547,7 @@ describe("browser shortcut routing", () => {
 		// not drop the shortcut target or the next ⌘T opens a shell terminal instead.
 		emit("browser:setBounds", 1, {
 			viewId: state.viewId,
+			revision: 1,
 			rect: { x: 0, y: 0, width: 10, height: 10 },
 			visible: false,
 		});
@@ -544,6 +578,7 @@ describe("browser shortcut routing", () => {
 		// Blank-tab hide must not drop the shortcut target.
 		emit("browser:setBounds", 1, {
 			viewId: state.viewId,
+			revision: 1,
 			rect: { x: 0, y: 0, width: 10, height: 10 },
 			visible: false,
 		});
@@ -952,7 +987,13 @@ function setupTabHost(
 	const invokeFromTab = (channel: string, senderId: number, ...args: unknown[]) =>
 		handlers.get(channel)!({ sender: { id: senderId } }, ...args) as Promise<unknown>;
 	const emit = (channel: string, ...args: unknown[]) =>
-		eventHandlers.get(channel)!({ sender: { id: 1, getZoomFactor: () => 1 } }, ...args);
+		eventHandlers.get(channel)!({
+			sender: {
+				id: 1,
+				getZoomFactor: () => 1,
+				send: (sentChannel: string, payload: unknown) => sent.push({ channel: sentChannel, payload }),
+			},
+		}, ...args);
 	const sendFromTab = (channel: string, senderId: number, ...args: unknown[]) =>
 		eventHandlers.get(channel)!({ sender: { id: senderId } }, ...args);
 	return {
@@ -1396,7 +1437,7 @@ describe("native Chromium DevTools host", () => {
 		const nav = await invoke("browser:ensure", "sess-1");
 		const viewId = (nav as BrowserNavState).viewId;
 		await invoke("browser:navigate", { viewId, url: "http://localhost:3000/" });
-		emit("browser:setBounds", 1, { viewId, rect: { x: 20, y: 30, width: 700, height: 500 }, visible: true });
+		emit("browser:setBounds", 1, { viewId, revision: 1, rect: { x: 20, y: 30, width: 700, height: 500 }, visible: true });
 
 		const opened = await invoke("browser:devtools", { viewId, operation: "open" });
 		expect(opened).toMatchObject({ open: true, placement: "right" });
@@ -1702,6 +1743,7 @@ describe("browser profile partitions and replacement", () => {
 		await invoke("browser:openTab", { viewId: nav.viewId, url: "https://example.com/" });
 		emit("browser:setBounds", {
 			viewId: nav.viewId,
+			revision: 1,
 			rect: { x: 24, y: 32, width: 640, height: 420 },
 			visible: true,
 		});
@@ -1953,6 +1995,7 @@ describe("native browser visibility", () => {
 
 		emit("browser:setBounds", 1, {
 			viewId: "1:sess-1",
+			revision: 1,
 			rect: { x: 10, y: 20, width: 320, height: 240 },
 			visible: true,
 		});
@@ -1976,6 +2019,7 @@ describe("native browser visibility", () => {
 		await invoke("browser:ensure", "sess-1");
 		emit("browser:setBounds", 1, {
 			viewId: "1:sess-1",
+			revision: 1,
 			rect: { x: 10, y: 20, width: 320, height: 240 },
 			visible: true,
 		});
@@ -2004,6 +2048,7 @@ describe("native browser visibility", () => {
 
 		emit("browser:setBounds", 1.25, {
 			viewId: "1:sess-1",
+			revision: 1,
 			rect: { x: 100.25, y: 20.25, width: 319.5, height: 239.5 },
 			visible: true,
 		});
@@ -2247,6 +2292,7 @@ describe("agent browser runtime", () => {
 		const ensured = (await invoke("browser:ensure", "sess-1")) as BrowserNavState;
 		emit("browser:setBounds", {
 			viewId: ensured.viewId,
+			revision: 1,
 			rect: { x: 10, y: 20, width: 320, height: 240 },
 			visible: true,
 		});
@@ -2802,6 +2848,38 @@ describe("agent browser network capture", () => {
 });
 
 describe("browser:setBounds", () => {
+	it("keeps the newest geometry across 200 rapid updates and acknowledges only applied revisions", async () => {
+		const { emit, invoke, shellSend, view } = setupHost();
+		await invoke("browser:ensure", "sess-1");
+		view.setBounds.mockClear();
+		shellSend.mockClear();
+
+		for (let revision = 1; revision <= 200; revision += 1) {
+			emit("browser:setBounds", 1, {
+				viewId: "1:sess-1",
+				revision,
+				rect: { x: revision, y: 20, width: 320, height: 240 },
+				visible: true,
+			});
+		}
+		emit("browser:setBounds", 1, {
+			viewId: "1:sess-1",
+			revision: 100,
+			rect: { x: 999, y: 20, width: 320, height: 240 },
+			visible: true,
+		});
+
+		expect(view.setBounds).toHaveBeenLastCalledWith({ x: 200, y: 20, width: 320, height: 240 });
+		const acknowledgements = shellSend.mock.calls.filter(([channel]) => channel === "browser:boundsApplied");
+		expect(acknowledgements).toHaveLength(200);
+		expect(acknowledgements.at(-1)?.[1]).toEqual({
+			viewId: "1:sess-1",
+			revision: 200,
+			rect: { x: 200, y: 20, width: 320, height: 240 },
+			visible: true,
+		});
+	});
+
 	it("converts page-zoomed renderer slot bounds before positioning the native view", async () => {
 		const { emit, invoke, view } = setupHost();
 		await invoke("browser:ensure", "sess-1");
@@ -2809,6 +2887,7 @@ describe("browser:setBounds", () => {
 
 		emit("browser:setBounds", 1.25, {
 			viewId: "1:sess-1",
+			revision: 1,
 			rect: { x: 100, y: 20, width: 320, height: 240 },
 			visible: true,
 		});
@@ -2827,12 +2906,14 @@ describe("browser:setBounds", () => {
 
 		emit("browser:setBounds", 1, {
 			viewId: "1:sess-1",
+			revision: 1,
 			rect: { x: 100, y: 20, width: 320, height: 240 },
 			visible: true,
 		});
 		expect(view.setVisible).toHaveBeenLastCalledWith(false);
 		emit("browser:setBounds", 1, {
 			viewId: "1:sess-1",
+			revision: 2,
 			rect: { x: 0, y: 0, width: 0, height: 0 },
 			visible: false,
 		});
@@ -2850,6 +2931,7 @@ describe("browser:setBounds", () => {
 		await invoke("browser:ensure", "sess-1");
 		emit("browser:setBounds", 1, {
 			viewId: "1:sess-1",
+			revision: 1,
 			rect: { x: 100, y: 20, width: 320, height: 240 },
 			visible: true,
 		});
@@ -2928,6 +3010,40 @@ describe("browser annotation IPC", () => {
 		await invoke("browser:annotation:setMode", { viewId: "1:sess-1", enabled: false });
 
 		expect(webContents.focus).not.toHaveBeenCalled();
+	});
+
+	it("drops an open draft when annotation mode is turned off, but keeps saved batch annotations", async () => {
+		const { invoke, send, sent, webContents } = setupHost();
+		await invoke("browser:ensure", "sess-1");
+		await invoke("browser:navigate", { viewId: "1:sess-1", url: "http://localhost:4173/" });
+		await invoke("browser:annotation:setMode", { viewId: "1:sess-1", enabled: true });
+		const session = {
+			...annotationSession(),
+			annotations: submittedAnnotationSession().annotations,
+		};
+		send("browser:annotation:state", 99, session);
+		webContents.send.mockClear();
+
+		await invoke("browser:annotation:setMode", { viewId: "1:sess-1", enabled: false });
+
+		expect(sent).toContainEqual({
+			channel: "browser:annotation:state",
+			payload: { viewId: "1:sess-1", count: 1, screenshotCount: 0, hasDraft: false },
+		});
+		const disablePayload = webContents.send.mock.calls.findLast(
+			([channel, payload]) => channel === "browser:annotation:setMode" && payload?.enabled === false,
+		)?.[1] as { enabled: boolean; session?: BrowserAnnotationSession } | undefined;
+		expect(disablePayload?.session?.draft).toBeUndefined();
+		expect(disablePayload?.session?.annotations).toEqual(session.annotations);
+
+		webContents.send.mockClear();
+		await invoke("browser:annotation:setMode", { viewId: "1:sess-1", enabled: true });
+
+		const enablePayload = webContents.send.mock.calls.find(
+			([channel, payload]) => channel === "browser:annotation:setMode" && payload?.enabled === true,
+		)?.[1] as { enabled: boolean; session?: BrowserAnnotationSession } | undefined;
+		expect(enablePayload?.session?.draft).toBeUndefined();
+		expect(enablePayload?.session?.annotations).toHaveLength(1);
 	});
 
 	it("preserves and restores an unfinished annotation when the toolbar reloads the page", async () => {
@@ -3386,7 +3502,7 @@ describe("getLastFocusedPanelContents", () => {
 			rendererOrigin: "http://localhost:5173",
 		});
 		const call = (channel: string, ...args: unknown[]) =>
-			handlers.get(channel)!({ sender: { id: 1, getZoomFactor: () => 1 } }, ...args);
+			handlers.get(channel)!({ sender: { id: 1, getZoomFactor: () => 1, send: shellSend } }, ...args);
 		return { host, call, shellSend, webContents, focus: () => focusListener?.() };
 	}
 
@@ -3404,7 +3520,7 @@ describe("getLastFocusedPanelContents", () => {
 		expect(host.getLastFocusedPanelContents()).toBe(webContents);
 		expect(shellSend).toHaveBeenCalledWith("browser:pageFocus", "1:s");
 
-		call("browser:setBounds", { viewId: "1:s", rect: { x: 0, y: 0, width: 10, height: 10 }, visible: false });
+		call("browser:setBounds", { viewId: "1:s", revision: 1, rect: { x: 0, y: 0, width: 10, height: 10 }, visible: false });
 		expect(host.getLastFocusedPanelContents()).toBeNull();
 
 		focus();
@@ -3448,5 +3564,288 @@ describe("scaleBoundsForZoom", () => {
 		expect(scaleBoundsForZoom(rect, 1)).toBe(rect);
 		expect(scaleBoundsForZoom(rect, 0)).toBe(rect);
 		expect(scaleBoundsForZoom(rect, Number.NaN)).toBe(rect);
+	});
+});
+
+describe("browser snapshot deltas", () => {
+	type NativeSnapshot = Record<string, unknown>;
+	function setupDeltaHost(respond: (args: Record<string, unknown>) => NativeSnapshot) {
+		const runtime = {
+			runAction: vi.fn(async (_sessionId: string, action: string, args: Record<string, unknown>) =>
+				action === "snapshot"
+					? {
+							snapshot: respond(args),
+							refs: { e1: { role: "button", name: "Save" } },
+							_boundary: { nonce: "n1", origin: "http://localhost:3000/" },
+						}
+					: {},
+			),
+			closeSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => undefined),
+		} as unknown as import("./agent-browser-runtime").AgentBrowserRuntime;
+		const snapshotCalls = () =>
+			(runtime.runAction as unknown as ReturnType<typeof vi.fn>).mock.calls
+				.filter((call: unknown[]) => call[1] === "snapshot")
+				.map((call: unknown[]) => call[2]);
+		return { ...setupHost(runtime), snapshotCalls };
+	}
+	const full = (revision: number) => ({
+		kind: "full",
+		revision,
+		tree: '- button "Save" [ref=e1]',
+		refs: { e1: { role: "button", name: "Save" } },
+	});
+
+	it("requests a full baseline first and returns it as snapshot text", async () => {
+		const { host, snapshotCalls } = setupDeltaHost(() => full(1));
+
+		const result = await host.execute("sess-1", "snapshot", { delta: true });
+
+		expect(snapshotCalls()).toEqual([{ interactive: false, delta: true, full: true }]);
+		expect(result).toEqual({
+			kind: "full",
+			revision: 1,
+			text: '- button "Save" [ref=e1]',
+			refs: { e1: { role: "button", name: "Save" } },
+			_boundary: { nonce: "n1", origin: "http://localhost:3000/" },
+			untrustedExternalContent: true,
+		});
+	});
+
+	it("returns unchanged and structural deltas measured from the revision the agent last received", async () => {
+		const responses: NativeSnapshot[] = [
+			full(1),
+			{ kind: "unchanged", baseRevision: 1, revision: 2 },
+			{
+				kind: "delta",
+				baseRevision: 2,
+				revision: 3,
+				changes: [{ op: "remove", ref: "@e1" }],
+				treeChange: { startLine: 0, deleteCount: 1, lines: [] },
+			},
+		];
+		const { host, snapshotCalls } = setupDeltaHost(() => responses.shift()!);
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		const unchanged = await host.execute("sess-1", "snapshot", { delta: true });
+		const delta = await host.execute("sess-1", "snapshot", { delta: true });
+
+		expect(snapshotCalls().slice(1)).toEqual([
+			{ interactive: false, delta: true },
+			{ interactive: false, delta: true },
+		]);
+		expect(unchanged).toMatchObject({ kind: "unchanged", baseRevision: 1, revision: 2 });
+		expect(delta).toMatchObject({
+			kind: "delta",
+			baseRevision: 2,
+			revision: 3,
+			changes: [{ op: "remove", ref: "@e1" }],
+			treeChange: { startLine: 0, deleteCount: 1, lines: [] },
+		});
+	});
+
+	it("refetches full state when the native baseline moved without the agent seeing it", async () => {
+		const responses: NativeSnapshot[] = [full(1), { kind: "unchanged", baseRevision: 2, revision: 3 }, full(4)];
+		const { host, snapshotCalls } = setupDeltaHost(() => responses.shift()!);
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		const result = await host.execute("sess-1", "snapshot", { delta: true });
+
+		expect(snapshotCalls().slice(1)).toEqual([
+			{ interactive: false, delta: true },
+			{ interactive: false, delta: true, full: true },
+		]);
+		expect(result).toMatchObject({ kind: "full", revision: 4, text: '- button "Save" [ref=e1]' });
+	});
+
+	it("forces full state when the agent asks for it or switches the interactive option set", async () => {
+		const { host, snapshotCalls } = setupDeltaHost(() => full(1));
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		await host.execute("sess-1", "snapshot", { delta: true, full: true });
+		await host.execute("sess-1", "snapshot", { delta: true, interactive: true });
+
+		expect(snapshotCalls()).toEqual([
+			{ interactive: false, delta: true, full: true },
+			{ interactive: false, delta: true, full: true },
+			{ interactive: true, delta: true, full: true },
+		]);
+	});
+
+	it("forces full state after the agent switches frames", async () => {
+		const { host, snapshotCalls } = setupDeltaHost(() => full(1));
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		await host.execute("sess-1", "frame", { target: "main" });
+		await host.execute("sess-1", "snapshot", { delta: true });
+
+		expect(snapshotCalls()[1]).toEqual({ interactive: false, delta: true, full: true });
+	});
+
+	it("forces full state after the agent switches tabs", async () => {
+		const { host, snapshotCalls } = setupDeltaHost(() => full(1));
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		await host.execute("sess-1", "tab-select", { tabId: "t1" });
+		await host.execute("sess-1", "snapshot", { delta: true });
+
+		expect(snapshotCalls()[1]).toEqual({ interactive: false, delta: true, full: true });
+	});
+
+	it("rejects a forced refetch that still is not full state", async () => {
+		const responses: NativeSnapshot[] = [
+			full(1),
+			{ kind: "unchanged", baseRevision: 2, revision: 3 },
+			{ kind: "unchanged", baseRevision: 3, revision: 4 },
+		];
+		const { host } = setupDeltaHost(() => responses.shift()!);
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+
+		await expect(host.execute("sess-1", "snapshot", { delta: true })).rejects.toMatchObject({
+			code: "BROWSER_AUTOMATION_INVALID_OUTPUT",
+		});
+	});
+
+	it("rejects a partial answer to an explicit --full request", async () => {
+		const responses: NativeSnapshot[] = [full(1), { kind: "unchanged", baseRevision: 1, revision: 2 }];
+		const { host } = setupDeltaHost(() => responses.shift()!);
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+
+		await expect(host.execute("sess-1", "snapshot", { delta: true, full: true })).rejects.toMatchObject({
+			code: "BROWSER_AUTOMATION_INVALID_OUTPUT",
+		});
+	});
+
+	it("forces full state after the agent takes a plain snapshot, but not after act", async () => {
+		const { host, snapshotCalls } = setupDeltaHost((args) =>
+			args.delta ? full(1) : ('- button "Save" [ref=e1]' as unknown as NativeSnapshot),
+		);
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		await host.execute("sess-1", "act", { instruction: "the Save button" });
+		await host.execute("sess-1", "snapshot", { delta: true });
+		await host.execute("sess-1", "snapshot", {});
+		await host.execute("sess-1", "snapshot", { delta: true });
+
+		const deltaCalls = snapshotCalls().filter((call) => (call as { delta?: boolean }).delta);
+		expect(deltaCalls).toEqual([
+			{ interactive: false, delta: true, full: true },
+			{ interactive: false, delta: true },
+			{ interactive: false, delta: true, full: true },
+		]);
+	});
+
+	it("drops the delta baseline when an unresolved act hands the agent a snapshot", async () => {
+		const { host, snapshotCalls } = setupDeltaHost((args) =>
+			args.delta ? full(1) : ('- button "Save" [ref=e1]' as unknown as NativeSnapshot),
+		);
+
+		await host.execute("sess-1", "snapshot", { delta: true });
+		await host.execute("sess-1", "act", { instruction: "nothing matches this instruction" });
+		await host.execute("sess-1", "snapshot", { delta: true });
+
+		const deltaCalls = snapshotCalls().filter((call) => (call as { delta?: boolean }).delta);
+		expect(deltaCalls.at(-1)).toEqual({ interactive: false, delta: true, full: true });
+	});
+
+	it("rejects delta output it cannot interpret", async () => {
+		const { host } = setupDeltaHost(() => ({ kind: "delta", revision: "two" }));
+
+		await expect(host.execute("sess-1", "snapshot", { delta: true })).rejects.toMatchObject({
+			code: "BROWSER_AUTOMATION_INVALID_OUTPUT",
+		});
+	});
+
+	it("keeps plain snapshots on the existing full-text contract", async () => {
+		const runtime = {
+			runAction: vi.fn(async () => ({ snapshot: '- button "Save" [ref=e1]', refs: {} })),
+			closeSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => undefined),
+		} as unknown as import("./agent-browser-runtime").AgentBrowserRuntime;
+		const { host } = setupHost(runtime);
+
+		const result = await host.execute("sess-1", "snapshot", { interactive: true });
+
+		expect(runtime.runAction).toHaveBeenCalledWith(
+			"sess-1",
+			"snapshot",
+			{ interactive: true },
+			expect.anything(),
+			undefined,
+		);
+		expect(result).toEqual({ text: '- button "Save" [ref=e1]', refs: {}, untrustedExternalContent: true });
+	});
+});
+
+describe("browser human pointer and annotated screenshots", () => {
+	function setupPointerHost() {
+		const runtime = {
+			runAction: vi.fn(async () => ({})),
+			screenshot: vi.fn(async () => ({
+				data: "",
+				width: 1,
+				height: 1,
+				annotations: [{ number: 1, ref: "e1", role: "button", name: "Save" }],
+				untrustedExternalContent: true as const,
+			})),
+			closeSession: vi.fn(async () => undefined),
+			dispose: vi.fn(async () => undefined),
+		} as unknown as import("./agent-browser-runtime").AgentBrowserRuntime;
+		return { ...setupHost(runtime), runtime };
+	}
+
+	it("forwards the human pointer option for clicks and drags only when asked", async () => {
+		const { host, runtime, invoke, emit } = setupPointerHost();
+		const ensure = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
+		emit("browser:setBounds", 1, {
+			viewId: ensure.viewId,
+			revision: 1,
+			rect: { x: 0, y: 0, width: 10, height: 10 },
+			visible: true,
+		});
+		const nativeArgs = () =>
+			(runtime.runAction as unknown as ReturnType<typeof vi.fn>).mock.calls.map((call: unknown[]) => call[2]);
+
+		await host.execute("sess-1", "click", { ref: "e1" });
+		await host.execute("sess-1", "click", { ref: "e1", human: true });
+		await host.execute("sess-1", "drag", { ref: "e1", targetRef: "e2", human: true });
+		await host.execute("sess-1", "dblclick", { ref: "e1", human: true });
+
+		expect(nativeArgs()).toEqual([
+			{ ref: "e1" },
+			{ ref: "e1", human: true },
+			{ ref: "e1", targetRef: "e2", human: true },
+			{ ref: "e1" },
+		]);
+	});
+
+	it("fails fast for a human pointer action while the Browser panel is hidden", async () => {
+		const { host, invoke, emit } = setupPointerHost();
+		const ensure = (await invoke("browser:ensure", "sess-1")) as { viewId: string };
+		emit("browser:setBounds", 1, {
+			viewId: ensure.viewId,
+			revision: 1,
+			rect: { x: 0, y: 0, width: 10, height: 10 },
+			visible: false,
+		});
+
+		await expect(host.execute("sess-1", "click", { ref: "e1", human: true })).rejects.toMatchObject({
+			code: "BROWSER_PANEL_HIDDEN",
+		});
+		await expect(host.execute("sess-1", "click", { ref: "e1" })).resolves.toBeDefined();
+	});
+
+	it("passes the annotate option to the screenshot runtime and returns its annotations", async () => {
+		const { host, runtime } = setupPointerHost();
+
+		const plain = await host.execute("sess-1", "screenshot", {});
+		const annotated = await host.execute("sess-1", "screenshot", { annotate: true });
+
+		expect(runtime.screenshot).toHaveBeenNthCalledWith(1, "sess-1", expect.anything(), undefined, { annotate: false });
+		expect(runtime.screenshot).toHaveBeenNthCalledWith(2, "sess-1", expect.anything(), undefined, { annotate: true });
+		expect(plain).toMatchObject({ width: 1, height: 1 });
+		expect(annotated).toMatchObject({ annotations: [{ number: 1, ref: "e1", role: "button", name: "Save" }] });
 	});
 });

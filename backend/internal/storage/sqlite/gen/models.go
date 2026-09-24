@@ -26,12 +26,20 @@ type AgentInstallJob struct {
 }
 
 type AgentModelCatalog struct {
-	AgentID       string
-	ProjectID     string
-	BinaryVersion string
-	CatalogJson   string
-	Source        string
-	FetchedAt     time.Time
+	AgentID          string
+	ProjectID        string
+	BinaryVersion    string
+	CatalogJson      string
+	Source           string
+	FetchedAt        time.Time
+	MetadataJson     string
+	InputFingerprint string
+	LastSuccessAt    sql.NullTime
+	RefreshState     string
+	RefreshError     string
+	RetryCount       int64
+	RetryAt          sql.NullTime
+	Generation       int64
 }
 
 type AgentNativeSession struct {
@@ -177,7 +185,9 @@ type Conversation struct {
 	Scope                      domain.ConversationScope
 	ProjectID                  *domain.ProjectID
 	SessionID                  *domain.SessionID
+	ReviewID                   sql.NullString
 	CurrentSessionID           *domain.SessionID
+	CurrentReviewID            sql.NullString
 	LatestSequence             int64
 	CreatedAt                  time.Time
 	UpdatedAt                  time.Time
@@ -245,6 +255,7 @@ type ConversationBranch struct {
 	ReplayTruncated        int64
 	ProviderScopeID        string
 	ProviderIdsScoped      int64
+	ReviewID               sql.NullString
 }
 
 type ConversationEditDelivery struct {
@@ -293,6 +304,7 @@ type ConversationProviderEvent struct {
 	PayloadJson     string
 	ReceivedAt      time.Time
 	BranchID        string
+	ReviewID        sql.NullString
 }
 
 type ConversationQueuedEditDelivery struct {
@@ -333,6 +345,7 @@ type ConversationTurn struct {
 	PromotionStartedAt   sql.NullTime
 	PromotedToTurnID     sql.NullString
 	RetryOfTurnID        sql.NullString
+	HandledByReviewID    sql.NullString
 }
 
 type ModelUsageEvent struct {
@@ -359,16 +372,17 @@ type ModelUsageEvent struct {
 }
 
 type Notification struct {
-	ID         string
-	SessionID  domain.SessionID
-	ProjectID  *domain.ProjectID
-	PRURL      string
-	Type       domain.NotificationType
-	Title      string
-	Body       string
-	Status     domain.NotificationStatus
-	CreatedAt  time.Time
-	ResolvedAt sql.NullTime
+	ID          string
+	SessionID   domain.SessionID
+	ProjectID   *domain.ProjectID
+	PRURL       string
+	Type        domain.NotificationType
+	Title       string
+	Body        string
+	Status      domain.NotificationStatus
+	CreatedAt   time.Time
+	ResolvedAt  sql.NullTime
+	DismissedAt sql.NullTime
 }
 
 type PR struct {
@@ -486,18 +500,55 @@ type Project struct {
 	Kind          string
 }
 
+type Report struct {
+	ID                 string
+	SessionID          string
+	ProjectID          string
+	State              string
+	Note               string
+	Message            string
+	CreatedAt          time.Time
+	DeliveryState      string
+	AvailableAt        time.Time
+	SettlementDeadline sql.NullTime
+	RepeatCount        int64
+	ClaimToken         string
+	ClaimedAt          sql.NullTime
+	DeliveryAttempts   int64
+	AcknowledgedAt     sql.NullTime
+	LastError          string
+	DeliveryBatchID    string
+}
+
+type ReportOutput struct {
+	ReportID  string
+	Position  int64
+	Kind      string
+	Reference string
+	Label     string
+}
+
+type ReportWorkerInterrupt struct {
+	SessionID         string
+	LastInterruptedAt time.Time
+}
+
 type Review struct {
-	ID                    string
-	SessionID             domain.SessionID
-	ProjectID             domain.ProjectID
-	Harness               domain.ReviewerHarness
-	PRURL                 string
-	ReviewerHandleID      string
-	AgentSessionID        string
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
-	ReviewerActivityState string
-	ReviewerLaunchID      string
+	ID                     string
+	SessionID              domain.SessionID
+	ProjectID              domain.ProjectID
+	Harness                domain.ReviewerHarness
+	PRURL                  string
+	ReviewerHandleID       string
+	AgentSessionID         string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	ReviewerActivityState  string
+	ReviewerLaunchID       string
+	InterfaceMode          string
+	ProviderConversationID string
+	ControllerGeneration   string
+	ControllerError        string
 }
 
 type ReviewRun struct {
@@ -572,6 +623,7 @@ type Session struct {
 	NativeCheckpointEvidence         string
 	LatestAssistantUpdateAt          sql.NullTime
 	NativeIdentityObservedAt         sql.NullTime
+	Effort                           string
 }
 
 type SessionCleanupFact struct {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -733,7 +734,7 @@ func TestInstallAgentProfileInstallsSessionCopilotAgent(t *testing.T) {
 		t.Fatalf("agent profile must start with YAML frontmatter for Copilot discovery:\n%s", agentText)
 	}
 	for _, want := range []string{
-		copilotAgentSentinel,
+		hookutil.CopilotAgentProfileSentinel,
 		"name: ao-sess-1",
 		"target: github-copilot",
 		"orchestrator must spawn workers",

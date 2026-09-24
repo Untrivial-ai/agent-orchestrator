@@ -76,13 +76,9 @@ func (s *Server) createTerminalTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	// routingKey is the terminal's stable affinity shard. An affinity-aware
-	// entry can use it to co-locate this client's socket with the worker's
-	// terminal stream on one replica, making the same-replica fast path the
-	// norm. Inert until such routing is deployed; safe for clients to ignore.
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"ticket": token, "expiresIn": int(terminalTicketTTL.Seconds()),
-		"scopes": scopes, "routingKey": routingKeyString(sessionID),
+		"scopes": scopes,
 	})
 }
 
@@ -170,6 +166,7 @@ func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	attachedAt := time.Now()
 	readResult := make(chan error, 1)
 	var writeMu sync.Mutex
 	go func() {
@@ -184,14 +181,32 @@ func (s *Server) connectTerminal(w http.ResponseWriter, r *http.Request) {
 		pingResult <- keepTerminalAlive(ctx, connection)
 	}()
 
+	// closeSource records which stream ended the socket. A browser terminal that
+	// drops seconds after attach and reconnects (a blank flash to the user) leaves
+	// its fingerprint here: read means the client sent a frame we rejected, write
+	// means the output pump failed, ping means keepalive timed out, ctx means the
+	// request was cancelled. Kept at Info because it is one line per socket close.
+	var closeSource string
 	select {
 	case err = <-readResult:
+		closeSource = "read"
 	case err = <-writeResult:
+		closeSource = "write"
 	case err = <-pingResult:
+		closeSource = "ping"
 	case <-ctx.Done():
 		err = ctx.Err()
+		closeSource = "ctx"
 	}
 	cancel()
+	if s.logger != nil {
+		s.logger.Info("browser terminal stream closed",
+			"session_id", terminal.SessionID, "terminal_id", terminal.ID,
+			"kind", terminal.Kind, "worker_epoch", terminal.WorkerEpoch,
+			"close_source", closeSource, "error", err,
+			"ws_close_status", int(websocket.CloseStatus(err)),
+			"connected_ms", time.Since(attachedAt).Milliseconds())
+	}
 	if err != nil && !errors.Is(err, context.Canceled) &&
 		websocket.CloseStatus(err) == -1 {
 		s.logger.Warn("terminal stream ended unexpectedly", "error", err, "terminal_id", terminal.ID)
@@ -304,7 +319,20 @@ func (s *Server) readTerminalInput(
 		if json.Unmarshal(data, &message) == nil {
 			if message.Type == "resize" {
 				if message.Columns == 0 || message.Rows == 0 {
-					return connection.Close(websocket.StatusPolicyViolation, "invalid terminal size")
+					// A zero-dimension resize carries no size to apply and must NOT
+					// tear the socket down. A pane that fits while its element is not
+					// yet laid out (hidden behind a connecting cover, mounted before
+					// layout) proposes a 0x0 grid; closing on it made the client
+					// reconnect, which replays from sequence 0 with a screen reset,
+					// which shows as a blank flash, whereupon the pane fits at 0x0
+					// again: an endless reconnect+flash loop. Ignore the frame and
+					// keep the socket; the next real fit sends valid dimensions and
+					// the PTY keeps whatever size it already had until then.
+					if s.logger != nil {
+						s.logger.Debug("ignoring zero-dimension terminal resize",
+							"terminal_id", terminal.ID)
+					}
+					continue
 				}
 				if err := retryTerminalRequest(ctx, func() error {
 					return s.store.QueueTerminalResize(
@@ -322,12 +350,12 @@ func (s *Server) readTerminalInput(
 		if len(data) == 0 {
 			continue
 		}
-		// Same-replica fast path: when this control-plane task also holds the
-		// worker's terminal stream, hand the keystroke to it in memory and skip
+		// Fast path: this single control-plane task holds the worker's terminal
+		// stream, so hand the keystroke to it in memory and skip
 		// the durable queue's insert + NOTIFY + claim round trip (~15-20ms of
 		// intra-region Postgres latency off the hot path). Falls back to the
-		// durable path when the worker stream lives on another replica, is
-		// absent, or its buffer is full — so delivery is never dropped silently.
+		// durable path when the worker stream is absent or its buffer is full,
+		// so delivery is never dropped silently.
 		if s.terminalStreamEnabled && s.terminalStreams.pushInput(terminal.ID, data) {
 			// Delivered in memory. The open terminal WebSocket already refreshes
 			// the interaction lease on its own timer, so no durable row is
@@ -391,8 +419,8 @@ func (s *Server) writeTerminalOutput(
 	startupDeadline := time.NewTimer(terminalReadyTimeout)
 	defer startupDeadline.Stop()
 	// With the stream enabled, a Postgres NOTIFY wakes this loop the moment a
-	// new output row commits; the ticker stays as the cross-replica and
-	// missed-notification fallback.
+	// new output row commits; the ticker stays as the missed-notification
+	// fallback.
 	var wake chan struct{}
 	if s.terminalStreamEnabled {
 		var cancelWake func()

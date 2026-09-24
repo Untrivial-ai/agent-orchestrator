@@ -31,6 +31,7 @@ import {
 	setUpdateRestartFailureHandler,
 	getUpdateStatus,
 	setUpdateSettings,
+	setMacDifferentialUpdates,
 	returnToHome,
 	type UpdateCheckOptions,
 } from "./main/auto-updater";
@@ -157,10 +158,17 @@ import { connectBrowserRuntime, type BrowserRuntimeLinkHandle } from "./main/bro
 import { keepDaemonAlive, shouldLinkOnAttach } from "./main/daemon-owner";
 import { readMigrationState, updateMigration, writeAppStateMarker, type MigrationState } from "./main/app-state";
 import { isAllowedAppExternalURL, openAllowedAppExternalURL } from "./main/external-open";
-import { dockBounceType, shouldReplaceBounce, shouldSignalAttention, shouldToast } from "./main/notification-signals";
+import {
+	dockBounceType,
+	shouldReplaceBounce,
+	shouldSignalAttention,
+	shouldToast,
+	toastSilent,
+} from "./main/notification-signals";
 import { buildLinuxAppMenuTemplate, buildMacAppMenuTemplate, buildWindowsAppMenuTemplate } from "./main/menu";
 import { ancestorRepositorySetupWarning, resolveCheckedOutBranch, scanImportFolder } from "./main/import-folder-scan";
 import { parseOpenFolderPathArg } from "./main/open-folder-arg";
+import { registerRemotesIpc, remotesFilePath } from "./main/remotes-main";
 import { AGENT_SWITCH_VISIBILITY_IPC_CHANNEL } from "./shared/agent-switch-observability";
 
 // Globals injected at compile time by @electron-forge/plugin-vite.
@@ -325,6 +333,20 @@ let pendingBounce: { id: number; critical: boolean } | null = null;
 // Live mirror of the persisted `soundNotificationsEnabled` UI setting, kept in sync by the
 // uiSettings:set handler so a toggle flip takes effect without an app restart.
 let soundNotificationsEnabled = DEFAULT_UI_SETTINGS.soundNotificationsEnabled;
+
+// Plays the bundled notification sound through the renderer (main has no
+// audio output). `shell.beep()` is only the fallback for when no shell is
+// alive to play it: on Linux it is a silent no-op for desktop-launched apps
+// (Electron writes `\a` to /dev/console or /dev/tty, neither of which such an
+// app can open), which is why the renderer owns playback (#5514).
+function playNotificationSound(): void {
+	const shellContents = getShellWebContents();
+	if (shellContents && !shellContents.isDestroyed()) {
+		shellContents.send("notifications:playSound");
+		return;
+	}
+	shell.beep();
+}
 
 const isDev = !app.isPackaged;
 
@@ -951,6 +973,7 @@ let cachedShellEnv: Record<string, string> | null = null;
 // Memoize the in-flight resolution so concurrent/repeat awaits are cheap.
 let shellEnvPromise: Promise<void> | null = null;
 let terminalShellPreference: TerminalShellPreference = { ...DEFAULT_TERMINAL_SHELL };
+const configuredLoginShell = process.platform === "darwin" ? (os.userInfo().shell ?? undefined) : undefined;
 
 // Telemetry defaults stamped on the daemon env on every platform; explicit env
 // always wins.
@@ -1057,7 +1080,7 @@ function ensureShellEnv(): Promise<void> {
 			});
 			return shellEnvPromise;
 		}
-		shellEnvPromise = resolveShellEnv(process.env, runLoginShell).then((resolved) => {
+		shellEnvPromise = resolveShellEnv(process.env, runLoginShell, configuredLoginShell).then((resolved) => {
 			cachedShellEnv = resolved;
 			if (!resolved) {
 				console.error("AO: could not read the login-shell environment; falling back to a static PATH floor.");
@@ -1156,7 +1179,12 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 	if (process.platform === "win32") {
 		return { ...process.env, ...(cachedShellEnv ?? {}), ...devExtras, ...telemetryOverrides(), ...ownerTag };
 	}
-	return buildDaemonEnv(process.env, cachedShellEnv, { ...devExtras, ...telemetryOverrides(), ...ownerTag });
+	return buildDaemonEnv(
+		process.env,
+		cachedShellEnv,
+		{ ...devExtras, ...telemetryOverrides(), ...ownerTag },
+		configuredLoginShell,
+	);
 }
 
 function pathKey(value: string): string {
@@ -2143,6 +2171,13 @@ async function chooseDirectory(title: string, defaultPath?: string): Promise<str
 	return result.filePaths[0] ?? null;
 }
 
+registerRemotesIpc(ipcMain, {
+	file: remotesFilePath(),
+	// No host is ever connected yet; the proxy registry that owns live
+	// connections lands in the next change and replaces this.
+	disconnect: async () => undefined,
+});
+
 ipcMain.handle("app:chooseDirectory", async (_event, input?: string | { title?: string; defaultPath?: string }) => {
 	const title = typeof input === "string"
 		? input
@@ -2295,13 +2330,19 @@ ipcMain.handle("appState:setMigration", async (_event, migration: MigrationState
 
 ipcMain.handle("updateSettings:get", async (): Promise<UpdateSettings> => {
 	const runFile = runFilePath();
-	if (!runFile) return { enabled: false, channel: "latest", nightlyAck: false, feature: null };
+	if (!runFile) return { enabled: false, channel: "latest", nightlyAck: false, feature: null, macDifferentialUpdates: false };
 	return readUpdateSettings(path.dirname(runFile));
 });
 ipcMain.handle("updateSettings:set", async (_event, settings: UpdateSettings) => {
 	const runFile = runFilePath();
 	if (!runFile) return;
 	await setUpdateSettings(path.dirname(runFile), settings);
+});
+ipcMain.handle("updateSettings:setMacDifferentialUpdates", async (_event, enabled: unknown) => {
+	if (typeof enabled !== "boolean") return;
+	const runFile = runFilePath();
+	if (!runFile) return;
+	await setMacDifferentialUpdates(path.dirname(runFile), enabled);
 });
 
 ipcMain.handle("uiSettings:get", async (): Promise<UiSettings> => {
@@ -2386,10 +2427,21 @@ function cancelDockBounce(): void {
 
 ipcMain.handle(
 	"notifications:show",
-	(_event, notification: { id: string; title: string; body?: string; type?: string }) => {
+	(_event, notification: { id: string; title: string; body?: string; type?: string; watched?: boolean }) => {
 		if (!notification.id || !mainWindow) return;
-		// Only signal when the window isn't already focused (the user is looking).
-		if (mainWindow.isFocused()) return;
+		// "Already looking" = the window has focus, or the renderer reports the
+		// prompt itself is on screen (`watched`). Visual signals are skipped then.
+		const looking = mainWindow.isFocused() || notification.watched === true;
+		// On Linux the sound ignores that guess: Wayland gives apps no reliable
+		// visibility, so a window parked on another workspace still reports
+		// focused/visible and would otherwise stay silent. macOS and Windows
+		// report focus accurately and keep the quieter behaviour.
+		const playsSound =
+			shouldSignalAttention(notification.type) &&
+			soundNotificationsEnabled &&
+			(process.platform === "linux" || !looking);
+		if (playsSound) playNotificationSound();
+		if (looking) return;
 		// OS toast: a native banner the user can click to jump straight back to the
 		// session. Fires for every backend notification type (see shouldToast), so a
 		// new type in notification.go never silently loses its toast.
@@ -2397,6 +2449,10 @@ ipcMain.handle(
 			const toast = new ElectronNotification({
 				title: notification.title,
 				body: notification.body,
+				// Mute the OS chime when our sound replaces it or the user turned
+				// sound notifications off. Honoured on macOS/Windows only; Linux
+				// notification daemons ignore it (see toastSilent).
+				silent: toastSilent(process.platform, soundNotificationsEnabled, playsSound),
 				// AO logo as the notification icon on Windows/Linux. Omitted on macOS,
 				// where a custom icon renders only as a redundant right-side content image —
 				// macOS uses the app-bundle icon (the AO logo in a packaged build) as the
@@ -2444,11 +2500,15 @@ ipcMain.handle(
 				});
 			}
 		}
-		if (shouldSignalAttention(notification.type) && soundNotificationsEnabled) {
-			shell.beep();
-		}
 	},
 );
+
+// The renderer could not decode or start the bundled sound. Beep so the
+// notification still makes a sound where the OS beep works at all.
+ipcMain.on("notifications:soundFailed", (event) => {
+	if (event.sender !== getShellWebContents()) return;
+	shell.beep();
+});
 
 // Dev-only: force attention signal regardless of window focus (for testing)
 if (!app.isPackaged) {
@@ -2466,7 +2526,7 @@ if (!app.isPackaged) {
 			}, 2000);
 		}
 		if (soundNotificationsEnabled) {
-			shell.beep();
+			playNotificationSound();
 		}
 	});
 }
