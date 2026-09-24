@@ -245,6 +245,7 @@ type Job struct {
 	Method              string `json:"method,omitempty" description:"Server-owned installation method selected for this harness job."`
 	Command             string `json:"command,omitempty" description:"Human-readable install command, e.g. \"brew install tmux\", for display even before/without output."`
 	ExpectedDestination string `json:"expectedDestination,omitempty" description:"Expected or adapter-resolved executable destination."`
+	Version             string `json:"version,omitempty" description:"Version reported by the harness's own --version probe, last recorded at install or verify time."`
 	Output              string `json:"output,omitempty" description:"Combined stdout+stderr from the install command, tail-capped to the last ~4000 bytes."`
 	Error               string `json:"error,omitempty" description:"Set on failure or when the target is unsupported on this machine: the exec error, the Unsupported reason, or a timeout message."`
 	// Pointers, not time.Time: omitempty has no effect on a struct, so a bare
@@ -611,7 +612,7 @@ func (s *Service) StartAgentOperation(ctx context.Context, target Target, method
 
 	initial := *job
 	if !s.beginWorker() {
-		s.finishAgentJob(job, StatusInterrupted, "", "daemon shutdown interrupted the install", "")
+		s.finishAgentJob(job, StatusInterrupted, "", "daemon shutdown interrupted the install", "", "")
 		return initial, nil
 	}
 	workerRelease := releaseDroid
@@ -768,6 +769,7 @@ func (s *Service) Verify(ctx context.Context, target Target) (Job, error) {
 		job.Method = current.Method
 		job.Command = current.Command
 		job.ExpectedDestination = current.ExpectedDestination
+		job.Version = current.Version
 		job.Output = current.Output
 	}
 	s.jobs[target] = job
@@ -786,7 +788,7 @@ func (s *Service) Verify(ctx context.Context, target Target) (Job, error) {
 	}
 	initial := *job
 	if !s.beginWorker() {
-		s.finishAgentJob(job, StatusInterrupted, "", "daemon shutdown interrupted verification", "")
+		s.finishAgentJob(job, StatusInterrupted, "", "daemon shutdown interrupted verification", "", "")
 		return initial, nil
 	}
 	go func() { //nolint:gosec // bounded daemon-owned worker intentionally outlives the request.
@@ -923,20 +925,20 @@ func (s *Service) runAgentInstall(parent context.Context, plan Plan, job *Job) {
 		runErr = s.commands.Run(ctx, plan.Command, out, out)
 	}
 	if ctx.Err() == context.DeadlineExceeded {
-		s.finishAgentJob(job, StatusFailed, out.String(), fmt.Sprintf("install timed out after %s", s.installTimeout), "")
+		s.finishAgentJob(job, StatusFailed, out.String(), fmt.Sprintf("install timed out after %s", s.installTimeout), "", "")
 		return
 	}
 	if ctx.Err() == context.Canceled {
-		s.finishAgentJob(job, StatusInterrupted, out.String(), "daemon shutdown interrupted the install", "")
+		s.finishAgentJob(job, StatusInterrupted, out.String(), "daemon shutdown interrupted the install", "", "")
 		return
 	}
 	if runErr != nil {
-		s.finishAgentJob(job, StatusFailed, out.String(), runErr.Error(), "")
+		s.finishAgentJob(job, StatusFailed, out.String(), runErr.Error(), "", "")
 		return
 	}
 
-	if err := s.transitionAgentJob(job, StatusVerifying, out.String(), "", ""); err != nil {
-		s.finishAgentJob(job, StatusFailed, "", fmt.Sprintf("persist verifying state: %v", err), "")
+	if err := s.transitionAgentJob(job, StatusVerifying, out.String(), "", "", ""); err != nil {
+		s.finishAgentJob(job, StatusFailed, "", fmt.Sprintf("persist verifying state: %v", err), "", "")
 		return
 	}
 	s.runAgentVerification(s.backgroundContext, job)
@@ -944,22 +946,22 @@ func (s *Service) runAgentInstall(parent context.Context, plan Plan, job *Job) {
 
 func (s *Service) runAgentVerification(ctx context.Context, job *Job) {
 	if s.verifier == nil {
-		s.finishAgentJob(job, StatusFailed, "", "adapter-backed install verifier is not configured", "")
+		s.finishAgentJob(job, StatusFailed, "", "adapter-backed install verifier is not configured", "", "")
 		return
 	}
 	result, err := s.verifier.Verify(ctx, job.Target)
 	if ctx.Err() == context.Canceled {
-		s.finishAgentJob(job, StatusInterrupted, result.Output, "daemon shutdown interrupted verification", result.ResolvedPath)
+		s.finishAgentJob(job, StatusInterrupted, result.Output, "daemon shutdown interrupted verification", result.ResolvedPath, result.Version)
 		return
 	}
 	if err != nil {
-		s.finishAgentJob(job, StatusFailed, result.Output, err.Error(), result.ResolvedPath)
+		s.finishAgentJob(job, StatusFailed, result.Output, err.Error(), result.ResolvedPath, result.Version)
 		return
 	}
-	s.finishAgentJob(job, StatusSucceeded, result.Output, "", result.ResolvedPath)
+	s.finishAgentJob(job, StatusSucceeded, result.Output, "", result.ResolvedPath, result.Version)
 }
 
-func (s *Service) transitionAgentJob(job *Job, status Status, output, errorMessage, resolvedPath string) error {
+func (s *Service) transitionAgentJob(job *Job, status Status, output, errorMessage, resolvedPath, resolvedVersion string) error {
 	now := time.Now().UTC()
 	s.mu.Lock()
 	job.Status = status
@@ -967,6 +969,9 @@ func (s *Service) transitionAgentJob(job *Job, status Status, output, errorMessa
 	job.Error = errorMessage
 	if resolvedPath != "" {
 		job.ExpectedDestination = resolvedPath
+	}
+	if resolvedVersion != "" {
+		job.Version = resolvedVersion
 	}
 	job.UpdatedAt = &now
 	snapshot := *job
@@ -974,7 +979,7 @@ func (s *Service) transitionAgentJob(job *Job, status Status, output, errorMessa
 	return s.persistJobBestEffort(snapshot)
 }
 
-func (s *Service) finishAgentJob(job *Job, status Status, output, errorMessage, resolvedPath string) {
+func (s *Service) finishAgentJob(job *Job, status Status, output, errorMessage, resolvedPath, resolvedVersion string) {
 	now := time.Now().UTC()
 	s.mu.Lock()
 	job.Status = status
@@ -982,6 +987,9 @@ func (s *Service) finishAgentJob(job *Job, status Status, output, errorMessage, 
 	job.Error = errorMessage
 	if resolvedPath != "" {
 		job.ExpectedDestination = resolvedPath
+	}
+	if resolvedVersion != "" {
+		job.Version = resolvedVersion
 	}
 	job.FinishedAt = &now
 	job.UpdatedAt = &now
@@ -1025,7 +1033,7 @@ func (s *Service) persistJob(ctx context.Context, job Job) error {
 	return s.jobStore.UpsertAgentInstallJob(ctx, ports.AgentInstallJobRecord{
 		Target: string(job.Target), Status: string(job.Status), Method: job.Method,
 		Command: job.Command, ExpectedDestination: job.ExpectedDestination,
-		Output: job.Output, Error: job.Error, StartedAt: *job.StartedAt,
+		Version: job.Version, Output: job.Output, Error: job.Error, StartedAt: *job.StartedAt,
 		FinishedAt: job.FinishedAt, UpdatedAt: updatedAt,
 	})
 }
@@ -1036,7 +1044,7 @@ func jobFromRecord(record ports.AgentInstallJobRecord) Job {
 	return Job{
 		Target: Target(record.Target), Status: Status(record.Status), Method: record.Method,
 		Command: record.Command, ExpectedDestination: record.ExpectedDestination,
-		Output: record.Output, Error: record.Error, StartedAt: &startedAt,
+		Version: record.Version, Output: record.Output, Error: record.Error, StartedAt: &startedAt,
 		FinishedAt: record.FinishedAt, UpdatedAt: &updatedAt,
 	}
 }

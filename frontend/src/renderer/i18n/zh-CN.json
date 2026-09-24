@@ -1906,6 +1906,7 @@
 	"settings.harness.verifyFailed": "{{agent}} finished installing, but AO could not find its executable.",
 	"settings.harness.verifyAgain": "Verify again",
 	"settings.harness.verifying": "Verifying…",
+	"settings.harness.version": "v{{version}}",
 	"settings.navSectionsAria": "设置分区",
 	"settings.project.settings": "项目设置",
 	"settings.dialogDescription": "管理{{section}}设置。",

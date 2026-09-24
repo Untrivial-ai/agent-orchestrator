@@ -58,7 +58,7 @@ func TestAgentJobTransitionPersistenceIsBounded(t *testing.T) {
 	job := &Job{Target: TargetCodex, Status: StatusInstalling, StartedAt: &now, UpdatedAt: &now}
 
 	started := time.Now()
-	err := s.transitionAgentJob(job, StatusVerifying, "", "", "")
+	err := s.transitionAgentJob(job, StatusVerifying, "", "", "", "")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("transitionAgentJob error = %v, want deadline exceeded", err)
 	}

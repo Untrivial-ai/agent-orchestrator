@@ -13,7 +13,7 @@ import (
 
 const getAgentInstallJob = `-- name: GetAgentInstallJob :one
 SELECT target, status, method, command, expected_destination, output, error,
-       started_at, finished_at, updated_at
+       started_at, finished_at, updated_at, version
 FROM agent_install_jobs
 WHERE target = ?
 `
@@ -32,6 +32,7 @@ func (q *Queries) GetAgentInstallJob(ctx context.Context, target string) (AgentI
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.UpdatedAt,
+		&i.Version,
 	)
 	return i, err
 }
@@ -60,7 +61,7 @@ func (q *Queries) InterruptActiveAgentInstallJobs(ctx context.Context, arg Inter
 
 const listAgentInstallJobs = `-- name: ListAgentInstallJobs :many
 SELECT target, status, method, command, expected_destination, output, error,
-       started_at, finished_at, updated_at
+       started_at, finished_at, updated_at, version
 FROM agent_install_jobs
 ORDER BY target
 `
@@ -85,6 +86,7 @@ func (q *Queries) ListAgentInstallJobs(ctx context.Context) ([]AgentInstallJob, 
 			&i.StartedAt,
 			&i.FinishedAt,
 			&i.UpdatedAt,
+			&i.Version,
 		); err != nil {
 			return nil, err
 		}
@@ -102,8 +104,8 @@ func (q *Queries) ListAgentInstallJobs(ctx context.Context) ([]AgentInstallJob, 
 const upsertAgentInstallJob = `-- name: UpsertAgentInstallJob :exec
 INSERT INTO agent_install_jobs (
     target, status, method, command, expected_destination, output, error,
-    started_at, finished_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    started_at, finished_at, updated_at, version
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(target) DO UPDATE SET
     status = excluded.status,
     method = excluded.method,
@@ -113,7 +115,8 @@ ON CONFLICT(target) DO UPDATE SET
     error = excluded.error,
     started_at = excluded.started_at,
     finished_at = excluded.finished_at,
-    updated_at = excluded.updated_at
+    updated_at = excluded.updated_at,
+    version = excluded.version
 `
 
 type UpsertAgentInstallJobParams struct {
@@ -127,6 +130,7 @@ type UpsertAgentInstallJobParams struct {
 	StartedAt           time.Time
 	FinishedAt          sql.NullTime
 	UpdatedAt           time.Time
+	Version             string
 }
 
 func (q *Queries) UpsertAgentInstallJob(ctx context.Context, arg UpsertAgentInstallJobParams) error {
@@ -141,6 +145,7 @@ func (q *Queries) UpsertAgentInstallJob(ctx context.Context, arg UpsertAgentInst
 		arg.StartedAt,
 		arg.FinishedAt,
 		arg.UpdatedAt,
+		arg.Version,
 	)
 	return err
 }

@@ -1,8 +1,8 @@
 -- name: UpsertAgentInstallJob :exec
 INSERT INTO agent_install_jobs (
     target, status, method, command, expected_destination, output, error,
-    started_at, finished_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    started_at, finished_at, updated_at, version
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(target) DO UPDATE SET
     status = excluded.status,
     method = excluded.method,
@@ -12,17 +12,18 @@ ON CONFLICT(target) DO UPDATE SET
     error = excluded.error,
     started_at = excluded.started_at,
     finished_at = excluded.finished_at,
-    updated_at = excluded.updated_at;
+    updated_at = excluded.updated_at,
+    version = excluded.version;
 
 -- name: GetAgentInstallJob :one
 SELECT target, status, method, command, expected_destination, output, error,
-       started_at, finished_at, updated_at
+       started_at, finished_at, updated_at, version
 FROM agent_install_jobs
 WHERE target = ?;
 
 -- name: ListAgentInstallJobs :many
 SELECT target, status, method, command, expected_destination, output, error,
-       started_at, finished_at, updated_at
+       started_at, finished_at, updated_at, version
 FROM agent_install_jobs
 ORDER BY target;
 

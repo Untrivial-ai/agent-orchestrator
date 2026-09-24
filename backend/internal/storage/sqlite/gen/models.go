@@ -23,6 +23,7 @@ type AgentInstallJob struct {
 	StartedAt           time.Time
 	FinishedAt          sql.NullTime
 	UpdatedAt           time.Time
+	Version             string
 }
 
 type AgentModelCatalog struct {

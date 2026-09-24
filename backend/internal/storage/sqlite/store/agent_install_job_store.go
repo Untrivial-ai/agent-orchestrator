@@ -23,6 +23,7 @@ func (s *Store) UpsertAgentInstallJob(ctx context.Context, job ports.AgentInstal
 		Target: job.Target, Status: job.Status, Method: job.Method, Command: job.Command,
 		ExpectedDestination: job.ExpectedDestination, Output: job.Output, Error: job.Error,
 		StartedAt: job.StartedAt.UTC(), FinishedAt: finishedAt, UpdatedAt: job.UpdatedAt.UTC(),
+		Version: job.Version,
 	}); err != nil {
 		return fmt.Errorf("upsert agent install job: %w", err)
 	}
@@ -70,7 +71,7 @@ func (s *Store) InterruptActiveAgentInstallJobs(ctx context.Context, interrupted
 func mapAgentInstallJob(row gen.AgentInstallJob) ports.AgentInstallJobRecord {
 	record := ports.AgentInstallJobRecord{
 		Target: row.Target, Status: row.Status, Method: row.Method, Command: row.Command,
-		ExpectedDestination: row.ExpectedDestination, Output: row.Output, Error: row.Error,
+		ExpectedDestination: row.ExpectedDestination, Version: row.Version, Output: row.Output, Error: row.Error,
 		StartedAt: row.StartedAt.UTC(), UpdatedAt: row.UpdatedAt.UTC(),
 	}
 	if row.FinishedAt.Valid {

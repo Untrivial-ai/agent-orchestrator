@@ -97,6 +97,7 @@ type AgentInstallJobRecord struct {
 	Method              string
 	Command             string
 	ExpectedDestination string
+	Version             string
 	Output              string
 	Error               string
 	StartedAt           time.Time

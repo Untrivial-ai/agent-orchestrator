@@ -10760,6 +10760,10 @@ components:
           type:
           - "null"
           - string
+        version:
+          description: Version reported by the harness's own --version probe, last
+            recorded at install or verify time.
+          type: string
       required:
       - target
       - status

@@ -1132,6 +1132,7 @@
 	"settings.harness.verifyFailed": "{{agent}} finished installing, but AO could not find its executable.",
 	"settings.harness.verifyAgain": "Verify again",
 	"settings.harness.verifying": "Verifying…",
+	"settings.harness.version": "v{{version}}",
 	"settings.navSectionsAria": "Settings sections",
 	"settings.keyboardShortcuts": "Keyboard shortcuts",
 	"settings.language": "Language",

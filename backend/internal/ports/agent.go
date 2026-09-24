@@ -126,6 +126,15 @@ type AgentBinaryPresenceResolver interface {
 	ResolveBinaryPresence(ctx context.Context) (path string, err error)
 }
 
+// AgentVersionParser is the optional capability an adapter implements when its
+// `--version` output needs adapter-specific parsing — for example a CLI whose
+// printed string is a build date rather than a plain semantic version. Ok=false
+// tells the caller to fall back to generic version parsing rather than
+// treating an unparsed string as the answer.
+type AgentVersionParser interface {
+	ParseVersionOutput(output string) (version string, ok bool)
+}
+
 // AgentReadinessProvider is the daemon-owned coordination boundary used by
 // launch and policy consumers. Implementations coalesce native checks and keep
 // the resulting snapshots in memory.

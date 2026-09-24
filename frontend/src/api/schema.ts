@@ -3739,6 +3739,8 @@ export interface components {
             target: "tmux" | "gh" | "claude" | "claude-code" | "codex" | "cursor" | "opencode" | "aider" | "copilot" | "grok" | "kimi" | "pi" | "amp" | "auggie" | "droid" | "crush" | "cline" | "goose" | "qwen" | "continue" | "devin" | "kiro" | "kilocode" | "vibe" | "muse" | "agy" | "autohand" | "kimchi" | "prime-agent" | "omp" | "cloudflared";
             /** Format: date-time */
             updatedAt?: null | string;
+            /** @description Version reported by the harness's own --version probe, last recorded at install or verify time. */
+            version?: string;
         };
         KillReviewResponse: {
             reviewerHandleId: string;

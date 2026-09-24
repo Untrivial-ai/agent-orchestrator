@@ -26,6 +26,16 @@ func (a verifierAgent) AuthStatus(context.Context) (ports.AgentAuthStatus, error
 	return ports.AgentAuthStatusAuthorized, nil
 }
 
+type versionParsingVerifierAgent struct {
+	verifierAgent
+	version string
+	ok      bool
+}
+
+func (a versionParsingVerifierAgent) ParseVersionOutput(string) (string, bool) {
+	return a.version, a.ok
+}
+
 type verifierResolver map[domain.AgentHarness]ports.Agent
 
 func (r verifierResolver) Agent(harness domain.AgentHarness) (ports.Agent, bool) {
@@ -59,7 +69,7 @@ func TestVerifierUsesAdapterResolvedBinaryWithoutAuthProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if result.ResolvedPath != "/custom/bin/codex" || result.Output != "codex-cli 1.2.3\n" {
+	if result.ResolvedPath != "/custom/bin/codex" || result.Output != "codex-cli 1.2.3\n" || result.Version != "1.2.3" {
 		t.Fatalf("result = %+v", result)
 	}
 	if !reflect.DeepEqual(runner.argv, []string{"/custom/bin/codex", "--version"}) {
@@ -102,5 +112,68 @@ func TestVerifierBoundsVersionProbe(t *testing.T) {
 	_, err := verifier.Verify(context.Background(), TargetCodex)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Verify error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestVerifierParsesVersionFromOutputByDefault(t *testing.T) {
+	t.Parallel()
+	runner := &recordingCommandRunner{run: func(_ context.Context, _ []string, stdout, _ io.Writer) error {
+		_, _ = io.WriteString(stdout, "cursor-agent 2026.08.11 (build 4)\n")
+		return nil
+	}}
+	verifier := NewVerifier(verifierResolver{
+		domain.HarnessCodex: verifierAgent{path: "/custom/bin/cursor-agent", authCalls: &atomic.Int32{}},
+	}, runner)
+
+	result, err := verifier.Verify(context.Background(), TargetCodex)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if result.Version != "2026.08.11" {
+		t.Fatalf("Version = %q, want %q", result.Version, "2026.08.11")
+	}
+}
+
+func TestVerifierPrefersAdapterVersionParser(t *testing.T) {
+	t.Parallel()
+	runner := &recordingCommandRunner{run: func(_ context.Context, _ []string, stdout, _ io.Writer) error {
+		_, _ = io.WriteString(stdout, "nightly build, no semver here\n")
+		return nil
+	}}
+	verifier := NewVerifier(verifierResolver{
+		domain.HarnessCodex: versionParsingVerifierAgent{
+			verifierAgent: verifierAgent{path: "/custom/bin/codex", authCalls: &atomic.Int32{}},
+			version:       "custom-42", ok: true,
+		},
+	}, runner)
+
+	result, err := verifier.Verify(context.Background(), TargetCodex)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if result.Version != "custom-42" {
+		t.Fatalf("Version = %q, want %q", result.Version, "custom-42")
+	}
+}
+
+func TestVerifierFallsBackWhenAdapterParserDeclines(t *testing.T) {
+	t.Parallel()
+	runner := &recordingCommandRunner{run: func(_ context.Context, _ []string, stdout, _ io.Writer) error {
+		_, _ = io.WriteString(stdout, "codex-cli 9.9.9\n")
+		return nil
+	}}
+	verifier := NewVerifier(verifierResolver{
+		domain.HarnessCodex: versionParsingVerifierAgent{
+			verifierAgent: verifierAgent{path: "/custom/bin/codex", authCalls: &atomic.Int32{}},
+			ok:            false,
+		},
+	}, runner)
+
+	result, err := verifier.Verify(context.Background(), TargetCodex)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if result.Version != "9.9.9" {
+		t.Fatalf("Version = %q, want %q", result.Version, "9.9.9")
 	}
 }
