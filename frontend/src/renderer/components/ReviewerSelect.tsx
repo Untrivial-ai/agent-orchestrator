@@ -270,7 +270,7 @@ function ReviewerHarnessOption({
 				disabled={agent.disabled}
 				aria-label={agent.status ? `${agent.label}${agent.status}` : agent.label}
 				onClick={(event) => {
-					if (!isCurrentHarness && defaultModel) {
+					if (!isCurrentHarness) {
 						event.preventDefault();
 						closeMenu();
 						selectDefault();

@@ -396,7 +396,7 @@ export function TaskComposer({
 		: undefined;
 	// Only send a catalog choice when the provider identifies it as the default.
 	// An unmarked first row is not evidence of what the provider will run.
-	const catalogModels = modelCatalogQuery.data?.models.filter((item) => item.id && item.id.toLowerCase() !== "default") ?? [];
+	const catalogModels = modelCatalogQuery.data?.models?.filter((item) => item.id && item.id.toLowerCase() !== "default") ?? [];
 	const catalogDefaultOption =
 		catalogModels.find((item) => item.isDefault)?.id ?? "";
 	const catalogUsesModes = modelCatalogQuery.data?.selectionMode === "mode";
