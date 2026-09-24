@@ -98,6 +98,11 @@ func (o Outcome) String() string {
 	}
 }
 
+type deliveryLock struct {
+	ch       chan struct{}
+	refCount int
+}
+
 // Guard is the guarded pane-write primitive shared by the session manager and
 // lifecycle. Its small lease lock only protects late binding; it is never held
 // across a store read or pane write. It implements
@@ -115,7 +120,7 @@ type Guard struct {
 	startupSignalGatesInput func(domain.AgentHarness) bool
 
 	deliveryMu    sync.Mutex
-	deliveryLocks map[domain.SessionID]chan struct{}
+	deliveryLocks map[domain.SessionID]*deliveryLock
 }
 
 var _ ports.AgentMessenger = (*Guard)(nil)
@@ -160,7 +165,7 @@ func New(store SessionReader, messenger ports.AgentMessenger, logger *slog.Logge
 		store:         store,
 		messenger:     messenger,
 		logger:        logger,
-		deliveryLocks: make(map[domain.SessionID]chan struct{}),
+		deliveryLocks: make(map[domain.SessionID]*deliveryLock),
 	}
 }
 
@@ -383,23 +388,67 @@ func (g *Guard) sendThen(ctx context.Context, id domain.SessionID, msg string, r
 }
 
 func (g *Guard) acquireDelivery(ctx context.Context, id domain.SessionID) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	g.deliveryMu.Lock()
 	if g.deliveryLocks == nil {
-		g.deliveryLocks = make(map[domain.SessionID]chan struct{})
+		g.deliveryLocks = make(map[domain.SessionID]*deliveryLock)
 	}
-	lock, ok := g.deliveryLocks[id]
+	entry, ok := g.deliveryLocks[id]
 	if !ok {
-		lock = make(chan struct{}, 1)
-		lock <- struct{}{}
-		g.deliveryLocks[id] = lock
+		entry = &deliveryLock{
+			ch: make(chan struct{}, 1),
+		}
+		entry.ch <- struct{}{}
+		g.deliveryLocks[id] = entry
 	}
+	entry.refCount++
 	g.deliveryMu.Unlock()
 
 	select {
-	case <-lock:
-		return func() { lock <- struct{}{} }, nil
+	case <-entry.ch:
+		if err := ctx.Err(); err != nil {
+			g.releaseDelivery(id, entry)
+			return nil, err
+		}
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				g.releaseDelivery(id, entry)
+			})
+		}, nil
 	case <-ctx.Done():
+		g.cancelDelivery(id, entry)
 		return nil, ctx.Err()
+	}
+}
+
+func (g *Guard) releaseDelivery(id domain.SessionID, entry *deliveryLock) {
+	g.deliveryMu.Lock()
+	defer g.deliveryMu.Unlock()
+
+	entry.refCount--
+	if entry.refCount == 0 {
+		if g.deliveryLocks[id] == entry {
+			delete(g.deliveryLocks, id)
+		}
+		return
+	}
+	entry.ch <- struct{}{}
+}
+
+func (g *Guard) cancelDelivery(id domain.SessionID, entry *deliveryLock) {
+	g.deliveryMu.Lock()
+	defer g.deliveryMu.Unlock()
+
+	entry.refCount--
+	if entry.refCount == 0 {
+		if g.deliveryLocks[id] == entry {
+			delete(g.deliveryLocks, id)
+		}
+		return
 	}
 }
 
