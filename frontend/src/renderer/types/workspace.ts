@@ -111,6 +111,12 @@ export type WorkspaceSession = {
 	 * {@link status} already produced.
 	 */
 	displayStatus?: string;
+	/**
+	 * Generic human-readable summary derived by the daemon from lifecycle and PR
+	 * facts. Conversation prompts, assistant replies, and tool output are never
+	 * used as card summaries.
+	 */
+	summary?: string;
 	statusReadiness?: "checking" | "ready" | "unavailable";
 	/** Durable runtime fact from the daemon; independent of the derived SCM-aware status. */
 	isTerminated?: boolean;

@@ -90,6 +90,40 @@ describe("SessionsBoardView", () => {
 		expect(screen.getByText(statusReadiness === "checking" ? "Checking…" : "Unable to verify")).toBeInTheDocument();
 	});
 
+	it("renders a spinner beside a working status", () => {
+		render(<SessionCardView externalLink={ExternalLink}
+			labels={{ formatTime: () => "now", intakeIssue: (id) => id, pr: progressLabels, updatedAt: (at) => at }}
+			renderAvatar={() => null}
+			session={{ ...baseSession, status: "working", displayStatus: "Working" }} />);
+		expect(screen.getByTestId("session-status").querySelector(".animate-spin")).not.toBeNull();
+	});
+
+	it("keeps a readable Working label beside a loader when a status source is empty", () => {
+		render(<SessionCardView externalLink={ExternalLink}
+			labels={{ formatTime: () => "now", intakeIssue: (id) => id, pr: progressLabels, updatedAt: (at) => at }}
+			renderAvatar={() => null}
+			session={{ ...baseSession, status: "working" }}
+			translate={() => ""} />);
+		expect(screen.getByTestId("session-status")).toHaveTextContent("Working");
+		expect(screen.getByTestId("session-status").querySelector(".animate-spin")).not.toBeNull();
+	});
+
+	it("does not show a loader while a review is pending", () => {
+		render(<SessionCardView externalLink={ExternalLink}
+			labels={{ formatTime: () => "now", intakeIssue: (id) => id, pr: progressLabels, updatedAt: (at) => at }}
+			renderAvatar={() => null}
+			session={{ ...baseSession, displayStatus: "Review pending", status: "working" }} />);
+		expect(screen.getByTestId("session-status").querySelector(".animate-spin")).toBeNull();
+	});
+
+	it("uses the exited color for an exited card regardless of its Kanban column", () => {
+		render(<SessionCardView externalLink={ExternalLink}
+			labels={{ formatTime: () => "now", intakeIssue: (id) => id, pr: progressLabels, updatedAt: (at) => at }}
+			renderAvatar={() => null}
+			session={{ ...baseSession, status: "exited" }} />);
+		expect(screen.getByTestId("session-status")).toHaveClass("text-status-exited");
+	});
+
 	it("renders one lane per Kanban column, newest first, with one scroller each", () => {
 		const sessions: BoardSessionPresentation[] = [
 			baseSession,
@@ -135,6 +169,42 @@ describe("SessionsBoardView", () => {
 		expect(screen.getByRole("region", { name: "Validating sessions" })).toBeInTheDocument();
 		expect(screen.getByRole("region", { name: "In review sessions" })).toBeInTheDocument();
 		expect(screen.getByTestId("board-horizontal-scroll")).toHaveClass("board-horizontal-scrollbar");
+	});
+
+	it("keeps cards in place when live updates change timestamps or attention", () => {
+		const columns = boardKanbanColumnOrder.map((column) => getKanbanColumnView(column));
+		const initial: BoardSessionPresentation[] = [
+			{ ...baseSession, id: "first", title: "first task", updatedAt: "2026-08-09T12:00:00Z" },
+			{ ...baseSession, id: "second", title: "second task", updatedAt: "2026-08-09T11:00:00Z" },
+		];
+		const { rerender } = render(
+			<SessionsBoardGridView
+				columns={columns}
+				labels={columnLabels}
+				renderSessionCard={(session) => <div data-testid={`card-${session.id}`}>{session.title}</div>}
+				sessions={initial}
+			/>,
+		);
+
+		rerender(
+			<SessionsBoardGridView
+				columns={columns}
+				labels={columnLabels}
+				renderSessionCard={(session) => <div data-testid={`card-${session.id}`}>{session.title}</div>}
+				sessions={[
+					{ ...initial[1], updatedAt: "2026-08-09T13:00:00Z" },
+					{ ...initial[0], status: "needs_input", updatedAt: "2026-08-09T14:00:00Z" },
+				]}
+			/>,
+		);
+
+		const buildingLane = screen.getByRole("region", { name: "Building sessions" });
+		expect(within(buildingLane).getAllByTestId(/^card-/).map((card) => card.textContent)).toEqual([
+			"first task",
+			"second task",
+		]);
+		expect(buildingLane.querySelector(".overflow-y-auto")).not.toHaveClass("pb-8");
+		expect(buildingLane.querySelector(".overflow-y-auto > div")).toHaveClass("pb-24");
 	});
 
 	it("pins attention-required sessions first inside every lane without changing lanes", () => {
@@ -213,6 +283,34 @@ describe("SessionsBoardView", () => {
 		).toEqual(["older attention", "newer neutral"]);
 	});
 
+	it("promotes a card when it becomes attention-required without reshuffling the rest", () => {
+		const columns = boardKanbanColumnOrder.map((column) => getKanbanColumnView(column));
+		const initial: BoardSessionPresentation[] = [
+			{ ...baseSession, id: "steady", kanbanColumn: "building", status: "idle", title: "steady" },
+			{ ...baseSession, id: "later", kanbanColumn: "building", status: "idle", title: "later" },
+		];
+		const { rerender } = render(
+			<SessionsBoardGridView
+				columns={columns}
+				labels={columnLabels}
+				renderSessionCard={(session) => <div data-testid={`card-${session.id}`}>{session.title}</div>}
+				sessions={initial}
+			/>,
+		);
+
+		rerender(
+			<SessionsBoardGridView
+				columns={columns}
+				labels={columnLabels}
+				renderSessionCard={(session) => <div data-testid={`card-${session.id}`}>{session.title}</div>}
+				sessions={[...initial.slice(0, 1), { ...initial[1], status: "needs_input" }]}
+			/>,
+		);
+
+		const lane = screen.getByRole("region", { name: "Building sessions" });
+		expect(within(lane).getAllByTestId(/^card-/).map((card) => card.textContent)).toEqual(["later", "steady"]);
+	});
+
 	it.each([
 		{ displayStatus: "Blocked", status: "idle" as const },
 		{ displayStatus: "CI failing", status: "idle" as const },
@@ -267,7 +365,7 @@ describe("SessionsBoardView", () => {
 		);
 
 		const card = screen.getByTestId("board-session-card");
-		expect(card).toHaveClass("border", "border-border", "bg-surface");
+		expect(card).toHaveClass("border", "border-foreground/5", "bg-surface");
 		expect(card).toHaveClass("rounded-lg");
 		expect(card).not.toHaveClass("animate-attention-card-pulse", "border-status-needs-you");
 	});

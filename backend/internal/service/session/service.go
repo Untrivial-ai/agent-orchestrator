@@ -205,6 +205,13 @@ type Service struct {
 	titleRefinementSlots   chan struct{}
 	titleRefinementMu      sync.Mutex
 	titleRefinementCancels map[domain.SessionID]context.CancelFunc
+	cardTitleGenerator     func(context.Context, domain.SessionRecord) (string, error)
+}
+
+// SetCardTitleGenerator wires detached configured-model title generation after
+// daemon construction has assembled the chat and session services.
+func (s *Service) SetCardTitleGenerator(generate func(context.Context, domain.SessionRecord) (string, error)) {
+	s.cardTitleGenerator = generate
 }
 
 // SetChatProviderPreserver wires the live Chat lifetime observation after both
@@ -330,6 +337,26 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.Session{}, 0, 0, apiErr
 	}
 	s.emitSpawned(ctx, rec, s.now().Sub(start).Milliseconds())
+	provisionalTitle := rec.DisplayName == "" || rec.DisplayName == domain.TitleCaseSessionTitle(rec.Metadata.Prompt) || rec.DisplayName == strings.TrimSpace(rec.Metadata.Prompt)
+	if s.cardTitleGenerator != nil && provisionalTitle && rec.Kind == domain.KindWorker && strings.TrimSpace(rec.Metadata.Prompt) != "" {
+		record := rec
+		work := func() {
+			if title, titleErr := s.cardTitleGenerator(s.backgroundContext, record); titleErr == nil && strings.TrimSpace(title) != "" {
+				record.DisplayName = title
+				record.UpdatedAt = s.now()
+				if writer, ok := s.store.(interface {
+					UpdateSession(context.Context, domain.SessionRecord) error
+				}); ok {
+					_ = writer.UpdateSession(s.backgroundContext, record)
+				}
+			}
+		}
+		if s.runBackground != nil {
+			s.runBackground(work)
+		} else {
+			go work()
+		}
+	}
 	if firstSession {
 		s.emitFirstSessionSpawned(ctx, rec, project)
 	}
@@ -1096,6 +1123,9 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 }
 
 func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFacts, runs []domain.CurrentHeadReviewRun) (domain.Session, error) {
+	// Normalize legacy labels on the read path too, so cards created before
+	// title generation was added converge without a migration.
+	rec.DisplayName = domain.TitleCaseSessionTitle(rec.DisplayName)
 	runs = canonicalizeCurrentHeadReviewRuns(prs, runs)
 	prs = deduplicatePRFacts(prs)
 	// Both derivations read the clock once, from the same instant: they share
@@ -1118,6 +1148,7 @@ func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFa
 		SCMStatus:        deriveSCMStatus(prs),
 		KanbanColumn:     presentation.Column,
 		DisplayStatus:    presentation.DisplayStatus,
+		Summary:          deriveSummary(rec, prs, presentation.DisplayStatus),
 		TerminalHandleID: rec.Metadata.RuntimeHandleID,
 		PRs:              prs,
 	}, nil

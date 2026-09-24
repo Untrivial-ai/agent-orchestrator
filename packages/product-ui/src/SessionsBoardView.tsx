@@ -4,6 +4,7 @@ import {
 	memo,
 	startTransition,
 	useEffect,
+	useRef,
 	useState,
 	type HTMLAttributes,
 	type ReactElement,
@@ -67,6 +68,11 @@ export type BoardSessionPresentation = {
 	statusPresentation?: BoardSessionStatusPresentation;
 	title: string;
 	trackerIssueId?: string;
+	/**
+	 * Generic activity line for the card, printed verbatim beneath the title.
+	 * Absent (or a daemon too old to send one) means no summary line renders.
+	 */
+	summary?: string;
 	updatedAt: string;
 	lastUserMessageAt?: string;
 };
@@ -80,12 +86,10 @@ export type BoardSessionStatusPresentation = {
 
 export type BoardPullRequestState = "closed" | "open" | "draft" | "merged";
 
-// Display statuses that mean work is still turning, and so earn the spinning
-// loader beside the card's status label: the review the PR is waiting on, or an
-// AO-driven loop working the PR. Settled phrases ("Mergeable", "Approved",
-// "Merged") are deliberately absent — see #4725 and #5081.
+// Display statuses that mean AO itself is still turning and earn the spinning
+// loader beside the card's status label. A pending review is waiting on a
+// person, not active agent work, so it deliberately has no loader.
 const IN_PROGRESS_DISPLAY_STATUSES = new Set<string>([
-	"Review pending",
 	"Fixing CI failures",
 	"Addressing comments",
 	"Reviewing",
@@ -138,6 +142,7 @@ export function SessionsBoardGridView<TSession extends BoardSessionPresentation>
 	renderSessionCard,
 	sessions,
 }: SessionsBoardGridViewProps<TSession>) {
+	const laneOrder = useRef(new Map<KanbanColumn, string[]>());
 	const byColumn = new Map<KanbanColumn, TSession[]>();
 	for (const session of sessions) {
 		const column = toKanbanColumn(session.kanbanColumn, session.status);
@@ -162,12 +167,53 @@ export function SessionsBoardGridView<TSession extends BoardSessionPresentation>
 						key={column.column}
 						labels={labels}
 						renderSessionCard={renderSessionCard}
-						sessions={byColumn.get(column.column) ?? []}
+						sessions={stableLaneSessions(column.column, byColumn.get(column.column) ?? [], laneOrder.current)}
 					/>
 				))}
 			</div>
 		</div>
 	);
+}
+
+function stableLaneSessions<TSession extends BoardSessionPresentation>(
+	column: KanbanColumn,
+	sessions: TSession[],
+	laneOrder: Map<KanbanColumn, string[]>,
+): TSession[] {
+	const byId = new Map(sessions.map((session) => [session.id, session]));
+	const previous = laneOrder.get(column);
+	if (!previous) {
+		const initial = [...sessions].sort((left, right) => {
+			const attentionPriority =
+				Number(boardSessionNeedsAttention(right)) - Number(boardSessionNeedsAttention(left));
+			return attentionPriority || right.updatedAt.localeCompare(left.updatedAt);
+		});
+		laneOrder.set(column, initial.map((session) => session.id));
+		return initial;
+	}
+
+	const present = new Set(byId.keys());
+	const orderedIds = previous.filter((id) => present.has(id));
+		const known = new Set(orderedIds);
+	for (const session of sessions) {
+		if (!known.has(session.id)) orderedIds.push(session.id);
+	}
+	const previousPosition = new Map(orderedIds.map((id, index) => [id, index]));
+	orderedIds.sort((left, right) => {
+		const attentionPriority =
+			Number(boardSessionNeedsAttention(byId.get(right)!)) -
+			Number(boardSessionNeedsAttention(byId.get(left)!));
+		return (
+			attentionPriority ||
+			(previousPosition.get(left) ?? Number.MAX_SAFE_INTEGER) -
+				(previousPosition.get(right) ?? Number.MAX_SAFE_INTEGER)
+		);
+	});
+	laneOrder.set(column, orderedIds);
+	return orderedIds.flatMap((id) => {
+		const session = byId.get(id);
+		return session ? [session] : [];
+	});
 }
 
 function BoardColumnView<TSession extends BoardSessionPresentation>({
@@ -181,11 +227,6 @@ function BoardColumnView<TSession extends BoardSessionPresentation>({
 	renderSessionCard: (session: TSession) => ReactNode;
 	sessions: TSession[];
 }) {
-	const ordered = [...sessions].sort((left, right) => {
-		const attentionPriority =
-			Number(boardSessionNeedsAttention(right)) - Number(boardSessionNeedsAttention(left));
-		return attentionPriority || right.updatedAt.localeCompare(left.updatedAt);
-	});
 	return (
 		<section
 			aria-label={labels.columnAria(column.label)}
@@ -202,11 +243,11 @@ function BoardColumnView<TSession extends BoardSessionPresentation>({
 				<span className={cn("text-xs font-medium", column.titleClassName)}>
 					{column.label}
 				</span>
-				<span className="ml-auto tabular-nums text-xs leading-none text-passive">{ordered.length}</span>
+				<span className="ml-auto tabular-nums text-xs leading-none text-passive">{sessions.length}</span>
 			</div>
-			<div className="board-scrollbar min-h-0 flex-1 overflow-y-auto pl-3 pr-2 pb-3 pt-3">
-				<div className="flex min-h-full flex-col gap-2.5">
-					{ordered.map((session) => (
+			<div className="scrollbar-none min-h-0 flex-1 overflow-y-auto pl-3 pr-2 pt-3">
+				<div className="flex min-h-full flex-col gap-2.5 pb-24">
+					{sessions.map((session) => (
 						<Fragment key={session.id}>{renderSessionCard(session)}</Fragment>
 					))}
 				</div>
@@ -261,23 +302,28 @@ export function SessionCardView({
 	const badge = getSessionStatusView(session.status, translate);
 	const statusPresentation = session.statusPresentation;
 	const needsAttention = boardSessionNeedsAttention(session);
-	const needsAttentionChip = needsAttention;
+	const isExited = session.status === "exited" || session.displayStatus === "Closed without merge";
+	const needsAttentionChip = needsAttention && !isExited;
 	const column = getKanbanColumnView(toKanbanColumn(session.kanbanColumn, session.status), translate);
 	const statusClassName =
-		session.displayStatus === "Closed without merge"
+		isExited
 			? "text-status-exited"
 			: session.status === "mergeable" || session.displayStatus === "Mergeable"
 				? "text-success"
 				: (session.statusPresentation?.className ?? column.titleClassName);
 	const branch = session.branch ?? "";
 	const showBranch = branch !== "" && !sameLabel(branch, session.title) && !sameLabel(branch, session.id);
-	const renderedStatusLabel =
+	const resolvedStatusLabel =
 		session.statusReadiness === "checking"
 			? translateStatus("session.statusChecking")
 			: session.statusReadiness === "unavailable"
 				? translateStatus("session.statusUnavailable")
 				: (statusPresentation?.label ??
 					(session.displayStatus ? getDisplayStatusLabel(session.displayStatus, translate) : badge.label));
+	// A loader without copy is an ambiguous, inaccessible state. Integrations may
+	// transiently send an empty display-status/translation while they reconnect;
+	// make the useful default explicit instead of rendering the spinner alone.
+	const renderedStatusLabel = resolvedStatusLabel?.trim() || "Working";
 	// Additive summary footer, not a replacement for renderedStatusLabel: it
 	// only appears once the daemon confirms the session is actually finished
 	// ("terminated", or "merged" with isTerminated true -- a live session can
@@ -289,10 +335,19 @@ export function SessionCardView({
 		prs.length > 0 && isFinishedForPullRequestProgress
 			? labels.pr.progress?.(countBoardPullRequests(prs))
 			: undefined;
+	const summaryContent = session.summary ? (
+		<div
+			className="mt-1 line-clamp-2 overflow-hidden text-xs leading-snug text-muted-foreground"
+			data-testid="board-session-summary"
+		>
+			{session.summary}
+		</div>
+	) : null;
 	const showStatusLoader =
 		session.statusReadiness === "checking" || (session.statusReadiness !== "unavailable" &&
 		!needsAttention &&
 		session.displayStatus !== "Needs human review" &&
+		session.displayStatus !== "Review pending" &&
 		// "Draft" describes the PR, not work AO is turning, so it gets no loader
 		// even while the worker is live.
 		session.displayStatus !== "Draft" &&
@@ -300,7 +355,7 @@ export function SessionCardView({
 			// The label reads `displayStatus`, so the loader must too. `status`
 			// aggregates the session's WORST open PR while `displayStatus` describes
 			// its BEST one, so keying the loader off `status` spun a settled
-			// "Mergeable" card forever whenever a sibling PR was still review-pending
+			// "Mergeable" card forever whenever a sibling PR was still awaiting review
 			// (#5081). Fall back to `status` only for a daemon too old to send
 			// `displayStatus`.
 			(session.displayStatus
@@ -312,10 +367,10 @@ export function SessionCardView({
 			onClick={interactive ? onOpen : undefined}
 			role={interactive ? undefined : "listitem"}
 			className={cn(
-				"group relative w-full rounded-lg border border-border text-left transition-[background-color,box-shadow,transform] duration-[120ms] ease-out",
-				badge.cardClassName ?? "border-border bg-surface",
+				"group relative w-full rounded-lg border border-foreground/5 text-left transition-transform duration-[120ms] ease-out",
+				badge.cardClassName ?? "border-foreground/5 bg-surface",
 				interactive &&
-					"cursor-pointer hover:bg-interactive-hover focus-within:bg-interactive-hover active:scale-[0.99] has-[.pr-link:active]:scale-100",
+					"hover:border-foreground/25 focus-within:border-foreground/25 active:scale-[0.99] has-[.pr-link:active]:scale-100",
 				needsAttention &&
 					"animate-attention-card-pulse border-status-needs-you bg-[color-mix(in_srgb,var(--color-status-needs-you)_8%,var(--color-surface))]",
 			)}
@@ -329,7 +384,7 @@ export function SessionCardView({
 					type="button"
 				/>
 			) : null}
-			<div className="px-3.5 pb-2.5 pt-2.5">
+			<div className="px-3 pb-2 pt-2">
 				<div className="flex min-w-0 items-center gap-2.5">
 					{renderAvatar(session.provider)}
 					<div
@@ -345,16 +400,20 @@ export function SessionCardView({
 						</div>
 					) : null}
 				</div>
-				{showBranch && (
+				{summaryContent}
+				{/* Board cards hide the branch name so the summary owns the
+				    second line. The row survives only where an action needs its
+				    anchor — the archive's copy-branch button. */}
+				{showBranch && branchAction ? (
 					<div className="mt-1.5 flex min-w-0 items-center gap-1.5 font-mono text-2xs text-muted-foreground">
 						{branchIcon ?? <GitBranchIcon aria-hidden="true" className="size-icon-2xs shrink-0" />}
 						<span className="truncate text-muted-foreground">{branch}</span>
 						{branchAction}
 					</div>
-				)}
+				) : null}
 			</div>
 			{prs.length > 0 && (
-				<div className="flex min-w-0 flex-col gap-1.5 px-3.5 pb-1">
+				<div className="flex min-w-0 flex-col gap-1.5 px-3 pb-1">
 					{prs.length > 0 && (
 						<div className="flex min-w-0 flex-col gap-y-1 font-mono text-2xs text-muted-foreground">
 							{groupBoardPullRequests(prs).flatMap((group) => {
@@ -376,7 +435,7 @@ export function SessionCardView({
 					)}
 				</div>
 			)}
-			<div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-t border-border px-3.5 py-2.5">
+			<div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-3 py-2">
 				<div className="flex min-w-0 flex-1">
 					<span
 						className={cn(

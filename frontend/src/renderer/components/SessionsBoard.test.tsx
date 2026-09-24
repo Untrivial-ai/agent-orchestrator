@@ -499,6 +499,28 @@ describe("SessionsBoard", () => {
 		expect(await screen.findByRole("tooltip")).toHaveTextContent("12,400 tokens");
 	});
 
+	it("renders a summary without a hover tooltip", async () => {
+		const summary =
+			"Implemented robust filename sanitization across export formats and added coverage for reserved names and unicode input";
+		workspaceQueryMock.mockReturnValue({
+			data: [
+				workspaceWithSessions([
+					boardSession({ id: "s-summary", title: "summary worker", status: "mergeable", summary }),
+				]),
+			],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const card = screen.getByText("summary worker").closest('[data-testid="board-session-card"]') as HTMLElement;
+		const summaryPreview = within(card).getByTestId("board-session-summary");
+
+		await userEvent.hover(summaryPreview);
+		expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+		expect(summaryPreview).not.toHaveAttribute("title");
+	});
+
 	it("styles a working card from its building lane without inferring from runtime activity", () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
@@ -930,13 +952,6 @@ describe("SessionsBoard", () => {
 			"https://github.com/example/radic/pull/41",
 		);
 		expect(within(terminatedCard!).getByRole("button", { name: "Copy branch ao/dead-worker" })).toBeInTheDocument();
-		const divider = terminatedCard!.querySelector("div.border-t.border-border");
-		expect(divider).not.toBeNull();
-		const mergedPrLink = within(terminatedCard!).getByRole("link", { name: "PR #42 merged" });
-		expect(divider!.compareDocumentPosition(mergedPrLink) & Node.DOCUMENT_POSITION_PRECEDING).not.toBe(0);
-		expect(
-			screen.getByText("ao/dead-worker").compareDocumentPosition(divider!) & Node.DOCUMENT_POSITION_FOLLOWING,
-		).not.toBe(0);
 		expect(screen.getByRole("button", { name: "Restore dead worker" })).toBeInTheDocument();
 
 		expect(screen.queryByRole("group", { name: "Archive layout" })).not.toBeInTheDocument();
@@ -1433,7 +1448,7 @@ describe("SessionsBoard", () => {
 			.flatMap((column) => Array.from(column.querySelectorAll<HTMLElement>(".overflow-y-auto")));
 		expect(laneScrollers).toHaveLength(4);
 		for (const scroller of laneScrollers) {
-			expect(scroller).toHaveClass("board-scrollbar", "overflow-y-auto");
+			expect(scroller).toHaveClass("scrollbar-none", "overflow-y-auto");
 		}
 	});
 

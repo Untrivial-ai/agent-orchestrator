@@ -1668,6 +1668,37 @@ BEGIN
 	// this column, so repair field databases that recorded 0132 without adding it.
 	{version: 132, table: "conversations", column: "opencode_mode",
 		addDDL: `ALTER TABLE conversations ADD COLUMN opencode_mode TEXT NOT NULL DEFAULT ''`},
+	// 0149_reviewer_chat_conversations.sql. Some development databases recorded
+	// the migration after running an older copy of the migration file. Verify
+	// every column consumed by the reviewer-chat queries so Cursor/Chat can
+	// start instead of failing with "no such column: review_id".
+	{version: 149, table: "review", column: "interface_mode",
+		addDDL: `ALTER TABLE review ADD COLUMN interface_mode TEXT NOT NULL DEFAULT 'tui'`},
+	{version: 149, table: "review", column: "provider_conversation_id",
+		addDDL: `ALTER TABLE review ADD COLUMN provider_conversation_id TEXT NOT NULL DEFAULT ''`},
+	{version: 149, table: "review", column: "controller_generation",
+		addDDL: `ALTER TABLE review ADD COLUMN controller_generation TEXT NOT NULL DEFAULT ''`},
+	{version: 149, table: "review", column: "controller_error",
+		addDDL: `ALTER TABLE review ADD COLUMN controller_error TEXT NOT NULL DEFAULT ''`},
+	{version: 149, table: "conversations", column: "review_id",
+		addDDL: `ALTER TABLE conversations ADD COLUMN review_id TEXT REFERENCES review(id) ON DELETE CASCADE`,
+		postAdd: []string{
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_review ON conversations(review_id) WHERE review_id IS NOT NULL`,
+		}},
+	{version: 149, table: "conversations", column: "current_review_id",
+		addDDL: `ALTER TABLE conversations ADD COLUMN current_review_id TEXT REFERENCES review(id) ON DELETE SET NULL`,
+		postAdd: []string{
+			`CREATE INDEX IF NOT EXISTS idx_conversations_current_review ON conversations(current_review_id) WHERE current_review_id IS NOT NULL`,
+		}},
+	{version: 149, table: "conversation_branches", column: "review_id",
+		addDDL: `ALTER TABLE conversation_branches ADD COLUMN review_id TEXT REFERENCES review(id) ON DELETE SET NULL`,
+		postAdd: []string{
+			`CREATE INDEX IF NOT EXISTS idx_conversation_branches_review ON conversation_branches(review_id) WHERE review_id IS NOT NULL`,
+		}},
+	{version: 149, table: "conversation_turns", column: "handled_by_review_id",
+		addDDL: `ALTER TABLE conversation_turns ADD COLUMN handled_by_review_id TEXT REFERENCES review(id) ON DELETE SET NULL`},
+	{version: 149, table: "conversation_provider_events", column: "review_id",
+		addDDL: `ALTER TABLE conversation_provider_events ADD COLUMN review_id TEXT REFERENCES review(id) ON DELETE SET NULL`},
 }
 
 // reconcileSchema verifies that the columns in schemaRepairs physically exist
@@ -1678,6 +1709,19 @@ BEGIN
 // on the first session list.
 func reconcileSchema(db *sql.DB) error {
 	for _, rc := range schemaRepairs {
+		var tableCount int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, rc.table,
+		).Scan(&tableCount); err != nil {
+			return fmt.Errorf("schema verification: inspect table %s: %w", rc.table, err)
+		}
+		// Early migration snapshots used by the migration tests (and genuinely
+		// pre-feature databases) do not have every later table yet. Goose will
+		// create those tables when their migration is reached; this repair only
+		// applies once the owning table exists.
+		if tableCount == 0 {
+			continue
+		}
 		var count int
 		if err := db.QueryRow(
 			`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, rc.table, rc.column,

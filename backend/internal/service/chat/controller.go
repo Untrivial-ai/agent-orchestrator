@@ -199,6 +199,7 @@ type Controller struct {
 	now                    Clock
 	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	onAssistantMessage     func(context.Context, domain.SessionID, string)
 
 	// sendMu serializes command dispatch so only one operation mutates the
 	// provider conversation at a time.
@@ -316,6 +317,7 @@ func newController(
 	now Clock,
 	onAccountChanged func(domain.SessionID, string, domain.AgentHarness),
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation),
+	onAssistantMessage func(context.Context, domain.SessionID, string),
 ) *Controller {
 	c := &Controller{
 		sessionID:              sessionID,
@@ -331,6 +333,7 @@ func newController(
 		now:                    now,
 		onAccountChanged:       onAccountChanged,
 		onCodexCapacityChanged: onCodexCapacityChanged,
+		onAssistantMessage:     onAssistantMessage,
 		state:                  ports.ChatControllerReady,
 		settings:               conversation.Settings,
 		mcpServers:             map[string]domain.ConversationMCPServer{},
@@ -3095,6 +3098,35 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, primaryTurn bool) {
 	now := c.now()
 	switch event.Kind {
+	case ports.ChatEventMessageDelta:
+		// Streamed assistant prose is the earliest signal for a new task. Feed
+		// the latest fragment into the debounced card editor so the card becomes
+		// specific while the agent is still planning, rather than waiting for a
+		// full turn to settle.
+		if c.reviewID == "" && c.onAssistantMessage != nil && strings.TrimSpace(event.Delta) != "" {
+			c.onAssistantMessage(ctx, c.sessionID, event.Delta)
+		}
+	case ports.ChatEventMessageCompleted:
+		if c.reviewID == "" && c.onAssistantMessage != nil && strings.TrimSpace(event.Text) != "" {
+			c.onAssistantMessage(ctx, c.sessionID, event.Text)
+		}
+	case ports.ChatEventReasoningDelta, ports.ChatEventCommandInput, ports.ChatEventCommandOutputDelta, ports.ChatEventActivityText:
+		// These are the live signals that arrive between an assistant message and
+		// a tool's lifecycle event. Include them in the next card batch so a
+		// continuously working agent keeps refreshing its progress rather than
+		// waiting for a command to finish. They remain private input to the card
+		// editor: raw tool text is never rendered on the board.
+		if c.reviewID == "" && c.onAssistantMessage != nil && strings.TrimSpace(event.Delta) != "" {
+			c.onAssistantMessage(ctx, c.sessionID, event.Delta)
+		}
+	case ports.ChatEventActivityStarted:
+		// Tool activity is the earliest reliable signal that a newly-created
+		// worker is doing something useful. Feed a short factual description
+		// through the same debounced card-editor path instead of showing only
+		// the generic "Working on the task" fallback.
+		if c.reviewID == "" && c.onAssistantMessage != nil && strings.TrimSpace(event.Summary) != "" {
+			c.onAssistantMessage(ctx, c.sessionID, "The agent is currently "+strings.TrimSpace(event.Summary))
+		}
 	case ports.ChatEventTurnStarted:
 		if primaryTurn {
 			c.reportActivity(ctx, domain.ActivityActive, "chat.turn.started", now)

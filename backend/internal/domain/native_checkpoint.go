@@ -65,6 +65,31 @@ func NativeSubmissionContext(id string) string {
 	return "AO transcript correlation ID: " + id + "."
 }
 
+// LatestObservedAssistantText is the newest non-submission reply retained in a
+// native evidence journal. Claude's TUI stop hook journals that reply and
+// withholds it from LatestAssistantUpdate, because a reused prompt id must not
+// become a trusted history pair. The text is still what the agent last said,
+// so a display summary can read it. Invalid or unreadable evidence yields "".
+func LatestObservedAssistantText(encoded string) string {
+	if strings.TrimSpace(encoded) == "" {
+		return ""
+	}
+	var evidence NativeCheckpointEvidence
+	if json.Unmarshal([]byte(encoded), &evidence) != nil || evidence.Invalid {
+		return ""
+	}
+	for i := len(evidence.Events) - 1; i >= 0; i-- {
+		event := evidence.Events[i]
+		if event.Submission || event.Coordination {
+			continue
+		}
+		if text := strings.TrimSpace(event.Text); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
 // NativeCheckpointTextMatches understands the bounded head/tail representation
 // used by hook clients without treating repeated text as a turn identity.
 func NativeCheckpointTextMatches(checkpoint, replayed string) bool {

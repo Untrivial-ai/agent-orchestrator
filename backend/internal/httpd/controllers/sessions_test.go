@@ -1201,8 +1201,8 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	if spawned.Session.ID != "ao-2" || spawned.Session.IssueID != "ISS-1" || spawned.Session.Harness != "codex" {
 		t.Fatalf("spawned = %#v", spawned)
 	}
-	if spawned.Session.DisplayName != "my worker" {
-		t.Fatalf("spawned displayName = %q, want %q", spawned.Session.DisplayName, "my worker")
+	if spawned.Session.DisplayName != "My Worker" {
+		t.Fatalf("spawned displayName = %q, want %q", spawned.Session.DisplayName, "My Worker")
 	}
 	if spawned.PromptBytes == nil || *spawned.PromptBytes != len("fix") {
 		t.Fatalf("spawned promptBytes = %v, want %d", spawned.PromptBytes, len("fix"))
