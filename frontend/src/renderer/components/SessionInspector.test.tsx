@@ -23,6 +23,7 @@ import { sessionInterfaceTransitionStatus } from "../test/interface-transition-f
 import type {
   PRState,
   PullRequestFacts,
+  SessionArtifact,
   WorkspaceSession,
   WorkspaceSummary,
 } from "../types/workspace";
@@ -696,9 +697,25 @@ describe("SessionInspector PR section", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows the empty state when there are no PRs", () => {
-    renderWithQuery(<SessionInspector session={session([])} />);
+  it("shows the empty state when the session's output is a PR but none are open yet", () => {
+    renderWithQuery(<SessionInspector session={session([], { outputType: "pr" })} />);
     expect(screen.getByText("No pull request opened yet.")).toBeInTheDocument();
+  });
+
+  it("hides the section entirely when the session has no known output type", () => {
+    renderWithQuery(<SessionInspector session={session([], { outputType: undefined })} />);
+    expect(
+      screen.queryByText("No pull request opened yet."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Pull request")).not.toBeInTheDocument();
+  });
+
+  it("hides the section entirely when the session's output type is explicitly none", () => {
+    renderWithQuery(<SessionInspector session={session([], { outputType: "none" })} />);
+    expect(
+      screen.queryByText("No pull request opened yet."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Pull request")).not.toBeInTheDocument();
   });
 
   it("keeps durable session policies in Summary and operational review controls in Reviews", async () => {
@@ -858,6 +875,131 @@ describe("SessionInspector PR section", () => {
       "https://example.com/pr/41",
       "https://example.com/pr/42",
     ]);
+  });
+});
+
+const artifact = (
+  overrides: Partial<SessionArtifact> & { path: string },
+): SessionArtifact => ({
+  kind: "file",
+  name: overrides.path,
+  size: 128,
+  updatedAt: "2026-06-15T00:00:00Z",
+  ...overrides,
+});
+
+describe("SessionInspector Artifacts section", () => {
+  it("shows an artifact list, not the empty PR state, when the session output is artifacts", () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session([], {
+          outputType: "artifact",
+          artifactFiles: [
+            artifact({ path: "notes.md", name: "notes.md", kind: "markdown" }),
+            artifact({ path: "report.html", name: "report.html", kind: "html" }),
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Artifacts (2)")).toBeInTheDocument();
+    expect(screen.getByText("notes.md")).toBeInTheDocument();
+    expect(screen.getByText("report.html")).toBeInTheDocument();
+    expect(
+      screen.queryByText("No pull request opened yet."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show artifacts for a plain PR session with no artifact files", () => {
+    renderWithQuery(<SessionInspector session={session([pr(7, "open")], { outputType: "pr" })} />);
+
+    expect(screen.getByText("Pull request")).toBeInTheDocument();
+    expect(screen.queryByText(/Artifacts? /)).not.toBeInTheDocument();
+  });
+
+  it("shows separate pull request and artifact sections when a session has both (pr_artifact)", () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session([pr(7, "open")], {
+          outputType: "pr_artifact",
+          artifactFiles: [artifact({ path: "notes.md" })],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Pull request")).toBeInTheDocument();
+    expect(screen.getByText("Artifact")).toBeInTheDocument();
+    expect(screen.getAllByText("PR #7").length).toBeGreaterThan(0);
+    expect(screen.getByText("notes.md")).toBeInTheDocument();
+  });
+
+  it("opens an html artifact through the Browser preview flow", async () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session([], {
+          outputType: "artifact",
+          artifactFiles: [
+            artifact({
+              path: "report.html",
+              name: "report.html",
+              kind: "html",
+              previewUrl: "http://sess-1.localhost:3001/report.html",
+            }),
+          ],
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("report.html"));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", {
+        params: { path: { sessionId: "sess-1" } },
+        body: { url: "http://sess-1.localhost:3001/report.html" },
+      }),
+    );
+  });
+
+  it("opens a markdown/file artifact through the artifact viewer flow", () => {
+    const onOpenArtifact = vi.fn();
+    renderWithQuery(
+      <SessionInspector
+        onOpenArtifact={onOpenArtifact}
+        session={session([], {
+          outputType: "artifact",
+          artifactFiles: [artifact({ path: "notes.md", name: "notes.md", kind: "markdown" })],
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("notes.md"));
+
+    expect(onOpenArtifact).toHaveBeenCalledWith({ path: "notes.md" });
+    expect(postMock).not.toHaveBeenCalledWith(
+      "/api/v1/sessions/{sessionId}/preview",
+      expect.anything(),
+    );
+  });
+
+  it("opens artifact feedback through the artifact viewer flow", async () => {
+    const onOpenArtifact = vi.fn();
+    renderWithQuery(
+      <SessionInspector
+        onOpenArtifact={onOpenArtifact}
+        session={session([], {
+          outputType: "artifact",
+          artifactFiles: [artifact({ path: "report.html", name: "report.html", kind: "html", previewUrl: "http://sess-1.localhost:3001/report.html" })],
+        })}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Add feedback: report.html" }));
+
+    expect(onOpenArtifact).toHaveBeenCalledWith({ feedback: true, path: "report.html" });
+    expect(postMock).not.toHaveBeenCalledWith(
+      "/api/v1/sessions/{sessionId}/preview",
+      expect.anything(),
+    );
   });
 });
 
@@ -3909,7 +4051,7 @@ describe("SessionInspector summary reviews", () => {
 
   it("hides Reviews when the session has no PR while keeping its durable preference in Summary", async () => {
     mockCommonGets();
-    renderWithQuery(<SessionInspector session={session([])} />);
+    renderWithQuery(<SessionInspector session={session([], { outputType: "pr" })} />);
 
     await screen.findByRole("tab", { name: /Summary/ });
     expect(screen.queryByRole("tab", { name: /Reviews/ })).not.toBeInTheDocument();

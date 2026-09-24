@@ -5936,6 +5936,14 @@ paths:
         schema:
           description: Session identifier, e.g. project-1.
           type: string
+      - description: When true, serve Markdown files as raw source instead of rendering
+          them to HTML for Browser preview.
+        in: query
+        name: raw
+        schema:
+          description: When true, serve Markdown files as raw source instead of rendering
+            them to HTML for Browser preview.
+          type: boolean
       responses:
         "200":
           content:

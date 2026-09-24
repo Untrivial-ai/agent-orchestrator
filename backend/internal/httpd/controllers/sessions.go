@@ -508,22 +508,29 @@ func (c *SessionsController) PreviewOrigin(w http.ResponseWriter, r *http.Reques
 		envelope.WriteError(w, r, err)
 		return true
 	}
-	entry, ok := previewOriginEntry(sess)
+	entry, ok := previewOriginEntry(sess, r.URL.Path)
 	if !ok {
 		envelope.WriteAPIError(w, r, http.StatusNotFound, "not_found", "NO_PREVIEW_ENTRY", "No preview entry point found in session workspace", nil)
 		return true
 	}
-	asset := previewOriginAssetPath(entry.Path, r.URL.Path)
 	switch entry.Scope {
 	case previewutil.StoredEntryScopeArtifact:
+		asset := previewOriginArtifactAssetPath(entry.Path, r.URL.Path)
 		c.serveRootedPreviewFile(w, r, sess.Metadata.ArtifactDir, asset)
 	default:
+		asset := previewOriginAssetPath(entry.Path, r.URL.Path)
 		c.serveRootedPreviewFile(w, r, sess.Metadata.WorkspacePath, asset)
 	}
 	return true
 }
 
-func previewOriginEntry(sess domain.Session) (previewutil.StoredEntry, bool) {
+func previewOriginEntry(sess domain.Session, requestPath string) (previewutil.StoredEntry, bool) {
+	requested := strings.TrimPrefix(path.Clean("/"+requestPath), "/")
+	if rel, ok := previewutil.ArtifactEntryRelative(requested); ok {
+		if _, exists := previewutil.EntryAtPath(sess.Metadata.ArtifactDir, rel); exists {
+			return previewutil.StoredEntry{Scope: previewutil.StoredEntryScopeArtifact, Path: rel}, true
+		}
+	}
 	if entry, ok := previewutil.StoredEntryFromPreview(sess.Metadata.PreviewURL, sess.ID); ok {
 		switch entry.Scope {
 		case previewutil.StoredEntryScopeArtifact:
@@ -569,6 +576,14 @@ func previewOriginAssetPath(entry, requestPath string) string {
 	return path.Join(root, requested)
 }
 
+func previewOriginArtifactAssetPath(entry, requestPath string) string {
+	requested := strings.TrimPrefix(path.Clean("/"+requestPath), "/")
+	if rel, ok := previewutil.ArtifactEntryRelative(requested); ok {
+		return previewOriginAssetPath(entry, rel)
+	}
+	return previewOriginAssetPath(entry, requestPath)
+}
+
 // serveWorkspacePreviewFile is the single serving path for both the legacy API
 // route and isolated preview origins. OpenRoot keeps symlink traversal and the
 // subsequent read on the same workspace-confined file handle.
@@ -583,7 +598,7 @@ func (c *SessionsController) serveRootedPreviewFile(w http.ResponseWriter, r *ht
 }
 
 func serveOpenedPreviewFile(w http.ResponseWriter, r *http.Request, file *os.File, info fs.FileInfo, clean string) {
-	if !previewutil.IsMarkdownPath(clean) {
+	if !previewutil.IsMarkdownPath(clean) || previewRawRequested(r) {
 		http.ServeContent(w, r, info.Name(), info.ModTime(), file)
 		return
 	}
@@ -602,6 +617,15 @@ func serveOpenedPreviewFile(w http.ResponseWriter, r *http.Request, file *os.Fil
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(rendered) //nolint:gosec // G705: preview content is workspace-local and agent-trusted
 	}
+}
+
+func previewRawRequested(r *http.Request) bool {
+	raw := r.URL.Query().Get("raw")
+	if raw == "" {
+		return false
+	}
+	enabled, err := strconv.ParseBool(raw)
+	return err == nil && enabled
 }
 
 func (c *SessionsController) listWorkspaceFiles(w http.ResponseWriter, r *http.Request) {

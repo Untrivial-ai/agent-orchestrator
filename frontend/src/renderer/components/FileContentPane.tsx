@@ -334,7 +334,7 @@ function CompleteFileView({ annotation, commitSha, detail, editing, onEditChange
 	const { t } = useTranslation();
 	const revision = useQuery({
 		...sessionSourceFileRevisionQueryOptions({ commitSha, path: detail.path, scope, sessionId, side: detail.deleted ? "before" : "after", source, workspaceVersion: detail.workspaceVersion }),
-		enabled: detail.deleted || detail.contentTruncated,
+		enabled: source.kind !== "artifact" && (detail.deleted || detail.contentTruncated),
 	});
 	if (revision.isPending && revision.isFetching) return <PanelMessage>{t("files.loading")}</PanelMessage>;
 	if (revision.error) return <PanelMessage>{revision.error.message}</PanelMessage>;

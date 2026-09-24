@@ -2124,7 +2124,7 @@ func sessionOperations() []operation {
 		{
 			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/preview/files/*", id: "getSessionPreviewFile", tag: "sessions",
 			summary:    "Serve a static browser preview file from a session workspace",
-			pathParams: []any{controllers.SessionIDParam{}},
+			pathParams: []any{controllers.SessionIDParam{}, controllers.PreviewFileQuery{}},
 			resps: []respUnit{
 				{http.StatusOK, ""},
 				{http.StatusNotFound, envelope.APIError{}},

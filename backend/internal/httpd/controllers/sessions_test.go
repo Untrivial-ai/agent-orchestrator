@@ -1457,13 +1457,6 @@ func TestSessionsAPI_GetExposesArtifactFilesAndServesHTMLArtifact(t *testing.T) 
 	}
 	svc.sessions["ao-1"] = s
 	srv := newSessionTestServer(t, svc)
-	previewURL, err := previewutil.FileURL(srv.URL, "ao-1", "__ao_artifacts__/site/index.html")
-	if err != nil {
-		t.Fatalf("build preview URL: %v", err)
-	}
-	s = svc.sessions["ao-1"]
-	s.Metadata.PreviewURL = previewURL
-	svc.sessions["ao-1"] = s
 
 	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1", "")
 	if status != http.StatusOK {
@@ -1498,12 +1491,16 @@ func TestSessionsAPI_GetExposesArtifactFilesAndServesHTMLArtifact(t *testing.T) 
 		t.Fatalf("markdown previewUrl = %q, want empty", resp.Session.ArtifactFiles[1].PreviewURL)
 	}
 
-	servedBody, servedStatus, _ := doPreviewOriginRequest(t, srv, resp.Session.ArtifactFiles[0].PreviewURL, "/")
-	if servedStatus != http.StatusOK {
-		t.Fatalf("GET artifact preview = %d, want 200; body=%s", servedStatus, servedBody)
+	directPreviewPath, err := url.Parse(resp.Session.ArtifactFiles[0].PreviewURL)
+	if err != nil {
+		t.Fatalf("parse html artifact previewUrl: %v", err)
 	}
-	if !bytes.Contains(servedBody, []byte("artifact preview")) {
-		t.Fatalf("served artifact body = %q, want html artifact content", servedBody)
+	directBody, directStatus, _ := doPreviewOriginRequest(t, srv, resp.Session.ArtifactFiles[0].PreviewURL, directPreviewPath.EscapedPath())
+	if directStatus != http.StatusOK {
+		t.Fatalf("GET direct artifact preview path = %d, want 200; body=%s", directStatus, directBody)
+	}
+	if !bytes.Contains(directBody, []byte("artifact preview")) {
+		t.Fatalf("direct artifact body = %q, want html artifact content", directBody)
 	}
 }
 
@@ -2085,6 +2082,40 @@ func TestSessionsAPI_SetPreviewLocalRelativePathResolvesToPreviewOrigin(t *testi
 	fileBody, fileStatus, _ := doPreviewOriginRequest(t, srv, resp.Session.PreviewURL, "/")
 	if fileStatus != http.StatusOK {
 		t.Fatalf("serve local file = %d, want 200; body=%s", fileStatus, fileBody)
+	}
+}
+
+func TestSessionsAPI_PreviewFileRawMarkdownBypassesHTMLRendering(t *testing.T) {
+	svc := newFakeSessionService()
+	workspace := t.TempDir()
+	const markdown = "# Artifact notes\n\nhello\n"
+	if err := os.WriteFile(filepath.Join(workspace, "notes.md"), []byte(markdown), 0o644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+	s := svc.sessions["ao-1"]
+	s.Metadata = domain.SessionMetadata{WorkspacePath: workspace}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/preview/files/notes.md", "")
+	if status != http.StatusOK {
+		t.Fatalf("render markdown preview = %d, want 200; body=%s", status, body)
+	}
+	if !strings.Contains(headers.Get("Content-Type"), "text/html") || !bytes.Contains(body, []byte("<!doctype html>")) {
+		t.Fatalf("rendered markdown response content-type=%q body=%q, want HTML document", headers.Get("Content-Type"), body)
+	}
+
+	for _, raw := range []string{"1", "true"} {
+		body, status, headers = doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/preview/files/notes.md?raw="+raw, "")
+		if status != http.StatusOK {
+			t.Fatalf("raw=%s markdown preview = %d, want 200; body=%s", raw, status, body)
+		}
+		if got := string(body); got != markdown {
+			t.Fatalf("raw=%s markdown body = %q, want %q", raw, got, markdown)
+		}
+		if strings.Contains(headers.Get("Content-Type"), "text/html") {
+			t.Fatalf("raw=%s markdown content type = %q, want non-HTML", raw, headers.Get("Content-Type"))
+		}
 	}
 }
 

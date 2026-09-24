@@ -203,6 +203,12 @@ type SessionIDParam struct {
 	SessionID string `path:"sessionId" description:"Session identifier, e.g. project-1."`
 }
 
+// PreviewFileQuery is the query string accepted by GET
+// /api/v1/sessions/{sessionId}/preview/files/*.
+type PreviewFileQuery struct {
+	Raw bool `query:"raw,omitempty" description:"When true, serve Markdown files as raw source instead of rendering them to HTML for Browser preview."`
+}
+
 // PRNumberParam is the associated pull-request number in Files routes.
 type PRNumberParam struct {
 	PRNumber int `path:"prNumber" description:"Associated pull request number." minimum:"1"`
