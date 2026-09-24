@@ -1040,11 +1040,10 @@ describe("SessionInspector Artifacts section", () => {
     );
   });
 
-  it("opens artifact feedback through the artifact viewer flow", async () => {
-    const onOpenArtifact = vi.fn();
+  it("does not render a feedback button on artifact rows", () => {
     renderWithQuery(
       <SessionInspector
-        onOpenArtifact={onOpenArtifact}
+        onOpenArtifact={vi.fn()}
         session={session([], {
           outputType: "artifact",
           artifactFiles: [artifact({ path: "report.html", name: "report.html", kind: "html", previewUrl: "http://sess-1.localhost:3001/report.html" })],
@@ -1052,13 +1051,7 @@ describe("SessionInspector Artifacts section", () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Add feedback: report.html" }));
-
-    expect(onOpenArtifact).toHaveBeenCalledWith({ feedback: true, path: "report.html" });
-    expect(postMock).not.toHaveBeenCalledWith(
-      "/api/v1/sessions/{sessionId}/preview",
-      expect.anything(),
-    );
+    expect(screen.queryByRole("button", { name: "Add feedback: report.html" })).not.toBeInTheDocument();
   });
 });
 
