@@ -118,6 +118,47 @@ describe("mapCloudBrowserPoint", () => {
 		expect(retry).toHaveBeenCalledOnce();
 	});
 
+	it("shows the usable empty browser instead of an indefinite startup message", () => {
+		const snapshot = {
+			status: "waiting" as const, frameUrl: "", frameWidth: 0, frameHeight: 0,
+			frameSequence: 0, streamEpoch: 1, url: "about:blank", title: "",
+			tabs: [{ id: "tab-1", url: "about:blank", title: "", active: true }],
+			activeTabId: "tab-1", owner: "idle" as const, canOperate: true,
+			canGoBack: false, canGoForward: false, isLoading: false, viewportPending: false,
+			dialogOpen: false, dialogType: "", dialogText: "", dialogPrompt: "", error: "", errorRequestId: "",
+		};
+		render(createElement(CloudBrowserSurface, { model: {
+			snapshot,
+			send: vi.fn(() => true),
+			setViewport: vi.fn(),
+			reportPaint: vi.fn(),
+			retry: vi.fn(),
+		} }));
+
+		expect(screen.getByText("Enter a URL or click one in the terminal.")).toBeInTheDocument();
+		expect(screen.queryByText("Starting browser")).not.toBeInTheDocument();
+	});
+
+	it("keeps startup feedback when a nonblank remote page has not produced a frame", () => {
+		render(createElement(CloudBrowserSurface, { model: {
+			snapshot: {
+				status: "waiting", frameUrl: "", frameWidth: 0, frameHeight: 0,
+				frameSequence: 0, streamEpoch: 1, url: "https://example.test", title: "Example",
+				tabs: [{ id: "tab-1", url: "https://example.test", title: "Example", active: true }],
+				activeTabId: "tab-1", owner: "idle", canOperate: true,
+				canGoBack: false, canGoForward: false, isLoading: true, viewportPending: false,
+				dialogOpen: false, dialogType: "", dialogText: "", dialogPrompt: "", error: "", errorRequestId: "",
+			},
+			send: vi.fn(() => true),
+			setViewport: vi.fn(),
+			reportPaint: vi.fn(),
+			retry: vi.fn(),
+		} }));
+
+		expect(screen.getByText("Starting browser")).toBeInTheDocument();
+		expect(screen.queryByText("Enter a URL or click one in the terminal.")).not.toBeInTheDocument();
+	});
+
 	it("reports decode and paint timing only after drawing the accepted frame", async () => {
 		const drawImage = vi.fn();
 		const fetchFrame = vi.fn().mockResolvedValue({ blob: () => Promise.resolve(new Blob(["jpeg"])) });

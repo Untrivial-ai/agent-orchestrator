@@ -208,6 +208,7 @@
 	"cloudLocalAuth.tabRegister": "Register",
 	"cloudLocalAuth.tabSignIn": "Sign in",
 	"cloudLocalAuth.title": "Local AO Cloud sign-in",
+	"cloudLocalAuth.useLocalDocker": "Use local Docker",
 	"cloudLocalAuth.working": "Working…",
 	"command.back": "Back",
 	"command.copyBranch": "Copy branch name",

@@ -304,7 +304,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !reachable {
-		writeError(w, r, http.StatusUnprocessableEntity, "repository_unreachable", "Can't reach this repository — it may be private, or the URL may be wrong.")
+		writeError(w, r, http.StatusUnprocessableEntity, "repository_unreachable", "The saved GitHub token cannot access this repository. Check the URL or update the token's repository access.")
 		return
 	}
 	owner, repo, _ := parseGitHubRepo(request.RepositoryURL)
@@ -1117,38 +1117,62 @@ func (s *Server) probeRepositoryAccess(ctx context.Context, repositoryURL string
 	defer cancel()
 
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, apiURL, http.NoBody)
+	probe := func(token string) (status int, push bool, err error) {
+		req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, apiURL, http.NoBody)
+		if err != nil {
+			return 0, false, err
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+		resp, err := s.repositoryProbeClient.Do(req)
+		if err != nil {
+			return 0, false, err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			return resp.StatusCode, false, nil
+		}
+
+		var data struct {
+			Permissions struct {
+				Push bool `json:"push"`
+			} `json:"permissions"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+			return 0, false, err
+		}
+		return resp.StatusCode, data.Permissions.Push, nil
+	}
+
+	status, push, err := probe(token)
 	if err != nil {
 		return false, false, err
 	}
+	if status == http.StatusOK {
+		return true, push, nil
+	}
+	if status != http.StatusUnauthorized && status != http.StatusNotFound {
+		return false, false, fmt.Errorf("github api returned status %d", status)
+	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-	resp, err := s.repositoryProbeClient.Do(req)
+	// A valid fine-grained token can return 404 for a public repository that is
+	// outside its selected repository scope. Retry without credentials so public
+	// repositories remain usable, but report them as read-only for this token.
+	status, _, err = probe("")
 	if err != nil {
 		return false, false, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusNotFound {
+	if status == http.StatusOK {
+		return true, false, nil
+	}
+	if status == http.StatusUnauthorized || status == http.StatusNotFound {
 		return false, false, nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		return false, false, fmt.Errorf("github api returned status %d", resp.StatusCode)
-	}
-
-	var data struct {
-		Permissions struct {
-			Push bool `json:"push"`
-		} `json:"permissions"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return false, false, err
-	}
-
-	return true, data.Permissions.Push, nil
+	return false, false, fmt.Errorf("github api returned status %d", status)
 }
 
 func validProjectInput(request createProjectRequest) bool {

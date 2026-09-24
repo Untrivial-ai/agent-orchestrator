@@ -46,9 +46,15 @@ func (*viewerTestEngine) Screenshot(context.Context) (string, int, int, error) {
 func (*viewerTestEngine) Close(context.Context) error { return nil }
 
 type viewerTabEngine struct {
-	actions []string
-	active  string
-	tabs    []string
+	actions     []string
+	active      string
+	tabs        []string
+	selectedArg string
+	closedArg   string
+	cdp         *viewerTestCDP
+	targets     map[string]string
+	urls        map[string]string
+	titles      map[string]string
 }
 
 func (e *viewerTabEngine) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
@@ -56,14 +62,23 @@ func (e *viewerTabEngine) Execute(_ context.Context, action string, args map[str
 	switch action {
 	case "tab-select":
 		e.active, _ = args["tabId"].(string)
+		e.selectedArg = e.active
 	case "tab-new":
 		e.active = "tab-3"
 		e.tabs = append(e.tabs, e.active)
+		e.targets[e.active] = "cdp-3"
+		e.urls[e.active], _ = args["url"].(string)
+		e.titles[e.active] = "Third"
+		e.cdp.targets = append(e.cdp.targets, viewerTestTarget{
+			id: "cdp-3", url: e.urls[e.active], title: e.titles[e.active],
+		})
+		return map[string]any{"tabId": e.active}, nil
 	case "tab-close":
 		closing, _ := args["tabId"].(string)
 		if closing == "" {
 			closing = e.active
 		}
+		e.closedArg = closing
 		remaining := e.tabs[:0]
 		for _, tab := range e.tabs {
 			if tab != closing {
@@ -76,10 +91,21 @@ func (e *viewerTabEngine) Execute(_ context.Context, action string, args map[str
 		} else {
 			e.active = ""
 		}
+		closedTarget := e.targets[closing]
+		remainingTargets := e.cdp.targets[:0]
+		for _, target := range e.cdp.targets {
+			if target.id != closedTarget {
+				remainingTargets = append(remainingTargets, target)
+			}
+		}
+		e.cdp.targets = remainingTargets
 	case "tabs":
 		tabs := make([]any, 0, len(e.tabs))
 		for _, tab := range e.tabs {
-			tabs = append(tabs, map[string]any{"tabId": tab, "active": tab == e.active})
+			tabs = append(tabs, map[string]any{
+				"tabId": tab, "active": tab == e.active,
+				"url": e.urls[tab], "title": e.titles[tab],
+			})
 		}
 		return map[string]any{"tabs": tabs}, nil
 	}
@@ -93,10 +119,17 @@ func (*viewerTabEngine) Screenshot(context.Context) (string, int, int, error) {
 func (*viewerTabEngine) Close(context.Context) error { return nil }
 
 type viewerTestCDP struct {
-	events chan cdpEvent
-	engine *viewerTestEngine
-	mu     sync.Mutex
-	calls  []string
+	events  chan cdpEvent
+	engine  *viewerTestEngine
+	mu      sync.Mutex
+	calls   []string
+	targets []viewerTestTarget
+}
+
+type viewerTestTarget struct {
+	id    string
+	title string
+	url   string
 }
 
 func (c *viewerTestCDP) Call(_ context.Context, _ string, method string, params any, result any) error {
@@ -128,9 +161,17 @@ func (c *viewerTestCDP) Call(_ context.Context, _ string, method string, params 
 	var response any
 	switch method {
 	case "Target.getTargets":
-		response = map[string]any{"targetInfos": []map[string]any{{
-			"targetId": "tab-1", "type": "page", "title": "Test", "url": "https://example.test/",
-		}}}
+		targets := c.targets
+		if targets == nil {
+			targets = []viewerTestTarget{{id: "tab-1", title: "Test", url: "https://example.test/"}}
+		}
+		targetInfos := make([]map[string]any, 0, len(targets))
+		for _, target := range targets {
+			targetInfos = append(targetInfos, map[string]any{
+				"targetId": target.id, "type": "page", "title": target.title, "url": target.url,
+			})
+		}
+		response = map[string]any{"targetInfos": targetInfos}
 	case "Target.attachToTarget":
 		response = map[string]any{"sessionId": "cdp-session-1"}
 	case "Page.getNavigationHistory":
@@ -359,51 +400,77 @@ func TestViewerThrottleFlushesNewestDeferredFrame(t *testing.T) {
 }
 
 func TestViewerTabOperationsSynchronizeSharedEngine(t *testing.T) {
-	engine := &viewerTabEngine{active: "tab-1", tabs: []string{"tab-1", "tab-2"}}
-	cdp := &viewerTestCDP{events: make(chan cdpEvent, 8), engine: &viewerTestEngine{}}
+	cdp := &viewerTestCDP{
+		events: make(chan cdpEvent, 8), engine: &viewerTestEngine{},
+		targets: []viewerTestTarget{
+			{id: "cdp-1", title: "First", url: "https://one.example.test/"},
+			{id: "cdp-2", title: "Second", url: "https://two.example.test/"},
+		},
+	}
+	engine := &viewerTabEngine{
+		active: "tab-1", tabs: []string{"tab-1", "tab-2"}, cdp: cdp,
+		targets: map[string]string{"tab-1": "cdp-1", "tab-2": "cdp-2"},
+		urls: map[string]string{
+			"tab-1": "https://one.example.test/", "tab-2": "https://two.example.test/",
+		},
+		titles: map[string]string{"tab-1": "First", "tab-2": "Second"},
+	}
 	viewer := NewViewerController(ViewerControllerOptions{Engine: engine})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	state := &viewerSession{
 		ctx: ctx, cancel: cancel, cdp: cdp,
 		control: make(chan browserstream.Control, 32), frames: browserstream.NewLatest(),
-		sessionID: "cdp-session-1", targetID: "tab-1", width: 1280, height: 720,
+		sessionID: "cdp-session-1", targetID: "cdp-1", width: 1280, height: 720,
 		quality: 70, fps: 15, captureWidth: 1440, captureHeight: 900,
 	}
 
-	if err := viewer.tabOperation(state, browserstream.Control{Operation: "select", TabID: "tab-2"}); err != nil {
+	if err := viewer.tabOperation(state, browserstream.Control{Operation: "select", TabID: "cdp-2"}); err != nil {
 		t.Fatal(err)
 	}
-	if state.targetID != "tab-2" || engine.active != "tab-2" {
+	if state.targetID != "cdp-2" || engine.active != "tab-2" || engine.selectedArg != "tab-2" {
 		t.Fatalf("selected viewer=%q engine=%q", state.targetID, engine.active)
 	}
 	if err := viewer.tabOperation(state, browserstream.Control{Operation: "new", URL: "https://example.test/new"}); err != nil {
 		t.Fatal(err)
 	}
-	if state.targetID != "tab-3" || engine.active != "tab-3" {
+	if state.targetID != "cdp-3" || engine.active != "tab-3" {
 		t.Fatalf("new viewer=%q engine=%q", state.targetID, engine.active)
 	}
 	if err := viewer.tabOperation(state, browserstream.Control{Operation: "close"}); err != nil {
 		t.Fatal(err)
 	}
-	if state.targetID != "tab-1" || engine.active != "tab-1" {
+	if state.targetID != "cdp-1" || engine.active != "tab-1" || engine.closedArg != "tab-3" {
 		t.Fatalf("closed viewer=%q engine=%q", state.targetID, engine.active)
 	}
-	if got := strings.Join(engine.actions, ","); got != "tab-select,tab-new,tabs,tab-close,tabs" {
+	if got := strings.Join(engine.actions, ","); got != "tabs,tab-select,tab-new,tabs,tab-close,tabs,tabs" {
 		t.Fatalf("engine actions = %q", got)
 	}
 }
 
 func TestViewerPopupSynchronizesSharedEngine(t *testing.T) {
-	engine := &viewerTabEngine{active: "tab-1", tabs: []string{"tab-1", "popup-1"}}
-	cdp := &viewerTestCDP{events: make(chan cdpEvent, 1), engine: &viewerTestEngine{}}
+	cdp := &viewerTestCDP{
+		events: make(chan cdpEvent, 1), engine: &viewerTestEngine{},
+		targets: []viewerTestTarget{
+			{id: "cdp-1", title: "First", url: "https://one.example.test/"},
+			{id: "popup-cdp", title: "Popup", url: "https://popup.example.test/"},
+		},
+	}
+	engine := &viewerTabEngine{
+		active: "tab-1", tabs: []string{"tab-1", "tab-2"}, cdp: cdp,
+		targets: map[string]string{"tab-1": "cdp-1", "tab-2": "popup-cdp"},
+		urls: map[string]string{
+			"tab-1": "https://one.example.test/", "tab-2": "https://popup.example.test/",
+		},
+		titles: map[string]string{"tab-1": "First", "tab-2": "Popup"},
+	}
 	viewer := NewViewerController(ViewerControllerOptions{Engine: engine})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	state := &viewerSession{
 		ctx: ctx, cancel: cancel, cdp: cdp,
 		control: make(chan browserstream.Control, 32), frames: browserstream.NewLatest(),
-		sessionID: "cdp-session-1", targetID: "tab-1", width: 1280, height: 720,
+		sessionID: "cdp-session-1", targetID: "cdp-1", width: 1280, height: 720,
 		quality: 70, fps: 15, captureWidth: 1440, captureHeight: 900,
 	}
 	defer state.frames.Close()
@@ -411,13 +478,13 @@ func TestViewerPopupSynchronizesSharedEngine(t *testing.T) {
 		t.Fatal("user control was not acquired")
 	}
 	params, _ := json.Marshal(map[string]any{"targetInfo": map[string]any{
-		"targetId": "popup-1", "type": "page", "openerId": "tab-1",
+		"targetId": "popup-cdp", "type": "page", "openerId": "cdp-1",
 	}})
 	viewer.handleTargetCreated(state, cdpEvent{Method: "Target.targetCreated", Params: params})
-	if state.targetID != "popup-1" || engine.active != "popup-1" {
+	if state.targetID != "popup-cdp" || engine.active != "tab-2" || engine.selectedArg != "tab-2" {
 		t.Fatalf("popup viewer=%q engine=%q", state.targetID, engine.active)
 	}
-	if len(engine.actions) == 0 || engine.actions[0] != "tab-select" {
+	if got := strings.Join(engine.actions, ","); got != "tabs,tab-select" {
 		t.Fatalf("popup engine actions = %v", engine.actions)
 	}
 }

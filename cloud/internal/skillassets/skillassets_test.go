@@ -15,6 +15,7 @@ func TestInstallMaterializesSkillTree(t *testing.T) {
 	root := Dir(dataDir)
 	for _, name := range []string{
 		"SKILL.md",
+		filepath.Join("commands", "browser.md"),
 		filepath.Join("commands", "orchestration.md"),
 		filepath.Join("commands", "pull-requests.md"),
 	} {
@@ -27,11 +28,22 @@ func TestInstallMaterializesSkillTree(t *testing.T) {
 		}
 	}
 	skill, _ := os.ReadFile(filepath.Join(root, "SKILL.md"))
+	browser, _ := os.ReadFile(filepath.Join(root, "commands", "browser.md"))
 	orchestration, _ := os.ReadFile(filepath.Join(root, "commands", "orchestration.md"))
 	// The cloud skill must document the cloud grammar, never the desktop CLI.
-	for _, needle := range []string{"`spawn`", "`report`", "`send`", "`kill`"} {
+	for _, needle := range []string{"`spawn`", "`report`", "`send`", "`kill`", "`browser`", "commands/browser.md"} {
 		if !strings.Contains(string(skill), needle) {
 			t.Fatalf("SKILL.md does not mention %s", needle)
+		}
+	}
+	for _, needle := range []string{"ao browser status", "ao browser open", "ao browser snapshot", "UNTRUSTED EXTERNAL CONTENT"} {
+		if !strings.Contains(string(browser), needle) {
+			t.Fatalf("browser.md does not document %q", needle)
+		}
+	}
+	for _, stale := range []string{"or `ao browser` here", "no `ao browser`"} {
+		if strings.Contains(string(skill), stale) {
+			t.Fatalf("SKILL.md still claims the browser command is unavailable: %q", stale)
 		}
 	}
 	for _, needle := range []string{"ao spawn", "ao report", "ao list", "ao send", "ao kill"} {

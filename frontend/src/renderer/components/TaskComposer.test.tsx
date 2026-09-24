@@ -888,6 +888,80 @@ describe("TaskComposer", () => {
 		await waitFor(() => expect(onSubmittingChange).toHaveBeenLastCalledWith(false));
 	});
 
+	it("synchronously blocks duplicate local submissions", async () => {
+		let resolveCreate!: (value: { data: { workerId: string } }) => void;
+		h.post.mockReturnValueOnce(new Promise((resolve) => (resolveCreate = resolve)));
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		fireEvent.change(task(), { target: { value: "Create one worker" } });
+		await waitForTaskReady();
+		const form = task().closest("form");
+		if (!form) throw new Error("task form missing");
+		act(() => {
+			fireEvent.submit(form);
+			fireEvent.submit(form);
+		});
+
+		await waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+		expect(h.post).toHaveBeenCalledWith(
+			"/api/v1/orchestrators/delegate",
+			expect.objectContaining({
+				body: expect.objectContaining({ idempotencyKey: expect.any(String) }),
+			}),
+		);
+		await act(async () => resolveCreate({ data: { workerId: "sess-1" } }));
+	});
+
+	it("reuses the local idempotency key after an ambiguous client failure", async () => {
+		vi.stubGlobal("crypto", { randomUUID: vi.fn(() => "local-request-1") });
+		h.post
+			.mockRejectedValueOnce(new Error("connection lost"))
+			.mockResolvedValueOnce({ data: { workerId: "sess-1" } });
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+		fireEvent.change(task(), { target: { value: "Retry safely" } });
+		await waitForTaskReady();
+		fireEvent.click(startTask());
+		await screen.findByText("connection lost");
+		fireEvent.click(startTask());
+
+		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(2));
+		const keys = h.post.mock.calls.map(([, request]) => request.body.idempotencyKey);
+		expect(keys).toEqual(["local-request-1", "local-request-1"]);
+	});
+
+	it("uses a new local idempotency key after a definitive server rejection", async () => {
+		let sequence = 0;
+		vi.stubGlobal("crypto", { randomUUID: vi.fn(() => `local-request-${++sequence}`) });
+		h.post
+			.mockResolvedValueOnce({ error: { code: "UNKNOWN_HARNESS", message: "Selection unavailable" } })
+			.mockResolvedValueOnce({ data: { workerId: "sess-1" } });
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+		fireEvent.change(task(), { target: { value: "Retry after setup" } });
+		await waitForTaskReady();
+		fireEvent.click(startTask());
+		await screen.findByText("Selection unavailable");
+		fireEvent.click(startTask());
+
+		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(2));
+		const keys = h.post.mock.calls.map(([, request]) => request.body.idempotencyKey);
+		expect(keys).toEqual(["local-request-1", "local-request-2"]);
+	});
+
 	it("locks agent and model selection while task creation is in flight, then unlocks them after failure", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {

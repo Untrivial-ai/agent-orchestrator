@@ -98,6 +98,12 @@ type PendingInput = {
 	minFrameSeq?: number;
 };
 
+type PendingRequest = {
+	resolve: () => void;
+	reject: (error: Error) => void;
+	timer: number;
+};
+
 type PendingFrame = {
 	receivedAt: number;
 	connectStartedAt: number;
@@ -156,6 +162,7 @@ export class CloudBrowserStream {
 	private inputSeq = 0;
 	private readonly retiredEpochs = new Set<number>();
 	private readonly pendingInputs = new Map<number, PendingInput>();
+	private readonly pendingRequests = new Map<number, PendingRequest>();
 	private pendingFrame: { sequence: number; timing: PendingFrame } | null = null;
 	private connectStartedAt = 0;
 	private connectionIsReconnect = false;
@@ -215,6 +222,7 @@ export class CloudBrowserStream {
 		this.socket?.close(1000, "browser viewer retry requested");
 		this.socket = null;
 		this.retry = 0;
+		this.rejectPendingRequests(new Error("The browser viewer is reconnecting."));
 		this.pendingInputs.clear();
 		this.pendingFrame = null;
 		this.update({ status: "connecting", error: "", errorRequestId: "", viewportPending: true });
@@ -222,6 +230,27 @@ export class CloudBrowserStream {
 	}
 
 	send(control: Omit<CloudBrowserControl, "version" | "streamEpoch">): boolean {
+		return this.sendControl(control) !== false;
+	}
+
+	request(control: Omit<CloudBrowserControl, "version" | "streamEpoch">): Promise<void> {
+		if (control.type !== "navigate" && control.type !== "tab" && control.type !== "dialog") {
+			return Promise.reject(new Error("This browser control cannot be acknowledged."));
+		}
+		const inputSeq = this.sendControl(control);
+		if (inputSeq === false || inputSeq === 0) {
+			return Promise.reject(new Error(this.controlUnavailableMessage()));
+		}
+		return new Promise<void>((resolve, reject) => {
+			const timer = window.setTimeout(() => {
+				this.pendingRequests.delete(inputSeq);
+				reject(new Error("The browser did not acknowledge the action."));
+			}, 10_000);
+			this.pendingRequests.set(inputSeq, { resolve, reject, timer });
+		});
+	}
+
+	private sendControl(control: Omit<CloudBrowserControl, "version" | "streamEpoch">): number | false {
 		const socket = this.socket;
 		if (socket === null || socket.readyState !== WebSocket.OPEN) return false;
 		if (control.type === "input" || control.type === "navigate" || control.type === "tab" || control.type === "dialog") {
@@ -240,13 +269,18 @@ export class CloudBrowserStream {
 				kind: control.type as PendingInput["kind"],
 			});
 		}
-		socket.send(JSON.stringify({
-			...control,
-			version: PROTOCOL_VERSION,
-			streamEpoch: this.snapshot.streamEpoch,
-			...(inputSeq === undefined ? {} : { inputSeq }),
-		}));
-		return true;
+		try {
+			socket.send(JSON.stringify({
+				...control,
+				version: PROTOCOL_VERSION,
+				streamEpoch: this.snapshot.streamEpoch,
+				...(inputSeq === undefined ? {} : { inputSeq }),
+			}));
+		} catch {
+			if (inputSeq !== undefined) this.pendingInputs.delete(inputSeq);
+			return false;
+		}
+		return inputSeq ?? 0;
 	}
 
 	reportPaint(frameSequence: number, decodeMs: number, paintMs: number): void {
@@ -339,6 +373,7 @@ export class CloudBrowserStream {
 
 	private scheduleReconnect(): void {
 		if (this.refs === 0 || this.snapshot.status === "fatal" || this.retryTimer !== undefined) return;
+		this.rejectPendingRequests(new Error("The browser viewer is reconnecting."));
 		this.update({ status: this.snapshot.frameUrl ? "reconnecting" : "connecting", viewportPending: true });
 		const delay = RETRY_DELAYS[Math.min(this.retry, RETRY_DELAYS.length - 1)]!;
 		this.retry += 1;
@@ -359,6 +394,7 @@ export class CloudBrowserStream {
 		this.socket?.close(1000, "browser viewer hidden");
 		this.socket = null;
 		this.retry = 0;
+		this.rejectPendingRequests(new Error("The browser viewer disconnected."));
 		this.pendingInputs.clear();
 		this.pendingFrame = null;
 		this.update({ status: "idle", viewportPending: true, owner: "idle" });
@@ -414,7 +450,8 @@ export class CloudBrowserStream {
 				this.update({ owner: control.running ? "agent" : normalizeOwner(control.owner) });
 				break;
 			case "input_ack": {
-				const pending = this.pendingInputs.get(control.inputSeq ?? 0);
+				const inputSeq = control.inputSeq ?? 0;
+				const pending = this.pendingInputs.get(inputSeq);
 				if (pending) {
 					pending.minFrameSeq = control.minFrameSeq;
 					this.capture("ao.renderer.cloud_browser_input_ack", {
@@ -422,15 +459,23 @@ export class CloudBrowserStream {
 						input_kind: pending.kind,
 					});
 				}
+				this.resolvePendingRequest(inputSeq);
+				this.update({ error: "" });
 				break;
 			}
-			case "input_rejected":
-				this.pendingInputs.delete(control.inputSeq ?? 0);
-				this.update({ owner: normalizeOwner(control.owner), error: control.message ?? "Browser input was rejected." });
+			case "input_rejected": {
+				const inputSeq = control.inputSeq ?? 0;
+				const message = browserControlErrorMessage(control);
+				this.pendingInputs.delete(inputSeq);
+				this.rejectPendingRequest(inputSeq, new Error(message));
+				this.update({ owner: normalizeOwner(control.owner), error: message });
 				break;
+			}
 			case "error":
 				if (control.code === "BROWSER_SESSION_UNAVAILABLE" || control.code === "BROWSER_RESTARTING") {
-					this.update({ status: this.snapshot.frameUrl ? "reconnecting" : "waiting", error: control.message ?? "" });
+					const message = control.message ?? "The session browser is reconnecting.";
+					this.rejectPendingRequests(new Error(message));
+					this.update({ status: this.snapshot.frameUrl ? "reconnecting" : "waiting", error: message });
 				} else {
 					this.update({ error: control.message ?? "The browser stream reported an error." });
 				}
@@ -503,6 +548,7 @@ export class CloudBrowserStream {
 			}
 		}
 		this.pendingInputs.clear();
+		this.rejectPendingRequests(new Error("The browser viewer restarted."));
 		this.pendingFrame = null;
 		this.update({ streamEpoch: epoch, frameSequence: 0, viewportPending: true });
 	}
@@ -520,6 +566,37 @@ export class CloudBrowserStream {
 		if (!this.snapshot.frameUrl && this.snapshot.frameWidth === 0 && this.snapshot.frameHeight === 0 && this.snapshot.frameSequence === 0) return;
 		if (this.snapshot.frameUrl) URL.revokeObjectURL(this.snapshot.frameUrl);
 		this.update({ frameUrl: "", frameWidth: 0, frameHeight: 0, frameSequence: 0 });
+	}
+
+	private controlUnavailableMessage(): string {
+		if (this.socket === null || this.socket.readyState !== WebSocket.OPEN) return "The browser viewer is disconnected.";
+		if (this.snapshot.viewportPending) return "The browser is still connecting.";
+		if (!this.snapshot.canOperate) return "This browser is read-only.";
+		return "The browser viewer is disconnected.";
+	}
+
+	private resolvePendingRequest(inputSeq: number): void {
+		const pending = this.pendingRequests.get(inputSeq);
+		if (!pending) return;
+		window.clearTimeout(pending.timer);
+		this.pendingRequests.delete(inputSeq);
+		pending.resolve();
+	}
+
+	private rejectPendingRequest(inputSeq: number, error: Error): void {
+		const pending = this.pendingRequests.get(inputSeq);
+		if (!pending) return;
+		window.clearTimeout(pending.timer);
+		this.pendingRequests.delete(inputSeq);
+		pending.reject(error);
+	}
+
+	private rejectPendingRequests(error: Error): void {
+		for (const [inputSeq, pending] of this.pendingRequests) {
+			window.clearTimeout(pending.timer);
+			this.pendingRequests.delete(inputSeq);
+			pending.reject(error);
+		}
 	}
 
 	private startPing(): void {
@@ -547,4 +624,21 @@ export class CloudBrowserStream {
 
 function normalizeOwner(owner: string | undefined): CloudBrowserSnapshot["owner"] {
 	return owner === "agent" || owner === "user" ? owner : "idle";
+}
+
+function browserControlErrorMessage(control: CloudBrowserControl): string {
+	if (control.message) return control.message;
+	switch (control.code) {
+		case "BROWSER_AGENT_CONTROL_ACTIVE":
+			return "The session agent is controlling the browser. Try again in a moment.";
+		case "BROWSER_INPUT_RATE_EXCEEDED":
+			return "Browser input is arriving too quickly. Try again in a moment.";
+		case "BROWSER_POLICY_DENIED":
+			return "This browser is read-only.";
+		case "BROWSER_SESSION_UNAVAILABLE":
+		case "BROWSER_RESTARTING":
+			return "The session browser is reconnecting.";
+		default:
+			return "Browser input was rejected.";
+	}
 }

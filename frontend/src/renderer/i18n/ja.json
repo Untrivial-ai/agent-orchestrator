@@ -46,6 +46,7 @@
 	"cloudLocalAuth.tabRegister": "登録",
 	"cloudLocalAuth.tabSignIn": "サインイン",
 	"cloudLocalAuth.title": "ローカル AO Cloud サインイン",
+	"cloudLocalAuth.useLocalDocker": "ローカル Docker を使用",
 	"cloudLocalAuth.working": "処理中…",
 	"common.breadcrumb": "パンくずリスト",
 	"common.close": "閉じる",

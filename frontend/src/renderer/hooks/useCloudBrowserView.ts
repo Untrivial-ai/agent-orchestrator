@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { BrowserViewModel, CloudBrowserSurfaceModel } from "./useBrowserView";
 import {
 	CloudBrowserStream,
@@ -68,12 +68,34 @@ export function useCloudBrowserView(options: {
 		stream?.getSnapshot ?? (() => empty),
 		() => empty,
 	);
+	const [commandNotice, setCommandNotice] = useState("");
+	const noticeTimerRef = useRef<number | undefined>(undefined);
 
 	useEffect(() => {
 		if (!stream || !ready || !options.active) return;
 		stream.retain();
 		return () => stream.release();
 	}, [options.active, ready, stream]);
+	useEffect(() => () => window.clearTimeout(noticeTimerRef.current), []);
+
+	const showCommandNotice = useCallback((message: string) => {
+		setCommandNotice(message);
+		window.clearTimeout(noticeTimerRef.current);
+		noticeTimerRef.current = window.setTimeout(() => setCommandNotice(""), 4_000);
+	}, []);
+	const request = useCallback(async (
+		control: Omit<CloudBrowserControl, "version" | "streamEpoch">,
+		fallback: string,
+	) => {
+		try {
+			if (!stream) throw new Error("The browser viewer is disconnected.");
+			await stream.request(control);
+			setCommandNotice("");
+			window.clearTimeout(noticeTimerRef.current);
+		} catch (error) {
+			showCommandNotice(error instanceof Error && error.message ? error.message : fallback);
+		}
+	}, [showCommandNotice, stream]);
 
 	const send = useCallback(
 		(control: Omit<CloudBrowserControl, "version" | "streamEpoch">) => stream?.send(control) ?? false,
@@ -94,11 +116,16 @@ export function useCloudBrowserView(options: {
 	}), [reportPaint, retry, send, setViewport, snapshot]);
 	const viewId = `cloud-browser-${options.sessionId}`;
 	const navigate = useCallback(async (url: string) => {
-		send({ type: "navigate", operation: "open", url });
-	}, [send]);
+		await request({ type: "navigate", operation: "open", url }, "Couldn't navigate to that URL");
+	}, [request]);
 	const tab = useCallback(async (operation: string, tabId?: string, url?: string) => {
-		send({ type: "tab", operation, tabId, url });
-	}, [send]);
+		const fallback = operation === "close"
+			? "Couldn't close that tab"
+			: operation === "select"
+				? "Couldn't switch to that tab"
+				: "Couldn't create a browser tab";
+		await request({ type: "tab", operation, tabId, url }, fallback);
+	}, [request]);
 
 	return {
 		viewId,
@@ -113,13 +140,13 @@ export function useCloudBrowserView(options: {
 		},
 		slotRef: () => undefined,
 		navigate,
-		goBack: async () => { send({ type: "navigate", operation: "back" }); },
-		goForward: async () => { send({ type: "navigate", operation: "forward" }); },
-		reload: async () => { send({ type: "navigate", operation: "reload" }); },
+		goBack: async () => request({ type: "navigate", operation: "back" }, "Couldn't go back"),
+		goForward: async () => request({ type: "navigate", operation: "forward" }, "Couldn't go forward"),
+		reload: async () => request({ type: "navigate", operation: "reload" }, "Couldn't reload that page"),
 		stop: async () => undefined,
 		tabs: snapshot.tabs,
 		activeTabId: snapshot.activeTabId,
-		tabNotice: snapshot.status === "reconnecting" ? "Reconnecting" : "",
+		tabNotice: commandNotice || (snapshot.status === "reconnecting" ? "Reconnecting" : ""),
 		selectTab: async (tabId) => tab("select", tabId),
 		closeTab: async (tabId) => tab("close", tabId),
 		openTab: async (url) => tab("new", undefined, url),

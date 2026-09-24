@@ -22,6 +22,18 @@ fi
 export AO_CLOUD_PORT="${AO_CLOUD_PORT:-8081}"
 export AO_CLOUD_POSTGRES_PORT="${AO_CLOUD_POSTGRES_PORT:-54329}"
 
+# Forge advances from Vite's default port when another desktop checkout already
+# owns it. Keep local viewer origins exact while covering that bounded fallback
+# range; packaged builds use the file origin and do not consume this setting.
+if [[ -z "${AO_CLOUD_BROWSER_VIEWER_ORIGINS:-}" ]]; then
+	browser_viewer_origins=()
+	for ((port = 5173; port <= 5273; port++)); do
+		browser_viewer_origins+=("http://localhost:${port}" "http://127.0.0.1:${port}")
+	done
+	printf -v AO_CLOUD_BROWSER_VIEWER_ORIGINS '%s,' "${browser_viewer_origins[@]}"
+	export AO_CLOUD_BROWSER_VIEWER_ORIGINS="${AO_CLOUD_BROWSER_VIEWER_ORIGINS%,}"
+fi
+
 # Stable, persisted keys so cloud-local-down.sh / cloud-local-reset.sh (which read
 # the same files via ao_docker_load_teardown_keys) match this bring-up. The files
 # live at the exact paths those teardown scripts consult.
@@ -42,7 +54,7 @@ export AO_CLOUD_PROVIDER_SECRET_KEY="${AO_CLOUD_PROVIDER_SECRET_KEY:-$(<"$provid
 export AO_CLOUD_WORKER_SIGNING_KEY="${AO_CLOUD_WORKER_SIGNING_KEY:-$(<"$worker_key_file")}"
 export AO_CLOUD_DOCKER_GID
 AO_CLOUD_DOCKER_GID="$(ao_docker_socket_gid)"
-export AO_CLOUD_DEVELOPMENT_SKIP_CREDENTIAL_VALIDATION="true"
+export AO_CLOUD_DEVELOPMENT_SKIP_CREDENTIAL_VALIDATION="${AO_CLOUD_DEVELOPMENT_SKIP_CREDENTIAL_VALIDATION:-true}"
 
 case "$(uname -m)" in
 	x86_64) export AO_CLOUD_LOCAL_TARGET_ARCH=amd64 ;;
@@ -109,8 +121,17 @@ wait_for_ready() {
 
 printf 'Building the local worker image...\n'
 compose --profile worker-image build worker-image
-printf 'Building and starting the control plane, PostgreSQL, and migrations...\n'
-compose up --build -d
+printf 'Starting PostgreSQL...\n'
+compose up -d postgres
+
+# Always run a fresh one-off migration container. Compose otherwise reuses the
+# exited service container even when AO_DATA_DIR now selects a new Postgres
+# data directory, leaving the new database empty while /readyz stays healthy.
+printf 'Applying database migrations...\n'
+compose run --build --rm migrate
+
+printf 'Building and starting the control plane...\n'
+compose up --build --no-deps -d control-plane
 wait_for_ready
 
 # Seed a default dev account so you can just sign in — no register step needed.

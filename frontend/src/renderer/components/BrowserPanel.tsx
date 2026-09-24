@@ -463,7 +463,7 @@ export function BrowserPanelView({
 		annotationQueue;
 	const hasNativeBrowser = !cloudSurface && Boolean(window.ao?.browser);
 	const showStaticPreview = !cloudSurface && !hasNativeBrowser && navState.url !== "";
-	const canAnnotate = Boolean(window.ao?.browser && viewId && navState.url);
+	const canAnnotate = !cloudSurface && Boolean(window.ao?.browser && viewId && navState.url);
 	const canRetryAnnotation = status === "error" && queuedCount > 0;
 	const [devicePreset, setDevicePreset] = useState<string | null>(null);
 	const [customDeviceWidth, setCustomDeviceWidth] = useState("390");
@@ -1257,10 +1257,11 @@ export function BrowserPanelView({
 						{tabNotice}
 					</span>
 				) : null}
-				<BrowserControlTooltip
-					label={annotationStatusLabel || agentStatusLabel || (canRetryAnnotation ? t("browser.retryAnnotation") : t("browser.annotate"))}
-				>
-					<span className="inline-flex">
+				{!cloudSurface ? (
+					<BrowserControlTooltip
+						label={annotationStatusLabel || agentStatusLabel || (canRetryAnnotation ? t("browser.retryAnnotation") : t("browser.annotate"))}
+					>
+						<span className="inline-flex">
 							<Button
 								aria-label={
 									canRetryAnnotation
@@ -1290,9 +1291,10 @@ export function BrowserPanelView({
 									<span aria-hidden="true" className="pointer-events-none absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-accent" />
 								) : null}
 							</Button>
-					</span>
-				</BrowserControlTooltip>
-				{browserDownloads.downloads.length > 0 ? (
+						</span>
+					</BrowserControlTooltip>
+				) : null}
+				{!cloudSurface && browserDownloads.downloads.length > 0 ? (
 					<DropdownMenu
 						onOpenChange={(open) => {
 							setDownloadsOpen(open);
@@ -1338,6 +1340,7 @@ export function BrowserPanelView({
 						setControlsOpen(open);
 						if (!open) setControlsView("root");
 					}}
+					open={controlsOpen}
 				>
 					<BrowserControlTooltip disabled={controlsOpen} label={t("browser.controls")}>
 						<DropdownMenuTrigger asChild>
@@ -1418,7 +1421,7 @@ export function BrowserPanelView({
 							/>
 						</label>
 							</>
-						) : controlsView === "profiles" ? (
+						) : controlsView === "profiles" && !cloudSurface ? (
 							<>
 								<DropdownMenuItem
 									className="gap-1.5"
@@ -1488,42 +1491,46 @@ export function BrowserPanelView({
 									{devicePreset !== null ? <span className="size-1.5 rounded-full bg-accent" /> : null}
 									<ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-passive" />
 								</DropdownMenuItem>
-								<DropdownMenuItem
-									className="gap-2"
-									onSelect={(event) => {
-										event.preventDefault();
-										setControlsView("profiles");
-									}}
-								>
-									<UserRound aria-hidden="true" className="size-icon-base shrink-0" />
-									<span className="flex-1">{t("browser.profile.label")}</span>
-									<span className="max-w-20 truncate text-caption text-passive">
-										{profileState.profileName ?? t("browser.profile.temporary")}
-									</span>
-									<ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-passive" />
-								</DropdownMenuItem>
-								<DropdownMenuItem
-									className="gap-2"
-									disabled={!canUseDevTools}
-									onSelect={() => void (devtoolsState.open ? closeDevTools() : openDevTools())}
-								>
-									<Bug aria-hidden="true" className="size-icon-base shrink-0" />
-									<span className="flex-1">{t(devtoolsState.open ? "browser.closeDevTools" : "browser.openDevTools")}</span>
-									{devtoolsState.open ? <Check aria-hidden="true" className="text-accent" /> : null}
-								</DropdownMenuItem>
-								<DropdownMenuItem className="gap-2" disabled={!canTakeScreenshot} onSelect={() => void takeScreenshot()}>
-									<Camera aria-hidden="true" className="size-icon-base shrink-0" />
-									<span className="flex-1">{t("browser.takeScreenshot")}</span>
-								</DropdownMenuItem>
-								<DropdownMenuItem className="gap-2" onSelect={() => openGlobalSettings("browserProfiles")}>
-									<Download aria-hidden="true" className="size-icon-base shrink-0" />
-									<span className="flex-1">{t("browser.downloads.title")}</span>
-								</DropdownMenuItem>
-								{closedTabs.length > 0 ? (
-									<DropdownMenuItem className="gap-2" onSelect={() => void reopenClosedTab()}>
-										<RotateCcw aria-hidden="true" className="size-icon-base shrink-0" />
-										<span className="flex-1">{t("browser.reopenClosedTab")}</span>
-									</DropdownMenuItem>
+								{!cloudSurface ? (
+									<>
+										<DropdownMenuItem
+											className="gap-2"
+											onSelect={(event) => {
+												event.preventDefault();
+												setControlsView("profiles");
+											}}
+										>
+											<UserRound aria-hidden="true" className="size-icon-base shrink-0" />
+											<span className="flex-1">{t("browser.profile.label")}</span>
+											<span className="max-w-20 truncate text-caption text-passive">
+												{profileState.profileName ?? t("browser.profile.temporary")}
+											</span>
+											<ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-passive" />
+										</DropdownMenuItem>
+										<DropdownMenuItem
+											className="gap-2"
+											disabled={!canUseDevTools}
+											onSelect={() => void (devtoolsState.open ? closeDevTools() : openDevTools())}
+										>
+											<Bug aria-hidden="true" className="size-icon-base shrink-0" />
+											<span className="flex-1">{t(devtoolsState.open ? "browser.closeDevTools" : "browser.openDevTools")}</span>
+											{devtoolsState.open ? <Check aria-hidden="true" className="text-accent" /> : null}
+										</DropdownMenuItem>
+										<DropdownMenuItem className="gap-2" disabled={!canTakeScreenshot} onSelect={() => void takeScreenshot()}>
+											<Camera aria-hidden="true" className="size-icon-base shrink-0" />
+											<span className="flex-1">{t("browser.takeScreenshot")}</span>
+										</DropdownMenuItem>
+										<DropdownMenuItem className="gap-2" onSelect={() => openGlobalSettings("browserProfiles")}>
+											<Download aria-hidden="true" className="size-icon-base shrink-0" />
+											<span className="flex-1">{t("browser.downloads.title")}</span>
+										</DropdownMenuItem>
+										{closedTabs.length > 0 ? (
+											<DropdownMenuItem className="gap-2" onSelect={() => void reopenClosedTab()}>
+												<RotateCcw aria-hidden="true" className="size-icon-base shrink-0" />
+												<span className="flex-1">{t("browser.reopenClosedTab")}</span>
+											</DropdownMenuItem>
+										) : null}
+									</>
 								) : null}
 							</>
 						)}

@@ -1611,6 +1611,11 @@ func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "MODEL_TOO_LONG", "Model must be 256 characters or fewer", nil)
 		return
 	}
+	idempotencyKey := strings.TrimSpace(in.IdempotencyKey)
+	if len(idempotencyKey) > maxIdempotencyKey {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "IDEMPOTENCY_KEY_TOO_LONG", "idempotencyKey is too long", nil)
+		return
+	}
 	if in.Mode != "" {
 		mode, err := domain.ParseSessionMode(string(in.Mode))
 		if err != nil {
@@ -1632,6 +1637,7 @@ func (c *SessionsController) delegateTask(w http.ResponseWriter, r *http.Request
 	out, err := c.Svc.DelegateTask(r.Context(), sessionsvc.DelegateTaskInput{
 		ProjectID:      in.ProjectID,
 		Brief:          domain.SanitizeControlChars(in.Brief),
+		IdempotencyKey: idempotencyKey,
 		RequestedAgent: in.Agent,
 		Model:          domain.SanitizeControlChars(strings.TrimSpace(in.Model)),
 		Effort:         sanitizedOptionalString(in.Effort),

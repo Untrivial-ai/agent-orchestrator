@@ -151,6 +151,74 @@ describe("CloudBrowserStream", () => {
 		stream.dispose();
 	});
 
+	it("acknowledges tab commands and returns actionable rejection errors", async () => {
+		const socket = new FakeSocket();
+		const stream = new CloudBrowserStream({
+			baseUrl: "https://cloud.example",
+			orgId: "org",
+			sessionId: "session",
+			client: {
+				createBrowserViewerTicket: vi.fn().mockResolvedValue({
+					ticket: "ticket", expiresIn: 300, protocolVersion: 1, canOperate: true,
+				}),
+			},
+			createSocket: () => socket,
+		});
+		stream.retain();
+		await Promise.resolve();
+		await Promise.resolve();
+		socket.open();
+		socket.message(JSON.stringify({ type: "state", version: 1, streamEpoch: 1 }));
+		socket.message(JSON.stringify({ type: "viewport_ack", version: 1, streamEpoch: 1 }));
+
+		const close = stream.request({ type: "tab", operation: "close", tabId: "tab-2" });
+		const closeControl = JSON.parse(String(socket.sent.at(-1))) as { inputSeq: number; operation: string; tabId: string };
+		expect(closeControl).toMatchObject({ operation: "close", tabId: "tab-2" });
+		socket.message(JSON.stringify({
+			type: "input_ack", version: 1, streamEpoch: 1, inputSeq: closeControl.inputSeq,
+		}));
+		await expect(close).resolves.toBeUndefined();
+
+		const select = stream.request({ type: "tab", operation: "select", tabId: "tab-1" });
+		const selectControl = JSON.parse(String(socket.sent.at(-1))) as { inputSeq: number };
+		socket.message(JSON.stringify({
+			type: "input_rejected", version: 1, streamEpoch: 1,
+			inputSeq: selectControl.inputSeq, code: "BROWSER_AGENT_CONTROL_ACTIVE", owner: "agent",
+		}));
+		await expect(select).rejects.toThrow("The session agent is controlling the browser. Try again in a moment.");
+		expect(stream.getSnapshot()).toMatchObject({
+			owner: "agent",
+			error: "The session agent is controlling the browser. Try again in a moment.",
+		});
+		stream.dispose();
+	});
+
+	it("rejects an acknowledged command immediately when the stream disconnects", async () => {
+		const socket = new FakeSocket();
+		const stream = new CloudBrowserStream({
+			baseUrl: "https://cloud.example",
+			orgId: "org",
+			sessionId: "session",
+			client: {
+				createBrowserViewerTicket: vi.fn().mockResolvedValue({
+					ticket: "ticket", expiresIn: 300, protocolVersion: 1, canOperate: true,
+				}),
+			},
+			createSocket: () => socket,
+		});
+		stream.retain();
+		await Promise.resolve();
+		await Promise.resolve();
+		socket.open();
+		socket.message(JSON.stringify({ type: "state", version: 1, streamEpoch: 1 }));
+		socket.message(JSON.stringify({ type: "viewport_ack", version: 1, streamEpoch: 1 }));
+
+		const close = stream.request({ type: "tab", operation: "close", tabId: "tab-2" });
+		socket.serverClose();
+		await expect(close).rejects.toThrow("The browser viewer is reconnecting.");
+		stream.dispose();
+	});
+
 	it("measures bounded viewer latency, reconnects, and never replays input", async () => {
 		vi.useFakeTimers();
 		let now = 0;

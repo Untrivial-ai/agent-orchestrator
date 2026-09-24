@@ -84,6 +84,10 @@ const CHAT_PREFLIGHT_CODES = new Set([
 ]);
 
 const READINESS_RECONCILE_CODES = new Set(["AGENT_BINARY_NOT_FOUND", "CHAT_AUTH_REQUIRED"]);
+const LOCAL_IDEMPOTENCY_RETAIN_CODES = new Set([
+	"TASK_DELEGATION_IN_PROGRESS",
+	"TASK_DELEGATION_COMMIT_FAILED",
+]);
 
 class TaskCreateError extends Error {
 	constructor(
@@ -137,6 +141,8 @@ export function TaskComposer({
 	const [modelTouched, setModelTouched] = useState(false);
 	const [effortTouched, setEffortTouched] = useState(false);
 	const [isSubmitting, setIsSubmitting] = useState(false);
+	const submittingRef = useRef(false);
+	const localSubmissionRef = useRef<{ signature: string; idempotencyKey: string } | undefined>(undefined);
 	const cloudPreparationRef = useRef<CloudSessionPreparation | undefined>(undefined);
 	const cloudPreparationUnavailableRef = useRef<unknown>(undefined);
 	const [error, setError] = useState<string | undefined>();
@@ -201,13 +207,14 @@ export function TaskComposer({
 	);
 
 	const createLocalTask = useCallback(
-		async (input: CreateTaskInput): Promise<string> => {
+		async (input: CreateTaskInput, idempotencyKey: string): Promise<string> => {
 			void captureRendererEvent("ao.renderer.task_create_requested", { project_id: input.projectId });
 			try {
 				const { data, error } = await apiClient.POST("/api/v1/orchestrators/delegate", {
 				body: {
 					projectId: input.projectId,
 					brief: input.brief,
+					idempotencyKey,
 					agent: input.agent,
 					...(input.model ? { model: input.model } : {}),
 					...(input.effort !== undefined ? { effort: input.effort } : {}),
@@ -273,8 +280,12 @@ export function TaskComposer({
 	);
 
 	const createTask = useCallback(
-		(input: CreateTaskInput): Promise<string> =>
-			isStandalone ? createStandaloneTask(input) : isCloudProject ? createCloudTask(input) : createLocalTask(input),
+		(input: CreateTaskInput, idempotencyKey?: string): Promise<string> =>
+			isStandalone
+				? createStandaloneTask(input)
+				: isCloudProject
+					? createCloudTask(input)
+					: createLocalTask(input, idempotencyKey ?? globalThis.crypto.randomUUID()),
 		[isStandalone, isCloudProject, createStandaloneTask, createCloudTask, createLocalTask],
 	);
 
@@ -601,25 +612,24 @@ export function TaskComposer({
 		interfaceMode?: "tui",
 		approvalMode?: "bypass-permissions",
 	) => {
-		if (!projectId || !canSubmit || isSubmitting) return;
-		const activePreparation = isCloudProject && cloudPreparationUnavailableRef.current === undefined
-			? cloudPreparationRef.current
-			: undefined;
-		const cloudStartupAttempt = isCloudProject
-			? (activePreparation?.attempt ?? beginCloudStartupAttempt())
-			: undefined;
-
-		const cleanModel = selectedModel.trim();
-		const cleanMode = selectedMode.trim();
-		// Same rule as agent: the visible selection is authoritative, whether
-		// it came from project setup or the catalog default.
-		const requestedModel = cleanModel || cleanMode || undefined;
-		const requestedEffort = effortTouched || rememberedEffortIsExplicit ? effort : undefined;
-
+		if (!projectId || !canSubmit || isSubmitting || submittingRef.current) return;
+		submittingRef.current = true;
 		setIsSubmitting(true);
 		setError(undefined);
 		setFallbackAction(undefined);
 		try {
+			const activePreparation = isCloudProject && cloudPreparationUnavailableRef.current === undefined
+				? cloudPreparationRef.current
+				: undefined;
+			const cloudStartupAttempt = isCloudProject
+				? (activePreparation?.attempt ?? beginCloudStartupAttempt())
+				: undefined;
+			const cleanModel = selectedModel.trim();
+			const cleanMode = selectedMode.trim();
+			// Same rule as agent: the visible selection is authoritative, whether
+			// it came from project setup or the catalog default.
+			const requestedModel = cleanModel || cleanMode || undefined;
+			const requestedEffort = effortTouched || rememberedEffortIsExplicit ? effort : undefined;
 			const baseInput: CreateTaskInput = {
 				projectId,
 				brief,
@@ -678,10 +688,20 @@ export function TaskComposer({
 				return;
 			}
 			const attachmentPayloads = await toSettledPayload();
-			const sessionId = await createTask({
+			const taskInput: CreateTaskInput = {
 				...baseInput,
 				attachments: attachmentPayloads.length > 0 ? attachmentPayloads : undefined,
-			});
+			};
+			let localIdempotencyKey: string | undefined;
+			if (!isCloudProject && !isStandalone) {
+				const signature = JSON.stringify(taskInput);
+				const existing = localSubmissionRef.current;
+				localIdempotencyKey = existing?.signature === signature
+					? existing.idempotencyKey
+					: globalThis.crypto.randomUUID();
+				localSubmissionRef.current = { signature, idempotencyKey: localIdempotencyKey };
+			}
+			const sessionId = await createTask(taskInput, localIdempotencyKey);
 			if (selectedAgent) {
 				const preference: TaskComposerAgentPreference = {
 					model: cleanModel,
@@ -692,7 +712,18 @@ export function TaskComposer({
 				rememberTaskComposerPreference(preferenceContext, selectedAgent, preference);
 			}
 			onCreated(sessionId);
+			if (localIdempotencyKey && localSubmissionRef.current?.idempotencyKey === localIdempotencyKey) {
+				localSubmissionRef.current = undefined;
+			}
 		} catch (err) {
+			if (
+				!isCloudProject &&
+				!isStandalone &&
+				err instanceof TaskCreateError &&
+				!LOCAL_IDEMPOTENCY_RETAIN_CODES.has(err.code ?? "")
+			) {
+				localSubmissionRef.current = undefined;
+			}
 			const canBypassApprovals =
 				err instanceof TaskCreateError &&
 				err.code === "SESSION_MODE_UNSUPPORTED" &&
@@ -709,6 +740,7 @@ export function TaskComposer({
 			);
 			setError(err instanceof Error ? err.message : t("newTask.unableToStart"));
 		} finally {
+			submittingRef.current = false;
 			setIsSubmitting(false);
 		}
 	};

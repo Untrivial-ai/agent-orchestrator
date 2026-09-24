@@ -3480,6 +3480,7 @@ export interface components {
             attachments?: components["schemas"]["AttachmentInput"][];
             brief: string;
             effort?: null | string;
+            idempotencyKey?: string;
             /** @enum {string} */
             mode?: "tui" | "chat";
             model?: string;

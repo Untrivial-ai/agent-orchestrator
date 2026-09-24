@@ -88,6 +88,8 @@ type viewerSession struct {
 	framesSent     atomic.Uint64
 	bytesSent      atomic.Uint64
 	inputRejected  atomic.Uint64
+	// Chromium targets and browser command tabs use different identifier namespaces.
+	engineTabIDs map[string]string
 }
 
 type deferredViewerFrame struct {
@@ -384,7 +386,11 @@ func (v *ViewerController) handleTargetCreated(state *viewerSession, event cdpEv
 	state.opMu.Unlock()
 	if created.TargetInfo.Type == "page" && created.TargetInfo.TargetID != "" && created.TargetInfo.OpenerID == activeTarget {
 		if v.opts.Engine != nil && v.opts.Arbiter.Owner() == ControlUser {
-			if _, err := v.opts.Engine.Execute(state.ctx, "tab-select", map[string]any{"tabId": created.TargetInfo.TargetID}); err != nil {
+			engineTabID, err := v.engineTabIDForTarget(state, created.TargetInfo.TargetID, false)
+			if err == nil {
+				_, err = v.opts.Engine.Execute(state.ctx, "tab-select", map[string]any{"tabId": engineTabID})
+			}
+			if err != nil {
 				v.opts.Logger.Debug("sync browser engine to user popup", "error", err)
 			}
 		}
@@ -822,7 +828,11 @@ func (v *ViewerController) tabOperation(state *viewerSession, control browserstr
 			return errors.New("tab id is required")
 		}
 		if v.opts.Engine != nil {
-			if _, err := v.opts.Engine.Execute(state.ctx, "tab-select", map[string]any{"tabId": control.TabID}); err != nil {
+			engineTabID, err := v.engineTabIDForTarget(state, control.TabID, true)
+			if err != nil {
+				return err
+			}
+			if _, err := v.opts.Engine.Execute(state.ctx, "tab-select", map[string]any{"tabId": engineTabID}); err != nil {
 				return err
 			}
 		} else if err := state.cdp.Call(state.ctx, "", "Target.activateTarget", map[string]any{"targetId": control.TabID}, nil); err != nil {
@@ -842,17 +852,38 @@ func (v *ViewerController) tabOperation(state *viewerSession, control browserstr
 		}
 		targetID := ""
 		if v.opts.Engine != nil {
+			before, err := v.listTargets(state)
+			if err != nil {
+				return err
+			}
 			args := map[string]any{}
 			if targetURL != "about:blank" {
 				args["url"] = targetURL
 			}
-			if _, err := v.opts.Engine.Execute(state.ctx, "tab-new", args); err != nil {
-				return err
-			}
-			var err error
-			targetID, err = v.engineActiveTabID(state.ctx)
+			result, err := v.opts.Engine.Execute(state.ctx, "tab-new", args)
 			if err != nil {
 				return err
+			}
+			engineTabID := stringField(result["tabId"])
+			if engineTabID == "" {
+				engineTabID, err = v.engineActiveTabID(state.ctx)
+				if err != nil {
+					return err
+				}
+			}
+			after, err := v.listTargets(state)
+			if err != nil {
+				return err
+			}
+			targetID = createdTargetID(before, after, targetURL)
+			if targetID != "" && engineTabID != "" {
+				v.rememberEngineTabID(state, targetID, engineTabID)
+			}
+			if targetID == "" && engineTabID != "" {
+				targetID, err = v.targetIDForEngineTab(state, engineTabID)
+				if err != nil {
+					return err
+				}
 			}
 		} else {
 			var created struct {
@@ -875,19 +906,24 @@ func (v *ViewerController) tabOperation(state *viewerSession, control browserstr
 			targetID = state.targetID
 		}
 		if v.opts.Engine != nil {
-			args := map[string]any{}
-			if control.TabID != "" {
-				args["tabId"] = control.TabID
-			}
-			if _, err := v.opts.Engine.Execute(state.ctx, "tab-close", args); err != nil {
+			engineTabID, err := v.engineTabIDForTarget(state, targetID, true)
+			if err != nil {
 				return err
 			}
+			if _, err := v.opts.Engine.Execute(state.ctx, "tab-close", map[string]any{"tabId": engineTabID}); err != nil {
+				return err
+			}
+			v.forgetEngineTarget(state, targetID)
 			activeID, err := v.engineActiveTabID(state.ctx)
 			if err != nil {
 				return err
 			}
 			if activeID != "" {
-				if err := v.switchTarget(state, activeID); err != nil {
+				activeTargetID, err := v.targetIDForEngineTab(state, activeID)
+				if err != nil {
+					return err
+				}
+				if err := v.switchTarget(state, activeTargetID); err != nil {
 					return err
 				}
 			}
@@ -912,17 +948,200 @@ func (v *ViewerController) tabOperation(state *viewerSession, control browserstr
 	return nil
 }
 
-func (v *ViewerController) engineActiveTabID(ctx context.Context) (string, error) {
+type engineTabState struct {
+	id     string
+	url    string
+	title  string
+	active bool
+}
+
+func (v *ViewerController) engineTabs(ctx context.Context) ([]engineTabState, error) {
 	data, err := v.opts.Engine.Execute(ctx, "tabs", nil)
+	if err != nil {
+		return nil, err
+	}
+	rawTabs, _ := data["tabs"].([]any)
+	tabs := make([]engineTabState, 0, len(rawTabs))
+	for _, raw := range rawTabs {
+		tab, _ := raw.(map[string]any)
+		id := stringField(tab["tabId"])
+		if id == "" {
+			continue
+		}
+		active, _ := tab["active"].(bool)
+		tabs = append(tabs, engineTabState{
+			id: id, url: SanitizeBrowserURL(stringField(tab["url"])),
+			title: SanitizeBrowserTitle(stringField(tab["title"])), active: active,
+		})
+	}
+	return tabs, nil
+}
+
+func (v *ViewerController) engineTabIDForTarget(state *viewerSession, targetID string, alignActive bool) (string, error) {
+	engineTabs, err := v.engineTabs(state.ctx)
 	if err != nil {
 		return "", err
 	}
-	rawTabs, _ := data["tabs"].([]any)
-	for _, raw := range rawTabs {
-		tab, _ := raw.(map[string]any)
-		active, _ := tab["active"].(bool)
-		if active {
-			return stringField(tab["tabId"]), nil
+	targets, err := v.listTargets(state)
+	if err != nil {
+		return "", err
+	}
+	v.reconcileEngineTabIDs(state, engineTabs, targets, alignActive)
+	state.opMu.Lock()
+	defer state.opMu.Unlock()
+	if engineTabID := state.engineTabIDs[targetID]; engineTabID != "" {
+		return engineTabID, nil
+	}
+	return "", errors.New("browser engine tab could not be matched to the viewer target")
+}
+
+func (v *ViewerController) targetIDForEngineTab(state *viewerSession, engineTabID string) (string, error) {
+	engineTabs, err := v.engineTabs(state.ctx)
+	if err != nil {
+		return "", err
+	}
+	targets, err := v.listTargets(state)
+	if err != nil {
+		return "", err
+	}
+	v.reconcileEngineTabIDs(state, engineTabs, targets, false)
+	state.opMu.Lock()
+	defer state.opMu.Unlock()
+	for targetID, candidate := range state.engineTabIDs {
+		if candidate == engineTabID {
+			return targetID, nil
+		}
+	}
+	return "", errors.New("browser viewer target could not be matched to the engine tab")
+}
+
+func (v *ViewerController) reconcileEngineTabIDs(state *viewerSession, engineTabs []engineTabState, targets []browserstream.Tab, alignActive bool) {
+	state.opMu.Lock()
+	defer state.opMu.Unlock()
+	if state.engineTabIDs == nil {
+		state.engineTabIDs = map[string]string{}
+	}
+	targetExists := make(map[string]bool, len(targets))
+	engineExists := make(map[string]bool, len(engineTabs))
+	for _, target := range targets {
+		targetExists[target.ID] = true
+	}
+	for _, tab := range engineTabs {
+		engineExists[tab.id] = true
+	}
+	for targetID, engineTabID := range state.engineTabIDs {
+		if !targetExists[targetID] || !engineExists[engineTabID] {
+			delete(state.engineTabIDs, targetID)
+		}
+	}
+	bind := func(targetID, engineTabID string) {
+		if targetID == "" || engineTabID == "" {
+			return
+		}
+		for existingTarget, existingEngineTab := range state.engineTabIDs {
+			if existingTarget == targetID || existingEngineTab == engineTabID {
+				delete(state.engineTabIDs, existingTarget)
+			}
+		}
+		state.engineTabIDs[targetID] = engineTabID
+	}
+	if alignActive && targetExists[state.targetID] {
+		for _, tab := range engineTabs {
+			if tab.active {
+				bind(state.targetID, tab.id)
+				break
+			}
+		}
+	}
+	usedEngineTabs := map[string]bool{}
+	for _, engineTabID := range state.engineTabIDs {
+		usedEngineTabs[engineTabID] = true
+	}
+	for _, target := range targets {
+		if state.engineTabIDs[target.ID] != "" {
+			continue
+		}
+		matches := make([]string, 0, 1)
+		for _, tab := range engineTabs {
+			if usedEngineTabs[tab.id] || tab.url != target.URL || tab.title != target.Title {
+				continue
+			}
+			matches = append(matches, tab.id)
+		}
+		if len(matches) == 1 {
+			bind(target.ID, matches[0])
+			usedEngineTabs[matches[0]] = true
+		}
+	}
+	unmappedTargets := make([]string, 0, len(targets))
+	unmappedEngineTabs := make([]string, 0, len(engineTabs))
+	for _, target := range targets {
+		if state.engineTabIDs[target.ID] == "" {
+			unmappedTargets = append(unmappedTargets, target.ID)
+		}
+	}
+	for _, tab := range engineTabs {
+		if !usedEngineTabs[tab.id] {
+			unmappedEngineTabs = append(unmappedEngineTabs, tab.id)
+		}
+	}
+	if len(unmappedTargets) == len(unmappedEngineTabs) {
+		for index := range unmappedTargets {
+			bind(unmappedTargets[index], unmappedEngineTabs[index])
+		}
+	}
+}
+
+func (v *ViewerController) rememberEngineTabID(state *viewerSession, targetID, engineTabID string) {
+	state.opMu.Lock()
+	defer state.opMu.Unlock()
+	if state.engineTabIDs == nil {
+		state.engineTabIDs = map[string]string{}
+	}
+	for existingTarget, existingEngineTab := range state.engineTabIDs {
+		if existingTarget == targetID || existingEngineTab == engineTabID {
+			delete(state.engineTabIDs, existingTarget)
+		}
+	}
+	state.engineTabIDs[targetID] = engineTabID
+}
+
+func (v *ViewerController) forgetEngineTarget(state *viewerSession, targetID string) {
+	state.opMu.Lock()
+	defer state.opMu.Unlock()
+	delete(state.engineTabIDs, targetID)
+}
+
+func createdTargetID(before, after []browserstream.Tab, targetURL string) string {
+	existing := make(map[string]bool, len(before))
+	for _, tab := range before {
+		existing[tab.ID] = true
+	}
+	candidates := make([]browserstream.Tab, 0, 1)
+	for _, tab := range after {
+		if !existing[tab.ID] {
+			candidates = append(candidates, tab)
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0].ID
+	}
+	for _, tab := range candidates {
+		if tab.URL == targetURL {
+			return tab.ID
+		}
+	}
+	return ""
+}
+
+func (v *ViewerController) engineActiveTabID(ctx context.Context) (string, error) {
+	tabs, err := v.engineTabs(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, tab := range tabs {
+		if tab.active {
+			return tab.id, nil
 		}
 	}
 	return "", nil
@@ -1086,14 +1305,22 @@ func (v *ViewerController) AgentActionFinished(action string, args map[string]an
 	if state == nil {
 		return
 	}
-	targetID := ""
+	engineTabID := ""
 	switch action {
 	case "tab-select":
-		targetID, _ = args["tabId"].(string)
+		engineTabID, _ = args["tabId"].(string)
 	case "tab-new":
-		targetID, _ = result["id"].(string)
+		engineTabID, _ = result["id"].(string)
 	case "tab-close":
-		targetID, _ = result["activeTabId"].(string)
+		engineTabID, _ = result["activeTabId"].(string)
+	}
+	targetID := ""
+	if engineTabID != "" {
+		var err error
+		targetID, err = v.targetIDForEngineTab(state, engineTabID)
+		if err != nil {
+			v.opts.Logger.Debug("match browser viewer target after agent action", "error", err, "action", action)
+		}
 	}
 	state.opMu.Lock()
 	activeTarget := state.targetID

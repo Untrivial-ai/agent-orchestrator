@@ -46,6 +46,7 @@
 	"cloudLocalAuth.tabRegister": "회원가입",
 	"cloudLocalAuth.tabSignIn": "로그인",
 	"cloudLocalAuth.title": "로컬 AO Cloud 로그인",
+	"cloudLocalAuth.useLocalDocker": "로컬 Docker 사용",
 	"cloudLocalAuth.working": "처리 중…",
 	"common.breadcrumb": "경로",
 	"common.close": "닫기",

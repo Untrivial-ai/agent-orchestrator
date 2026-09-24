@@ -46,6 +46,7 @@
 	"cloudLocalAuth.tabRegister": "S'inscrire",
 	"cloudLocalAuth.tabSignIn": "Se connecter",
 	"cloudLocalAuth.title": "Connexion locale à AO Cloud",
+	"cloudLocalAuth.useLocalDocker": "Utiliser Docker local",
 	"cloudLocalAuth.working": "En cours…",
 	"common.breadcrumb": "Fil d'Ariane",
 	"common.close": "Fermer",

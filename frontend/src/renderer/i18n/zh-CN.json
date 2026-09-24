@@ -46,6 +46,7 @@
 	"cloudLocalAuth.tabRegister": "注册",
 	"cloudLocalAuth.tabSignIn": "登录",
 	"cloudLocalAuth.title": "本地 AO Cloud 登录",
+	"cloudLocalAuth.useLocalDocker": "使用本地 Docker",
 	"cloudLocalAuth.working": "处理中…",
 	"common.breadcrumb": "面包屑导航",
 	"common.close": "关闭",

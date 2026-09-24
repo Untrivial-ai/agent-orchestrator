@@ -114,9 +114,56 @@ func main() {
 	if err := viewer.waitFrame(ctx, navigationAck.MinFrameSeq); err != nil {
 		fatal(err)
 	}
+	originalTabID := viewer.lastState.ActiveTabID
+	if originalTabID == "" {
+		fatal(errors.New("viewer state did not report the fixture tab"))
+	}
+	if err := viewer.send(ctx, browserstream.Control{
+		Type: "tab", InputSeq: 2, Operation: "new", URL: "http://localhost:3000/?second=1",
+	}); err != nil {
+		fatal(err)
+	}
+	if _, err := viewer.waitInputAck(ctx, 2); err != nil {
+		fatal(fmt.Errorf("open viewer tab: %w", err))
+	}
+	newTabState, err := viewer.waitControl(ctx, func(control browserstream.Control) bool {
+		return control.Type == "state" && len(control.Tabs) == 2 &&
+			control.ActiveTabID != "" && control.ActiveTabID != originalTabID
+	})
+	if err != nil {
+		fatal(fmt.Errorf("wait for opened viewer tab: %w", err))
+	}
+	newTabID := newTabState.ActiveTabID
+	if err := viewer.send(ctx, browserstream.Control{
+		Type: "tab", InputSeq: 3, Operation: "select", TabID: originalTabID,
+	}); err != nil {
+		fatal(err)
+	}
+	if _, err := viewer.waitInputAck(ctx, 3); err != nil {
+		fatal(fmt.Errorf("select viewer tab: %w", err))
+	}
+	if _, err := viewer.waitControl(ctx, func(control browserstream.Control) bool {
+		return control.Type == "state" && control.ActiveTabID == originalTabID
+	}); err != nil {
+		fatal(fmt.Errorf("wait for selected viewer tab: %w", err))
+	}
+	if err := viewer.send(ctx, browserstream.Control{
+		Type: "tab", InputSeq: 4, Operation: "close", TabID: newTabID,
+	}); err != nil {
+		fatal(err)
+	}
+	if _, err := viewer.waitInputAck(ctx, 4); err != nil {
+		fatal(fmt.Errorf("close viewer tab: %w", err))
+	}
+	if _, err := viewer.waitControl(ctx, func(control browserstream.Control) bool {
+		return control.Type == "state" && len(control.Tabs) == 1 &&
+			control.ActiveTabID == originalTabID && control.Tabs[0].ID == originalTabID
+	}); err != nil {
+		fatal(fmt.Errorf("wait for closed viewer tab: %w", err))
+	}
 
 	inputStarted := time.Now()
-	sequence := uint64(2)
+	sequence := uint64(5)
 	for _, control := range []browserstream.Control{
 		{Type: "input", InputSeq: sequence, Kind: "pointerDown", X: 80, Y: 40, Button: "left", Buttons: 1, ClickCount: 1},
 		{Type: "input", InputSeq: sequence + 1, Kind: "pointerUp", X: 80, Y: 40, Button: "left", ClickCount: 1},
@@ -295,6 +342,7 @@ func main() {
 		"inputReplayPrevented":     true,
 		"slowViewerRecovered":      true,
 		"slowViewerRecoveryMs":     slowViewerRecovery.Milliseconds(),
+		"tabControlsVerified":      true,
 		"userInputVisibleMs":       viewerInputVisible.Milliseconds(),
 		"viewerReconnectMs":        viewerReconnect.Milliseconds(),
 		"viewerAndCommandShared":   true,

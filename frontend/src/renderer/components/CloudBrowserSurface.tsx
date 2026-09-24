@@ -256,7 +256,8 @@ export function CloudBrowserSurface({ model }: { model: CloudBrowserSurfaceModel
 		send({ type: "input", kind, text: event.data });
 	}, [inputEnabled, send]);
 
-	const statusLabel = snapshot.status === "connecting" || snapshot.status === "waiting"
+	const blankPage = !snapshot.frameUrl && (!snapshot.url || snapshot.url === "about:blank");
+	const statusLabel = (snapshot.status === "connecting" || snapshot.status === "waiting") && !blankPage
 		? t("browser.cloud.starting")
 		: snapshot.status === "reconnecting"
 			? t("browser.cloud.reconnecting")
@@ -320,6 +321,11 @@ export function CloudBrowserSurface({ model }: { model: CloudBrowserSurfaceModel
 							</button>
 						) : null}
 					</div>
+				</div>
+			) : null}
+			{blankPage && snapshot.status !== "fatal" && snapshot.status !== "reconnecting" ? (
+				<div className="pointer-events-none absolute inset-0 grid place-items-center p-5 text-center font-mono text-xs text-passive">
+					<p>{t("browser.emptyUrl")}</p>
 				</div>
 			) : null}
 			{ownerLabel ? (
