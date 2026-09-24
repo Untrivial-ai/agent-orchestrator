@@ -290,6 +290,14 @@ func OpenPreMigrated(dataDir string) (*Store, error) {
 }
 
 func migrate(db *sql.DB) error {
+	want, err := expectedMigrationVersion()
+	if err != nil {
+		return fmt.Errorf("determine expected migration version: %w", err)
+	}
+	if err := rejectNewerDatabase(db, want); err != nil {
+		return err
+	}
+
 	gooseMu.Lock()
 	defer gooseMu.Unlock()
 	goose.SetBaseFS(migrationsFS)
@@ -353,6 +361,39 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	return reconcileSchema(db)
+}
+
+// rejectNewerDatabase prevents an older daemon from opening a database that
+// was migrated by a newer build. goose.WithAllowMissing is intentionally used
+// for forward-compatible interleaved migrations, but it also allows a
+// downgrade to proceed against a schema whose generated queries this binary
+// cannot understand. That failure is otherwise delayed until a background
+// observer or the first user request, where it becomes an opaque SQL error.
+func rejectNewerDatabase(db *sql.DB, expected int64) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return fmt.Errorf("inspect migration ledger: %w", err)
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var applied int64
+	if err := db.QueryRow(
+		`SELECT COALESCE(MAX(version_id), 0) FROM goose_db_version WHERE is_applied = 1`,
+	).Scan(&applied); err != nil {
+		return fmt.Errorf("read migration ledger: %w", err)
+	}
+	if applied <= expected {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"database schema version %d is newer than this AO binary supports (version %d); update Agent Orchestrator before starting it",
+		applied, expected,
+	)
 }
 
 // repairRenumberedAgentInstallJobsMigrationHistory preserves development

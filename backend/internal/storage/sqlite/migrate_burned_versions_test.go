@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -261,6 +262,24 @@ SELECT COUNT(*) FROM (
 	}
 	if err := migrate(db); err != nil {
 		t.Fatalf("repeat migration over a foreign interleaved version: %v", err)
+	}
+}
+
+func TestMigrateRejectsDatabaseNewerThanEmbeddedMigrations(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, 154)
+	if _, err := db.Exec(
+		`INSERT INTO goose_db_version (version_id, is_applied) VALUES (155, 1)`,
+	); err != nil {
+		t.Fatalf("seed newer migration version: %v", err)
+	}
+
+	err := migrate(db)
+	if err == nil {
+		t.Fatal("migrate accepted a database newer than the embedded migrations")
+	}
+	want := "database schema version 155 is newer than this AO binary supports"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("migrate error = %q, want substring %q", err, want)
 	}
 }
 
