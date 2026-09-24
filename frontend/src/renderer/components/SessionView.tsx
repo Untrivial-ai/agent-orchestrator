@@ -567,7 +567,6 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 		() => queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
 		[queryClient],
 	);
-	const workspaceSessionQuery = useWorkspaceSession(sessionId);
 	const workspaceQuery = useWorkspaceQuery();
 	const workspaces = workspaceQuery.data ?? [];
 	const routedWorkspace = projectId ? workspaces.find((workspace) => workspace.id === projectId) : undefined;
@@ -583,6 +582,8 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 		sessionId,
 		Boolean(cloudOrgId && (isCloudRoute || !listedSession)),
 	);
+	const localLookupEnabled = !cloudOrgId || Boolean(listedSession && !listedSession.cloud) || Boolean(!isCloudRoute && cloudRouteSession.isError);
+	const workspaceSessionQuery = useWorkspaceSession(sessionId, localLookupEnabled);
 	const { client: cloudCpClient } = useCloudCp();
 	const theme = useResolvedTheme();
 	const browserOnly = Boolean(workspaceSessionQuery.data && isOrchestratorSession(workspaceSessionQuery.data));
@@ -754,7 +755,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 	const session =
 		listedSession ??
 		workspaceSessionQuery.data ??
-		(cloudOrgId && cloudRouteSession.data && cloudSessionWorkspace
+		(cloudOrgId && cloudRouteSession.data
 			? toCloudWorkspaceSession(
 					cloudRouteSession.data,
 					{
@@ -1536,7 +1537,11 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 				})
 			: undefined;
 	const showInterfaceSwitchAction = Boolean(
-		cloudEnabled && sessionId && !interfaceSwitchUnsupported,
+		!interfaceSwitchUnsupported && (
+			isCloudSession
+				? cloudEnabled && sessionId
+				: interfaceSwitch.status || interfaceSwitch.isLoading || interfaceSwitch.statusError
+		),
 	);
 	const newTerminalError = openShellTerminal.error ? apiErrorMessage(openShellTerminal.error) : undefined;
 	const newShellTerminalAction = useMemo(() =>
@@ -2228,7 +2233,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 									)}
 								</div>
 							) : null}
-							{cloudEnabled && interfaceSwitch.startError && !interfaceSwitchDialogOpen && !historyRecoveryNotice && !restartRequiredNotice ? (
+							{interfaceSwitch.startError && !interfaceSwitchDialogOpen && !historyRecoveryNotice && !restartRequiredNotice ? (
 								<div role="alert" className="absolute left-1/2 top-3 z-20 flex w-[min(34rem,calc(100%-1.5rem))] -translate-x-1/2 items-start gap-3 rounded-lg border border-destructive/40 bg-popover px-3 py-2.5 text-xs shadow-md">
 									<div className="min-w-0 flex-1">
 										<p className="font-medium">{t("session.interfaceSwitchFailed")}</p>
@@ -2237,7 +2242,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 									<button type="button" aria-label={t("session.dismissInterfaceSwitchError")} className="shrink-0 rounded px-1 text-muted-foreground hover:text-foreground" onClick={interfaceSwitch.resetStartError}>{t("session.dismissInterfaceSwitchNotice")}</button>
 								</div>
 							) : null}
-							{cloudEnabled && (!interfaceSwitch.startError || historyRecoveryNotice || restartRequiredNotice) && hasInterfaceNotice ? (
+							{(!interfaceSwitch.startError || historyRecoveryNotice || restartRequiredNotice) && hasInterfaceNotice ? (
 								<SessionInterfaceTransitionNotice
 									transition={interfaceSwitch.transition}
 									dismissing={interfaceSwitch.acknowledgingNotice}

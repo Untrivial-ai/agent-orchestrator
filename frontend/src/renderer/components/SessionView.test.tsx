@@ -45,6 +45,7 @@ const cloudSessionQueryState = vi.hoisted(() => ({
 	isLoading: false,
 }));
 const cloudGateState = vi.hoisted(() => ({ cloudEnabled: true }));
+const workspaceSessionLookup = vi.hoisted(() => vi.fn());
 
 async function chooseSessionAction(name: string) {
 	const user = userEvent.setup();
@@ -621,12 +622,15 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 		data: workspaceQueryState.data,
 		isLoading: workspaceQueryState.isLoading,
 	}),
-	useWorkspaceSession: (sessionId: string) => ({
+	useWorkspaceSession: (sessionId: string, localLookupEnabled?: boolean) => {
+		workspaceSessionLookup(sessionId, localLookupEnabled);
+		return ({
 		data: workspaceQueryState.data
 			?.flatMap((workspace) => workspace.sessions)
 			.find((session) => session.id === sessionId),
 		isLoading: workspaceQueryState.isLoading,
-	}),
+		});
+	},
 }));
 // Standalone shell terminals are orthogonal to the split under test, and their
 // real hooks would need a QueryClientProvider this suite deliberately omits.
@@ -805,6 +809,7 @@ describe("SessionView", () => {
 	it("keeps the Cloud switch visible while a newly selected Cloud session resolves", () => {
 		workspaceQueryState.data = [];
 		cloudSessionQueryState.isLoading = true;
+		workspaceSessionLookup.mockClear();
 
 		render(<SessionView cloudOrgId="cloud-org" projectId="cloud-project" sessionId="cloud-session" />);
 
@@ -812,6 +817,7 @@ describe("SessionView", () => {
 		const switchButtons = screen.getAllByRole("button", { name: "Switch to chat UI" });
 		expect(switchButtons).not.toHaveLength(0);
 		expect(switchButtons.some((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+		expect(workspaceSessionLookup).toHaveBeenCalledWith("cloud-session", false);
 	});
 	// Regression: shell terminals are an app-wide list, so without a per-session
 	// filter a shell opened in another session would show up as a tab in this

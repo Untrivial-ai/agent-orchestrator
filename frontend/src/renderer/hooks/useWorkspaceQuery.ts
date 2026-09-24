@@ -436,18 +436,18 @@ export function useWorkspaceQuery(options: WorkspaceSubscriptionOptions = {}) {
  * tree. TanStack Query applies structural sharing to the selected value, so an
  * activity update elsewhere no longer redraws the open session workspace.
  */
-export function useWorkspaceSession(sessionId: string) {
+export function useWorkspaceSession(sessionId: string, localLookupEnabled = true) {
 	const queryClient = useQueryClient();
 	const selectLocalSession = useMemo(
 		() => (workspaces: WorkspaceSummary[]) =>
 			workspaces.flatMap((workspace) => workspace.sessions).find((session) => session.id === sessionId),
 		[sessionId],
 	);
-	const local = useQuery({ ...workspaceQueryOptions, select: selectLocalSession });
-	const localWorkspaces = useQuery({ ...workspaceQueryOptions, subscribed: false, enabled: Boolean(sessionId) });
+	const local = useQuery({ ...workspaceQueryOptions, select: selectLocalSession, enabled: localLookupEnabled });
+	const localWorkspaces = useQuery({ ...workspaceQueryOptions, subscribed: false, enabled: localLookupEnabled && Boolean(sessionId) });
 	const direct = useQuery({
 		queryKey: ["session", sessionId],
-		enabled: Boolean(sessionId) && local.data === undefined,
+		enabled: localLookupEnabled && Boolean(sessionId) && local.data === undefined,
 		retry: (attempt, error) => apiErrorCode(error) === "SESSION_NOT_FOUND" && attempt < 4,
 		retryDelay: 250,
 		queryFn: async () => {
