@@ -1,7 +1,7 @@
 import { Feather } from "./icons";
 import { Pressable, StyleSheet } from "react-native";
 import { useTheme } from "./ThemeProvider";
-import { iconSize, radius, type } from "./tokens";
+import { iconSize, radius } from "./tokens";
 
 export function SidebarSettingsButton({ active, onPress }: { active: boolean; onPress: () => void }) {
 	const t = useTheme();
@@ -15,8 +15,8 @@ export function SidebarSettingsButton({ active, onPress }: { active: boolean; on
 			style={({ pressed }) => [
 				styles.button,
 				{
-					backgroundColor: active || pressed ? t.accentTint : t.bgElevated,
-					borderColor: active ? t.accent : t.borderDefault,
+					backgroundColor: pressed ? t.accentTint : t.bgElevatedHover,
+					borderColor: active ? t.accent : t.borderStrong,
 				},
 			]}
 		>
