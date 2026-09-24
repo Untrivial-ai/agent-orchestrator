@@ -12,6 +12,7 @@ import (
 type projectCapture struct {
 	method string
 	path   string
+	query  string
 	body   []byte
 }
 
@@ -21,6 +22,7 @@ func projectServer(t *testing.T, status int, respBody string) (*httptest.Server,
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capture.method = r.Method
 		capture.path = r.URL.Path
+		capture.query = r.URL.RawQuery
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read request body: %v", err)
@@ -449,5 +451,164 @@ func TestProjectRemove_YesSkipsConfirmationAndSupportsBackendRemoveEnvelope(t *t
 	}
 	if strings.Contains(out, "Type the project id") || !strings.Contains(out, "removed project demo") {
 		t.Fatalf("--yes output should skip prompt and print removal:\n%s", out)
+	}
+}
+
+func TestProjectRepoAdd_Success(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := projectServer(t, http.StatusCreated, `{"project":{"id":"ws","name":"WS","kind":"workspace","path":"/ws"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repo", "add", "--project", "ws", "--path", "/ws/cli")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodPost || capture.path != "/api/v1/projects/ws/repos" {
+		t.Fatalf("request = %s %s, want POST /api/v1/projects/ws/repos", capture.method, capture.path)
+	}
+	var got addWorkspaceRepoRequest
+	if err := json.Unmarshal(capture.body, &got); err != nil {
+		t.Fatalf("decode request: %v\nbody=%s", err, capture.body)
+	}
+	if got.Path != "/ws/cli" || got.Name != nil || got.DefaultBranch != nil {
+		t.Fatalf("add request = %#v, want path only (daemon infers the rest)", got)
+	}
+	if !strings.Contains(out, "added repo cli to project ws") {
+		t.Fatalf("output missing add message:\n%s", out)
+	}
+}
+
+func TestProjectRepoAdd_ExplicitNameBranchJSON(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := projectServer(t, http.StatusCreated, `{"project":{"id":"ws","kind":"workspace","path":"/ws"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repo", "add", "--project", "ws", "--path", "/ws/tooling", "--name", "tools", "--default-branch", "release", "--json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var got addWorkspaceRepoRequest
+	if err := json.Unmarshal(capture.body, &got); err != nil {
+		t.Fatalf("decode request: %v\nbody=%s", err, capture.body)
+	}
+	if got.Path != "/ws/tooling" || got.Name == nil || *got.Name != "tools" || got.DefaultBranch == nil || *got.DefaultBranch != "release" {
+		t.Fatalf("add request = %#v, want explicit name and branch", got)
+	}
+	var res projectResult
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("decode json output: %v\nout=%s", err, out)
+	}
+	if res.Project.ID != "ws" {
+		t.Fatalf("add json = %#v, want ws", res)
+	}
+}
+
+func TestProjectRepoAdd_MissingPath(t *testing.T) {
+	setConfigEnv(t)
+	_, _, err := executeCLI(t, Deps{}, "project", "repo", "add", "--project", "ws")
+	if err == nil {
+		t.Fatal("expected missing path error")
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2", got)
+	}
+}
+
+func TestProjectRepoAdd_NotFound(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := projectServer(t, http.StatusNotFound, `{"error":"not_found","code":"PROJECT_NOT_FOUND","message":"Unknown project"}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repo", "add", "--project", "missing", "--path", "/ws/cli")
+	if err == nil {
+		t.Fatal("expected not found error")
+	}
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("exit code = %d, want 1", got)
+	}
+	if !strings.Contains(err.Error(), "PROJECT_NOT_FOUND") && !strings.Contains(errOut, "PROJECT_NOT_FOUND") {
+		t.Fatalf("error did not surface not found envelope: %v\nstderr=%s", err, errOut)
+	}
+}
+
+func TestProjectRepoRm_Success(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := projectServer(t, http.StatusOK, `{"project":{"id":"ws","kind":"workspace","path":"/ws"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repo", "rm", "--project", "ws", "cli")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodDelete || capture.path != "/api/v1/projects/ws/repos/cli" {
+		t.Fatalf("request = %s %s, want DELETE /api/v1/projects/ws/repos/cli", capture.method, capture.path)
+	}
+	if capture.query != "" {
+		t.Fatalf("query = %q, want no query without --delete-files", capture.query)
+	}
+	if !strings.Contains(out, "removed repo cli from project ws") || strings.Contains(out, "deleted its files") {
+		t.Fatalf("output should report registry-only removal:\n%s", out)
+	}
+}
+
+func TestProjectRepoRm_DeleteFilesConfirmsAndSendsQuery(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := projectServer(t, http.StatusOK, `{"project":{"id":"ws","kind":"workspace","path":"/ws"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		In:           strings.NewReader("cli\n"),
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repo", "rm", "--project", "ws", "cli", "--delete-files")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodDelete || capture.path != "/api/v1/projects/ws/repos/cli" {
+		t.Fatalf("request = %s %s, want DELETE /api/v1/projects/ws/repos/cli (?deleteFiles=true)", capture.method, capture.path)
+	}
+	if capture.query != "deleteFiles=true" {
+		t.Fatalf("query = %q, want deleteFiles=true", capture.query)
+	}
+	if !strings.Contains(out, "Type the repo name to confirm") || !strings.Contains(out, "deleted its files") {
+		t.Fatalf("output missing prompt/deletion message:\n%s", out)
+	}
+}
+
+func TestProjectRepoRm_DeleteFilesAbortMakesNoRequest(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := projectServer(t, http.StatusOK, `{"project":{"id":"ws"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	out, _, err := executeCLI(t, Deps{
+		In:           strings.NewReader("nope\n"),
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "repo", "rm", "--project", "ws", "cli", "--delete-files")
+	if err != nil {
+		t.Fatalf("unexpected abort error: %v", err)
+	}
+	if !strings.Contains(out, "aborted") {
+		t.Fatalf("output missing abort:\n%s", out)
+	}
+	if capture.method == http.MethodDelete {
+		t.Fatalf("aborted rm must not send DELETE, got %s %s", capture.method, capture.path)
+	}
+}
+
+func TestProjectRepoRm_MissingArg(t *testing.T) {
+	setConfigEnv(t)
+	_, _, err := executeCLI(t, Deps{}, "project", "repo", "rm", "--project", "ws")
+	if err == nil {
+		t.Fatal("expected missing arg error")
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2", got)
 	}
 }

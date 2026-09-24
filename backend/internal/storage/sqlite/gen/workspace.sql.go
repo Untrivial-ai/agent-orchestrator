@@ -21,6 +21,23 @@ func (q *Queries) DeleteSessionWorktrees(ctx context.Context, sessionID domain.S
 	return err
 }
 
+const deleteWorkspaceRepo = `-- name: DeleteWorkspaceRepo :execrows
+DELETE FROM workspace_repos WHERE project_id = ? AND name = ?
+`
+
+type DeleteWorkspaceRepoParams struct {
+	ProjectID domain.ProjectID
+	Name      string
+}
+
+func (q *Queries) DeleteWorkspaceRepo(ctx context.Context, arg DeleteWorkspaceRepoParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteWorkspaceRepo, arg.ProjectID, arg.Name)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteWorkspaceReposByProject = `-- name: DeleteWorkspaceReposByProject :exec
 DELETE FROM workspace_repos WHERE project_id = ?
 `

@@ -2281,3 +2281,190 @@ func TestEmptyCloneOnboardingCreatesFirstWorkspace(t *testing.T) {
 		})
 	}
 }
+
+func workspaceParentWithChild(t *testing.T, m project.Manager, parentID string) string {
+	t.Helper()
+	configureCommitter(t)
+	parent := t.TempDir()
+	gitRepoWithCommit(t, filepath.Join(parent, "api"))
+	if _, err := m.Add(context.Background(), project.AddInput{Path: parent, ProjectID: ptr(parentID), AsWorkspace: true}); err != nil {
+		t.Fatalf("Add workspace: %v", err)
+	}
+	return parent
+}
+
+func TestManager_AddWorkspaceRepo(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	m := newManager(t)
+	parent := workspaceParentWithChild(t, m, "ws-add")
+
+	child := gitRepoWithCommit(t, filepath.Join(parent, "cli"))
+	proj, err := m.AddWorkspaceRepo(ctx, "ws-add", project.AddWorkspaceRepoInput{Path: child})
+	if err != nil {
+		t.Fatalf("AddWorkspaceRepo: %v", err)
+	}
+	byName := map[string]project.WorkspaceRepo{}
+	for _, r := range proj.WorkspaceRepos {
+		byName[r.Name] = r
+	}
+	got, ok := byName["cli"]
+	if !ok {
+		t.Fatalf("WorkspaceRepos = %#v, want cli attached", proj.WorkspaceRepos)
+	}
+	if got.RelativePath != "cli" || got.Repo != "https://example.com/cli.git" {
+		t.Fatalf("cli repo = %#v, want inferred path and origin", got)
+	}
+	if got.GitStatus != string(domain.GitStatusReady) {
+		t.Fatalf("cli gitStatus = %q, want ready", got.GitStatus)
+	}
+	// The child must be visible through the same read path spawn uses.
+	listed, err := m.Get(ctx, "ws-add")
+	if err != nil {
+		t.Fatalf("Get after add: %v", err)
+	}
+	if len(listed.Project.WorkspaceRepos) != 2 {
+		t.Fatalf("Get WorkspaceRepos = %#v, want api + cli", listed.Project.WorkspaceRepos)
+	}
+	// The parent .gitignore must cover the new child.
+	ignored, err := os.ReadFile(filepath.Join(parent, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(ignored), "/cli/") {
+		t.Fatalf(".gitignore missing /cli/:\n%s", ignored)
+	}
+}
+
+func TestManager_AddWorkspaceRepoExplicitNameAndBranch(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	m := newManager(t)
+	parent := workspaceParentWithChild(t, m, "ws-add-named")
+
+	child := gitRepoWithCommit(t, filepath.Join(parent, "tooling"))
+	proj, err := m.AddWorkspaceRepo(ctx, "ws-add-named", project.AddWorkspaceRepoInput{
+		Path:          child,
+		Name:          ptr("tools"),
+		DefaultBranch: ptr("release"),
+	})
+	if err != nil {
+		t.Fatalf("AddWorkspaceRepo: %v", err)
+	}
+	byName := map[string]project.WorkspaceRepo{}
+	for _, r := range proj.WorkspaceRepos {
+		byName[r.Name] = r
+	}
+	if byName["tools"].DefaultBranch != "release" || byName["tools"].RelativePath != "tooling" {
+		t.Fatalf("tools repo = %#v, want explicit branch on tooling path", byName["tools"])
+	}
+}
+
+func TestManager_AddWorkspaceRepoRejects(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	m := newManager(t)
+	parent := workspaceParentWithChild(t, m, "ws-add-reject")
+
+	child := gitRepoWithCommit(t, filepath.Join(parent, "cli"))
+	if _, err := m.AddWorkspaceRepo(ctx, "ws-add-reject", project.AddWorkspaceRepoInput{Path: child}); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if _, err := m.AddWorkspaceRepo(ctx, "ws-add-reject", project.AddWorkspaceRepoInput{Path: child}); err == nil {
+		t.Fatal("expected duplicate-name conflict")
+	} else {
+		wantCode(t, err, "REPO_ALREADY_REGISTERED")
+	}
+	outside := gitRepoWithCommit(t, t.TempDir())
+	if _, err := m.AddWorkspaceRepo(ctx, "ws-add-reject", project.AddWorkspaceRepoInput{Path: outside}); err == nil {
+		t.Fatal("expected outside-workspace error")
+	} else {
+		wantCode(t, err, "REPO_OUTSIDE_WORKSPACE")
+	}
+	solo := gitRepo(t)
+	if _, err := m.Add(ctx, project.AddInput{Path: solo, ProjectID: ptr("solo-reject")}); err != nil {
+		t.Fatalf("Add solo: %v", err)
+	}
+	if _, err := m.AddWorkspaceRepo(ctx, "solo-reject", project.AddWorkspaceRepoInput{Path: child}); err == nil {
+		t.Fatal("expected non-workspace error")
+	} else {
+		wantCode(t, err, "NOT_A_WORKSPACE_PROJECT")
+	}
+	if _, err := m.AddWorkspaceRepo(ctx, "missing", project.AddWorkspaceRepoInput{Path: child}); err == nil {
+		t.Fatal("expected not-found error")
+	} else {
+		wantCode(t, err, "PROJECT_NOT_FOUND")
+	}
+}
+
+func TestManager_AddWorkspaceRepoNeedsInit(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	m := newManager(t)
+	parent := workspaceParentWithChild(t, m, "ws-add-plain")
+
+	plain := filepath.Join(parent, "docs")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proj, err := m.AddWorkspaceRepo(ctx, "ws-add-plain", project.AddWorkspaceRepoInput{Path: plain})
+	if err != nil {
+		t.Fatalf("AddWorkspaceRepo plain dir: %v", err)
+	}
+	byName := map[string]project.WorkspaceRepo{}
+	for _, r := range proj.WorkspaceRepos {
+		byName[r.Name] = r
+	}
+	// Plain directories share the registry but stay hidden from the read
+	// model until they gain a .git directory, matching add-time behavior.
+	if _, ok := byName["docs"]; ok {
+		t.Fatalf("WorkspaceRepos = %#v, want docs hidden until git init", proj.WorkspaceRepos)
+	}
+}
+
+func TestManager_RemoveWorkspaceRepoKeepsFiles(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	m := newManager(t)
+	parent := workspaceParentWithChild(t, m, "ws-rm")
+
+	child := gitRepoWithCommit(t, filepath.Join(parent, "cli"))
+	if _, err := m.AddWorkspaceRepo(ctx, "ws-rm", project.AddWorkspaceRepoInput{Path: child}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	proj, err := m.RemoveWorkspaceRepo(ctx, "ws-rm", "cli", false)
+	if err != nil {
+		t.Fatalf("RemoveWorkspaceRepo: %v", err)
+	}
+	for _, r := range proj.WorkspaceRepos {
+		if r.Name == "cli" {
+			t.Fatalf("WorkspaceRepos = %#v, want cli detached", proj.WorkspaceRepos)
+		}
+	}
+	if _, err := os.Stat(child); err != nil {
+		t.Fatalf("child dir should remain on disk: %v", err)
+	}
+	if _, err := m.RemoveWorkspaceRepo(ctx, "ws-rm", "cli", false); err == nil {
+		t.Fatal("expected not-found on second remove")
+	} else {
+		wantCode(t, err, "REPO_NOT_FOUND")
+	}
+}
+
+func TestManager_RemoveWorkspaceRepoDeleteFiles(t *testing.T) {
+	configureCommitter(t)
+	ctx := context.Background()
+	m := newManager(t)
+	parent := workspaceParentWithChild(t, m, "ws-rm-files")
+
+	child := gitRepoWithCommit(t, filepath.Join(parent, "cli"))
+	if _, err := m.AddWorkspaceRepo(ctx, "ws-rm-files", project.AddWorkspaceRepoInput{Path: child}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, err := m.RemoveWorkspaceRepo(ctx, "ws-rm-files", "cli", true); err != nil {
+		t.Fatalf("RemoveWorkspaceRepo delete-files: %v", err)
+	}
+	if _, err := os.Stat(child); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("child dir should be deleted, stat err = %v", err)
+	}
+}

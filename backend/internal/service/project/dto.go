@@ -67,6 +67,17 @@ type SetConfigInput struct {
 	Config domain.ProjectConfig `json:"config"`
 }
 
+// AddWorkspaceRepoInput is the body shape for POST
+// /api/v1/projects/{id}/repos. It attaches one child repository, already on
+// disk under the workspace root, to the project's registry. Name defaults to
+// the directory basename; DefaultBranch defaults to the child's resolved
+// branch and may be set explicitly when children disagree.
+type AddWorkspaceRepoInput struct {
+	Path          string  `json:"path" minLength:"1"`
+	Name          *string `json:"name,omitempty"`
+	DefaultBranch *string `json:"defaultBranch,omitempty"`
+}
+
 // RemoveResult reports what DELETE /api/v1/projects/{id} actually did.
 type RemoveResult struct {
 	ProjectID         domain.ProjectID `json:"projectId"`

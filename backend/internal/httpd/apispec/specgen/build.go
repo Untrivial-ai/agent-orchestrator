@@ -469,6 +469,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ProjectSummary":                    "ProjectSummary",
 	"ProjectDegraded":                   "DegradedProject",
 	"ProjectAddInput":                   "AddProjectInput",
+	"ProjectAddWorkspaceRepoInput":      "AddWorkspaceRepoInput",
 	"ProjectCloneInput":                 "CloneProjectInput",
 	"ProjectClonePreparationResult":     "ClonePreparationResult",
 	"ProjectInitializeRepositoryInput":  "InitializeRepositoryInput",
@@ -1975,6 +1976,30 @@ func projectOperations() []operation {
 			pathParams: []any{controllers.ProjectIDParam{}},
 			resps: []respUnit{
 				{http.StatusOK, projectsvc.RemoveResult{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/projects/{id}/repos", id: "addWorkspaceRepo", tag: "projects",
+			summary:    "Attach a child repository on disk to a workspace project",
+			pathParams: []any{controllers.ProjectIDParam{}},
+			reqBody:    projectsvc.AddWorkspaceRepoInput{},
+			resps: []respUnit{
+				{http.StatusCreated, controllers.ProjectResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/projects/{id}/repos/{name}", id: "removeWorkspaceRepo", tag: "projects",
+			summary:    "Drop a child repository from a workspace project registry",
+			pathParams: []any{controllers.ProjectIDParam{}, controllers.WorkspaceRepoNameParam{}, controllers.RemoveWorkspaceRepoQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ProjectResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},

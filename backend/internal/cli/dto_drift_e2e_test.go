@@ -28,6 +28,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,7 +120,12 @@ func authorizedCodexInventory() agentsvc.Inventory {
 // the CLI's request body. Every other method is a no-op so it satisfies the
 // projectsvc.Manager interface.
 type fakeProjectManager struct {
-	added projectsvc.AddInput
+	added       projectsvc.AddInput
+	addedRepo   projectsvc.AddWorkspaceRepoInput
+	removedRepo struct {
+		name        string
+		deleteFiles bool
+	}
 }
 
 var _ projectsvc.Manager = (*fakeProjectManager)(nil)
@@ -170,6 +176,17 @@ func (f *fakeProjectManager) SetConfig(_ context.Context, id domain.ProjectID, i
 
 func (f *fakeProjectManager) Remove(context.Context, domain.ProjectID) (projectsvc.RemoveResult, error) {
 	return projectsvc.RemoveResult{}, nil
+}
+
+func (f *fakeProjectManager) AddWorkspaceRepo(_ context.Context, id domain.ProjectID, in projectsvc.AddWorkspaceRepoInput) (projectsvc.Project, error) {
+	f.addedRepo = in
+	return projectsvc.Project{ID: id, Kind: domain.ProjectKindWorkspace}, nil
+}
+
+func (f *fakeProjectManager) RemoveWorkspaceRepo(_ context.Context, id domain.ProjectID, name string, deleteFiles bool) (projectsvc.Project, error) {
+	f.removedRepo.name = name
+	f.removedRepo.deleteFiles = deleteFiles
+	return projectsvc.Project{ID: id, Kind: domain.ProjectKindWorkspace}, nil
 }
 
 // startDriftTestDaemon stands up the real router+controllers backed by the
@@ -298,6 +315,73 @@ func TestE2E_SpawnAndProjectAddDTORoundTrip(t *testing.T) {
 		}
 		if !bytes.Contains(out.Bytes(), []byte("registered project")) {
 			t.Errorf("output missing %q; got: %s", "registered project", out.String())
+		}
+	})
+
+	t.Run("project repo add", func(t *testing.T) {
+		projects := &fakeProjectManager{}
+		startDriftTestDaemon(t, &fakeSessionService{}, projects)
+
+		var out bytes.Buffer
+		root := NewRootCommand(Deps{
+			Out:          &out,
+			Err:          &out,
+			HTTPClient:   &http.Client{},
+			ProcessAlive: func(int) bool { return true },
+		})
+		root.SetArgs([]string{
+			"project", "repo", "add",
+			"--project", "ws",
+			"--path", "/ws/cli",
+			"--name", "cli",
+			"--default-branch", "main",
+		})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("project repo add execute: %v\noutput: %s", err, out.String())
+		}
+
+		got := projects.addedRepo
+		if got.Path != "/ws/cli" {
+			t.Errorf("Path = %q, want %q", got.Path, "/ws/cli")
+		}
+		if got.Name == nil || *got.Name != "cli" {
+			t.Errorf("Name = %v, want %q (CLI json:\"name\" vs AddWorkspaceRepoInput)", got.Name, "cli")
+		}
+		if got.DefaultBranch == nil || *got.DefaultBranch != "main" {
+			t.Errorf("DefaultBranch = %v, want %q (CLI json:\"defaultBranch\" vs AddWorkspaceRepoInput)", got.DefaultBranch, "main")
+		}
+		if !bytes.Contains(out.Bytes(), []byte("added repo cli")) {
+			t.Errorf("output missing %q; got: %s", "added repo cli", out.String())
+		}
+	})
+
+	t.Run("project repo rm", func(t *testing.T) {
+		projects := &fakeProjectManager{}
+		startDriftTestDaemon(t, &fakeSessionService{}, projects)
+
+		var out bytes.Buffer
+		root := NewRootCommand(Deps{
+			Out:          &out,
+			Err:          &out,
+			In:           strings.NewReader("cli\n"),
+			HTTPClient:   &http.Client{},
+			ProcessAlive: func(int) bool { return true },
+		})
+		root.SetArgs([]string{
+			"project", "repo", "rm",
+			"--project", "ws",
+			"cli",
+			"--delete-files",
+		})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("project repo rm execute: %v\noutput: %s", err, out.String())
+		}
+
+		if projects.removedRepo.name != "cli" || !projects.removedRepo.deleteFiles {
+			t.Errorf("removed = %+v, want {cli true} (query deleteFiles vs RemoveWorkspaceRepo)", projects.removedRepo)
+		}
+		if !bytes.Contains(out.Bytes(), []byte("deleted its files")) {
+			t.Errorf("output missing %q; got: %s", "deleted its files", out.String())
 		}
 	})
 }

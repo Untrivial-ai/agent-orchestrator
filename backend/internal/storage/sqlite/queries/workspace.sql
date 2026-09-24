@@ -1,6 +1,9 @@
 -- name: DeleteWorkspaceReposByProject :exec
 DELETE FROM workspace_repos WHERE project_id = ?;
 
+-- name: DeleteWorkspaceRepo :execrows
+DELETE FROM workspace_repos WHERE project_id = ? AND name = ?;
+
 -- name: UpsertWorkspaceRepo :exec
 INSERT INTO workspace_repos (project_id, name, relative_path, repo_origin_url, default_branch, registered_at, git_status)
 VALUES (?, ?, ?, ?, ?, ?, ?)

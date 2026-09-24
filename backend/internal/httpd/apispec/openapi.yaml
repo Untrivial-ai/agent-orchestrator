@@ -2458,6 +2458,111 @@ paths:
       summary: Remember project permissions for future sessions
       tags:
       - projects
+  /api/v1/projects/{id}/repos:
+    post:
+      operationId: addWorkspaceRepo
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddWorkspaceRepoInput'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Attach a child repository on disk to a workspace project
+      tags:
+      - projects
+  /api/v1/projects/{id}/repos/{name}:
+    delete:
+      operationId: removeWorkspaceRepo
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      - description: Workspace child repository name.
+        in: path
+        name: name
+        required: true
+        schema:
+          description: Workspace child repository name.
+          type: string
+      - description: When true, delete the child directory from disk in addition to
+          the registry row.
+        in: query
+        name: deleteFiles
+        schema:
+          description: When true, delete the child directory from disk in addition
+            to the registry row.
+          type: boolean
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Drop a child repository from a workspace project registry
+      tags:
+      - projects
   /api/v1/projects/clone:
     post:
       operationId: cloneProject
@@ -7975,6 +8080,22 @@ components:
           type:
           - "null"
           - string
+      required:
+      - path
+      type: object
+    AddWorkspaceRepoInput:
+      properties:
+        defaultBranch:
+          type:
+          - "null"
+          - string
+        name:
+          type:
+          - "null"
+          - string
+        path:
+          minLength: 1
+          type: string
       required:
       - path
       type: object
@@ -13764,6 +13885,8 @@ components:
       type: object
     WorkspaceRepo:
       properties:
+        defaultBranch:
+          type: string
         gitStatus:
           type: string
         name:

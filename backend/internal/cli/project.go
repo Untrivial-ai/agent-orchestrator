@@ -183,6 +183,7 @@ func newProjectCommand(ctx *commandContext) *cobra.Command {
 	cmd.AddCommand(newProjectListCommand(ctx))
 	cmd.AddCommand(newProjectGetCommand(ctx))
 	cmd.AddCommand(newProjectAddCommand(ctx))
+	cmd.AddCommand(newProjectRepoCommand(ctx))
 	cmd.AddCommand(newProjectSetConfigCommand(ctx))
 	cmd.AddCommand(newProjectRemoveCommand(ctx))
 	return cmd
@@ -286,6 +287,168 @@ func newProjectAddCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.orchestratorAgent, "orchestrator-agent", "", "Default orchestrator session agent")
 	f.BoolVar(&opts.asWorkspace, "as-workspace", false, "Register a parent folder as a workspace project (root-as-repo plus direct child repos)")
 	return cmd
+}
+
+type projectRepoAddOptions struct {
+	project       string
+	path          string
+	name          string
+	defaultBranch string
+	json          bool
+}
+
+type projectRepoRemoveOptions struct {
+	project     string
+	deleteFiles bool
+	json        bool
+}
+
+// addWorkspaceRepoRequest mirrors the daemon's AddWorkspaceRepoInput body for
+// POST /api/v1/projects/{id}/repos. Name and default branch are optional
+// (pointers omit them so the daemon infers both).
+type addWorkspaceRepoRequest struct {
+	Path          string  `json:"path"`
+	Name          *string `json:"name,omitempty"`
+	DefaultBranch *string `json:"defaultBranch,omitempty"`
+}
+
+func newProjectRepoCommand(ctx *commandContext) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "repo",
+		Short: "Attach or detach child repos of a workspace project",
+	}
+	cmd.AddCommand(newProjectRepoAddCommand(ctx))
+	cmd.AddCommand(newProjectRepoRemoveCommand(ctx))
+	return cmd
+}
+
+func newProjectRepoAddCommand(ctx *commandContext) *cobra.Command {
+	var opts projectRepoAddOptions
+	cmd := &cobra.Command{
+		Use:   "add",
+		Short: "Attach a child repo on disk to a workspace project",
+		Long: "Attach an existing git checkout under the workspace root to the " +
+			"project's registry so the next `ao spawn` worktrees the child. " +
+			"Name defaults to the directory basename; default branch is inferred " +
+			"from the child unless --default-branch is given.",
+		Args: noArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.path == "" {
+				return usageError{fmt.Errorf("--path is required")}
+			}
+			project, err := ctx.resolveSpawnProject(cmd.Context(), opts.project)
+			if err != nil {
+				return err
+			}
+			req := addWorkspaceRepoRequest{Path: opts.path}
+			if opts.name != "" {
+				req.Name = &opts.name
+			}
+			if opts.defaultBranch != "" {
+				req.DefaultBranch = &opts.defaultBranch
+			}
+			var res projectResult
+			if err := ctx.postJSON(cmd.Context(), "projects/"+url.PathEscape(project.ID)+"/repos", req, &res); err != nil {
+				return err
+			}
+			if opts.json {
+				return writeJSON(cmd.OutOrStdout(), res)
+			}
+			repoName := opts.name
+			if repoName == "" {
+				repoName = lastPathSegment(opts.path)
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "added repo %s to project %s\n", repoName, res.Project.ID)
+			return err
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&opts.project, "project", "", "Project id (default: AO_PROJECT_ID or the current registered repo)")
+	f.StringVar(&opts.path, "path", "", "Path to the child repo directory (required)")
+	f.StringVar(&opts.name, "name", "", "Registry name (default: directory basename)")
+	f.StringVar(&opts.defaultBranch, "default-branch", "", "Default branch for the child (default: inferred)")
+	f.BoolVar(&opts.json, "json", false, "Output the updated project as JSON")
+	return cmd
+}
+
+func newProjectRepoRemoveCommand(ctx *commandContext) *cobra.Command {
+	var opts projectRepoRemoveOptions
+	cmd := &cobra.Command{
+		Use:     "rm <name>",
+		Aliases: []string{"remove", "delete"},
+		Short:   "Detach a child repo from a workspace project",
+		Long: "Drop a child repo from the project's registry. Files on disk are " +
+			"kept unless --delete-files is given, in which case the child " +
+			"directory is removed after confirmation.",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := cobra.ExactArgs(1)(cmd, args); err != nil {
+				return usageError{err}
+			}
+			if strings.TrimSpace(args[0]) == "" {
+				return usageError{errors.New("usage: repo name is required")}
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := strings.TrimSpace(args[0])
+			project, err := ctx.resolveSpawnProject(cmd.Context(), opts.project)
+			if err != nil {
+				return err
+			}
+			if opts.deleteFiles {
+				confirmed, err := confirmRepoRemoval(cmd, project.ID, name)
+				if err != nil {
+					return err
+				}
+				if !confirmed {
+					_, err := fmt.Fprintln(cmd.OutOrStdout(), "aborted")
+					return err
+				}
+			}
+			path := "projects/" + url.PathEscape(project.ID) + "/repos/" + url.PathEscape(name)
+			if opts.deleteFiles {
+				path += "?deleteFiles=true"
+			}
+			var res projectResult
+			if err := ctx.deleteJSON(cmd.Context(), path, &res); err != nil {
+				return err
+			}
+			if opts.json {
+				return writeJSON(cmd.OutOrStdout(), res)
+			}
+			msg := fmt.Sprintf("removed repo %s from project %s\n", name, res.Project.ID)
+			if opts.deleteFiles {
+				msg = fmt.Sprintf("removed repo %s from project %s and deleted its files\n", name, res.Project.ID)
+			}
+			_, err = fmt.Fprint(cmd.OutOrStdout(), msg)
+			return err
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&opts.project, "project", "", "Project id (default: AO_PROJECT_ID or the current registered repo)")
+	f.BoolVar(&opts.deleteFiles, "delete-files", false, "Delete the child directory from disk as well")
+	f.BoolVar(&opts.json, "json", false, "Output the updated project as JSON")
+	return cmd
+}
+
+func confirmRepoRemoval(cmd *cobra.Command, projectID, name string) (bool, error) {
+	if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Delete files of repo %q in project %q? Type the repo name to confirm: ", name, projectID); err != nil {
+		return false, err
+	}
+	reader := bufio.NewReader(cmd.InOrStdin())
+	line, err := reader.ReadString('\n')
+	if err != nil && line == "" {
+		return false, err
+	}
+	return strings.TrimSpace(line) == name, nil
+}
+
+func lastPathSegment(path string) string {
+	path = strings.TrimRight(strings.TrimSpace(path), `/\`)
+	if i := strings.LastIndexAny(path, `/\`); i >= 0 {
+		return path[i+1:]
+	}
+	return path
 }
 
 func newProjectSetConfigCommand(ctx *commandContext) *cobra.Command {

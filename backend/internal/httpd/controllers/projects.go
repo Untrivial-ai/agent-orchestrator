@@ -7,6 +7,7 @@ package controllers
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -34,6 +35,8 @@ func (c *ProjectsController) Register(r chi.Router) {
 	r.Put("/projects/{id}", c.updateSettings)
 	r.Put("/projects/{id}/config", c.setConfig)
 	r.Patch("/projects/{id}/permissions", c.setPermissions)
+	r.Post("/projects/{id}/repos", c.addWorkspaceRepo)
+	r.Delete("/projects/{id}/repos/{name}", c.removeWorkspaceRepo)
 	r.Delete("/projects/{id}", c.remove)
 }
 
@@ -195,6 +198,46 @@ func (c *ProjectsController) setConfig(w http.ResponseWriter, r *http.Request) {
 	envelope.WriteJSON(w, http.StatusOK, ProjectResponse{Project: p})
 }
 
+func (c *ProjectsController) addWorkspaceRepo(w http.ResponseWriter, r *http.Request) {
+	if c.Mgr == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/projects/{id}/repos")
+		return
+	}
+	var in projectsvc.AddWorkspaceRepoInput
+	if err := decodeJSONStrict(r, &in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	p, err := c.Mgr.AddWorkspaceRepo(r.Context(), projectID(r), in)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusCreated, ProjectResponse{Project: p})
+}
+
+func (c *ProjectsController) removeWorkspaceRepo(w http.ResponseWriter, r *http.Request) {
+	if c.Mgr == nil {
+		apispec.NotImplemented(w, r, "DELETE", "/api/v1/projects/{id}/repos/{name}")
+		return
+	}
+	deleteFiles := false
+	if raw := r.URL.Query().Get("deleteFiles"); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_QUERY", "deleteFiles must be a boolean", nil)
+			return
+		}
+		deleteFiles = parsed
+	}
+	p, err := c.Mgr.RemoveWorkspaceRepo(r.Context(), projectID(r), workspaceRepoName(r), deleteFiles)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, ProjectResponse{Project: p})
+}
+
 func (c *ProjectsController) remove(w http.ResponseWriter, r *http.Request) {
 	if c.Mgr == nil {
 		apispec.NotImplemented(w, r, "DELETE", "/api/v1/projects/{id}")
@@ -210,6 +253,10 @@ func (c *ProjectsController) remove(w http.ResponseWriter, r *http.Request) {
 
 func projectID(r *http.Request) domain.ProjectID {
 	return domain.ProjectID(chi.URLParam(r, "id"))
+}
+
+func workspaceRepoName(r *http.Request) string {
+	return chi.URLParam(r, "name")
 }
 
 func decodeJSON(r *http.Request, out any) error {

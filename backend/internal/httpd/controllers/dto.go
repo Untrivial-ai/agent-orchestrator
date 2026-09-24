@@ -90,6 +90,18 @@ type ProjectIDParam struct {
 	ID string `path:"id" description:"Project identifier (registry key)."`
 }
 
+// WorkspaceRepoNameParam is the {name} path parameter for the
+// /projects/{id}/repos/{name} routes.
+type WorkspaceRepoNameParam struct {
+	Name string `path:"name" description:"Workspace child repository name."`
+}
+
+// RemoveWorkspaceRepoQuery is the query string accepted by
+// DELETE /api/v1/projects/{id}/repos/{name}.
+type RemoveWorkspaceRepoQuery struct {
+	DeleteFiles bool `query:"deleteFiles,omitempty" description:"When true, delete the child directory from disk in addition to the registry row."`
+}
+
 // AgentIDParam is the {agent} path parameter for one-agent catalog probes.
 type AgentIDParam struct {
 	Agent string `path:"agent" description:"Agent adapter identifier."`

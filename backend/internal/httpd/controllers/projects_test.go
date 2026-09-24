@@ -692,3 +692,109 @@ func TestProjectsAPI_SetPermissions(t *testing.T) {
 	body, status, _ = doRequest(t, srv, "PATCH", "/api/v1/projects/missing/permissions", `{"permissions":"auto"}`)
 	assertErrorCode(t, body, status, http.StatusNotFound, "PROJECT_NOT_FOUND")
 }
+
+func workspaceChildRepo(t *testing.T, parent, name string) string {
+	t.Helper()
+	dir := filepath.Join(parent, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create child fixture: %v", err)
+	}
+	for _, args := range [][]string{
+		{"init", "-b", "main", dir},
+		{"-C", dir, "-c", "user.email=ao@example.com", "-c", "user.name=AO Test", "commit", "--allow-empty", "-m", "initial"},
+		{"-C", dir, "remote", "add", "origin", "https://example.com/" + name + ".git"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return dir
+}
+
+func workspaceRepoNames(t *testing.T, body []byte) []string {
+	t.Helper()
+	var got struct {
+		Project struct {
+			WorkspaceRepos []struct {
+				Name string `json:"name"`
+			} `json:"workspaceRepos"`
+		} `json:"project"`
+	}
+	mustJSON(t, body, &got)
+	names := make([]string, 0, len(got.Project.WorkspaceRepos))
+	for _, r := range got.Project.WorkspaceRepos {
+		names = append(names, r.Name)
+	}
+	return names
+}
+
+func TestProjectsAPI_WorkspaceRepoAddRemove(t *testing.T) {
+	srv := newTestServer(t)
+	parent := t.TempDir()
+	workspaceChildRepo(t, parent, "api")
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/projects", `{"path":`+quote(parent)+`,"projectId":"ws","asWorkspace":true}`)
+	if status != http.StatusCreated {
+		t.Fatalf("seed workspace = %d, want 201; body=%s", status, body)
+	}
+
+	cli := workspaceChildRepo(t, parent, "cli")
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/projects/ws/repos", `{"path":`+quote(cli)+`}`)
+	if status != http.StatusCreated {
+		t.Fatalf("POST repo = %d, want 201; body=%s", status, body)
+	}
+	if names := workspaceRepoNames(t, body); len(names) != 2 || names[0] != "api" || names[1] != "cli" {
+		t.Fatalf("repos after add = %v, want [api cli]", names)
+	}
+
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/projects/ws/repos", `{"path":`+quote(cli)+`}`)
+	assertErrorCode(t, body, status, http.StatusConflict, "REPO_ALREADY_REGISTERED")
+
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/projects/ws/repos", `{"path":`+quote(cli)+`,"surprise":"!"}`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
+
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/projects/missing/repos", `{"path":`+quote(cli)+`}`)
+	assertErrorCode(t, body, status, http.StatusNotFound, "PROJECT_NOT_FOUND")
+
+	body, status, _ = doRequest(t, srv, "DELETE", "/api/v1/projects/ws/repos/cli", "")
+	if status != http.StatusOK {
+		t.Fatalf("DELETE repo = %d, want 200; body=%s", status, body)
+	}
+	if names := workspaceRepoNames(t, body); len(names) != 1 || names[0] != "api" {
+		t.Fatalf("repos after rm = %v, want [api]", names)
+	}
+	if _, err := os.Stat(cli); err != nil {
+		t.Fatalf("child dir should remain on disk without deleteFiles: %v", err)
+	}
+
+	body, status, _ = doRequest(t, srv, "DELETE", "/api/v1/projects/ws/repos/cli", "")
+	assertErrorCode(t, body, status, http.StatusNotFound, "REPO_NOT_FOUND")
+
+	body, status, _ = doRequest(t, srv, "DELETE", "/api/v1/projects/ws/repos/api?deleteFiles=yes", "")
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_QUERY")
+
+	body, status, _ = doRequest(t, srv, "DELETE", "/api/v1/projects/ws/repos/api?deleteFiles=true", "")
+	if status != http.StatusOK {
+		t.Fatalf("DELETE repo with files = %d, want 200; body=%s", status, body)
+	}
+	if _, err := os.Stat(filepath.Join(parent, "api")); !os.IsNotExist(err) {
+		t.Fatalf("child dir should be deleted with deleteFiles, stat err = %v", err)
+	}
+	if names := workspaceRepoNames(t, body); len(names) != 0 {
+		t.Fatalf("repos after delete-files rm = %v, want []", names)
+	}
+}
+
+func TestProjectsAPI_WorkspaceRepoRejectsNonWorkspace(t *testing.T) {
+	srv := newTestServer(t)
+	repo := gitRepo(t, "solo")
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/projects", `{"path":`+quote(repo)+`,"projectId":"solo"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("seed solo = %d, want 201; body=%s", status, body)
+	}
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/projects/solo/repos", `{"path":`+quote(repo)+`}`)
+	assertErrorCode(t, body, status, http.StatusBadRequest, "NOT_A_WORKSPACE_PROJECT")
+
+	body, status, _ = doRequest(t, srv, "DELETE", "/api/v1/projects/solo/repos/whatever", "")
+	assertErrorCode(t, body, status, http.StatusBadRequest, "NOT_A_WORKSPACE_PROJECT")
+}

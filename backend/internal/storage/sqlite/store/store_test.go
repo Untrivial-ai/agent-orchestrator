@@ -1983,3 +1983,40 @@ func TestClaimChatControllerGenerationPreservesRecency(t *testing.T) {
 		t.Fatalf("claim changed user-visible facts: before=%+v after=%+v", before, after)
 	}
 }
+
+func TestWorkspaceRepoSingleUpsertDelete(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := s.UpsertWorkspaceProject(ctx, domain.ProjectRecord{
+		ID: "ws", Path: "/tmp/ws", Kind: domain.ProjectKindWorkspace, RegisteredAt: now,
+	}, []domain.WorkspaceRepoRecord{{
+		ProjectID: "ws", Name: "api", RelativePath: "api",
+		RepoOriginURL: "https://example.com/api.git", RegisteredAt: now,
+	}}); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if err := s.UpsertWorkspaceRepo(ctx, domain.WorkspaceRepoRecord{
+		ProjectID: "ws", Name: "cli", RelativePath: "cli",
+		RepoOriginURL: "https://example.com/cli.git", DefaultBranch: "main",
+		RegisteredAt: now, GitStatus: domain.GitStatusReady,
+	}); err != nil {
+		t.Fatalf("upsert single repo: %v", err)
+	}
+	repos, err := s.ListWorkspaceRepos(ctx, "ws")
+	if err != nil || len(repos) != 2 {
+		t.Fatalf("repos = %#v err = %v, want api + cli", repos, err)
+	}
+	removed, err := s.DeleteWorkspaceRepo(ctx, "ws", "cli")
+	if err != nil || !removed {
+		t.Fatalf("delete cli: removed=%v err=%v", removed, err)
+	}
+	removed, err = s.DeleteWorkspaceRepo(ctx, "ws", "cli")
+	if err != nil || removed {
+		t.Fatalf("second delete: removed=%v err=%v, want false", removed, err)
+	}
+	repos, err = s.ListWorkspaceRepos(ctx, "ws")
+	if err != nil || len(repos) != 1 || repos[0].Name != "api" {
+		t.Fatalf("repos after delete = %#v err = %v, want [api]", repos, err)
+	}
+}
