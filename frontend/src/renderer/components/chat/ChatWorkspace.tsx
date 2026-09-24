@@ -126,7 +126,6 @@ import {
 	queuedTurnIds,
 	type ConversationPlan,
 	type ConversationSnapshot,
-	type ConversationTurn,
 	type ControllerState,
 	type ChatConfigOption,
 	type ChatConfigOptionValue,
@@ -138,6 +137,7 @@ import {
 	type ConversationBranchPoint,
 	type ConversationItem,
 	type ConversationMessage,
+	type ConversationTurn,
 	type TurnDiff,
 	type TurnSettings,
 } from "../../types/conversation";
