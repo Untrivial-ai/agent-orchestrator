@@ -3,6 +3,7 @@ package httpd
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -194,6 +195,8 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 	}
 }
 
+const attachmentUploadHeader = "X-AO-Attachment-Upload"
+
 // Register mounts the bounded /api/v1 REST surface. Long-lived surfaces such
 // as muxed terminal streams stay outside this timeout group.
 func (a *API) Register(root chi.Router) {
@@ -206,7 +209,20 @@ func (a *API) Register(root chi.Router) {
 		r.Get("/openapi.yaml", apispec.ServeYAML)
 
 		r.Group(func(r chi.Router) {
-			r.Use(middleware.Timeout(timeout))
+			// Large base64 bodies can spend longer than the ordinary REST budget
+			// uploading over a phone connection. Only attachment-bearing requests
+			// opt in; ordinary calls to the same routes keep the configured timeout.
+			r.Use(func(next http.Handler) http.Handler {
+				ordinary := middleware.Timeout(timeout)(next)
+				upload := middleware.Timeout(max(timeout, 10*time.Minute))(next)
+				return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					if attachmentUploadRoute(req) {
+						upload.ServeHTTP(w, req)
+						return
+					}
+					ordinary.ServeHTTP(w, req)
+				})
+			})
 			r.Use(presenceMiddleware(a.deps.Presence))
 			a.agents.Register(r)
 			a.codexAccounts.Register(r)
@@ -242,6 +258,33 @@ func (a *API) Register(root chi.Router) {
 		a.sessions.RegisterStreams(r)
 		a.events.Register(r)
 	})
+}
+
+func attachmentUploadRoute(req *http.Request) bool {
+	if req.Method != http.MethodPost {
+		return false
+	}
+	route := chi.RouteContext(req.Context()).RoutePattern()
+	// This route only accepts attachments, including from older clients.
+	if route == "/api/v1/sessions/{sessionId}/attachments" {
+		return true
+	}
+	if req.Header.Get(attachmentUploadHeader) != "1" {
+		return false
+	}
+	switch route {
+	case "/api/v1/sessions",
+		"/api/v1/orchestrators/delegate",
+		"/api/v1/sessions/{sessionId}/send",
+		"/api/v1/sessions/{sessionId}/conversation/messages",
+		"/api/v1/sessions/{sessionId}/conversation/steer",
+		"/api/v1/sessions/{sessionId}/conversation/steer-or-send",
+		"/api/v1/sessions/{sessionId}/conversation/turns/{turnId}/queue/edit",
+		"/api/v1/reviews/{reviewId}/conversation/messages":
+		return true
+	default:
+		return false
+	}
 }
 
 // notFoundJSON returns the locked envelope for unmatched routes. Chi's default

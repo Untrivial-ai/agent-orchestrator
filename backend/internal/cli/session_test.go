@@ -263,7 +263,7 @@ func TestSessionList_EnrichesPRColumnsAndKeepsFallbackFacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("session ls failed: %v\nstderr=%s", err, errOut)
 	}
-	for _, want := range []string{"SESSION", "BRANCH", "THREADS", "demo-1", "feat/INT-1327", "#3", "passing", "approved", "2", "working", "5m ago", "demo-2", "#2", "failing", "changes_requested"} {
+	for _, want := range []string{"SESSION", "ROLE", "BRANCH", "THREADS", "demo-1", "worker", "feat/INT-1327", "#3", "passing", "approved", "2", "working", "5m ago", "demo-2", "#2", "failing", "changes_requested"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}
@@ -373,6 +373,10 @@ func TestSessionList_AllIncludesOrchestratorsWithoutHiddenHint(t *testing.T) {
 	if !strings.Contains(out, "demo-1") || !strings.Contains(out, "demo-2") {
 		t.Fatalf("output missing worker or orchestrator session:\n%s", out)
 	}
+	fields := strings.Join(strings.Fields(out), " ")
+	if !strings.Contains(fields, "demo-1 worker") || !strings.Contains(fields, "demo-2 orchestrator") {
+		t.Fatalf("output does not distinguish worker and orchestrator roles:\n%s", out)
+	}
 	if strings.Contains(out, "orchestrator session hidden") {
 		t.Fatalf("output reports hidden orchestrators with --all:\n%s", out)
 	}
@@ -467,7 +471,20 @@ func TestSessionKill_PreservedWorkspaceNote(t *testing.T) {
 
 func TestSessionRestore_SuccessWithProjectScope(t *testing.T) {
 	cfg := setConfigEnv(t)
-	srv, log := sessionCommandServer(t)
+	log := &sessionRequestLog{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.append(r)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-1":
+			_, _ = io.WriteString(w, `{"session":`+sessionJSON("demo-1", "demo", "worker", "terminated", true)+`}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-1/restore":
+			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-1","session":`+sessionJSON("demo-1", "demo", "worker", "idle", false)+`}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
 	writeRunFileFor(t, cfg, srv)
 
 	out, errOut, err := executeCLI(t, Deps{
@@ -480,6 +497,42 @@ func TestSessionRestore_SuccessWithProjectScope(t *testing.T) {
 		t.Fatalf("unexpected restore output:\n%s", out)
 	}
 	want := []string{"GET /api/v1/sessions/demo-1", "POST /api/v1/sessions/demo-1/restore"}
+	if got := log.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests = %#v, want %#v", got, want)
+	}
+}
+
+func TestSessionRestore_ExitedOrchestratorResumesAgentInPlace(t *testing.T) {
+	cfg := setConfigEnv(t)
+	log := &sessionRequestLog{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.append(r)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/sessions/demo-orch":
+			_, _ = io.WriteString(w, `{"session":{"id":"demo-orch","projectId":"demo","kind":"orchestrator","harness":"codex","activity":{"state":"exited","lastActivityAt":"2026-06-02T12:00:00Z"},"isTerminated":false,"status":"exited"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions/demo-orch/resume-agent":
+			_, _ = io.WriteString(w, `{"ok":true,"sessionId":"demo-orch","resumeMode":"native","session":{"id":"demo-orch","projectId":"demo","kind":"orchestrator","activity":{"state":"idle"},"isTerminated":false,"status":"idle"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "session", "restore", "demo-orch", "--project", "demo")
+	if err != nil {
+		t.Fatalf("session restore failed: %v\nstderr=%s", err, errOut)
+	}
+	if !strings.Contains(out, "agent resumed for session demo-orch") || !strings.Contains(out, "mode: native") {
+		t.Fatalf("unexpected restore output:\n%s", out)
+	}
+	want := []string{
+		"GET /api/v1/sessions/demo-orch",
+		"POST /api/v1/sessions/demo-orch/resume-agent",
+	}
 	if got := log.all(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("requests = %#v, want %#v", got, want)
 	}

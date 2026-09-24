@@ -1,9 +1,25 @@
 package sqlite
 
-import "testing"
+import (
+	"database/sql"
+	"strings"
+	"testing"
+)
 
 func TestMigratePreservesPreviewCuesAtOldVersion149(t *testing.T) {
 	db := openMigratedDatabaseCopy(t, 148)
+	seedPreviewCues(t, db, 149)
+	assertPreviewCueMigration(t, db)
+}
+
+func TestMigratePreservesPreviewCuesAtOldVersion155(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, 154)
+	seedPreviewCues(t, db, 155)
+	assertPreviewCueMigration(t, db)
+}
+
+func seedPreviewCues(t *testing.T, db *sql.DB, version int64) {
+	t.Helper()
 	_, err := db.Exec(`
 CREATE TABLE cues (
     id TEXT PRIMARY KEY,
@@ -21,12 +37,17 @@ INSERT INTO projects (id, path, repo_origin_url, display_name, registered_at, co
 VALUES ('scratch', 'C:\scratch', '', 'Scratch', '2026-09-24T00:00:00Z', '{}', 'single_repo');
 INSERT INTO cues (id, project_id, name, type, command, created_at, updated_at)
 VALUES ('cue-1', 'scratch', 'Check status', 'command', 'git status', '2026-09-24T00:00:00Z', '2026-09-24T00:00:00Z');
-INSERT INTO goose_db_version (version_id, is_applied) VALUES (149, 1);
 `)
 	if err != nil {
 		t.Fatalf("seed preview cue schema: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`, version); err != nil {
+		t.Fatalf("seed preview cue migration version %d: %v", version, err)
+	}
+}
 
+func assertPreviewCueMigration(t *testing.T, db *sql.DB) {
+	t.Helper()
 	for i := 0; i < 2; i++ {
 		if err := migrate(db); err != nil {
 			t.Fatalf("migrate preview cue database (pass %d): %v", i+1, err)
@@ -46,7 +67,14 @@ INSERT INTO goose_db_version (version_id, is_applied) VALUES (149, 1);
 	if reviewerColumn != 1 {
 		t.Fatalf("review.interface_mode count = %d, want reviewer migration applied", reviewerColumn)
 	}
-	for _, version := range []int{149, 155} {
+	var sessionsSQL string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`).Scan(&sessionsSQL); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sessionsSQL, "'unreal-agent'") {
+		t.Fatal("upstream Unreal Agent migration was not applied")
+	}
+	for _, version := range []int{149, 155, 156} {
 		var applied int
 		if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id = ? ORDER BY id DESC LIMIT 1), 0)`, version).Scan(&applied); err != nil {
 			t.Fatal(err)

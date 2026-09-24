@@ -26,7 +26,7 @@ const (
 	durableDir   = "attachments"
 	// MaxFileBytes matches the HTTP attachment limit and also bounds legacy
 	// imports from agent-writable worktrees.
-	MaxFileBytes = 10 << 20
+	MaxFileBytes = 50 << 20
 )
 
 var (

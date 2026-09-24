@@ -31,6 +31,7 @@ var routineInternalCLICommands = []string{
 	"ao orchestrator ls",
 	"ao hooks",
 	"ao pty-host",
+	"ao unreal-provider",
 	"ao codex-login",
 	"ao claude-login",
 }
@@ -73,6 +74,7 @@ var legacyActorlessSystemCLICommands = map[string]struct{}{
 	"ao help":                    {},
 	"ao pty-host":                {},
 	"ao start":                   {},
+	"ao unreal-provider":         {},
 }
 
 var legacyActorlessUserCLICommands = map[string]struct{}{

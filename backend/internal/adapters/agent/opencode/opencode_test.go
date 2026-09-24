@@ -659,6 +659,12 @@ func TestGetAgentHooksInstallsPlugin(t *testing.T) {
 	if !strings.Contains(body, "launch_id:") {
 		t.Fatalf("installed plugin missing launch_id in hook payload:\n%s", body)
 	}
+	if !strings.Contains(body, `Bun.which("ao")`) {
+		t.Fatalf("installed plugin does not resolve ao portably:\n%s", body)
+	}
+	if strings.Contains(body, `return ["sh", "-c"`) {
+		t.Fatalf("installed plugin still requires a POSIX shell:\n%s", body)
+	}
 	if !strings.Contains(body, "AO_RUNTIME_LAUNCH_ID") {
 		t.Fatalf("installed plugin missing AO_RUNTIME_LAUNCH_ID reference:\n%s", body)
 	}

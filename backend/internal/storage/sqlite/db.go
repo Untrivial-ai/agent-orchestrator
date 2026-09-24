@@ -359,8 +359,9 @@ func migrate(db *sql.DB) error {
 }
 
 // repairRenumberedCueMigrationHistory preserves preview databases where Cues
-// used version 0149 before main assigned it to reviewer Chat. Move only that
-// identifiable schema to 0155 so Goose can apply the real 0149 migration.
+// used 0149 or 0155 before main assigned those versions to other migrations.
+// Move only an identifiable Cue schema to 0156 so Goose can apply the upstream
+// migration that owns the old number.
 func repairRenumberedCueMigrationHistory(db *sql.DB) error {
 	var gooseTable int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`).Scan(&gooseTable); err != nil || gooseTable == 0 {
@@ -376,17 +377,34 @@ func repairRenumberedCueMigrationHistory(db *sql.DB) error {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('review') WHERE name = 'interface_mode'`).Scan(&reviewerColumns); err != nil {
 		return err
 	}
-	if reviewerColumns != 0 {
-		return nil
-	}
-	var oldApplied, canonicalApplied int
+	var oldApplied, collidedApplied, canonicalApplied int
 	if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id = 149 ORDER BY id DESC LIMIT 1), 0)`).Scan(&oldApplied); err != nil {
 		return err
 	}
-	if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id = 155 ORDER BY id DESC LIMIT 1), 0)`).Scan(&canonicalApplied); err != nil {
+	if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id = 155 ORDER BY id DESC LIMIT 1), 0)`).Scan(&collidedApplied); err != nil {
 		return err
 	}
-	if oldApplied == 0 || canonicalApplied != 0 {
+	if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id = 156 ORDER BY id DESC LIMIT 1), 0)`).Scan(&canonicalApplied); err != nil {
+		return err
+	}
+	if canonicalApplied != 0 {
+		return nil
+	}
+	oldVersion := 0
+	if oldApplied != 0 && reviewerColumns == 0 {
+		oldVersion = 149
+	} else if collidedApplied != 0 {
+		// Upstream's 0155 adds unreal-agent to the sessions CHECK. If that
+		// change is already present, the ledger entry does not belong to Cues.
+		var sessionsSQL string
+		if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`).Scan(&sessionsSQL); err != nil {
+			return err
+		}
+		if !strings.Contains(sessionsSQL, "'unreal-agent'") {
+			oldVersion = 155
+		}
+	}
+	if oldVersion == 0 {
 		return nil
 	}
 	tx, err := db.Begin()
@@ -394,10 +412,10 @@ func repairRenumberedCueMigrationHistory(db *sql.DB) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (155, 1)`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (156, 1)`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = 149`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = ?`, oldVersion); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1712,6 +1730,10 @@ BEGIN
 	// matches the migration: unknown historical certainty stays partial.
 	{version: 130, table: "pr", column: "review_partial",
 		addDDL: `ALTER TABLE pr ADD COLUMN review_partial BOOLEAN NOT NULL DEFAULT TRUE`},
+	// 0132_conversation_opencode_mode.sql. Generated conversation reads select
+	// this column, so repair field databases that recorded 0132 without adding it.
+	{version: 132, table: "conversations", column: "opencode_mode",
+		addDDL: `ALTER TABLE conversations ADD COLUMN opencode_mode TEXT NOT NULL DEFAULT ''`},
 }
 
 // reconcileSchema verifies that the columns in schemaRepairs physically exist
@@ -1776,6 +1798,11 @@ const (
 	sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'qm', 'fake'))`
 )
 
+const (
+	sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnreal   = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'fake'))`
+	sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnreal = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'qm', 'fake'))`
+)
+
 func reconcileHarnessConstraint(db *sql.DB) error {
 	var schema string
 	if err := db.QueryRow(
@@ -1787,7 +1814,8 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 	needsKimchi := !strings.Contains(schema, "'kimchi'")
 	needsPrimeAgent := !strings.Contains(schema, "'prime-agent'")
 	needsOMP := !strings.Contains(schema, "'omp'")
-	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP {
+	needsUnreal := !strings.Contains(schema, "'unreal-agent'")
+	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP && !needsUnreal {
 		return nil
 	}
 	if _, err := db.Exec(`PRAGMA writable_schema = ON`); err != nil {
@@ -1828,6 +1856,12 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 			replacement{sessionsHarnessCheckWithMuseQMKimchiPrimeAgent, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP},
 		)
 	}
+	if needsUnreal {
+		repairs = append(repairs,
+			replacement{sessionsHarnessCheckWithMuseKimchiPrimeAgentOMP, sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnreal},
+			replacement{sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnreal},
+		)
+	}
 	for _, r := range repairs {
 		if _, err := db.Exec(
 			`UPDATE sqlite_master
@@ -1858,6 +1892,9 @@ WHERE type = 'table' AND name = 'sessions'`,
 	}
 	if !strings.Contains(schema, "'omp'") {
 		return fmt.Errorf("schema repair: sessions harness constraint is missing OMP and did not match known pre-OMP schema")
+	}
+	if !strings.Contains(schema, "'unreal-agent'") {
+		return fmt.Errorf("schema repair: sessions harness constraint is missing Unreal Agent and did not match known pre-Unreal-Agent schema")
 	}
 	return nil
 }
