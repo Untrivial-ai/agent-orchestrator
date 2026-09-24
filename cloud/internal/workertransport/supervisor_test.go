@@ -256,6 +256,39 @@ func TestStopInterfaceWaitsForChatProcessExit(t *testing.T) {
 	}
 }
 
+func TestControllerReadyWaitsForChatWorkspaceAndRunner(t *testing.T) {
+	workspaceReady := make(chan struct{})
+	started := make(chan struct{})
+	supervisor := &Supervisor{
+		ChatRunner:         blockingChatRunner{started: started},
+		ChatWorkspaceReady: workspaceReady,
+	}
+
+	if err := supervisor.startChat(context.Background()); err != nil {
+		t.Fatalf("start chat: %v", err)
+	}
+	if got := supervisor.controllerReady(InterfaceChat); got.Ready {
+		t.Fatal("chat controller reported ready before workspace checkout")
+	}
+
+	close(workspaceReady)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("chat runner did not start after workspace became ready")
+	}
+	if got := supervisor.controllerReady(InterfaceChat); !got.Ready {
+		t.Fatalf("chat controller readiness = %+v, want ready", got)
+	}
+
+	if err := supervisor.stopInterface(context.Background()); err != nil {
+		t.Fatalf("stop chat: %v", err)
+	}
+	if got := supervisor.controllerReady(InterfaceChat); got.Ready {
+		t.Fatal("stopped chat controller still reported ready")
+	}
+}
+
 func TestNativeConversationIDRefreshesFromControlPlane(t *testing.T) {
 	supervisor := &Supervisor{Control: &supervisorControlStub{agentSessionID: "native-chat"}}
 	got := supervisor.nativeConversationID(context.Background(), interfacePayload{})

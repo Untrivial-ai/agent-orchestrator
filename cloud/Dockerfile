@@ -8,6 +8,9 @@ FROM --platform=${BUILDPLATFORM} golang:1.26.5-bookworm AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
+# The control plane is an independently built Go module. Never let a caller's
+# repository-level workspace change the dependency graph of this image.
+ENV GOWORK=off
 
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download

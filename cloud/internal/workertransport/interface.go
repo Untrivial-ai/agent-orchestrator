@@ -31,6 +31,11 @@ type interfaceInspectResult struct {
 	QuiescenceUnverified bool `json:"quiescenceUnverified"`
 }
 
+type interfaceReadyResult struct {
+	Ready     bool   `json:"ready"`
+	Interface string `json:"interface"`
+}
+
 // InterfaceTransition drives the run-time swap between the interactive agent
 // terminal (TUI) and the headless turn-based Chat controller. It owns the
 // current committed interface and the chat runner lifecycle.
@@ -40,6 +45,7 @@ type InterfaceTransition struct {
 	chatRun        context.CancelFunc
 	chatDone       chan struct{}
 	chatRunning    bool
+	chatReady      bool
 	chatGeneration uint64
 	agentTermID    string
 }
@@ -52,7 +58,7 @@ func (t *InterfaceTransition) Current() string {
 
 // handleInterface dispatches an interface command to the worker. kind is one of
 // interface.inspect, interface.interrupt, interface.stop, interface.native-id,
-// interface.start.
+// interface.start, interface.ready.
 func (s *Supervisor) handleInterface(
 	ctx context.Context,
 	input interfacePayload,
@@ -69,9 +75,34 @@ func (s *Supervisor) handleInterface(
 		return map[string]bool{"ok": true}, s.stopInterface(ctx)
 	case "interface.start":
 		return map[string]bool{"ok": true}, s.startInterface(ctx, input)
+	case "interface.ready":
+		return s.controllerReady(input.TargetInterface), nil
 	default:
 		return nil, errors.New("unsupported interface command")
 	}
+}
+
+func (s *Supervisor) controllerReady(expected string) interfaceReadyResult {
+	s.iface.mu.Lock()
+	current := s.iface.current
+	chatReady := s.iface.chatRunning && s.iface.chatReady
+	s.iface.mu.Unlock()
+	if expected != "" && current != expected {
+		return interfaceReadyResult{Interface: current}
+	}
+
+	ready := false
+	switch current {
+	case InterfaceChat:
+		ready = chatReady
+	case InterfaceTUI:
+		s.mu.Lock()
+		agentTerminalID := s.AgentTerminalID
+		_, terminalOpen := s.terminals[agentTerminalID]
+		ready = s.agentStarted && terminalOpen && (!s.holdAgentInput || s.workspaceReady)
+		s.mu.Unlock()
+	}
+	return interfaceReadyResult{Ready: ready, Interface: current}
 }
 
 func (s *Supervisor) inspectInterface() (any, error) {
@@ -253,6 +284,7 @@ func (s *Supervisor) startChat(ctx context.Context) error {
 	s.iface.chatRun = cancel
 	s.iface.chatDone = done
 	s.iface.chatRunning = true
+	s.iface.chatReady = false
 	s.iface.current = InterfaceChat
 	s.iface.mu.Unlock()
 	go func() {
@@ -263,6 +295,11 @@ func (s *Supervisor) startChat(ctx context.Context) error {
 			}
 		}
 		if runCtx.Err() == nil {
+			s.iface.mu.Lock()
+			if s.iface.chatGeneration == generation {
+				s.iface.chatReady = true
+			}
+			s.iface.mu.Unlock()
 			if err := s.ChatRunner.Run(runCtx); err != nil && runCtx.Err() == nil {
 				s.Logger.Warn("chat controller stopped", "error", err)
 			}
@@ -272,6 +309,7 @@ func (s *Supervisor) startChat(ctx context.Context) error {
 			s.iface.chatRun = nil
 			s.iface.chatDone = nil
 			s.iface.chatRunning = false
+			s.iface.chatReady = false
 		}
 		s.iface.mu.Unlock()
 		close(done)

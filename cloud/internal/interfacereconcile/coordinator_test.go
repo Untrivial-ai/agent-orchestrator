@@ -29,13 +29,14 @@ func testTransition(phase domain.SessionInterfaceTransitionPhase) postgres.Coord
 }
 
 type fakeStore struct {
-	transitions []postgres.CoordinatedInterfaceTransition
-	committed   domain.SessionInterface
-	commitCalls int
-	advances    []domain.SessionInterfaceTransitionPhase
-	claimErr    error
-	advanceErr  error
-	commitErr   error
+	transitions          []postgres.CoordinatedInterfaceTransition
+	committed            domain.SessionInterface
+	commitCalls          int
+	advances             []domain.SessionInterfaceTransitionPhase
+	claimErr             error
+	advanceErr           error
+	commitErr            error
+	heldMessagesReleased bool
 }
 
 func (f *fakeStore) ClaimCoordinatedInterfaceTransitions(context.Context, string, int, time.Duration) ([]postgres.CoordinatedInterfaceTransition, error) {
@@ -47,9 +48,12 @@ func (f *fakeStore) ClaimCoordinatedInterfaceTransitions(context.Context, string
 func (f *fakeStore) RenewCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string, lease time.Duration) error {
 	return nil
 }
-func (f *fakeStore) AdvanceCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string, from, to domain.SessionInterfaceTransitionPhase, nativeConversationID, errorCode, errorDetail string) error {
+func (f *fakeStore) AdvanceCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string, from, to domain.SessionInterfaceTransitionPhase, nativeConversationID, errorCode, errorDetail string, releaseHeldMessages bool) error {
 	if f.advanceErr != nil {
 		return f.advanceErr
+	}
+	if releaseHeldMessages {
+		f.heldMessagesReleased = true
 	}
 	f.advances = append(f.advances, to)
 	for index := range f.transitions {
@@ -77,6 +81,7 @@ func (f *fakeStore) CommitCoordinatedSessionInterface(ctx context.Context, owner
 }
 func (f *fakeStore) CompleteCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string) error {
 	f.advances = append(f.advances, domain.SessionInterfaceTransitionCompleted)
+	f.heldMessagesReleased = true
 	for index := range f.transitions {
 		if f.transitions[index].ID == transitionID {
 			f.transitions[index].Phase = domain.SessionInterfaceTransitionCompleted
@@ -104,6 +109,8 @@ type fakeDriver struct {
 	stopCalls      int
 	nativeIDCalls  int
 	startCalls     int
+	readyCalls     int
+	readyErr       error
 
 	startedWithNativeID string
 }
@@ -136,6 +143,10 @@ func (f *fakeDriver) StartTarget(_ context.Context, _ postgres.CoordinatedInterf
 	f.startCalls++
 	f.startedWithNativeID = nativeID
 	return f.startErr
+}
+func (f *fakeDriver) VerifyControllerReady(context.Context, postgres.CoordinatedInterfaceTransition) error {
+	f.readyCalls++
+	return f.readyErr
 }
 
 func newCoordinator(store *fakeStore, driver *fakeDriver) *Coordinator {
@@ -338,6 +349,9 @@ func TestReconcileDrainDecisionPendingFails(t *testing.T) {
 	if last := store.advances[len(store.advances)-1]; last != domain.SessionInterfaceTransitionFailed {
 		t.Fatalf("expected terminal phase failed, got %q", last)
 	}
+	if !store.heldMessagesReleased {
+		t.Fatal("expected prompts held during the usable source failure to be released atomically")
+	}
 }
 
 func TestReconcileTargetStartFailureRecovers(t *testing.T) {
@@ -365,6 +379,38 @@ func TestReconcilePreflightFailure(t *testing.T) {
 	}
 	if store.committed != "" {
 		t.Fatalf("no session interface should be committed on preflight failure, got %q", store.committed)
+	}
+	if !store.heldMessagesReleased {
+		t.Fatal("expected prompts held during preflight failure to be released atomically")
+	}
+}
+
+func TestReconcileRecoveryReleasesMessagesOnlyAfterControllerReady(t *testing.T) {
+	transition := testTransition(domain.SessionInterfaceTransitionRecovery)
+	store := &fakeStore{transitions: []postgres.CoordinatedInterfaceTransition{transition}}
+	driver := &fakeDriver{readyErr: errors.New("replacement controller is still starting")}
+	if err := newCoordinator(store, driver).ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("reconcile should leave recovery pending: %v", err)
+	}
+	if store.transitions[0].Phase != domain.SessionInterfaceTransitionRecovery {
+		t.Fatalf("phase = %q, want recovery_required while controller is not ready", store.transitions[0].Phase)
+	}
+	if store.heldMessagesReleased {
+		t.Fatal("must not release prompts before controller readiness proof")
+	}
+
+	driver.readyErr = nil
+	if err := newCoordinator(store, driver).ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("reconcile ready recovery: %v", err)
+	}
+	if store.transitions[0].Phase != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("phase = %q, want completed after readiness proof", store.transitions[0].Phase)
+	}
+	if !store.heldMessagesReleased {
+		t.Fatal("expected recovery to release held prompts atomically")
+	}
+	if driver.readyCalls != 2 {
+		t.Fatalf("readiness calls = %d, want 2", driver.readyCalls)
 	}
 }
 

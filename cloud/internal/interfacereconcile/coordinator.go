@@ -21,7 +21,7 @@ import (
 type Store interface {
 	ClaimCoordinatedInterfaceTransitions(ctx context.Context, owner string, limit int, lease time.Duration) ([]postgres.CoordinatedInterfaceTransition, error)
 	RenewCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string, lease time.Duration) error
-	AdvanceCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string, from, to domain.SessionInterfaceTransitionPhase, nativeConversationID, errorCode, errorDetail string) error
+	AdvanceCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string, from, to domain.SessionInterfaceTransitionPhase, nativeConversationID, errorCode, errorDetail string, releaseHeldMessages bool) error
 	CommitCoordinatedSessionInterface(ctx context.Context, owner, orgID, transitionID string, interfaceValue domain.SessionInterface) (bool, error)
 	CompleteCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string) error
 	ReleaseCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string) error
@@ -47,6 +47,10 @@ type WorkerDriver interface {
 	ResolveNativeConversationID(ctx context.Context, transition postgres.CoordinatedInterfaceTransition) (string, error)
 	// StartTarget starts the target controller and commits it as active.
 	StartTarget(ctx context.Context, transition postgres.CoordinatedInterfaceTransition, nativeConversationID string) error
+	// VerifyControllerReady proves that the committed controller has restarted
+	// after a recovery-required handoff. Held prompts remain fenced until this
+	// proof succeeds.
+	VerifyControllerReady(ctx context.Context, transition postgres.CoordinatedInterfaceTransition) error
 }
 
 // SourceInspection is the drain quiescence verdict for a source controller.
@@ -220,21 +224,21 @@ func (c *Coordinator) reconcile(ctx context.Context, transition *postgres.Coordi
 			}
 		case domain.SessionInterfaceTransitionPreflighting:
 			if err := c.driver.PreflightTarget(runCtx, *transition); err != nil {
-				return c.retryOrFail(*transition, "TARGET_PREFLIGHT_FAILED", err)
+				return c.retryOrFail(*transition, "TARGET_PREFLIGHT_FAILED", err, true)
 			}
 			if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionDraining, "", ""); err != nil {
 				return err
 			}
 		case domain.SessionInterfaceTransitionDraining:
-			if err := c.drain(runCtx, *transition); err != nil {
-				return c.retryOrFail(*transition, "SOURCE_DRAIN_FAILED", err)
+			if err, sourceUsable := c.drain(runCtx, *transition); err != nil {
+				return c.retryOrFail(*transition, "SOURCE_DRAIN_FAILED", err, sourceUsable)
 			}
 			if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionSourceStopping, "", ""); err != nil {
 				return err
 			}
 		case domain.SessionInterfaceTransitionSourceStopping:
 			if err := c.driver.StopSource(runCtx, *transition); err != nil {
-				return c.retryOrFail(*transition, "SOURCE_STOP_FAILED", err)
+				return c.retryOrFail(*transition, "SOURCE_STOP_FAILED", err, false)
 			}
 			if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionSourceStopped, "", ""); err != nil {
 				return err
@@ -242,7 +246,7 @@ func (c *Coordinator) reconcile(ctx context.Context, transition *postgres.Coordi
 		case domain.SessionInterfaceTransitionSourceStopped:
 			nativeID, err := c.driver.ResolveNativeConversationID(runCtx, *transition)
 			if err != nil {
-				return c.retryOrFail(*transition, "NATIVE_ID_RESOLUTION_FAILED", err)
+				return c.retryOrFail(*transition, "NATIVE_ID_RESOLUTION_FAILED", err, false)
 			}
 			committed, err := c.store.CommitCoordinatedSessionInterface(
 				runCtx, c.owner, transition.OrgID, transition.ID, transition.TargetInterface,
@@ -251,10 +255,10 @@ func (c *Coordinator) reconcile(ctx context.Context, transition *postgres.Coordi
 				if errors.Is(err, postgres.ErrTransitionStale) {
 					return errCoordinationLost
 				}
-				return c.fail(*transition, "SESSION_COMMIT_FAILED", err)
+				return c.fail(*transition, "SESSION_COMMIT_FAILED", err, false)
 			}
 			if !committed {
-				return c.fail(*transition, "SESSION_NOT_FOUND", errors.New("session changed before interface commit"))
+				return c.fail(*transition, "SESSION_NOT_FOUND", errors.New("session changed before interface commit"), false)
 			}
 			if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionTargetStarting, nativeID, ""); err != nil {
 				return err
@@ -267,7 +271,7 @@ func (c *Coordinator) reconcile(ctx context.Context, transition *postgres.Coordi
 					// with no controller.
 					return c.recover(*transition, "TARGET_START_FAILED", err)
 				}
-				return c.retryOrFail(*transition, "TARGET_START_FAILED", err)
+				return c.retryOrFail(*transition, "TARGET_START_FAILED", err, false)
 			}
 			if err := c.advance(runCtx, transition, domain.SessionInterfaceTransitionActivating, transition.NativeConversationID, ""); err != nil {
 				return err
@@ -278,6 +282,21 @@ func (c *Coordinator) reconcile(ctx context.Context, transition *postgres.Coordi
 					return errCoordinationLost
 				}
 				return fmt.Errorf("complete interface transition: %w", err)
+			}
+			transition.Phase = domain.SessionInterfaceTransitionCompleted
+			return nil
+		case domain.SessionInterfaceTransitionRecovery:
+			// Recovery is terminal until a replacement worker proves that the
+			// committed controller is live. Only then may the store atomically
+			// release prompts held by this transition.
+			if err := c.driver.VerifyControllerReady(runCtx, *transition); err != nil {
+				return err
+			}
+			if err := c.store.CompleteCoordinatedInterfaceTransition(runCtx, c.owner, transition.ID); err != nil {
+				if errors.Is(err, postgres.ErrTransitionStale) {
+					return errCoordinationLost
+				}
+				return fmt.Errorf("complete recovered interface transition: %w", err)
 			}
 			transition.Phase = domain.SessionInterfaceTransitionCompleted
 			return nil
@@ -294,9 +313,10 @@ func (c *Coordinator) retryOrFail(
 	transition postgres.CoordinatedInterfaceTransition,
 	errorCode string,
 	err error,
+	sourceUsable bool,
 ) error {
 	if !isRetryable(err) {
-		return c.fail(transition, errorCode, err)
+		return c.fail(transition, errorCode, err, sourceUsable)
 	}
 	c.retries[transition.ID]++
 	if c.retries[transition.ID] <= c.options.MaxPendingRetries {
@@ -320,7 +340,7 @@ func (c *Coordinator) retryOrFail(
 	return c.fail(transition, errorCode, fmt.Errorf(
 		"worker never completed the interface command after %d attempts: %w",
 		c.options.MaxPendingRetries, err,
-	))
+	), sourceUsable)
 }
 
 // isRetryable reports an error that must release the claim and retry on a later
@@ -332,33 +352,33 @@ func isRetryable(err error) bool {
 
 // drain waits for the source controller to be quiescent. An interrupt policy
 // cancels in-flight work first.
-func (c *Coordinator) drain(ctx context.Context, transition postgres.CoordinatedInterfaceTransition) error {
+func (c *Coordinator) drain(ctx context.Context, transition postgres.CoordinatedInterfaceTransition) (error, bool) {
 	if transition.Policy == domain.SessionInterfaceTransitionInterrupt {
 		// Stop-now is the explicit opt-in to ending a source that cannot prove it
 		// is idle (notably an interactive TUI). The worker stop step waits for the
 		// controller process to exit before starting the target.
-		return c.driver.InterruptSource(ctx, transition)
+		return c.driver.InterruptSource(ctx, transition), false
 	}
 	for {
 		inspection, err := c.driver.InspectSource(ctx, transition)
 		if err != nil {
-			return err
+			return err, false
 		}
 		if inspection.DecisionPending {
-			return errors.New("source controller is waiting for a decision; answer it in the source interface")
+			return errors.New("source controller is waiting for a decision; answer it in the source interface"), true
 		}
 		if inspection.DraftPresent {
-			return errors.New("source controller has unsent text; submit or clear it in the source interface")
+			return errors.New("source controller has unsent text; submit or clear it in the source interface"), true
 		}
 		if inspection.QuiescenceUnverified {
-			return errors.New("source controller activity cannot be verified; use stop now to interrupt it")
+			return errors.New("source controller activity cannot be verified; use stop now to interrupt it"), true
 		}
 		if inspection.Idle {
-			return nil
+			return nil, true
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return ctx.Err(), false
 		case <-time.After(c.options.Interval):
 		}
 	}
@@ -384,6 +404,7 @@ func (c *Coordinator) advance(
 		nativeID,
 		"",
 		detail,
+		false,
 	)
 	if errors.Is(err, postgres.ErrTransitionStale) {
 		return errCoordinationLost
@@ -400,8 +421,14 @@ func (c *Coordinator) fail(
 	transition postgres.CoordinatedInterfaceTransition,
 	errorCode string,
 	cause error,
+	sourceUsable bool,
 ) error {
-	if interfacehandoff.FailureOutcome(transition.Phase) == domain.SessionInterfaceTransitionRecovery {
+	// A failure while the source is still usable can safely release prompts in
+	// the same transaction as the terminal failed outcome. If the worker did
+	// not prove that, keep the handoff fenced for recovery rather than exposing
+	// accepted prompts to a controller that may no longer exist.
+	if interfacehandoff.FailureOutcome(transition.Phase) == domain.SessionInterfaceTransitionRecovery ||
+		(!sourceUsable && transition.Phase != domain.SessionInterfaceTransitionPreflighting) {
 		return c.recover(transition, errorCode, cause)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), c.options.StepTimeout)
@@ -410,6 +437,7 @@ func (c *Coordinator) fail(
 		ctx, c.owner, transition.ID, transition.Phase,
 		domain.SessionInterfaceTransitionFailed, transition.NativeConversationID,
 		errorCode, cause.Error(),
+		sourceUsable,
 	)
 	if errors.Is(err, postgres.ErrTransitionStale) {
 		return errCoordinationLost
@@ -431,6 +459,7 @@ func (c *Coordinator) recover(
 		ctx, c.owner, transition.ID, transition.Phase,
 		domain.SessionInterfaceTransitionRecovery, transition.NativeConversationID,
 		errorCode, cause.Error(),
+		false,
 	)
 	if errors.Is(err, postgres.ErrTransitionStale) {
 		return errCoordinationLost

@@ -6,8 +6,8 @@ require (
 	github.com/aoagents/agent-orchestrator/backend v0.0.0
 	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.20.0
+	github.com/creack/pty v1.1.24
 	github.com/go-chi/chi/v5 v5.3.1
-	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/pressly/goose/v3 v3.27.3
@@ -15,7 +15,7 @@ require (
 )
 
 require (
-	github.com/creack/pty v1.1.24 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
@@ -27,4 +27,7 @@ require (
 	golang.org/x/text v0.40.0 // indirect
 )
 
-replace github.com/aoagents/agent-orchestrator/backend => github.com/Untrivial-ai/agent-orchestrator/backend v0.0.0-20260812094327-5da0ce157982
+// Cloud is built as a standalone module in its Docker image. Pin the backend
+// module revision that contains the shared interface-handoff state table rather
+// than relying on the repository-level go.work file.
+replace github.com/aoagents/agent-orchestrator/backend => github.com/vanshx999/agent-orchestrator/backend v0.0.0-20260923112602-9fd67e5975cd

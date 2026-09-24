@@ -513,7 +513,7 @@ func (s *Supervisor) handle(
 			response = map[string]bool{"closed": true}
 		}
 	case "interface.inspect", "interface.interrupt", "interface.stop",
-		"interface.native-id", "interface.start":
+		"interface.native-id", "interface.start", "interface.ready":
 		var input interfacePayload
 		err = decodePayload(request.Payload, &input)
 		if err == nil {

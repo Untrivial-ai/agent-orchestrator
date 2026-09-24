@@ -3,6 +3,7 @@ package interfacereconcile
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -109,6 +110,34 @@ func (d *TransportDriver) StartTarget(
 		"nativeConversationId": nativeConversationID,
 	})
 	return d.dispatch(ctx, transition, "interface.start", payload, nil)
+}
+
+// VerifyControllerReady asks the worker to prove that the controller committed
+// by the session row is live after a recovery-required handoff. A successful
+// worker request with ready=false is deliberately not treated as proof: the
+// coordinator will release the claim and retry after the replacement worker
+// finishes starting its controller.
+func (d *TransportDriver) VerifyControllerReady(
+	ctx context.Context,
+	transition postgres.CoordinatedInterfaceTransition,
+) error {
+	var result struct {
+		Ready     bool   `json:"ready"`
+		Interface string `json:"interface"`
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"targetInterface": transition.TargetInterface,
+	})
+	if err := d.dispatch(ctx, transition, "interface.ready", payload, &result); err != nil {
+		return err
+	}
+	if !result.Ready {
+		return errors.New("committed interface controller is not ready")
+	}
+	if result.Interface != string(transition.TargetInterface) {
+		return fmt.Errorf("worker reports interface %q, want %q", result.Interface, transition.TargetInterface)
+	}
+	return nil
 }
 
 // dispatch enqueues a worker command and awaits its result within the step

@@ -324,17 +324,18 @@ func (s *Store) AcknowledgeSessionInterfaceTransitionNotice(
 }
 
 // CompleteCoordinatedInterfaceTransition atomically releases every prompt held
-// by an active handoff and marks the transition complete. The transition row is
-// locked first, which pairs with appendUserMessage's lock: a message is either
-// included in this delivery or observes the completed handoff and routes to
-// the committed controller, never an in-between state.
+// by an active or recovered handoff and marks the transition complete. The
+// transition row is locked first, which pairs with appendUserMessage's lock: a
+// message is either included in this delivery or observes the completed
+// handoff and routes to the committed controller, never an in-between state.
 func (s *Store) CompleteCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string) error {
 	return s.withService(ctx, func(tx pgx.Tx) error {
-		var orgID, sessionID string
-		if err := tx.QueryRow(ctx, `SELECT org_id, session_id
+		var orgID, sessionID, phase string
+		if err := tx.QueryRow(ctx, `SELECT org_id, session_id, phase
 			FROM ao_interface_transitions
-			WHERE id = $1 AND claimed_by = $2 AND phase = 'activating'
-			FOR UPDATE`, transitionID, owner).Scan(&orgID, &sessionID); err != nil {
+			WHERE id = $1 AND claimed_by = $2
+			  AND phase IN ('activating', 'recovery_required')
+			FOR UPDATE`, transitionID, owner).Scan(&orgID, &sessionID, &phase); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrTransitionStale
 			}
@@ -350,7 +351,7 @@ func (s *Store) CompleteCoordinatedInterfaceTransition(ctx context.Context, owne
 		}
 		if _, err := tx.Exec(ctx, `UPDATE ao_interface_transitions
 			SET phase = 'completed', completed_at = now(), updated_at = now()
-			WHERE id = $1 AND claimed_by = $2 AND phase = 'activating'`, transitionID, owner); err != nil {
+			WHERE id = $1 AND claimed_by = $2 AND phase = $3`, transitionID, owner, phase); err != nil {
 			return err
 		}
 		return nil
@@ -409,10 +410,11 @@ type CoordinatedInterfaceTransition struct {
 	Harness string
 }
 
-// ClaimCoordinatedInterfaceTransitions atomically claims one active transition
-// row per session for this coordinator owner and returns the session context.
-// The partial unique index guarantees a single active row per session, so a
-// competing replica can never claim the same session concurrently.
+// ClaimCoordinatedInterfaceTransitions atomically claims one active or
+// recovery-required transition row per session for this coordinator owner and
+// returns the session context. The partial unique index guarantees a single
+// active row per session, so a competing replica can never claim the same
+// session concurrently.
 func (s *Store) ClaimCoordinatedInterfaceTransitions(
 	ctx context.Context,
 	owner string,
@@ -428,9 +430,7 @@ func (s *Store) ClaimCoordinatedInterfaceTransitions(
 				FROM ao_interface_transitions t
 				JOIN ao_sessions session
 					ON session.org_id = t.org_id AND session.id = t.session_id
-				WHERE t.phase NOT IN (
-						'completed', 'failed', 'cancelled', 'recovery_required'
-					)
+				WHERE t.phase NOT IN ('completed', 'failed', 'cancelled')
 					AND (
 						t.claimed_by = ''
 						OR (t.claimed_by = $1 AND t.claimed_at > now() - $3::interval)
@@ -519,6 +519,7 @@ func (s *Store) AdvanceCoordinatedInterfaceTransition(
 	from, to domain.SessionInterfaceTransitionPhase,
 	nativeConversationID string,
 	errorCode, errorDetail string,
+	releaseHeldMessages bool,
 ) error {
 	return s.withService(ctx, func(tx pgx.Tx) error {
 		var orgID, sessionID string
@@ -532,6 +533,17 @@ func (s *Store) AdvanceCoordinatedInterfaceTransition(
 		}
 		if _, err := tx.Exec(ctx, `SELECT set_config('ao.org_id', $1, true)`, orgID); err != nil {
 			return err
+		}
+		if releaseHeldMessages {
+			if to != domain.SessionInterfaceTransitionFailed {
+				return ErrInvalidTransition
+			}
+			// The row lock and this delivery share one transaction with the
+			// terminal phase update. A source-known-usable failure therefore
+			// cannot leave an accepted prompt stranded between controllers.
+			if err := deliverInterfaceTransitionMessages(ctx, tx, orgID, sessionID, transitionID); err != nil {
+				return err
+			}
 		}
 		tag, err := tx.Exec(ctx,
 			`UPDATE ao_interface_transitions

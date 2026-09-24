@@ -18,7 +18,7 @@ var canonicalWorkerRequestKinds = []string{
 	"terminal.open", "terminal.input", "terminal.resize", "terminal.close",
 	"browser.fetch",
 	"interface.inspect", "interface.interrupt", "interface.stop",
-	"interface.native-id", "interface.start",
+	"interface.native-id", "interface.start", "interface.ready",
 }
 
 // The kind allowlist lives in a SQL CHECK constraint that migrations rewrite
