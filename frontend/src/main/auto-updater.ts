@@ -430,17 +430,10 @@ let escalationStateDir: string | undefined;
 // Automatic re-check cadence for a long-running session. A fresh check also
 // runs on every launch (startAutoUpdates), so most users are current the moment
 // they open the app; this interval only governs sessions left open for a long
-// stretch. Kept to once a day on every channel: 15-minute nightly polling and
-// hourly stable polling were redundant background work and, on a cold network,
-// a source of launch-time check errors. Trade-off: the failing-checks nudge
-// needs consecutive automatic failures, and every launch supplies one, so users
-// who restart still trip it quickly; but a session left open continuously on a
-// broken updater now waits days rather than hours before the nudge appears.
-// Feature pins (a pr<N> channel) are the case a daily interval bites hardest: a
-// new build pushed to that PR is not noticed until relaunch, and the 30-minute
-// retirement poll only catches the PR closing, not a fresh build on it. Accepted
-// deliberately, since a pinned session is short-lived and relaunch re-checks.
-const AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// stretch. Kept short so a session left open picks up a nightly or hotfix build
+// within minutes rather than waiting out a day: a daily interval meant any
+// release we published took up to 24h to reach users who keep the app running.
+const AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 let automaticUpdateTimer: ReturnType<typeof setInterval> | undefined;
 let automaticUpdateTimerIntervalMs: number | undefined;
 type UpdaterOperation =
