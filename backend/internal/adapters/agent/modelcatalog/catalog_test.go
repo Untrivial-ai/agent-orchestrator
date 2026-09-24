@@ -203,6 +203,7 @@ func TestCustomModelEntryPolicy(t *testing.T) {
 		{agent: "kimchi", wantEntryMode: "configured", wantSelection: ports.ModelSelectionCatalog},
 		{agent: "prime-agent", wantEntryMode: "configured", wantSelection: ports.ModelSelectionCatalog},
 		{agent: "autohand", wantEntryMode: "direct", wantSelection: ports.ModelSelectionCatalog},
+		{agent: "junie", wantEntryMode: "direct", wantSelection: ports.ModelSelectionText},
 	}
 
 	for _, tc := range tests {

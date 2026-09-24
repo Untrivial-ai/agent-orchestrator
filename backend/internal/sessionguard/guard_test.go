@@ -3,6 +3,7 @@ package sessionguard
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -497,5 +498,84 @@ func TestGuard_NudgeCoordinationEnforcesSteeringAtWriteBoundary(t *testing.T) {
 				t.Fatalf("sends = %d, want %d", len(msg.sent), wantSends)
 			}
 		})
+	}
+}
+
+// Junie has no observation-only permission signal yet: idle and active can
+// both hide a native decision. Never send automated paste+Enter to its TUI.
+func TestJunieSuppressesAutomatedPaneInput(t *testing.T) {
+	for _, state := range []domain.ActivityState{domain.ActivityIdle, domain.ActivityActive, domain.ActivityWaitingInput, domain.ActivityBlocked} {
+		for _, kind := range []string{"nudge", "urgent", "coordination", "mutation"} {
+			t.Run(string(state)+"/"+kind, func(t *testing.T) {
+				rec := record(state, false)
+				rec.Harness = domain.HarnessJunie
+				rec.Mode = domain.SessionModeTUI
+				messenger := &fakeMessenger{}
+				g := New(&fakeStore{rec: rec, ok: true}, messenger, nil)
+				yes := func(domain.AgentHarness) bool { return true }
+				var outcome Outcome
+				var err error
+				switch kind {
+				case "nudge":
+					outcome, err = g.Nudge(context.Background(), "s1", "hello")
+				case "urgent":
+					outcome, err = g.NudgeUrgent(context.Background(), "s1", "hello", yes)
+				case "coordination":
+					outcome, err = g.NudgeCoordination(context.Background(), "s1", "hello", yes)
+				case "mutation":
+					outcome, err = g.CoordinationUnderMutation(context.Background(), "s1", "", yes, yes)
+				}
+				if err != nil || outcome != SuppressedAwaitingUser || len(messenger.sent) != 0 {
+					t.Fatalf("outcome=%v err=%v writes=%v", outcome, err, messenger.sent)
+				}
+			})
+		}
+	}
+}
+
+// Explicit messages reach Junie only after a hook-observed turn ended at idle;
+// every other state may be hiding a native dialog that paste+Enter would answer.
+func TestJunieDeliverRequiresObservedIdle(t *testing.T) {
+	cases := []struct {
+		name      string
+		state     domain.ActivityState
+		noSignal  bool
+		wantWrite bool
+	}{
+		{name: "observed idle", state: domain.ActivityIdle, wantWrite: true},
+		{name: "idle before first signal", state: domain.ActivityIdle, noSignal: true},
+		{name: "active", state: domain.ActivityActive},
+		{name: "waiting input", state: domain.ActivityWaitingInput},
+		{name: "blocked", state: domain.ActivityBlocked},
+	}
+	for _, tc := range cases {
+		for _, mutation := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/mutation=%v", tc.name, mutation), func(t *testing.T) {
+				rec := record(tc.state, false)
+				rec.Harness = domain.HarnessJunie
+				rec.Mode = domain.SessionModeTUI
+				if tc.noSignal {
+					rec.FirstSignalAt = time.Time{}
+				}
+				messenger := &fakeMessenger{}
+				g := New(&fakeStore{rec: rec, ok: true}, messenger, nil)
+				var outcome Outcome
+				var err error
+				if mutation {
+					outcome, err = g.DeliverUnderMutation(context.Background(), "s1", "hello")
+				} else {
+					outcome, err = g.Deliver(context.Background(), "s1", "hello")
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if wrote := len(messenger.sent) != 0; wrote != tc.wantWrite {
+					t.Fatalf("outcome=%v writes=%v; want write=%v", outcome, messenger.sent, tc.wantWrite)
+				}
+				if !tc.wantWrite && outcome != SuppressedAwaitingUser {
+					t.Fatalf("outcome=%v; want SuppressedAwaitingUser", outcome)
+				}
+			})
+		}
 	}
 }

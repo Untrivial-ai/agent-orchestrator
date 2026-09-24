@@ -10126,6 +10126,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - junie
           - fake
           type: string
         approvalMode:
@@ -10749,6 +10750,7 @@ components:
           - kimchi
           - prime-agent
           - omp
+          - junie
           - cloudflared
           type: string
         updatedAt:
@@ -12880,6 +12882,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - junie
           type: string
         issueId:
           type: string

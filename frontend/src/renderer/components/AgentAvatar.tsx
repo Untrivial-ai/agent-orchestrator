@@ -23,6 +23,7 @@ import grokLogo from "../assets/agents/grok.png";
 import kilocodeLogo from "../assets/agents/kilocode.svg";
 import kimiLogo from "../assets/agents/kimi.png";
 import kimchiLogo from "../assets/agents/kimchi.svg";
+import junieLogo from "../assets/agents/junie.svg";
 import kiroLogo from "../assets/agents/kiro.png";
 import museLogo from "../assets/agents/muse.png";
 import ompLogo from "../assets/agents/omp.png";
@@ -57,6 +58,7 @@ const LOGOS: AgentLogoSources = {
 	vibe: vibeLogo,
 	pi: piLogo,
 	kimchi: kimchiLogo,
+	junie: junieLogo,
 	"prime-agent": primeAgentLogo,
 	amp: ampLogo,
 	cline: clineLogo,

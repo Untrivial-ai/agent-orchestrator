@@ -20,6 +20,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/activitydispatch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/cursor"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/junie"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/internal/pricing"
@@ -472,6 +473,13 @@ func newHooksCommand(ctx *commandContext) *cobra.Command {
 }
 
 func (c *commandContext) runHook(ctx context.Context, agent, event string) error {
+	if agent == "junie" {
+		// Leave room for the projection-busy retries while completing before
+		// Junie's ten-second hook runner deadline. Delivery stays best-effort.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+	}
 	observedAt := c.deps.Now()
 	if isAgyModernHookEvent(agent, event) {
 		// AGY requires every modern hook handler to return a JSON object, even
@@ -483,7 +491,8 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 		if !sessionIDPattern.MatchString(reviewSessionID) {
 			return nil
 		}
-		return c.runReviewHook(ctx, agent, event, reviewSessionID)
+		c.runReviewHook(ctx, agent, event, reviewSessionID)
+		return nil
 	}
 	sessionID := strings.TrimSpace(os.Getenv("AO_SESSION_ID"))
 	if !sessionIDPattern.MatchString(sessionID) {
@@ -512,7 +521,9 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 
 	state, hasActivity := activitydispatch.Derive(agent, event, payload)
 	agentSessionID := ""
-	if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
+	if agent == "junie" {
+		agentSessionID = junie.NativeSessionID(payload)
+	} else if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
 		agentSessionID = hookAgentSessionID(payload)
 	}
 	usage := hookUsageMetadata(agent, payload)
@@ -678,7 +689,7 @@ func isAgyModernHookEvent(agent, event string) bool {
 	}
 }
 
-func (c *commandContext) runReviewHook(ctx context.Context, agent, event, reviewSessionID string) error {
+func (c *commandContext) runReviewHook(ctx context.Context, agent, event, reviewSessionID string) {
 	var payload []byte
 	if hookReadsStdin(agent, event) {
 		var err error
@@ -693,15 +704,17 @@ func (c *commandContext) runReviewHook(ctx context.Context, agent, event, review
 		if err := json.NewEncoder(c.deps.Out).Encode(out); err != nil {
 			c.reportHookFailure(agent, event, reviewSessionID, fmt.Errorf("write permission response: %w", err))
 		}
-		return nil
+		return
 	}
 	state, hasActivity := activitydispatch.Derive(agent, event, payload)
 	agentSessionID := ""
-	if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
+	if agent == "junie" {
+		agentSessionID = junie.NativeSessionID(payload)
+	} else if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
 		agentSessionID = hookAgentSessionID(payload)
 	}
 	if !hasActivity && agentSessionID == "" {
-		return nil
+		return
 	}
 	launchID := validLaunchID(os.Getenv("AO_RUNTIME_LAUNCH_ID"))
 	if launchID == "" {
@@ -719,7 +732,6 @@ func (c *commandContext) runReviewHook(ctx context.Context, agent, event, review
 	if err := c.postJSON(ctx, path, req, nil); err != nil {
 		c.reportHookFailure(agent, event, reviewSessionID, err)
 	}
-	return nil
 }
 
 // Aider's notification callback is synchronous and inherits the interactive
