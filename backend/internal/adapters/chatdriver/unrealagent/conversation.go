@@ -21,10 +21,11 @@ import (
 const eventBuffer = 4096
 
 type conversation struct {
-	cfg         providerConfig
-	transport   *persistenthost.Transport
-	log         *slog.Logger
-	reconnected bool
+	cfg          providerConfig
+	transport    *persistenthost.Transport
+	log          *slog.Logger
+	reconnected  bool
+	shutdownHost func(context.Context, string, string) error
 
 	events chan ports.ChatEvent
 	ready  chan error
@@ -38,10 +39,19 @@ type conversation struct {
 	closeErr  error
 }
 
-func newConversation(cfg providerConfig, transport *persistenthost.Transport, log *slog.Logger) *conversation {
+func newConversation(
+	cfg providerConfig,
+	transport *persistenthost.Transport,
+	log *slog.Logger,
+	shutdownHost func(context.Context, string, string) error,
+) *conversation {
+	if shutdownHost == nil {
+		shutdownHost = persistenthost.Shutdown
+	}
 	c := &conversation{
 		cfg: cfg, transport: transport, log: log, reconnected: transport.Reconnected,
-		events: make(chan ports.ChatEvent, eventBuffer), ready: make(chan error, 1),
+		shutdownHost: shutdownHost,
+		events:       make(chan ports.ChatEvent, eventBuffer), ready: make(chan error, 1),
 		pending: make(map[string]chan error),
 	}
 	go c.pump()
@@ -156,7 +166,16 @@ func (c *conversation) pump() {
 			if decodeErr := json.Unmarshal(line, &incoming); decodeErr != nil {
 				c.log.Warn("discarding invalid Unreal Agent frame", "error", decodeErr)
 			} else if incoming.Version != protocolVersion {
-				c.fail(fmt.Errorf("unreal agent protocol version %d is incompatible with AO version %d", incoming.Version, protocolVersion))
+				versionErr := fmt.Errorf("unreal agent protocol version %d is incompatible with AO version %d", incoming.Version, protocolVersion)
+				if !readyDelivered {
+					readyDelivered = true
+					c.ready <- versionErr
+				}
+				c.fail(versionErr)
+				c.emit(ports.ChatEvent{
+					Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerStopped,
+					Err: versionErr,
+				})
 				return
 			} else {
 				switch incoming.Type {
@@ -244,5 +263,5 @@ func (c *conversation) Terminate() error {
 	_ = c.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return persistenthost.Shutdown(ctx, c.cfg.DataDir, c.cfg.AOSessionID)
+	return c.shutdownHost(ctx, c.cfg.DataDir, c.cfg.AOSessionID)
 }

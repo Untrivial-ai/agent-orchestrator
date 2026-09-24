@@ -7,7 +7,7 @@ to install and no Terminal UI mode.
 ## Configure a provider
 
 The default provider is OpenAI with model `gpt-6-astra`. Make the credential
-available to the AO daemon:
+available to the AO daemon or in the project's environment:
 
 ```bash
 export OPENAI_API_KEY=...
@@ -29,9 +29,11 @@ auth file understood by Unreal; `ollama` needs a model but no API key.
 
 ## Run
 
-Choose `unreal-agent`, Chat mode, and `bypass-permissions`. AO refuses safer
-permission modes because Unreal v0.1.1 does not expose an interactive approval
-channel or a provider-enforced read-only sandbox.
+Choosing `unreal-agent` without explicit mode or approval overrides defaults the
+session to Chat with `bypass-permissions`, including for `ao spawn` and delegated
+tasks. AO refuses explicitly selected safer permission modes because Unreal
+v0.1.1 does not expose an interactive approval channel or a provider-enforced
+read-only sandbox.
 
 The harness supplies Bash, image inspection, and workspace skills from
 `.harness/skills`. AO-supplied MCP servers, prompt attachments, additional

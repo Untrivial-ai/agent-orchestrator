@@ -99,7 +99,7 @@ func runProvider(ctx context.Context, cfg providerConfig, input io.Reader, outpu
 	if err != nil {
 		return fmt.Errorf("open Unreal Agent session store: %w", err)
 	}
-	journal, err := newEventJournal(filepath.Join(cfg.DataDir, "agent-runtime", string(domain.HarnessUnreal), "journals", cfg.AOSessionID+".json"), output)
+	journal, err := newEventJournal(providerStatePath(cfg, "journals"), output)
 	if err != nil {
 		return err
 	}
@@ -108,6 +108,9 @@ func runProvider(ctx context.Context, cfg providerConfig, input io.Reader, outpu
 		pendingTools: make(map[string]domain.ActivityKind),
 	}
 	if runtime.active, err = runtime.readActiveTurn(); err != nil {
+		return err
+	}
+	if runtime.usage, err = runtime.readUsage(); err != nil {
 		return err
 	}
 	if runtime.active.ProviderTurnID != "" && journal.hasTurnCompletion(runtime.active.ProviderTurnID) {
@@ -267,6 +270,10 @@ func (runtime *providerRuntime) interrupt(requested string) error {
 	select {
 	case err := <-done:
 		if err != nil && !errors.Is(err, context.Canceled) {
+			// The provider loop is the owner of coordinator failures. Preserve a
+			// failure observed while interrupt waits so the loop can project the
+			// terminal error and clear the active turn instead of being stranded.
+			done <- err
 			return err
 		}
 	case <-runtime.ctx.Done():
@@ -440,12 +447,11 @@ func (runtime *providerRuntime) observeModelResponse(turnID string, stored sessi
 			_ = runtime.emit(wireEvent{Kind: ports.ChatEventActivityStarted, ProviderTurnID: turnID, ProviderItemID: call.CallID, ActivityKind: kind, ActivityStatus: domain.ActivityStatusRunning, Summary: call.Name, Detail: detail})
 		}
 	}
-	runtime.usage.InputTokens += response.Usage.InputTokens
-	runtime.usage.OutputTokens += response.Usage.OutputTokens
-	runtime.usage.CachedTokens += response.Usage.CachedInputTokens
-	runtime.usage.TotalTokens = runtime.usage.InputTokens + runtime.usage.OutputTokens
-	runtime.usage.TotalsKnown = true
-	usage := runtime.usage
+	usage, err := runtime.recordUsage(response.Usage)
+	if err != nil {
+		runtime.failTurn(turnID, fmt.Errorf("persist Unreal Agent usage: %w", err))
+		return
+	}
 	_ = runtime.emit(wireEvent{Kind: ports.ChatEventUsage, ProviderTurnID: turnID, Usage: &usage})
 	if response.Failure != nil {
 		runtime.failTurn(turnID, errors.New(strings.TrimSpace(response.Failure.Code+": "+response.Failure.Message)))
@@ -513,7 +519,18 @@ func (runtime *providerRuntime) hasPendingTools() bool {
 }
 
 func (runtime *providerRuntime) activeTurnPath() string {
-	return filepath.Join(runtime.cfg.DataDir, "agent-runtime", string(domain.HarnessUnreal), "active", runtime.cfg.AOSessionID+".json")
+	return providerStatePath(runtime.cfg, "active")
+}
+
+func (runtime *providerRuntime) usagePath() string {
+	return providerStatePath(runtime.cfg, "usage")
+}
+
+func providerStatePath(cfg providerConfig, kind string) string {
+	return filepath.Join(
+		cfg.DataDir, "agent-runtime", string(domain.HarnessUnreal), kind,
+		cfg.AOSessionID, cfg.ProviderConversationID+".json",
+	)
 }
 
 func (runtime *providerRuntime) readActiveTurn() (activeTurnState, error) {
@@ -535,23 +552,7 @@ func (runtime *providerRuntime) writeActiveTurn() error {
 	runtime.mu.Lock()
 	active := runtime.active
 	runtime.mu.Unlock()
-	path := runtime.activeTurnPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	encoded, err := json.Marshal(active)
-	if err != nil {
-		return err
-	}
-	temporary := path + ".tmp-" + uuid.NewString()
-	if err := os.WriteFile(temporary, encoded, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(temporary, path); err != nil {
-		_ = os.Remove(temporary)
-		return err
-	}
-	return nil
+	return writeJSONAtomically(runtime.activeTurnPath(), active)
 }
 
 func (runtime *providerRuntime) clearActiveTurn() error {
@@ -563,6 +564,37 @@ func (runtime *providerRuntime) clearActiveTurn() error {
 		return fmt.Errorf("clear Unreal Agent active turn: %w", err)
 	}
 	return nil
+}
+
+func (runtime *providerRuntime) readUsage() (ports.ChatUsage, error) {
+	encoded, err := os.ReadFile(runtime.usagePath()) //nolint:gosec // AO-owned path from validated provider id
+	if errors.Is(err, os.ErrNotExist) {
+		return ports.ChatUsage{}, nil
+	}
+	if err != nil {
+		return ports.ChatUsage{}, fmt.Errorf("read Unreal Agent usage: %w", err)
+	}
+	var usage ports.ChatUsage
+	if err := json.Unmarshal(encoded, &usage); err != nil {
+		return ports.ChatUsage{}, fmt.Errorf("decode Unreal Agent usage: %w", err)
+	}
+	return usage, nil
+}
+
+func (runtime *providerRuntime) recordUsage(delta llm.Usage) (ports.ChatUsage, error) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	previous := runtime.usage
+	runtime.usage.InputTokens += delta.InputTokens
+	runtime.usage.OutputTokens += delta.OutputTokens
+	runtime.usage.CachedTokens += delta.CachedInputTokens
+	runtime.usage.TotalTokens = runtime.usage.InputTokens + runtime.usage.OutputTokens
+	runtime.usage.TotalsKnown = true
+	if err := writeJSONAtomically(runtime.usagePath(), runtime.usage); err != nil {
+		runtime.usage = previous
+		return ports.ChatUsage{}, err
+	}
+	return runtime.usage, nil
 }
 
 func shell() string {
@@ -757,18 +789,22 @@ func (journal *eventJournal) writeLocked(current frame) error {
 }
 
 func (journal *eventJournal) persistLocked() error {
-	if err := os.MkdirAll(filepath.Dir(journal.path), 0o700); err != nil {
+	return writeJSONAtomically(journal.path, journal.frames)
+}
+
+func writeJSONAtomically(path string, value any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	encoded, err := json.Marshal(journal.frames)
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	temporary := journal.path + ".tmp-" + uuid.NewString()
+	temporary := path + ".tmp-" + uuid.NewString()
 	if err := os.WriteFile(temporary, encoded, 0o600); err != nil {
 		return err
 	}
-	if err := os.Rename(temporary, journal.path); err != nil {
+	if err := os.Rename(temporary, path); err != nil {
 		_ = os.Remove(temporary)
 		return err
 	}

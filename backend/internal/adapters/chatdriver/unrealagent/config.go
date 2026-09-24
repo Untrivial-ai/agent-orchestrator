@@ -71,8 +71,8 @@ func validateProviderConfig(cfg providerConfig) error {
 	if cfg.AOSessionID == "" || filepath.Base(cfg.AOSessionID) != cfg.AOSessionID || strings.ContainsAny(cfg.AOSessionID, `/\\`) {
 		return errors.New("invalid Unreal Agent AO session id")
 	}
-	if cfg.ProviderConversationID == "" {
-		return errors.New("unreal agent provider conversation id is empty")
+	if cfg.ProviderConversationID == "" || filepath.Base(cfg.ProviderConversationID) != cfg.ProviderConversationID || strings.ContainsAny(cfg.ProviderConversationID, `/\\`) {
+		return errors.New("invalid Unreal Agent provider conversation id")
 	}
 	return nil
 }

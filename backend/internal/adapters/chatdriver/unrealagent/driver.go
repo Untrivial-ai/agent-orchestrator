@@ -26,14 +26,19 @@ type plugin interface {
 	AuthStatus(context.Context) (ports.AgentAuthStatus, error)
 }
 
+type environmentAuthPlugin interface {
+	AuthStatusWithEnv(context.Context, map[string]string) (ports.AgentAuthStatus, error)
+}
+
 type connectHostFunc func(context.Context, persistenthost.Config) (*persistenthost.Transport, error)
 
 // Driver embeds Unreal Agent as a persistent AO Chat provider.
 type Driver struct {
-	plugin      plugin
-	log         *slog.Logger
-	executable  func() (string, error)
-	connectHost connectHostFunc
+	plugin       plugin
+	log          *slog.Logger
+	executable   func() (string, error)
+	connectHost  connectHostFunc
+	shutdownHost func(context.Context, string, string) error
 }
 
 // New creates the built-in Unreal Agent Chat adapter.
@@ -43,7 +48,7 @@ func New(plugin plugin, log *slog.Logger) *Driver {
 	}
 	return &Driver{
 		plugin: plugin, log: log, executable: os.Executable,
-		connectHost: persistenthost.ConnectOrStart,
+		connectHost: persistenthost.ConnectOrStart, shutdownHost: persistenthost.Shutdown,
 	}
 }
 
@@ -80,7 +85,9 @@ func (d *Driver) Probe(ctx context.Context) (ports.ChatCapabilities, error) {
 	if err != nil {
 		d.log.Debug("Unreal Agent auth probe inconclusive; continuing", "error", err)
 	} else if status == ports.AgentAuthStatusUnauthorized {
-		return nil, ports.ErrChatAuthRequired
+		// Probe has no project context. A project-scoped provider key may still
+		// make the launch valid, so defer the authoritative check to Start/Resume.
+		d.log.Debug("Unreal Agent auth unavailable in daemon environment; deferring to launch environment")
 	}
 	return capabilities(), nil
 }
@@ -88,6 +95,9 @@ func (d *Driver) Probe(ctx context.Context) (ports.ChatCapabilities, error) {
 // Start opens a fresh persistent Unreal conversation.
 func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
 	if err := validateStart(cfg.WorkspacePath, cfg.Permissions, cfg.ReadOnly, cfg.AdditionalDirectories, cfg.MCPServers); err != nil {
+		return nil, err
+	}
+	if err := d.validateLaunchAuth(ctx, cfg.Env); err != nil {
 		return nil, err
 	}
 	providerID := uuid.NewString()
@@ -113,6 +123,9 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		return nil, fmt.Errorf("%w: Unreal Agent conversation id is empty", ports.ErrChatResumeFailed)
 	}
 	if err := validateStart(cfg.WorkspacePath, cfg.Permissions, cfg.ReadOnly, cfg.AdditionalDirectories, cfg.MCPServers); err != nil {
+		return nil, err
+	}
+	if err := d.validateLaunchAuth(ctx, cfg.Env); err != nil {
 		return nil, err
 	}
 	conv, err := d.connect(ctx, providerConfig{
@@ -153,6 +166,22 @@ func normalizeEffort(value string) string {
 	default:
 		return "high"
 	}
+}
+
+func (d *Driver) validateLaunchAuth(ctx context.Context, env map[string]string) error {
+	checker, ok := d.plugin.(environmentAuthPlugin)
+	if !ok {
+		return nil
+	}
+	status, err := checker.AuthStatusWithEnv(ctx, env)
+	if err != nil {
+		d.log.Debug("Unreal Agent launch auth probe inconclusive; continuing", "error", err)
+		return nil
+	}
+	if status == ports.AgentAuthStatusUnauthorized {
+		return ports.ErrChatAuthRequired
+	}
+	return nil
 }
 
 func (d *Driver) connect(
@@ -200,7 +229,7 @@ func (d *Driver) connect(
 		}
 		return nil, fmt.Errorf("%w: persistent Unreal Agent host: %w", ports.ErrChatDriverUnavailable, err)
 	}
-	conv := newConversation(cfg, transport, d.log)
+	conv := newConversation(cfg, transport, d.log, d.shutdownHost)
 	if !transport.Reconnected {
 		if err := conv.waitReady(ctx); err != nil {
 			_ = conv.Terminate()
@@ -210,7 +239,11 @@ func (d *Driver) connect(
 	replayCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := conv.request(replayCtx, command{Type: "replay"}); err != nil {
-		_ = conv.Close()
+		if conv.reconnected {
+			_ = conv.Close()
+		} else {
+			_ = conv.Terminate()
+		}
 		return nil, fmt.Errorf("replay Unreal Agent events: %w", err)
 	}
 	return conv, nil

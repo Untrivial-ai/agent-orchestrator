@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/unreallabsai/unreal-agent/harness/inbox"
 	"github.com/unreallabsai/unreal-agent/harness/llm"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -201,5 +202,112 @@ func TestEventJournalRunsCompletionBeforePublishingEvent(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProviderRecoveryStateIsScopedToProviderConversation(t *testing.T) {
+	dataDir := t.TempDir()
+	firstConfig := providerConfig{
+		AOSessionID: "ao-session", ProviderConversationID: "provider-one",
+		DataDir: dataDir, WorkspacePath: t.TempDir(),
+	}
+	secondConfig := firstConfig
+	secondConfig.ProviderConversationID = "provider-two"
+
+	firstRuntime := &providerRuntime{
+		cfg: firstConfig,
+		active: activeTurnState{
+			ProviderTurnID: "stale-turn", MessageID: "stale-message",
+		},
+	}
+	if err := firstRuntime.writeActiveTurn(); err != nil {
+		t.Fatal(err)
+	}
+	secondRuntime := &providerRuntime{cfg: secondConfig}
+	active, err := secondRuntime.readActiveTurn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.ProviderTurnID != "" || active.MessageID != "" {
+		t.Fatalf("new provider conversation inherited active turn %#v", active)
+	}
+
+	firstJournal, err := newEventJournal(providerStatePath(firstConfig, "journals"), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := firstJournal.emit(wireEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "stale-turn"}); err != nil {
+		t.Fatal(err)
+	}
+	secondOutput := new(bytes.Buffer)
+	secondJournal, err := newEventJournal(providerStatePath(secondConfig, "journals"), secondOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := secondJournal.replay(); err != nil {
+		t.Fatal(err)
+	}
+	if secondOutput.Len() != 0 {
+		t.Fatalf("new provider conversation replayed stale frames: %s", secondOutput.String())
+	}
+}
+
+func TestInterruptPreservesCoordinatorFailureForProviderLoop(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	inputs, err := inbox.New(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinatorErr := errors.New("coordinator failed")
+	done := make(chan error, 1)
+	done <- coordinatorErr
+	runtime := &providerRuntime{
+		ctx: ctx,
+		active: activeTurnState{
+			ProviderTurnID: "turn-1", MessageID: "message-1",
+		},
+		inputs: inputs,
+		done:   done,
+	}
+
+	if err := runtime.interrupt("turn-1"); !errors.Is(err, coordinatorErr) {
+		t.Fatalf("interrupt error = %v, want %v", err, coordinatorErr)
+	}
+	select {
+	case got := <-done:
+		if !errors.Is(got, coordinatorErr) {
+			t.Fatalf("preserved coordinator error = %v, want %v", got, coordinatorErr)
+		}
+	default:
+		t.Fatal("interrupt consumed the coordinator failure")
+	}
+}
+
+func TestProviderUsageSurvivesRestart(t *testing.T) {
+	cfg := providerConfig{
+		AOSessionID: "ao-session", ProviderConversationID: "provider-session",
+		DataDir: t.TempDir(), WorkspacePath: t.TempDir(),
+	}
+	first := &providerRuntime{cfg: cfg}
+	usage, err := first.recordUsage(llm.Usage{InputTokens: 3, OutputTokens: 2, CachedInputTokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.InputTokens != 3 || usage.OutputTokens != 2 || usage.CachedTokens != 1 || usage.TotalTokens != 5 {
+		t.Fatalf("first usage = %#v", usage)
+	}
+
+	restarted := &providerRuntime{cfg: cfg}
+	restarted.usage, err = restarted.readUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err = restarted.recordUsage(llm.Usage{InputTokens: 4, OutputTokens: 1, CachedInputTokens: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.InputTokens != 7 || usage.OutputTokens != 3 || usage.CachedTokens != 3 || usage.TotalTokens != 10 || !usage.TotalsKnown {
+		t.Fatalf("restarted cumulative usage = %#v", usage)
 	}
 }

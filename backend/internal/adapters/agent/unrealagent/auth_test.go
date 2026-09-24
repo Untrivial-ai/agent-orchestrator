@@ -50,3 +50,22 @@ func TestAuthStatusFindsCodexAuthFile(t *testing.T) {
 		t.Fatalf("AuthStatus() = (%q, %v)", got, err)
 	}
 }
+
+func TestAuthStatusWithEnvUsesProjectProviderCredentials(t *testing.T) {
+	for _, name := range []string{
+		"UNREAL_HARNESS_LLM_PROVIDER", "UNREAL_HARNESS_LLM_API_KEY",
+		"OPENAI_API_KEY", "OPENROUTER_API_KEY", "FIREWORKS_API_KEY",
+	} {
+		t.Setenv(name, "")
+	}
+	status, err := (&Plugin{resolvedBinary: "unreal-agent-runner"}).AuthStatusWithEnv(
+		context.Background(),
+		map[string]string{
+			"UNREAL_HARNESS_LLM_PROVIDER": "openrouter",
+			"OPENROUTER_API_KEY":          "project-key",
+		},
+	)
+	if err != nil || status != ports.AgentAuthStatusAuthorized {
+		t.Fatalf("AuthStatusWithEnv() = (%q, %v), want (%q, nil)", status, err, ports.AgentAuthStatusAuthorized)
+	}
+}
