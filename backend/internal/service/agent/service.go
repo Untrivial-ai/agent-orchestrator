@@ -99,6 +99,7 @@ type Deps struct {
 	CodexAccounts          ports.CodexAccountClientFactory
 	CodexAccountSwitches   ports.CodexAccountSwitchStore
 	CodexOperationGate     ports.CodexOperationGate
+	CodexRouteProvider     ports.CodexRouteProvider
 	// Clock overrides time.Now for deterministic account-bootstrap retry tests.
 	Clock func() time.Time
 }
@@ -146,7 +147,7 @@ func NewWithDeps(deps Deps) *Service {
 	if svc.codexAccounts != nil && deps.CodexAccountSwitches != nil && deps.CodexOperationGate != nil {
 		svc.codexSwitches = newCodexAccountSwitchCoordinator(
 			deps.Context, svc, deps.CodexAccountSwitches, deps.CodexOperationGate,
-			deps.Clock, svc.PublishCodexAccounts,
+			deps.Clock, svc.PublishCodexAccounts, deps.CodexRouteProvider,
 		)
 	}
 	svc.sessions = deps.Sessions

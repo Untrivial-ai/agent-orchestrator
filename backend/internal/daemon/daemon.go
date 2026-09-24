@@ -565,6 +565,7 @@ func Run() error {
 			return codexagent.New().ResolveBinary(resolveCtx)
 		}, log),
 		CodexOperationGate: codexOperationGate,
+		CodexRouteProvider: codexProxy,
 	}
 	agentSvc = agentsvc.NewWithDeps(agentDeps)
 	agentSvc.WarmModelCatalogs(ctx)

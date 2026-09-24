@@ -13,7 +13,8 @@ import (
 )
 
 type persistedRouteState struct {
-	Sessions map[string]string `json:"sessions"`
+	ActiveAccount string            `json:"active_account,omitempty"`
+	Sessions      map[string]string `json:"sessions"`
 }
 
 // routeState is the small durable part of Accounts Manager state. It stores
@@ -22,8 +23,9 @@ type persistedRouteState struct {
 type routeState struct {
 	path string
 
-	mu       sync.RWMutex
-	sessions map[string]string
+	mu            sync.RWMutex
+	activeAccount string
+	sessions      map[string]string
 }
 
 func newRouteState(path string) (*routeState, error) {
@@ -49,6 +51,7 @@ func newRouteState(path string) (*routeState, error) {
 			state.sessions[sessionID] = accountID
 		}
 	}
+	state.activeAccount = strings.TrimSpace(persisted.ActiveAccount)
 	return state, nil
 }
 
@@ -60,6 +63,16 @@ func (s *routeState) accountForSession(sessionID string) (string, bool) {
 	accountID, ok := s.sessions[strings.TrimSpace(sessionID)]
 	s.mu.RUnlock()
 	return accountID, ok
+}
+
+func (s *routeState) activeAccountID() (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.RLock()
+	accountID := s.activeAccount
+	s.mu.RUnlock()
+	return accountID, accountID != ""
 }
 
 func (s *routeState) setAccountForSession(sessionID, accountID string) error {
@@ -75,9 +88,34 @@ func (s *routeState) setAccountForSession(sessionID, accountID string) error {
 	defer s.mu.Unlock()
 	candidate := cloneStringMap(s.sessions)
 	candidate[sessionID] = accountID
-	if err := s.persist(persistedRouteState{Sessions: candidate}); err != nil {
+	if err := s.persist(persistedRouteState{ActiveAccount: s.activeAccount, Sessions: candidate}); err != nil {
 		return err
 	}
+	s.sessions = candidate
+	return nil
+}
+
+// setAccountForAllSessions atomically changes the account used by every
+// session that has already been routed and records it as the default for
+// sessions started after the global switch.
+func (s *routeState) setAccountForAllSessions(accountID string) error {
+	if s == nil {
+		return ports.ErrCodexProxyUnavailable
+	}
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return errors.New("account id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	candidate := cloneStringMap(s.sessions)
+	for sessionID := range candidate {
+		candidate[sessionID] = accountID
+	}
+	if err := s.persist(persistedRouteState{ActiveAccount: accountID, Sessions: candidate}); err != nil {
+		return err
+	}
+	s.activeAccount = accountID
 	s.sessions = candidate
 	return nil
 }

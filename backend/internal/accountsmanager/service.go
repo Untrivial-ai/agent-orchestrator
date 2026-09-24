@@ -294,11 +294,18 @@ func (s *Service) RouteForSession(ctx context.Context, sessionID string) (ports.
 			return ports.AgentProviderRoute{}, fmt.Errorf("route Codex session %s: %w", sessionID, ports.ErrCodexProxyAccountUnavailable)
 		}
 	} else {
-		account, ok := s.defaultUsableAccount()
-		if !ok {
-			return ports.AgentProviderRoute{}, ports.ErrCodexProxyNoAccounts
+		if activeID, active := s.routes.activeAccountID(); active {
+			if _, ok := s.resolveUsableAccount(activeID); !ok {
+				return ports.AgentProviderRoute{}, fmt.Errorf("route Codex session %s: %w", sessionID, ports.ErrCodexProxyAccountUnavailable)
+			}
+			accountID = activeID
+		} else {
+			account, ok := s.defaultUsableAccount()
+			if !ok {
+				return ports.AgentProviderRoute{}, ports.ErrCodexProxyNoAccounts
+			}
+			accountID = account.ID
 		}
-		accountID = account.ID
 		if err := s.routes.setAccountForSession(sessionID, accountID); err != nil {
 			return ports.AgentProviderRoute{}, fmt.Errorf("persist Codex session account: %w", err)
 		}
@@ -313,6 +320,29 @@ func (s *Service) RouteForSession(ctx context.Context, sessionID string) (ports.
 		Token:        token,
 		TokenEnv:     defaultRouteTokenEnv,
 	}, nil
+}
+
+// SwitchAllSessionsAccount updates the route pin for every existing Codex
+// session without restarting its process. The selected account is also
+// persisted as the default for sessions that start after the switch.
+func (s *Service) SwitchAllSessionsAccount(ctx context.Context, accountRef string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if s == nil || s.coreManager == nil {
+		return "", ports.ErrCodexProxyUnavailable
+	}
+	if err := s.refreshAccounts(ctx); err != nil {
+		return "", err
+	}
+	account, ok := s.resolveUsableAccount(accountRef)
+	if !ok {
+		return "", ports.ErrCodexProxyAccountUnavailable
+	}
+	if err := s.routes.setAccountForAllSessions(account.ID); err != nil {
+		return "", err
+	}
+	return s.externalAccountID(account.ID), nil
 }
 
 // SwitchSessionAccount updates the persisted account pin used by future

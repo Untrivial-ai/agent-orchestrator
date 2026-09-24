@@ -72,6 +72,50 @@ func TestServiceRoutesMirroredNativeCodexAccount(t *testing.T) {
 	}
 }
 
+func TestServiceGlobalSwitchRepinsExistingAndFutureSessions(t *testing.T) {
+	dataDir := t.TempDir()
+	nativeRoot := filepath.Join(dataDir, "native")
+	for _, accountID := range []string{"native-account-1", "native-account-2"} {
+		nativeDir := filepath.Join(nativeRoot, accountID, "credential-home")
+		if err := os.MkdirAll(nativeDir, 0o700); err != nil {
+			t.Fatalf("create native account %s: %v", accountID, err)
+		}
+		credential := []byte(`{"type":"codex","access_token":"` + accountID + `"}`)
+		if err := os.WriteFile(filepath.Join(nativeDir, "auth.json"), credential, 0o600); err != nil {
+			t.Fatalf("write native credential %s: %v", accountID, err)
+		}
+	}
+
+	service, err := New(Options{DataDir: dataDir, NativeAccountRoot: nativeRoot})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = service.Close(context.Background()) }()
+	for _, sessionID := range []string{"session-1", "session-2"} {
+		if _, err := service.RouteForSession(context.Background(), sessionID); err != nil {
+			t.Fatalf("RouteForSession(%s): %v", sessionID, err)
+		}
+	}
+	selected, err := service.SwitchAllSessionsAccount(context.Background(), "native-account-2")
+	if err != nil {
+		t.Fatalf("SwitchAllSessionsAccount: %v", err)
+	}
+	if selected != "native-account-2" {
+		t.Fatalf("selected account = %q, want native-account-2", selected)
+	}
+	for _, sessionID := range []string{"session-1", "session-2"} {
+		if got, ok := service.routes.accountForSession(sessionID); !ok || got != "ao-native-native-account-2.json" {
+			t.Fatalf("session %s pin = (%q, %t), want account 2", sessionID, got, ok)
+		}
+	}
+	if _, err := service.RouteForSession(context.Background(), "session-3"); err != nil {
+		t.Fatalf("RouteForSession(session-3): %v", err)
+	}
+	if got, ok := service.routes.accountForSession("session-3"); !ok || got != "ao-native-native-account-2.json" {
+		t.Fatalf("future session pin = (%q, %t), want account 2", got, ok)
+	}
+}
+
 func TestServiceRemovesMirrorsWhenNativeAccountRootDisappears(t *testing.T) {
 	dataDir := t.TempDir()
 	nativeRoot := filepath.Join(dataDir, "native")

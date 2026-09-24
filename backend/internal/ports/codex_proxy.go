@@ -40,10 +40,11 @@ type AgentProviderRoute struct {
 }
 
 // CodexRouteProvider owns account selection for Codex sessions. The route
-// token is stable for the lifetime of an AO session; SwitchSessionAccount
-// changes the account selected for subsequent requests without restarting the
-// Codex process.
+// token is stable for the lifetime of an AO session; account switches change
+// the account selected for subsequent requests without restarting the Codex
+// process.
 type CodexRouteProvider interface {
 	RouteForSession(context.Context, string) (AgentProviderRoute, error)
 	SwitchSessionAccount(context.Context, string, string) (string, error)
+	SwitchAllSessionsAccount(context.Context, string) (string, error)
 }

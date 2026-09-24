@@ -98,6 +98,26 @@ type coordinatorSwitchStoreFake struct {
 	readErr error
 }
 
+type coordinatorRouteFake struct {
+	mu       sync.Mutex
+	accounts []string
+}
+
+func (f *coordinatorRouteFake) RouteForSession(context.Context, string) (ports.AgentProviderRoute, error) {
+	return ports.AgentProviderRoute{}, nil
+}
+
+func (f *coordinatorRouteFake) SwitchSessionAccount(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func (f *coordinatorRouteFake) SwitchAllSessionsAccount(_ context.Context, accountID string) (string, error) {
+	f.mu.Lock()
+	f.accounts = append(f.accounts, accountID)
+	f.mu.Unlock()
+	return accountID, nil
+}
+
 func (s *coordinatorSwitchStoreFake) CreateCodexAccountSwitch(_ context.Context, record domain.CodexAccountSwitch) (domain.CodexAccountSwitch, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -138,7 +158,8 @@ func (s *coordinatorSwitchStoreFake) UpdateCodexAccountSwitch(_ context.Context,
 func TestCodexAccountSwitchCoordinatorCompletesLocalCredentialSwitch(t *testing.T) {
 	credentials := &coordinatorCredentialFake{source: domain.CodexAccountSwitchSource{Kind: domain.CodexAccountSwitchSourceManaged, AccountID: "source"}}
 	store := &coordinatorSwitchStoreFake{}
-	coordinator := newCodexAccountSwitchCoordinator(context.Background(), credentials, store, codexops.NewGate(), time.Now, nil)
+	routes := &coordinatorRouteFake{}
+	coordinator := newCodexAccountSwitchCoordinator(context.Background(), credentials, store, codexops.NewGate(), time.Now, nil, routes)
 
 	if _, err := coordinator.StartCodexAccountSwitch(context.Background(), ports.CodexAccountSwitchConfig{TargetAccountID: "target", IdempotencyKey: "request-1"}); err != nil {
 		t.Fatal(err)
@@ -154,6 +175,12 @@ func TestCodexAccountSwitchCoordinatorCompletesLocalCredentialSwitch(t *testing.
 	store.mu.Unlock()
 	if completed.Phase != domain.CodexAccountSwitchCompleted {
 		t.Fatalf("phase = %q, want completed", completed.Phase)
+	}
+	routes.mu.Lock()
+	routedAccounts := append([]string(nil), routes.accounts...)
+	routes.mu.Unlock()
+	if !slices.Equal(routedAccounts, []string{"target"}) {
+		t.Fatalf("routed accounts = %v, want [target]", routedAccounts)
 	}
 	credentials.mu.Lock()
 	calls := append([]string(nil), credentials.calls...)

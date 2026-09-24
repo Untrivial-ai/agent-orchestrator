@@ -26,6 +26,7 @@ type codexAccountSwitchCoordinator struct {
 	workersClosed                   bool
 	clock                           func() time.Time
 	publish                         func()
+	routeProvider                   ports.CodexRouteProvider
 }
 
 const codexAccountSwitchDurableBoundaryWait = 5 * time.Second
@@ -41,6 +42,7 @@ func newCodexAccountSwitchCoordinator(
 	gate ports.CodexOperationGate,
 	clock func() time.Time,
 	publish func(),
+	routeProviders ...ports.CodexRouteProvider,
 ) *codexAccountSwitchCoordinator {
 	if ctx == nil {
 		ctx = context.Background()
@@ -48,9 +50,13 @@ func newCodexAccountSwitchCoordinator(
 	if clock == nil {
 		clock = time.Now
 	}
+	var routeProvider ports.CodexRouteProvider
+	if len(routeProviders) > 0 {
+		routeProvider = routeProviders[0]
+	}
 	return &codexAccountSwitchCoordinator{
 		credentials: credentials, store: store, codexOperationGate: gate,
-		backgroundContext: ctx, clock: clock, publish: publish,
+		backgroundContext: ctx, clock: clock, publish: publish, routeProvider: routeProvider,
 	}
 }
 
@@ -295,6 +301,13 @@ func (m *codexAccountSwitchCoordinator) dispatchCodexAccountSwitch(ctx context.C
 			}
 			committedAt := m.clock()
 			sw.CredentialsCommittedAt = &committedAt
+			if !m.switchAllCodexSessionRoutes(ctx, sw.TargetAccountID) {
+				// Keep the durable switch in the activating phase. The worker
+				// retries route reconciliation, so a transient proxy/storage
+				// failure cannot leave the global credential switch falsely
+				// completed while sessions still use the old account.
+				return
+			}
 			m.completeCodexAccountSwitch(ctx, sw)
 			return
 		case domain.CodexAccountSwitchRecoveryRequired:
@@ -326,12 +339,23 @@ func (m *codexAccountSwitchCoordinator) settleCodexAccountSwitch(ctx context.Con
 			committedAt := m.clock()
 			sw.CredentialsCommittedAt = &committedAt
 		}
+		if !m.switchAllCodexSessionRoutes(ctx, sw.TargetAccountID) {
+			return false
+		}
 		m.completeCodexAccountSwitch(ctx, sw)
 		return true
 	}
 	sw.FailureCode = failureCode
 	m.failAndCleanupCodexAccountSwitch(ctx, sw)
 	return true
+}
+
+func (m *codexAccountSwitchCoordinator) switchAllCodexSessionRoutes(ctx context.Context, accountID string) bool {
+	if m.routeProvider == nil {
+		return true
+	}
+	_, err := m.routeProvider.SwitchAllSessionsAccount(ctx, accountID)
+	return err == nil
 }
 
 func (m *codexAccountSwitchCoordinator) completeCodexAccountSwitch(ctx context.Context, sw *domain.CodexAccountSwitch) {

@@ -62,6 +62,38 @@ func TestRouteStateProtectsExistingFileOnLoad(t *testing.T) {
 	}
 }
 
+func TestRouteStateGlobalSwitchUpdatesExistingSessionsAndFutureDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "routes.json")
+	state, err := newRouteState(path)
+	if err != nil {
+		t.Fatalf("newRouteState: %v", err)
+	}
+	for _, sessionID := range []string{"session-1", "session-2"} {
+		if err := state.setAccountForSession(sessionID, "proxy-account-1"); err != nil {
+			t.Fatalf("setAccountForSession(%s): %v", sessionID, err)
+		}
+	}
+	if err := state.setAccountForAllSessions("proxy-account-2"); err != nil {
+		t.Fatalf("setAccountForAllSessions: %v", err)
+	}
+	for _, sessionID := range []string{"session-1", "session-2"} {
+		if got, ok := state.accountForSession(sessionID); !ok || got != "proxy-account-2" {
+			t.Fatalf("session %s pin = (%q, %t), want proxy-account-2", sessionID, got, ok)
+		}
+	}
+	if got, ok := state.activeAccountID(); !ok || got != "proxy-account-2" {
+		t.Fatalf("active account = (%q, %t), want proxy-account-2", got, ok)
+	}
+
+	reloaded, err := newRouteState(path)
+	if err != nil {
+		t.Fatalf("reload route state: %v", err)
+	}
+	if got, ok := reloaded.activeAccountID(); !ok || got != "proxy-account-2" {
+		t.Fatalf("reloaded active account = (%q, %t), want proxy-account-2", got, ok)
+	}
+}
+
 func TestRouteStateDoesNotMutateWhenPersistenceFails(t *testing.T) {
 	root := t.TempDir()
 	parent := filepath.Join(root, "not-a-directory")
