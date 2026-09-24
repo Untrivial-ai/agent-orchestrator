@@ -131,7 +131,7 @@ func (g *Guard) refuseDeliver(rec domain.SessionRecord) (Outcome, bool) {
 	if g.tuiAwaitingStartupInput(rec) {
 		return SuppressedStartupPending, true
 	}
-	if rec.Activity.State == domain.ActivityBlocked {
+	if rec.Activity.State == domain.ActivityBlocked || directTerminalInputPending(rec) {
 		return SuppressedAwaitingUser, true
 	}
 	return SuppressedUnknown, false
@@ -141,6 +141,15 @@ func (g *Guard) refuseDeliver(rec domain.SessionRecord) (Outcome, bool) {
 // can conceal a native decision, so automated input must remain disabled.
 func requiresDirectTerminalInput(rec domain.SessionRecord) bool {
 	return rec.Harness == domain.HarnessJunie && domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeTUI
+}
+
+// directTerminalInputPending gates explicit messages to such a session. Junie
+// never reports blocked, so a paste plus Enter is only admitted after a
+// hook-observed turn has ended at idle; before the first signal (onboarding,
+// trust) and during a turn a native dialog may be waiting for the user.
+func directTerminalInputPending(rec domain.SessionRecord) bool {
+	return requiresDirectTerminalInput(rec) &&
+		(rec.FirstSignalAt.IsZero() || rec.Activity.State != domain.ActivityIdle)
 }
 
 func (g *Guard) refuseNudge(rec domain.SessionRecord) (Outcome, bool) {
@@ -221,7 +230,7 @@ func (g *Guard) DeliverWithPostWrite(ctx context.Context, id domain.SessionID, m
 // write its own handoff or startup prompt while ordinary input stays gated.
 func (g *Guard) DeliverUnderMutation(ctx context.Context, id domain.SessionID, msg string) (Outcome, error) {
 	return g.sendAdmitted(ctx, id, msg, func(rec domain.SessionRecord) (Outcome, bool) {
-		return SuppressedAwaitingUser, rec.Activity.State == domain.ActivityBlocked
+		return SuppressedAwaitingUser, rec.Activity.State == domain.ActivityBlocked || directTerminalInputPending(rec)
 	})
 }
 
