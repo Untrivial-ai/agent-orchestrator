@@ -9,7 +9,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage, hasTrustedApiBaseUrl } from "../lib/api-client";
 import { conversationQueryKey } from "./useConversation";
-import { workspaceQueryKey } from "./useWorkspaceQuery";
+import { useCloudCp } from "./useCloudCp";
+import { cloudSessionsQueryKey, workspaceQueryKey } from "./useWorkspaceQuery";
+import type { CloudCpInterfaceTransition } from "../lib/cloud-cp";
 
 export type SessionInterfaceTransition = components["schemas"]["SessionInterfaceTransition"];
 export type SessionInterfaceTransitionStatus =
@@ -49,6 +51,17 @@ type InterfaceTransitionMutationState<TInput> = {
 	status: "error" | "idle" | "pending" | "success";
 	submittedAt: number;
 };
+
+// Cloud and the local daemon deliberately expose the same state-machine
+// vocabulary. Keep this conversion at the control-plane boundary rather than
+// dropping the Cloud transition: without it, the first status refetch after a
+// successful POST erased the optimistic active state, re-enabled the action,
+// and let a second click race the still-running handoff.
+function toSessionInterfaceTransition(
+	transition: CloudCpInterfaceTransition | undefined,
+): SessionInterfaceTransition | undefined {
+	return transition as SessionInterfaceTransition | undefined;
+}
 
 function useInterfaceTransitionMutations<TInput>(mutationKey: readonly unknown[]) {
 	return useMutationState<InterfaceTransitionMutationState<TInput>>({
@@ -151,11 +164,32 @@ export function sessionInterfaceTransitionQueryKey(sessionId: string) {
 	return ["session-interface-transition", sessionId] as const;
 }
 
-function useSessionInterfaceTransitionStatusQuery(sessionId: string | undefined) {
+function useSessionInterfaceTransitionStatusQuery(
+	sessionId: string | undefined,
+	cloudCp: ReturnType<typeof useCloudCp>,
+	cloud?: { orgId: string } | null,
+	hasSessionContext = false,
+) {
+	const isCloud = Boolean(cloud && cloudCp.ready);
+	const isLocal = cloud === null || !hasSessionContext;
 	return useQuery({
 		queryKey: sessionInterfaceTransitionQueryKey(sessionId ?? ""),
-		enabled: Boolean(sessionId && hasTrustedApiBaseUrl()),
+		enabled: Boolean(sessionId && (isCloud || (isLocal && hasTrustedApiBaseUrl()))),
 		queryFn: async () => {
+			if (isCloud && cloud) {
+				const [sessionResponse, transitionStatus] = await Promise.all([
+					cloudCp.client.getSession(cloud.orgId, sessionId as string),
+					cloudCp.client.getInterfaceTransition(cloud.orgId, sessionId as string),
+				]);
+				return {
+					supported: transitionStatus.supported,
+					targetMode: transitionStatus.targetMode,
+					reasonCode: transitionStatus.reasonCode,
+					reason: transitionStatus.reason,
+					transition: toSessionInterfaceTransition(transitionStatus.transition),
+					currentMode: sessionResponse.session.interfaceMode,
+				} as SessionInterfaceTransitionStatus & { currentMode?: SessionInterfaceMode };
+			}
 			const { data, error } = await apiClient.GET(
 				"/api/v1/sessions/{sessionId}/interface-transition",
 				{ params: { path: { sessionId: sessionId as string } } },
@@ -181,7 +215,7 @@ function useSessionInterfaceTransitionStatusQuery(sessionId: string | undefined)
 }
 
 export function useSessionInterfaceTransitionStatus(sessionId: string | undefined) {
-	const query = useSessionInterfaceTransitionStatusQuery(sessionId);
+	const query = useSessionInterfaceTransitionStatusQuery(sessionId, useCloudCp());
 	return {
 		status: query.data,
 		transition: query.data?.transition,
@@ -196,15 +230,31 @@ export function useSessionInterfaceTransitionStatus(sessionId: string | undefine
  * traffic and the existing session CDC stream still refreshes the committed
  * mode in the workspace model.
  */
-export function useSessionInterfaceTransition(sessionId: string | undefined) {
+export function useSessionInterfaceTransition(
+	sessionId: string | undefined,
+	// undefined: session row is still resolving; null: resolved local session.
+	// This prevents unresolved Cloud tabs from probing the local daemon.
+	cloud?: { orgId: string } | null,
+) {
 	const queryClient = useQueryClient();
+	const cloudCp = useCloudCp();
+	// Keep the two-argument call site backwards-compatible for local sessions.
+	// SessionView deliberately passes `undefined` while a tab is unresolved, so
+	// distinguish an omitted context from that explicit unresolved value.
+	const hasSessionContext = arguments.length >= 2;
+	const isCloud = Boolean(cloud && cloudCp.ready);
 	const settledRef = useRef<string>("");
 	const refreshAttemptRef = useRef(0);
 	const [refreshingTransition, setRefreshingTransition] = useState<{
 		attempt: number;
 		key: string;
 	}>();
-	const query = useSessionInterfaceTransitionStatusQuery(sessionId);
+	const query = useSessionInterfaceTransitionStatusQuery(
+		sessionId,
+		cloudCp,
+		cloud,
+		hasSessionContext,
+	);
 
 	const start = useMutation({
 		mutationKey: startInterfaceTransitionMutationKey,
@@ -212,6 +262,16 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 			targetSessionId,
 			...input
 		}: StartInterfaceTransitionMutationInput) => {
+			if (isCloud && cloud) {
+				const response = await cloudCp.client.startInterfaceTransition(
+					cloud.orgId,
+					targetSessionId,
+					{ targetMode: input.targetMode, policy: input.policy },
+				);
+				return {
+					transition: toSessionInterfaceTransition(response.transition),
+				};
+			}
 			const { data, error } = await apiClient.POST(
 				"/api/v1/sessions/{sessionId}/interface-transition",
 				{
@@ -236,22 +296,36 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 					},
 				);
 			}
-			return queryClient
-				.invalidateQueries({
+			const refreshes = [
+				queryClient.invalidateQueries({
 					queryKey: sessionInterfaceTransitionQueryKey(variables.targetSessionId),
-				})
-				.catch(() => undefined);
+				}),
+			];
+			if (isCloud) {
+				// Cloud's session projection owns interfaceMode. Refetch it as soon
+				// as POST accepts the handoff rather than leaving the source TUI
+				// mounted until the ordinary five-second Cloud polling interval.
+				refreshes.push(
+					queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey }),
+					queryClient.invalidateQueries({ queryKey: ["cloud-session"] }),
+				);
+			}
+			return Promise.all(refreshes).catch(() => undefined);
 		},
 	});
 
 	const cancel = useMutation({
 		mutationKey: cancelInterfaceTransitionMutationKey,
 		mutationFn: async ({ targetSessionId }: InterfaceTransitionMutationTarget) => {
+			if (isCloud && cloud) {
+				return cloudCp.client.cancelInterfaceTransition(cloud.orgId, targetSessionId);
+			}
 			const { error } = await apiClient.DELETE(
 				"/api/v1/sessions/{sessionId}/interface-transition",
 				{ params: { path: { sessionId: targetSessionId } } },
 			);
 			if (error) throw error;
+			return undefined;
 		},
 		onSuccess: (_data, variables) => {
 			void queryClient.invalidateQueries({
@@ -266,6 +340,13 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 			targetSessionId,
 			transitionId,
 		}: AcknowledgeInterfaceTransitionNoticeMutationInput) => {
+			if (isCloud && cloud) {
+				return cloudCp.client.acknowledgeInterfaceTransitionNotice(
+					cloud.orgId,
+					targetSessionId,
+					transitionId,
+				);
+			}
 			const { data, error } = await apiClient.PUT(
 				"/api/v1/sessions/{sessionId}/interface-transition/{transitionId}/notice-acknowledgement",
 				{
@@ -278,11 +359,13 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 			return data;
 		},
 		onSuccess: (response, variables) => {
+			if (!response || isCloud) return;
+			const localResponse = response as unknown as { transition: SessionInterfaceTransition };
 			queryClient.setQueryData<SessionInterfaceTransitionStatus>(
 				sessionInterfaceTransitionQueryKey(variables.targetSessionId),
 				(current) =>
-					current?.transition?.id === response.transition.id
-						? { ...current, transition: response.transition }
+					current?.transition?.id === localResponse.transition.id
+						? { ...current, transition: localResponse.transition }
 						: current,
 			);
 		},
@@ -334,17 +417,24 @@ export function useSessionInterfaceTransition(sessionId: string | undefined) {
 		settledRef.current = transitionKey;
 		const attempt = ++refreshAttemptRef.current;
 		setRefreshingTransition({ attempt, key: transitionKey });
-		void Promise.all([
+		const refreshes = [
 			queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
 			queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId) }),
-		]).finally(() => {
+		];
+		if (isCloud) {
+			refreshes.push(
+				queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey }),
+				queryClient.invalidateQueries({ queryKey: ["cloud-session"] }),
+			);
+		}
+		void Promise.all(refreshes).finally(() => {
 			setRefreshingTransition((refreshing) =>
 				refreshing?.key === transitionKey && refreshing.attempt === attempt
 					? undefined
 					: refreshing,
 			);
 		});
-	}, [queryClient, sessionId, transitionActive, transitionKey]);
+	}, [isCloud, queryClient, sessionId, transitionActive, transitionKey]);
 	// A local start refusal records a durable-free error. If any client then opens
 	// a real transition, that newer durable row supersedes the stale refusal: the
 	// switch is running or done, so the "could not switch" notice must not linger.

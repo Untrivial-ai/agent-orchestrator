@@ -45,6 +45,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 type TerminalPaneProps = {
 	session?: WorkspaceSession;
+	terminalGeneration?: string;
 	theme: Theme;
 	daemonReady: boolean;
 	terminalTarget?: TerminalTarget;
@@ -138,6 +139,7 @@ function terminalPropsMatch(left: TerminalPaneProps, right: TerminalPaneProps): 
 function cacheDescriptor(
 	session: WorkspaceSession | undefined,
 	terminalTarget: TerminalTarget | undefined,
+	terminalGeneration?: string,
 ): TerminalCacheDescriptor | null {
 	if (terminalTarget?.kind === "shell") {
 		if (!terminalTargetBelongsToSession(terminalTarget, session?.id)) return null;
@@ -158,7 +160,7 @@ function cacheDescriptor(
 	const handleId = session?.terminalHandleId;
 	if (!session?.id || !handleId) return null;
 	const ownerKey = `session:${session.id}:worker`;
-	const generation = session.terminalGeneration ?? "";
+	const generation = terminalGeneration ?? session.terminalGeneration ?? "";
 	// The reset nonce discriminates a restored session (same id, new worker epoch,
 	// dead old terminal) from the live one: folding it into the cache key alone
 	// makes restore mount a brand-new entry (which re-mints against the new epoch)
@@ -536,6 +538,10 @@ export function TerminalCacheProvider({
 				removeEntry(entry.cacheKey);
 				continue;
 			}
+			if (entry.kind === "worker" && session?.cloud && session.mode === "chat") {
+				removeEntry(entry.cacheKey);
+				continue;
+			}
 			if (entry.kind === "worker" && session) {
 				const sessionGen = session.terminalGeneration ?? "";
 				const entryGen = entry.generation ?? "";
@@ -670,6 +676,7 @@ function CachedTerminalSlot({
 
 export function TerminalPane({
 	session,
+	terminalGeneration,
 	theme,
 	daemonReady,
 	terminalTarget: requestedTerminalTarget,
@@ -783,7 +790,7 @@ export function TerminalPane({
 		inputRequest,
 		onInputRequestResult,
 	};
-	const descriptor = cacheDescriptor(session, terminalTarget);
+	const descriptor = cacheDescriptor(session, terminalTarget, terminalGeneration);
 	if (cache && descriptor) {
 		return <CachedTerminalSlot descriptor={descriptor} props={props} />;
 	}

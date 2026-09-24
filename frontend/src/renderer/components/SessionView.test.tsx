@@ -40,6 +40,11 @@ const chatSurfaceWorkState = vi.hoisted(() => ({
 	hasRunningTurn: false,
 	queuedTurnCount: 0,
 }));
+const cloudSessionQueryState = vi.hoisted(() => ({
+	data: undefined as WorkspaceSession | undefined,
+	isLoading: false,
+}));
+const cloudGateState = vi.hoisted(() => ({ cloudEnabled: true }));
 
 async function chooseSessionAction(name: string) {
 	const user = userEvent.setup();
@@ -68,9 +73,13 @@ vi.mock("../lib/platform", () => ({
 	// shortcut assertions in this suite.
 	hidesShellTopbar: () => true,
 	isMacPlatform: () => false,
+	isLinuxPlatform: () => false,
 }));
 vi.mock("../hooks/useWindowFullScreen", () => ({
 	useWindowFullScreen: () => nativeFullScreenMock(),
+}));
+vi.mock("../hooks/useCloudGate", () => ({
+	useCloudGate: () => ({ cloudEnabled: cloudGateState.cloudEnabled, localEnabled: true, client: "" }),
 }));
 vi.mock("../hooks/useCloudCp", () => ({
 	useCloudCp: () => ({
@@ -605,6 +614,8 @@ vi.mock("../lib/shell-context", () => ({
 	useShell: () => ({ daemonStatus: { state: "ready" } }),
 }));
 vi.mock("../hooks/useWorkspaceQuery", () => ({
+	toCloudWorkspaceSession: vi.fn(),
+	useCloudSessionQuery: () => cloudSessionQueryState,
 	cloudSessionsQueryKey: ["cloud-sessions"],
 	useWorkspaceQuery: () => ({
 		data: workspaceQueryState.data,
@@ -704,6 +715,7 @@ describe("SessionView", () => {
 	}
 
 	beforeEach(() => {
+		cloudGateState.cloudEnabled = true;
 		for (const sessionId of ["sess-1", "sess-2", "sess-orch", "sess-cross-project"]) {
 			setChatDraftBoundary(sessionId, "composer", undefined);
 			setChatDraftBoundary(sessionId, "inline-edit", undefined);
@@ -714,6 +726,7 @@ describe("SessionView", () => {
 		nativeFullScreenMock.mockReturnValue(false);
 		window.localStorage.clear();
 		for (const session of workspaces.flatMap((workspace) => workspace.sessions)) {
+			delete session.cloud;
 			delete session.previewUrl;
 			delete session.previewRevision;
 			delete session.isTerminated;
@@ -722,6 +735,7 @@ describe("SessionView", () => {
 			session.status = "working";
 			session.provider = "claude-code";
 			delete session.mode;
+			delete session.cloud;
 			session.prs = [];
 		}
 		workspaceQueryState.data = workspaces;
@@ -764,6 +778,8 @@ describe("SessionView", () => {
 		interfaceTransitionState.settling = false;
 		interfaceTransitionState.startError = undefined;
 		interfaceTransitionState.status = undefined;
+		cloudSessionQueryState.data = undefined;
+		cloudSessionQueryState.isLoading = false;
 		chatSurfaceWorkState.controllerBusy = false;
 		chatSurfaceWorkState.hasRunningTurn = false;
 		chatSurfaceWorkState.queuedTurnCount = 0;
@@ -786,6 +802,17 @@ describe("SessionView", () => {
 		});
 	});
 
+	it("keeps the Cloud switch visible while a newly selected Cloud session resolves", () => {
+		workspaceQueryState.data = [];
+		cloudSessionQueryState.isLoading = true;
+
+		render(<SessionView cloudOrgId="cloud-org" projectId="cloud-project" sessionId="cloud-session" />);
+
+		expect(screen.queryByText("session not found")).not.toBeInTheDocument();
+		const switchButtons = screen.getAllByRole("button", { name: "Switch to chat UI" });
+		expect(switchButtons).not.toHaveLength(0);
+		expect(switchButtons.some((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+	});
 	// Regression: shell terminals are an app-wide list, so without a per-session
 	// filter a shell opened in another session would show up as a tab in this
 	// session's strip. Only this session's shells (not another session's, and no
@@ -1288,6 +1315,32 @@ describe("SessionView", () => {
 
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 		expect(interfaceTransitionMock.start).toHaveBeenCalledWith({ targetMode, policy: "drain", historyPolicy: "strict" });
+	});
+
+	it("shows the supported interface switch as a direct session-tab button", () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "chat" };
+		const session = workerSession("sess-1");
+		session.cloud = { orgId: "org-1" };
+		session.mode = "tui";
+		session.status = "idle";
+		session.activity = { state: "idle", lastActivityAt: "2026-08-06T00:00:00Z" };
+
+		render(<SessionView sessionId="sess-1" />);
+
+		expect(screen.getByRole("button", { name: "Switch to chat UI" })).toBeInTheDocument();
+	});
+
+	it("hides interface switching when the Cloud offering is disabled", () => {
+		cloudGateState.cloudEnabled = false;
+		interfaceTransitionState.status = { supported: true, targetMode: "chat" };
+		const session = workerSession("sess-1");
+		session.mode = "tui";
+		session.status = "idle";
+		session.activity = { state: "idle", lastActivityAt: "2026-08-06T00:00:00Z" };
+
+		render(<SessionView sessionId="sess-1" />);
+
+		expect(screen.queryByRole("button", { name: "Switch to chat UI" })).not.toBeInTheDocument();
 	});
 
 	it.each([
