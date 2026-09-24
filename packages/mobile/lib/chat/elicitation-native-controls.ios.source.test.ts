@@ -7,12 +7,16 @@ describe("iOS elicitation controls", () => {
 	it("keeps choices visually subordinate to the question", () => {
 		expect(source).toContain('font({ size: 14, weight: "semibold" })');
 		expect(source).toContain('font({ size: 12, weight: "regular" })');
-		expect(source).toContain('size={18}');
+		expect(source).toContain("size={iconSize.md}");
 		expect(source).toContain("minHeight: 56");
 	});
 
 	it("uses the same native glass material as the worker controls", () => {
-		expect(source).toContain("glassEffect({ glass: { variant: \"regular\", interactive: true }, shape: \"roundedRectangle\", cornerRadius: 16 })");
+		// The recipe module is the single place the glass material, shape and
+		// interactivity are decided, so this asserts the shared call and not a
+		// literal that every control would otherwise have to repeat.
+		expect(source).toContain("glassPanel()");
+		expect(source).not.toContain("glassEffect(");
 		expect(source).not.toContain("background(t.bgSubtle)");
 	});
 

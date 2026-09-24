@@ -576,6 +576,30 @@
 	background: linear-gradient(270deg, transparent 0%, var(--color-bg-primary) 82%);
 }
 
+/* Vertical section caps resolve against the actual sidebar space between chrome. */
+.sidebar-sections-container {
+	container-type: size;
+}
+
+/* Persistent edge fades show when a sidebar section has more content to scroll. */
+.sidebar-section-scroll-fade {
+	position: absolute;
+	inset-inline: 0;
+	z-index: 10;
+	height: var(--space-4);
+	pointer-events: none;
+}
+
+.sidebar-section-scroll-fade--top {
+	top: 0;
+	background: linear-gradient(180deg, var(--color-bg-sidebar) 0%, transparent 100%);
+}
+
+.sidebar-section-scroll-fade--bottom {
+	bottom: 0;
+	background: linear-gradient(0deg, var(--color-bg-sidebar) 0%, transparent 100%);
+}
+
 /* Session actions are portaled into the center pane. Make their responsive
  * labels follow that pane's width instead of the full window width. */
 .workspace-topbar-container {

@@ -3395,31 +3395,28 @@ func TestACPDriverRejectsUnsupportedTurnSettingsAtStartAndSend(t *testing.T) {
 	}
 }
 
-// TestNormalizeMCPServersFailsWithoutCapabilities verifies that
-// normalizeMCPServers returns an error when MCP server configs are provided
-// but the agent does not advertise any MCP capability.
-func TestNormalizeMCPServersFailsWithoutCapabilities(t *testing.T) {
-	configs := []ports.ChatMCPServerConfig{{Name: "test", Type: "stdio", Command: "echo"}}
-	_, err := normalizeMCPServers(configs, acpsdk.McpCapabilities{})
-	if err == nil {
-		t.Fatal("normalizeMCPServers with no MCP caps: err = nil, want error")
-	}
-	if !strings.Contains(err.Error(), "does not support per-session MCP") {
-		t.Fatalf("err = %v, want mention of per-session MCP", err)
+func TestNormalizeMCPServersAllowsStdioWithoutCapabilities(t *testing.T) {
+	for _, serverType := range []string{"", "stdio"} {
+		servers, err := normalizeMCPServers([]ports.ChatMCPServerConfig{{
+			Name: "test", Type: serverType, Command: "echo",
+		}}, acpsdk.McpCapabilities{})
+		if err != nil {
+			t.Fatalf("normalizeMCPServers(type %q): %v", serverType, err)
+		}
+		if len(servers) != 1 || servers[0].Stdio == nil {
+			t.Fatalf("servers = %#v, want one stdio server", servers)
+		}
 	}
 }
 
-// TestNormalizeMCPServersSucceedsWithHttpCapability verifies that stdio
-// servers pass when the agent advertises HTTP MCP (any MCP capability is
-// sufficient — the transport-specific check happens later).
-func TestNormalizeMCPServersSucceedsWithHttpCapability(t *testing.T) {
-	configs := []ports.ChatMCPServerConfig{{Name: "test", Type: "stdio", Command: "echo"}}
-	servers, err := normalizeMCPServers(configs, acpsdk.McpCapabilities{Http: true})
-	if err != nil {
-		t.Fatalf("normalizeMCPServers with Http cap: %v", err)
-	}
-	if len(servers) != 1 {
-		t.Fatalf("servers = %d, want 1", len(servers))
+func TestNormalizeMCPServersStillGatesOptionalTransports(t *testing.T) {
+	for _, serverType := range []string{"http", "sse"} {
+		_, err := normalizeMCPServers([]ports.ChatMCPServerConfig{{
+			Name: "test", Type: serverType, URL: "https://example.test",
+		}}, acpsdk.McpCapabilities{})
+		if err == nil || !strings.Contains(err.Error(), "does not support") {
+			t.Fatalf("normalizeMCPServers(type %q) error = %v, want capability error", serverType, err)
+		}
 	}
 }
 

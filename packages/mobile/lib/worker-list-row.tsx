@@ -1,6 +1,6 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Keyboard, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import type { DashboardSession } from "./api";
 import { AgentLogo } from "./AgentLogo";
@@ -15,13 +15,17 @@ import { workerContextActions, type WorkerActionId } from "./worker-action-model
 import { WorkerRowActions } from "./worker-row-actions";
 import { WorkerRowInteraction } from "./worker-row-interaction";
 import { WORKER_ACTION_REVEAL_WIDTH } from "./worker-row-swipe-model";
+import { Spinning } from "./ui";
 import { normalizeConversationTitle } from "./chat/conversationMenuModel";
+import { iconSize, press, space, type } from "./tokens";
 
-export function WorkerListRow({
+export const WorkerListRow = memo(
+	function WorkerListRow({
 	session,
 	projectName,
 	isRenaming,
 	activeSwipeId,
+	nowBucket,
 	onSwipeOpen,
 	onSwipeClose,
 	onRenameStart,
@@ -36,6 +40,12 @@ export function WorkerListRow({
 	projectName?: string;
 	isRenaming: boolean;
 	activeSwipeId?: string;
+	/**
+	 * The current minute, passed in only so a row re-renders when its relative
+	 * timestamp would read differently — the memo below compares session *values*,
+	 * so nothing else would wake a row whose data has not changed.
+	 */
+	nowBucket: number;
 	onSwipeOpen(id: string, close: () => void): void;
 	onSwipeClose(id: string): void;
 	onRenameStart(): void;
@@ -59,7 +69,14 @@ export function WorkerListRow({
 	const visual = statusVisual(t, session.status);
 	const glyph = workerStatusGlyph(session.status);
 	const prs = prLine(session);
-	const details = [row.branch, prs?.text].filter(Boolean).join("  ·  ");
+	// The second line is the pull request when there is one, and the branch when
+	// there is not. The branch used to lead unconditionally, which put a worktree
+	// path (`ao/dev/<project>-N/root`) under every title — the same string the
+	// session header already shows. Then it went missing entirely for a row with no
+	// PR, which left the line blank on exactly the sessions that had no other way to
+	// name their branch. `workerRowPresentation` has already dropped a branch that
+	// only restates the title, so whatever reaches here says something new.
+	const details = prs?.text ?? row.branch ?? "";
 	useEffect(() => {
 		if (isRenaming) return;
 		setRenameTitle(row.title);
@@ -83,7 +100,7 @@ export function WorkerListRow({
 			onRenameCancel();
 		} catch (cause) {
 			haptics.error();
-			setRenameError(cause instanceof Error ? cause.message : "Could not rename this worker.");
+			setRenameError(cause instanceof Error ? cause.message : "Couldn't rename this worker.");
 			setRenameSaving(false);
 		}
 	}, [onRename, onRenameCancel, renameSaving, renameTitle]);
@@ -201,7 +218,24 @@ export function WorkerListRow({
 			)}
 		</WorkerRowInteraction>
 	);
-}
+},
+	/**
+	 * Ignores the handler props on purpose. Every one of them is created inline by
+	 * the board and closes only over this row's own `session` (and store actions
+	 * that never change identity), so a row whose session, name and swipe state are
+	 * the same cannot be holding a stale handler. Comparing them would defeat the
+	 * memo — and re-rendering every row of a long board is what made folding heavy.
+	 */
+	(prev, next) =>
+		prev.nowBucket === next.nowBucket &&
+		prev.projectName === next.projectName &&
+		prev.isRenaming === next.isRenaming &&
+		prev.activeSwipeId === next.activeSwipeId &&
+		// By value, not identity: the store polls and publishes freshly parsed
+		// session objects each tick, so identity would fail for every row and put
+		// the whole board through a re-render on every poll.
+		(prev.session === next.session || JSON.stringify(prev.session) === JSON.stringify(next.session)),
+);
 
 function WorkerRowContents({
 	row,
@@ -246,9 +280,14 @@ function WorkerRowContents({
 				</Text>
 				{/* Paired with the tinted label so status reads by shape as well as
 				    colour. Only shown alongside a real status — when the row is
-				    showing an elapsed time instead, there is no state to depict. */}
+				    showing an elapsed time instead, there is no state to depict.
+				    A working row turns: the shape for "working" is a circle, and a
+				    circle only says so while it is moving — a pulse says "waiting",
+				    which is what the row above it says for a different state. */}
 				{glyph && row.trailingKind === "status" ? (
-					<Feather name={glyph} size={12} color={visual.color} />
+					<Spinning enabled={Boolean(visual.breathing)}>
+						<Feather name={glyph} size={12} color={visual.color} />
+					</Spinning>
 				) : null}
 				<Text
 					style={[styles.trailing, { color: row.trailingKind === "status" ? visual.color : t.textTertiary }]}
@@ -266,29 +305,29 @@ function WorkerRowContents({
 						onChangeText={onRenameTitleChange}
 						placeholder="Worker name"
 						placeholderTextColor={t.textFaint}
-						selectionColor={t.blue}
-						maxLength={100}
+						selectionColor={t.accent}
+						maxLength={120}
 						returnKeyType="done"
 						onSubmitEditing={onRenameSave}
 						style={styles.renameInput}
 					/>
 					<Pressable
 						accessibilityRole="button"
-						accessibilityLabel="Cancel rename"
+						hitSlop={{ top: 6, bottom: 6, left: 3, right: 3 }} accessibilityLabel="Cancel rename"
 						disabled={renameSaving}
 						onPress={onRenameCancel}
 						style={({ pressed }) => [styles.renameControl, pressed && styles.renameControlPressed, renameSaving && styles.renameControlDisabled]}
 					>
-						<Feather name="x" size={17} color={t.textSecondary} />
+						<Feather name="x" size={iconSize.md} color={t.textSecondary} />
 					</Pressable>
 					<Pressable
 						accessibilityRole="button"
-						accessibilityLabel="Save worker name"
+						hitSlop={{ top: 6, bottom: 6, left: 3, right: 3 }} accessibilityLabel="Save worker name"
 						disabled={!canSave}
 						onPress={onRenameSave}
 						style={({ pressed }) => [styles.renameControl, styles.renameSave, pressed && styles.renameControlPressed, !canSave && styles.renameControlDisabled]}
 					>
-						<Feather name={renameSaving ? "loader" : "check"} size={17} color={t.onAccent} />
+						<Feather name={renameSaving ? "loader" : "check"} size={iconSize.md} color={t.onAccent} />
 					</Pressable>
 				</View>
 			) : (
@@ -299,7 +338,7 @@ function WorkerRowContents({
 
 			{renameError ? <Text accessibilityRole="alert" style={styles.renameError}>{renameError}</Text> : null}
 			{details ? (
-				<Text style={[styles.details, prsTone && !row.branch && { color: toneColor(t, prsTone) }]} numberOfLines={1}>
+				<Text style={[styles.details, prsTone && { color: toneColor(t, prsTone) }]} numberOfLines={1}>
 					{details}
 				</Text>
 			) : null}
@@ -324,21 +363,21 @@ const makeStyles = (t: Theme) =>
 		foreground: { backgroundColor: t.bgBase },
 		row: {
 			minHeight: 76,
-			paddingHorizontal: 18,
-			paddingVertical: 10,
-			gap: 3,
+			paddingHorizontal: space.lg,
+			paddingVertical: space.sm,
+			gap: space.hair,
 		},
 		rowPressed: { backgroundColor: t.bgSubtle },
-		titleEditor: { minHeight: 32, flexDirection: "row", alignItems: "center", gap: 7 },
-		renameInput: { flex: 1, minWidth: 0, minHeight: 32, paddingHorizontal: 0, paddingVertical: 0, borderWidth: 0, backgroundColor: "transparent", color: t.textPrimary, fontSize: 16, lineHeight: 21, fontWeight: "600", letterSpacing: -0.15, includeFontPadding: false, textAlignVertical: "center" },
-		renameError: { color: t.red, fontSize: 11, lineHeight: 15, marginTop: -1 },
-		renameControl: { width: 32, height: 32, borderRadius: 16, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault, alignItems: "center", justifyContent: "center", backgroundColor: t.bgElevatedHover },
-		renameSave: { borderColor: t.blue, backgroundColor: t.blue },
-		renameControlPressed: { opacity: 0.68 },
+		titleEditor: { minHeight: 32, flexDirection: "row", alignItems: "center", gap: space.xs },
+		renameInput: { fontFamily: "Geist_600SemiBold", flex: 1, minWidth: 0, minHeight: 32, paddingHorizontal: space.none, paddingVertical: space.none, borderWidth: 0, backgroundColor: "transparent", color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600", letterSpacing: -0.15, includeFontPadding: false, textAlignVertical: "center" },
+		renameError: { fontFamily: "Geist_400Regular", color: t.red, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, marginTop: -1 },
+		renameControl: { width: 32, height: 32, borderRadius: 16, borderCurve: "continuous", borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault, alignItems: "center", justifyContent: "center", backgroundColor: t.bgElevatedHover },
+		renameSave: { borderColor: t.accent, backgroundColor: t.accent },
+		renameControlPressed: { opacity: press.opacity },
 		renameControlDisabled: { opacity: 0.45 },
-		eyebrow: { flexDirection: "row", alignItems: "center", gap: 6, minHeight: 17 },
-		project: { flex: 1, color: t.textSecondary, fontSize: 12, lineHeight: 16, fontWeight: "500" },
-		trailing: { flexShrink: 0, fontSize: 12, lineHeight: 16, fontWeight: "500", fontVariant: ["tabular-nums"] },
-		title: { color: t.textPrimary, fontSize: 16, lineHeight: 21, fontWeight: "600", letterSpacing: -0.15 },
-		details: { color: t.textTertiary, fontSize: 12, lineHeight: 16, fontFamily: t.fontMono },
+		eyebrow: { flexDirection: "row", alignItems: "center", gap: space.xs, minHeight: 17 },
+		project: { fontFamily: "Geist_500Medium", flex: 1, color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
+		trailing: { fontFamily: "Geist_500Medium", flexShrink: 0, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500", fontVariant: ["tabular-nums"] },
+		title: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600", letterSpacing: -0.15 },
+		details: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontFamily: t.fontMono },
 	});

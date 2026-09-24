@@ -212,3 +212,38 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(output))
 }
+
+// TestCloneExtraRepoDoesNotPersistToken locks the security invariant behind the
+// multi-repo dev kit: the checkout token must never be baked into the extra
+// repo's origin URL / .git/config, where the coding agent could read it back.
+func TestCloneExtraRepoDoesNotPersistToken(t *testing.T) {
+	src := t.TempDir()
+	gitRun(t, src, "init", "--initial-branch=main")
+	gitRun(t, src, "config", "user.name", "AO Test")
+	gitRun(t, src, "config", "user.email", "ao@example.test")
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("hi\n"), 0o600); err != nil {
+		t.Fatalf("seed source repo: %v", err)
+	}
+	gitRun(t, src, "add", "README.md")
+	gitRun(t, src, "commit", "-m", "init")
+
+	parent := t.TempDir()
+	dataDir := t.TempDir()
+	dest := filepath.Join(parent, "extra")
+	const token = "gho_SUPERSECRETTOKENVALUE000000000000"
+
+	if err := CloneExtraRepo(context.Background(), ExecGitRunner{}, parent, dest, "file://"+src, "", token, dataDir); err != nil {
+		t.Fatalf("CloneExtraRepo: %v", err)
+	}
+	cfg, err := os.ReadFile(filepath.Join(dest, ".git", "config"))
+	if err != nil {
+		t.Fatalf("read .git/config: %v", err)
+	}
+	if strings.Contains(string(cfg), token) || strings.Contains(string(cfg), "x-access-token") {
+		t.Fatalf("token/credential leaked into .git/config:\n%s", cfg)
+	}
+	origin := gitOutput(t, dest, "remote", "get-url", "origin")
+	if strings.Contains(origin, token) || strings.Contains(origin, "x-access-token") {
+		t.Fatalf("origin url is credentialed: %s", origin)
+	}
+}

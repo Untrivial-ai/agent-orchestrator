@@ -89,6 +89,10 @@ export type UiState = {
 	themeStyle: ThemeStyle;
 	/** When true, developer-only release controls are available. Default off. */
 	developerMode: boolean;
+	/** Experimental: connect to AO daemons on other machines. Default off. */
+	remoteHosts: boolean;
+	/** Copy the terminal selection to the clipboard on mouse-up, like native terminals. Default on. */
+	terminalCopyOnSelect: boolean;
 	restartingProjectIds: ReadonlySet<string>;
 	// Projects whose initial orchestrator spawn (after import/clone) is still
 	// running in the background. The board renders a progress banner and gates
@@ -133,6 +137,8 @@ export type UiState = {
 	setThemePreference: (theme: ThemePreference) => void;
 	setThemeStyle: (style: ThemeStyle) => void;
 	setDeveloperMode: (enabled: boolean) => void;
+	setRemoteHosts: (enabled: boolean) => void;
+	setTerminalCopyOnSelect: (enabled: boolean) => void;
 	/** True while the restart-to-update confirmation is open. */
 	updateInstallPromptOpen: boolean;
 	openUpdateInstallPrompt: () => void;
@@ -184,6 +190,8 @@ export type OrchestratorReplacementFailure = {
 
 const sidebarStorageKey = "ao.sidebar.open";
 const developerModeStorageKey = "ao.developerMode";
+const remoteHostsStorageKey = "ao.remoteHosts";
+const terminalCopyOnSelectStorageKey = "ao.terminalCopyOnSelect";
 function getLocalStorage() {
 	if (typeof window === "undefined" || !window.localStorage) return null;
 	return window.localStorage;
@@ -195,6 +203,14 @@ function initialSidebarOpen() {
 
 function initialDeveloperMode() {
 	return getLocalStorage()?.getItem(developerModeStorageKey) === "true";
+}
+
+function initialRemoteHosts() {
+	return getLocalStorage()?.getItem(remoteHostsStorageKey) === "true";
+}
+
+function initialTerminalCopyOnSelect() {
+	return getLocalStorage()?.getItem(terminalCopyOnSelectStorageKey) !== "false";
 }
 
 function syncDeveloperModeToUpdater(enabled: boolean): void {
@@ -229,6 +245,8 @@ export const useUiStore = create<UiState>((set, get) => ({
 	resolvedTheme: resolveTheme(initialThemePreference),
 	themeStyle: initialThemeStyle,
 	developerMode: initialDeveloperModeValue,
+	remoteHosts: initialRemoteHosts(),
+	terminalCopyOnSelect: initialTerminalCopyOnSelect(),
 	restartingProjectIds: new Set<string>(),
 	provisioningProjectIds: new Set<string>(),
 	orchestratorReplacementErrors: {},
@@ -264,6 +282,14 @@ export const useUiStore = create<UiState>((set, get) => ({
 		getLocalStorage()?.setItem(developerModeStorageKey, String(developerMode));
 		set({ developerMode });
 		syncDeveloperModeToUpdater(developerMode);
+	},
+	setRemoteHosts: (remoteHosts) => {
+		getLocalStorage()?.setItem(remoteHostsStorageKey, String(remoteHosts));
+		set({ remoteHosts });
+	},
+	setTerminalCopyOnSelect: (terminalCopyOnSelect) => {
+		getLocalStorage()?.setItem(terminalCopyOnSelectStorageKey, String(terminalCopyOnSelect));
+		set({ terminalCopyOnSelect });
 	},
 	updateInstallPromptOpen: false,
 	openUpdateInstallPrompt: () => set({ updateInstallPromptOpen: true }),

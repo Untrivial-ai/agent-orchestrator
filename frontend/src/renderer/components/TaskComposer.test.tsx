@@ -1296,6 +1296,35 @@ describe("TaskComposer", () => {
 		);
 	});
 
+	it("forwards model refresh metadata to the task picker", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "codex",
+						selectionMode: "catalog",
+						models: [{ id: "gpt-5", label: "GPT-5", isDefault: true }],
+						allowCustom: true,
+						lastSuccessAt: "2026-09-23T08:00:00Z",
+						refreshState: "error",
+						refreshError: "Provider temporarily unavailable",
+						retryAt: "2026-09-23T08:05:00Z",
+					},
+				};
+			}
+			return { data: { status: "ok", project: { agent: "codex", config: {} } } };
+		});
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		await userEvent.click(await screen.findByRole("button", { name: "Model" }));
+		expect(await screen.findByTitle("Provider temporarily unavailable")).toBeInTheDocument();
+	});
+
 	it("does not render free text when models must be configured in the agent", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {

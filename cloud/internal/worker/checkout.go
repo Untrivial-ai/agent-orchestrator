@@ -273,7 +273,7 @@ func ConfigureWorkerGit(
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		return fmt.Errorf("create worker tooling directory: %w", err)
 	}
-	helperPath := filepath.Join(dataDir, "git-credential-ao")
+	helperPath := GitCredentialHelperPath(dataDir)
 	helper := fmt.Sprintf(`#!/bin/sh
 set -eu
 [ "${1:-}" = "get" ] || exit 0
@@ -356,6 +356,61 @@ GH_TOKEN="$github_token" exec "$real_gh" "$@"
 
 func ToolingBinDir(dataDir string) string {
 	return filepath.Join(dataDir, "bin")
+}
+
+// GitCredentialHelperPath is where ConfigureWorkerGit writes the repo-local
+// credential helper that brokers fresh scoped GitHub tokens. Exported so extra
+// dev-kit repositories can reuse the same session helper.
+func GitCredentialHelperPath(dataDir string) string {
+	return filepath.Join(dataDir, "git-credential-ao")
+}
+
+// CloneExtraRepo clones an additional dev-kit repository beside the primary
+// checkout using the SAME askpass mechanism as the primary (the token lives only
+// in the clone command's environment - never in the URL, the process argv, or
+// the repository's .git/config, so the coding agent cannot read it back). It
+// then points the repo at the session credential helper (already written by
+// ConfigureWorkerGit for the primary checkout) so the agent's own git
+// fetch/push in the extra repo keeps working after the short-lived clone token
+// expires. cloneURL must be an uncredentialed GitHub URL.
+func CloneExtraRepo(
+	ctx context.Context,
+	runner GitRunner,
+	parentDir, dest, cloneURL, branch, token, dataDir string,
+) error {
+	if runner == nil {
+		return errors.New("git runner is required")
+	}
+	args := []string{"clone", "--origin", "origin", "--no-tags"}
+	if strings.TrimSpace(branch) != "" {
+		args = append(args, "--branch", branch)
+	}
+	args = append(args, "--", cloneURL, dest)
+	if err := withGitCredential(token, func(env map[string]string) error {
+		_, err := runner.Run(ctx, parentDir, env, args...)
+		return err
+	}); err != nil {
+		return err
+	}
+	helperPath := GitCredentialHelperPath(dataDir)
+	if _, statErr := os.Stat(helperPath); statErr != nil {
+		// No session helper (e.g. scratch/no-primary paths). The clone succeeded
+		// with an uncredentialed origin; agent network ops will simply prompt-fail
+		// rather than leak a token. Leave the repo as-is.
+		return nil
+	}
+	for _, command := range [][]string{
+		{"config", "--local", "--replace-all", "credential.helper", ""},
+		{"config", "--local", "--add", "credential.helper", helperPath},
+		{"config", "--local", "--replace-all", "credential.useHttpPath", "true"},
+		{"config", "--local", "--replace-all", "user.name", cloudGitAuthorName},
+		{"config", "--local", "--replace-all", "user.email", cloudGitAuthorEmail},
+	} {
+		if _, err := runner.Run(ctx, dest, nil, command...); err != nil {
+			return fmt.Errorf("configure extra repo git: %w", err)
+		}
+	}
+	return nil
 }
 
 func shellQuote(value string) string {

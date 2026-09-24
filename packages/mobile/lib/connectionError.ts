@@ -119,16 +119,16 @@ export function describeConnectionFailure(
 	switch (reason) {
 		case "tunnel-rotated":
 			return {
-				title: "This machine's remote address changed",
+				title: "Your desktop's address changed",
 				message:
-					"AO on your computer restarted, which gives it a new address. Open Settings \u2192 Connect Mobile there and scan the code again.",
+					"AO restarted on your desktop, so it has a new address. Open AO \u2192 Settings \u2192 Connect Mobile there and scan the new code.",
 				showLocalNetworkHint: false,
 			};
 		case "outdated-desktop":
 			return {
-				title: "Update AO on your computer",
+				title: "Update AO on your desktop",
 				message:
-					"That code was made by an older version of AO. Update the desktop app, then generate a new code.",
+					"That code came from an older version of AO. Update the desktop app, then generate a new code.",
 				showLocalNetworkHint: false,
 			};
 		case "not-ao-qr":
@@ -142,7 +142,7 @@ export function describeConnectionFailure(
 				title: "Your desktop disconnected",
 				message: isTailscaleHost(target.host)
 					? `Reached nothing at ${target.host}:${target.port}. ` +
-						"Make sure Tailscale is connected on both this phone and your computer, and that your computer is awake."
+						"Make sure Tailscale is connected on this phone and your desktop, and that your desktop is awake."
 					: `Reached nothing at ${target.host}:${target.port}. ` +
 						"Is Connect Mobile still on, and is your phone on the same Wi-Fi?",
 				showLocalNetworkHint,
@@ -152,7 +152,7 @@ export function describeConnectionFailure(
 			// and re-scanning is the actual fix, not retrying the same password.
 			return {
 				title: "Your desktop rejected the password",
-				message: "That password was rotated. Re-scan the code on your computer.",
+				message: "That password was rotated. Re-scan the code on your desktop.",
 				showLocalNetworkHint: false,
 			};
 		case "rate-limited":
@@ -162,14 +162,14 @@ export function describeConnectionFailure(
 			return {
 				title: "Too many attempts",
 				message:
-					"Your computer locked this device out after too many failed attempts. " +
+					"Your desktop locked this device out after too many failed attempts. " +
 					"It clears on its own in about a minute — check the password, then try again.",
 				showLocalNetworkHint: false,
 			};
 		case "server-error":
 			return {
 				title: "Your desktop returned an error",
-				message: `${target.host}:${target.port} answered, but with an error. Check the AO logs on your computer.`,
+				message: `${target.host}:${target.port} answered, but with an error. Check the AO logs on your desktop.`,
 				showLocalNetworkHint: false,
 			};
 	}

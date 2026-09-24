@@ -1688,7 +1688,13 @@ describe("CreateProjectFlow project import validation", () => {
 			code: "GITHUB_AUTH_INVALID",
 		});
 		githubDaemonMocks.listGitHubRepos.mockRejectedValue(invalidCredential);
-		bridgeMocks.connectProviderAuth.mockResolvedValue("replacement-token");
+		// GitHub App exchange returns the access token plus refresh material.
+		bridgeMocks.connectProviderAuth.mockResolvedValue({
+			secret: "replacement-token",
+			refreshToken: "replacement-refresh",
+			expiresIn: 28800,
+			refreshTokenExpiresIn: 15552000,
+		});
 		const user = userEvent.setup();
 		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
 
@@ -1701,7 +1707,11 @@ describe("CreateProjectFlow project import validation", () => {
 			orgId: "org-1",
 			provider: "github",
 		}));
-		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalledWith("replacement-token"));
+		// The refresh material is forwarded to the daemon so the token self-renews.
+		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalledWith(
+			"replacement-token",
+			expect.objectContaining({ refreshToken: "replacement-refresh", expiresIn: 28800, refreshTokenExpiresIn: 15552000 }),
+		));
 		await waitFor(() => expect(cloudMocks.putGitHubPAT).toHaveBeenCalledWith({ secret: "replacement-token" }));
 	});
 
@@ -1771,6 +1781,29 @@ describe("CreateProjectFlow project import validation", () => {
 
 		expect(await screen.findByText("Enter an https repository URL.")).toBeInTheDocument();
 		expect(cloudMocks.createProject).not.toHaveBeenCalled();
+	});
+
+	it("treats a cloud-auth 401 on PAT save as an expired session, not an invalid token", async () => {
+		cloudMocks.cloudEnabled = true;
+		cloudMocks.sessionStatus = "authenticated";
+		// The control plane rejects PUT /me/github-pat at its auth middleware (the
+		// AO Cloud session token expired) before the PAT is ever validated.
+		cloudMocks.putGitHubPAT.mockRejectedValueOnce(
+			new CloudCpError("The access token is invalid or expired.", { status: 401, code: "unauthorized" }),
+		);
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+		await user.type(screen.getByLabelText("Project name"), "web-app");
+		await user.click(screen.getByRole("button", { name: "Manually setup" }));
+		await user.type(screen.getByLabelText("GitHub PAT"), "ghp_validtoken00000000000000000000000");
+		await user.click(screen.getByRole("button", { name: "Save & Continue" }));
+
+		// Re-auth is triggered and the token is NOT blamed.
+		await waitFor(() => expect(cloudMocks.signIn).toHaveBeenCalled());
+		expect(await screen.findByText(/AO Cloud session expired/i)).toBeInTheDocument();
+		expect(screen.queryByText("The access token is invalid or expired.")).not.toBeInTheDocument();
 	});
 
 	it("returns from GitHub setup to the project source list", async () => {

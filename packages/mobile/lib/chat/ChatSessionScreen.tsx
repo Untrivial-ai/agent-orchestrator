@@ -1,15 +1,13 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../icons";
 import { useHeaderHeight } from "expo-router/build/react-navigation/elements";
 import { useNavigation, useRouter } from "expo-router";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useKeyboardState } from "react-native-keyboard-controller";
+import { KeyboardAvoidingView, useKeyboardState } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
 	ActivityIndicator,
 	Alert,
-	InteractionManager,
 	Keyboard,
-	KeyboardAvoidingView,
 	Platform,
 	Pressable,
 	StyleSheet,
@@ -18,9 +16,10 @@ import {
 } from "react-native";
 import { mobileReachablePreviewURL, restoreSession, resumeSessionAgent, type DashboardSession, type OrchestratorLink } from "../api";
 import { haptics } from "../haptics";
-import { headerActionStyle } from "../headerAction";
-import { deferRouteContent, resetHeaderRightForSwap } from "../headerRightSwap";
+import { resetHeaderRightForSwap } from "../headerRightSwap";
 import { openGitHub } from "../openGitHub";
+import { glassHeaderControl } from "../native-header-items";
+import { NativeHeaderButton } from "../native-header-button";
 import { useApp } from "../store";
 import {
 	mobileInterfaceTransitionIsActive,
@@ -29,7 +28,7 @@ import {
 	mobileInterfaceTransitionRecoveryMessage,
 	useInterfaceTransition,
 } from "../session/useInterfaceTransition";
-import { dockInset, keyboardVerticalOffset, screenKeyboardAvoidance } from "../session/keyboardInset";
+import { dockRestingInset, keyboardVerticalOffset, screenKeyboardAvoidance } from "../session/keyboardInset";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { getWorkspacePaths, openSessionShell } from "./api";
@@ -45,6 +44,8 @@ import { conversationActionError, conversationActionUnsupported } from "./conver
 import { conversationMarkers } from "./timelineModel";
 import { brokenMcpServers, can } from "./types";
 import { useMobileConversation } from "./useConversation";
+import { type, space } from "../tokens";
+import { backOr } from "../backNavigation";
 
 type MobileChatSession = DashboardSession | OrchestratorLink;
 
@@ -74,21 +75,13 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	const headerHeight = useHeaderHeight();
 	const insets = useSafeAreaInsets();
 	const [headerRightReady, setHeaderRightReady] = useState(false);
-	const [contentReadySessionId, setContentReadySessionId] = useState<string>();
 	useLayoutEffect(
 		() => resetHeaderRightForSwap(
-			() => navigation.setOptions({ headerRight: undefined }),
+			() => navigation.setOptions(glassHeaderControl("right")),
 			() => setHeaderRightReady(true),
 		),
 		[navigation],
 	);
-	useEffect(() => deferRouteContent(
-		() => setContentReadySessionId(session.id),
-		(callback) => {
-			const task = InteractionManager.runAfterInteractions(callback);
-			return () => task.cancel();
-		},
-	), [session.id]);
 	const { config, projects, refresh: refreshBoard, setActiveProject, setWorkerPinned, renameWorker, kill } = useApp();
 	const conversation = useMobileConversation(config, session.id);
 	const interfaceSwitch = useInterfaceTransition(config, session.id, refreshBoard);
@@ -186,10 +179,6 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		navigation.setOptions({ gestureEnabled: !cardShowing });
 	}, [cardShowing, navigation]);
 	useLayoutEffect(() => {
-		if (!headerRightReady) {
-			navigation.setOptions({ headerRight: undefined });
-			return;
-		}
 		navigation.setOptions({
 			headerTitle: () => (
 				<ConversationTitle
@@ -199,13 +188,22 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 					state={headerState}
 				/>
 			),
-			headerRight: () => (
-				<Pressable accessibilityRole="button" accessibilityLabel="Conversation actions" hitSlop={11} onPress={() => { haptics.tap(); setMenuOpen(true); }} style={headerActionStyle}>
-					<Feather name="more-horizontal" size={20} color={t.textSecondary} />
-				</Pressable>
-			),
 		});
-	}, [headerHarness, headerRightReady, headerState, navigation, projectName, title, t]);
+	}, [headerHarness, headerState, navigation, projectName, title, t]);
+
+	// The title is set on the first commit, above. Only the trailing control waits:
+	// native-stack measures the replacement for a frame, and deferring the whole
+	// options object meant the title arrived with it — iOS then animated the
+	// header in from the top, after the screen had already landed.
+	useLayoutEffect(() => {
+		navigation.setOptions(
+			headerRightReady
+				? glassHeaderControl("right", (
+					<NativeHeaderButton icon="more" label="Conversation actions" onPress={() => { haptics.tap(); setMenuOpen(true); }} />
+				))
+				: glassHeaderControl("right"),
+		);
+	}, [headerRightReady, navigation, t]);
 
 	const loadWorkspaceFiles = useCallback(async () => {
 		if (!config || !conversation.snapshot) return { paths: filePaths, truncated: filePathsTruncated };
@@ -254,7 +252,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 			setMenuOpen(false);
 			router.push({ pathname: "/shell/[handleId]", params: { handleId: shell.handleId, projectId: session.projectId, sessionId: session.id, title: shell.title } });
 		} catch (cause) {
-			Alert.alert("Could not open shell", cause instanceof Error ? cause.message : String(cause));
+			Alert.alert("Couldn't open shell", cause instanceof Error ? cause.message : String(cause));
 		} finally { setOpeningShell(false); }
 	}, [config, openingShell, router, session.id, session.projectId]);
 
@@ -277,7 +275,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 			await refreshBoard();
 			await conversation.refresh();
 		} catch (cause) {
-			Alert.alert("Could not resume agent", cause instanceof Error ? cause.message : String(cause));
+			Alert.alert("Couldn't resume the agent", cause instanceof Error ? cause.message : String(cause));
 		} finally { setResuming(false); }
 	}, [config, conversation.refresh, refreshBoard, resuming, session.id, terminated]);
 
@@ -287,7 +285,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 			try {
 				await interfaceSwitch.start("tui", policy);
 			} catch (cause) {
-				Alert.alert("Could not switch interface", cause instanceof Error ? cause.message : String(cause));
+				Alert.alert("Couldn't switch interface", cause instanceof Error ? cause.message : String(cause));
 			}
 		},
 		[interfaceSwitch],
@@ -363,7 +361,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 						{ text: "Cancel", style: "cancel" },
 						// Leave first: the session this screen is showing is about to stop
 						// existing, and the board is where its row disappears from.
-						{ text: "Delete session", style: "destructive", onPress: () => { router.back(); void kill(session.id).catch(() => {}); } },
+						{ text: "Delete session", style: "destructive", onPress: () => { backOr(router); void kill(session.id).catch(() => {}); } },
 					],
 				);
 			},
@@ -392,7 +390,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	const interfaceTransitionPhaseText = interfaceRecoveryMessage || `Switching to Terminal UI · ${interfacePhaseLabel(interfaceSwitch.transition?.phase)}`;
 	const interfaceTransitionBanner = {
 		text: interfaceSwitch.fetchFailed
-			? `${interfaceTransitionPhaseText}. Could not check on it${interfaceSwitch.error ? `: ${interfaceSwitch.error}` : ""}`
+			? `${interfaceTransitionPhaseText}. Couldn't check on it${interfaceSwitch.error ? `: ${interfaceSwitch.error}` : ""}`
 			: interfaceTransitionPhaseText,
 		// Cancel stays put while a check is failing: the phase the hook holds is
 		// still cancellable and the cancel is its own request, so a user who wants
@@ -406,8 +404,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 
 	if (conversation.loading && !conversation.snapshot) return <Centered icon="message-square" title="Loading conversation…" spinning />;
 	if (conversation.unavailable) return <Unavailable message={conversation.unavailable.message} onShell={() => void openShell()} openingShell={openingShell} />;
-	if (!conversation.snapshot) return <Centered icon="alert-triangle" title="Could not load conversation" message={conversation.error || "The daemon did not return a conversation."} action="Retry" onAction={() => void conversation.refresh()} />;
-	if (contentReadySessionId !== session.id) return <Centered icon="message-square" title="Preparing conversation…" spinning />;
+	if (!conversation.snapshot) return <Centered icon="alert-triangle" title="Couldn't load the conversation" message={conversation.error || "The daemon did not return a conversation."} action="Retry" onAction={() => void conversation.refresh()} />;
 
 	const snapshot = conversation.snapshot;
 	const active = snapshot.turns.some((turn) => turn.state === "running" || turn.state === "queued");
@@ -419,6 +416,11 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	const steerUnsupported = conversationActionUnsupported("steer", conversation.actionCodes.steer);
 
 	return (
+		// keyboard-controller's avoider, not React Native's. Both do the same
+		// arithmetic; this one interpolates the padding with the keyboard's own
+		// animation, so the composer travels with the keys. RN's re-renders once per
+		// keyboard event on the JS thread, which is the single-frame jump up when
+		// the keyboard opens.
 		<KeyboardAvoidingView
 			style={[styles.screen, Platform.OS === "android" ? screenKeyboardAvoidance("android", keyboardHeight, insets.bottom).rootStyle : undefined]}
 			behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -440,7 +442,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 					icon={interfaceTransitionRecovered ? "check-circle" : "alert-triangle"}
 					title={`${interfaceTransitionNoticeText}${
 						interfaceSwitch.acknowledgeNoticeError
-							? ` Could not dismiss: ${interfaceSwitch.acknowledgeNoticeError}`
+							? ` Couldn't dismiss: ${interfaceSwitch.acknowledgeNoticeError}`
 							: ""
 					}`}
 					action={interfaceSwitch.acknowledgingNotice ? "Dismissing…" : "Dismiss"}
@@ -519,7 +521,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				onOpenSettings={() => void openTurnSettings()}
 				onSettings={conversation.chooseSettings}
 				onConfigOption={conversation.setConfigOption}
-				bottomInset={dockInset(keyboardHeight, insets.bottom, keyboardVisible)}
+				restingInset={dockRestingInset(insets.bottom)}
 			/>
 		</KeyboardAvoidingView>
 	);
@@ -554,20 +556,20 @@ function InlineBanner({ tone, icon, title, body, action, secondary, onPress, onS
 	const fill = tone === "danger" ? t.tintRed : tone === "warning" ? t.tintAmber : t.bgSubtle;
 	return (
 		<View style={[styles.banner, { backgroundColor: fill }]}>
-			<Feather name={icon} size={13} color={color} style={styles.bannerIcon} />
+			<Feather name={icon} size={12} color={color} style={styles.bannerIcon} />
 			<View style={styles.bannerCopy}>
 				<Text style={[styles.bannerTitle, { color: tone === "muted" ? t.textSecondary : color }]} numberOfLines={1}>{title}</Text>
 				{body ? <Text style={styles.bannerText} numberOfLines={2}>{body}</Text> : null}
 			</View>
 			{secondary ? <Pressable hitSlop={7} onPress={() => { haptics.tap(); onSecondary?.(); }}><Text style={styles.bannerSecondary}>{secondary}</Text></Pressable> : null}
 			{action ? <Pressable hitSlop={7} onPress={() => { haptics.tap(); onPress?.(); }}><Text style={[styles.bannerAction, { color }]}>{action}</Text></Pressable> : null}
-			{onDismiss ? <Pressable accessibilityRole="button" accessibilityLabel={`Close: ${title}`} hitSlop={10} onPress={() => { haptics.tap(); onDismiss(); }} style={styles.bannerClose}><Feather name="x" size={14} color={t.textTertiary} /></Pressable> : null}
+			{onDismiss ? <Pressable accessibilityRole="button" accessibilityLabel={`Close: ${title}`} hitSlop={10} onPress={() => { haptics.tap(); onDismiss(); }} style={styles.bannerClose}><Feather name="x" size={15} color={t.textTertiary} /></Pressable> : null}
 		</View>
 	);
 }
 
 function Unavailable({ message, onShell, openingShell }: { message: string; onShell(): void; openingShell: boolean }) { return <Centered icon="alert-triangle" title="Conversation unavailable" message={`${message}\n\nThe worktree is untouched. You can still open a plain shell in it.`} action={openingShell ? "Opening…" : "Open worktree shell"} onAction={onShell} />; }
-function Centered({ icon, title, message, spinning, action, onAction }: { icon: keyof typeof Feather.glyphMap; title: string; message?: string; spinning?: boolean; action?: string; onAction?(): void }) { const t = useTheme(); const styles = useThemedStyles(makeStyles); return <View style={styles.center}>{spinning ? <ActivityIndicator color={t.blue} /> : <Feather name={icon} size={22} color={t.amber} />}<Text style={styles.centerTitle}>{title}</Text>{message ? <Text style={styles.centerCopy}>{message}</Text> : null}{action ? <Pressable onPress={() => { haptics.tap(); onAction?.(); }} style={styles.centerAction}><Text style={styles.centerActionText}>{action}</Text></Pressable> : null}</View>; }
+function Centered({ icon, title, message, spinning, action, onAction }: { icon: keyof typeof Feather.glyphMap; title: string; message?: string; spinning?: boolean; action?: string; onAction?(): void }) { const t = useTheme(); const styles = useThemedStyles(makeStyles); return <View style={styles.center}>{spinning ? <ActivityIndicator color={t.accent} /> : <Feather name={icon} size={20} color={t.amber} />}<Text style={styles.centerTitle}>{title}</Text>{message ? <Text style={styles.centerCopy}>{message}</Text> : null}{action ? <Pressable onPress={() => { haptics.tap(); onAction?.(); }} style={styles.centerAction}><Text style={styles.centerActionText}>{action}</Text></Pressable> : null}</View>; }
 
 function sessionTitle(session: MobileChatSession): string { return "displayName" in session ? session.displayName || session.issueTitle || session.issueLabel || session.id : session.projectName || session.id; }
 function interfacePhaseLabel(phase?: string): string {
@@ -584,17 +586,17 @@ function signInCommand(harness: string): string | undefined { return harness ===
 
 const makeStyles = (t: Theme) => StyleSheet.create({
 	screen: { flex: 1, backgroundColor: t.bgBase },
-	banner: { minHeight: 35, flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 12, paddingRight: 8, paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: t.borderSubtle },
-	bannerIcon: { alignSelf: "flex-start", marginTop: 2 },
-	bannerCopy: { flex: 1, minWidth: 0, gap: 1 },
-	bannerTitle: { fontSize: 12, lineHeight: 16, fontWeight: "600" },
-	bannerText: { color: t.textTertiary, fontSize: 11, lineHeight: 15 },
+	banner: { minHeight: 35, flexDirection: "row", alignItems: "center", gap: space.sm, paddingLeft: space.md, paddingRight: space.sm, paddingVertical: space.xs, borderBottomWidth: 1, borderBottomColor: t.borderSubtle },
+	bannerIcon: { alignSelf: "flex-start", marginTop: space.hair },
+	bannerCopy: { flex: 1, minWidth: 0, gap: space.none },
+	bannerTitle: { fontFamily: "Geist_600SemiBold", fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "600" },
+	bannerText: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
 	bannerClose: { width: 26, height: 26, alignItems: "center", justifyContent: "center" },
-	bannerAction: { fontSize: 11, fontWeight: "700" },
-	bannerSecondary: { color: t.textTertiary, fontSize: 11, fontWeight: "600" },
-	center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12, paddingHorizontal: 38, backgroundColor: t.bgBase },
-	centerTitle: { color: t.textPrimary, fontSize: 17, fontWeight: "700", textAlign: "center" },
-	centerCopy: { color: t.textSecondary, fontSize: 13, lineHeight: 19, textAlign: "center" },
-	centerAction: { minHeight: 42, justifyContent: "center", backgroundColor: t.blue, borderRadius: 11, paddingHorizontal: 15, marginTop: 4 },
-	centerActionText: { color: t.onAccent, fontSize: 13, fontWeight: "700" },
+	bannerAction: { fontFamily: "Geist_600SemiBold", fontSize: type.caption2.fontSize, fontWeight: "600" },
+	bannerSecondary: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.caption2.fontSize, fontWeight: "600" },
+	center: { flex: 1, alignItems: "center", justifyContent: "center", gap: space.md, paddingHorizontal: space.huge, backgroundColor: t.bgBase },
+	centerTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.body.fontSize, fontWeight: "600", textAlign: "center" },
+	centerCopy: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, textAlign: "center" },
+	centerAction: { minHeight: 42, justifyContent: "center", backgroundColor: t.accent, borderRadius: 12, paddingHorizontal: space.lg, marginTop: space.xxs },
+	centerActionText: { fontFamily: "Geist_600SemiBold", color: t.onAccent, fontSize: type.footnote.fontSize, fontWeight: "600" },
 });

@@ -327,6 +327,11 @@ vi.mock("./chat/SessionChatSurface", async () => {
 	}),
 	};
 });
+vi.mock("./chat/ReviewerChatSurface", () => ({
+	ReviewerChatSurface: ({ reviewId }: { reviewId: string }) => (
+		<div data-testid="reviewer-chat-surface">{reviewId}</div>
+	),
+}));
 vi.mock("./CenterPane", () => ({
 	CenterPane: ({
 		agentInputDisabled,
@@ -342,6 +347,7 @@ vi.mock("./CenterPane", () => ({
 		workspaceTabs,
 		workspaceTabActions,
 		reviewerTerminal,
+		reviewerChatContent,
 		terminalTarget,
 		auxiliaryTabOrder,
 	}: {
@@ -358,6 +364,7 @@ vi.mock("./CenterPane", () => ({
 		workspaceTabs?: Array<{ key: string; content: ReactNode; onSelect: () => void }>;
 		workspaceTabActions?: ReactNode;
 		reviewerTerminal?: { handleId: string; harness: string };
+		reviewerChatContent?: ReactNode;
 		terminalTarget?: { kind: string; handleId?: string };
 		auxiliaryTabOrder?: string[];
 	}) => (
@@ -378,6 +385,7 @@ vi.mock("./CenterPane", () => ({
 			</div>
 			<div data-testid="session-tab">{session?.title ?? ""}</div>
 			<div data-testid="reviewer-harness">{reviewerTerminal?.harness ?? ""}</div>
+			{reviewerChatContent}
 			{reviewerTerminal ? (
 				<button type="button" onClick={() => onSelectReviewerTerminal?.(reviewerTerminal)}>
 					select reviewer tab
@@ -536,16 +544,20 @@ vi.mock("./SessionInspector", () => ({
 		isInspectorVisible = true,
 		onOpenFiles,
 		onOpenReviewFile,
+		onOpenReviewerChat,
 		onToggleBrowserPopOut,
 		onViewChange,
+		onWorkerMessageSent,
 		view,
 	}: {
 		filesView?: ReactNode;
 		isInspectorVisible?: boolean;
 		onOpenFiles?: () => void;
 		onOpenReviewFile?: (target: { line?: number; path: string }) => void;
+		onOpenReviewerChat?: (reviewId: string) => void;
 		onToggleBrowserPopOut?: (next: boolean) => void;
 		onViewChange?: (view: InspectorView) => void;
+		onWorkerMessageSent?: () => void;
 		view?: string;
 	}) => {
 		inspectorVisibilityRenders.push(isInspectorVisible);
@@ -577,6 +589,12 @@ vi.mock("./SessionInspector", () => ({
 				</button>
 				<button type="button" onClick={() => onOpenReviewFile?.({ path: "notes.txt" })}>
 					view review basename
+				</button>
+				<button type="button" onClick={() => onOpenReviewerChat?.("review-1")}>
+					open reviewer chat
+				</button>
+				<button type="button" onClick={onWorkerMessageSent}>
+					send review feedback
 				</button>
 				{view === "files" ? filesView : null}
 			</div>
@@ -2626,6 +2644,84 @@ describe("SessionView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "select chat tab" }));
 		expect(screen.queryByTestId("terminal-target")).not.toBeInTheDocument();
 		expect(screen.getByTestId("chat-surface")).toBeInTheDocument();
+	});
+
+	it("returns to worker Chat after review feedback is sent", () => {
+		const worker = workerSession("sess-1");
+		worker.mode = "chat";
+		worker.prs = [{
+			url: "https://github.com/acme/repo/pull/7",
+			number: 7,
+			state: "open",
+			ci: "passing",
+			review: "none",
+			mergeability: "mergeable",
+			reviewComments: false,
+			updatedAt: "2026-06-15T00:00:00Z",
+		}];
+
+		render(<SessionView sessionId="sess-1" />);
+		fireEvent.click(screen.getByRole("button", { name: "open reviewer chat" }));
+		expect(screen.getByTestId("reviewer-chat-surface")).toHaveTextContent("review-1");
+
+		fireEvent.click(screen.getByRole("button", { name: "send review feedback" }));
+		expect(screen.queryByTestId("reviewer-chat-surface")).not.toBeInTheDocument();
+		expect(screen.getByTestId("chat-surface")).toBeInTheDocument();
+	});
+
+	it("returns to worker Chat when the selected reviewer Chat is replaced", async () => {
+		const worker = workerSession("sess-1");
+		worker.mode = "chat";
+		const view = render(<SessionView sessionId="sess-1" />);
+		act(() => {
+			view.client.setQueryData(["session-reviews", "sess-1"], {
+				reviewerHandleId: "review-chat:review-1",
+				reviewerSurface: { mode: "chat", reviewId: "review-1", harness: "codex" },
+				reviews: [],
+				runs: [],
+			});
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "open reviewer chat" }));
+		expect(screen.getByTestId("reviewer-chat-surface")).toHaveTextContent("review-1");
+
+		act(() => {
+			view.client.setQueryData(["session-reviews", "sess-1"], {
+				reviewerHandleId: "review-chat:review-2",
+				reviewerSurface: { mode: "chat", reviewId: "review-2", harness: "claude-code" },
+				reviews: [],
+				runs: [],
+			});
+		});
+
+		await waitFor(() => expect(screen.queryByTestId("reviewer-chat-surface")).not.toBeInTheDocument());
+		expect(screen.getByTestId("chat-surface")).toBeInTheDocument();
+	});
+
+	it("returns to the worker terminal when the selected reviewer Chat disappears", async () => {
+		const view = render(<SessionView sessionId="sess-1" />);
+		act(() => {
+			view.client.setQueryData(["session-reviews", "sess-1"], {
+				reviewerHandleId: "review-chat:review-1",
+				reviewerSurface: { mode: "chat", reviewId: "review-1", harness: "codex" },
+				reviews: [],
+				runs: [],
+			});
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "open reviewer chat" }));
+		expect(screen.getByTestId("reviewer-chat-surface")).toHaveTextContent("review-1");
+
+		act(() => {
+			view.client.setQueryData(["session-reviews", "sess-1"], {
+				reviewerHandleId: "",
+				reviews: [],
+				runs: [],
+			});
+		});
+
+		await waitFor(() => expect(screen.queryByTestId("reviewer-chat-surface")).not.toBeInTheDocument());
+		expect(screen.getByTestId("terminal-target")).toHaveTextContent("worker");
 	});
 
 	it("returns to the session terminal when the reviewer handle is cleared", async () => {

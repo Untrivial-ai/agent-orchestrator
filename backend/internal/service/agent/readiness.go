@@ -87,11 +87,13 @@ func (s *Service) InvalidateAgentInstallation(agentID string) {
 			invalidator.InvalidateBinaryResolution()
 		}
 	}
+	s.InvalidateModelCatalogs(agentID)
 }
 
 // InvalidateAgentAuthentication marks an agent's authentication observation stale.
 func (s *Service) InvalidateAgentAuthentication(agentID string) {
 	s.readiness.Invalidate(agentID, readinessInvalidateAuthentication)
+	s.InvalidateModelCatalogs(agentID)
 	if agentID == string(domain.HarnessCodex) && s.codexAccounts != nil {
 		if accountID := s.codexAccounts.activeAccountID(); accountID != "" {
 			s.codexAccounts.invalidate(accountID)
