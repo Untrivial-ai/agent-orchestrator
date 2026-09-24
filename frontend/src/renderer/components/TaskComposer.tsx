@@ -443,6 +443,11 @@ export function TaskComposer({
 		onEffortReset: setEffort,
 	});
 	const effortOptions = effortModel?.efforts?.filter((option) => option && option.toLowerCase() !== "default") ?? [];
+	const inheritedEffort = selectedAgent === configuredProjectAgent ? defaultWorkerEffort : "";
+	const implicitEffort = inheritedEffort || effortModel?.defaultEffort || "";
+	const requestedEffort = effortTouched || rememberedEffortIsExplicit
+		? effort === implicitEffort ? undefined : effort
+		: undefined;
 
 	const selectedAgentLabel = agentCatalog?.agents.find((item) => item.id === selectedAgent)?.label || selectedAgent;
 	const requiresTuiFallback =
@@ -509,8 +514,6 @@ export function TaskComposer({
 		approvalMode?: "bypass-permissions",
 	) => {
 		if (!projectId || !canSubmit || isSubmitting) return;
-
-		const requestedEffort = effortTouched || rememberedEffortIsExplicit ? effort : undefined;
 
 		setIsSubmitting(true);
 		setError(undefined);
@@ -599,7 +602,7 @@ export function TaskComposer({
 						agentDrafts[selectedAgent] = {
 							model: selectedModel ? requestedModel ?? "" : "",
 							mode: selectedMode ? requestedModel ?? "" : "",
-							...(effortTouched || rememberedEffortIsExplicit ? { effort } : {}),
+					...(requestedEffort !== undefined ? { effort: requestedEffort } : {}),
 						};
 					}
 					setAgent(value);
@@ -685,7 +688,8 @@ function selectedAgentLabelFor(agent: string, catalog?: Array<{ id: string; labe
 function TaskEffortPicker({ disabled, label, onChange, options, value, defaultEffort }: TaskComposerEffortControl & { defaultEffort?: string }) {
 	const { t } = useTranslation();
 	const explicitEffort = value.toLowerCase() === "default" ? "" : value;
-	const effectiveEffort = explicitEffort || (defaultEffort && options.includes(defaultEffort) ? defaultEffort : "");
+	const reportedDefault = defaultEffort && options.includes(defaultEffort) ? defaultEffort : "";
+	const effectiveEffort = explicitEffort || reportedDefault;
 	const visibleLabel = effectiveEffort ? formatEffortLabel(effectiveEffort) : t("settings.models.effortNotReported");
 
 	return (
@@ -694,6 +698,7 @@ function TaskEffortPicker({ disabled, label, onChange, options, value, defaultEf
 			disabled={disabled}
 			value={effectiveEffort}
 			options={options.map((option) => ({ value: option, label: formatEffortLabel(option) }))}
+			action={explicitEffort && !reportedDefault ? { label: t("settings.models.useAgentEffort"), onSelect: () => onChange("") } : undefined}
 			triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
 			menuAlign="end"
 			renderTrigger={() => (
