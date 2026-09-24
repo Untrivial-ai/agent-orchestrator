@@ -2,7 +2,7 @@ import { AppLink } from "./AppLink";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "@tanstack/react-router";
-import { memo, useCallback, useEffect, useId, useState, type MouseEvent, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useId, useState, type ReactNode } from "react";
 import type { TFunction } from "i18next";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -35,7 +35,6 @@ import {
 	Play,
 	Trash2,
 	Loader2,
-	MessageSquarePlus,
 	MessageSquare,
 	X,
 } from "lucide-react";
@@ -1344,10 +1343,6 @@ function ArtifactSummaryCard({
 		}
 		onOpenArtifact?.({ path: artifact.path });
 	};
-	const handleFeedback = (event: MouseEvent<HTMLButtonElement>) => {
-		event.stopPropagation();
-		onOpenArtifact?.({ feedback: true, path: artifact.path });
-	};
 	return (
 		<div className="flex w-full min-w-0 items-center rounded-md border border-(--color-border-settings-input) text-xs transition-colors hover:bg-interactive-hover focus-within:bg-interactive-hover focus-within:ring-1 focus-within:ring-ring">
 			<button
@@ -1362,23 +1357,6 @@ function ArtifactSummaryCard({
 				)}
 				<span className="min-w-0 flex-1 truncate">{artifact.name}</span>
 			</button>
-			{onOpenArtifact ? (
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<Button
-							aria-label={`${appI18n.t("files.addFeedback")}: ${artifact.name}`}
-							className="mr-1 size-6 shrink-0"
-							onClick={handleFeedback}
-							size="icon-sm"
-							type="button"
-							variant="ghost"
-						>
-							<MessageSquarePlus aria-hidden="true" className="size-icon-sm" />
-						</Button>
-					</TooltipTrigger>
-					<TooltipContent side="bottom">{appI18n.t("files.addFeedback")}</TooltipContent>
-				</Tooltip>
-			) : null}
 		</div>
 	);
 }
