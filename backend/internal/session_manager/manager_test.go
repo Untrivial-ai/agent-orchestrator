@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -773,6 +774,19 @@ type recordingAgent struct {
 	lastRestore  ports.RestoreConfig
 	launchCalls  int
 	restoreCalls int
+}
+
+type launchAuthAgent struct {
+	*recordingAgent
+	status     ports.AgentAuthStatus
+	workingDir string
+	env        map[string]string
+}
+
+func (a *launchAuthAgent) ValidateLaunchAuth(_ context.Context, workingDir string, env map[string]string) (ports.AgentAuthStatus, error) {
+	a.workingDir = workingDir
+	a.env = maps.Clone(env)
+	return a.status, nil
 }
 
 func (a *recordingAgent) GetLaunchCommand(_ context.Context, cfg ports.LaunchConfig) ([]string, error) {
@@ -3696,6 +3710,27 @@ func TestRestore_ReopensTerminal(t *testing.T) {
 	}
 }
 
+func TestRestoreRejectsUnauthorizedLaunchContext(t *testing.T) {
+	m, st, rt, _ := newManager()
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "b", AgentSessionID: "agent-x"})
+	project := st.projects["mer"]
+	project.Config.Env = map[string]string{"ANTHROPIC_BASE_URL": "https://gateway.example"}
+	st.projects["mer"] = project
+	agent := &launchAuthAgent{recordingAgent: &recordingAgent{}, status: ports.AgentAuthStatusUnauthorized}
+	m.agents = singleAgent{agent: agent}
+
+	_, err := m.RestoreWithMode(ctx, "mer-1")
+	if !errors.Is(err, ports.ErrAgentAuthRequired) {
+		t.Fatalf("restore error = %v, want ErrAgentAuthRequired", err)
+	}
+	if agent.workingDir != "/ws/mer-1" || agent.env["ANTHROPIC_BASE_URL"] != "https://gateway.example" {
+		t.Fatalf("launch auth context = cwd %q env %#v", agent.workingDir, agent.env)
+	}
+	if rt.created != 0 {
+		t.Fatalf("runtime created %d times after rejected auth", rt.created)
+	}
+}
+
 func TestRestore_RestoresReviewerWithoutTerminating(t *testing.T) {
 	m, st, rt, _ := newManager()
 	reviewer := &fakeReviewerTerminator{err: errors.New("reviewer still alive")}
@@ -6398,6 +6433,65 @@ func TestSpawn_RejectsUnknownHarness(t *testing.T) {
 	}
 	if rt.created != 0 {
 		t.Fatal("runtime must not be created for an unknown harness")
+	}
+}
+
+func TestSpawn_RejectsUnsupportedClaudeTUIEffortBeforeSessionRow(t *testing.T) {
+	m, st, rt, ws := newManager()
+	m.SetModelCatalog(tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+		{ID: "sonnet", IsDefault: true, Efforts: []string{"low", "high"}},
+	}}})
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID:     "mer",
+		Kind:          domain.KindWorker,
+		Harness:       domain.HarnessClaudeCode,
+		RequestedMode: domain.SessionModeTUI,
+		AgentConfig: ports.AgentConfig{
+			Model: "sonnet", Effort: "max",
+		},
+		EffortOverride: true,
+	})
+	if !errors.Is(err, ports.ErrUnsupportedEffort) {
+		t.Fatalf("err = %v, want ErrUnsupportedEffort", err)
+	}
+	if len(st.sessions) != 0 {
+		t.Fatalf("no session row should be created, got %d", len(st.sessions))
+	}
+	if ws.lastCfg.SessionID != "" || ws.destroyed != 0 {
+		t.Fatal("workspace must not be created for an unsupported Claude effort")
+	}
+	if rt.created != 0 {
+		t.Fatal("runtime must not be created for an unsupported Claude effort")
+	}
+}
+
+func TestSpawn_RejectsFreshClaudeAuthInWorkspaceLaunchContext(t *testing.T) {
+	m, st, rt, ws := newManager()
+	project := st.projects["mer"]
+	project.Config.Env = map[string]string{"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_PROFILE": "project-profile"}
+	st.projects["mer"] = project
+	agent := &launchAuthAgent{recordingAgent: &recordingAgent{}, status: ports.AgentAuthStatusUnauthorized}
+	m.agents = singleAgent{agent: agent}
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		RequestedMode: domain.SessionModeTUI,
+	})
+	if !errors.Is(err, ports.ErrAgentAuthRequired) {
+		t.Fatalf("err = %v, want ErrAgentAuthRequired", err)
+	}
+	if agent.workingDir != "/ws/mer-1" {
+		t.Fatalf("auth cwd = %q, want session workspace", agent.workingDir)
+	}
+	if agent.env["CLAUDE_CODE_USE_BEDROCK"] != "1" || agent.env["AWS_PROFILE"] != "project-profile" {
+		t.Fatalf("auth env = %#v, want merged project launch environment", agent.env)
+	}
+	if rt.created != 0 {
+		t.Fatal("runtime was created after a rejected fresh credential")
+	}
+	if len(st.sessions) != 0 || ws.destroyed != 1 {
+		t.Fatalf("rejected launch cleanup: sessions=%d destroyed=%d, want 0/1", len(st.sessions), ws.destroyed)
 	}
 }
 

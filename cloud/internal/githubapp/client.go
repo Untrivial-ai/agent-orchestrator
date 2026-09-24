@@ -259,7 +259,13 @@ func (c *Client) ExchangeOAuthCode(ctx context.Context, code, verifier string) (
 		"client_secret": c.clientSecret,
 		"code":          code,
 		"redirect_uri":  c.OAuthCallbackURL(),
-		"code_verifier": verifier,
+	}
+	// Only send code_verifier when we actually issued a PKCE challenge. The
+	// bundled installation+OAuth flow (CompleteInstallationOAuth) has no verifier
+	// because GitHub authorized during installation without our code_challenge;
+	// sending an empty code_verifier would make GitHub reject the exchange.
+	if verifier = strings.TrimSpace(verifier); verifier != "" {
+		payload["code_verifier"] = verifier
 	}
 	var response struct {
 		AccessToken string `json:"access_token"`

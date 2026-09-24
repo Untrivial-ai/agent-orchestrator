@@ -3240,6 +3240,14 @@ func (c *Controller) applyAccount(
 	update ports.ChatAccount,
 	now time.Time,
 ) error {
+	if update.ReauthRecovered {
+		c.mu.Lock()
+		reauthPending := c.account.ReauthRequiredAt != nil
+		c.mu.Unlock()
+		if !reauthPending {
+			return nil
+		}
+	}
 	if err := c.recordAccount(ctx, update, now); err != nil {
 		return err
 	}
@@ -3283,6 +3291,9 @@ func (c *Controller) recordAccount(
 		at := now
 		c.account.ReauthRequiredAt = &at
 		c.account.ReauthReason = update.ReauthReason
+	} else if update.ReauthRecovered {
+		c.account.ReauthRequiredAt = nil
+		c.account.ReauthReason = ""
 	}
 	account := c.account
 	c.mu.Unlock()

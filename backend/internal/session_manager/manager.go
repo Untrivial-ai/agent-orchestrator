@@ -929,12 +929,6 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if err := validateSpawnModel(cfg.Harness, agentConfig.Model); err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: %s", ErrUnsupportedModel, err.Error())
 	}
-	// Adapters whose model picker is an agent-owned mode list (e.g. Amp) keep
-	// their selectable values in AgentConfig.Mode. Normalize a copy for the
-	// adapter so `ao spawn --agent amp --model high` launches Amp with `--mode
-	// high`, while metadata keeps the original resolved Model for the API view.
-	adapterConfig := normalizeAgentConfigForHarness(cfg.Harness, agentConfig)
-
 	// Resolve the controller mode here, before anything durable is created, for
 	// the same reason an unknown harness is rejected above: an explicit Chat
 	// request AO cannot honor should cost nothing, not leave a terminated row and
@@ -964,7 +958,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			mode = domain.SessionModeTUI
 		}
 		if mode == domain.SessionModeChat {
-			resolved, err := m.resolveChatAgentConfig(ctx, cfg, project.Config)
+			resolved, err := m.resolveAgentConfig(ctx, cfg, project.Config)
 			if err != nil {
 				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
 			}
@@ -972,7 +966,22 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			cfg.AgentConfigResolved = true
 		}
 	}
+	if mode == domain.SessionModeTUI && cfg.Harness == domain.HarnessClaudeCode {
+		resolved, err := m.resolveAgentConfig(ctx, cfg, project.Config)
+		if err != nil {
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)
+		}
+		cfg.AgentConfig = resolved
+		cfg.AgentConfigResolved = true
+		agentConfig = resolved
+	}
 	cfg.RequestedMode = mode
+
+	// Adapters whose model picker is an agent-owned mode list (e.g. Amp) keep
+	// their selectable values in AgentConfig.Mode. Normalize a copy for the
+	// adapter so `ao spawn --agent amp --model high` launches Amp with `--mode
+	// high`, while metadata keeps the original resolved Model for the API view.
+	adapterConfig := normalizeAgentConfigForHarness(cfg.Harness, agentConfig)
 
 	// A chat session runs no agent inside a terminal runtime, so the terminal
 	// prerequisites are not its concern.
@@ -1172,6 +1181,16 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	m.augmentAgentRuntimeEnv(agent, env)
 	pinRuntimePermissionEnv(env, adapterConfig.Permissions)
+	if validator, ok := agent.(ports.AgentLaunchAuthValidator); ok {
+		status, authErr := validator.ValidateLaunchAuth(ctx, ws.Path, env)
+		if authErr != nil {
+			m.logger.Debug("spawn: launch authentication probe inconclusive; continuing",
+				"sessionID", id, "harness", cfg.Harness, "error", authErr)
+		} else if status == ports.AgentAuthStatusUnauthorized {
+			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true, false)
+			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: %w", id, ports.ErrAgentAuthRequired)
+		}
+	}
 	if err := m.prepareWorkspace(ctx, agent, id, ws.Path, systemPrompt, systemPromptFile, adapterConfig, env); err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, false, false)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnPrepare, err)
@@ -1280,28 +1299,40 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	return rec, promptBytes, systemPromptBytes, nil
 }
 
-func (m *Manager) resolveChatAgentConfig(ctx context.Context, cfg ports.SpawnConfig, project domain.ProjectConfig) (ports.AgentConfig, error) {
+func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig, project domain.ProjectConfig) (ports.AgentConfig, error) {
 	base := effectiveAgentConfig(cfg.Harness, cfg.Kind, project)
 	requested := cfg.AgentConfig
 	resolved := applySpawnAgentConfig(base, requested)
+	modelChangedWithoutExplicitEffort := requested.Model != "" && requested.Model != base.Model &&
+		!cfg.EffortOverride && requested.Effort == ""
 	if cfg.EffortOverride {
 		resolved.Effort = requested.Effort
 	}
-	if cfg.Harness != domain.HarnessCodex {
+	if cfg.Harness != domain.HarnessCodex && cfg.Harness != domain.HarnessClaudeCode {
 		resolved.Effort = ""
 		return resolved, nil
 	}
+	modelID := strings.TrimSpace(resolved.Model)
+	validateClaudeModel := cfg.Harness == domain.HarnessClaudeCode && modelID != ""
+	if resolved.Effort == "" && !validateClaudeModel {
+		return resolved, nil
+	}
 	if m.modelCatalog == nil {
+		if validateClaudeModel {
+			return ports.AgentConfig{}, fmt.Errorf("%w: model catalog is unavailable", ports.ErrModelCapabilitiesUnavailable)
+		}
 		return resolved, nil
 	}
 	catalog, err := m.modelCatalog.Models(ctx, string(cfg.Harness), string(cfg.ProjectID), true)
 	if err != nil {
-		if resolved.Effort != "" {
+		if modelChangedWithoutExplicitEffort {
+			resolved.Effort = ""
+		}
+		if validateClaudeModel || resolved.Effort != "" {
 			return ports.AgentConfig{}, fmt.Errorf("%w: %w", ports.ErrModelCapabilitiesUnavailable, err)
 		}
 		return resolved, nil
 	}
-	modelID := resolved.Model
 	if modelID == "" {
 		for _, item := range catalog.Models {
 			if item.IsDefault {
@@ -1310,6 +1341,9 @@ func (m *Manager) resolveChatAgentConfig(ctx context.Context, cfg ports.SpawnCon
 			}
 		}
 	}
+	if catalog.Stale && validateClaudeModel {
+		return ports.AgentConfig{}, fmt.Errorf("%w for model %q: catalog is stale", ports.ErrModelCapabilitiesUnavailable, modelID)
+	}
 	var selected *ports.AgentModelInfo
 	for i := range catalog.Models {
 		if catalog.Models[i].ID == modelID {
@@ -1317,8 +1351,11 @@ func (m *Manager) resolveChatAgentConfig(ctx context.Context, cfg ports.SpawnCon
 			break
 		}
 	}
-	if requested.Model != "" && requested.Model != base.Model {
-		if !cfg.EffortOverride && requested.Effort == "" && (selected == nil || !containsString(selected.Efforts, base.Effort)) {
+	if validateClaudeModel && selected == nil {
+		return ports.AgentConfig{}, fmt.Errorf("%w: model %q is not in the active provider catalog", ErrUnsupportedModel, modelID)
+	}
+	if modelChangedWithoutExplicitEffort {
+		if selected == nil || !containsString(selected.Efforts, base.Effort) {
 			resolved.Effort = ""
 		}
 	}
@@ -1805,6 +1842,7 @@ func restoredAgentConfig(rec domain.SessionRecord, cfg domain.ProjectConfig) por
 	merged := effectiveAgentConfig(rec.Harness, rec.Kind, cfg)
 	if rec.Harness == domain.HarnessClaudeCode {
 		merged.Model = rec.Metadata.Model
+		merged.Effort = rec.Metadata.Effort
 	}
 	return merged
 }
@@ -2697,6 +2735,15 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	}
 	m.augmentAgentRuntimeEnv(agent, env)
 	pinRuntimePermissionEnv(env, agentConfig.Permissions)
+	if validator, ok := agent.(ports.AgentLaunchAuthValidator); ok {
+		status, authErr := validator.ValidateLaunchAuth(ctx, ws.Path, env)
+		if authErr != nil {
+			m.logger.Debug("restore: launch authentication probe inconclusive; continuing",
+				"sessionID", rec.ID, "harness", rec.Harness, "error", authErr)
+		} else if status == ports.AgentAuthStatusUnauthorized {
+			return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, ports.ErrAgentAuthRequired)
+		}
+	}
 	if err := m.prepareWorkspace(ctx, agent, rec.ID, ws.Path, systemPrompt, systemPromptFile, agentConfig, env); err != nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
 	}

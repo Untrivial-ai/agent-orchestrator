@@ -409,6 +409,15 @@ let offeredReleaseNotes: string | undefined;
 // Notes resolved out-of-band for a feed whose provider cannot carry them.
 // Used only as a fallback, so a provider that does supply notes always wins.
 let directFeedReleaseNotes: string | undefined;
+// A build strictly newer than the running one, discovered through the GitHub
+// API during direct-prerelease feed setup. That discovery hits api.github.com,
+// a host that answers even for users whose network cannot reach the release
+// asset CDN, and it already verified the channel manifest asset exists. So it
+// is a truthful "update available" even when the electron-updater check that
+// follows hangs fetching that manifest from the CDN. Set per direct-feed setup,
+// read only by the automatic check to surface the update the hung check could
+// not. Undefined when discovery found nothing newer or is not a direct feed.
+let directFeedDiscoveredAvailable: { version: string; notes?: string } | undefined;
 // Which feed channel the staged build came from. A build staged from one
 // channel is already armed with the OS installer, so switching channels has
 // to notice that it no longer belongs (see stagedBuildIsStale).
@@ -421,17 +430,10 @@ let escalationStateDir: string | undefined;
 // Automatic re-check cadence for a long-running session. A fresh check also
 // runs on every launch (startAutoUpdates), so most users are current the moment
 // they open the app; this interval only governs sessions left open for a long
-// stretch. Kept to once a day on every channel: 15-minute nightly polling and
-// hourly stable polling were redundant background work and, on a cold network,
-// a source of launch-time check errors. Trade-off: the failing-checks nudge
-// needs consecutive automatic failures, and every launch supplies one, so users
-// who restart still trip it quickly; but a session left open continuously on a
-// broken updater now waits days rather than hours before the nudge appears.
-// Feature pins (a pr<N> channel) are the case a daily interval bites hardest: a
-// new build pushed to that PR is not noticed until relaunch, and the 30-minute
-// retirement poll only catches the PR closing, not a fresh build on it. Accepted
-// deliberately, since a pinned session is short-lived and relaunch re-checks.
-const AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// stretch. Kept short so a session left open picks up a nightly or hotfix build
+// within minutes rather than waiting out a day: a daily interval meant any
+// release we published took up to 24h to reach users who keep the app running.
+const AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 let automaticUpdateTimer: ReturnType<typeof setInterval> | undefined;
 let automaticUpdateTimerIntervalMs: number | undefined;
 type UpdaterOperation =
@@ -778,6 +780,9 @@ function directPrereleaseChannel(
 async function configureDirectPrereleaseFeed(
   settings: UpdateSettings,
 ): Promise<(() => void) | undefined> {
+  // Cleared up front so a discovery that finds nothing newer (or bails below)
+  // never leaves a stale build from a previous check readable by the caller.
+  directFeedDiscoveredAvailable = undefined;
   const channel = directPrereleaseChannel(settings);
   if (!channel) return undefined;
   const coordinates = await readAppUpdateYml();
@@ -801,6 +806,19 @@ async function configureDirectPrereleaseFeed(
   // Stand in for what the generic provider cannot supply. Overwritten by the
   // real thing if a later event does carry notes.
   directFeedReleaseNotes = normalizeReleaseNotes(release.body);
+  // Record the discovered build when it is strictly newer than what is running,
+  // so the automatic check can still show it if the manifest fetch stalls. An
+  // unparseable running version is treated as "older" so the discovered build
+  // still surfaces rather than being silently dropped.
+  if (
+    semver.valid(tag) !== null &&
+    (semver.valid(runningVersion) === null || semver.gt(tag, runningVersion))
+  ) {
+    directFeedDiscoveredAvailable = {
+      version: tag,
+      ...(directFeedReleaseNotes !== undefined ? { notes: directFeedReleaseNotes } : {}),
+    };
+  }
   autoUpdater.setFeedURL({
     provider: "generic",
     url: `https://github.com/${coordinates.owner}/${coordinates.repo}/releases/download/${tag}`,
@@ -1150,6 +1168,29 @@ function settleCheckStatus(result: UpdateCheckOutcome): void {
   broadcastCompletedCheck(
     hasStagedBuild() ? stagedDownloadedStatus() : { state: "not-available" },
   );
+}
+
+// Surface an update that GitHub-API discovery found but the electron-updater
+// check could not confirm, because its manifest fetch from the release asset
+// CDN stalled or timed out. Only fills a gap: it never overrides a status that
+// already reflects this or a newer build, and never downgrades a staged build
+// the discovered one does not supersede. Called after the automatic check so a
+// user on a network that cannot reach the CDN still learns an update exists.
+function broadcastDiscoveredAvailable(): void {
+  const discovered = directFeedDiscoveredAvailable;
+  if (discovered === undefined) return;
+  if (
+    lastStatus.state === "available" ||
+    lastStatus.state === "downloading" ||
+    lastStatus.state === "preparing" ||
+    lastStatus.state === "downloaded"
+  ) {
+    return;
+  }
+  if (hasStagedBuild() && !supersedesStagedBuild(discovered.version)) return;
+  pendingUpdateVersion = discovered.version;
+  offeredReleaseNotes = discovered.notes ?? offeredReleaseNotes;
+  broadcastCompletedCheck({ state: "available", version: discovered.version });
 }
 
 // stagedDownloadedStatus rebuilds the enriched downloaded status from module
@@ -2149,6 +2190,10 @@ async function runAutomaticUpdateCheck(
         // the direct provider, and later background checks start from the
         // normal GitHub feed again.
         restoreFeed?.();
+        // If the check could not confirm the update (a stalled or timed-out
+        // manifest fetch on a network that cannot reach the asset CDN), fall
+        // back to the build API discovery already found on a host that answers.
+        broadcastDiscoveredAvailable();
       }
     });
   } catch (err) {

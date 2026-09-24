@@ -425,6 +425,9 @@ describe("NewTaskDialog", () => {
 			if (path === "/api/v1/projects/{id}/tasks/prepare") {
 				return { data: { ok: true, taskPreparation: "prep-token" }, error: undefined };
 			}
+			if (path === "/api/v1/agents/readiness/ensure") {
+				return { data: agentInventory, error: undefined };
+			}
 			return {
 				data: undefined,
 				error: { code, message },

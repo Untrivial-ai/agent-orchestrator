@@ -108,7 +108,7 @@ export function AgentModelCombobox({
 	 *  contexts where the menu should read like a simple choice, not a
 	 *  model-management surface. */
 	compact?: boolean;
-	/** Codex callers opt into a combined model and reasoning-effort menu. */
+	/** Callers opt into a combined model and reasoning-effort menu. */
 	tuning?: ModelEffortSelection;
 	disabled?: boolean;
 	"aria-label": string;
@@ -128,6 +128,8 @@ export function AgentModelCombobox({
 	const allowDirectCustom = entryMode === "direct";
 	const [search, setSearch] = useState("");
 	const [menuOpen, setMenuOpen] = useState(false);
+	const [effortMenuOpen, setEffortMenuOpen] = useState(false);
+	const [awaitingEffort, setAwaitingEffort] = useState(false);
 	const [refreshFailed, setRefreshFailed] = useState(false);
 	const [refreshingLocal, setRefreshingLocal] = useState(false);
 	const [sessionRecentModels, setSessionRecentModels] = useState<Record<string, string[]>>({});
@@ -173,6 +175,7 @@ export function AgentModelCombobox({
 	const noOverrideLabel = emptyLabel ?? t("settings.models.agentDefault");
 	const currentLabel = (triggerLabel ?? selected?.label ?? value) || noOverrideLabel;
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const effortTriggerRef = useRef<HTMLDivElement>(null);
 	const [canScrollDown, setCanScrollDown] = useState(false);
 	const updateScrollCue = useCallback(() => {
 		const element = scrollRef.current;
@@ -198,6 +201,15 @@ export function AgentModelCombobox({
 		}
 		onChange(modelID);
 	};
+	const selectCatalogModel = (event: Event, item: IndexedModel) => {
+		const openEffort = Boolean(tuning && item.model.efforts?.length);
+		if (openEffort) event.preventDefault();
+		selectModel(item.id);
+		setSearch("");
+		setEffortMenuOpen(openEffort);
+		setAwaitingEffort(openEffort);
+		if (!openEffort) setMenuOpen(false);
+	};
 	const refreshBusy = refreshing || refreshingLocal;
 	const showManualRefresh = Boolean(
 		onRefresh && (models.length === 0 || (normalizedSearch !== "" && rankedModels.length === 0)),
@@ -211,10 +223,15 @@ export function AgentModelCombobox({
 
 	return (
 		<DropdownMenu
+			open={menuOpen}
 			onOpenChange={(open) => {
 				setMenuOpen(open);
-				if (!open) setSearch("");
-				if (!open) setRefreshFailed(false);
+				if (!open) {
+					setSearch("");
+					setRefreshFailed(false);
+					setEffortMenuOpen(false);
+					setAwaitingEffort(false);
+				}
 			}}
 		>
 			<DropdownMenuTrigger asChild disabled={disabled}>
@@ -337,7 +354,7 @@ export function AgentModelCombobox({
 									compact ? (
 										<DropdownMenuItem
 											key={item.id}
-											onSelect={() => selectModel(item.id)}
+											onSelect={(event) => selectCatalogModel(event, item)}
 											className={modelItemClass(item.id === value)}
 											aria-current={tuning && item.id === value ? true : undefined}
 										>
@@ -347,7 +364,7 @@ export function AgentModelCombobox({
 									) : (
 										<DropdownMenuItem
 											key={item.id}
-											onSelect={() => selectModel(item.id)}
+											onSelect={(event) => selectCatalogModel(event, item)}
 											className={modelItemClass(item.id === value)}
 										>
 											<div className="flex min-w-0 flex-1 items-center gap-3">
@@ -430,12 +447,25 @@ export function AgentModelCombobox({
 				{showEffort && tuning && (
 					<div className="shrink-0">
 						<DropdownMenuSeparator />
-						<OptionMenuSub>
-							<OptionMenuSubTrigger label={t("settings.models.reasoningEffort", { defaultValue: "Reasoning effort" })} value={currentEffortLabel} />
-							<OptionMenuSubContent>
+						<OptionMenuSub open={effortMenuOpen} onOpenChange={(open) => {
+							if (open || !awaitingEffort) setEffortMenuOpen(open);
+						}}>
+							<OptionMenuSubTrigger ref={effortTriggerRef} label={t("settings.models.reasoningEffort", { defaultValue: "Reasoning effort" })} value={currentEffortLabel} />
+							<OptionMenuSubContent onEscapeKeyDown={(event) => {
+								event.preventDefault();
+								event.stopPropagation();
+								setAwaitingEffort(false);
+								setEffortMenuOpen(false);
+								effortTriggerRef.current?.focus();
+							}}>
 								{["", ...(effortModel?.efforts ?? [])].map((effort) => (
 									<OptionMenuItem key={effort} role="menuitemradio" aria-checked={effort === tuning.effort}
-										active={effort === tuning.effort} onSelect={() => tuning.onEffortChange(effort)} className="gap-3 text-xs">
+										active={effort === tuning.effort} onSelect={() => {
+											tuning.onEffortChange(effort);
+											setEffortMenuOpen(false);
+											setAwaitingEffort(false);
+											setMenuOpen(false);
+										}} className="gap-3 text-xs">
 										{effort ? effortLabel(effort) : t("settings.models.providerDefault")}
 										{effort === tuning.effort && <Check className="ml-auto size-icon-sm shrink-0" aria-hidden="true" />}
 									</OptionMenuItem>

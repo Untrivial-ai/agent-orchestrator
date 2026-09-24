@@ -1794,6 +1794,10 @@ BEGIN
 	// matches the migration: unknown historical certainty stays partial.
 	{version: 130, table: "pr", column: "review_partial",
 		addDDL: `ALTER TABLE pr ADD COLUMN review_partial BOOLEAN NOT NULL DEFAULT TRUE`},
+	// 0132_conversation_opencode_mode.sql. Generated conversation reads select
+	// this column, so repair field databases that recorded 0132 without adding it.
+	{version: 132, table: "conversations", column: "opencode_mode",
+		addDDL: `ALTER TABLE conversations ADD COLUMN opencode_mode TEXT NOT NULL DEFAULT ''`},
 }
 
 // reconcileSchema verifies that the columns in schemaRepairs physically exist
