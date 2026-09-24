@@ -1716,6 +1716,39 @@ describe("CreateProjectFlow project import validation", () => {
 		expect(await screen.findByRole("option", { name: "acme/two" })).toBeInTheDocument();
 	});
 
+	it("allows wheel scrolling in the repository picker inside the project modal", async () => {
+		cloudMocks.cloudEnabled = true;
+		cloudMocks.sessionStatus = "authenticated";
+		cloudMocks.listGitHubInstallations.mockResolvedValue({
+			installations: [{
+				id: "inst-1", githubInstallationId: "100", accountLogin: "acme", accountType: "Organization",
+				status: "active", repositorySelection: "all", syncStatus: "ready", createdAt: "", updatedAt: "",
+			}],
+		});
+		cloudMocks.listGitHubRepositories.mockResolvedValue({
+			items: Array.from({ length: 40 }, (_, index) => ({
+				githubRepositoryId: String(index), name: `repo-${index}`, fullName: `acme/repo-${index}`,
+				htmlUrl: `https://github.com/acme/repo-${index}`, defaultBranch: "main",
+				visibility: "private", isPrivate: true, isArchived: false, access: "write", grantedAt: "",
+			})),
+			page: { hasMore: false },
+		});
+		const user = userEvent.setup();
+		render(
+			<CreateProjectFlow mode="choose" {...noop}>
+				{({ choosePath }) => <button onClick={choosePath}>New project</button>}
+			</CreateProjectFlow>,
+			{ wrapper: CloudTestProviders },
+		);
+		await user.click(screen.getByRole("button", { name: "New project" }));
+		await user.click(await screen.findByRole("button", { name: "New cloud project" }));
+		await user.click(await screen.findByRole("combobox", { name: "Select a repository" }));
+		const list = screen.getByRole("listbox", { name: "Select a repository" });
+		const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 120 });
+		list.dispatchEvent(wheel);
+		expect(wheel.defaultPrevented).toBe(false);
+	});
+
 	it("asks to connect GitHub when the credential exists locally but not in the control plane", async () => {
 		cloudMocks.cloudEnabled = true;
 		cloudMocks.sessionStatus = "authenticated";
