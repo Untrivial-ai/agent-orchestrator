@@ -531,6 +531,8 @@ func (*cancelAwareModelDiscoverer) Manual(agentID string) ports.AgentModelCatalo
 	return ports.AgentModelCatalog{AgentID: agentID, Models: []ports.AgentModelInfo{}}
 }
 
+func (*cancelAwareModelDiscoverer) DiscoveryCanPromptLogin(string) bool { return false }
+
 func TestModelDiscoveryStopsOnServiceShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	discoverer := &cancelAwareModelDiscoverer{started: make(chan struct{})}
@@ -2007,3 +2009,7 @@ func TestWarmModelCatalogsStartsAsynchronously(t *testing.T) {
 		t.Fatal("background warm did not finish")
 	}
 }
+
+// Only Kiro is known to hijack the browser during discovery, so the shared fake
+// stands in for every other adapter: discovery is never withheld from it.
+func (f *fakeModelDiscoverer) DiscoveryCanPromptLogin(string) bool { return false }
