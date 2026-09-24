@@ -217,7 +217,7 @@ describe("SessionFileExplorer", () => {
 		await userEvent.click(screen.getByRole("combobox", { name: "File source" }));
 		await userEvent.click(await screen.findByRole("option", { name: "PR #42 · feature/files" }));
 
-		expect(screen.getByRole("combobox", { name: "File source" })).toHaveTextContent("PR #42 · feature/files");
+		expect(screen.getByText("PR #42 · feature/files", { selector: "div" })).toBeInTheDocument();
 		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("true");
 		expect(getMock).toHaveBeenCalledWith(
 			"/api/v1/sessions/{sessionId}/pr/{prNumber}/files",

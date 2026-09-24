@@ -29,10 +29,6 @@ const PATCH_BATCH_SIZE = 100;
 const parsedPatchCache = new Map<string, FileDiffMetadata[]>();
 const MAX_PARSED_GROUPS = 24;
 const workingScopeOrder = ["unstaged", "staged"] as const;
-// Same quiet pill as the explorer's view tabs so the two toolbars read as one system.
-const reviewPillClass = "inline-flex h-control-md shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50";
-const reviewPillActive = "bg-interactive-active text-foreground";
-const reviewPillIdle = "text-muted-foreground hover:bg-interactive-hover/60 hover:text-foreground";
 
 function chunked<T>(items: readonly T[], size: number): T[][] {
 	const chunks: T[][] = [];
@@ -372,41 +368,34 @@ export function WorkspaceReviewPane({
 			onPointerMove={gutterHover.onPointerMove}
 			ref={reviewRef}
 		>
-			<div className="flex h-inspector-tabs shrink-0 items-center gap-0.5 border-b border-border px-2">
+			<div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border bg-surface px-2 py-1.5">
 				{showReviewScopeSwitcher ? workingSourceOptions.map((entry) => (
-					<button
+					<Button
 						aria-pressed={scope === entry}
-						className={cn(reviewPillClass, scope === entry ? reviewPillActive : reviewPillIdle)}
 						disabled={!entry}
 						key={entry}
 						onClick={() => selectScope(entry)}
+						size="sm"
 						type="button"
+						variant={scope === entry ? "secondary" : "ghost"}
 					>
 						{workingSourceLabel(entry)}
-						<span className="font-mono text-caption tabular-nums text-passive">{sectionFiles(data, entry).length}</span>
-					</button>
+						<span className="text-caption text-passive">{sectionFiles(data, entry).length}</span>
+					</Button>
 				)) : null}
-				<button
-					aria-expanded={commitBrowserOpen}
-					aria-pressed={scope === "committed"}
-					className={cn(reviewPillClass, scope === "committed" || commitBrowserOpen ? reviewPillActive : reviewPillIdle)}
-					disabled={data.commits.length === 0}
-					onClick={() => setCommitBrowserOpen((open) => !open)}
-					type="button"
-				>
+				<Button aria-expanded={commitBrowserOpen} aria-pressed={scope === "committed"} className="gap-1.5" disabled={data.commits.length === 0} onClick={() => setCommitBrowserOpen((open) => !open)} size="sm" type="button" variant={scope === "committed" ? "secondary" : "ghost"}>
 					<GitCommitHorizontal aria-hidden="true" className="size-icon-sm" />
 					<span>{t("files.commits")}</span>
-					{commitHashForButton ? <span className="font-mono text-caption text-passive">{commitHashForButton}</span> : null}
-					<ChevronDown aria-hidden="true" className={cn("size-icon-sm text-passive transition-transform", commitBrowserOpen && "rotate-180")} />
-				</button>
-				{!commitBrowserOpen ? <div className="ml-auto flex shrink-0 items-center gap-1 text-caption text-muted-foreground">
-					<span className="tabular-nums">{t("files.reviewProgress", { total: allFiles.length, viewed: viewedCount })}</span>
+					{commitHashForButton ? <span className="text-caption text-passive">{commitHashForButton}</span> : null}
+				</Button>
+				{!commitBrowserOpen ? <div className="ml-auto flex items-center gap-1 text-caption text-muted-foreground">
+					<span>{t("files.reviewProgress", { total: allFiles.length, viewed: viewedCount })}</span>
 					<HeaderActionTooltip label={t(allFilesCollapsed ? "files.expandAll" : "files.collapseAll")}>
-						<Button aria-label={t(allFilesCollapsed ? "files.expandAll" : "files.collapseAll")} className="text-muted-foreground hover:text-foreground" onClick={toggleAll} size="icon-sm" type="button" variant="ghost">
-							{allFilesCollapsed ? <ChevronsUpDown aria-hidden="true" className="size-icon-sm" /> : <ChevronsDownUp aria-hidden="true" className="size-icon-sm" />}
+						<Button aria-label={t(allFilesCollapsed ? "files.expandAll" : "files.collapseAll")} onClick={toggleAll} size="icon-sm" type="button" variant="ghost">
+							{allFilesCollapsed ? <ChevronsUpDown aria-hidden="true" /> : <ChevronsDownUp aria-hidden="true" />}
 						</Button>
 					</HeaderActionTooltip>
-				</div> : <span className="ml-auto truncate pl-2 text-caption text-muted-foreground">{t("files.selectCommit")}</span>}
+				</div> : <span className="ml-auto text-caption text-muted-foreground">{t("files.selectCommit")}</span>}
 			</div>
 			{commitBrowserOpen ? (
 				<CommitBrowser
@@ -469,7 +458,7 @@ export function WorkspaceReviewPane({
 							const fileAnnotationActive = annotation.target?.surface !== "focused" && annotation.target?.path === file.path && annotation.target.side === "file";
 							return (
 								<div className="relative bg-surface">
-									<div className="flex h-10 min-w-0 items-center gap-1.5 border-b border-border pl-1 pr-2">
+									<div className="flex h-10 min-w-0 items-center gap-2 border-b border-border px-2">
 										<Button
 											aria-label={isCollapsed ? t("files.expandFile", { file: file.path }) : t("files.collapseFile", { file: file.path })}
 											onClick={() => toggleCollapsed(file.path)}
@@ -479,7 +468,7 @@ export function WorkspaceReviewPane({
 										>
 											{isCollapsed ? <ChevronRight aria-hidden="true" className="size-icon-sm" /> : <ChevronDown aria-hidden="true" className="size-icon-sm" />}
 										</Button>
-										<span className={cn("w-3 shrink-0 text-center font-mono text-xs font-semibold", statusTone[file.status])}>{statusLabel[file.status]}</span>
+										<span className={cn("font-mono text-xs font-semibold", statusTone[file.status])}>{statusLabel[file.status]}</span>
 										<button
 											aria-label={isCollapsed ? t("files.expandFile", { file: file.path }) : t("files.collapseFile", { file: file.path })}
 											className="min-w-0 flex-1 truncate text-left font-mono text-xs hover:underline"
@@ -489,33 +478,30 @@ export function WorkspaceReviewPane({
 										>
 											{file.path}
 										</button>
-										<span className="flex shrink-0 items-center gap-1.5 font-mono text-caption tabular-nums">
-											<span className="text-success">+{file.additions}</span>
-											<span className="text-error">−{file.deletions}</span>
-										</span>
-										<span aria-hidden="true" className="mx-0.5 h-4 w-px shrink-0 bg-border" />
-										<div className="flex shrink-0 items-center gap-0.5">
+										<span className="text-caption text-success">+{file.additions}</span>
+										<span className="text-caption text-error">−{file.deletions}</span>
+										<div className="flex shrink-0 items-center">
 											{file.editable && file.fileFingerprint ? (
 												<HeaderActionTooltip label={t("files.editFile")}>
-											<Button aria-label={t("files.editFile")} className="size-7" onClick={(event) => { event.stopPropagation(); onOpenFile?.(file.path, { editing: true, mode: "file", scope }); }} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button>
+											<Button aria-label={t("files.editFile")} className="size-6" onClick={(event) => { event.stopPropagation(); onOpenFile?.(file.path, { editing: true, mode: "file", scope }); }} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button>
 												</HeaderActionTooltip>
 											) : null}
 											<HeaderActionTooltip label={t("files.addFeedback")}>
-												<Button aria-label={t("files.addFeedback")} className="size-7" onClick={(event) => { event.stopPropagation(); annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint }); }} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
+												<Button aria-label={t("files.addFeedback")} className="size-6" onClick={(event) => { event.stopPropagation(); annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint }); }} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
 											</HeaderActionTooltip>
 											<HeaderActionTooltip label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}>
-										<Button aria-label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")} className="size-7" onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: renderedAvailable ? "rendered" : "file" })} size="icon-sm" type="button" variant="ghost"><FileCode2 aria-hidden="true" className="size-icon-sm" /></Button>
+										<Button aria-label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")} className="size-6" onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: renderedAvailable ? "rendered" : "file" })} size="icon-sm" type="button" variant="ghost"><FileCode2 aria-hidden="true" className="size-icon-sm" /></Button>
 											</HeaderActionTooltip>
 											{onOpenFile ? (
 												<HeaderActionTooltip label={t("files.openDiffInCenter")}>
-											<Button aria-label={t("files.openDiffInCenter")} className="size-7" onClick={() => onOpenFile(file.path, { ...fileOpenContext, mode: "diff" })} size="icon-sm" type="button" variant="ghost"><VscodeGoToFileIcon aria-hidden="true" className="size-icon-sm" /></Button>
+											<Button aria-label={t("files.openDiffInCenter")} className="size-6" onClick={() => onOpenFile(file.path, { ...fileOpenContext, mode: "diff" })} size="icon-sm" type="button" variant="ghost"><VscodeGoToFileIcon aria-hidden="true" className="size-icon-sm" /></Button>
 												</HeaderActionTooltip>
 											) : null}
 											<HeaderActionTooltip label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}>
 												<Checkbox
 													aria-label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}
 													checked={isViewed}
-													className="mx-1.5 size-4 border border-muted-foreground/70 bg-transparent"
+													className="size-4 border border-muted-foreground/70 bg-transparent"
 													onCheckedChange={() => toggleViewed(file)}
 													style={isViewed ? { backgroundColor: "#fff", borderColor: "#fff", color: "#000" } : undefined}
 												/>
