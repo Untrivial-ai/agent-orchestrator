@@ -1694,6 +1694,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 		showInterfaceSwitchAction && (isCloudSession || (session && activeInterfaceTransition)) ? (
 			<SessionInterfaceSwitchButton
 				target={interfaceTarget}
+				showLabel={isCloudSession}
 				supported={isCloudSession ? Boolean(interfaceSwitch.status?.supported) : true}
 				disabledReason={
 					interfaceSwitch.isLoading
