@@ -24,12 +24,14 @@ import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./ui/resizable";
+import { cn } from "../lib/utils";
 import { FileTree } from "./FileTree";
 import { FileContentPane, type FileOpenOptions } from "./FileContentPane";
 import { PanelMessage, RetryButton } from "./WorkspaceDiffView";
 import { WorkspaceReviewPane } from "./diffs/WorkspaceReviewPane";
 
 const WORKSPACE_SOURCE: FilesSource = { kind: "workspace" };
+const viewTabClass = "inline-flex h-control-md items-center rounded-md px-2.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50";
 
 type SessionFileExplorerProps = {
 	sessionId: string;
@@ -132,110 +134,119 @@ export function SessionFileExplorer({
 
 	return (
 		<section className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label={t("files.sessionFiles")}>
-			<header className="flex min-h-10 shrink-0 flex-wrap items-center gap-0.5 border-b border-border bg-surface px-2 py-1">
-				<Select onValueChange={selectSource} value={sourceValue}>
-					<SelectTrigger aria-label={t("files.explorer.source")} className="h-8 max-w-56 min-w-32 text-xs">
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="workspace">{t("files.explorer.workspaceSource")}</SelectItem>
-						{scmQuery.data?.map((pr) => (
-							<SelectItem key={pr.url} value={pr.url}>{`PR #${pr.number} · ${pr.sourceBranch || pr.title}`}</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
-				<label className="relative mr-1 min-w-0 flex-1">
-					<Search className="pointer-events-none absolute left-2.5 top-1/2 size-icon-sm -translate-y-1/2 text-passive" />
-					<Input
-						aria-label={t("files.explorer.filter")}
-						className="h-8 pl-8 font-mono text-xs"
-						onChange={(event) => setFilter(event.target.value)}
-						placeholder={t("files.explorer.filterPlaceholder")}
-						value={filter}
-					/>
-				</label>
-				{hasChanges ? (
-					<div
-						aria-label={t("files.viewMode")}
-						className="flex shrink-0 items-center rounded-md border border-border bg-muted/30 p-0.5"
-						role="tablist"
-					>
-						<Button
-							aria-selected={showChanges}
-							className="h-6 rounded px-2 text-2xs"
-							onClick={() => handleViewChange(true)}
-							role="tab"
-							size="sm"
-							type="button"
-							variant={showChanges ? "secondary" : "ghost"}
-						>
-							{t("files.reviewChanges")}
-						</Button>
-						<Button
-							aria-selected={!showChanges}
-							className="h-6 rounded px-2 text-2xs"
-							onClick={() => handleViewChange(false)}
-							role="tab"
-							size="sm"
-							type="button"
-							variant={!showChanges ? "secondary" : "ghost"}
-						>
-							{t("files.allFiles")}
-						</Button>
+			<header className="shrink-0 border-b border-border bg-surface">
+				{/* One toolbar, not a stack of bars: view tabs lead (the primary
+				    choice), source + panel actions sit quietly on the right, and the
+				    filter shares the same surface underneath. Tabs follow the
+				    inspector's terminal-tab treatment rather than a boxed segment. */}
+				<div className="flex h-inspector-tabs min-w-0 items-center gap-1 px-2">
+					{hasChanges ? (
+						<div aria-label={t("files.viewMode")} className="flex shrink-0 items-center gap-0.5" role="tablist">
+							<button
+								aria-selected={showChanges}
+								className={cn(viewTabClass, showChanges ? "bg-interactive-active text-foreground" : "text-passive hover:bg-interactive-hover/60 hover:text-foreground")}
+								onClick={() => handleViewChange(true)}
+								role="tab"
+								type="button"
+							>
+								{t("files.reviewChanges")}
+							</button>
+							<button
+								aria-selected={!showChanges}
+								className={cn(viewTabClass, !showChanges ? "bg-interactive-active text-foreground" : "text-passive hover:bg-interactive-hover/60 hover:text-foreground")}
+								onClick={() => handleViewChange(false)}
+								role="tab"
+								type="button"
+							>
+								{t("files.allFiles")}
+							</button>
+						</div>
+					) : null}
+					<div className="ml-auto flex min-w-0 items-center gap-0.5">
+						<Select onValueChange={selectSource} value={sourceValue}>
+							<SelectTrigger
+								aria-label={t("files.explorer.source")}
+								className="h-control-md min-w-0 max-w-48 gap-1 border-0 bg-transparent px-2 text-xs font-medium text-muted-foreground shadow-none hover:bg-interactive-hover hover:text-foreground data-[state=open]:bg-interactive-active data-[state=open]:text-foreground [&_svg]:size-icon-sm"
+								size="sm"
+								title={source.kind === "workspace" ? t("files.explorer.workspaceSource") : source.label}
+							>
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent align="end" position="popper">
+								<SelectItem value="workspace">{t("files.explorer.workspaceSource")}</SelectItem>
+								{scmQuery.data?.map((pr) => (
+									<SelectItem key={pr.url} value={pr.url}>{`PR #${pr.number} · ${pr.sourceBranch || pr.title}`}</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+						{showChanges || onToggleMaximized ? <span aria-hidden="true" className="mx-1 h-4 w-px shrink-0 bg-border" /> : null}
+						{showChanges ? (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										aria-label={split ? t("files.unifiedDiff") : t("files.splitDiff")}
+										aria-pressed={split}
+										className="shrink-0 text-muted-foreground hover:text-foreground"
+										onClick={() => {
+											const next = !split;
+											if (controlledSplit === undefined) setInternalSplit(next);
+											onSplitChange?.(next);
+										}}
+										size="icon-sm"
+										type="button"
+										variant="ghost"
+									>
+										{split ? (
+											<Columns2 className="size-icon-sm" aria-hidden="true" />
+										) : (
+											<Rows3 className="size-icon-sm" aria-hidden="true" />
+										)}
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent side="bottom">{split ? t("files.unifiedDiff") : t("files.splitDiff")}</TooltipContent>
+							</Tooltip>
+						) : null}
+						{onToggleMaximized ? (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										aria-label={isMaximized ? t("files.minimize") : t("files.maximize")}
+										className="shrink-0 text-muted-foreground hover:text-foreground"
+										onClick={() => onToggleMaximized(!isMaximized)}
+										size="icon-sm"
+										type="button"
+										variant="ghost"
+									>
+										{isMaximized ? (
+											<Minimize2 className="size-icon-sm" aria-hidden="true" />
+										) : (
+											<Maximize2 className="size-icon-sm" aria-hidden="true" />
+										)}
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent side="bottom">{isMaximized ? t("files.minimize") : t("files.maximize")}</TooltipContent>
+							</Tooltip>
+						) : null}
 					</div>
-				) : null}
-				{showChanges ? (
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<Button
-								aria-label={split ? t("files.unifiedDiff") : t("files.splitDiff")}
-								aria-pressed={split}
-								className="shrink-0"
-								onClick={() => {
-									const next = !split;
-									if (controlledSplit === undefined) setInternalSplit(next);
-									onSplitChange?.(next);
-								}}
-								size="icon-sm"
-								type="button"
-								variant="ghost"
-							>
-								{split ? (
-									<Columns2 className="size-icon-sm" aria-hidden="true" />
-								) : (
-									<Rows3 className="size-icon-sm" aria-hidden="true" />
-								)}
-							</Button>
-						</TooltipTrigger>
-						<TooltipContent side="bottom">{split ? t("files.unifiedDiff") : t("files.splitDiff")}</TooltipContent>
-					</Tooltip>
-				) : null}
-				{onToggleMaximized ? (
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<Button
-								aria-label={isMaximized ? t("files.minimize") : t("files.maximize")}
-								className="shrink-0"
-								onClick={() => onToggleMaximized(!isMaximized)}
-								size="icon-sm"
-								type="button"
-								variant="ghost"
-							>
-								{isMaximized ? (
-									<Minimize2 className="size-icon-sm" aria-hidden="true" />
-								) : (
-									<Maximize2 className="size-icon-sm" aria-hidden="true" />
-								)}
-							</Button>
-						</TooltipTrigger>
-						<TooltipContent side="bottom">{isMaximized ? t("files.minimize") : t("files.maximize")}</TooltipContent>
-					</Tooltip>
+				</div>
+				<div className="px-2 pb-2">
+					<label className="relative block min-w-0">
+						<Search className="pointer-events-none absolute left-2.5 top-1/2 size-icon-sm -translate-y-1/2 text-passive" />
+						<Input
+							aria-label={t("files.explorer.filter")}
+							className="h-control-md pl-8 text-xs"
+							onChange={(event) => setFilter(event.target.value)}
+							placeholder={t("files.explorer.filterPlaceholder")}
+							value={filter}
+						/>
+					</label>
+				</div>
+				{sourceNotice ? (
+					<p className="border-t border-border px-3 py-1.5 text-2xs text-muted-foreground" role="status">
+						{sourceNotice}
+					</p>
 				) : null}
 			</header>
-			<div className="shrink-0 border-b border-border px-3 py-1 text-2xs text-muted-foreground">
-				{source.kind === "workspace" ? t("files.explorer.workspaceSource") : source.label}
-				{sourceNotice ? ` — ${sourceNotice}` : ""}
-			</div>
 			{showChanges ? (
 				filesQuery.isPending ? (
 					<PanelMessage>{t("files.loading")}</PanelMessage>
