@@ -84,7 +84,7 @@ function RoundButton({ icon, label, onPress, active = false, testID }: {
 				},
 			]}
 		>
-			<Feather name={icon} size={iconSize.lg} color={active ? t.accent : t.textSecondary} />
+			<Feather name={icon} size={iconSize.lg} color={active ? t.accent : t.textPrimary} />
 		</Pressable>
 	);
 }

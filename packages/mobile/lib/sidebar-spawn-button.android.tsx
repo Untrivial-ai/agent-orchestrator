@@ -17,7 +17,7 @@ export function SidebarSpawnButton({ onPress }: { onPress: () => void }) {
 				{ backgroundColor: pressed ? t.accentTint : t.bgElevatedHover, borderColor: t.borderStrong },
 			]}
 		>
-			<Feather name="plus" size={iconSize.xl} color={t.textSecondary} />
+			<Feather name="plus" size={iconSize.xl} color={t.textPrimary} />
 		</Pressable>
 	);
 }
