@@ -6125,6 +6125,226 @@ paths:
         preview
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/research:
+    get:
+      operationId: listResearch
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListResearchRunsResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: List research runs requested by an orchestrator
+      tags:
+      - sessions
+    post:
+      operationId: startResearch
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartResearchRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResearchRunResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Start repository research with the project's researcher
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/research/{researchId}:
+    delete:
+      operationId: cancelResearch
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Research run identifier.
+        in: path
+        name: researchId
+        required: true
+        schema:
+          description: Research run identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResearchRunResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Cancel one research run
+      tags:
+      - sessions
+    get:
+      operationId: getResearch
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Research run identifier.
+        in: path
+        name: researchId
+        required: true
+        schema:
+          description: Research run identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResearchRunResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Get one research run and its result
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/research/{researchId}/approval:
+    post:
+      operationId: resolveResearchApproval
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      - description: Research run identifier.
+        in: path
+        name: researchId
+        required: true
+        schema:
+          description: Research run identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveResearchApprovalRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResearchRunResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Answer a researcher's provider approval request
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/restore:
     post:
       operationId: restoreSession
@@ -10940,6 +11160,15 @@ components:
       required:
       - reports
       type: object
+    ListResearchRunsResponse:
+      properties:
+        research:
+          items:
+            $ref: '#/components/schemas/ResearchRun'
+          type: array
+      required:
+      - research
+      type: object
     ListReviewsResponse:
       properties:
         reviewerActivityState:
@@ -11515,6 +11744,8 @@ components:
           items:
             type: string
           type: array
+        researcher:
+          $ref: '#/components/schemas/ResearcherConfig'
         reviewers:
           items:
             $ref: '#/components/schemas/DomainReviewerConfig'
@@ -11799,6 +12030,95 @@ components:
       - createdAt
       - repeatCount
       type: object
+    ResearchApproval:
+      properties:
+        options:
+          items:
+            $ref: '#/components/schemas/ResearchApprovalOption'
+          type: array
+        requestId:
+          type: string
+        summary:
+          type: string
+      required:
+      - requestId
+      - summary
+      - options
+      type: object
+    ResearchApprovalOption:
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+        label:
+          type: string
+      required:
+      - id
+      - label
+      - kind
+      type: object
+    ResearchRun:
+      properties:
+        agent:
+          type: string
+        agentConfig:
+          $ref: '#/components/schemas/AgentConfig'
+        approval:
+          $ref: '#/components/schemas/ResearchApproval'
+        createdAt:
+          format: date-time
+          type: string
+        error:
+          type: string
+        finishedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        id:
+          type: string
+        parentSessionId:
+          type: string
+        projectId:
+          type: string
+        prompt:
+          type: string
+        result:
+          type: string
+        startedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        status:
+          type: string
+      required:
+      - id
+      - parentSessionId
+      - projectId
+      - prompt
+      - agent
+      - agentConfig
+      - status
+      - createdAt
+      type: object
+    ResearchRunResponse:
+      properties:
+        research:
+          $ref: '#/components/schemas/ResearchRun'
+      required:
+      - research
+      type: object
+    ResearcherConfig:
+      properties:
+        agent:
+          type: string
+        agentConfig:
+          $ref: '#/components/schemas/AgentConfig'
+        enabled:
+          type: boolean
+      type: object
     ResolveCommentsResponse:
       properties:
         ok:
@@ -11829,6 +12149,16 @@ components:
           type: object
       required:
       - action
+      type: object
+    ResolveResearchApprovalRequest:
+      properties:
+        optionId:
+          type: string
+        requestId:
+          type: string
+      required:
+      - requestId
+      - optionId
       type: object
     RestoreReviewResponse:
       properties:
@@ -13004,6 +13334,14 @@ components:
           description: Named preview configuration. Optional when exactly one configuration
             exists.
           type: string
+      type: object
+    StartResearchRequest:
+      properties:
+        prompt:
+          description: Repository question for the configured researcher.
+          type: string
+      required:
+      - prompt
       type: object
     StartSessionInterfaceTransitionRequest:
       properties:

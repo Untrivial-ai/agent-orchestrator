@@ -296,6 +296,10 @@ type ChatStartConfig struct {
 	// Effort is an optional provider-advertised model tuning value; empty
 	// defers to the provider's configured default.
 	Effort string
+	// Mode is an optional provider-advertised session mode for background tasks.
+	Mode string
+	// OnApproval handles provider requests for short-lived background turns.
+	OnApproval func(context.Context, ChatEvent) (ChatDecision, error)
 	// Permissions is AO's existing per-session approval policy. Drivers map it
 	// onto their provider's native approval and sandbox settings.
 	Permissions PermissionMode
@@ -1033,6 +1037,12 @@ type ChatDriver interface {
 	// Resume reattaches to an existing one. It returns ErrChatResumeFailed
 	// rather than silently starting a new conversation.
 	Resume(ctx context.Context, cfg ChatResumeConfig) (ChatConversation, error)
+}
+
+// ChatDetachedHostTerminator cleans up an ephemeral provider host after a
+// daemon crash, when no live conversation handle remains to terminate.
+type ChatDetachedHostTerminator interface {
+	StopDetachedHost(context.Context, string, domain.SessionID) error
 }
 
 // ChatConversation is one live controller. Exactly one exists per Chat session,

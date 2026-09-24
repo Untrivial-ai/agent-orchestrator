@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
 	SessionsArchiveView,
@@ -35,6 +35,7 @@ import { demoBoardSessions } from "../lib/demo-board-sessions";
 import { isLinuxPlatform, isMacPlatform, usesBoardActionsInPanel } from "../lib/platform";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
+import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { RestoreUnavailableDialog } from "./RestoreUnavailableDialog";
 import { DaemonStartupLoader } from "./DaemonStartupLoader";
 import { useBoardPresentation } from "../hooks/useBoardPresentation";
@@ -108,6 +109,21 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 			)
 		: liveUsageBySession;
 	const orchestrator = projectId ? newestActiveOrchestrator(workspaces[0]?.sessions ?? []) : undefined;
+	const orchestratorId = orchestrator?.id;
+	const researchQuery = useQuery({
+		queryKey: ["research-runs", orchestratorId],
+		queryFn: async () => {
+			if (!orchestratorId) return [];
+			const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/research", {
+				params: { path: { sessionId: orchestratorId } },
+			});
+			if (error) throw new Error(apiErrorMessage(error));
+			return data?.research ?? [];
+		},
+		enabled: Boolean(projectId && orchestratorId && !orchestrator?.cloud),
+		refetchInterval: 5000,
+	});
+	const latestResearch = researchQuery.data?.[0];
 	const projectActions = useProjectOrchestratorAction({ projectId, project: workspace, orchestrator, source: "board" });
 	const { isProjectRestarting, isProvisioning } = projectActions;
 	const setProjectRestarting = useUiStore((state) => state.setProjectRestarting);
@@ -189,6 +205,23 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 						</div>
 					) : null}
 				</div>
+			) : null}
+
+			{researchQuery.isError ? (
+				<p className="mx-3 mt-3 text-xs text-error" role="alert">{t("inspector.research.loadFailed")}</p>
+			) : latestResearch && orchestratorId && projectId ? (
+				<button
+					type="button"
+					className="mx-3 mt-3 flex min-w-0 items-center gap-3 rounded-md border border-border bg-surface px-3 py-2 text-left text-xs"
+					onClick={() => void navigate({
+						to: "/projects/$projectId/sessions/$sessionId",
+						params: { projectId, sessionId: orchestratorId },
+					})}
+				>
+					<span className="shrink-0 font-semibold">{t("inspector.research.title")}</span>
+					<span className="min-w-0 flex-1 truncate">{latestResearch.prompt}</span>
+					<span className="shrink-0 text-muted-foreground" role="status">{latestResearch.status}</span>
+				</button>
 			) : null}
 
 			{/* Reserve only the collapsed archive bar. Expanded archive overlays the

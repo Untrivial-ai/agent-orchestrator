@@ -2134,5 +2134,21 @@
 	"executionContext.active": "activo",
 	"executionContext.configured": "configurado",
 	"executionContext.title": "contexto de ejecución",
-	"executionContext.loading": "cargando el contexto del proyecto…"
+	"executionContext.loading": "cargando el contexto del proyecto…",
+	"settings.models.researcherMode": "Modo del investigador",
+	"settings.models.researcherModel": "Modelo del investigador",
+	"settings.project.defaultResearcher": "Agente investigador predeterminado",
+	"settings.project.enableResearcher": "Activar investigador",
+	"settings.project.researcher": "Investigador",
+	"settings.project.researcherAgentRequired": "Selecciona un agente investigador antes de guardar.",
+	"settings.project.researcherApproval": "Aprobación del investigador",
+	"settings.project.selectResearcher": "Seleccionar agente investigador",
+	"settings.models.researcherRole": "Investigador",
+	"inspector.research.title": "Investigación",
+	"inspector.research.loadFailed": "No se pudieron cargar las investigaciones.",
+	"inspector.research.cancelFailed": "No se pudo cancelar la investigación.",
+	"inspector.research.approvalFailed": "No se pudo responder a la solicitud de aprobación.",
+	"inspector.research.approvalRequested": "El investigador solicita aprobación.",
+	"inspector.research.readReport": "Leer informe",
+	"inspector.research.cancel": "Cancelar investigación"
 }

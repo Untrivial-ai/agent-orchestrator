@@ -205,6 +205,9 @@ type Service struct {
 	titleRefinementSlots   chan struct{}
 	titleRefinementMu      sync.Mutex
 	titleRefinementCancels map[domain.SessionID]context.CancelFunc
+	researchMu             sync.Mutex
+	researchCancels        map[string]context.CancelFunc
+	researchApprovals      map[string]*pendingResearchApproval
 }
 
 // SetChatProviderPreserver wires the live Chat lifetime observation after both
@@ -767,6 +770,7 @@ func restoreModeView(mode sessionmanager.RestoreMode) RestoreModeView {
 // Kill delegates terminal intent and teardown to the internal manager.
 func (s *Service) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
 	s.cancelTitleRefinement(id)
+	s.cancelResearchByParent(ctx, id)
 	freed, err := s.manager.Kill(ctx, id)
 	return freed, toAPIError(err)
 }

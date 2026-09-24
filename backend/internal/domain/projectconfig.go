@@ -49,6 +49,8 @@ type ProjectConfig struct {
 	// Worker and Orchestrator are role-specific harness/agent-config overrides.
 	Worker       RoleOverride `json:"worker,omitempty"`
 	Orchestrator RoleOverride `json:"orchestrator,omitempty"`
+	// Researcher configures optional, orchestrator-requested repository research.
+	Researcher ResearcherConfig `json:"researcher,omitempty"`
 
 	// Reviewers names the agent(s) that review a worker's PR when a review is
 	// triggered. It is configured independently of the Worker override; an empty
@@ -124,6 +126,13 @@ type RoleOverride struct {
 	AgentConfig AgentConfig  `json:"agentConfig,omitempty"`
 }
 
+// ResearcherConfig selects the agent and tuning for short-lived research.
+type ResearcherConfig struct {
+	Enabled     bool         `json:"enabled,omitempty"`
+	Harness     AgentHarness `json:"agent,omitempty"`
+	AgentConfig AgentConfig  `json:"agentConfig,omitempty"`
+}
+
 const (
 	// DefaultBranchAuto tells callers to infer the Git default branch for each
 	// repository instead of naming one branch for the whole project.
@@ -191,6 +200,18 @@ func (c ProjectConfig) Validate() error {
 		if err := ro.AgentConfig.Validate(); err != nil {
 			return fmt.Errorf("%s.%w", role, err)
 		}
+	}
+	if c.Researcher.Enabled && c.Researcher.Harness == "" {
+		return fmt.Errorf("researcher.agent: required when researcher is enabled")
+	}
+	if c.Researcher.Harness != "" && !c.Researcher.Harness.IsKnown() {
+		return fmt.Errorf("researcher.agent: unknown harness %q", c.Researcher.Harness)
+	}
+	if err := c.Researcher.AgentConfig.Validate(); err != nil {
+		return fmt.Errorf("researcher.%w", err)
+	}
+	if c.Researcher.Enabled && c.Researcher.Harness != HarnessCodex && c.Researcher.AgentConfig.Effort != "" {
+		return fmt.Errorf("researcher.agentConfig.effort: unsupported by %s", c.Researcher.Harness)
 	}
 	for _, s := range c.Symlinks {
 		if err := validateRepoRelative(s); err != nil {

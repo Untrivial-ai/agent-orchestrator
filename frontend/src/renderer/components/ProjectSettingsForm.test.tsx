@@ -211,6 +211,45 @@ beforeEach(() => {
 });
 
 describe("ProjectSettingsForm", () => {
+	it("saves independently selected researcher model, effort and approval", async () => {
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/agents/readiness") return agentCatalogResponse;
+			if (path === "/api/v1/settings") return { data: { chatHarnesses: ["codex", "claude-code"] } };
+			if (path === "/api/v1/agents/{agent}/models") return { data: {
+				agent: "codex", selectionMode: "catalog", allowCustom: false,
+				models: [{ id: "chosen-research-model", label: "Research Model", isDefault: true, efforts: ["low", "high"] }],
+			} };
+			return { data: { status: "ok", project: {
+				id: "proj-1", name: "Project One", kind: "single_repo", path: "/repo/project-one", repo: "", defaultBranch: "main",
+				config: {
+					worker: { agent: "codex", agentConfig: { model: "worker-model" } },
+					orchestrator: { agent: "claude-code" },
+					researcher: { enabled: true, agent: "codex", agentConfig: { model: "chosen-research-model", effort: "high" } },
+				},
+			} } };
+		});
+		renderSettings("proj-1", undefined, "agents");
+		const picker = await screen.findByRole("button", { name: "Researcher model" });
+		expect(picker).toHaveTextContent("Research Model · High");
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
+		await chooseOption(screen.getByRole("button", { name: "Researcher approval" }), "Bypass permissions");
+		submitSettings();
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		const config = putMock.mock.calls[0][1].body.config;
+		expect(config.researcher).toEqual({ enabled: true, agent: "codex", agentConfig: { model: "chosen-research-model", effort: "low", permissions: "bypass-permissions" } });
+		expect(config.worker.agentConfig.model).toBe("worker-model");
+		expect(config.orchestrator.agent).toBe("claude-code");
+	});
+
+	it.each(["scratch", "workspace"])("does not offer research on unsupported %s projects", async (kind) => {
+		mockProject({ id: "proj-1", name: "Project One", kind, path: "/repo/project-one", config: { worker: { agent: "codex" }, orchestrator: { agent: "codex" } } });
+		renderSettings("proj-1", undefined, "agents");
+		await screen.findByRole("button", { name: "Default worker agent" });
+		expect(screen.queryByRole("switch", { name: "Enable researcher" })).not.toBeInTheDocument();
+	});
+
 	it.each([
 		{ field: "Default worker agent", selectedAgent: "codex", selectedLabel: "Codex" },
 		{ field: "Default orchestrator agent", selectedAgent: "claude-code", selectedLabel: "Claude Code" },
@@ -274,7 +313,7 @@ describe("ProjectSettingsForm", () => {
 		await waitFor(() =>
 			expect(ensureAgentReadinessMock).toHaveBeenCalledWith(
 				expect.objectContaining({
-					agentIds: ["codex", "claude-code", ""],
+					agentIds: ["codex", "claude-code", "", ""],
 					enabled: true,
 				}),
 			),

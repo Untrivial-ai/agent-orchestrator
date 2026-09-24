@@ -24,7 +24,9 @@ func (s *Service) RunBackgroundTask(ctx context.Context, harness domain.AgentHar
 		return "", fmt.Errorf("background task driver for %s: %w", harness, err)
 	}
 
-	cfg.SessionID = domain.SessionID("background-" + s.newID())
+	if cfg.SessionID == "" {
+		cfg.SessionID = domain.SessionID("background-" + s.newID())
+	}
 	cfg.ProviderScopeID = s.newID()
 	cfg.ProviderIDsScoped = true
 	cfg.Ephemeral = true
@@ -37,6 +39,15 @@ func (s *Service) RunBackgroundTask(ctx context.Context, harness domain.AgentHar
 			err = fmt.Errorf("stop background %s task: %w", harness, cleanupErr)
 		}
 	}()
+	if cfg.Mode != "" {
+		controller, ok := conversation.(ports.ChatConfigOptionController)
+		if !ok {
+			return "", fmt.Errorf("background %s task cannot select mode %q", harness, cfg.Mode)
+		}
+		if _, err := controller.SetConfigOption(ctx, "mode", ports.ChatConfigOptionValue{Select: cfg.Mode}); err != nil {
+			return "", fmt.Errorf("set background %s mode %q: %w", harness, cfg.Mode, err)
+		}
+	}
 
 	turn, err := conversation.SendTurn(ctx, ports.ChatUserMessage{
 		Text:   prompt,
@@ -68,8 +79,19 @@ func (s *Service) RunBackgroundTask(ctx context.Context, harness domain.AgentHar
 				if text := strings.TrimSpace(event.Text); text != "" {
 					answer = text
 				}
-			case ports.ChatEventApprovalRequested, ports.ChatEventInputRequested:
-				return "", errors.New("background task requested user interaction")
+			case ports.ChatEventApprovalRequested:
+				if cfg.OnApproval == nil {
+					return "", errors.New("background task requested approval")
+				}
+				decision, err := cfg.OnApproval(ctx, event)
+				if err != nil {
+					return "", err
+				}
+				if err := conversation.ResolveRequest(ctx, event.RequestID, decision); err != nil {
+					return "", fmt.Errorf("resolve background approval: %w", err)
+				}
+			case ports.ChatEventInputRequested:
+				return "", errors.New("background task requested structured user input")
 			case ports.ChatEventError:
 				if event.Err != nil {
 					return "", event.Err
@@ -86,4 +108,17 @@ func (s *Service) RunBackgroundTask(ctx context.Context, harness domain.AgentHar
 			}
 		}
 	}
+}
+
+// StopBackgroundTask terminates a detached ephemeral host after daemon restart.
+func (s *Service) StopBackgroundTask(ctx context.Context, harness domain.AgentHarness, dataDir string, id domain.SessionID) error {
+	driver, err := s.drivers.Driver(harness)
+	if err != nil {
+		return err
+	}
+	stopper, ok := driver.(ports.ChatDetachedHostTerminator)
+	if !ok {
+		return ports.ErrChatUnsupported
+	}
+	return stopper.StopDetachedHost(ctx, dataDir, id)
 }

@@ -92,6 +92,7 @@ import {
 } from "../lib/session-reviews";
 
 type ProjectConfig = components["schemas"]["ProjectConfig"];
+type ResearchRun = components["schemas"]["ResearchRun"];
 type OpenReviewerTerminal = (target: { handleId: string; harness: string }) => void;
 
 export type { InspectorView } from "@aoagents/product-ui";
@@ -372,7 +373,12 @@ const SummaryView = memo(function SummaryView({
 				</div>
 			}
 			pullRequestTitle={prSectionTitle}
-			workers={showWorkers ? <OrchestratorChildrenSection session={session} /> : undefined}
+			workers={session.kind === "orchestrator" ? (
+				<>
+					{showWorkers && <OrchestratorChildrenSection session={session} />}
+					{!session.cloud && <ResearchRunsSection sessionId={session.id} />}
+				</>
+			) : undefined}
 			usage={
 				showUsageError ? (
 					<Section title={t("inspector.usage.title")}>
@@ -389,6 +395,79 @@ const SummaryView = memo(function SummaryView({
 		/>
 	);
 });
+
+function ResearchRunsSection({ sessionId }: { sessionId: string }) {
+	const { t } = useTranslation();
+	const queryClient = useQueryClient();
+	const query = useQuery({
+		queryKey: ["research-runs", sessionId],
+		queryFn: async () => {
+			const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/research", {
+				params: { path: { sessionId } },
+			});
+			if (error) throw new Error(apiErrorMessage(error));
+			return (data?.research ?? []) as ResearchRun[];
+		},
+		refetchInterval: 5000,
+	});
+	const cancel = useMutation({
+		mutationFn: async (researchId: string) => {
+			const { error } = await apiClient.DELETE("/api/v1/sessions/{sessionId}/research/{researchId}", {
+				params: { path: { sessionId, researchId } },
+			});
+			if (error) throw new Error(apiErrorMessage(error));
+		},
+		onSuccess: () => queryClient.invalidateQueries({ queryKey: ["research-runs", sessionId] }),
+	});
+	const resolve = useMutation({
+		mutationFn: async ({ researchId, requestId, optionId }: { researchId: string; requestId: string; optionId: string }) => {
+			const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/research/{researchId}/approval", {
+				params: { path: { sessionId, researchId } },
+				body: { requestId, optionId },
+			});
+			if (error) throw new Error(apiErrorMessage(error));
+		},
+		onSuccess: () => queryClient.invalidateQueries({ queryKey: ["research-runs", sessionId] }),
+	});
+	if (!query.data?.length && !query.isError) return null;
+	return (
+		<Section title={t("inspector.research.title")}>
+			{query.isError && <p role="alert" className="text-xs text-error">{t("inspector.research.loadFailed")}</p>}
+			{cancel.isError && <p role="alert" className="text-xs text-error">{cancel.error instanceof Error ? cancel.error.message : t("inspector.research.cancelFailed")}</p>}
+			{resolve.isError && <p role="alert" className="text-xs text-error">{resolve.error instanceof Error ? resolve.error.message : t("inspector.research.approvalFailed")}</p>}
+			<div className="flex flex-col gap-3">
+				{query.data?.map((run) => (
+					<div key={run.id} className="rounded-md border border-(--color-border-settings-input) p-3 text-xs">
+						<p className="font-medium">{run.prompt}</p>
+						<p className="mt-1 text-settings-muted">
+							{run.agent} · {run.agentConfig.model || t("settings.models.providerDefault")}
+							{run.agentConfig.effort ? ` · ${run.agentConfig.effort}` : ""} · {run.status}
+						</p>
+						{run.error && <p role="alert" className="mt-2 text-error">{run.error}</p>}
+						{run.approval && (
+							<div className="mt-2 rounded border border-(--color-border-settings-input) p-2">
+								<p>{run.approval.summary || t("inspector.research.approvalRequested")}</p>
+								<div className="mt-2 flex flex-wrap gap-2">
+									{run.approval.options.map((option) => (
+										<button key={option.id} type="button" className="rounded border border-(--color-border-settings-input) px-2 py-1" disabled={resolve.isPending} onClick={() => resolve.mutate({ researchId: run.id, requestId: run.approval!.requestId, optionId: option.id })}>
+											{option.label || option.kind || option.id}
+										</button>
+									))}
+								</div>
+							</div>
+						)}
+						{run.result && <details className="mt-2"><summary className="cursor-pointer">{t("inspector.research.readReport")}</summary><div className="prose prose-sm mt-2 max-w-none"><ReactMarkdown remarkPlugins={[remarkGfm]}>{run.result}</ReactMarkdown></div></details>}
+						{(run.status === "queued" || run.status === "running") && (
+							<button type="button" className="mt-2 text-error underline" disabled={cancel.isPending} onClick={() => cancel.mutate(run.id)}>
+								{t("inspector.research.cancel")}
+							</button>
+						)}
+					</div>
+				))}
+			</div>
+		</Section>
+	);
+}
 
 const ReviewsView = memo(function ReviewsView({
 	session,

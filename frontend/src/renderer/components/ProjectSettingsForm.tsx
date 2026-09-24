@@ -23,6 +23,7 @@ import {
 } from "../hooks/useAgentModelsQuery";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { useSettings } from "../hooks/useSettings";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
 import { OrchestratorSpawnError, spawnOrchestrator } from "../lib/spawn-orchestrator";
@@ -142,6 +143,12 @@ function SettingsBody({
 		sessionPrefix: config.sessionPrefix ?? "",
 		workerAgent: config.worker?.agent ?? "",
 		orchestratorAgent: config.orchestrator?.agent ?? "",
+		researcherEnabled: config.researcher?.enabled ?? false,
+		researcherAgent: config.researcher?.agent ?? "",
+		researcherModel: config.researcher?.agentConfig?.model ?? "",
+		researcherMode: config.researcher?.agentConfig?.mode ?? "",
+		researcherEffort: config.researcher?.agentConfig?.effort ?? "",
+		researcherPermissions: config.researcher?.agentConfig?.permissions ?? "",
 		workerModel: config.worker?.agentConfig?.model ?? config.agentConfig?.model ?? "",
 		workerEffort: config.worker?.agentConfig?.effort ?? config.agentConfig?.effort ?? "",
 		workerPermissions: config.worker?.agentConfig?.permissions ?? config.agentConfig?.permissions ?? "",
@@ -164,14 +171,15 @@ function SettingsBody({
 	const [showSaving, setShowSaving] = useState(false);
 	const [replacementError, setReplacementError] = useState<string | null>(null);
 	const [validationError, setValidationError] = useState<string | null>(null);
-	const [tuningValidity, setTuningValidity] = useState({ worker: true, orchestrator: true, reviewer: true });
+	const [tuningValidity, setTuningValidity] = useState({ worker: true, orchestrator: true, researcher: true, reviewer: true });
 	const initialOrchestratorAgent = config.orchestrator?.agent ?? "";
 	const missingRequiredAgent = form.workerAgent === "" || form.orchestratorAgent === "";
 	const agentsQuery = useAgentReadinessQuery();
+	const { settings } = useSettings();
 	useEnsureAgentReadiness();
 	useEnsureAgentReadiness({
-		agentIds: [form.workerAgent, form.orchestratorAgent, form.reviewerHarness],
-		enabled: form.workerAgent !== "" || form.orchestratorAgent !== "" || form.reviewerHarness !== "",
+		agentIds: [form.workerAgent, form.orchestratorAgent, form.researcherEnabled ? form.researcherAgent : "", form.reviewerHarness],
+		enabled: form.workerAgent !== "" || form.orchestratorAgent !== "" || (form.researcherEnabled && form.researcherAgent !== "") || form.reviewerHarness !== "",
 	});
 	const agentCatalog = agentsQuery.data;
 
@@ -248,6 +256,17 @@ function SettingsBody({
 								form.orchestratorMode,
 								form.orchestratorEffort,
 								form.orchestratorPermissions,
+							),
+						},
+						researcher: {
+							enabled: form.researcherEnabled,
+							agent: form.researcherAgent || undefined,
+							agentConfig: buildRoleAgentConfig(
+								config.researcher?.agentConfig,
+								form.researcherModel,
+								form.researcherMode,
+								form.researcherAgent === "codex" ? form.researcherEffort : "",
+								form.researcherPermissions,
 							),
 						},
 						agentConfig: blankToUndefined({
@@ -402,7 +421,11 @@ function SettingsBody({
 					);
 					return;
 				}
-				if (!tuningValidity.worker || !tuningValidity.orchestrator || !tuningValidity.reviewer) {
+				if (form.researcherEnabled && !form.researcherAgent) {
+					setValidationError(t("settings.project.researcherAgentRequired"));
+					return;
+				}
+				if (!tuningValidity.worker || !tuningValidity.orchestrator || (form.researcherEnabled && !tuningValidity.researcher) || !tuningValidity.reviewer) {
 					setValidationError(t("settings.project.tuningInvalid"));
 					return;
 				}
@@ -529,6 +552,54 @@ function SettingsBody({
 							missingRequiredAgent ? t("settings.project.agentsRequired") : null
 						}
 					/>
+					{(project.kind === "single_repo" || !project.kind) && (
+						<ProjectSettingsSection title={t("settings.project.researcher")} grouped>
+							<SettingsRow label={t("settings.project.enableResearcher")}>
+								<Switch
+									aria-label={t("settings.project.enableResearcher")}
+									checked={form.researcherEnabled}
+									onCheckedChange={(researcherEnabled) => setForm((f) => ({ ...f, researcherEnabled }))}
+								/>
+							</SettingsRow>
+							{form.researcherEnabled && (
+								<>
+									<RequiredAgentField
+										id="researcherAgent"
+										variant="settings-row"
+										value={form.researcherAgent}
+										placeholder={t("settings.project.selectResearcher")}
+										label={t("settings.project.defaultResearcher")}
+										agents={agentCatalog?.agents.filter((agent) => settings?.chatHarnesses?.includes(agent.id)) ?? []}
+										disabled={agentCatalog === undefined || settings?.chatHarnesses === undefined}
+										invalid={validationError !== null && form.researcherAgent === ""}
+										onChange={(researcherAgent) => {
+											setTuningValidity((value) => ({ ...value, researcher: true }));
+											setForm((f) => ({ ...f, researcherAgent, researcherModel: "", researcherMode: "", researcherEffort: "" }));
+										}}
+									/>
+									<AgentModelField
+										role="researcher"
+										agentId={form.researcherAgent}
+										projectId={projectId}
+										model={form.researcherModel}
+										mode={form.researcherMode}
+										effort={form.researcherEffort}
+										onModelChange={(researcherModel) => setForm((f) => ({ ...f, researcherModel }))}
+										onModeChange={(researcherMode) => setForm((f) => ({ ...f, researcherMode }))}
+										onEffortChange={(researcherEffort) => setForm((f) => ({ ...f, researcherEffort }))}
+										onValidityChange={(valid) => setTuningValidity((value) => ({ ...value, researcher: valid }))}
+									/>
+									<SettingsRow label={t("settings.project.researcherApproval")}>
+										<PermissionModeSelect
+											ariaLabel={t("settings.project.researcherApproval")}
+											value={form.researcherPermissions}
+											onChange={(researcherPermissions) => setForm((f) => ({ ...f, researcherPermissions }))}
+										/>
+									</SettingsRow>
+								</>
+							)}
+						</ProjectSettingsSection>
+					)}
 				{!isScratchProject && (
 					<ProjectSettingsSection title={t("settings.project.reviewer")} grouped>
 						<SettingsRow label={t("settings.project.defaultReviewer")}>
@@ -684,7 +755,7 @@ function AgentModelField({
 	onEffortChange,
 	onValidityChange,
 }: {
-	role: "worker" | "orchestrator" | "reviewer";
+	role: "worker" | "orchestrator" | "researcher" | "reviewer";
 	agentId: string;
 	projectId: string;
 	model: string;
@@ -806,7 +877,7 @@ function AgentModelField({
 	);
 }
 
-function PermissionModeSelect({ ariaLabel, value, onChange }: { ariaLabel: string; value: string; onChange: (value: string) => void }) {
+function PermissionModeSelect({ ariaLabel, value, onChange, disabled }: { ariaLabel: string; value: string; onChange: (value: string) => void; disabled?: boolean }) {
 	const { t } = useTranslation();
 	const options = [
 		{ value: "__default__", label: `${t("settings.project.permissionAuto")} (${t("settings.project.default")})` },
@@ -826,6 +897,7 @@ function PermissionModeSelect({ ariaLabel, value, onChange }: { ariaLabel: strin
 	return (
 		<SettingsOptionMenu
 			aria-label={ariaLabel}
+			disabled={disabled}
 			value={value || "__default__"}
 			options={options}
 			onChange={(v) => onChange(v === "__default__" ? "" : v)}

@@ -306,6 +306,9 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		// coverage; partial callbacks cannot prove that silence is abnormal.
 		SignalCapable: activitydispatch.FullySupportsHarness,
 	})
+	if err := sessionSvc.RecoverResearch(ctx); err != nil {
+		return nil, nil, nil, fmt.Errorf("recover research: %w", err)
+	}
 	// Triggering a review spawns a reviewer over the worker's worktree, resolved
 	// from the reviewer registry (distinct from the worker agent set). The
 	// reviewer posts its review to the PR itself, so the service needs no SCM
@@ -531,6 +534,7 @@ type chatLauncher struct{ svc *chatsvc.Service }
 var _ sessionmanager.ChatLauncher = chatLauncher{}
 var _ interface {
 	RunBackgroundTask(context.Context, domain.AgentHarness, ports.ChatStartConfig, string) (string, error)
+	StopBackgroundTask(context.Context, domain.AgentHarness, string, domain.SessionID) error
 	ArmChatHandoff(context.Context, domain.SessionID, domain.SessionInterfaceTransitionPolicy) error
 	PrepareChatHandoff(context.Context, domain.SessionID, domain.SessionInterfaceTransitionPolicy) error
 	AbortChatHandoff(domain.SessionID)
@@ -607,6 +611,10 @@ func (c chatLauncher) StartChat(ctx context.Context, cfg sessionmanager.ChatStar
 
 func (c chatLauncher) RunBackgroundTask(ctx context.Context, harness domain.AgentHarness, cfg ports.ChatStartConfig, prompt string) (string, error) {
 	return c.svc.RunBackgroundTask(ctx, harness, cfg, prompt)
+}
+
+func (c chatLauncher) StopBackgroundTask(ctx context.Context, harness domain.AgentHarness, dataDir string, id domain.SessionID) error {
+	return c.svc.StopBackgroundTask(ctx, harness, dataDir, id)
 }
 
 func (c chatLauncher) StartChatTurn(ctx context.Context, id domain.SessionID, text string) (string, error) {

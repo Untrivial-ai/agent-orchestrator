@@ -2086,5 +2086,21 @@
 	"executionContext.active": "活跃",
 	"executionContext.configured": "已配置",
 	"executionContext.title": "执行上下文",
-	"executionContext.loading": "正在加载项目上下文…"
+	"executionContext.loading": "正在加载项目上下文…",
+	"settings.models.researcherMode": "研究员模式",
+	"settings.models.researcherModel": "研究员模型",
+	"settings.project.defaultResearcher": "默认研究员代理",
+	"settings.project.enableResearcher": "启用研究员",
+	"settings.project.researcher": "研究员",
+	"settings.project.researcherAgentRequired": "请先选择研究员代理，再保存。",
+	"settings.project.researcherApproval": "研究员审批",
+	"settings.project.selectResearcher": "选择研究员代理",
+	"settings.models.researcherRole": "研究员",
+	"inspector.research.title": "研究",
+	"inspector.research.loadFailed": "无法加载研究任务。",
+	"inspector.research.cancelFailed": "无法取消研究。",
+	"inspector.research.approvalFailed": "无法回应审批请求。",
+	"inspector.research.approvalRequested": "研究员正在请求审批。",
+	"inspector.research.readReport": "阅读报告",
+	"inspector.research.cancel": "取消研究"
 }

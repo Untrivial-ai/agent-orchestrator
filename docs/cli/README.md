@@ -217,6 +217,16 @@ PR actions are available through `ao pr merge` and
 `ao review trigger` (also `execute` and `restart`), `ao review cancel` (also
 `stop`), and `ao review submit`.
 
+Project Settings can enable a researcher and select its agent, model or mode,
+Codex reasoning effort, and approval policy independently of the worker and
+orchestrator. From an orchestrator session, `ao research "question"` waits for a
+repository report; `--detach` prints a run ID. Use `ao research ls`,
+`ao research get <id> [--wait]`, and `ao research cancel <id>` to follow or stop
+it. If the provider asks for approval, the command prints its request ID and
+offered option IDs; answer with
+`ao research approve <id> <request-id> <option-id>`. These commands accept `--session <orchestrator-id>` outside the
+session. Research currently supports single-repository projects.
+
 ## Configuration
 
 The CLI and daemon share the same environment-driven config:

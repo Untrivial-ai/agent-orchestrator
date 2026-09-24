@@ -2104,5 +2104,21 @@
 	"executionContext.active": "aktiv",
 	"executionContext.configured": "konfiguriert",
 	"executionContext.title": "Ausführungskontext",
-	"executionContext.loading": "Projektkontext wird geladen…"
+	"executionContext.loading": "Projektkontext wird geladen…",
+	"settings.models.researcherMode": "Recherchemodus",
+	"settings.models.researcherModel": "Recherchemodell",
+	"settings.project.defaultResearcher": "Standard-Rechercheagent",
+	"settings.project.enableResearcher": "Rechercheagent aktivieren",
+	"settings.project.researcher": "Rechercheagent",
+	"settings.project.researcherAgentRequired": "Vor dem Speichern einen Rechercheagenten auswählen.",
+	"settings.project.researcherApproval": "Recherchefreigabe",
+	"settings.project.selectResearcher": "Rechercheagent auswählen",
+	"settings.models.researcherRole": "Rechercheagent",
+	"inspector.research.title": "Recherche",
+	"inspector.research.loadFailed": "Recherchen konnten nicht geladen werden.",
+	"inspector.research.cancelFailed": "Recherche konnte nicht abgebrochen werden.",
+	"inspector.research.approvalFailed": "Freigabeanfrage konnte nicht beantwortet werden.",
+	"inspector.research.approvalRequested": "Der Rechercheagent bittet um Freigabe.",
+	"inspector.research.readReport": "Bericht lesen",
+	"inspector.research.cancel": "Recherche abbrechen"
 }

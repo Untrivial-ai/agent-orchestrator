@@ -217,6 +217,10 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"DomainContainerReapConfig":       "ContainerReapConfig",
 	"DomainAgentConfig":               "AgentConfig",
 	"DomainRoleOverride":              "RoleOverride",
+	"DomainResearcherConfig":          "ResearcherConfig",
+	"DomainResearchRun":               "ResearchRun",
+	"DomainResearchApproval":          "ResearchApproval",
+	"DomainResearchApprovalOption":    "ResearchApprovalOption",
 	// httpd/controllers (wire envelopes)
 	"ControllersListProjectsResponse":                     "ListProjectsResponse",
 	"ControllersProjectResponse":                          "ProjectResponse",
@@ -234,6 +238,11 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersSpawnSessionRequest":                      "SpawnSessionRequest",
 	"ControllersSpawnSessionResponse":                     "SpawnSessionResponse",
 	"ControllersSessionResponse":                          "SessionResponse",
+	"ControllersResearchIDParam":                          "ResearchIDParam",
+	"ControllersStartResearchRequest":                     "StartResearchRequest",
+	"ControllersResolveResearchApprovalRequest":           "ResolveResearchApprovalRequest",
+	"ControllersResearchRunResponse":                      "ResearchRunResponse",
+	"ControllersListResearchRunsResponse":                 "ListResearchRunsResponse",
 	"ControllersSessionPreviewResponse":                   "SessionPreviewResponse",
 	"ControllersSetSessionPreviewRequest":                 "SetSessionPreviewRequest",
 	"ControllersStartPreviewServerRequest":                "StartPreviewServerRequest",
@@ -1985,6 +1994,36 @@ func projectOperations() []operation {
 
 func sessionOperations() []operation {
 	return []operation{
+		{
+			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/research", id: "startResearch", tag: "sessions",
+			summary:    "Start repository research with the project's researcher",
+			pathParams: []any{controllers.SessionIDParam{}}, reqBody: controllers.StartResearchRequest{},
+			resps: []respUnit{{http.StatusCreated, controllers.ResearchRunResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/research", id: "listResearch", tag: "sessions",
+			summary:    "List research runs requested by an orchestrator",
+			pathParams: []any{controllers.SessionIDParam{}},
+			resps:      []respUnit{{http.StatusOK, controllers.ListResearchRunsResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/research/{researchId}", id: "getResearch", tag: "sessions",
+			summary:    "Get one research run and its result",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.ResearchIDParam{}},
+			resps:      []respUnit{{http.StatusOK, controllers.ResearchRunResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/sessions/{sessionId}/research/{researchId}", id: "cancelResearch", tag: "sessions",
+			summary:    "Cancel one research run",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.ResearchIDParam{}},
+			resps:      []respUnit{{http.StatusOK, controllers.ResearchRunResponse{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/research/{researchId}/approval", id: "resolveResearchApproval", tag: "sessions",
+			summary:    "Answer a researcher's provider approval request",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.ResearchIDParam{}}, reqBody: controllers.ResolveResearchApprovalRequest{},
+			resps: []respUnit{{http.StatusOK, controllers.ResearchRunResponse{}}, {http.StatusBadRequest, envelope.APIError{}}, {http.StatusNotFound, envelope.APIError{}}, {http.StatusConflict, envelope.APIError{}}, {http.StatusInternalServerError, envelope.APIError{}}},
+		},
 		{
 			method: http.MethodGet, path: "/api/v1/sessions", id: "listSessions", tag: "sessions",
 			summary:    "List sessions",

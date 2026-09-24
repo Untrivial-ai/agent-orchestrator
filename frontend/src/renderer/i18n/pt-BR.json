@@ -2134,5 +2134,21 @@
 	"executionContext.active": "ativo",
 	"executionContext.configured": "configurado",
 	"executionContext.title": "contexto de execução",
-	"executionContext.loading": "carregando o contexto do projeto…"
+	"executionContext.loading": "carregando o contexto do projeto…",
+	"settings.models.researcherMode": "Modo do pesquisador",
+	"settings.models.researcherModel": "Modelo do pesquisador",
+	"settings.project.defaultResearcher": "Agente pesquisador padrão",
+	"settings.project.enableResearcher": "Ativar pesquisador",
+	"settings.project.researcher": "Pesquisador",
+	"settings.project.researcherAgentRequired": "Selecione um agente pesquisador antes de salvar.",
+	"settings.project.researcherApproval": "Aprovação do pesquisador",
+	"settings.project.selectResearcher": "Selecionar agente pesquisador",
+	"settings.models.researcherRole": "Pesquisador",
+	"inspector.research.title": "Pesquisa",
+	"inspector.research.loadFailed": "Não foi possível carregar as pesquisas.",
+	"inspector.research.cancelFailed": "Não foi possível cancelar a pesquisa.",
+	"inspector.research.approvalFailed": "Não foi possível responder à solicitação de aprovação.",
+	"inspector.research.approvalRequested": "O pesquisador solicita aprovação.",
+	"inspector.research.readReport": "Ler relatório",
+	"inspector.research.cancel": "Cancelar pesquisa"
 }

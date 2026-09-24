@@ -2104,5 +2104,21 @@
 	"executionContext.active": "활성",
 	"executionContext.configured": "구성됨",
 	"executionContext.title": "실행 컨텍스트",
-	"executionContext.loading": "프로젝트 컨텍스트 로드 중…"
+	"executionContext.loading": "프로젝트 컨텍스트 로드 중…",
+	"settings.models.researcherMode": "리서처 모드",
+	"settings.models.researcherModel": "리서처 모델",
+	"settings.project.defaultResearcher": "기본 리서처 에이전트",
+	"settings.project.enableResearcher": "리서처 활성화",
+	"settings.project.researcher": "리서처",
+	"settings.project.researcherAgentRequired": "저장하기 전에 리서처 에이전트를 선택하세요.",
+	"settings.project.researcherApproval": "리서처 승인",
+	"settings.project.selectResearcher": "리서처 에이전트 선택",
+	"settings.models.researcherRole": "리서처",
+	"inspector.research.title": "조사",
+	"inspector.research.loadFailed": "조사를 불러올 수 없습니다.",
+	"inspector.research.cancelFailed": "조사를 취소할 수 없습니다.",
+	"inspector.research.approvalFailed": "승인 요청에 응답할 수 없습니다.",
+	"inspector.research.approvalRequested": "리서처가 승인을 요청합니다.",
+	"inspector.research.readReport": "보고서 읽기",
+	"inspector.research.cancel": "조사 취소"
 }

@@ -2104,5 +2104,21 @@
 	"executionContext.active": "アクティブ",
 	"executionContext.configured": "設定済み",
 	"executionContext.title": "実行コンテキスト",
-	"executionContext.loading": "プロジェクトコンテキストを読み込み中…"
+	"executionContext.loading": "プロジェクトコンテキストを読み込み中…",
+	"settings.models.researcherMode": "リサーチャーのモード",
+	"settings.models.researcherModel": "リサーチャーのモデル",
+	"settings.project.defaultResearcher": "既定のリサーチャーエージェント",
+	"settings.project.enableResearcher": "リサーチャーを有効にする",
+	"settings.project.researcher": "リサーチャー",
+	"settings.project.researcherAgentRequired": "保存する前にリサーチャーエージェントを選択してください。",
+	"settings.project.researcherApproval": "リサーチャーの承認",
+	"settings.project.selectResearcher": "リサーチャーエージェントを選択",
+	"settings.models.researcherRole": "リサーチャー",
+	"inspector.research.title": "調査",
+	"inspector.research.loadFailed": "調査を読み込めませんでした。",
+	"inspector.research.cancelFailed": "調査をキャンセルできませんでした。",
+	"inspector.research.approvalFailed": "承認リクエストに回答できませんでした。",
+	"inspector.research.approvalRequested": "リサーチャーが承認を求めています。",
+	"inspector.research.readReport": "レポートを読む",
+	"inspector.research.cancel": "調査をキャンセル"
 }

@@ -465,6 +465,25 @@ describe("project board with no sessions", () => {
 		expect(columnCount()).toBe(0);
 	});
 
+	it("shows the latest research run even when no worker exists", async () => {
+		respondWith([project], [orchestratorSession]);
+		const get = getMock.getMockImplementation()!;
+		getMock.mockImplementation((url: string) => url === "/api/v1/sessions/{sessionId}/research"
+			? { data: { research: [{ id: "research-1", prompt: "Inspect contact", status: "interrupted" }] } }
+			: get(url));
+		renderBoard(<SessionsBoard projectId="proj-1" />);
+
+		expect(await screen.findByText("No worker sessions yet")).toBeInTheDocument();
+		const researchButton = (await screen.findByText("Inspect contact")).closest("button");
+		expect(researchButton).not.toBeNull();
+		await userEvent.click(researchButton!);
+		expect(screen.getByRole("status")).toHaveTextContent("interrupted");
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId: "proj-1", sessionId: "proj-1-orchestrator" },
+		});
+	});
+
 	it("surfaces the daemon error when spawning the orchestrator fails", async () => {
 		respondWith([project], []);
 		spawnOrchestratorMock.mockRejectedValue(new Error("branch is already checked out in another worktree"));

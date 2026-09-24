@@ -198,6 +198,32 @@ type SessionIDParam struct {
 	SessionID string `path:"sessionId" description:"Session identifier, e.g. project-1."`
 }
 
+// ResearchIDParam is the {researchId} path parameter.
+type ResearchIDParam struct {
+	ResearchID string `path:"researchId" description:"Research run identifier."`
+}
+
+// StartResearchRequest contains the question for a new research run.
+type StartResearchRequest struct {
+	Prompt string `json:"prompt" description:"Repository question for the configured researcher."`
+}
+
+// ResolveResearchApprovalRequest selects one pending provider decision.
+type ResolveResearchApprovalRequest struct {
+	RequestID string `json:"requestId"`
+	OptionID  string `json:"optionId"`
+}
+
+// ResearchRunResponse wraps a single research run.
+type ResearchRunResponse struct {
+	Research domain.ResearchRun `json:"research"`
+}
+
+// ListResearchRunsResponse wraps an orchestrator's research runs.
+type ListResearchRunsResponse struct {
+	Research []domain.ResearchRun `json:"research"`
+}
+
 // PRNumberParam is the associated pull-request number in Files routes.
 type PRNumberParam struct {
 	PRNumber int `path:"prNumber" description:"Associated pull request number." minimum:"1"`

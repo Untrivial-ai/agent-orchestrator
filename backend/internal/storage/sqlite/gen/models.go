@@ -533,6 +533,24 @@ type ReportWorkerInterrupt struct {
 	LastInterruptedAt time.Time
 }
 
+type ResearchRun struct {
+	ID              string
+	ParentSessionID string
+	ProjectID       string
+	Prompt          string
+	Harness         string
+	Model           string
+	Effort          string
+	Mode            string
+	Permissions     string
+	Status          string
+	Result          string
+	Error           string
+	CreatedAt       time.Time
+	StartedAt       sql.NullTime
+	FinishedAt      sql.NullTime
+}
+
 type Review struct {
 	ID                     string
 	SessionID              domain.SessionID

@@ -119,6 +119,11 @@ type Driver struct {
 
 var _ ports.ChatDriver = (*Driver)(nil)
 
+// StopDetachedHost shuts down a background ACP host by session ID.
+func (d *Driver) StopDetachedHost(ctx context.Context, dataDir string, id domain.SessionID) error {
+	return persistenthost.Shutdown(ctx, dataDir, string(id))
+}
+
 // New returns an ACP Chat driver from a provider binding.
 func New(cfg Config, log *slog.Logger) *Driver {
 	if log == nil {
