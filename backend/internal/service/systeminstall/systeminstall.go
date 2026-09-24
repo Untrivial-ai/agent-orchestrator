@@ -208,7 +208,9 @@ const (
 	AgentOperationInstall AgentOperation = "install"
 	// AgentOperationReinstall requests an explicit rebuild of an existing installation.
 	AgentOperationReinstall AgentOperation = "reinstall"
+	// AgentOperationUpdate refreshes the installed agent CLI using its selected method.
 	AgentOperationUpdate    AgentOperation = "update"
+	// AgentOperationUninstall removes the installed agent CLI using its selected method.
 	AgentOperationUninstall AgentOperation = "uninstall"
 )
 

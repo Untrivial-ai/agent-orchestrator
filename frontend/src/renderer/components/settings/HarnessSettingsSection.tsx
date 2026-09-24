@@ -587,7 +587,7 @@ export function HarnessSettingsSection({
 							</div>
 
 			{active ? (
-				<span className="inline-flex items-center gap-1.5 text-xs text-settings-muted" role="status"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" />{t("settings.harness.working")}</span>
+				<span className="inline-flex items-center gap-1.5 text-xs text-settings-muted" role="status"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" />{job?.status === "installing" ? t("settings.harness.installing") : job?.status === "verifying" ? t("settings.harness.verifying") : t("settings.harness.working")}</span>
 							) : isInstalled ? (
 								<div className="flex shrink-0 items-center gap-2">
 								{showInstallationStatus ? <Button
