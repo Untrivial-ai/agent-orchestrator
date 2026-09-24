@@ -381,3 +381,43 @@ func TestSanitizeRemotePayloadDropsUnlistedReviewKeys(t *testing.T) {
 		t.Fatalf("pr_url survived sanitization: %#v", got)
 	}
 }
+
+// Person profiles are only written by the handle-carrying $set, so it must carry
+// the running version too, or the profile keeps a version from months ago.
+func TestPersonSetCarriesCurrentVersion(t *testing.T) {
+	sink := &PostHogSink{appVersion: "0.13.1-nightly.202609232348"}
+	props := sink.properties(ports.TelemetryEvent{
+		Name:    "ao.session.spawned",
+		Source:  "session_service",
+		Payload: map[string]any{"github_actor": "octocat"},
+	})
+	set, ok := props["$set"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties.$set type = %T, want map[string]any", props["$set"])
+	}
+	for key, want := range map[string]string{
+		"github_actor":    "octocat",
+		"app_version":     "0.13.1-nightly.202609232348",
+		"ao_version":      "0.13.1-nightly.202609232348",
+		"version_channel": "nightly",
+	} {
+		if set[key] != want {
+			t.Errorf("$set.%s = %#v, want %q", key, set[key], want)
+		}
+	}
+}
+
+// A dev build with no version stamps no version, rather than an empty string
+// that would overwrite a real one on the profile.
+func TestPersonSetOmitsVersionWhenUnknown(t *testing.T) {
+	props := (&PostHogSink{}).properties(ports.TelemetryEvent{
+		Name:    "ao.session.spawned",
+		Payload: map[string]any{"github_actor": "octocat"},
+	})
+	set, _ := props["$set"].(map[string]any)
+	for _, key := range []string{"app_version", "ao_version", "version_channel"} {
+		if _, ok := set[key]; ok {
+			t.Errorf("$set.%s present with no app version: %#v", key, set[key])
+		}
+	}
+}

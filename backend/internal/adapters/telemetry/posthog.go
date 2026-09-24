@@ -476,9 +476,18 @@ func (s *PostHogSink) properties(ev ports.TelemetryEvent) map[string]any {
 	// re-sending $set on every spawn would only multiply identified-event cost
 	// (see $process_person_profile above) against the 200 spawns/day the limiter
 	// allows. github_actor still rides every spawn as an event property, so
-	// activity breakdowns stay complete.
+	// activity breakdowns stay complete. The version rides the same $set because
+	// person profiles are otherwise never updated: without it the profile keeps
+	// whatever version an install reported before profiles were turned off. Once
+	// per process is enough, since an update restarts the daemon.
 	if actor, ok := props["github_actor"]; ok && s.personProfileSet.CompareAndSwap(false, true) {
-		props["$set"] = map[string]any{"github_actor": actor}
+		set := map[string]any{"github_actor": actor}
+		for _, key := range []string{"app_version", "ao_version", "version_channel"} {
+			if v, ok := props[key]; ok {
+				set[key] = v
+			}
+		}
+		props["$set"] = set
 		props["$process_person_profile"] = true
 	}
 	return props
