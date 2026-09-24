@@ -2041,6 +2041,50 @@ func TestSignInRequiredDiscoveryKeepsTheCachedCatalogAndRetryBudget(t *testing.T
 	}
 }
 
+func TestSignInOutsideAOReloadsACatalogThatLoadedEarlierTheSameDay(t *testing.T) {
+	cache := &fakeModelCache{}
+	discoverer := signInRequiredDiscoverer()
+	discoverer.signIn(ports.AgentModelInfo{ID: "model-one"})
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("kiro", "Kiro", nil)}, cache, nil, discoverer)
+	noon := time.Date(2026, 9, 24, 12, 0, 0, 0, time.Local)
+	svc.now = func() time.Time { return noon }
+
+	// Models load in the morning, then the user signs out and a refresh is skipped.
+	if _, err := svc.Models(context.Background(), "kiro", "", true); err != nil {
+		t.Fatal(err)
+	}
+	discoverer.signOut()
+	if _, err := svc.Models(context.Background(), "kiro", "", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// The user signs back in from a terminal; AO's auth probe is never called.
+	discoverer.signIn(ports.AgentModelInfo{ID: "model-two"})
+	noon = noon.Add(time.Hour)
+	read, err := svc.Models(context.Background(), "kiro", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.RefreshRecommended {
+		t.Fatal("same-day catalog skipped for sign-in is not due for revalidation")
+	}
+	// The cache-first read revalidates in the background.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, err := svc.Models(context.Background(), "kiro", "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Models) == 1 && got.Models[0].ID == "model-two" && got.Warning == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("catalog after signing in outside AO = %#v, want model-two without the sign-in warning", got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestOrdinaryDiscoveryFailureStillSpendsTheRetryBudget(t *testing.T) {
 	cache := &fakeModelCache{}
 	discoverer := &fakeModelDiscoverer{version: "v1", err: errors.New("kiro model discovery: exit status 1")}

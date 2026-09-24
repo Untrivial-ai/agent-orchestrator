@@ -594,10 +594,11 @@ func (s *Service) loadModels(ctx context.Context, agentID string, mode modelLoad
 // clearly signed out. That is not a failure: no retry budget is spent and no
 // retry timer is set. A cached catalog keeps its models but loses any earlier
 // failure marker, and a first load stores an idle placeholder. Both carry the
-// sign-in warning, so cache-first reads show it too. The record's last success
-// is unchanged, so it stays due for revalidation and the next picker read,
-// daemon start, or post-login auth probe (InvalidateModelCatalogs) loads the
-// real models once the agent reports a login.
+// sign-in warning, so cache-first reads show it too. The record's validation
+// times are cleared so it is due for revalidation regardless of when it last
+// loaded: a sign-in made outside AO (for example from a terminal) is picked up
+// by the next picker read or daemon start, not only by AO's own auth probe.
+// The refresh state stays idle because the picker shows a spinner for queued.
 func (s *Service) keepCatalogUntilSignIn(ctx context.Context, agentName string, cached decodedCatalog, hasCached bool, policy ports.AgentModelCatalog, version string, generation int64) ports.AgentModelCatalog {
 	catalog := cached.Catalog
 	if !hasCached {
@@ -605,6 +606,8 @@ func (s *Service) keepCatalogUntilSignIn(ctx context.Context, agentName string, 
 		catalog.BinaryVersion = version
 		catalog.InputFingerprint = version
 	}
+	catalog.ValidatedAt = time.Time{}
+	catalog.LastSuccessAt = nil
 	catalog.Stale = false
 	catalog.Warning = agentName + " is not signed in; sign in to load its models"
 	catalog.RefreshState = "idle"
