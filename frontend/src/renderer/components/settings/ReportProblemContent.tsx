@@ -5,11 +5,14 @@ import {
 	formatReportProblemDraft,
 	reportProblemDestinationUrl,
 	type ReportProblemDiagnostics,
+	type ReportProblemEmailProvider,
 	type ReportProblemOutput,
 } from "../../lib/report-problem";
 import { aoBridge } from "../../lib/bridge";
+import { isWindowsPlatform } from "../../lib/platform";
 import { captureRendererEvent } from "../../lib/telemetry";
 import { Button } from "../ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
 type DestinationIconProps = {
@@ -100,13 +103,13 @@ export function ReportProblemContent({ active }: { active: boolean }) {
 		setCopyError(null);
 	};
 
-	const copyDraft = async (output: ReportProblemOutput) => {
+	const copyDraft = async (output: ReportProblemOutput, emailProvider: ReportProblemEmailProvider = "system") => {
 		if (!canSubmit) return;
 		setCopyError(null);
 		const draft = formatReportProblemDraft(input, diagnostics, output);
 		try {
 			await aoBridge.clipboard.writeText(draft);
-			const destinationUrl = reportProblemDestinationUrl(input, diagnostics, output);
+			const destinationUrl = reportProblemDestinationUrl(input, diagnostics, output, emailProvider);
 			if (destinationUrl) {
 				await aoBridge.app.openExternal(destinationUrl);
 			}
@@ -174,26 +177,61 @@ export function ReportProblemContent({ active }: { active: boolean }) {
 					<p className="text-caption leading-4 text-success">{t("report.draftCopied", { label: copiedLabel })}</p>
 				) : null}
 				<div className="flex items-center gap-1.5">
-					{destinations.map((option) => (
-						<Tooltip key={option.value}>
-							<TooltipTrigger asChild>
-								<Button
-									type="button"
-									variant="footer"
-									className="size-(--size-settings-action-height) shrink-0 rounded-md! p-0"
-									disabled={!canSubmit}
-									aria-label={option.action}
-									onClick={() => {
-										if (!canSubmit) return;
-										void copyDraft(option.value);
-									}}
-								>
-									<option.icon className="size-icon-sm" aria-hidden="true" />
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent>{option.action}</TooltipContent>
-						</Tooltip>
-					))}
+					{destinations.map((option) => {
+						if (option.value === "email" && isWindowsPlatform()) {
+							return (
+								<DropdownMenu key={option.value}>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<DropdownMenuTrigger asChild>
+												<Button
+													type="button"
+													variant="footer"
+													className="size-(--size-settings-action-height) shrink-0 rounded-md! p-0"
+													disabled={!canSubmit}
+													aria-label={option.action}
+												>
+													<option.icon className="size-icon-sm" aria-hidden="true" />
+												</Button>
+											</DropdownMenuTrigger>
+										</TooltipTrigger>
+										<TooltipContent>{option.action}</TooltipContent>
+									</Tooltip>
+									<DropdownMenuContent align="end" side="top" className="w-52">
+										<DropdownMenuItem onSelect={() => void copyDraft("email", "system")}>
+											{t("report.emailSystem")}
+										</DropdownMenuItem>
+										<DropdownMenuItem onSelect={() => void copyDraft("email", "gmail")}>
+											{t("report.emailGmail")}
+										</DropdownMenuItem>
+										<DropdownMenuItem onSelect={() => void copyDraft("email", "outlook")}>
+											{t("report.emailOutlook")}
+										</DropdownMenuItem>
+									</DropdownMenuContent>
+								</DropdownMenu>
+							);
+						}
+						return (
+							<Tooltip key={option.value}>
+								<TooltipTrigger asChild>
+									<Button
+										type="button"
+										variant="footer"
+										className="size-(--size-settings-action-height) shrink-0 rounded-md! p-0"
+										disabled={!canSubmit}
+										aria-label={option.action}
+										onClick={() => {
+											if (!canSubmit) return;
+											void copyDraft(option.value);
+										}}
+									>
+										<option.icon className="size-icon-sm" aria-hidden="true" />
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent>{option.action}</TooltipContent>
+							</Tooltip>
+						);
+					})}
 				</div>
 			</div>
 		</div>

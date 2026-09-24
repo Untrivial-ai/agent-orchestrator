@@ -13,6 +13,7 @@ vi.mock("./spawn-orchestrator", () => ({
 			readonly code?: string,
 			readonly requestId?: string,
 			readonly status?: number,
+			readonly details?: Record<string, unknown>,
 		) {
 			super(message);
 		}
@@ -47,7 +48,7 @@ describe("restartProjectOrchestrator", () => {
 			onError,
 		});
 
-		expect(spawnMock).toHaveBeenCalledWith("proj-1", "restart", true, undefined);
+		expect(spawnMock).toHaveBeenCalledWith("proj-1", "restart", true, undefined, undefined);
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: workspaceQueryKey });
 		expect(setOrchestratorReplacementError).toHaveBeenNthCalledWith(1, "proj-1", {
 			message: "missing goose binary",
@@ -157,11 +158,44 @@ describe("restartProjectOrchestrator", () => {
 			mode: "tui",
 		});
 
-		expect(spawnMock).toHaveBeenCalledWith("proj-1", "restart", true, "tui");
+		expect(spawnMock).toHaveBeenCalledWith("proj-1", "restart", true, "tui", undefined);
 		expect(setOrchestratorReplacementError).toHaveBeenLastCalledWith("proj-1", {
 			message: "Claude Code is unavailable",
 			code: "CHAT_DRIVER_UNAVAILABLE",
 			requestId: "request-42",
+		});
+	});
+
+	it("forwards an approval override and preserves daemon error details", async () => {
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue();
+		const setOrchestratorReplacementError = vi.fn();
+		const details = { missingCapabilities: ["approvals"], allowedApprovalModes: ["bypass-permissions"] };
+		spawnMock.mockRejectedValue(
+			new OrchestratorSpawnError(
+				"chat needs approvals",
+				"SESSION_MODE_UNSUPPORTED",
+				"request-7",
+				400,
+				details,
+			),
+		);
+
+		await restartProjectOrchestrator({
+			projectId: "proj-1",
+			queryClient,
+			navigate: vi.fn(),
+			setProjectRestarting: vi.fn(),
+			setOrchestratorReplacementError,
+			approvalMode: "bypass-permissions",
+		});
+
+		expect(spawnMock).toHaveBeenCalledWith("proj-1", "restart", true, undefined, "bypass-permissions");
+		expect(setOrchestratorReplacementError).toHaveBeenLastCalledWith("proj-1", {
+			message: "chat needs approvals",
+			code: "SESSION_MODE_UNSUPPORTED",
+			requestId: "request-7",
+			details,
 		});
 	});
 });

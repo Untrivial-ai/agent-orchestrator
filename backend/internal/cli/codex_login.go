@@ -29,21 +29,28 @@ const (
 // the user an interactive choice of Codex-supported authentication methods
 // while CODEX_HOME points at AO's private pending account slot.
 func newCodexLoginCommand(ctx *commandContext) *cobra.Command {
-	return &cobra.Command{
+	var executable string
+	var useDefaultCredentialStore bool
+	cmd := &cobra.Command{
 		Use:    "codex-login",
 		Short:  "Sign a managed Codex account in (internal)",
 		Hidden: true,
 		Args:   noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return ctx.runCodexLogin(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return ctx.runCodexLogin(cmd.Context(), executable, useDefaultCredentialStore, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
+	cmd.Flags().StringVar(&executable, "executable", "", "resolved Codex executable (internal)")
+	cmd.Flags().BoolVar(&useDefaultCredentialStore, "use-default-credential-store", false, "respect the user's Codex credential store (internal)")
+	_ = cmd.Flags().MarkHidden("executable")
+	_ = cmd.Flags().MarkHidden("use-default-credential-store")
+	return cmd
 }
 
-func (c *commandContext) runCodexLogin(ctx context.Context, in io.Reader, out, stderr io.Writer) error {
-	codex, err := c.deps.LookPath("codex")
+func (c *commandContext) runCodexLogin(ctx context.Context, executable string, useDefaultCredentialStore bool, in io.Reader, out, stderr io.Writer) error {
+	codex, err := resolveLoginExecutable(executable, "codex", c.deps.LookPath)
 	if err != nil {
-		return fmt.Errorf("codex CLI is not installed or is not available on PATH")
+		return err
 	}
 	style := newCodexLoginStyle(out)
 	if err := writeCodexLoginMenu(out, style); err != nil {
@@ -54,7 +61,10 @@ func (c *commandContext) runCodexLogin(ctx context.Context, in io.Reader, out, s
 		return fmt.Errorf("read login method: %w", err)
 	}
 
-	args := []string{"-c", codexFileStoreOverride, "login"}
+	args := []string{"login"}
+	if !useDefaultCredentialStore {
+		args = append([]string{"-c", codexFileStoreOverride}, args...)
+	}
 	childInput := in
 	switch strings.TrimSpace(selection) {
 	case "1":
@@ -95,6 +105,17 @@ func (c *commandContext) runCodexLogin(ctx context.Context, in io.Reader, out, s
 		return err
 	}
 	return nil
+}
+
+func resolveLoginExecutable(explicit, name string, lookPath func(string) (string, error)) (string, error) {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit, nil
+	}
+	resolved, err := lookPath(name)
+	if err != nil {
+		return "", fmt.Errorf("%s CLI is not installed or is not available on PATH", name)
+	}
+	return resolved, nil
 }
 
 type codexLoginStyle struct {

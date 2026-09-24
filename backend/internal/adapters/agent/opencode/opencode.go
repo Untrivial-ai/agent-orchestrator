@@ -72,9 +72,14 @@ func New() *Plugin {
 	return &Plugin{}
 }
 
+// EmitsSemanticMessageAcceptance reports that the OpenCode activity plugin
+// includes the accepted prompt text in its user-prompt-submit callback.
+func (p *Plugin) EmitsSemanticMessageAcceptance() bool { return true }
+
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
+var _ ports.SemanticMessageAcceptanceSignaler = (*Plugin)(nil)
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {
@@ -110,7 +115,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 		return nil, err
 	}
 
-	envPrefix, agentName, err := opencodeConfigEnvPrefix(cfg.SystemPrompt, cfg.SystemPromptFile, cfg.SessionID)
+	envPrefix, agentName, err := opencodeConfigEnvPrefix(cfg.Permissions, cfg.SystemPrompt, cfg.SystemPromptFile, cfg.SessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +155,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		return nil, false, err
 	}
 
-	envPrefix, agentName, err := opencodeConfigEnvPrefix(cfg.SystemPrompt, cfg.SystemPromptFile, cfg.Session.ID)
+	envPrefix, agentName, err := opencodeConfigEnvPrefix(cfg.Permissions, cfg.SystemPrompt, cfg.SystemPromptFile, cfg.Session.ID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -364,14 +369,16 @@ func opencodeDBCount(ctx context.Context, db *sql.DB, query string) (int, error)
 	return count, nil
 }
 
-// appendPermissionFlags maps AO's permission modes onto opencode's single
-// approval flag. opencode exposes only --dangerously-skip-permissions (no
-// graduated accept-edits/auto modes), so:
-//   - bypass-permissions → --dangerously-skip-permissions
-//   - default / accept-edits / auto → no flag. opencode resolves approvals from
-//     its own `permission` config exactly as a normal launch.
+// appendPermissionFlags uses OpenCode's own approval flags where it has them.
+// --auto approves whatever is not explicitly denied, which is exactly AO's auto
+// mode, so the Terminal UI runs the provider's implementation rather than an
+// emulation of it. Bypass keeps the established alias and carries its
+// full-access rule on the AO agent, which outranks every config layer.
 func appendPermissionFlags(cmd *[]string, permissions ports.PermissionMode) {
-	if ports.NormalizePermissionMode(permissions) == ports.PermissionModeBypassPermissions {
+	switch ports.NormalizePermissionMode(permissions) {
+	case ports.PermissionModeAuto:
+		*cmd = append(*cmd, "--auto")
+	case ports.PermissionModeBypassPermissions:
 		*cmd = append(*cmd, "--dangerously-skip-permissions")
 	}
 }
@@ -379,36 +386,79 @@ func appendPermissionFlags(cmd *[]string, permissions ports.PermissionMode) {
 const opencodeConfigEnvVar = "OPENCODE_CONFIG"
 
 type opencodeInlineConfig struct {
-	Schema string                           `json:"$schema,omitempty"`
-	Agent  map[string]opencodeAgentSettings `json:"agent,omitempty"`
+	Schema     string                           `json:"$schema,omitempty"`
+	Permission map[string]string                `json:"permission,omitempty"`
+	Agent      map[string]opencodeAgentSettings `json:"agent,omitempty"`
 }
 
 type opencodeAgentSettings struct {
 	Mode   string `json:"mode,omitempty"`
 	Prompt string `json:"prompt,omitempty"`
+	// Either a ruleset or OpenCode's scalar form, and it outranks every config
+	// layer — which is what makes bypass a true bypass.
+	Permission any `json:"permission,omitempty"`
 }
 
-func opencodeConfigEnvPrefix(inlinePrompt, promptFile, sessionID string) ([]string, string, error) {
-	if inlinePrompt == "" && promptFile == "" {
+// opencodePermissionConfig maps AO's approval vocabulary onto what OpenCode
+// itself does, so a mode behaves the way the same session would outside AO.
+//
+//   - default: no rule. OpenCode's own configuration decides, unchanged.
+//   - accept-edits: allow edits. OpenCode has no such mode, so this is the one
+//     grant AO adds; everything else stays as OpenCode would have it.
+//   - auto: OpenCode's --auto, which approves whatever is not explicitly denied.
+//     Permissions that merely ask, including its external_directory and
+//     doom_loop guards, are approved; explicit deny rules still apply.
+//   - bypass-permissions: `permission: "allow"`, OpenCode's own full-access
+//     setting, which is the one mode that also passes explicit denies.
+//
+// `read` is never named, so OpenCode's default `.env` deny survives every mode
+// but bypass.
+func opencodePermissionConfig(mode ports.PermissionMode) map[string]string {
+	switch ports.NormalizePermissionMode(mode) {
+	case ports.PermissionModeAcceptEdits:
+		return map[string]string{"edit": "allow"}
+	case ports.PermissionModeAuto:
+		return nil // the caller supplies OpenCode's --auto, or emulates it
+	default:
+		return nil
+	}
+}
+
+func opencodeConfigEnvPrefix(permissions ports.PermissionMode, inlinePrompt, promptFile, sessionID string) ([]string, string, error) {
+	permission := opencodePermissionConfig(permissions)
+	// Bypass goes on the agent, not in the config body. OpenCode's native flag
+	// is an alias of --auto, which still enforces explicit deny rules, and a
+	// config-level rule here would lose to a project policy — either way the
+	// mode would stop short of the full access it promises, and of what Chat
+	// does. Agent rules outrank every config layer, so this matches Chat.
+	var agentPermission any
+	if ports.NormalizePermissionMode(permissions) == ports.PermissionModeBypassPermissions {
+		agentPermission, permission = "allow", nil
+	}
+	// Both overlays ride on the AO-owned config file, never on
+	// OPENCODE_CONFIG_CONTENT. That variable is the highest-precedence config
+	// source and callers own it — the reviewer harness passes its own read-only
+	// policy there, and a launch prefix setting the same variable would replace
+	// it at exec time. Writing to OPENCODE_CONFIG instead also keeps a single
+	// answer for precedence: a worktree opencode.json always overrides AO.
+	if promptFile == "" {
+		if inlinePrompt != "" {
+			return nil, "", fmt.Errorf("opencode: system prompt file required to build agent config")
+		}
 		return nil, "", nil
 	}
-	if promptFile == "" {
-		return nil, "", fmt.Errorf("opencode: system prompt file required to build agent config")
-	}
+	dir := filepath.Dir(promptFile)
+	configPath := filepath.Join(dir, "opencode.json")
 	agentName := opencodeAOAgentName(sessionID)
 	prompt := inlinePrompt
 	if prompt == "" {
 		prompt = "{file:./" + filepath.Base(promptFile) + "}"
 	}
-	dir := filepath.Dir(promptFile)
-	configPath := filepath.Join(dir, "opencode.json")
 	config := opencodeInlineConfig{
-		Schema: "https://opencode.ai/config.json",
+		Schema:     "https://opencode.ai/config.json",
+		Permission: permission,
 		Agent: map[string]opencodeAgentSettings{
-			agentName: {
-				Mode:   "primary",
-				Prompt: prompt,
-			},
+			agentName: {Mode: "primary", Prompt: prompt, Permission: agentPermission},
 		},
 	}
 	data, err := json.MarshalIndent(config, "", "  ")
@@ -425,18 +475,65 @@ func opencodeConfigEnvPrefix(inlinePrompt, promptFile, sessionID string) ([]stri
 	return []string{"env", opencodeConfigEnvVar + "=" + configPath}, agentName, nil
 }
 
-// PrepareACPConfigContent merges AO's standing instructions and any explicit
-// bypass-permissions choice into OpenCode's inline runtime overlay. The user's
-// OPENCODE_CONFIG path remains untouched, preserving its normal global, custom,
-// project, provider, and credential configuration.
+// ACP permission tiers. OpenCode's session modes are agents, and an agent
+// carries its own permission ruleset, so AO injects one agent per approval mode
+// and lets OpenCode enforce the choice. Selecting a mode is then an ordinary
+// session/set_config_option on "mode", which applies in both directions while a
+// session runs — a global `permission` rule could only be written at launch and
+// never taken back, so tightening a mode mid-session would change the label and
+// nothing else.
+const (
+	ACPAgentDefault     = "ao-default"
+	ACPAgentAcceptEdits = "ao-accept-edits"
+	ACPAgentAuto        = "ao-auto"
+	ACPAgentBypass      = "ao-bypass"
+)
+
+var acpAgentPermissions = map[string]ports.PermissionMode{
+	ACPAgentDefault:     ports.PermissionModeDefault,
+	ACPAgentAcceptEdits: ports.PermissionModeAcceptEdits,
+	ACPAgentAuto:        ports.PermissionModeAuto,
+	ACPAgentBypass:      ports.PermissionModeBypassPermissions,
+}
+
+// acpAgentPermission is the ruleset AO writes for one tier.
+//
+// Only bypass gets one. Accept edits and auto are answered per request instead,
+// the way OpenCode's own --auto is: its Auto handler replies to each permission
+// request rather than rewriting config, so a rule the user or repository denied
+// never raises a request and stays denied without AO having to know about it.
+// Reconstructing that policy here would mean reading every source OpenCode
+// merges — global, project, .opencode, managed, remote — and being wrong in
+// AO's favour whenever a source was unreadable.
+func acpAgentPermission(mode ports.PermissionMode) any {
+	if ports.NormalizePermissionMode(mode) == ports.PermissionModeBypassPermissions {
+		return "allow"
+	}
+	return nil
+}
+
+// ACPAgentForPermissions is the agent a session starts on.
+func ACPAgentForPermissions(permissions ports.PermissionMode) string {
+	switch ports.NormalizePermissionMode(permissions) {
+	case ports.PermissionModeAcceptEdits:
+		return ACPAgentAcceptEdits
+	case ports.PermissionModeAuto:
+		return ACPAgentAuto
+	case ports.PermissionModeBypassPermissions:
+		return ACPAgentBypass
+	default:
+		return ACPAgentDefault
+	}
+}
+
+// PrepareACPConfigContent merges AO's standing instructions and its approval
+// tiers into OpenCode's inline runtime overlay. The user's OPENCODE_CONFIG path
+// remains untouched, preserving its normal global, custom, project, provider,
+// and credential configuration.
 func PrepareACPConfigContent(
-	existing, systemPrompt, sessionID string,
+	existing, systemPrompt string,
 	permissions ports.PermissionMode,
 ) (string, error) {
-	allowAll := ports.NormalizePermissionMode(permissions) == ports.PermissionModeBypassPermissions
-	if strings.TrimSpace(systemPrompt) == "" && !allowAll {
-		return existing, nil
-	}
 	config := map[string]any{}
 	if strings.TrimSpace(existing) != "" {
 		if err := json.Unmarshal([]byte(existing), &config); err != nil {
@@ -446,24 +543,21 @@ func PrepareACPConfigContent(
 	if _, ok := config["$schema"]; !ok {
 		config["$schema"] = "https://opencode.ai/config.json"
 	}
-	if strings.TrimSpace(systemPrompt) != "" {
-		agents, ok := config["agent"].(map[string]any)
-		if config["agent"] != nil && !ok {
-			return "", fmt.Errorf("opencode: OPENCODE_CONFIG_CONTENT agent must be an object")
-		}
-		if agents == nil {
-			agents = map[string]any{}
-		}
-		agentName := opencodeAOAgentName(sessionID)
-		agents[agentName] = opencodeAgentSettings{Mode: "primary", Prompt: systemPrompt}
-		config["agent"] = agents
-		config["default_agent"] = agentName
+	agents, ok := config["agent"].(map[string]any)
+	if config["agent"] != nil && !ok {
+		return "", fmt.Errorf("opencode: OPENCODE_CONFIG_CONTENT agent must be an object")
 	}
-	if allowAll {
-		// This is the native config equivalent of OpenCode's TUI auto-approval
-		// flag. Other AO permission modes preserve the user's granular rules.
-		config["permission"] = "allow"
+	if agents == nil {
+		agents = map[string]any{}
 	}
+	for name, mode := range acpAgentPermissions {
+		agents[name] = opencodeAgentSettings{
+			Mode: "primary", Prompt: systemPrompt,
+			Permission: acpAgentPermission(mode),
+		}
+	}
+	config["agent"] = agents
+	config["default_agent"] = ACPAgentForPermissions(permissions)
 	data, err := json.Marshal(config)
 	if err != nil {
 		return "", fmt.Errorf("opencode: encode ACP agent config: %w", err)

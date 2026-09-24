@@ -1,7 +1,8 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { useRouter } from "expo-router";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { sessionTitle, shortLabel, type DashboardPR, type DashboardSession, type SessionPRSummary } from "./api";
+import { haptics } from "./haptics";
 import { openGitHub } from "./openGitHub";
 import type { Theme } from "./theme";
 import {
@@ -15,16 +16,9 @@ import {
 	type PRLifecycle,
 } from "./prView";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
-import { cardShell, IconButton } from "./ui";
+import { iconSize, space, type } from "./tokens";
 
-// One PR, complete. Everything the daemon knows is on the card — there is no
-// detail screen behind it, because for most PRs the detail was four rows and two
-// links, which does not earn a navigation.
-//
-// The rich fields (real title, branches, author, diff stats, blockers) come from
-// GET /sessions/{id}/pr via usePRSummaries and arrive a moment after the card
-// first paints. Until then the card renders from the thin board facts, so it is
-// never blank and never jumps between two layouts — the extra lines only append.
+/** A pull-request row with the same hierarchy and density as WorkerListRow. */
 export function PRCard({
 	pr,
 	session,
@@ -37,113 +31,83 @@ export function PRCard({
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const router = useRouter();
-	// The rich summary reports `draft` as a state of its own; the board facts fold
-	// it into "open" and leave only the isDraft flag for prLifecycle to recover.
 	const state = summary ? stateVisualOf(t, summary.state as PRLifecycle) : prStateVisual(t, pr);
-
 	const title = summary?.title?.trim() || prTitle(pr, sessionTitle(session));
-	const branches = summary ? [summary.sourceBranch, summary.targetBranch].filter(Boolean).join(" → ") : "";
-	const meta = [branches, summary?.author].filter(Boolean).join(" · ");
-	const hasDiff = !!summary && (summary.changedFiles > 0 || summary.additions > 0 || summary.deletions > 0);
-
-	// With the rich summary we can say all three things; without it, fall back to
-	// the single worst-thing line the board facts support.
+	const project = shortLabel(summary?.repo || session.projectId || "Standalone");
+	const branches = summary
+		? [summary.sourceBranch, summary.targetBranch].filter(Boolean).join(" → ")
+		: session.branch || "";
+	const diff = summary && (summary.changedFiles > 0 || summary.additions > 0 || summary.deletions > 0)
+		? `${summary.changedFiles} ${summary.changedFiles === 1 ? "file" : "files"}  +${summary.additions} −${summary.deletions}`
+		: "";
+	const detail = [`#${pr.number}`, branches, diff].filter(Boolean).join("  ·  ");
 	const atoms = summary ? prStatusAtoms(summary) : [prSummaryLine(pr)];
+	const status = atoms[0] ?? { text: state.label, tone: "passive" as const };
 	const blockers = summary ? prBlockerLine(summary) : null;
 
 	return (
-		<View style={styles.card}>
-			<View style={styles.top}>
-				<Feather name="git-pull-request" size={13} color={state.color} />
-				<Text style={styles.number}>#{pr.number}</Text>
-				<Text style={[styles.state, { color: state.color }]}>{state.label}</Text>
-				<View style={{ flex: 1 }} />
-				<Text style={styles.project} numberOfLines={1}>
-					{shortLabel(summary?.repo || session.projectId)}
-				</Text>
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={`${title}. Pull request ${pr.number}. ${status.text}.`}
+			onPress={() => {
+				haptics.tap();
+				router.push({
+					pathname: "/session/[id]",
+					params: { id: session.id, projectId: session.projectId },
+				});
+			}}
+			style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+		>
+			<View style={styles.eyebrow}>
+				<Feather name="git-pull-request" size={iconSize.sm} color={state.color} />
+				<Text style={styles.project} numberOfLines={1}>{project}</Text>
+				<Text style={[styles.status, { color: toneColor(t, status.tone) }]} numberOfLines={1}>{status.text}</Text>
 			</View>
 
-			<Text style={styles.title} numberOfLines={2}>
-				{title}
-			</Text>
-
-			{meta ? (
-				<Text style={styles.meta} numberOfLines={1}>
-					{meta}
-				</Text>
-			) : null}
-
-			{hasDiff && summary ? (
-				<View style={styles.diff}>
-					<Text style={styles.diffFiles}>
-						{summary.changedFiles} {summary.changedFiles === 1 ? "file" : "files"}
-					</Text>
-					<Text style={[styles.diffNum, { color: t.green }]}>+{summary.additions}</Text>
-					<Text style={[styles.diffNum, { color: t.red }]}>−{summary.deletions}</Text>
+			<View style={styles.titleRow}>
+				<View style={styles.copy}>
+					<Text style={styles.title} numberOfLines={1}>{title}</Text>
+					<Text style={styles.details} numberOfLines={1}>{detail}</Text>
 				</View>
-			) : null}
-
-			<View style={styles.footer}>
-				<View style={styles.status}>
-					{atoms.map((a, i) => (
-						<View key={a.text} style={styles.atom}>
-							{i > 0 ? <Text style={styles.sep}>·</Text> : null}
-							<Text style={[styles.atomText, { color: toneColor(t, a.tone) }]}>{a.text}</Text>
-						</View>
-					))}
-				</View>
-
-				<View style={styles.actions}>
-					<IconButton
-						icon="terminal"
-						label="Open session"
-						onPress={() =>
-							router.push({
-								pathname: "/session/[id]",
-								params: { id: session.id, projectId: session.projectId },
-							})
-						}
-					/>
-					<IconButton
-						icon="external-link"
-						label="Open in GitHub"
-						onPress={() => {
-							void openGitHub(summary?.htmlUrl || summary?.url || pr.url);
-						}}
-					/>
-				</View>
+				<Pressable
+					accessibilityRole="link"
+					accessibilityLabel={`Open pull request ${pr.number} in GitHub`}
+					hitSlop={8}
+					onPress={(event) => {
+						event.stopPropagation();
+						haptics.tap();
+						void openGitHub(summary?.htmlUrl || summary?.url || pr.url);
+					}}
+					style={({ pressed }) => [styles.external, pressed && styles.externalPressed]}
+				>
+					<Feather name="external-link" size={iconSize.sm} color={t.textTertiary} />
+				</Pressable>
 			</View>
 
-			{blockers ? (
-				<Text style={styles.blockers} numberOfLines={2}>
-					{blockers}
-				</Text>
-			) : null}
-		</View>
+			{blockers ? <Text style={styles.blockers} numberOfLines={1}>{blockers}</Text> : null}
+		</Pressable>
 	);
 }
 
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
-	card: cardShell(t),
-	top: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 },
-	number: { color: t.textSecondary, fontSize: 12, fontWeight: "700", fontFamily: t.fontMono },
-	state: { fontSize: 12, fontWeight: "600" },
-	project: { color: t.textTertiary, fontSize: 11, fontFamily: t.fontMono, flexShrink: 1 },
-	title: { color: t.textPrimary, fontSize: 15, fontWeight: "500", lineHeight: 20 },
-	meta: { color: t.textTertiary, fontSize: 11, fontFamily: t.fontMono, marginTop: 5 },
-	diff: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 5 },
-	diffFiles: { color: t.textTertiary, fontSize: 11, fontFamily: t.fontMono },
-	diffNum: { fontSize: 11, fontWeight: "700", fontFamily: t.fontMono },
-	// The status line and the actions share a row: the actions sit bottom-right
-	// against the card's own padding, and the status wraps beside them. Centred,
-	// not bottom-aligned — the buttons are 32pt and a one-line status pinned to
-	// their baseline left an obvious gap above it.
-	footer: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 10 },
-	status: { flex: 1, flexDirection: "row", flexWrap: "wrap", alignItems: "center" },
-	atom: { flexDirection: "row", alignItems: "center" },
-	sep: { color: t.textFaint, fontSize: 12, marginHorizontal: 6 },
-	atomText: { fontSize: 12, fontWeight: "600" },
-	actions: { flexDirection: "row", gap: 6 },
-	blockers: { color: t.textTertiary, fontSize: 11, lineHeight: 16, marginTop: 8 },
-});
+		row: {
+			minHeight: 76,
+			paddingHorizontal: space.lg,
+			paddingVertical: space.sm,
+			gap: space.hair,
+			borderBottomWidth: StyleSheet.hairlineWidth,
+			borderBottomColor: t.borderSubtle,
+		},
+		rowPressed: { backgroundColor: t.bgSubtle },
+		eyebrow: { flexDirection: "row", alignItems: "center", gap: space.xs, minHeight: 17 },
+		project: { fontFamily: "Geist_500Medium", flex: 1, color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
+		status: { fontFamily: "Geist_500Medium", flexShrink: 0, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
+		titleRow: { flexDirection: "row", alignItems: "center", minHeight: 40 },
+		copy: { flex: 1, gap: space.hair },
+		title: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600", letterSpacing: -0.15 },
+		details: { color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontFamily: t.fontMono },
+		external: { width: 36, height: 36, marginRight: -8, alignItems: "center", justifyContent: "center", borderRadius: 12, borderCurve: "continuous"},
+		externalPressed: { backgroundColor: t.bgElevated },
+		blockers: { fontFamily: "Geist_400Regular", color: t.amber, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, marginTop: space.hair, marginLeft: space.xl },
+	});

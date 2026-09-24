@@ -225,23 +225,61 @@ export class AgentBrowserRuntime {
 		return parseAgentBrowserJSON(result.stdout);
 	}
 
+	private nativeAnnotations(stdout: string): { annotations?: unknown[]; boundary?: unknown } | undefined {
+		try {
+			const parsed = parseAgentBrowserJSON(stdout);
+			if (!Array.isArray(parsed.annotations)) {
+				this.log("agent-browser screenshot returned no annotations for an annotated capture");
+				return undefined;
+			}
+			return { annotations: parsed.annotations, boundary: parsed._boundary };
+		} catch (error) {
+			// agent-browser reporting its own failure is the caller's error, not a
+			// missing extra; only unreadable output degrades to "no annotations".
+			if ((error as { code?: string }).code !== "AGENT_BROWSER_INVALID_OUTPUT") throw error;
+			this.log(`agent-browser screenshot annotations were unreadable: ${(error as Error).message}`);
+			return undefined;
+		}
+	}
+
 	async screenshot(
 		sessionId: string,
 		provider: AgentBrowserTargetProvider,
 		signal?: AbortSignal,
-	): Promise<{ data: string; width: number; height: number; untrustedExternalContent: true }> {
+		options: { annotate?: boolean } = {},
+	): Promise<{
+		data: string;
+		width: number;
+		height: number;
+		annotations?: unknown[];
+		annotationsUnavailable?: true;
+		untrustedExternalContent: true;
+	}> {
 		const runtime = await this.ensureSession(sessionId, provider);
 		await this.touchRuntimeRoot();
 		const directory = await mkdtemp(path.join(runtime.runtimeDir, "screenshot-"));
 		const target = path.join(directory, "screenshot.png");
 		try {
-			await this.run(sessionId, ["screenshot", target, "--json"], provider, signal);
+			const command = ["screenshot", target, "--json", ...(options.annotate === true ? ["--annotate"] : [])];
+			const result = await this.run(sessionId, command, provider, signal);
+			// Read the envelope before the file: a native capture that failed with a
+			// reason reports it here, and its message beats the ENOENT that reading a
+			// PNG it never wrote would raise.
+			const annotated = options.annotate === true ? this.nativeAnnotations(result.stdout) : undefined;
 			const image = await readFile(target);
 			if (image.length > MAX_SCREENSHOT_BYTES) {
 				throw runtimeError("AGENT_BROWSER_OUTPUT_TOO_LARGE", "Browser screenshot exceeded AO's size limit");
 			}
 			const { width, height } = pngDimensions(image);
-			return { data: image.toString("base64"), width, height, untrustedExternalContent: true };
+			return {
+				data: image.toString("base64"),
+				width,
+				height,
+				...(annotated?.annotations ? { annotations: annotated.annotations } : {}),
+				...(annotated?.boundary ? { _boundary: annotated.boundary } : {}),
+				...(options.annotate === true && !annotated?.annotations ? { annotationsUnavailable: true as const } : {}),
+				untrustedExternalContent: true,
+			};
 		} finally {
 			await removePath(directory, this.log, "screenshot directory");
 		}
@@ -626,8 +664,14 @@ export function nativeArgumentsForAction(action: string, args: Record<string, un
 		case "open":
 			return ["open", httpURL(stringValue(args.url, "url is required"))];
 		case "snapshot":
-			return ["snapshot", ...(args.interactive === true ? ["--interactive"] : []), "--compact"];
+			return [
+				"snapshot",
+				...(args.interactive === true ? ["--interactive"] : []),
+				"--compact",
+				...(args.delta === true ? ["--delta", ...(args.full === true ? ["--full"] : [])] : []),
+			];
 		case "click":
+			return ["click", ref(), ...(args.human === true ? ["--human"] : [])];
 		case "dblclick":
 		case "focus":
 		case "hover":
@@ -642,7 +686,12 @@ export function nativeArgumentsForAction(action: string, args: Record<string, un
 		case "press":
 			return ["press", stringValue(args.key, "key is required")];
 		case "drag":
-			return ["drag", ref(), nativeRef(stringValue(args.targetRef, "target ref is required"))];
+			return [
+				"drag",
+				ref(),
+				nativeRef(stringValue(args.targetRef, "target ref is required")),
+				...(args.human === true ? ["--human"] : []),
+			];
 		case "select":
 			return ["select", ref(), stringValue(args.value, "value is required", true)];
 		case "tabs":
@@ -739,7 +788,7 @@ export function parseAgentBrowserJSON(stdout: string): AgentBrowserJSONResult {
 	const result: Record<string, unknown> = isRecord(envelope.data) ? { ...envelope.data } : { value: envelope.data };
 	// `_boundary` is native-output metadata. Never forward a page-shaped field
 	// with the same name as trusted metadata, but preserve the root field emitted
-	// by agent-browser 0.33.1 so downstream adapters retain its nonce and origin.
+	// by agent-browser 0.38.1 so downstream adapters retain its nonce and origin.
 	delete result._boundary;
 	if (boundary) result._boundary = boundary;
 	return { ...result, untrustedExternalContent: true };

@@ -660,6 +660,8 @@ type fakeAgent struct {
 	loadUpdateBatches   [][]acpsdk.SessionUpdate
 	blockLoadCall       int
 	loadStarted         chan struct{}
+	failLoadFrom        int   // LoadSession calls >= this number return failLoadErr
+	failLoadErr         error // the SDK coerces a plain error into -32603
 	loadCalls           int
 	resumeCalls         int
 	promptParams        acpsdk.PromptRequest
@@ -667,6 +669,7 @@ type fakeAgent struct {
 	elicitation         *acpsdk.UnstableCreateElicitationRequest
 	elicitationResponse acpsdk.UnstableCreateElicitationResponse
 	promptErr           error
+	promptResponse      *acpsdk.PromptResponse
 	promptBlock         bool
 	promptStarted       chan struct{}
 	cancelErr           error
@@ -919,7 +922,12 @@ func (a *fakeAgent) LoadSession(ctx context.Context, params acpsdk.LoadSessionRe
 	}
 	block := a.blockLoadCall == loadCall
 	started := a.loadStarted
+	failLoad := a.failLoadFrom > 0 && loadCall >= a.failLoadFrom
+	failLoadErr := a.failLoadErr
 	a.mu.Unlock()
+	if failLoad {
+		return acpsdk.LoadSessionResponse{}, failLoadErr
+	}
 	if block {
 		if started != nil {
 			close(started)
@@ -978,6 +986,7 @@ func (a *fakeAgent) Prompt(ctx context.Context, params acpsdk.PromptRequest) (ac
 	promptNoPermission := a.promptNoPermission
 	elicitation := a.elicitation
 	promptErr := a.promptErr
+	promptResponse := a.promptResponse
 	promptBlock := a.promptBlock
 	promptStarted := a.promptStarted
 	customPrompt := a.customPrompt
@@ -987,6 +996,9 @@ func (a *fakeAgent) Prompt(ctx context.Context, params acpsdk.PromptRequest) (ac
 	}
 	if promptErr != nil {
 		return acpsdk.PromptResponse{}, promptErr
+	}
+	if promptResponse != nil {
+		return *promptResponse, nil
 	}
 	if promptBlock {
 		if promptStarted != nil {
@@ -1723,6 +1735,143 @@ func TestACPDriverHistoryRefreshHonorsCancellation(t *testing.T) {
 	}
 }
 
+// A provider that answers session/load with -32603 while AO's context is still
+// live has failed the replay itself; the refresh must return a dedicated error
+// rather than a generic one the settle loop keeps polling.
+func TestACPDriverHistoryRefreshMapsProviderInternalErrorToLoadFailed(t *testing.T) {
+	userID := "11111111-1111-4111-8111-111111111111"
+	user := acpsdk.UpdateUserMessageText("Inspect the repository")
+	user.UserMessageChunk.MessageId = &userID
+	agent := &fakeAgent{
+		capabilities: &acpsdk.AgentCapabilities{LoadSession: true},
+		loadUpdates:  []acpsdk.SessionUpdate{user},
+		failLoadFrom: 2,
+		failLoadErr:  context.DeadlineExceeded,
+	}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	conv, err := driver.Resume(context.Background(), ports.ChatResumeConfig{
+		ProviderConversationID: "provider-session-1",
+		WorkspacePath:          t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	defer conv.Close()
+
+	_, err = conv.(ports.ChatHistoryRefresher).RefreshHistory(context.Background())
+	if !errors.Is(err, ports.ErrChatHistoryLoadFailed) {
+		t.Fatalf("RefreshHistory error = %v, want ErrChatHistoryLoadFailed", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RefreshHistory error = %v, provider's own deadline must not read as AO's", err)
+	}
+	var requestErr *acpsdk.RequestError
+	if !errors.As(err, &requestErr) || requestErr.Code != -32603 {
+		t.Fatalf("RefreshHistory error = %v, want the provider's -32603 preserved", err)
+	}
+	if !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("RefreshHistory error = %v, want the provider detail preserved", err)
+	}
+}
+
+// When AO's own deadline ends a session/load, the SDK reports a synthetic
+// -32603 carrying "context deadline exceeded". That is AO's timeout, not a
+// provider failure, and must keep its context error classification.
+func TestACPDriverHistoryRefreshKeepsOwnDeadlineAsContextError(t *testing.T) {
+	userID := "11111111-1111-4111-8111-111111111111"
+	user := acpsdk.UpdateUserMessageText("Inspect the repository")
+	user.UserMessageChunk.MessageId = &userID
+	agent := &fakeAgent{
+		capabilities:  &acpsdk.AgentCapabilities{LoadSession: true},
+		loadUpdates:   []acpsdk.SessionUpdate{user},
+		blockLoadCall: 2,
+	}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	conv, err := driver.Resume(context.Background(), ports.ChatResumeConfig{
+		ProviderConversationID: "provider-session-1",
+		WorkspacePath:          t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	defer conv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err = conv.(ports.ChatHistoryRefresher).RefreshHistory(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RefreshHistory error = %v, want AO's own deadline", err)
+	}
+	if errors.Is(err, ports.ErrChatHistoryLoadFailed) {
+		t.Fatalf("RefreshHistory error = %v, AO's own deadline must not read as a provider load failure", err)
+	}
+}
+
+// The initial resume load takes the same mapping so a transition that fails
+// before the first refresh also reports the rejection.
+func TestACPDriverResumeMapsProviderInternalLoadErrorToLoadFailed(t *testing.T) {
+	agent := &fakeAgent{
+		capabilities: &acpsdk.AgentCapabilities{LoadSession: true},
+		failLoadFrom: 1,
+		failLoadErr:  errors.New("transcript replay failed"),
+	}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	_, err := driver.Resume(context.Background(), ports.ChatResumeConfig{
+		ProviderConversationID: "provider-session-1",
+		WorkspacePath:          t.TempDir(),
+	})
+	if !errors.Is(err, ports.ErrChatResumeFailed) || !errors.Is(err, ports.ErrChatHistoryLoadFailed) {
+		t.Fatalf("Resume error = %v, want ErrChatResumeFailed wrapping ErrChatHistoryLoadFailed", err)
+	}
+}
+
+func TestNormalizeACPLoadErrorKeepsOtherCodes(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "auth required", err: acpsdk.NewAuthRequired(nil), want: ports.ErrChatAuthRequired},
+		{name: "internal", err: acpsdk.NewInternalError(map[string]any{"error": "context deadline exceeded"}), want: ports.ErrChatHistoryLoadFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := normalizeACPLoadError("ACP session/load", tt.err)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("normalizeACPLoadError = %v, want %v", err, tt.want)
+			}
+		})
+	}
+	plain := errors.New("peer disconnected before response")
+	if err := normalizeACPLoadError("ACP session/load", plain); errors.Is(err, ports.ErrChatHistoryLoadFailed) || !errors.Is(err, plain) {
+		t.Fatalf("normalizeACPLoadError(plain) = %v, want the transport error untouched", err)
+	}
+	if err := normalizeACPError("ACP session/prompt", acpsdk.NewInternalError(nil)); errors.Is(err, ports.ErrChatHistoryLoadFailed) {
+		t.Fatalf("normalizeACPError(prompt -32603) = %v, must not read as a history load rejection", err)
+	}
+}
+
 func TestHistoricalUserContentSuppressesOnlyMarkedInternalReplayResources(t *testing.T) {
 	resource := acpsdk.ResourceBlock(acpsdk.EmbeddedResourceResource{
 		TextResourceContents: &acpsdk.TextResourceContents{
@@ -2346,21 +2495,20 @@ func TestACPDriverMapsCostRateLimitsAndAuthRecovery(t *testing.T) {
 	if err := opened.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
 		t.Fatalf("StartDeferredTurn: %v", err)
 	}
-	foundAccount := false
 	for {
 		event := nextEvent(t, opened.Events())
-		if event.Kind == ports.ChatEventAccountChanged {
-			foundAccount = event.Account != nil && event.Account.ReauthRequired
+		if event.Kind == ports.ChatEventAccountChanged || event.Kind == ports.ChatEventError {
+			t.Fatalf("terminal auth failure emitted a second event: %#v", event)
 		}
 		if event.Kind == ports.ChatEventTurnCompleted {
 			if event.TurnState != domain.TurnStateFailed {
 				t.Fatalf("turn state = %q", event.TurnState)
 			}
+			if !errors.Is(event.Err, ports.ErrChatAuthRequired) {
+				t.Fatalf("completion error = %#v", event.Err)
+			}
 			break
 		}
-	}
-	if !foundAccount {
-		t.Fatal("authentication failure did not emit an account recovery event")
 	}
 }
 
@@ -2436,10 +2584,9 @@ func TestACPDriverNormalizesClaudeRetryStatus(t *testing.T) {
 	}
 
 	var retry ports.ChatEvent
-	retryItemID := "session-failure:" + ref.ProviderTurnID
 	for retry.Kind == "" {
 		event := nextEvent(t, opened.Events())
-		if event.Kind == ports.ChatEventActivityStarted && event.ProviderItemID == retryItemID {
+		if event.Kind == ports.ChatEventActivityStarted && strings.HasPrefix(event.ProviderItemID, "session-failure:") {
 			retry = event
 		}
 	}
@@ -2461,7 +2608,7 @@ func TestACPDriverNormalizesClaudeRetryStatus(t *testing.T) {
 	}
 
 	// Claude can use a new extension incident id for each attempt before its
-	// provider turn id is available. AO must still update one per-turn activity.
+	// provider turn id is available. AO must still update one active-episode row.
 	if err := agent.conn.SessionUpdate(context.Background(), acpsdk.SessionNotification{
 		SessionId: acpsdk.SessionId(opened.ProviderConversationID()),
 		Update: acpsdk.SessionUpdate{SessionInfoUpdate: &acpsdk.SessionSessionInfoUpdate{
@@ -3248,31 +3395,28 @@ func TestACPDriverRejectsUnsupportedTurnSettingsAtStartAndSend(t *testing.T) {
 	}
 }
 
-// TestNormalizeMCPServersFailsWithoutCapabilities verifies that
-// normalizeMCPServers returns an error when MCP server configs are provided
-// but the agent does not advertise any MCP capability.
-func TestNormalizeMCPServersFailsWithoutCapabilities(t *testing.T) {
-	configs := []ports.ChatMCPServerConfig{{Name: "test", Type: "stdio", Command: "echo"}}
-	_, err := normalizeMCPServers(configs, acpsdk.McpCapabilities{})
-	if err == nil {
-		t.Fatal("normalizeMCPServers with no MCP caps: err = nil, want error")
-	}
-	if !strings.Contains(err.Error(), "does not support per-session MCP") {
-		t.Fatalf("err = %v, want mention of per-session MCP", err)
+func TestNormalizeMCPServersAllowsStdioWithoutCapabilities(t *testing.T) {
+	for _, serverType := range []string{"", "stdio"} {
+		servers, err := normalizeMCPServers([]ports.ChatMCPServerConfig{{
+			Name: "test", Type: serverType, Command: "echo",
+		}}, acpsdk.McpCapabilities{})
+		if err != nil {
+			t.Fatalf("normalizeMCPServers(type %q): %v", serverType, err)
+		}
+		if len(servers) != 1 || servers[0].Stdio == nil {
+			t.Fatalf("servers = %#v, want one stdio server", servers)
+		}
 	}
 }
 
-// TestNormalizeMCPServersSucceedsWithHttpCapability verifies that stdio
-// servers pass when the agent advertises HTTP MCP (any MCP capability is
-// sufficient — the transport-specific check happens later).
-func TestNormalizeMCPServersSucceedsWithHttpCapability(t *testing.T) {
-	configs := []ports.ChatMCPServerConfig{{Name: "test", Type: "stdio", Command: "echo"}}
-	servers, err := normalizeMCPServers(configs, acpsdk.McpCapabilities{Http: true})
-	if err != nil {
-		t.Fatalf("normalizeMCPServers with Http cap: %v", err)
-	}
-	if len(servers) != 1 {
-		t.Fatalf("servers = %d, want 1", len(servers))
+func TestNormalizeMCPServersStillGatesOptionalTransports(t *testing.T) {
+	for _, serverType := range []string{"http", "sse"} {
+		_, err := normalizeMCPServers([]ports.ChatMCPServerConfig{{
+			Name: "test", Type: serverType, URL: "https://example.test",
+		}}, acpsdk.McpCapabilities{})
+		if err == nil || !strings.Contains(err.Error(), "does not support") {
+			t.Fatalf("normalizeMCPServers(type %q) error = %v, want capability error", serverType, err)
+		}
 	}
 }
 

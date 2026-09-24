@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -21,6 +23,8 @@ const (
 type capacityReadCall struct {
 	done              chan struct{}
 	startedReceivedAt time.Time
+	previous          domain.CodexCapacitySnapshot
+	retry             bool
 }
 
 type accountCapacityState struct {
@@ -83,32 +87,15 @@ func (c *codexCapacityCoordinator) ensureStateLocked(accountID string) *accountC
 	return state
 }
 
-func (c *codexCapacityCoordinator) ensure(ctx context.Context, records []codexAccountRecord, capabilities domain.CodexAccountCapabilities) error {
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(records))
+func (c *codexCapacityCoordinator) ensure(ctx context.Context, records []codexAccountRecord, capabilities domain.CodexAccountCapabilities, bypassBackoff bool) error {
+	group, groupCtx := errgroup.WithContext(ctx)
 	for _, record := range records {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if _, err := c.ensureOne(ctx, record, capabilities, false); err != nil {
-				errCh <- err
-			}
-		}()
-	}
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-done:
-	}
-	close(errCh)
-	for err := range errCh {
-		if err != nil {
+		group.Go(func() error {
+			_, err := c.ensureOne(groupCtx, record, capabilities, bypassBackoff)
 			return err
-		}
+		})
 	}
-	return nil
+	return group.Wait()
 }
 
 func (c *codexCapacityCoordinator) ensureOne(ctx context.Context, record codexAccountRecord, capabilities domain.CodexAccountCapabilities, bypassBackoff bool) (domain.CodexCapacitySnapshot, error) {
@@ -145,12 +132,15 @@ func (c *codexCapacityCoordinator) ensureOne(ctx context.Context, record codexAc
 		c.logger.Debug("joined Codex account capacity read", "account_id", record.Snapshot.ID, "source", record.Snapshot.Source, "trigger", "display", "cache", "join")
 		select {
 		case <-call.done:
+			if call.retry {
+				return c.ensureOne(ctx, record, capabilities, bypassBackoff)
+			}
 			return c.snapshot(record.Snapshot.ID), nil
 		case <-ctx.Done():
 			return domain.CodexCapacitySnapshot{}, ctx.Err()
 		}
 	}
-	call := &capacityReadCall{done: make(chan struct{}), startedReceivedAt: state.receivedAt}
+	call := &capacityReadCall{done: make(chan struct{}), startedReceivedAt: state.receivedAt, previous: state.snapshot}
 	state.call = call
 	checking := state.snapshot
 	checking.Freshness = domain.AgentReadinessChecking
@@ -165,6 +155,9 @@ func (c *codexCapacityCoordinator) ensureOne(ctx context.Context, record codexAc
 	go c.runRead(record, call, attemptedAt)
 	select {
 	case <-call.done:
+		if call.retry {
+			return c.ensureOne(ctx, record, capabilities, bypassBackoff)
+		}
 		return c.snapshot(record.Snapshot.ID), nil
 	case <-ctx.Done():
 		return domain.CodexCapacitySnapshot{}, ctx.Err()
@@ -179,13 +172,24 @@ func (c *codexCapacityCoordinator) authGate(record codexAccountRecord, capabilit
 		return c.preserveFailure(record.Snapshot.ID, domain.CodexCapacityReasonCheckInconclusive, "Codex capacity could not be checked."), true
 	}
 	auth := record.Snapshot.Authentication
-	if auth.State == domain.AgentAuthenticationUnauthorized && auth.Freshness == domain.AgentReadinessFresh {
+	verified, reauthenticationRequired := c.manager.authenticationVerification(record.Snapshot.ID)
+	if reauthenticationRequired {
 		return c.replace(record.Snapshot.ID, staticCodexCapacity(domain.CodexCapacityUnknown, domain.CodexCapacityReasonSkippedSignedOut, "Sign in to Codex to see subscription capacity."), "signed_out"), true
+	}
+	if auth.State == domain.AgentAuthenticationUnauthorized && auth.Freshness == domain.AgentReadinessFresh {
+		// Older AO versions could mark an account unauthorized from
+		// account/read(refreshToken=true) even while protected calls worked. Let
+		// one protected read repair that stale conclusion. A non-verified local
+		// signed-out observation still skips the provider call.
+		if !verified {
+			return c.replace(record.Snapshot.ID, staticCodexCapacity(domain.CodexCapacityUnknown, domain.CodexCapacityReasonSkippedSignedOut, "Sign in to Codex to see subscription capacity."), "signed_out"), true
+		}
 	}
 	if auth.State == domain.AgentAuthenticationNotApplicable || record.Snapshot.AuthMethod == domain.CodexAuthMethodAPIKey || record.Snapshot.AuthMethod == domain.CodexAuthMethodOther {
 		return c.replace(record.Snapshot.ID, staticCodexCapacity(domain.CodexCapacityUnsupported, domain.CodexCapacityReasonUnsupported, "Subscription capacity is not available for this Codex authentication method."), "unsupported_auth"), true
 	}
-	if auth.State != domain.AgentAuthenticationAuthorized || record.Snapshot.AuthMethod != domain.CodexAuthMethodChatGPT {
+	staleRefreshFailure := auth.State == domain.AgentAuthenticationUnauthorized && verified
+	if (auth.State != domain.AgentAuthenticationAuthorized && !staleRefreshFailure) || record.Snapshot.AuthMethod != domain.CodexAuthMethodChatGPT {
 		return c.preserveFailure(record.Snapshot.ID, domain.CodexCapacityReasonSkippedAuthUnknown, "Confirm Codex authentication before checking capacity."), true
 	}
 	return domain.CodexCapacitySnapshot{}, false
@@ -197,42 +201,127 @@ func staticCodexCapacity(state domain.CodexCapacityState, code, reason string) d
 
 func (c *codexCapacityCoordinator) runRead(record codexAccountRecord, call *capacityReadCall, attemptedAt time.Time) {
 	if c.manager.factory == nil {
-		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonCheckFailed, "Codex capacity check failed.", call)
+		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonClientStartFailed, "Codex could not be started to check usage limits.", call)
 		return
 	}
 	select {
 	case c.manager.processes <- struct{}{}:
 		defer func() { <-c.manager.processes }()
 	case <-c.ctx.Done():
-		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonCheckFailed, "Codex capacity check stopped.", call)
+		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonCheckStopped, "The usage-limit check was interrupted.", call)
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.ctx, codexCapacityReadTimeout)
-	defer cancel()
 	account := c.manager.accountContext(record)
 	releaseGlobal, err := c.manager.acquireGlobalRead(ctx, account)
 	if err != nil {
-		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonCheckFailed, "Codex capacity check stopped.", call)
+		cancel()
+		code, reason := classifyCodexCapacityReadFailure(err)
+		c.finishFailure(record.Snapshot.ID, attemptedAt, code, reason, call)
 		return
 	}
-	defer releaseGlobal()
+	releasedGlobal := false
+	releaseGlobalOnce := func() {
+		if !releasedGlobal {
+			releaseGlobal()
+			releasedGlobal = true
+		}
+	}
+	defer releaseGlobalOnce()
+	if c.manager.globalCredentialMissingFor(account) {
+		releaseGlobalOnce()
+		_ = c.manager.reconcileGlobalWithPolicy(c.ctx, true)
+		c.retryAfterDeviceChange(record.Snapshot.ID, call)
+		cancel()
+		return
+	}
 	client, err := c.manager.factory.Open(ctx, account)
 	if err != nil {
-		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonCheckFailed, "Codex capacity check failed.", call)
+		if c.manager.globalCredentialMissingFor(account) {
+			releaseGlobalOnce()
+			_ = c.manager.reconcileGlobalWithPolicy(c.ctx, true)
+			c.retryAfterDeviceChange(record.Snapshot.ID, call)
+			cancel()
+			return
+		}
+		cancel()
+		c.finishFailure(record.Snapshot.ID, attemptedAt, domain.CodexCapacityReasonClientStartFailed, "Codex could not be started to check usage limits.", call)
 		return
 	}
-	defer func() { _ = client.Close() }()
-	observation, err := client.ReadCapacity(ctx)
-	if err != nil {
-		code, reason := domain.CodexCapacityReasonCheckFailed, "Codex capacity check failed."
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			code, reason = domain.CodexCapacityReasonCheckTimeout, "Codex capacity check timed out."
+	clientClosed := false
+	closeClientOnce := func() {
+		if !clientClosed {
+			_ = client.Close()
+			clientClosed = true
 		}
+	}
+	defer closeClientOnce()
+	observation, err := client.ReadCapacity(ctx)
+	cancel()
+	if c.manager.globalCredentialMissingFor(account) {
+		closeClientOnce()
+		releaseGlobalOnce()
+		_ = c.manager.reconcileGlobalWithPolicy(c.ctx, true)
+		c.retryAfterDeviceChange(record.Snapshot.ID, call)
+		return
+	}
+	if errors.Is(err, ports.ErrCodexOAuthTokenRevoked) {
+		c.finishCredentialRejected(record.Snapshot.ID, attemptedAt, call)
+		return
+	}
+	if err != nil {
+		code, reason := classifyCodexCapacityReadFailure(err)
 		c.finishFailure(record.Snapshot.ID, attemptedAt, code, reason, call)
 		return
 	}
 	observation.Partial = false
 	c.finishSuccess(record.Snapshot.ID, observation, attemptedAt, call, "direct")
+}
+
+func (c *codexCapacityCoordinator) retryAfterDeviceChange(accountID string, call *capacityReadCall) {
+	c.mu.Lock()
+	state := c.ensureStateLocked(accountID)
+	if state.call == call {
+		state.snapshot = call.previous
+		state.invalidated = true
+		state.nextRetryAt = time.Time{}
+		state.call = nil
+		call.retry = true
+		close(call.done)
+	}
+	result := state.snapshot
+	c.mu.Unlock()
+	c.publish(accountID, &result)
+}
+
+func (c *codexCapacityCoordinator) finishCredentialRejected(accountID string, attemptedAt time.Time, call *capacityReadCall) {
+	c.manager.recordProtectedAuthenticationEvidence(accountID, codexAuthenticationCredentialRejected)
+	c.mu.Lock()
+	state := c.ensureStateLocked(accountID)
+	if state.call == call {
+		state.call = nil
+		close(call.done)
+	}
+	result := state.snapshot
+	c.mu.Unlock()
+	c.logger.Info("Codex account capacity read completed", "account_id", accountID, "trigger", "capacity", "source", "direct", "duration_ms", c.now().Sub(attemptedAt).Milliseconds(), "outcome", result.State, "failure_category", "oauth_token_revoked")
+}
+
+func classifyCodexCapacityReadFailure(err error) (string, string) {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return domain.CodexCapacityReasonCheckTimeout, "The usage-limit check timed out."
+	case errors.Is(err, context.Canceled):
+		return domain.CodexCapacityReasonCheckStopped, "The usage-limit check was interrupted."
+	case errors.Is(err, ports.ErrCodexOAuthTokenRevoked):
+		return domain.CodexCapacityReasonSkippedSignedOut, "Sign in to Codex to see subscription capacity."
+	case errors.Is(err, ports.ErrCodexCapacityRequestRejected):
+		return domain.CodexCapacityReasonProviderRejected, "Codex could not provide usage limits for this account."
+	case errors.Is(err, ports.ErrCodexCapacityProviderUnavailable):
+		return domain.CodexCapacityReasonProviderUnavailable, "Codex usage limits are temporarily unavailable."
+	default:
+		return domain.CodexCapacityReasonCheckFailed, "Usage limits could not be checked."
+	}
 }
 
 func (c *codexCapacityCoordinator) finishSuccess(accountID string, observation ports.CodexCapacityObservation, attemptedAt time.Time, call *capacityReadCall, source string) {
@@ -258,7 +347,6 @@ func (c *codexCapacityCoordinator) finishSuccess(accountID string, observation p
 	generation := state.generation
 	result := state.snapshot
 	c.mu.Unlock()
-	c.publish(accountID, &result)
 	c.scheduleResetInvalidation(accountID, generation, result)
 	c.logger.Info("Codex account capacity updated", "account_id", accountID, "trigger", "capacity", "source", source, "duration_ms", receivedAt.Sub(attemptedAt).Milliseconds(), "outcome", result.State, "classification", map[bool]string{true: "partial", false: "full"}[observation.Partial])
 }

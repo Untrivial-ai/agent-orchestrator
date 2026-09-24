@@ -291,6 +291,31 @@ func TestCodexDiscoveryUsesStructuredProviderCatalog(t *testing.T) {
 	}
 }
 
+func TestCodexDiscoveryListsNewestModelsFirst(t *testing.T) {
+	discoverer := Discoverer{CodexModels: func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.ChatModel, error) {
+		return []ports.ChatModel{
+			{ID: "gpt-5.2", DisplayName: "GPT-5.2", Default: true},
+			{ID: "legacy", DisplayName: "Legacy"},
+			{ID: "sol-5", DisplayName: "Sol 5"},
+			{ID: "sol-6-astra", DisplayName: "Sol 6 Astra"},
+			{ID: "gpt-5.10", DisplayName: "GPT-5.10"},
+			{ID: "sol-6", DisplayName: "Sol 6"},
+		}, nil
+	}}
+	got, err := discoverer.Discover(context.Background(), ports.AgentModelDiscoveryRequest{AgentID: "codex", Binary: "/bin/codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, item := range got.Models {
+		ids = append(ids, item.ID)
+	}
+	want := []string{"sol-6", "sol-6-astra", "gpt-5.10", "gpt-5.2", "sol-5", "legacy"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("model order = %v, want %v", ids, want)
+	}
+}
+
 func TestClineDiscoveryUsesACPModelOptions(t *testing.T) {
 	discoverer := Discoverer{ClineOptions: func(context.Context, ports.AgentModelDiscoveryRequest) ([]ports.ChatConfigOption, error) {
 		return []ports.ChatConfigOption{

@@ -30,9 +30,11 @@ import type { ConversationAccount, ConversationThreadState, McpServer } from "..
 export const ReauthBanner = memo(function ReauthBanner({
 	account,
 	harness,
+	reasonInTimeline = false,
 }: {
 	account: ConversationAccount;
 	harness: string;
+	reasonInTimeline?: boolean;
 }) {
 	if (!account.reauthRequiredAt) return null;
 	const command = signInCommand(harness);
@@ -47,11 +49,13 @@ export const ReauthBanner = memo(function ReauthBanner({
 				<strong className="text-xs font-semibold text-destructive">
 					Sign in again to keep going
 				</strong>
-				<p className="text-[11px] leading-relaxed text-foreground">
-					{account.reauthReason ??
-						"The provider rejected this session's credentials."}{" "}
-					Nothing will run until it is fixed, and the worktree is untouched.
-				</p>
+				{!reasonInTimeline ? (
+					<p className="text-[11px] leading-relaxed text-foreground">
+						{account.reauthReason ??
+							"The provider rejected this session's credentials."}{" "}
+						Nothing will run until it is fixed, and the worktree is untouched.
+					</p>
+				) : null}
 				<p className="text-[11px] leading-relaxed text-muted-foreground">
 					{command ? (
 						<>

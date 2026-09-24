@@ -82,11 +82,18 @@ func (s *Service) EnsureAgentReadiness(ctx context.Context, agentID string, purp
 // InvalidateAgentInstallation marks an agent's installation observation stale.
 func (s *Service) InvalidateAgentInstallation(agentID string) {
 	s.readiness.Invalidate(agentID, readinessInvalidateInstallation)
+	if item, ok := s.agent(agentID); ok {
+		if invalidator, ok := item.Agent.(ports.AgentBinaryResolutionInvalidator); ok {
+			invalidator.InvalidateBinaryResolution()
+		}
+	}
+	s.InvalidateModelCatalogs(agentID)
 }
 
 // InvalidateAgentAuthentication marks an agent's authentication observation stale.
 func (s *Service) InvalidateAgentAuthentication(agentID string) {
 	s.readiness.Invalidate(agentID, readinessInvalidateAuthentication)
+	s.InvalidateModelCatalogs(agentID)
 	if agentID == string(domain.HarnessCodex) && s.codexAccounts != nil {
 		if accountID := s.codexAccounts.activeAccountID(); accountID != "" {
 			s.codexAccounts.invalidate(accountID)

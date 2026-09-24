@@ -1,8 +1,9 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { Children, memo, useEffect, useRef, type ReactNode } from "react";
 import {
 	ActivityIndicator,
 	Animated,
+	Easing,
 	Image,
 	Pressable,
 	StyleSheet,
@@ -14,11 +15,62 @@ import {
 	type ViewStyle,
 } from "react-native";
 import { haptics } from "./haptics";
+import { BREATHE_MS, shouldBreathe, shouldSpin, SPIN_MS } from "./motion";
+import { useEnterTransition, usePressScale } from "./motionHooks";
+import { NativeHeaderButton, type NativeHeaderButtonIcon } from "./native-header-button";
+import { useOptionalSidebarNavigation } from "./sidebar-navigation-context";
+import { useReducedMotion } from "./useReducedMotion";
+import { fontScaleCap, press, space, type } from "./tokens";
 import type { ConnStatus } from "./store";
 import { statusVisual, type Theme } from "./theme";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
 // AO mascot glyph (transparent) shown beside each screen heading.
 import MASCOT from "../assets/mascot.png";
+
+/**
+ * The app's breathing loop, in one place.
+ *
+ * "Working" is the only state that moves, and it moves the same way wherever it
+ * appears: a slow opacity pulse. Returns the animated value to drive it, or
+ * `undefined` when the loop must not run — which is every state that is not
+ * working, and everything at all under Reduce Motion.
+ *
+ * The setting is consumed here rather than at the call sites, so honouring it
+ * once fixes every consumer — status badges, the connection lamp, project rows —
+ * without touching any of them.
+ */
+export function useBreathing(enabled: boolean): Animated.Value | undefined {
+	const pulse = useRef(new Animated.Value(1)).current;
+	const reduceMotion = useReducedMotion();
+	const animate = shouldBreathe(reduceMotion, enabled);
+	useEffect(() => {
+		// Deliberately not a zero duration: a zero-length loop is a busy loop, so
+		// the animation must not start at all.
+		if (!animate) return;
+		const loop = Animated.loop(
+			Animated.sequence([
+				Animated.timing(pulse, {
+					toValue: 0.35,
+					duration: BREATHE_MS,
+					useNativeDriver: true,
+				}),
+				Animated.timing(pulse, {
+					toValue: 1,
+					duration: BREATHE_MS,
+					useNativeDriver: true,
+				}),
+			]),
+		);
+		loop.start();
+		return () => {
+			loop.stop();
+			// Leave it at full opacity; a stopped loop otherwise freezes mid-fade,
+			// which reads as a rendering bug rather than a resting state.
+			pulse.setValue(1);
+		};
+	}, [animate, pulse]);
+	return animate ? pulse : undefined;
+}
 
 // A gently breathing dot - the only motion in the UI, reserved for "working".
 // Memoized so an unrelated parent re-render doesn't tear down and restart the
@@ -32,27 +84,7 @@ export const Dot = memo(function Dot({
 	size?: number;
 	breathing?: boolean;
 }) {
-	const pulse = useRef(new Animated.Value(1)).current;
-	useEffect(() => {
-		if (!breathing) return;
-		const loop = Animated.loop(
-			Animated.sequence([
-				Animated.timing(pulse, {
-					toValue: 0.35,
-					duration: 1200,
-					useNativeDriver: true,
-				}),
-				Animated.timing(pulse, {
-					toValue: 1,
-					duration: 1200,
-					useNativeDriver: true,
-				}),
-			]),
-		);
-		loop.start();
-		return () => loop.stop();
-	}, [breathing, pulse]);
-
+	const pulse = useBreathing(breathing);
 	return (
 		<Animated.View
 			style={{
@@ -60,11 +92,52 @@ export const Dot = memo(function Dot({
 				height: size,
 				borderRadius: size / 2,
 				backgroundColor: color,
-				opacity: breathing ? pulse : 1,
+				opacity: pulse ?? 1,
 			}}
 		/>
 	);
 });
+
+/**
+ * A continuous turn, for a glyph that means "in progress".
+ *
+ * A circle drawn still reads as stopped, which is the one thing a progress
+ * indicator must not say — and a pulse is a different signal: it reads as waiting
+ * or attention, not as work happening. Linear and endless, so nothing about it
+ * suggests it is about to finish. Returning a fragment when the loop is off keeps
+ * the resting state free of an extra view.
+ */
+export function Spinning({ enabled, children }: { enabled: boolean; children: ReactNode }) {
+	const spin = useRef(new Animated.Value(0)).current;
+	const reduceMotion = useReducedMotion();
+	const animate = shouldSpin(reduceMotion, enabled);
+	useEffect(() => {
+		if (!animate) return;
+		const loop = Animated.loop(
+			Animated.timing(spin, {
+				toValue: 1,
+				duration: SPIN_MS,
+				easing: Easing.linear,
+				useNativeDriver: true,
+			}),
+		);
+		loop.start();
+		return () => {
+			loop.stop();
+			// Back to the starting angle: a stopped loop otherwise leaves the glyph
+			// frozen mid-turn, which reads as the progress it is depicting.
+			spin.setValue(0);
+		};
+	}, [animate, spin]);
+	if (!animate) return <>{children}</>;
+	return (
+		<Animated.View
+			style={{ transform: [{ rotate: spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] }) }] }}
+		>
+			{children}
+		</Animated.View>
+	);
+}
 
 // A selectable pill - used by the project switcher, PR filters, and spawn picker
 // so the active/inactive color logic lives in exactly one place.
@@ -84,13 +157,19 @@ export function Pill({
 	const s = useThemedStyles(makeStyles);
 	return (
 		<Pressable
+			accessibilityRole="button"
+			accessibilityState={{ selected: active }}
 			onPress={() => {
 				haptics.select();
 				onPress();
 			}}
 			style={[s.pill, active && s.pillActive, style]}
 		>
-			<Text numberOfLines={1} style={[s.pillText, active && s.pillTextActive, textStyle]}>
+			<Text
+				numberOfLines={1}
+				maxFontSizeMultiplier={fontScaleCap.chrome}
+				style={[s.pillText, active && s.pillTextActive, textStyle]}
+			>
 				{label}
 			</Text>
 		</Pressable>
@@ -104,7 +183,9 @@ export function StatusBadge({ status }: { status?: string | null }) {
 	return (
 		<View style={s.badge}>
 			<Dot color={v.color} breathing={v.breathing} size={8} />
-			<Text style={[s.badgeText, { color: v.color }]}>{v.label}</Text>
+			<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={[s.badgeText, { color: v.color }]}>
+				{v.label}
+			</Text>
 		</View>
 	);
 }
@@ -130,8 +211,12 @@ export function Chip({
 	const bg = tint ?? t.bgSubtle;
 	return (
 		<View style={[s.chip, { backgroundColor: bg }]}>
-			{icon ? <Feather name={icon} size={11} color={fg} style={{ marginRight: 4 }} /> : null}
-			<Text style={[s.chipText, { color: fg }, mono && { fontFamily: t.fontMono, fontSize: 11 }]} numberOfLines={1}>
+			{icon ? <Feather name={icon} size={12} color={fg} style={{ marginRight: space.xxs }} /> : null}
+			<Text
+				style={[s.chipText, { color: fg }, mono && { fontFamily: t.fontMono, fontSize: type.caption2.fontSize }]}
+				numberOfLines={1}
+				maxFontSizeMultiplier={fontScaleCap.chrome}
+			>
 				{label}
 			</Text>
 		</View>
@@ -148,17 +233,24 @@ export function Card({
 	style?: StyleProp<ViewStyle>;
 }) {
 	const s = useThemedStyles(makeStyles);
+	const pressFx = usePressScale();
 	if (!onPress) return <View style={[s.card, style]}>{children}</View>;
 	return (
-		<Pressable
-			onPress={() => {
-				haptics.tap();
-				onPress();
-			}}
-			style={({ pressed }) => [s.card, pressed && s.cardPressed, style]}
-		>
-			{children}
-		</Pressable>
+		// The animated transform lives on a wrapper: `Animated.createAnimatedComponent`
+		// drops function styles, and the card's pressed state needs one.
+		<Animated.View style={[style, pressFx.style]}>
+			<Pressable
+				onPressIn={pressFx.onPressIn}
+				onPressOut={pressFx.onPressOut}
+				onPress={() => {
+					haptics.tap();
+					onPress();
+				}}
+				style={({ pressed }) => [s.card, pressed && s.cardPressed]}
+			>
+				{children}
+			</Pressable>
+		</Animated.View>
 	);
 }
 
@@ -167,8 +259,14 @@ export function SectionHeader({ label, color, count }: { label: string; color: s
 	return (
 		<View style={s.sectionHeader}>
 			<View style={[s.sectionBar, { backgroundColor: color }]} />
-			<Text style={s.sectionLabel}>{label.toUpperCase()}</Text>
-			{count !== undefined ? <Text style={s.sectionCount}>{count}</Text> : null}
+			<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={s.sectionLabel}>
+				{label.toUpperCase()}
+			</Text>
+			{count !== undefined ? (
+				<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={s.sectionCount}>
+					{count}
+				</Text>
+			) : null}
 		</View>
 	);
 }
@@ -181,28 +279,26 @@ export function HeaderIconButton({
 	onPress,
 	badge = 0,
 }: {
-	icon: keyof typeof Feather.glyphMap;
+	icon: NativeHeaderButtonIcon;
 	/** Required — the control has no visible text. */
 	label: string;
 	onPress: () => void;
 	/** Non-zero shows an unread dot. The number itself is not drawn. */
 	badge?: number;
 }) {
-	const t = useTheme();
 	const s = useThemedStyles(makeStyles);
 	return (
-		<Pressable
-			hitSlop={10}
-			accessibilityLabel={badge > 0 ? `${label}, ${badge} unread` : label}
-			onPress={() => {
-				haptics.tap();
-				onPress();
-			}}
-			style={({ pressed }) => [s.headerIconBtn, pressed && { opacity: 0.6 }]}
-		>
-			<Feather name={icon} size={21} color={t.textSecondary} />
+		<View style={s.headerIconBtn} accessibilityLabel={badge > 0 ? `${label}, ${badge} unread` : label}>
+			<NativeHeaderButton
+				icon={icon}
+				label={badge > 0 ? `${label}, ${badge} unread` : label}
+				onPress={() => {
+					haptics.tap();
+					onPress();
+				}}
+			/>
 			{badge > 0 ? <View style={s.headerBadge} /> : null}
-		</Pressable>
+		</View>
 	);
 }
 
@@ -210,27 +306,30 @@ export function HeaderIconButton({
 // green when the daemon is reachable and goes dark when it isn't. The tip sits
 // at ~85% across and ~7% down `mascot.png` — where `wandTip`/`wandHalo` below
 // get their offsets from.
-function MascotLamp({ status }: { status?: ConnStatus }) {
+export function MascotLamp({ status, size = 40 }: { status?: ConnStatus; size?: number }) {
 	const t = useTheme();
 	const s = useThemedStyles(makeStyles);
 	const color = status === "open" ? t.green : status === "connecting" ? t.amber : t.textFaint;
 	const lit = status === "open" || status === "connecting";
 	const label = status === "open" ? "Connected" : status === "connecting" ? "Connecting" : "Offline";
+	// Every offset below is a fraction of the artwork's 40x35 box, so the lamp
+	// stays on the wand tip at whatever size the logo is drawn.
+	const k = size / 40;
 	return (
 		<View
-			style={s.mascotWrap}
+			style={[s.mascotWrap, { width: size, height: 35 * k }]}
 			accessible
 			accessibilityRole="image"
 			accessibilityLabel={status ? `AO mascot, ${label}` : "AO mascot"}
 		>
-			<Image source={MASCOT} style={s.mascot} resizeMode="contain" />
+			<Image source={MASCOT} style={{ width: size, height: 35 * k }} resizeMode="contain" />
 			{status ? (
 				<>
 					{/* Halo first, dot on top: RN has no boxShadow, so the glow is a
 					    larger translucent circle plus a platform shadow/elevation. */}
-					{lit ? <View style={[s.wandHalo, { backgroundColor: color, shadowColor: color }]} /> : null}
-					<View style={s.wandTip}>
-						<Dot color={color} size={7} breathing={status === "connecting"} />
+					{lit ? <View style={[s.wandHalo, { left: 26 * k, top: -4 * k, width: 16 * k, height: 16 * k, borderRadius: 8 * k, backgroundColor: color, shadowColor: color }]} /> : null}
+					<View style={[s.wandTip, { left: 30.5 * k }]}>
+						<Dot color={color} size={7 * k} breathing={status === "connecting"} />
 					</View>
 				</>
 			) : null}
@@ -240,32 +339,77 @@ function MascotLamp({ status }: { status?: ConnStatus }) {
 
 export function ScreenHeader({
 	title,
-	subtitle,
+	left,
 	right,
-	status,
 }: {
 	title: string;
-	subtitle?: string;
+	/** Detail routes can supply a back action instead of the sidebar button. */
+	left?: ReactNode;
 	right?: ReactNode;
-	/** Drives the wand-tip lamp. Omit to render the mascot with no lamp. */
-	status?: ConnStatus;
 }) {
 	const s = useThemedStyles(makeStyles);
+	const sidebar = useOptionalSidebarNavigation();
 	return (
 		<View style={s.screenHeader}>
+			{left ?? (sidebar ? <HeaderIconButton icon="menu" label="Open navigation" onPress={sidebar.openSidebar} /> : null)}
 			<View style={{ flex: 1 }}>
-				<View style={s.titleRow}>
-					<Text style={s.screenTitle}>{title}</Text>
-					<MascotLamp status={status} />
-				</View>
-				{subtitle ? (
-					<Text style={s.screenSubtitle} numberOfLines={1}>
-						{subtitle}
-					</Text>
-				) : null}
+				<Text maxFontSizeMultiplier={fontScaleCap.title} style={s.screenTitle}>
+					{title}
+				</Text>
 			</View>
 			{right}
 		</View>
+	);
+}
+
+/**
+ * A board group's heading. With `onToggle` it folds its section away — same
+ * typography and rule as before, plus the chevron that says so.
+ *
+ * The chevron sits beside the label rather than at the far edge so the row still
+ * reads as one heading with a rule running out of it, which is what the board
+ * looked like before sections could be folded.
+ */
+export function ListSectionHeader({
+	label,
+	count,
+	open = true,
+	onToggle,
+}: {
+	label: string;
+	count?: number;
+	open?: boolean;
+	onToggle?: () => void;
+}) {
+	const t = useTheme();
+	const s = useThemedStyles(makeStyles);
+	const body = (
+		<>
+			<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={s.listSectionLabel}>
+				{label}
+			</Text>
+			{onToggle ? (
+				<Feather name={open ? "chevron-down" : "chevron-right"} size={15} color={t.textTertiary} />
+			) : null}
+			{count !== undefined ? (
+				<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={s.listSectionCount}>
+					{count}
+				</Text>
+			) : null}
+		</>
+	);
+
+	if (!onToggle) return <View style={s.listSectionHeader}>{body}</View>;
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityState={{ expanded: open }}
+			accessibilityLabel={`${label} section`}
+			onPress={onToggle}
+			style={({ pressed }) => [s.listSectionHeader, pressed && { opacity: 0.6 }]}
+		>
+			{body}
+		</Pressable>
 	);
 }
 
@@ -292,35 +436,47 @@ export function Button({
 	const isDanger = variant === "danger";
 	// `onAccent`, not a literal: near-black reads best on the dark theme's light
 	// accent, but is invisible on light mode's darker one, which needs white.
-	const fg = isPrimary ? t.onAccent : isDanger ? t.red : t.blue;
+	const fg = isPrimary ? t.onAccent : isDanger ? t.red : t.accent;
+	const pressFx = usePressScale(disabled || loading);
 	return (
-		<Pressable
-			onPress={() => {
-				// Danger actions get a cautionary buzz; everything else a light tap.
-				if (isDanger) haptics.warning();
-				else haptics.tap();
-				onPress();
-			}}
-			disabled={disabled || loading}
-			style={({ pressed }) => [
-				s.btn,
-				isPrimary && s.btnPrimary,
-				!isPrimary && s.btnGhost,
-				isDanger && s.btnDanger,
-				(disabled || loading) && { opacity: 0.5 },
-				pressed && { opacity: 0.8 },
-				style,
-			]}
-		>
-			{loading ? (
-				<ActivityIndicator color={fg} size="small" />
-			) : (
-				<View style={s.btnInner}>
-					{icon ? <Feather name={icon} size={15} color={fg} style={{ marginRight: 7 }} /> : null}
-					<Text style={[s.btnText, { color: fg }]}>{title}</Text>
-				</View>
-			)}
-		</Pressable>
+		<Animated.View style={[style, pressFx.style]}>
+			<Pressable
+				accessibilityRole="button"
+				// The label is pinned to the visible title rather than left to the child
+				// text: while a request is in flight the text is replaced by a spinner,
+				// and the control would otherwise announce with no name at all.
+				accessibilityLabel={title}
+				accessibilityState={{ disabled: disabled || loading, busy: loading }}
+				onPressIn={pressFx.onPressIn}
+				onPressOut={pressFx.onPressOut}
+				onPress={() => {
+					// Danger actions get a cautionary buzz; everything else a light tap.
+					if (isDanger) haptics.warning();
+					else haptics.tap();
+					onPress();
+				}}
+				disabled={disabled || loading}
+				style={({ pressed }) => [
+					s.btn,
+					isPrimary && s.btnPrimary,
+					!isPrimary && s.btnGhost,
+					isDanger && s.btnDanger,
+					(disabled || loading) && { opacity: 0.5 },
+					pressed && { opacity: press.opacity },
+				]}
+			>
+				{loading ? (
+					<ActivityIndicator color={fg} size="small" />
+				) : (
+					<View style={s.btnInner}>
+						{icon ? <Feather name={icon} size={15} color={fg} style={{ marginRight: space.xs }} /> : null}
+						<Text maxFontSizeMultiplier={fontScaleCap.body} style={[s.btnText, { color: fg }]}>
+							{title}
+						</Text>
+					</View>
+				)}
+			</Pressable>
+		</Animated.View>
 	);
 }
 
@@ -391,9 +547,9 @@ export function SheetHeader({
  * share. Pure padding, so it needs no theme and can be a plain const.
  */
 export const SHEET_SCROLL_CONTENT = {
-	paddingHorizontal: 20,
-	paddingTop: 22,
-	paddingBottom: 24,
+	paddingHorizontal: space.xl,
+	paddingTop: space.xl,
+	paddingBottom: space.xxl,
 };
 
 /** A sheet whose content is short and fixed, so it needs no scrolling root. */
@@ -488,40 +644,61 @@ export function SettingsRow({
 	const s = useThemedStyles(makeStyles);
 	const labelColor = destructive ? t.red : t.textPrimary;
 	const iconColor = destructive ? t.red : t.textSecondary;
+	const pressFx = usePressScale();
 	const body = (
 		<>
 			{icon ? <Feather name={icon} size={17} color={iconColor} style={s.rowIcon} /> : null}
-			<Text style={[s.rowLabel, { color: labelColor }]} numberOfLines={1}>
+			<Text
+				style={[s.rowLabel, { color: labelColor }]}
+				numberOfLines={1}
+				maxFontSizeMultiplier={fontScaleCap.body}
+			>
 				{label}
 			</Text>
-			{right ?? (
-				<>
-					{loading ? <ActivityIndicator size="small" color={t.textTertiary} /> : null}
-					{!loading && leading ? leading : null}
-					{!loading && value ? (
-						<Text style={[s.rowValue, valueColor ? { color: valueColor } : null]} numberOfLines={1}>
-							{value}
-						</Text>
-					) : null}
-					{onPress ? <Feather name="chevron-right" size={17} color={t.textFaint} style={s.rowChevron} /> : null}
-				</>
-			)}
+			{/* The accessory never shrinks: at large text sizes the label has to be the
+			    one that gives way, or it draws underneath the switch. */}
+			<View style={s.rowAccessory}>
+				{right ?? (
+					<>
+						{loading ? <ActivityIndicator size="small" color={t.textTertiary} /> : null}
+						{!loading && leading ? leading : null}
+						{!loading && value ? (
+							<Text
+								style={[s.rowValue, valueColor ? { color: valueColor } : null]}
+								numberOfLines={1}
+								maxFontSizeMultiplier={fontScaleCap.chrome}
+							>
+								{value}
+							</Text>
+						) : null}
+						{onPress ? <Feather name="chevron-right" size={17} color={t.textFaint} style={s.rowChevron} /> : null}
+					</>
+				)}
+			</View>
 		</>
 	);
 
 	if (!onPress) return <View style={[s.row, disabled && s.rowDisabled]}>{body}</View>;
 	return (
-		<Pressable
-			disabled={disabled || loading}
-			onPress={() => {
-				if (destructive) haptics.warning();
-				else haptics.tap();
-				onPress();
-			}}
-			style={({ pressed }) => [s.row, pressed && s.rowPressed, (disabled || loading) && s.rowDisabled]}
-		>
-			{body}
-		</Pressable>
+		<Animated.View style={pressFx.style}>
+			<Pressable
+				accessibilityRole="button"
+				// No `accessibilityLabel`: the row's own text is the name, and pinning one
+				// would drop the accessory value ("Connected", "2 devices") from it.
+				accessibilityState={{ disabled: disabled || loading, busy: loading }}
+				disabled={disabled || loading}
+				onPressIn={pressFx.onPressIn}
+				onPressOut={pressFx.onPressOut}
+				onPress={() => {
+					if (destructive) haptics.warning();
+					else haptics.tap();
+					onPress();
+				}}
+				style={({ pressed }) => [s.row, pressed && s.rowPressed, (disabled || loading) && s.rowDisabled]}
+			>
+				{body}
+			</Pressable>
+		</Animated.View>
 	);
 }
 
@@ -559,7 +736,7 @@ export function SettingsToggle({
 							onValueChange(v);
 						}}
 						disabled={disabled}
-						trackColor={{ true: t.blue, false: t.borderStrong }}
+						trackColor={{ true: t.accent, false: t.borderStrong }}
 					/>
 				)
 			}
@@ -591,31 +768,36 @@ export function IconButton({
 }) {
 	const t = useTheme();
 	const s = useThemedStyles(makeStyles);
+	const pressFx = usePressScale(disabled || loading);
 	return (
-		<Pressable
-			accessibilityRole="button"
-			accessibilityLabel={label}
-			accessibilityState={{ disabled: disabled || loading }}
-			disabled={disabled || loading}
-			hitSlop={6}
-			onPress={() => {
-				if (destructive) haptics.warning();
-				else haptics.tap();
-				onPress();
-			}}
-			style={({ pressed }) => [
-				s.iconBtn,
-				destructive && { borderColor: t.tintRed },
-				pressed && (destructive ? s.iconBtnPressedDanger : s.iconBtnPressed),
-				(disabled || loading) && { opacity: 0.4 },
-			]}
-		>
-			{loading ? (
-				<ActivityIndicator size="small" color={t.textSecondary} />
-			) : (
-				<Feather name={icon} size={15} color={destructive ? t.red : t.textSecondary} />
-			)}
-		</Pressable>
+		<Animated.View style={pressFx.style}>
+			<Pressable
+				accessibilityRole="button"
+				accessibilityLabel={label}
+				accessibilityState={{ disabled: disabled || loading }}
+				disabled={disabled || loading}
+				hitSlop={6}
+				onPressIn={pressFx.onPressIn}
+				onPressOut={pressFx.onPressOut}
+				onPress={() => {
+					if (destructive) haptics.warning();
+					else haptics.tap();
+					onPress();
+				}}
+				style={({ pressed }) => [
+					s.iconBtn,
+					destructive && { borderColor: t.tintRed },
+					pressed && (destructive ? s.iconBtnPressedDanger : s.iconBtnPressed),
+					(disabled || loading) && { opacity: 0.4 },
+				]}
+			>
+				{loading ? (
+					<ActivityIndicator size="small" color={t.textSecondary} />
+				) : (
+					<Feather name={icon} size={15} color={destructive ? t.red : t.textSecondary} />
+				)}
+			</Pressable>
+		</Animated.View>
 	);
 }
 
@@ -632,50 +814,70 @@ export function EmptyState({
 }) {
 	const t = useTheme();
 	const s = useThemedStyles(makeStyles);
+	// An empty state appears once per screen and then sits still, so it can afford
+	// a quiet entrance. Lists and rows stay unstaggered.
+	const enter = useEnterTransition(space.xxs);
 	return (
-		<View style={s.empty}>
+		<Animated.View style={[s.empty, enter]}>
 			<View style={s.emptyIcon}>
-				<Feather name={icon} size={26} color={t.textTertiary} />
+				<Feather name={icon} size={24} color={t.textTertiary} />
 			</View>
-			<Text style={s.emptyTitle}>{title}</Text>
-			{message ? <Text style={s.emptyMsg}>{message}</Text> : null}
-			{action ? <View style={{ marginTop: 18 }}>{action}</View> : null}
-		</View>
+			<Text maxFontSizeMultiplier={fontScaleCap.body} style={s.emptyTitle}>
+				{title}
+			</Text>
+			{message ? (
+				<Text maxFontSizeMultiplier={fontScaleCap.body} style={s.emptyMsg}>
+					{message}
+				</Text>
+			) : null}
+			{action ? <View style={{ marginTop: space.lg }}>{action}</View> : null}
+		</Animated.View>
 	);
 }
 
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
-		badge: { flexDirection: "row", alignItems: "center", gap: 6 },
-		badgeText: { fontSize: 12, fontWeight: "600" },
+		listSectionHeader: {
+			flexDirection: "row",
+			alignItems: "center",
+			gap: space.sm,
+			paddingHorizontal: space.lg,
+			paddingTop: space.lg,
+			paddingBottom: space.xxs,
+		},
+		listSectionLabel: { fontFamily: "Geist_500Medium", color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
+		// Mono and tabular so a count changing from 9 to 10 does not shift the rule.
+		listSectionCount: { color: t.textFaint, fontSize: type.caption1.fontSize, fontWeight: "600", fontFamily: t.fontMono },
+		badge: { flexDirection: "row", alignItems: "center", gap: space.xs },
+		badgeText: { fontFamily: "Geist_600SemiBold", fontSize: type.caption1.fontSize, fontWeight: "600" },
 
 		pill: {
-			paddingHorizontal: 14,
-			paddingVertical: 7,
+			paddingHorizontal: space.md,
+			paddingVertical: space.xs,
 			borderRadius: 20,
 			borderWidth: 1,
 			borderColor: t.borderDefault,
 			backgroundColor: t.bgElevated,
 		},
-		pillActive: { backgroundColor: t.tintBlue, borderColor: t.blue },
-		pillText: { color: t.textSecondary, fontSize: 13, fontWeight: "600" },
-		pillTextActive: { color: t.blue },
+		pillActive: { backgroundColor: t.accentTint, borderColor: t.accent },
+		pillText: { fontFamily: "Geist_600SemiBold", color: t.textSecondary, fontSize: type.footnote.fontSize, fontWeight: "600" },
+		pillTextActive: { color: t.accent },
 
 		chip: {
 			flexDirection: "row",
 			alignItems: "center",
-			paddingHorizontal: 8,
-			paddingVertical: 3,
-			borderRadius: 6,
+			paddingHorizontal: space.sm,
+			paddingVertical: space.hair,
+			borderRadius: 4,
 		},
-		chipText: { fontSize: 11, fontWeight: "600" },
+		chipText: { fontFamily: "Geist_600SemiBold", fontSize: type.caption2.fontSize, fontWeight: "600" },
 
 		card: {
 			backgroundColor: t.bgElevated,
 			borderRadius: 12,
 			borderWidth: 1,
 			borderColor: t.borderSubtle,
-			padding: 14,
+			padding: space.md,
 		},
 		cardPressed: {
 			backgroundColor: t.bgElevatedHover,
@@ -685,38 +887,38 @@ const makeStyles = (t: Theme) =>
 		sectionHeader: {
 			flexDirection: "row",
 			alignItems: "center",
-			paddingHorizontal: 16,
-			paddingTop: 20,
-			paddingBottom: 10,
-			gap: 9,
+			paddingHorizontal: space.lg,
+			paddingTop: space.xl,
+			paddingBottom: space.sm,
+			gap: space.sm,
 		},
 		sectionBar: { width: 3, height: 13, borderRadius: 2 },
-		sectionLabel: {
+		sectionLabel: { fontFamily: "Geist_600SemiBold",
 			color: t.textSecondary,
-			fontSize: 11,
+			fontSize: type.caption2.fontSize,
 			letterSpacing: 1.2,
-			fontWeight: "700",
+			fontWeight: "600",
 			flex: 1,
 		},
 		sectionCount: {
 			color: t.textTertiary,
-			fontSize: 12,
-			fontWeight: "700",
+			fontSize: type.caption1.fontSize,
+			fontWeight: "600",
 			fontFamily: t.fontMono,
 		},
 
 		screenHeader: {
 			flexDirection: "row",
 			alignItems: "center",
-			paddingHorizontal: 16,
-			paddingTop: 8,
-			paddingBottom: 10,
-			gap: 12,
+			paddingHorizontal: space.lg,
+			paddingTop: space.sm,
+			paddingBottom: space.sm,
+			gap: space.md,
 		},
-		titleRow: { flexDirection: "row", alignItems: "center", gap: 9 },
+		titleRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
 		// Enlarged from 30x26: the wand-tip lamp replaced the "live" pill, so the tip
 		// has to be big enough for the dot to actually read as a status light.
-		mascotWrap: { width: 40, height: 35, marginTop: 3 },
+		mascotWrap: { width: 40, height: 35, marginTop: space.hair },
 		mascot: { width: 40, height: 35 },
 		// Positioned on the wand tip — see the note above MascotLamp. Offsets are the
 		// tip fraction of the 40x35 box, less half the dot/halo so they sit centred.
@@ -740,17 +942,17 @@ const makeStyles = (t: Theme) =>
 			shadowRadius: 6,
 			shadowOffset: { width: 0, height: 0 },
 		},
-		screenTitle: {
+		screenTitle: { fontFamily: "Geist_600SemiBold",
 			color: t.textPrimary,
-			fontSize: 26,
-			fontWeight: "800",
+			fontSize: type.title1.fontSize,
+			fontWeight: "600",
 			letterSpacing: -0.5,
 		},
-		screenSubtitle: { color: t.textTertiary, fontSize: 12, marginTop: 1 },
+		screenSubtitle: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.caption1.fontSize, marginTop: space.none },
 		headerIconBtn: {
 			alignItems: "center",
 			justifyContent: "center",
-			padding: 2,
+			padding: space.hair,
 		},
 		headerBadge: {
 			position: "absolute",
@@ -758,39 +960,39 @@ const makeStyles = (t: Theme) =>
 			right: 1,
 			width: 9,
 			height: 9,
-			borderRadius: 4.5,
-			backgroundColor: t.blue,
+			borderRadius: 4,
+			backgroundColor: t.accent,
 			borderWidth: 1.5,
 			borderColor: t.bgBase,
 		},
 
 		btn: {
-			borderRadius: 10,
-			paddingVertical: 13,
-			paddingHorizontal: 16,
+			borderRadius: 8,
+			paddingVertical: space.md,
+			paddingHorizontal: space.lg,
 			alignItems: "center",
 		},
 		btnInner: { flexDirection: "row", alignItems: "center" },
-		btnPrimary: { backgroundColor: t.blue },
+		btnPrimary: { backgroundColor: t.accent },
 		btnGhost: {
 			borderWidth: 1,
 			borderColor: t.borderStrong,
 			backgroundColor: t.bgElevated,
 		},
 		btnDanger: { borderColor: t.tintRed, backgroundColor: t.tintRed },
-		btnText: { fontSize: 15, fontWeight: "700" },
+		btnText: { fontFamily: "Geist_600SemiBold", fontSize: type.subheadline.fontSize, fontWeight: "600" },
 
 		step: {
 			flexDirection: "row",
 			alignItems: "flex-start",
-			gap: 13,
-			paddingVertical: 14,
+			gap: space.md,
+			paddingVertical: space.md,
 		},
-		stepCompact: { paddingVertical: 6, alignItems: "center", gap: 11 },
+		stepCompact: { paddingVertical: space.xs, alignItems: "center", gap: space.md },
 		stepBadge: {
 			width: 30,
 			height: 30,
-			borderRadius: 9,
+			borderRadius: 8,
 			backgroundColor: t.bgElevated,
 			borderWidth: 1,
 			borderColor: t.borderSubtle,
@@ -798,15 +1000,15 @@ const makeStyles = (t: Theme) =>
 			justifyContent: "center",
 		},
 		stepBadgeCompact: { width: 23, height: 23, borderRadius: 12 },
-		stepNum: { color: t.textSecondary, fontSize: 13, fontWeight: "700" },
-		stepNumCompact: { fontSize: 11 },
-		stepTitle: { color: t.textPrimary, fontSize: 15, fontWeight: "700" },
-		stepTitleCompact: { fontSize: 14, fontWeight: "600" },
-		stepHint: {
+		stepNum: { fontFamily: "Geist_600SemiBold", color: t.textSecondary, fontSize: type.footnote.fontSize, fontWeight: "600" },
+		stepNumCompact: { fontFamily: "Geist_400Regular", fontSize: type.caption2.fontSize },
+		stepTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "600" },
+		stepTitleCompact: { fontFamily: "Geist_600SemiBold", fontSize: type.subheadline.fontSize, fontWeight: "600" },
+		stepHint: { fontFamily: "Geist_400Regular",
 			color: t.textTertiary,
-			fontSize: 13,
-			lineHeight: 19,
-			marginTop: 3,
+			fontSize: type.footnote.fontSize,
+			lineHeight: type.footnote.lineHeight,
+			marginTop: space.hair,
 		},
 
 		// No card, corners or grabber here — the native sheet draws all of that. The
@@ -815,35 +1017,35 @@ const makeStyles = (t: Theme) =>
 		// reserves room for the home indicator, and adding it again left a dead strip.
 		sheetScreen: {
 			backgroundColor: t.bgSurface,
-			paddingHorizontal: 20,
-			paddingTop: 22,
-			paddingBottom: 20,
+			paddingHorizontal: space.xl,
+			paddingTop: space.xl,
+			paddingBottom: space.xl,
 		},
 		// Padding lives on the scroll content rather than a wrapper, so a scrolling
 		// sheet's list can run edge to edge while its rows keep the same inset.
-		sheetHeader: { paddingBottom: 2 },
-		sheetTitleRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-		sheetTitle: {
+		sheetHeader: { paddingBottom: space.hair },
+		sheetTitleRow: { flexDirection: "row", alignItems: "center", gap: space.md },
+		sheetTitle: { fontFamily: "Geist_600SemiBold",
 			color: t.textPrimary,
-			fontSize: 19,
-			fontWeight: "800",
+			fontSize: type.title3.fontSize,
+			fontWeight: "600",
 			letterSpacing: -0.3,
 		},
-		sheetSubtitle: {
+		sheetSubtitle: { fontFamily: "Geist_400Regular",
 			color: t.textSecondary,
-			fontSize: 13,
-			lineHeight: 19,
-			marginTop: 5,
+			fontSize: type.footnote.fontSize,
+			lineHeight: type.footnote.lineHeight,
+			marginTop: space.xxs,
 		},
 
-		group: { marginBottom: 26 },
-		groupTitle: {
+		group: { marginBottom: space.xxl },
+		groupTitle: { fontFamily: "Geist_600SemiBold",
 			color: t.textTertiary,
-			fontSize: 11,
+			fontSize: type.caption2.fontSize,
 			letterSpacing: 1.2,
-			fontWeight: "700",
-			marginBottom: 8,
-			marginLeft: 4,
+			fontWeight: "600",
+			marginBottom: space.sm,
+			marginLeft: space.xxs,
 		},
 		groupBody: {
 			backgroundColor: t.bgElevated,
@@ -852,12 +1054,12 @@ const makeStyles = (t: Theme) =>
 			borderColor: t.borderSubtle,
 			overflow: "hidden",
 		},
-		groupFooter: {
+		groupFooter: { fontFamily: "Geist_400Regular",
 			color: t.textTertiary,
-			fontSize: 12,
-			lineHeight: 17,
-			marginTop: 8,
-			marginHorizontal: 4,
+			fontSize: type.caption1.fontSize,
+			lineHeight: type.caption1.lineHeight,
+			marginTop: space.sm,
+			marginHorizontal: space.xxs,
 		},
 		// Inset to the label's x-origin (row padding + icon + gap), the iOS detail
 		// that makes a stack of rows read as one grouped list.
@@ -870,65 +1072,67 @@ const makeStyles = (t: Theme) =>
 			flexDirection: "row",
 			alignItems: "center",
 			minHeight: 48,
-			paddingVertical: 11,
-			paddingHorizontal: 14,
-			gap: 8,
+			paddingVertical: space.md,
+			paddingHorizontal: space.md,
+			gap: space.sm,
 		},
 		rowPressed: { backgroundColor: t.bgElevatedHover },
 		rowDisabled: { opacity: 0.45 },
-		rowIcon: { width: 17, marginRight: 4 },
-		rowLabel: {
+		rowIcon: { width: 17, marginRight: space.xxs },
+		rowLabel: { fontFamily: "Geist_500Medium",
 			flex: 1,
+			minWidth: 0,
 			color: t.textPrimary,
-			fontSize: 15,
+			fontSize: type.subheadline.fontSize,
 			fontWeight: "500",
 		},
-		rowValue: { color: t.textTertiary, fontSize: 14, flexShrink: 1 },
+		rowValue: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.subheadline.fontSize, flexShrink: 1 },
 		rowChevron: { marginRight: -3 },
+		rowAccessory: { flexShrink: 0, flexDirection: "row", alignItems: "center" },
 
 		iconBtn: {
 			width: 32,
 			height: 32,
-			borderRadius: 9,
+			borderRadius: 8,
 			borderWidth: 1,
 			borderColor: t.borderDefault,
 			backgroundColor: t.bgSubtle,
 			alignItems: "center",
 			justifyContent: "center",
 		},
-		iconBtnPressed: { backgroundColor: t.tintBlue, borderColor: t.blue },
+		iconBtnPressed: { backgroundColor: t.accentTint, borderColor: t.accent },
 		iconBtnPressedDanger: { backgroundColor: t.tintRed, borderColor: t.red },
 
 		empty: {
 			flex: 1,
 			alignItems: "center",
 			justifyContent: "center",
-			padding: 40,
+			padding: space.huge,
 			minHeight: 320,
 		},
 		emptyIcon: {
 			width: 64,
 			height: 64,
-			borderRadius: 18,
+			borderRadius: 16,
 			backgroundColor: t.bgElevated,
 			borderWidth: 1,
 			borderColor: t.borderSubtle,
 			alignItems: "center",
 			justifyContent: "center",
-			marginBottom: 18,
+			marginBottom: space.lg,
 		},
-		emptyTitle: {
+		emptyTitle: { fontFamily: "Geist_600SemiBold",
 			color: t.textPrimary,
-			fontSize: 17,
-			fontWeight: "700",
+			fontSize: type.body.fontSize,
+			fontWeight: "600",
 			textAlign: "center",
 		},
-		emptyMsg: {
+		emptyMsg: { fontFamily: "Geist_400Regular",
 			color: t.textSecondary,
-			fontSize: 13,
-			lineHeight: 20,
+			fontSize: type.footnote.fontSize,
+			lineHeight: type.footnote.lineHeight,
 			textAlign: "center",
-			marginTop: 8,
+			marginTop: space.sm,
 			maxWidth: 300,
 		},
 	});
@@ -938,7 +1142,7 @@ const makeStyles = (t: Theme) =>
  * orchestrator's project card.
  *
  * These three had byte-identical style blocks, each with a comment
- * acknowledging the duplication ("Matches SessionCard's shell so a PR card and
+ * acknowledging the duplication ("Matches the session card shell so a PR card and
  * a session card read as siblings"). Comments cannot keep them in step — a
  * radius changed in one place would quietly make one card a different shape
  * from its neighbours in the same scroll view. This is what those comments were
@@ -953,10 +1157,10 @@ export function cardShell(t: Theme): ViewStyle {
 		borderRadius: 12,
 		borderWidth: 1,
 		borderColor: t.borderSubtle,
-		paddingHorizontal: 14,
-		paddingVertical: 13,
-		marginHorizontal: 12,
-		marginVertical: 5,
+		paddingHorizontal: space.md,
+		paddingVertical: space.md,
+		marginHorizontal: space.md,
+		marginVertical: space.xxs,
 	};
 }
 

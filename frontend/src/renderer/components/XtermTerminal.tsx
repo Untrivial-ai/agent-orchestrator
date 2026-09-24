@@ -52,6 +52,9 @@ import {
 import { buildTerminalThemes } from "../lib/terminal-themes";
 import { useUiStore, type Theme, type ThemeStyle } from "../stores/ui-store";
 import { TerminalSearch } from "./TerminalSearch";
+import { useLinkPreview } from "../hooks/useLinkPreview";
+import { LinkPreviewCard, LinkPreviewCardLoading } from "./LinkPreviewCard";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "./ui/hover-card";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -128,6 +131,10 @@ function loadRenderer(term: Terminal): void {
 const SUPPRESS_NATIVE_PASTE_MS = 100;
 /** Long enough to notice, short enough that a second copy reads as a second copy. */
 const COPY_TOAST_MS = 1400;
+/** Hover dwell before the link preview card opens, matching ui/hover-card. */
+const LINK_PREVIEW_OPEN_MS = 300;
+/** Grace period to move the pointer from the link into the preview card. */
+const LINK_PREVIEW_CLOSE_MS = 300;
 const AUTOFOCUS_RETRY_FRAMES = 2;
 const COLOR_SCHEME_UPDATE_MODE = 2031;
 const COLOR_SCHEME_QUERY = 996;
@@ -138,6 +145,46 @@ function preparePastedText(text: string): string {
 
 function bracketPastedText(text: string, bracketedPasteMode: boolean): string {
 	return bracketedPasteMode ? `\x1b[200~${text}\x1b[201~` : text;
+}
+
+// xterm marks physically wrapped rows (`isWrapped`) and getSelection() joins
+// them itself, but agent TUIs repaint full-screen with absolute cursor moves,
+// so their visually continuous rows never get that mark and are copied with a
+// hard newline exactly at the window edge (issue #5785). Walk the selected
+// buffer range and drop the newline between adjacent selected rows when the
+// upper row fills every column of the grid — a full-width TUI row has no line
+// end of its own. Rows xterm already merged are skipped, and a row with a
+// visible end keeps its newline.
+// ponytail: "fills the grid" is a heuristic — a genuine paragraph line that
+// happens to end at the last column joins too; buffer-level precision (what
+// getSelectionPosition gives us here) is already applied, the rest has no
+// on-screen marker to read.
+function joinVisuallyContinuousLines(term: Terminal, selection: string, columnSelection: boolean): string {
+	// xterm's column mode intentionally keeps one text line per selected buffer
+	// row, even when the upper row fills the grid. Joining those rows would
+	// change the rectangular selection into a single line.
+	if (columnSelection) return selection;
+	const range = term.getSelectionPosition();
+	if (!range) return selection;
+	const lineBreak = selection.includes("\r\n") ? "\r\n" : "\n";
+	const lines = selection.split(lineBreak);
+	const buffer = term.buffer.active;
+	let joined = lines[0] ?? "";
+	let index = 0;
+	for (let row = range.start.y + 1; row <= range.end.y; row++) {
+		// xterm already merged this row into the previous one; no text boundary here.
+		if (buffer.getLine(row)?.isWrapped) continue;
+		const text = lines[++index];
+		if (text === undefined) break;
+		const previous = buffer.getLine(row - 1);
+		// Full grid = content in the last visible cell. Read only the current grid
+		// width because xterm can retain backing cells after a resize. Null cells
+		// compose to spaces and a wide char skips its continuation cell, so this
+		// stays cell-accurate without comparing UTF-16 length to cols.
+		const continuous = !!previous && !/\s$/.test(previous.translateToString(false, 0, term.cols));
+		joined += `${continuous ? "" : lineBreak}${text}`;
+	}
+	return joined;
 }
 
 function isTerminalCopyShortcut(event: KeyboardEvent): boolean {
@@ -252,10 +299,12 @@ function canAutoFocusTerminal(host: HTMLElement): boolean {
 	if (!(activeElement instanceof HTMLElement) || activeElement === document.body || !activeElement.isConnected) return true;
 	if (host.contains(activeElement)) return true;
 	// Selecting a session in the sidebar deliberately leaves its navigation
-	// button focused. Terminal tabs are the same intentional handoff within the
-	// pane. Every other focused control remains authoritative.
+	// button focused. Terminal tabs and controls that launch an inline PTY are
+	// the same intentional handoff. Every other focused control remains
+	// authoritative.
 	return (
 		activeElement.matches("button[aria-current='page']") ||
+		activeElement.matches("button[data-terminal-focus-handoff='true']") ||
 		(activeElement.matches("button[role='tab'][aria-current]") &&
 			activeElement.closest('[data-testid="session-workspace-topbar"]') !== null)
 	);
@@ -397,6 +446,17 @@ export function XtermTerminal(props: XtermTerminalProps) {
 	// hover/leave callbacks so the right-click menu can offer "Open in system
 	// browser" for it.
 	const hoveredLinkRef = useRef<string | null>(null);
+	// Link preview card anchored at the hover position. The trigger is a
+	// zero-size fixed element, mirroring the context menu below; open/close
+	// delays are manual because the card is controlled (no real anchor hover).
+	const [linkPreview, setLinkPreview] = useState<{ url: string; x: number; y: number } | null>(null);
+	const linkPreviewTimerRef = useRef<number | undefined>(undefined);
+	const linkPreviewControlsRef = useRef<{
+		show: (url: string, x: number, y: number) => void;
+		hide: (immediately?: boolean) => void;
+		cancelHide: () => void;
+	}>({ show: () => undefined, hide: () => undefined, cancelHide: () => undefined });
+	const linkPreviewQuery = useLinkPreview(linkPreview?.url ?? "", linkPreview !== null);
 	// Latest callbacks in a ref so the mount effect stays dependency-free — we
 	// never tear down and recreate the terminal because a handler identity
 	// changed between renders.
@@ -461,10 +521,40 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			copiedToastTimerRef.current = undefined;
 		}, COPY_TOAST_MS);
 	};
+	linkPreviewControlsRef.current = {
+		show: (url, x, y) => {
+			// Same overlay rule as the copy toast: hidden retained terminals show nothing.
+			if (callbacksRef.current.isVisible === false) return;
+			if (linkPreviewTimerRef.current !== undefined) window.clearTimeout(linkPreviewTimerRef.current);
+			linkPreviewTimerRef.current = window.setTimeout(() => {
+				linkPreviewTimerRef.current = undefined;
+				setLinkPreview({ url, x, y });
+			}, LINK_PREVIEW_OPEN_MS);
+		},
+		hide: (immediately = false) => {
+			if (linkPreviewTimerRef.current !== undefined) window.clearTimeout(linkPreviewTimerRef.current);
+			if (immediately) {
+				linkPreviewTimerRef.current = undefined;
+				setLinkPreview(null);
+				return;
+			}
+			linkPreviewTimerRef.current = window.setTimeout(() => {
+				linkPreviewTimerRef.current = undefined;
+				setLinkPreview(null);
+			}, LINK_PREVIEW_CLOSE_MS);
+		},
+		cancelHide: () => {
+			if (linkPreviewTimerRef.current !== undefined) {
+				window.clearTimeout(linkPreviewTimerRef.current);
+				linkPreviewTimerRef.current = undefined;
+			}
+		},
+	};
 
 	useEffect(
 		() => () => {
 			if (copiedToastTimerRef.current !== undefined) window.clearTimeout(copiedToastTimerRef.current);
+			if (linkPreviewTimerRef.current !== undefined) window.clearTimeout(linkPreviewTimerRef.current);
 		},
 		[],
 	);
@@ -537,11 +627,15 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			}
 			window.open(uri, "_blank", "noopener");
 		};
-		const trackHover = (_event: MouseEvent, uri: string) => {
-			hoveredLinkRef.current = isWebLink(uri) ? uri : null;
+		const trackHover = (event: MouseEvent, uri: string) => {
+			const webUri = isWebLink(uri) ? uri : null;
+			hoveredLinkRef.current = webUri;
+			if (webUri) linkPreviewControlsRef.current.show(webUri, event.clientX, event.clientY);
+			else linkPreviewControlsRef.current.hide(true);
 		};
 		const clearHover = () => {
 			hoveredLinkRef.current = null;
+			linkPreviewControlsRef.current.hide();
 		};
 
 		let term: Terminal;
@@ -711,8 +805,10 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		scrollbarTrack?.addEventListener("pointercancel", scrollbarPointerUp);
 		scheduleScrollbarUpdate();
 
+		let columnSelectionActive = false;
+		let pendingColumnSelection: boolean | null = null;
 		const copySelection = (options?: { clipboardData?: DataTransfer | null }) => {
-			const selection = term.getSelection();
+			const selection = joinVisuallyContinuousLines(term, term.getSelection(), columnSelectionActive);
 			if (!selection) return false;
 			options?.clipboardData?.setData("text/plain", selection);
 			void aoBridge.clipboard
@@ -853,6 +949,8 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				focusTerminal();
 			},
 			selectAll: () => {
+				columnSelectionActive = false;
+				pendingColumnSelection = null;
 				term.selectAll();
 				focusTerminal();
 			},
@@ -941,6 +1039,44 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		};
 		shell.addEventListener("copy", copyInput);
 		window.addEventListener("keydown", copyShortcut, true);
+
+		// Copy on select: releasing the mouse button after a selection copies it,
+		// like every native terminal (issue #5785). xterm computes the selection
+		// continuously during mousemove and its own mouseup handler does not touch
+		// the selection, so the model is already final when pointerup fires —
+		// copying here cannot race the TUI repaint that later drops the highlight.
+		// Arming on pointerdown inside the terminal (left button only) keeps
+		// releases elsewhere in the app — context menu items, the scrollbar — from
+		// re-copying a lingering selection. Only a left-button release consumes
+		// the armed flag (an in-between right-button release must not eat the
+		// drag), and pointercancel or window blur disarms it: those never deliver
+		// the pointerup, and a stale armed flag would copy on the next unrelated
+		// click anywhere in the app.
+		let pointerSelectionArmed = false;
+		const disarmPointerSelection = () => {
+			pointerSelectionArmed = false;
+			pendingColumnSelection = null;
+		};
+		const pointerDown = (event: PointerEvent) => {
+			if (event.button !== 0) return;
+			pointerSelectionArmed = true;
+			// xterm uses Alt-drag for column selection on Windows and Linux. On
+			// macOS, Option is configured to force regular selection instead.
+			pendingColumnSelection = event.altKey && !isMacPlatform();
+		};
+		const pointerUp = (event: PointerEvent) => {
+			if (event.button !== 0) return;
+			if (!pointerSelectionArmed) return;
+			pointerSelectionArmed = false;
+			columnSelectionActive = pendingColumnSelection ?? false;
+			pendingColumnSelection = null;
+			if (!useUiStore.getState().terminalCopyOnSelect) return;
+			copySelection();
+		};
+		host.addEventListener("pointerdown", pointerDown);
+		document.addEventListener("pointerup", pointerUp);
+		document.addEventListener("pointercancel", disarmPointerSelection);
+		window.addEventListener("blur", disarmPointerSelection);
 
 		const fitTerminal = () => {
 			// Parked terminals keep their last measured box and continue parsing
@@ -1334,10 +1470,6 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			writeln: (line) => term.writeln(line, scheduleScrollbarUpdate),
 			showLatestOutput,
 			prepareForActivation,
-			// Live buffer discriminator for predictive local echo on cloud panes:
-			// predictions run only while the NORMAL buffer is active (alt-screen
-			// TUIs repaint too aggressively to predict into).
-			bufferType: () => term.buffer.active.type,
 			notifyCursorColorScheme: () => {
 				if (callbacksRef.current.supportsCursorColorScheme) {
 					notifyCursorScheme(callbacksRef.current.theme, false, true);
@@ -1381,6 +1513,10 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			window.removeEventListener("resize", scheduleVisibleFit);
 			shell.removeEventListener("copy", copyInput);
 			window.removeEventListener("keydown", copyShortcut, true);
+			host.removeEventListener("pointerdown", pointerDown);
+			document.removeEventListener("pointerup", pointerUp);
+			document.removeEventListener("pointercancel", disarmPointerSelection);
+			window.removeEventListener("blur", disarmPointerSelection);
 			shell.removeEventListener("contextmenu", openContextMenu);
 			shell.removeEventListener("paste", pasteInput, true);
 			shell.removeEventListener("compositionend", compositionInput, true);
@@ -1632,6 +1768,45 @@ export function XtermTerminal(props: XtermTerminalProps) {
 					) : null}
 				</DropdownMenuContent>
 			</DropdownMenu>
+			<HoverCard
+				open={linkPreview !== null}
+				onOpenChange={(open) => {
+					if (!open) linkPreviewControlsRef.current.hide(true);
+				}}
+			>
+				<HoverCardTrigger asChild>
+					<button
+						type="button"
+						aria-hidden="true"
+						tabIndex={-1}
+						style={{
+							border: 0,
+							height: 0,
+							left: linkPreview?.x ?? 0,
+							opacity: 0,
+							padding: 0,
+							pointerEvents: "none",
+							position: "fixed",
+							top: linkPreview?.y ?? 0,
+							width: 0,
+						}}
+					/>
+				</HoverCardTrigger>
+				{linkPreview && !linkPreviewQuery.isError ? (
+					<HoverCardContent
+						collisionPadding={8}
+						portalContainer={contextMenuPortalContainer}
+						onPointerEnter={() => linkPreviewControlsRef.current.cancelHide()}
+						onPointerLeave={() => linkPreviewControlsRef.current.hide()}
+					>
+						{linkPreviewQuery.data ? (
+							<LinkPreviewCard url={linkPreview.url} preview={linkPreviewQuery.data} />
+						) : (
+							<LinkPreviewCardLoading />
+						)}
+					</HoverCardContent>
+				) : null}
+			</HoverCard>
 		</>
 	);
 }

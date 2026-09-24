@@ -6,8 +6,7 @@ import (
 )
 
 func TestMigration0101AllowsRepeatedProviderOwnershipEpochs(t *testing.T) {
-	db := openTestDB(t)
-	upTo(t, db, 99)
+	db := openMigratedDatabaseCopyNoForeignKeys(t, 99)
 
 	now := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
 	mustExec(t, db, `

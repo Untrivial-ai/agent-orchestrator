@@ -22,6 +22,38 @@ const (
 	CodexAccountStatusBroken CodexAccountStatus = "broken"
 )
 
+// CodexDeviceReconciliationStatus describes whether AO has conclusively
+// identified the account currently installed in Codex's device-global home.
+// It is runtime state only; the durable active-account pointer remains the
+// last known selection across daemon restarts.
+type CodexDeviceReconciliationStatus string
+
+const (
+	// CodexDeviceReconciliationNotChecked means device discovery has not run.
+	CodexDeviceReconciliationNotChecked CodexDeviceReconciliationStatus = "not_checked"
+	// CodexDeviceReconciliationChecking means device discovery is in progress.
+	CodexDeviceReconciliationChecking CodexDeviceReconciliationStatus = "checking"
+	// CodexDeviceReconciliationVerified means the canonical device state was conclusively identified.
+	CodexDeviceReconciliationVerified CodexDeviceReconciliationStatus = "verified"
+	// CodexDeviceReconciliationTemporarilyUnavailable means discovery failed and will be retried.
+	CodexDeviceReconciliationTemporarilyUnavailable CodexDeviceReconciliationStatus = "temporarily_unavailable"
+	// CodexDeviceReconciliationBlocked means switching requires a user or environment change.
+	CodexDeviceReconciliationBlocked CodexDeviceReconciliationStatus = "blocked"
+)
+
+// CodexDeviceReconciliation is the display-safe, ephemeral state of device
+// discovery. Provider output, credential paths, and secret-bearing errors must
+// never be copied into this projection.
+type CodexDeviceReconciliation struct {
+	Status                CodexDeviceReconciliationStatus `json:"status" enum:"not_checked,checking,verified,temporarily_unavailable,blocked"`
+	ActiveAccountVerified bool                            `json:"activeAccountVerified"`
+	ReasonCode            string                          `json:"reasonCode"`
+	Retryable             bool                            `json:"retryable"`
+	AttemptedAt           *time.Time                      `json:"attemptedAt,omitempty"`
+	VerifiedAt            *time.Time                      `json:"verifiedAt,omitempty"`
+	NextRetryAt           *time.Time                      `json:"nextRetryAt,omitempty"`
+}
+
 // CodexAuthMethod identifies the provider authentication mechanism.
 type CodexAuthMethod string
 
@@ -62,8 +94,6 @@ type CodexAccountCapabilities struct {
 	CapacityRead       CodexCapabilityObservation `json:"capacityRead"`
 	UsageRead          CodexCapabilityObservation `json:"usageRead"`
 	ResetCreditConsume CodexCapabilityObservation `json:"resetCreditConsume"`
-	ThreadResume       CodexCapabilityObservation `json:"threadResume"`
-	AccountManagement  CodexCapabilityObservation `json:"accountManagement"`
 	GlobalSwitch       CodexCapabilityObservation `json:"globalSwitch"`
 }
 
@@ -143,8 +173,8 @@ const (
 	CodexAccountLoginVerifying CodexAccountLoginStatus = "verifying"
 	// CodexAccountLoginUnauthorized means verification confirmed signed-out state.
 	CodexAccountLoginUnauthorized CodexAccountLoginStatus = "unauthorized"
-	// CodexAccountLoginUnverified means verification was inconclusive.
-	CodexAccountLoginUnverified CodexAccountLoginStatus = "unverified"
+	// CodexAccountLoginRetryable means the local credential is not ready yet.
+	CodexAccountLoginRetryable CodexAccountLoginStatus = "retryable"
 	// CodexAccountLoginCompleted means a verified account was committed.
 	CodexAccountLoginCompleted CodexAccountLoginStatus = "completed"
 	// CodexAccountLoginCancelled means terminal and staging were removed.
@@ -166,8 +196,6 @@ const (
 	CodexAccountLoginReasonFailed = "login_failed"
 	// CodexAccountLoginReasonUnauthorized is the safe signed-out reason code.
 	CodexAccountLoginReasonUnauthorized = "login_unauthorized"
-	// CodexAccountLoginReasonUnverified is the safe inconclusive reason code.
-	CodexAccountLoginReasonUnverified = "login_unverified"
 	// CodexAccountLoginReasonExpired is the safe expiry reason code.
 	CodexAccountLoginReasonExpired = "login_expired"
 )
@@ -176,28 +204,9 @@ const (
 type CodexAccountLoginOperation struct {
 	OperationID string                  `json:"operationId"`
 	AccountID   string                  `json:"accountId,omitempty"`
-	Status      CodexAccountLoginStatus `json:"status" enum:"pending,verifying,unauthorized,unverified,completed,cancelled,failed,expired"`
+	Status      CodexAccountLoginStatus `json:"status" enum:"pending,verifying,unauthorized,retryable,completed,cancelled,failed,expired"`
 	ReasonCode  string                  `json:"reasonCode"`
 	Reason      string                  `json:"reason"`
 	Account     *CodexAccountSnapshot   `json:"account,omitempty"`
 	ExpiresAt   time.Time               `json:"expiresAt"`
-}
-
-// CodexActiveAccount identifies the AO account currently installed in the
-// device-global Codex credential store.
-type CodexActiveAccount struct {
-	AccountID   string    `json:"accountId"`
-	Revision    int64     `json:"revision"`
-	ActivatedAt time.Time `json:"activatedAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
-}
-
-// CodexUnmanagedGlobalAccount describes a device-global identity that AO cannot
-// safely import or switch because its credential is unavailable or ambiguous.
-type CodexUnmanagedGlobalAccount struct {
-	Label        string          `json:"label"`
-	AuthMethod   CodexAuthMethod `json:"authMethod"`
-	AccountEmail *string         `json:"accountEmail,omitempty"`
-	ReasonCode   string          `json:"reasonCode"`
-	Reason       string          `json:"reason"`
 }
