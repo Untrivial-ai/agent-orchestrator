@@ -529,7 +529,13 @@ func (s *Service) loadModels(ctx context.Context, agentID string, mode modelLoad
 	if mode == modelLoadRefresh {
 		_ = s.persistCatalogState(ctx, cached, hasCached, "refreshing", "", time.Time{}, generation)
 	}
-	discovered, discoverErr := s.discoverer.Discover(ctx, request)
+	var discovered ports.AgentModelCatalog
+	var discoverErr error
+	if signedOutDiscoveryWouldPromptLogin(ctx, item) {
+		discoverErr = fmt.Errorf("%s is not signed in; sign in to load its models", item.Manifest.Name)
+	} else {
+		discovered, discoverErr = s.discoverer.Discover(ctx, request)
+	}
 	discovered = applyCustomModelEntryPolicy(discovered, policy)
 	discovered.BinaryVersion = version
 	persistCtx := s.ctx
@@ -584,6 +590,24 @@ func (s *Service) loadModels(ctx context.Context, agentID string, mode modelLoad
 		discovered.Warning = appendCacheWarning(discovered.Warning)
 	}
 	return discovered, nil
+}
+
+// loginPromptingDiscovery lists harnesses whose model-listing command starts
+// the vendor's interactive browser sign-in when the CLI is signed out. Running
+// it from background discovery (daemon start, retries) would repeatedly open
+// the sign-in page, so discovery is skipped until the harness reports a login.
+var loginPromptingDiscovery = map[string]struct{}{"kiro": {}}
+
+func signedOutDiscoveryWouldPromptLogin(ctx context.Context, item agentregistry.HarnessAgent) bool {
+	if _, gated := loginPromptingDiscovery[string(item.Harness)]; !gated {
+		return false
+	}
+	checker, ok := item.Agent.(ports.AgentAuthChecker)
+	if !ok {
+		return false
+	}
+	status, err := checker.AuthStatus(ctx)
+	return err == nil && status == ports.AgentAuthStatusUnauthorized
 }
 
 func applyCustomModelEntryPolicy(catalog, policy ports.AgentModelCatalog) ports.AgentModelCatalog {

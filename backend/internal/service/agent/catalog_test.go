@@ -1923,6 +1923,35 @@ func TestRevalidateModelsRediscoversAnAgedCatalog(t *testing.T) {
 	}
 }
 
+func TestModelDiscoverySkipsSignedOutKiroSoTheBrowserLoginIsNotOpened(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    ports.AgentAuthStatus
+		wantCalls int32
+	}{
+		{"signed out", ports.AgentAuthStatusUnauthorized, 0},
+		{"signed in", ports.AgentAuthStatusAuthorized, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			discoverer := &fakeModelDiscoverer{version: "v1", catalog: ports.AgentModelCatalog{
+				SelectionMode: ports.ModelSelectionCatalog,
+				Models:        []ports.AgentModelInfo{{ID: "model-one"}},
+				Source:        "cli",
+			}}
+			svc := newService([]agentregistry.HarnessAgent{
+				harnessAuthAgent("kiro", "Kiro", tc.status, nil),
+			}, &fakeModelCache{}, nil, discoverer)
+
+			if _, err := svc.Models(context.Background(), "kiro", "", true); err != nil {
+				t.Fatal(err)
+			}
+			if got := discoverer.discoverCalls.Load(); got != tc.wantCalls {
+				t.Fatalf("discovery calls = %d, want %d", got, tc.wantCalls)
+			}
+		})
+	}
+}
+
 func cachedModelRecord(t *testing.T, agentID, _ string, validatedAt time.Time, stale bool) ports.CachedAgentModelCatalog {
 	t.Helper()
 	catalog := ports.AgentModelCatalog{
