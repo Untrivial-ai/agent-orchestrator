@@ -219,6 +219,18 @@ surface (`npm run sqlc`, `npm run api`).
 
 ## In flight / not yet a runtime feature
 
+- **OneDev issue intake contribution**: shares the daemon's tracker instance,
+  keeps origin inference for existing projects, and offers explicit OneDev
+  selection in CLI and project settings. OneDev intake supports one configured
+  instance because workflow fields and states are instance-specific; manual
+  `ao spawn` issue hydration remains limited to GitHub and GitLab. Follow
+  review and CI at <https://github.com/Untrivial-ai/agent-orchestrator/pull/4655>.
+  The backend build, focused race checks, lint, frontend typecheck and tests
+  cover this branch. Browser verification covers selecting OneDev and retaining
+  it when intake is disabled. The full backend race run is not green on this
+  workstation: installed Codex protocol drift also fails on unchanged upstream;
+  a transient tmux attach failure passes when rerun alone.
+
 - **OneDev SCM contribution**: the provider observes PRs, reviews and CI;
   incomplete listings fail without advancing discovery, and bounded CI windows
   remain partial. Automatic merging is unsupported. Follow review and CI at

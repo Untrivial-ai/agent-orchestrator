@@ -13216,6 +13216,7 @@ components:
           enum:
           - github
           - gitlab
+          - onedev
           type: string
         repo:
           type: string

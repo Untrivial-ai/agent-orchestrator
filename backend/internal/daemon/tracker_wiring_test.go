@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"errors"
-	trackeronedev "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/onedev"
 	"io"
 	"log/slog"
 	"os"
@@ -14,6 +13,7 @@ import (
 
 	trackergitlab "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/gitlab"
 	trackermulti "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/multi"
+	trackeronedev "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/onedev"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
