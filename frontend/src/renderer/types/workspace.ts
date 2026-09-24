@@ -117,6 +117,11 @@ export type WorkspaceSession = {
 	 * {@link status} already produced.
 	 */
 	displayStatus?: string;
+	/**
+	 * Human-readable card summary generated from agent activity, or derived from
+	 * lifecycle and PR facts before a live summary is available.
+	 */
+	summary?: string;
 	statusReadiness?: "checking" | "ready" | "unavailable";
 	/**
 	 * How far this session's start-up got. A Chat spawn answers as soon as the

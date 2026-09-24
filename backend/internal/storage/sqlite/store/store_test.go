@@ -84,6 +84,29 @@ func TestSessionCreateAndReadFXHarness(t *testing.T) {
 	}
 }
 
+func TestCardSummaryUpdatePreservesNewerSessionState(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "card-summary")
+	rec, err := s.CreateSession(ctx, sampleRecord("card-summary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RenameSession(ctx, rec.ID, "New title", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if updated, err := s.UpdateSessionCardSummary(ctx, rec.ID, domain.CardSummaryMetadataPrefix+"Inspecting navigation routes", time.Now().UTC()); err != nil || !updated {
+		t.Fatalf("update card summary = %v, %v", updated, err)
+	}
+	got, ok, err := s.GetSession(ctx, rec.ID)
+	if err != nil || !ok {
+		t.Fatalf("get session = %v, %v", ok, err)
+	}
+	if got.DisplayName != "New title" || got.Metadata.LatestAssistantUpdate != domain.CardSummaryMetadataPrefix+"Inspecting navigation routes" {
+		t.Fatalf("summary update changed unrelated state: title=%q summary=%q", got.DisplayName, got.Metadata.LatestAssistantUpdate)
+	}
+}
+
 func TestTaskPreparationPromotionPreservesWorkspace(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

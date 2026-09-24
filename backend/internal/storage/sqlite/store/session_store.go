@@ -213,6 +213,20 @@ func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) err
 	return s.qw.UpdateSession(ctx, recordToUpdate(rec))
 }
 
+// UpdateSessionCardSummary changes only card text and recency, preserving
+// session state that may have advanced while the summary model was running.
+func (s *Store) UpdateSessionCardSummary(ctx context.Context, id domain.SessionID, summary string, updatedAt time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.UpdateSessionCardSummary(ctx, gen.UpdateSessionCardSummaryParams{
+		ID: id, Summary: summary, UpdatedAt: updatedAt,
+	})
+	if err != nil {
+		return false, fmt.Errorf("update card summary for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // UpdateSessionModel changes only the selected model, leaving concurrent
 // lifecycle and controller ownership updates intact.
 func (s *Store) UpdateSessionModel(ctx context.Context, id domain.SessionID, model string) (bool, error) {
