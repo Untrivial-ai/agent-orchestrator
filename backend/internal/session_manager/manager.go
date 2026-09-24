@@ -416,6 +416,12 @@ type Manager struct {
 	taskPreparationsMu          sync.Mutex
 	taskPreparations            map[domain.TaskPreparationToken]*taskPreparation
 	taskPreparationTTL          time.Duration
+	// Snapshot before the listener binds; background cleanup must never reclaim
+	// a preparation opened in this daemon after the listener is live.
+	startupTaskPreparations []domain.SessionRecord
+	// Only pre-listener provisioning writes that failed may be retried after
+	// bind; scanning then would also sweep tasks created by this daemon.
+	startupProvisioningRetries []domain.SessionRecord
 	// runBackground runs an asynchronous spawn's remaining work. Nil means a
 	// plain goroutine; tests substitute a synchronous runner.
 	runBackground     func(func())
@@ -909,8 +915,6 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			releaseHarness()
 		}
 	}()
-	releaseWorkspaceGate := m.acquireWorkspaceGate(cfg.ProjectID)
-	defer releaseWorkspaceGate()
 	// Reject an unknown harness before any durable state is created. Doing this
 	// after CreateSession would leave a terminated orphan row and waste a
 	// worktree on a spawn that can never launch.
@@ -984,6 +988,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	promptBytes := len(prompt)
 	systemPromptBytes := len(systemPrompt)
+	asyncChat := cfg.Async && mode == domain.SessionModeChat && cfg.Kind == domain.KindWorker && m.chat != nil
 
 	var prep *taskPreparation
 	if cfg.Branch == "" {
@@ -1015,7 +1020,6 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		}
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnSystemPrompt, err)
 	}
-	asyncChat := cfg.Async && mode == domain.SessionModeChat && cfg.Kind == domain.KindWorker && m.chat != nil
 	if prep != nil {
 		// A synchronous spawn can be promoted as ready only after the hidden
 		// preparation has finished publishing its worktree. Otherwise its late
@@ -1044,6 +1048,14 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			cancel()
 			return domain.SessionRecord{}, 0, 0, wrapSpawnStageEarly(ErrSpawnCreate, err)
 		}
+	}
+	// A speculative worktree may still be being created under this gate. Wait
+	// for it above without holding the gate, then serialize the remaining
+	// synchronous workspace lifecycle as before. Async Chat acquires it in its
+	// background half so the API response never waits on Git.
+	if !asyncChat {
+		releaseWorkspaceGate := m.acquireWorkspaceGate(cfg.ProjectID)
+		defer releaseWorkspaceGate()
 	}
 	m.markFreshSessionStatusReady(id)
 
@@ -1115,15 +1127,14 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	// exists) and before the launch command is built (so the references reach
 	// the agent).
 	if len(cfg.Attachments) > 0 {
+		if err := m.workspace.AddExclude(ctx, ws, "/"+attachmentsDir+"/"); err != nil {
+			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, false, false)
+			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnAttachments, err)
+		}
 		refs, err := m.writeSpawnAttachments(ctx, id, ws.Path, cfg.Attachments)
 		if err != nil {
 			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, false, false)
 			return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnAttachments, err)
-		}
-		// Keep the attachments dir out of git status. Best-effort: the images are
-		// already written and usable, so an exclude failure must not fail the spawn.
-		if err := m.workspace.AddExclude(ctx, ws, "/"+attachmentsDir+"/"); err != nil {
-			m.logger.Warn("spawn: exclude attachments dir", "sessionID", id, "error", err)
 		}
 		prompt = appendAttachmentReferences(prompt, refs)
 	}
@@ -1482,7 +1493,7 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 			Kind:          cfg.Kind,
 			SessionPrefix: sessionPrefix(project),
 			Branch:        branch,
-			FreshBranch:   cfg.TaskPreparation != "" && cfg.Branch == "",
+			FreshBranch:   cfg.TaskPreparation != "",
 			BaseBranch:    baseBranch,
 			BaseRef:       baseRefs[filepath.Clean(project.Path)],
 		})
@@ -1528,31 +1539,62 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 		Kind:          cfg.Kind,
 		SessionPrefix: sessionPrefix(project),
 		Branch:        branch,
-		FreshBranch:   cfg.TaskPreparation != "" && cfg.Branch == "",
+		FreshBranch:   cfg.TaskPreparation != "",
 		RootRepoPath:  project.Path,
 		BaseBranch:    project.Config.WorktreeBaseBranch(),
 		BaseRef:       baseRefs[filepath.Clean(project.Path)],
 		Repos:         childRepos,
 		Assets:        assets,
 	})
-	if err != nil {
+	if err != nil && (cfg.TaskPreparation == "" || len(info.Worktrees) == 0) {
 		return ports.WorkspaceInfo{}, nil, err
 	}
-	for _, wt := range info.Worktrees {
-		if err := m.store.UpsertSessionWorktree(ctx, domain.SessionWorktreeRecord{
+	persistCtx := ctx
+	if cfg.TaskPreparation != "" {
+		var cancel context.CancelFunc
+		persistCtx, cancel = spawnRollbackContext(ctx)
+		defer cancel()
+	}
+	var previousRows []domain.SessionWorktreeRecord
+	if cfg.TaskPreparation != "" {
+		var readErr error
+		previousRows, readErr = m.store.ListSessionWorktrees(persistCtx, id)
+		if readErr != nil {
+			return info.Root, &info, errors.Join(err, readErr)
+		}
+	}
+	for i := range info.Worktrees {
+		wt := &info.Worktrees[i]
+		if cfg.TaskPreparation != "" && wt.CreationSHA == "" {
+			for _, previous := range previousRows {
+				if previous.RepoName == wt.RepoName && previous.Branch == wt.Branch &&
+					previous.WorktreePath == wt.Path && previous.BaseRef == wt.BaseRef {
+					wt.CreationSHA = previous.CreationSHA
+					if wt.RepoName == domain.RootWorkspaceRepoName {
+						info.Root.BaseSHA = previous.CreationSHA
+					}
+					break
+				}
+			}
+		}
+		if storeErr := m.store.UpsertSessionWorktree(persistCtx, domain.SessionWorktreeRecord{
 			SessionID:    id,
 			RepoName:     wt.RepoName,
 			Branch:       wt.Branch,
 			BaseSHA:      wt.BaseSHA,
 			BaseRef:      wt.BaseRef,
+			CreationSHA:  wt.CreationSHA,
 			WorktreePath: wt.Path,
 			State:        "active",
-		}); err != nil {
+		}); storeErr != nil {
+			if cfg.TaskPreparation != "" {
+				return info.Root, &info, errors.Join(err, fmt.Errorf("record prepared workspace worktree %q: %w", wt.RepoName, storeErr))
+			}
 			_ = workspaceProject.DestroyWorkspaceProject(ctx, info)
-			return ports.WorkspaceInfo{}, nil, fmt.Errorf("record workspace worktree %q: %w", wt.RepoName, err)
+			return ports.WorkspaceInfo{}, nil, fmt.Errorf("record workspace worktree %q: %w", wt.RepoName, storeErr)
 		}
 	}
-	return info.Root, &info, nil
+	return info.Root, &info, err
 }
 
 func resolveSpawnDiffBase(ctx context.Context, root, defaultBranch string) (string, string) {
@@ -2463,7 +2505,12 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 	if err := m.beginAgentResume(ctx, id); err != nil {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, err)
 	}
-	defer m.endAgentResume(id)
+	resumeHandedOff := false
+	defer func() {
+		if !resumeHandedOff {
+			m.endAgentResume(id)
+		}
+	}()
 	if active, err := m.hasActiveInterfaceTransition(ctx, id); err != nil {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: interface transition: %w", id, err)
 	} else if active {
@@ -2488,10 +2535,14 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 	if rec.IsTerminated {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrTerminated)
 	}
+	if rec.ProvisionState.IsProvisioning() {
+		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrResumeInProgress)
+	}
 	if rec.ProvisionState == domain.SessionProvisionFailed {
 		result, handedOff, err := m.retryFailedChatSpawn(ctx, rec, releaseHarness)
 		if handedOff {
 			releaseHarness = nil
+			resumeHandedOff = true
 		}
 		return result, err
 	}
@@ -3171,14 +3222,28 @@ func (m *Manager) ReconcileStartupSafety(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("reconcile: interface transitions: %w", err)
 	}
-	if err := m.CleanupInterruptedTaskPreparations(ctx); err != nil {
-		return fmt.Errorf("reconcile: task preparations: %w", err)
+	// Capture only rows that predate the listener. Git cleanup belongs in the
+	// background, where a slow or unavailable repository cannot delay boot.
+	m.startupTaskPreparations = []domain.SessionRecord{}
+	m.startupProvisioningRetries = nil
+	recs, err := m.store.ListAllSessions(ctx)
+	if err != nil {
+		m.logger.Warn("reconcile: interrupted startup work could not be listed", "error", err)
+	} else {
+		for _, rec := range recs {
+			if rec.IsTaskPreparation {
+				m.startupTaskPreparations = append(m.startupTaskPreparations, rec)
+			}
+		}
 	}
 	// An asynchronous spawn lives in one daemon's memory. Anything still
 	// "starting" after a restart has no one left to finish it, so say so rather
 	// than leaving a session that spins forever.
-	if err := m.FailInterruptedProvisioning(ctx); err != nil {
-		return fmt.Errorf("reconcile: interrupted session starts: %w", err)
+	if err == nil {
+		m.startupProvisioningRetries, err = m.failInterruptedProvisioningRecords(ctx, recs)
+		if err != nil {
+			m.logger.Warn("reconcile: interrupted session starts could not be settled", "error", err)
+		}
 	}
 	return nil
 }
@@ -3195,6 +3260,36 @@ func (m *Manager) ReconcileBackground(ctx context.Context) (resultErr error) {
 		m.statusRecoveryMu.Unlock()
 		m.startupBackgroundReconcileOnce.Do(func() { close(m.startupBackgroundReconcileDone) })
 	}()
+	for _, interrupted := range m.startupTaskPreparations {
+		releaseWorkspaceGate := m.acquireWorkspaceGate(interrupted.ProjectID)
+		rec, ok, err := m.store.GetSession(ctx, interrupted.ID)
+		if err == nil && ok && !interrupted.CreatedAt.IsZero() && rec.CreatedAt.Equal(interrupted.CreatedAt) &&
+			rec.IsTaskPreparation && !rec.IsTerminated {
+			err = m.cleanupTaskPreparationRecord(ctx, rec)
+		}
+		releaseWorkspaceGate()
+		if err != nil {
+			m.logger.Warn("interrupted task preparation cleanup failed", "sessionID", interrupted.ID, "error", err)
+		}
+	}
+	m.startupTaskPreparations = nil
+	for _, interrupted := range m.startupProvisioningRetries {
+		id := interrupted.ID
+		rec, ok, err := m.store.GetSession(ctx, id)
+		if err != nil {
+			m.logger.Warn("reconcile: interrupted session start retry lookup failed", "sessionID", id, "error", err)
+			continue
+		}
+		if !ok || interrupted.CreatedAt.IsZero() || !rec.CreatedAt.Equal(interrupted.CreatedAt) ||
+			rec.IsTerminated || rec.IsTaskPreparation || !rec.ProvisionState.IsProvisioning() {
+			continue
+		}
+		if _, err := m.setProvisionState(ctx, id, domain.SessionProvisionFailed,
+			"AO restarted before this session finished starting"); err != nil {
+			m.logger.Warn("reconcile: interrupted session start retry failed", "sessionID", id, "error", err)
+		}
+	}
+	m.startupProvisioningRetries = nil
 	recs, err := m.store.ListAllSessions(ctx)
 	if err != nil {
 		return fmt.Errorf("reconcile: list sessions: %w", err)
@@ -3222,7 +3317,7 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 	candidates := make([]domain.SessionRecord, 0, len(recs))
 	ids := make([]domain.SessionID, 0, len(recs))
 	for _, rec := range recs {
-		if rec.IsTerminated {
+		if rec.IsTerminated || rec.IsTaskPreparation || rec.ProvisionState.WithDefault() != domain.SessionProvisionReady {
 			continue
 		}
 		candidates = append(candidates, rec)
@@ -3606,6 +3701,7 @@ func (m *Manager) sessionWorktreeRowsToRepoInfos(ctx context.Context, project do
 			Branch:       firstNonEmptyString(row.Branch, rec.Metadata.Branch),
 			BaseSHA:      row.BaseSHA,
 			BaseRef:      row.BaseRef,
+			CreationSHA:  row.CreationSHA,
 			SessionID:    rec.ID,
 			ProjectID:    rec.ProjectID,
 			RelativePath: relPaths[row.RepoName],
@@ -3626,6 +3722,7 @@ func (m *Manager) saveAndTeardownWorkspaceProject(ctx context.Context, rec domai
 			Branch:       row.Branch,
 			BaseSHA:      row.BaseSHA,
 			BaseRef:      row.BaseRef,
+			CreationSHA:  row.CreationSHA,
 			WorktreePath: row.Path,
 			PreservedRef: ref,
 			State:        "removed",
@@ -3709,6 +3806,7 @@ func (m *Manager) upsertWorkspaceProjectRowState(ctx context.Context, row ports.
 		Branch:       row.Branch,
 		BaseSHA:      row.BaseSHA,
 		BaseRef:      row.BaseRef,
+		CreationSHA:  row.CreationSHA,
 		WorktreePath: row.Path,
 		State:        state,
 	})
@@ -4562,17 +4660,13 @@ func (m *Manager) importAttachments(ctx context.Context, rec domain.SessionRecor
 }
 
 func (m *Manager) restoreAttachments(ctx context.Context, id domain.SessionID, workspace ports.WorkspaceInfo) error {
-	materialized, err := m.attachments.MaterializeWorkspace(ctx, id, workspace.Path)
-	if err != nil {
-		return err
-	}
-	if !materialized {
+	_, err := m.attachments.MaterializeWorkspace(ctx, id, workspace.Path, func() error {
+		if err := m.workspace.AddExclude(ctx, workspace, "/"+attachmentsDir+"/"); err != nil {
+			return fmt.Errorf("exclude restored attachments: %w", err)
+		}
 		return nil
-	}
-	if err := m.workspace.AddExclude(ctx, workspace, "/"+attachmentsDir+"/"); err != nil {
-		m.logger.Warn("restore attachments: exclude attachments dir", "sessionID", id, "error", err)
-	}
-	return nil
+	})
+	return err
 }
 
 func (m *Manager) cleanupAttachments(ctx context.Context, id domain.SessionID) {

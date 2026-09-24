@@ -207,6 +207,25 @@ func TestSpawnAsyncChat_FailedStartKeepsSessionAndReason(t *testing.T) {
 	}
 }
 
+func TestSpawnAsyncChat_DrainFailureLeavesRetryableSession(t *testing.T) {
+	launcher := &recordingLauncher{drainErr: errors.New("controller stopped before dispatch")}
+	m, st, _ := newChatManager(launcher)
+	m.browserCapabilities = browsersvc.NewAuthority()
+	deferred := deferredBackground(m)
+	rec, _, _, err := m.Spawn(context.Background(), asyncChatSpawnConfig("do the thing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	(*deferred)[0]()
+	stored := st.sessions[rec.ID]
+	if stored.ProvisionState != domain.SessionProvisionFailed || !strings.Contains(stored.ProvisionError, "controller stopped before dispatch") {
+		t.Fatalf("drain failure left %+v, want failed session with retry reason", stored)
+	}
+	if len(launcher.stopped) != 1 || launcher.stopped[0] != rec.ID {
+		t.Fatalf("stopped controllers = %v, want failed controller stopped", launcher.stopped)
+	}
+}
+
 func TestResumeFailedAsyncChatSpawnRetriesSameSessionAndQueue(t *testing.T) {
 	launcher := &recordingLauncher{}
 	m, st, _ := newChatManager(launcher)
@@ -239,6 +258,12 @@ func TestResumeFailedAsyncChatSpawnRetriesSameSessionAndQueue(t *testing.T) {
 	if len(launcher.queued) != 1 {
 		t.Fatalf("opening prompt queued %d times, want once", len(launcher.queued))
 	}
+	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); !errors.Is(err, ErrResumeInProgress) {
+		t.Fatalf("second resume during background retry = %v, want ErrResumeInProgress", err)
+	}
+	if len(*deferred) != 2 {
+		t.Fatalf("background starts = %d, want only initial attempt and one retry", len(*deferred))
+	}
 	(*deferred)[1]()
 	if gate.active != 0 {
 		t.Fatalf("harness uses after retry background start = %d, want 0", gate.active)
@@ -249,6 +274,23 @@ func TestResumeFailedAsyncChatSpawnRetriesSameSessionAndQueue(t *testing.T) {
 	if len(launcher.started) != 1 || len(launcher.drained) != 1 {
 		t.Fatalf("controllers started = %d, queues drained = %d", len(launcher.started), len(launcher.drained))
 	}
+}
+
+func TestResumeCannotStartSecondControllerDuringInitialAsyncSpawn(t *testing.T) {
+	m, _, _ := newChatManager(&recordingLauncher{})
+	m.browserCapabilities = browsersvc.NewAuthority()
+	deferred := deferredBackground(m)
+	rec, _, _, err := m.Spawn(context.Background(), asyncChatSpawnConfig("do the thing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); !errors.Is(err, ErrResumeInProgress) {
+		t.Fatalf("resume while initial start is provisioning = %v, want ErrResumeInProgress", err)
+	}
+	if len(*deferred) != 1 {
+		t.Fatalf("background starts = %d, want only initial start", len(*deferred))
+	}
+	(*deferred)[0]()
 }
 
 func TestResumeFailedAsyncChatSpawnRetainsOpeningAttachments(t *testing.T) {

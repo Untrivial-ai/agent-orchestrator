@@ -195,10 +195,9 @@ func (s *Store) ImportWorkspace(ctx context.Context, id domain.SessionID, worksp
 }
 
 // MaterializeWorkspace projects every canonical attachment into a restored
-// worktree before its controller is relaunched. The boolean reports whether at
-// least one projection was written, so callers only add attachment-specific
-// workspace configuration when it is needed.
-func (s *Store) MaterializeWorkspace(ctx context.Context, id domain.SessionID, workspacePath string) (bool, error) {
+// worktree before its controller is relaunched. beforeWrite runs once, only
+// when a file exists, and must succeed before any file becomes visible there.
+func (s *Store) MaterializeWorkspace(ctx context.Context, id domain.SessionID, workspacePath string, beforeWrite func() error) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -225,6 +224,7 @@ func (s *Store) MaterializeWorkspace(ctx context.Context, id domain.SessionID, w
 	}
 
 	materialized := false
+	prepared := false
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return false, err
@@ -238,6 +238,15 @@ func (s *Store) MaterializeWorkspace(ctx context.Context, id domain.SessionID, w
 		}
 		if openErr != nil {
 			return false, fmt.Errorf("open canonical attachment %q: %w", entry.Name(), openErr)
+		}
+		if !prepared {
+			if beforeWrite != nil {
+				if err := beforeWrite(); err != nil {
+					_ = file.Close()
+					return false, fmt.Errorf("prepare attachment workspace: %w", err)
+				}
+			}
+			prepared = true
 		}
 		copyErr := writeReaderAtomicUnder(ctx, workspacePath, filepath.FromSlash(WorkspaceDir), entry.Name(), file, true)
 		closeErr := file.Close()

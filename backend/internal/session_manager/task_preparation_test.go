@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,6 +67,269 @@ func TestCancelTaskPreparationRemovesWorkspaceAndRow(t *testing.T) {
 	}
 	if _, ok := st.sessions["mer-1"]; ok {
 		t.Fatal("canceled preparation row still exists")
+	}
+}
+
+func TestTaskPreparationCapsOutstandingPerProject(t *testing.T) {
+	m, st, _, _ := newManager()
+	deferred := deferredBackground(m)
+	project := st.projects["mer"]
+	var tokens []domain.TaskPreparationToken
+	for i := 0; i < 3; i++ {
+		token, err := m.PrepareTaskWorkspace(context.Background(), project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tokens = append(tokens, token)
+	}
+	if tokens[0] == "" || tokens[1] == "" || tokens[2] != "" {
+		t.Fatalf("preparation tokens = %q, want two owned preparations and a skipped third", tokens)
+	}
+	if len(*deferred) != 2 {
+		t.Fatalf("background creates = %d, want 2", len(*deferred))
+	}
+	if len(st.sessions) != 2 {
+		t.Fatalf("hidden session rows = %d, want 2", len(st.sessions))
+	}
+	for _, token := range tokens[:2] {
+		(*deferred)[0]()
+		*deferred = (*deferred)[1:]
+		if err := m.CancelTaskPreparation(context.Background(), token); err != nil {
+			t.Fatal(err)
+		}
+		if token == tokens[0] {
+			if _, ok := st.sessions[domain.SessionID(tokens[1])]; !ok {
+				t.Fatal("closing one composer canceled another composer's preparation")
+			}
+		}
+	}
+}
+
+type partialPreparedWorkspace struct{ *fakeWorkspace }
+
+func (w *partialPreparedWorkspace) Create(_ context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+	return ports.WorkspaceInfo{
+		Path: "/ws/partial", Branch: cfg.Branch, BaseSHA: "creation-sha", BaseRef: "main",
+		SessionID: cfg.SessionID, ProjectID: cfg.ProjectID,
+	}, context.Canceled
+}
+
+func (w *partialPreparedWorkspace) Destroy(context.Context, ports.WorkspaceInfo) error {
+	return ports.ErrWorkspaceDirty
+}
+
+func TestTaskPreparationPersistsPartialWorktreeForRetry(t *testing.T) {
+	m, st, _, base := newManager()
+	m.workspace = &partialPreparedWorkspace{base}
+	m.runBackground = func(work func()) { work() }
+	token, err := m.PrepareTaskWorkspace(context.Background(), st.projects["mer"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := st.sessions[domain.SessionID(token)]
+	if rec.Metadata.WorkspacePath != "/ws/partial" || rec.Metadata.DiffBaseSHA != "creation-sha" {
+		t.Fatalf("partial worktree was not durably retained: %+v", rec.Metadata)
+	}
+	if err := m.CancelTaskPreparation(context.Background(), token); !errors.Is(err, ports.ErrWorkspaceDirty) {
+		t.Fatalf("cancel partial preparation = %v, want preserve dirty path", err)
+	}
+	if _, ok := st.sessions[domain.SessionID(token)]; !ok {
+		t.Fatal("partial worktree lost its hidden retry row")
+	}
+}
+
+type partialProjectWorkspace struct {
+	*fakeWorkspace
+	partial ports.WorkspaceProjectInfo
+}
+
+func (w *partialProjectWorkspace) CreateWorkspaceProject(context.Context, ports.WorkspaceProjectConfig) (ports.WorkspaceProjectInfo, error) {
+	return w.partial, context.Canceled
+}
+
+func TestTaskPreparationPersistsPartialWorkspaceProjectAcrossStartup(t *testing.T) {
+	m, st, _, base := newManager()
+	project := st.projects["mer"]
+	project.Kind = domain.ProjectKindWorkspace
+	project.Path = "/repo/root"
+	st.projects["mer"] = project
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api", GitStatus: domain.GitStatusReady}}
+	branch := "ao/mer-1/root"
+	root := ports.WorkspaceInfo{Path: "/ws/mer-1", Branch: branch, BaseSHA: "root-created", BaseRef: "main", SessionID: "mer-1", ProjectID: "mer"}
+	base.destroyErr = ports.ErrWorkspaceDirty
+	m.workspace = &partialProjectWorkspace{fakeWorkspace: base, partial: ports.WorkspaceProjectInfo{
+		Root: root,
+		Worktrees: []ports.WorkspaceRepoInfo{
+			{RepoName: domain.RootWorkspaceRepoName, RepoPath: project.Path, Path: root.Path, Branch: branch, BaseSHA: "root-base", CreationSHA: root.BaseSHA, BaseRef: "main", SessionID: "mer-1", ProjectID: "mer"},
+			{RepoName: "api", RepoPath: "/repo/root/api", Path: "/ws/mer-1/api", Branch: branch, BaseSHA: "api-base", CreationSHA: "api-created", BaseRef: "main", SessionID: "mer-1", ProjectID: "mer", RelativePath: "api"},
+		},
+	}}
+	m.runBackground = func(work func()) { work() }
+	token, err := m.PrepareTaskWorkspace(context.Background(), project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.worktrees[domain.SessionID(token)]; len(got) != 2 || got[1].CreationSHA != "api-created" {
+		t.Fatalf("partial project rows = %+v, want both durably recorded", got)
+	}
+	m.taskPreparationsMu.Lock()
+	prep := m.taskPreparations[token]
+	prep.timer.Stop()
+	delete(m.taskPreparations, token)
+	m.taskPreparationsMu.Unlock()
+	if err := m.CleanupInterruptedTaskPreparations(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := st.sessions[domain.SessionID(token)]; !ok {
+		t.Fatal("startup cleanup deleted a dirty partial workspace project row")
+	}
+}
+
+func TestRecoveredPreparationCreationSHAMatchesExactWorktreeIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, branch, wantSHA string
+	}{
+		{name: "same worktree", branch: "ao/mer-1/root", wantSHA: "original-sha"},
+		{name: "new suffixed branch", branch: "ao/mer-1/root-2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, _, ws := newManager()
+			project := st.projects["mer"]
+			project.Kind = domain.ProjectKindWorkspace
+			st.projects["mer"] = project
+			st.worktrees["mer-1"] = []domain.SessionWorktreeRecord{{
+				SessionID: "mer-1", RepoName: domain.RootWorkspaceRepoName,
+				Branch: "ao/mer-1/root", BaseRef: "main", CreationSHA: "original-sha", WorktreePath: "/ws/mer-1",
+			}}
+			ws.projectCreateInfo = ports.WorkspaceProjectInfo{
+				Root: ports.WorkspaceInfo{Path: "/ws/mer-1", Branch: tc.branch, ProjectID: "mer", SessionID: "mer-1"},
+				Worktrees: []ports.WorkspaceRepoInfo{{
+					RepoName: domain.RootWorkspaceRepoName, Path: "/ws/mer-1", Branch: tc.branch,
+					BaseRef: "main", ProjectID: "mer", SessionID: "mer-1",
+				}},
+			}
+			root, info, err := m.createSessionWorkspace(context.Background(), project, ports.SpawnConfig{
+				ProjectID: "mer", Kind: domain.KindWorker, TaskPreparation: "mer-1",
+			}, "mer-1", tc.branch, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if root.BaseSHA != tc.wantSHA || info.Worktrees[0].CreationSHA != tc.wantSHA || st.worktrees["mer-1"][0].CreationSHA != tc.wantSHA {
+				t.Fatalf("creation SHA = root:%q worktree:%q stored:%q, want %q", root.BaseSHA, info.Worktrees[0].CreationSHA, st.worktrees["mer-1"][0].CreationSHA, tc.wantSHA)
+			}
+		})
+	}
+}
+
+type blockedPreparationWorkspace struct {
+	*fakeWorkspace
+	mu            sync.Mutex
+	calls         int
+	firstEntered  chan struct{}
+	secondEntered chan struct{}
+	releaseFirst  chan struct{}
+}
+
+func (w *blockedPreparationWorkspace) Create(ctx context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+	w.mu.Lock()
+	w.calls++
+	call := w.calls
+	w.mu.Unlock()
+	switch call {
+	case 1:
+		close(w.firstEntered)
+		<-w.releaseFirst
+	case 2:
+		close(w.secondEntered)
+	}
+	return w.fakeWorkspace.Create(ctx, cfg)
+}
+
+func TestTaskPreparationSerializesWorkspaceCreationPerProject(t *testing.T) {
+	m, st, _, base := newManager()
+	ws := &blockedPreparationWorkspace{
+		fakeWorkspace: base, firstEntered: make(chan struct{}), secondEntered: make(chan struct{}), releaseFirst: make(chan struct{}),
+	}
+	m.workspace = ws
+	deferred := deferredBackground(m)
+	project := st.projects["mer"]
+	first, err := m.PrepareTaskWorkspace(context.Background(), project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.PrepareTaskWorkspace(context.Background(), project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDone := make(chan struct{})
+	go func() { (*deferred)[0](); close(firstDone) }()
+	<-ws.firstEntered
+	secondDone := make(chan struct{})
+	go func() { (*deferred)[1](); close(secondDone) }()
+	secondBeforeRelease := false
+	select {
+	case <-ws.secondEntered:
+		secondBeforeRelease = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(ws.releaseFirst)
+	<-firstDone
+	<-secondDone
+	if secondBeforeRelease {
+		t.Fatal("second worktree creation entered while first still held the project workspace gate")
+	}
+	if err := m.CancelTaskPreparation(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CancelTaskPreparation(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAsyncPreparedSpawnAnswersWhilePreparationOwnsWorkspaceGate(t *testing.T) {
+	m, st, _ := newChatManager(&recordingLauncher{})
+	ws := &blockedPreparationWorkspace{
+		fakeWorkspace: m.workspace.(*fakeWorkspace),
+		firstEntered:  make(chan struct{}), secondEntered: make(chan struct{}), releaseFirst: make(chan struct{}),
+	}
+	m.workspace = ws
+	jobs := make(chan func(), 2)
+	m.runBackground = func(work func()) { jobs <- work }
+	project := st.projects["mer"]
+	token, err := m.PrepareTaskWorkspace(context.Background(), project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepDone := make(chan struct{})
+	go func() { (<-jobs)(); close(prepDone) }()
+	<-ws.firstEntered
+	result := make(chan error, 1)
+	go func() {
+		cfg := asyncChatSpawnConfig("do the thing")
+		cfg.TaskPreparation = token
+		_, _, _, err := m.Spawn(context.Background(), cfg)
+		result <- err
+	}()
+	answeredBeforeGit := false
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("async prepared spawn: %v", err)
+		}
+		answeredBeforeGit = true
+	case <-time.After(500 * time.Millisecond):
+	}
+	close(ws.releaseFirst)
+	<-prepDone
+	if !answeredBeforeGit {
+		if err := <-result; err != nil {
+			t.Fatal(err)
+		}
+		t.Fatal("async Start Task waited for speculative git work to finish")
+	}
+	(<-jobs)()
+	if ws.calls != 1 {
+		t.Fatalf("worktree creates = %d, want only the prepared worktree", ws.calls)
 	}
 }
 
@@ -251,6 +515,140 @@ func TestCancelWorkspaceProjectPreparationRemovesEachBranch(t *testing.T) {
 	}
 	assertManagerBranchAbsent(t, root, branch)
 	assertManagerBranchAbsent(t, childPath, branch)
+}
+
+func TestStartupCleanupPreservesUnrecordedDirtyChildWorktree(t *testing.T) {
+	m, st, _, root := newGitTaskPreparationManager(t)
+	child := newManagerGitRepo(t)
+	childPath := filepath.Join(root, "api")
+	if err := os.Rename(child, childPath); err != nil {
+		t.Fatal(err)
+	}
+	runManagerGit(t, childPath, "remote", "add", "origin", childPath)
+	runManagerGit(t, childPath, "fetch", "origin", "main")
+	runManagerGit(t, childPath, "remote", "set-head", "origin", "main")
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("api/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runManagerGit(t, root, "add", ".gitignore")
+	runManagerGit(t, root, "commit", "-m", "ignore child checkout")
+	project := st.projects["mer"]
+	project.Kind = domain.ProjectKindWorkspace
+	st.projects["mer"] = project
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api", GitStatus: domain.GitStatusReady}}
+	token, err := m.PrepareTaskWorkspace(context.Background(), project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prep := m.taskPreparations[token]; prep.err != nil {
+		t.Fatal(prep.err)
+	}
+	rows := st.worktrees[domain.SessionID(token)]
+	if len(rows) != 2 {
+		t.Fatalf("worktree rows = %+v, want root and child", rows)
+	}
+	childWorktree := rows[1].WorktreePath
+	file := filepath.Join(childWorktree, "user.txt")
+	if err := os.WriteFile(file, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a crash after Git created the child but before its DB upsert.
+	st.worktrees[domain.SessionID(token)] = rows[:1]
+	prep := m.taskPreparations[token]
+	prep.timer.Stop()
+	delete(m.taskPreparations, token)
+	if err := m.CleanupInterruptedTaskPreparations(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Fatalf("unrecorded dirty child contents removed: %v", err)
+	}
+	if _, err := os.Stat(rows[0].WorktreePath); err != nil {
+		t.Fatalf("parent removed before unrecorded child cleanup: %v", err)
+	}
+	if _, ok := st.sessions[domain.SessionID(token)]; !ok {
+		t.Fatal("startup cleanup deleted retry row for unrecorded child")
+	}
+}
+
+func TestStartupCleanupPreservesWorkspaceProjectWithNoWorktreeRows(t *testing.T) {
+	m, st, _, ws := newManager()
+	project := st.projects["mer"]
+	project.Kind = domain.ProjectKindWorkspace
+	st.projects["mer"] = project
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api", GitStatus: domain.GitStatusReady}}
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, IsTaskPreparation: true,
+		Metadata: domain.SessionMetadata{Branch: "ao/mer-1/root"},
+	}
+	if err := m.CleanupInterruptedTaskPreparations(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ws.destroyed != 0 {
+		t.Fatalf("destroy calls = %d before any worktree was accounted for", ws.destroyed)
+	}
+	if _, ok := st.sessions["mer-1"]; !ok {
+		t.Fatal("preparation without worktree rows lost its recovery handle")
+	}
+}
+
+func TestStartupCleanupPreservesUnregisteredRecoveredChildWithUnknownCreationSHA(t *testing.T) {
+	m, st, _, root := newGitTaskPreparationManager(t)
+	child := newManagerGitRepo(t)
+	childPath := filepath.Join(root, "api")
+	if err := os.Rename(child, childPath); err != nil {
+		t.Fatal(err)
+	}
+	runManagerGit(t, childPath, "remote", "add", "origin", childPath)
+	runManagerGit(t, childPath, "fetch", "origin", "main")
+	runManagerGit(t, childPath, "remote", "set-head", "origin", "main")
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("api/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runManagerGit(t, root, "add", ".gitignore")
+	runManagerGit(t, root, "commit", "-m", "ignore child checkout")
+	project := st.projects["mer"]
+	project.Kind = domain.ProjectKindWorkspace
+	st.projects["mer"] = project
+	st.workspaceRepo["mer"] = []domain.WorkspaceRepoRecord{{Name: "api", RelativePath: "api", GitStatus: domain.GitStatusReady}}
+	token, err := m.PrepareTaskWorkspace(context.Background(), project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prep := m.taskPreparations[token]; prep.err != nil {
+		t.Fatal(prep.err)
+	}
+	rows := st.worktrees[domain.SessionID(token)]
+	if len(rows) != 2 || rows[1].BaseSHA == "" {
+		t.Fatalf("prepared rows = %+v, want root and child comparison base", rows)
+	}
+	// A recovered branch has no trusted creation SHA. Then Git loses the
+	// child registration while an unregistered, nonempty path remains.
+	rows[1].CreationSHA = ""
+	st.worktrees[domain.SessionID(token)] = rows
+	runManagerGit(t, childPath, "worktree", "remove", "--force", rows[1].WorktreePath)
+	if err := os.MkdirAll(rows[1].WorktreePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(rows[1].WorktreePath, "user.txt")
+	if err := os.WriteFile(file, []byte("keep me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prep := m.taskPreparations[token]
+	prep.timer.Stop()
+	delete(m.taskPreparations, token)
+	if err := m.CleanupInterruptedTaskPreparations(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Fatalf("unregistered child contents removed: %v", err)
+	}
+	if _, err := os.Stat(rows[0].WorktreePath); err != nil {
+		t.Fatalf("parent removed after child refusal: %v", err)
+	}
+	if _, ok := st.sessions[domain.SessionID(token)]; !ok {
+		t.Fatal("dirty recovered child lost its hidden cleanup row")
+	}
 }
 
 func TestCancelTaskPreparationCanRetryAfterCleanupFailure(t *testing.T) {
@@ -442,5 +840,50 @@ func TestStartupCleanupFailureDoesNotBlockDaemon(t *testing.T) {
 	}
 	if _, ok := st.sessions["mer-1"]; !ok {
 		t.Fatal("failed cleanup lost the hidden row needed for a later retry")
+	}
+}
+
+func TestStartupSafetyDefersInterruptedPreparationGitCleanup(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		IsTaskPreparation: true, ProvisionState: domain.SessionProvisionProvisioning,
+		CreatedAt: time.Date(2026, time.September, 20, 12, 0, 0, 0, time.UTC),
+		Metadata:  domain.SessionMetadata{Branch: "ao/mer-1/root", WorkspacePath: "/ws/mer-1"},
+	}
+	if err := m.ReconcileStartupSafety(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ws.destroyed != 0 {
+		t.Fatalf("startup safety destroyed %d worktrees before the listener bound", ws.destroyed)
+	}
+	if rec, ok := st.sessions["mer-1"]; !ok || rec.ProvisionState != domain.SessionProvisionProvisioning {
+		t.Fatalf("startup safety touched interrupted preparation: %+v, exists=%v", rec, ok)
+	}
+	// A preparation opened after the listener binds belongs to this daemon,
+	// not the interrupted set captured by startup safety.
+	st.sessions["mer-2"] = domain.SessionRecord{
+		ID: "mer-2", ProjectID: "mer", Kind: domain.KindWorker,
+		IsTaskPreparation: true, ProvisionState: domain.SessionProvisionProvisioning,
+		Metadata: domain.SessionMetadata{Branch: "ao/mer-2/root", WorkspacePath: "/ws/mer-2"},
+	}
+	st.sessions["mer-3"] = domain.SessionRecord{
+		ID: "mer-3", ProjectID: "mer", Kind: domain.KindWorker,
+		Mode: domain.SessionModeChat, ProvisionState: domain.SessionProvisionProvisioning,
+	}
+	if err := m.ReconcileBackground(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ws.destroyed != 1 {
+		t.Fatalf("background cleanup destroyed %d worktrees, want 1", ws.destroyed)
+	}
+	if _, ok := st.sessions["mer-1"]; ok {
+		t.Fatal("background cleanup left the preparation row")
+	}
+	if rec, ok := st.sessions["mer-2"]; !ok || rec.ProvisionState != domain.SessionProvisionProvisioning {
+		t.Fatalf("background cleanup touched a new preparation: %+v, exists=%v", rec, ok)
+	}
+	if got := st.sessions["mer-3"].ProvisionState; got != domain.SessionProvisionProvisioning {
+		t.Fatalf("background retry marked a new async spawn %q, want provisioning", got)
 	}
 }

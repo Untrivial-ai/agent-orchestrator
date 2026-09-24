@@ -97,6 +97,9 @@ func (m *Manager) beginAsyncChatSpawn(ctx context.Context, in asyncChatSpawn) (d
 	m.asyncChatSpawns[id] = run
 	m.asyncChatSpawnsMu.Unlock()
 	m.runInBackground(func() {
+		if in.retry {
+			defer m.endAgentResume(id)
+		}
 		defer func() {
 			if in.releaseHarness != nil {
 				in.releaseHarness()
@@ -147,6 +150,10 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 			return
 		}
 	}
+	// The foreground response must not wait behind Git, but the background
+	// workspace lifecycle still serializes with spawn, restore and cleanup.
+	releaseWorkspaceGate := m.acquireWorkspaceGate(in.cfg.ProjectID)
+	defer releaseWorkspaceGate()
 	if ws.Path == "" {
 		baseRefs := m.refreshDefaultBranchesBestEffort(ctx, in.project)
 		m.logAsyncChatSpawnStage(id, "default_branch_refresh", stageStarted)
@@ -237,7 +244,8 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 	m.logAsyncChatSpawnStage(id, "controller_start", stageStarted)
 	stageStarted = time.Now()
 	if err := m.chat.DrainChatQueue(ctx, id); err != nil {
-		m.logger.Error("spawn: dispatch queued prompt", "sessionID", id, "error", err)
+		m.failAsyncChatSpawn(ctx, id, wrapSpawnStage(id, ErrSpawnDeliverPrompt, err))
+		return
 	}
 	m.logAsyncChatSpawnStage(id, "queue_drain", stageStarted)
 	stageStarted = time.Now()
@@ -372,17 +380,24 @@ func (m *Manager) FailInterruptedProvisioning(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list sessions for interrupted starts: %w", err)
 	}
+	_, err = m.failInterruptedProvisioningRecords(ctx, recs)
+	return err
+}
+
+func (m *Manager) failInterruptedProvisioningRecords(ctx context.Context, recs []domain.SessionRecord) ([]domain.SessionRecord, error) {
 	var failures []error
+	var retries []domain.SessionRecord
 	for _, rec := range recs {
-		if rec.IsTerminated || !rec.ProvisionState.IsProvisioning() {
+		if rec.IsTerminated || rec.IsTaskPreparation || !rec.ProvisionState.IsProvisioning() {
 			continue
 		}
 		if _, err := m.setProvisionState(ctx, rec.ID, domain.SessionProvisionFailed,
 			"AO restarted before this session finished starting"); err != nil {
 			failures = append(failures, fmt.Errorf("session %s: %w", rec.ID, err))
+			retries = append(retries, rec)
 		}
 	}
-	return errors.Join(failures...)
+	return retries, errors.Join(failures...)
 }
 
 // runInBackground runs work outside the caller's request. The seam exists so

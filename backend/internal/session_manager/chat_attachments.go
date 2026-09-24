@@ -52,6 +52,12 @@ func (m *Manager) StageAttachments(
 		// was attached.
 		return nil, fmt.Errorf("session %s has no workspace", id)
 	}
+	if rec.Metadata.WorkspacePath != "" {
+		// Establish the git guard before any attachment becomes visible to git.
+		if err := m.workspace.AddExclude(ctx, workspaceInfo(rec), "/"+attachmentsDir+"/"); err != nil {
+			return nil, fmt.Errorf("exclude attachments: %w", err)
+		}
+	}
 
 	refs := make([]string, 0, len(attachments))
 	for i, a := range attachments {
@@ -96,14 +102,12 @@ func (m *Manager) StageAttachments(
 			return refs, nil
 		}
 		rec = latest
-		if _, err := m.attachments.MaterializeWorkspace(ctx, id, rec.Metadata.WorkspacePath); err != nil {
+		if err := m.workspace.AddExclude(ctx, workspaceInfo(rec), "/"+attachmentsDir+"/"); err != nil {
+			return nil, fmt.Errorf("exclude attachments: %w", err)
+		}
+		if _, err := m.attachments.MaterializeWorkspace(ctx, id, rec.Metadata.WorkspacePath, nil); err != nil {
 			return nil, fmt.Errorf("materialize staged attachments: %w", err)
 		}
-	}
-	// Keep the directory out of git status. Best-effort: the bytes are already
-	// usable, so an exclude failure must not fail the message.
-	if err := m.workspace.AddExclude(ctx, workspaceInfo(rec), "/"+attachmentsDir+"/"); err != nil {
-		m.logger.Warn("stage attachments: exclude attachments dir", "sessionID", id, "error", err)
 	}
 	return refs, nil
 }

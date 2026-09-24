@@ -93,6 +93,7 @@ type recordingLauncher struct {
 	// it, then drains once the controller is live.
 	queued   []string
 	queueErr error
+	drainErr error
 	drained  []domain.SessionID
 }
 
@@ -106,7 +107,7 @@ func (l *recordingLauncher) QueueChatPrompt(_ context.Context, _ domain.SessionI
 
 func (l *recordingLauncher) DrainChatQueue(_ context.Context, id domain.SessionID) error {
 	l.drained = append(l.drained, id)
-	return nil
+	return l.drainErr
 }
 
 type historicalChatRestoreStore struct {

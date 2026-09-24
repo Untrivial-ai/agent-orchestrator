@@ -675,6 +675,7 @@ type SessionWorktree struct {
 	PreservedRef string
 	State        string
 	BaseRef      string
+	CreationSha  string
 }
 
 type ShellTerminal struct {

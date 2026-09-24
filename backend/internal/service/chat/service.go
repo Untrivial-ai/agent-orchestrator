@@ -276,27 +276,6 @@ func (s *Service) settleOrphanedWork(ctx context.Context, session domain.Session
 	}
 }
 
-// queuedAheadOfFirstController reports whether this session's rows were written
-// before any provider existed. An asynchronous spawn records the opening prompt
-// — and anything the user typed while the agent was starting — as queued turns,
-// which advances the conversation sequence without a single provider event.
-//
-// That distinction is load-bearing at start: a non-zero sequence normally means
-// the conversation already owns provider history this process cannot resume, and
-// reserving a fresh provider boundary is the right answer. Queued turns are the
-// opposite case — nothing has reached a provider yet — and fencing them off would
-// open a brand-new session as if it were a resumed one.
-func queuedAheadOfFirstController(ctx context.Context, sessions SessionReader, id domain.SessionID) bool {
-	if sessions == nil {
-		return false
-	}
-	record, found, err := sessions.GetSession(ctx, id)
-	if err != nil || !found {
-		return false
-	}
-	return record.ProvisionState.IsProvisioning()
-}
-
 // Start launches or resumes the Chat controller for a session.
 //
 // A resume that fails is reported as a failure rather than quietly becoming a new
@@ -550,13 +529,35 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		providerScopeID = cfg.ProviderScopeID
 		providerHandleOwnedByActiveBranch = providerScopeID == activeBranch.ProviderScopeID
 	}
-	queuedBeforeFirstController := queuedAheadOfFirstController(ctx, s.sessions, cfg.SessionID)
+	// A provisioning retry is not necessarily the first controller. Only durable
+	// controller ownership (or a running provider turn) proves work was dispatched;
+	// queued-only intake must survive a failed first drain.
+	queuedBeforeFirstController := false
+	preserveUndispatchedQueue := false
+	hadProviderHistory := false
+	if s.sessions != nil {
+		record, found, readErr := s.sessions.GetSession(ctx, cfg.SessionID)
+		if readErr != nil {
+			return nil, fmt.Errorf("read chat session before start: %w", readErr)
+		}
+		if found && record.ProvisionState.IsProvisioning() {
+			hadProviderHistory = record.Metadata.ProviderConversationID != ""
+			running, listErr := s.store.ListVisibleRunningTurnProviderIDs(ctx, conversation.ID)
+			if listErr != nil {
+				return nil, fmt.Errorf("read running chat turns before start: %w", listErr)
+			}
+			queuedBeforeFirstController = record.Metadata.ControllerGeneration == "" &&
+				record.Metadata.ProviderConversationID == "" && len(running) == 0
+			preserveUndispatchedQueue = len(running) == 0
+		}
+	}
 	providerBoundaryID := ""
 	if !providerHandleOwnedByActiveBranch {
 		providerBoundaryID = providerScopeID
 	} else if cfg.ProviderConversationID == "" && cfg.ProviderScopeID == "" &&
 		!queuedBeforeFirstController &&
-		(conversation.LatestSequence > 0 || activeBranch.ProviderConversationID != "") {
+		(activeBranch.ProviderConversationID != "" || hadProviderHistory ||
+			(!preserveUndispatchedQueue && conversation.LatestSequence > 0)) {
 		// This conversation already owns provider history, but the caller proved it
 		// cannot resume that provider thread. Reserve the next provider boundary
 		// before connect so every opaque id emitted by the fresh process is born in
@@ -756,7 +757,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// it was waiting for finally arrived.
 	if !liveReconnect && cfg.ProviderHandoff == nil &&
 		owner.Kind != domain.ConversationOwnerReview &&
-		!queuedBeforeFirstController {
+		!queuedBeforeFirstController && !preserveUndispatchedQueue {
 		s.settleOrphanedWork(ctx, cfg.SessionID, conversation.ID)
 	}
 	// A fresh generation per launch, so events from the controller this one

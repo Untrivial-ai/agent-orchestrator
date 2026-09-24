@@ -215,6 +215,166 @@ func TestFirstControllerAfterQueuedPromptIsNotFencedAsResume(t *testing.T) {
 	}
 }
 
+func TestDrainWithoutControllerKeepsOpeningPromptForLaterStart(t *testing.T) {
+	st, id := openProvisioningStore(t, domain.SessionProvisionProvisioning)
+	ctx := context.Background()
+	svc := provisioningService(t, st)
+	if _, err := svc.Send(ctx, id, ports.ChatUserMessage{Text: "opening brief", Origin: domain.MessageOriginHuman}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainQueued(ctx, id); !errors.Is(err, chatsvc.ErrNoController) {
+		t.Fatalf("drain before controller = %v, want ErrNoController", err)
+	}
+	snapshot, err := svc.Snapshot(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Turns) != 1 || snapshot.Turns[0].State != domain.TurnStateQueued {
+		t.Fatalf("opening brief after failed drain = %+v, want queued", snapshot.Turns)
+	}
+	if _, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: id, ProjectID: testProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ControllerReady: func(chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+			return chatsvc.ControllerCommit{}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), id) })
+	if err := svc.DrainQueued(ctx, id); err != nil {
+		t.Fatalf("drain after controller start: %v", err)
+	}
+	snapshot, err = svc.Snapshot(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Turns) != 1 || snapshot.Turns[0].State != domain.TurnStateRunning {
+		t.Fatalf("opening brief after retry = %+v, want running", snapshot.Turns)
+	}
+}
+
+func TestRetryAfterControllerStartedButBeforeDrainKeepsOpeningPrompt(t *testing.T) {
+	st, id := openProvisioningStore(t, domain.SessionProvisionProvisioning)
+	ctx := context.Background()
+	first := provisioningService(t, st)
+	if _, err := first.Send(ctx, id, ports.ChatUserMessage{Text: "opening brief", Origin: domain.MessageOriginHuman}); err != nil {
+		t.Fatal(err)
+	}
+	start := chatsvc.StartConfig{
+		SessionID: id, ProjectID: testProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ControllerReady: func(chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+			return chatsvc.ControllerCommit{}, nil
+		},
+	}
+	if _, err := first.Start(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetSessionProvisionState(ctx, id, domain.SessionProvisionFailed, "drain interrupted", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetSessionProvisionState(ctx, id, domain.SessionProvisionProvisioning, "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// Model daemon replacement: the old controller did not dispatch or clean up.
+	next := provisioningService(t, st)
+	start.ProviderConversationID = "thread-1"
+	if _, err := next.Start(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = next.Stop(context.Background(), id) })
+	snapshot, err := next.Snapshot(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Turns) != 1 || snapshot.Turns[0].State != domain.TurnStateQueued {
+		t.Fatalf("opening prompt after retry = %+v, want queued for drain", snapshot.Turns)
+	}
+}
+
+type failingProvisionSessionReader struct{ *sqlite.Store }
+
+func (f failingProvisionSessionReader) GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error) {
+	return domain.SessionRecord{}, false, errors.New("temporary session read failure")
+}
+
+func TestFirstControllerSessionReadFailureDoesNotFailQueuedBrief(t *testing.T) {
+	st, id := openProvisioningStore(t, domain.SessionProvisionProvisioning)
+	ctx := context.Background()
+	svc := provisioningService(t, st)
+	if _, err := svc.Send(ctx, id, ports.ChatUserMessage{Text: "opening brief", Origin: domain.MessageOriginHuman}); err != nil {
+		t.Fatal(err)
+	}
+	failing := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: failingProvisionSessionReader{st}, Reader: fullSnapshotReader(st),
+		Drivers: fakeRegistry{driver: fakeDriver{conv: newFakeConversation()}},
+		Log:     slog.New(slog.DiscardHandler), NewID: func() string { return "read-failure" },
+	})
+	if _, err := failing.Start(ctx, chatsvc.StartConfig{
+		SessionID: id, ProjectID: testProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+	}); err == nil || !strings.Contains(err.Error(), "temporary session read failure") {
+		t.Fatalf("start with unavailable session facts = %v, want read error", err)
+	}
+	snapshot, err := svc.Snapshot(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Turns) != 1 || snapshot.Turns[0].State != domain.TurnStateQueued {
+		t.Fatalf("opening prompt after read failure = %+v, want queued", snapshot.Turns)
+	}
+}
+
+func TestProvisioningRetryStillReservesBoundaryForPriorProviderHistory(t *testing.T) {
+	st, id := openProvisioningStore(t, domain.SessionProvisionProvisioning)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	rec, found, err := st.GetSession(ctx, id)
+	if err != nil || !found {
+		t.Fatalf("session: found=%v err=%v", found, err)
+	}
+	rec.Metadata.ControllerGeneration = "old-generation"
+	rec.Metadata.ProviderConversationID = "unavailable-provider-thread"
+	if err := st.UpdateSession(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	conv, err := st.CreateConversation(ctx, "prior-provider-history", domain.ConversationScopeSession, testProject, id, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertActivity(ctx, conv.ID, "", domain.ConversationActivity{
+		ID: "old-provider-event", Kind: domain.ActivityKindSystem,
+		Status: domain.ActivityStatusCompleted, ProviderItemID: "old-provider-item",
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	svc := provisioningService(t, st)
+	boundaryReserved := false
+	if _, err := svc.Start(ctx, chatsvc.StartConfig{
+		SessionID: id, ProjectID: testProject, Kind: domain.KindWorker,
+		Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
+		ControllerReady: func(result chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
+			boundaryReserved = result.ProviderBoundary != nil
+			if result.ProviderBoundary == nil {
+				return chatsvc.ControllerCommit{}, nil
+			}
+			if err := st.CreateAndActivateConversationBranch(ctx, id, *result.ProviderBoundary, result.ControllerGeneration, now); err != nil {
+				return chatsvc.ControllerCommit{}, err
+			}
+			committed := result.Conversation
+			committed.ActiveBranchID = result.ProviderBoundary.ID
+			return chatsvc.ControllerCommit{Conversation: committed}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = svc.Stop(context.Background(), id) })
+	if !boundaryReserved {
+		t.Fatal("fresh provider was attached to prior provider history without a new boundary")
+	}
+}
+
 func TestControllerPublishedWhileProvisioningCannotOvertakeQueuedPrompt(t *testing.T) {
 	st, provisioningSession := openProvisioningStore(t, domain.SessionProvisionProvisioning)
 	conv := newFakeConversation()

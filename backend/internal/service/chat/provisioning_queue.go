@@ -124,6 +124,5 @@ func (s *Service) DrainQueued(ctx context.Context, id domain.SessionID) error {
 	if err != nil {
 		return err
 	}
-	controller.drain(ctx)
-	return nil
+	return controller.drain(ctx)
 }

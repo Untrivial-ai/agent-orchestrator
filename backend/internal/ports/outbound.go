@@ -587,6 +587,9 @@ type WorkspaceRepoInfo struct {
 	Path     string
 	Branch   string
 	BaseSHA  string
+	// CreationSHA pins a speculative branch's initial tip for safe cleanup.
+	// BaseSHA stays the comparison base and may be a different commit.
+	CreationSHA string
 	// BaseRef is the repository-default ref persisted with BaseSHA so comparisons
 	// can recompute a merge base after that default advances or the session is
 	// rebased. It can differ from the remote session ref used to seed the worktree.

@@ -34,7 +34,7 @@ func TestStoreImportsBeforeWorkspaceRemovalAndMaterializesAfterRestore(t *testin
 	if err := os.MkdirAll(workspace, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.MaterializeWorkspace(context.Background(), "ao-1", workspace); err != nil {
+	if _, err := store.MaterializeWorkspace(context.Background(), "ao-1", workspace, nil); err != nil {
 		t.Fatalf("MaterializeWorkspace: %v", err)
 	}
 
@@ -44,6 +44,36 @@ func TestStoreImportsBeforeWorkspaceRemovalAndMaterializesAfterRestore(t *testin
 	}
 	if string(got) != string(want) {
 		t.Fatalf("restored attachment = %q, want %q", got, want)
+	}
+}
+
+func TestMaterializeWorkspacePreparesOnceBeforeWriting(t *testing.T) {
+	store := New(t.TempDir())
+	workspace := t.TempDir()
+	for _, name := range []string{"attachment-first.png", "attachment-second.png"} {
+		if err := store.PutCanonical(context.Background(), "ao-1", name, []byte(name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	guardCalls := 0
+	guard := func() error {
+		guardCalls++
+		if _, err := os.Stat(filepath.Join(workspace, filepath.FromSlash(WorkspaceDir), "attachment-first.png")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("guard ran after workspace write: %v", err)
+		}
+		return nil
+	}
+	if materialized, err := store.MaterializeWorkspace(context.Background(), "ao-1", workspace, guard); err != nil || !materialized {
+		t.Fatalf("materialize = (%v, %v), want success", materialized, err)
+	}
+	if guardCalls != 1 {
+		t.Fatalf("guard calls = %d, want 1", guardCalls)
+	}
+	if materialized, err := store.MaterializeWorkspace(context.Background(), "ao-2", workspace, guard); err != nil || materialized {
+		t.Fatalf("empty materialize = (%v, %v), want no files", materialized, err)
+	}
+	if guardCalls != 1 {
+		t.Fatalf("empty materialization called guard: %d", guardCalls)
 	}
 }
 
@@ -247,7 +277,7 @@ func TestStoreMaterializeRejectsUnsafeWorkspaceDestination(t *testing.T) {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
 
-		if _, err := store.MaterializeWorkspace(context.Background(), "ao-1", workspace); err == nil {
+		if _, err := store.MaterializeWorkspace(context.Background(), "ao-1", workspace, nil); err == nil {
 			t.Fatal("MaterializeWorkspace accepted a symlinked attachment directory")
 		}
 		if _, err := os.Stat(filepath.Join(outside, name)); !errors.Is(err, fs.ErrNotExist) {
@@ -257,7 +287,7 @@ func TestStoreMaterializeRejectsUnsafeWorkspaceDestination(t *testing.T) {
 
 	t.Run("empty workspace path", func(t *testing.T) {
 		t.Chdir(t.TempDir())
-		if _, err := store.MaterializeWorkspace(context.Background(), "ao-1", ""); err == nil {
+		if _, err := store.MaterializeWorkspace(context.Background(), "ao-1", "", nil); err == nil {
 			t.Fatal("MaterializeWorkspace accepted an empty workspace path")
 		}
 	})
@@ -274,7 +304,7 @@ func TestStoreMaterializeRestoresCanonicalBytesOverExistingProjection(t *testing
 	if err := os.WriteFile(projection, []byte("tampered"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.MaterializeWorkspace(context.Background(), "ao-1", workspace); err != nil {
+	if _, err := store.MaterializeWorkspace(context.Background(), "ao-1", workspace, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(projection)

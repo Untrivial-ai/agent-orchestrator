@@ -1751,10 +1751,10 @@ func (c *Controller) dispatch(
 // Runs on the projection goroutine, so it observes turn completion in order with
 // everything else the provider said. One message per call: the turn it starts
 // makes the controller busy again, and the next completion drains the next.
-func (c *Controller) drain(ctx context.Context) {
+func (c *Controller) drain(ctx context.Context) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	c.drainLocked(ctx, true)
+	return c.drainLocked(ctx, true)
 }
 
 // drainLocked is drain with the dispatch lock already held. Turn completion
@@ -1763,7 +1763,7 @@ func (c *Controller) drain(ctx context.Context) {
 //
 // allowDispatch gates sending the next queued turn. A pending Stop cutoff forces
 // it true so messages typed after Stop still send.
-func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) {
+func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) error {
 	c.mu.Lock()
 	cutoff := c.cancelQueuedAt
 	c.cancelQueuedAt = time.Time{}
@@ -1773,7 +1773,7 @@ func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) {
 
 	if busy {
 		// Something already claimed the agent, so this drain has nothing to do.
-		return
+		return nil
 	}
 
 	if !cutoff.IsZero() {
@@ -1781,24 +1781,24 @@ func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) {
 		// cancelled; anything typed afterwards is still theirs to send.
 		if err := c.store.CancelQueuedTurns(ctx, c.conversation.ID, cutoff, c.now()); err != nil {
 			c.log.Error("failed to cancel queued turns", "session", c.sessionID, "error", err)
-			return
+			return err
 		}
 		allowDispatch = true
 	}
 	if handoff != controllerHandoffNone && handoff != controllerHandoffInterfaceDrain {
-		return
+		return nil
 	}
 	if !allowDispatch {
-		return
+		return nil
 	}
 
 	queued, err := c.store.NextQueuedTurn(ctx, c.conversation.ID)
 	if errors.Is(err, domain.ErrNoQueuedTurn) {
-		return
+		return nil
 	}
 	if err != nil {
 		c.log.Error("failed to read queued turn", "session", c.sessionID, "error", err)
-		return
+		return err
 	}
 
 	var content []ports.ChatContent
@@ -1808,7 +1808,7 @@ func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) {
 				"queued chat content is corrupt", c.now())
 			c.log.Error("failed to decode queued chat content",
 				"session", c.sessionID, "turn", queued.TurnID, "error", err)
-			return
+			return err
 		}
 	}
 	if _, err := c.dispatch(ctx, queued.TurnID, ports.ChatUserMessage{
@@ -1823,7 +1823,9 @@ func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) {
 		// discard messages the user can otherwise still see waiting.
 		c.log.Error("failed to dispatch queued turn",
 			"session", c.sessionID, "turn", queued.TurnID, "error", err)
+		return err
 	}
+	return nil
 }
 
 // ArmHandoff is the linearization point for an interface transition. It closes
