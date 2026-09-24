@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,15 +77,18 @@ func newAppTestClient(t *testing.T, baseURL string, httpClient *http.Client) *Cl
 	return client
 }
 
-// installationRepositoryServer answers the two GitHub endpoints the checkout
-// scope path touches: minting installation tokens (capturing the repository_ids
-// of the read-scoped mint) and listing an installation's repositories.
+// installationRepositoryServer answers the GitHub endpoints the checkout scope
+// path touches: minting installation tokens (capturing the repository_ids of the
+// read-scoped mint), listing an installation's repositories, and the per-name
+// GET /repos/{owner}/{repo} fallback for repositories missing from the listing.
 type installationRepositoryServer struct {
 	repos             []Repository
+	directRepos       map[string]Repository // fullName -> repo, resolvable only via GET /repos
 	mintedRepoIDs     []int64
 	mintedPermissions map[string]string
 	tokenCalls        int
 	listCalls         int
+	directGetCalls    int
 }
 
 func (h *installationRepositoryServer) handler(t *testing.T) http.HandlerFunc {
@@ -110,6 +114,17 @@ func (h *installationRepositoryServer) handler(t *testing.T) http.HandlerFunc {
 		case r.Method == http.MethodGet && r.URL.Path == "/installation/repositories":
 			h.listCalls++
 			_ = json.NewEncoder(w).Encode(map[string]any{"repositories": h.repos})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/"):
+			h.directGetCalls++
+			fullName := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/repos/"))
+			// A repo present in the listing is also directly readable; the fallback
+			// only exercises repos that are exclusively in directRepos.
+			if repo, ok := h.directRepos[fullName]; ok {
+				_ = json.NewEncoder(w).Encode(repo)
+				return
+			}
+			// Not granted to the installation: GitHub answers 404.
+			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -118,32 +133,48 @@ func (h *installationRepositoryServer) handler(t *testing.T) http.HandlerFunc {
 }
 
 func TestResolveInstallationRepositoryIDs(t *testing.T) {
-	backend := &installationRepositoryServer{repos: []Repository{
-		{ID: 1, FullName: "octo/app"},
-		{ID: 2, FullName: "octo/lib"},
-		{ID: 9, FullName: "octo/unused"},
-	}}
+	backend := &installationRepositoryServer{
+		repos: []Repository{
+			{ID: 1, FullName: "octo/app"},
+			{ID: 2, FullName: "octo/lib"},
+			{ID: 9, FullName: "octo/unused"},
+		},
+		// octo/private is granted to the installation but not (yet) in the
+		// eventually-consistent listing; it resolves only via the direct GET.
+		directRepos: map[string]Repository{
+			"octo/private": {ID: 7, FullName: "octo/private", Private: true},
+		},
+	}
 	server := httptest.NewServer(backend.handler(t))
 	defer server.Close()
 	client := newAppTestClient(t, server.URL, server.Client())
 
-	// A matched extra, a case-mismatched extra, a duplicate, and one outside the
-	// installation: only the two in-installation repos resolve, deduped.
-	ids, err := client.resolveInstallationRepositoryIDs(context.Background(), 1234, []string{
-		"octo/lib", "OCTO/LIB", "octo/lib", "other/nope",
+	// A matched extra, a case-mismatched duplicate of it, a private extra missing
+	// from the listing (resolved via the GET fallback), and one the App cannot
+	// access (404 -> unresolved).
+	ids, unresolved, err := client.resolveInstallationRepositoryIDs(context.Background(), 1234, []string{
+		"octo/lib", "OCTO/LIB", "octo/lib", "octo/private", "other/nope",
 	})
 	if err != nil {
 		t.Fatalf("resolveInstallationRepositoryIDs: %v", err)
 	}
-	if len(ids) != 1 || ids[0] != 2 {
-		t.Fatalf("resolved ids = %v, want [2] (octo/lib once, out-of-installation dropped)", ids)
+	if len(ids) != 2 || ids[0] != 2 || ids[1] != 7 {
+		t.Fatalf("resolved ids = %v, want [2 7] (octo/lib deduped + octo/private via fallback)", ids)
+	}
+	if len(unresolved) != 1 || unresolved[0] != "other/nope" {
+		t.Fatalf("unresolved = %v, want [other/nope]", unresolved)
+	}
+	// Only the two names missing from the listing fall back to a direct GET; the
+	// matched name and its duplicate never do.
+	if backend.directGetCalls != 2 {
+		t.Fatalf("direct GET calls = %d, want 2 (octo/private + other/nope)", backend.directGetCalls)
 	}
 
 	// No names means no work and no HTTP call.
 	backend.listCalls = 0
-	ids, err = client.resolveInstallationRepositoryIDs(context.Background(), 1234, nil)
-	if err != nil || ids != nil {
-		t.Fatalf("empty resolve = (%v, %v), want (nil, nil)", ids, err)
+	ids, unresolved, err = client.resolveInstallationRepositoryIDs(context.Background(), 1234, nil)
+	if err != nil || ids != nil || unresolved != nil {
+		t.Fatalf("empty resolve = (%v, %v, %v), want (nil, nil, nil)", ids, unresolved, err)
 	}
 	if backend.listCalls != 0 {
 		t.Fatalf("empty resolve listed repositories %d times, want 0", backend.listCalls)
@@ -232,6 +263,62 @@ func TestIssueCheckoutGrantBroadensToExtraRepos(t *testing.T) {
 	}
 	if backend.mintedPermissions["contents"] != "read" || len(backend.mintedPermissions) != 1 {
 		t.Fatalf("minted permissions = %v, want contents:read only", backend.mintedPermissions)
+	}
+}
+
+func TestIssueCheckoutGrantResolvesExtraViaDirectFallback(t *testing.T) {
+	backend := &installationRepositoryServer{
+		repos: []Repository{{ID: 1, FullName: "octo/app"}},
+		// The declared extra is private and missing from the listing, but the App
+		// can read it directly (the ChartSnip case): the checkout scope must still
+		// include it so the worker can clone it.
+		directRepos: map[string]Repository{
+			"octo/private": {ID: 5, FullName: "octo/private", Private: true},
+		},
+	}
+	server := httptest.NewServer(backend.handler(t))
+	defer server.Close()
+	client := newAppTestClient(t, server.URL, server.Client())
+	store := &checkoutStubStore{
+		primary: primaryContext(),
+		extras:  []domain.RepoRef{{URL: "https://github.com/octo/private"}},
+	}
+	svc := newCheckoutTestService(t, store, client)
+
+	if _, err := svc.IssueCheckoutGrant(context.Background(), "org-1", "sess-1"); err != nil {
+		t.Fatalf("IssueCheckoutGrant: %v", err)
+	}
+	got := append([]int64(nil), backend.mintedRepoIDs...)
+	sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+	if len(got) != 2 || got[0] != 1 || got[1] != 5 {
+		t.Fatalf("minted repository_ids = %v, want [1 5] (primary + octo/private via fallback)", backend.mintedRepoIDs)
+	}
+	if backend.directGetCalls != 1 {
+		t.Fatalf("direct GET calls = %d, want 1 (octo/private)", backend.directGetCalls)
+	}
+}
+
+func TestIssueCheckoutGrantExcludesInaccessibleExtra(t *testing.T) {
+	backend := &installationRepositoryServer{repos: []Repository{{ID: 1, FullName: "octo/app"}}}
+	server := httptest.NewServer(backend.handler(t))
+	defer server.Close()
+	client := newAppTestClient(t, server.URL, server.Client())
+	store := &checkoutStubStore{
+		primary: primaryContext(),
+		// Neither in the listing nor readable directly: it must be dropped from the
+		// scope without failing the primary checkout (a 422 would have failed all).
+		extras: []domain.RepoRef{{URL: "https://github.com/octo/ghost"}},
+	}
+	svc := newCheckoutTestService(t, store, client)
+
+	if _, err := svc.IssueCheckoutGrant(context.Background(), "org-1", "sess-1"); err != nil {
+		t.Fatalf("IssueCheckoutGrant: %v", err)
+	}
+	if len(backend.mintedRepoIDs) != 1 || backend.mintedRepoIDs[0] != 1 {
+		t.Fatalf("minted repository_ids = %v, want [1] (primary only; ghost is 404)", backend.mintedRepoIDs)
+	}
+	if backend.directGetCalls != 1 {
+		t.Fatalf("direct GET calls = %d, want 1 (octo/ghost)", backend.directGetCalls)
 	}
 }
 

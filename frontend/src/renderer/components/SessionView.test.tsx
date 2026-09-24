@@ -947,6 +947,13 @@ describe("SessionView", () => {
 		const loaderScreen = screen.getByTestId("cloud-session-loader-screen");
 		const loader = within(loaderScreen).getByRole("status", { name: "Session setup activity" });
 		expect(loaderScreen).toHaveClass("absolute", "inset-0", "grid", "place-items-center", "bg-background");
+		// The loader covers the session pane but MUST stay within the app z-scale,
+		// below the overlay layer (dialogs/dropdowns at z-overlay). A raw high z
+		// (previously z-[200]) painted over any shell modal opened while a cloud
+		// session loads (New Task, the project three-dots menu), hiding it while
+		// its Radix modal still locked body pointer-events and froze the whole UI.
+		expect(loaderScreen).toHaveClass("z-chrome");
+		expect(loaderScreen.className).not.toMatch(/z-\[\d+\]/);
 		expect(loaderScreen.children).toHaveLength(1);
 		expect(loader).toHaveTextContent("Orchestrating your environment");
 		expect(loader).not.toHaveTextContent("Connecting");

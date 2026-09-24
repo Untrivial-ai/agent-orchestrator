@@ -439,7 +439,14 @@ function CloudSessionLifecycleLoader() {
 	], [t]);
 	return (
 		<div
-			className="absolute inset-0 z-[200] grid place-items-center bg-background"
+			// Sits at the session-pane chrome level: it must cover the loading
+			// pane's content (topbar/terminal) but MUST stay below the app overlay
+			// layer (`z-overlay`, dialogs/dropdowns). A raw high z (this was `z-[200]`)
+			// painted over any shell modal opened while a cloud session loads — the
+			// New Task dialog, the project three-dots menu — leaving it invisible
+			// behind the loader while Radix still applied `body{pointer-events:none}`,
+			// which froze the whole UI (sidebar included). Keep this <= z-overlay.
+			className="absolute inset-0 z-chrome grid place-items-center bg-background"
 			data-testid="cloud-session-loader-screen"
 		>
 			<MultiStepLoader
