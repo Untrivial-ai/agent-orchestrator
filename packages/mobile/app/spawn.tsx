@@ -284,7 +284,11 @@ export default function SpawnModal() {
 	};
 
 	const content = (
-		<View style={[styles.content, Platform.OS === "android" && styles.androidContent]}>
+		<View style={[
+			styles.content,
+			Platform.OS === "ios" && styles.iosContent,
+			Platform.OS === "android" && styles.androidContent,
+		]}>
 				<View
 					style={[styles.promptHost, Platform.OS === "ios" && styles.promptHostFill]}
 					onLayout={Platform.OS === "ios" ? (event) => setPromptRoom(Math.floor(event.nativeEvent.layout.height)) : undefined}
@@ -393,6 +397,7 @@ const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgBase },
 		content: { flex: 1, paddingHorizontal: space.lg, paddingTop: space.lg, paddingBottom: space.sm, gap: space.sm },
+		iosContent: { paddingTop: space.huge },
 		androidModalRoot: { flex: 1, backgroundColor: "transparent" },
 		androidSheet: {
 			paddingTop: space.xs,

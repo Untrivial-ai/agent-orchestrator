@@ -146,6 +146,12 @@ describe("Android native compatibility boundaries", () => {
 		expect(ios).not.toContain("height: 154");
 	});
 
+	it("gives the iOS Spawn prompt modest top breathing room", () => {
+		const spawn = source("../app/spawn.tsx");
+		expect(spawn).toContain('Platform.OS === "ios" && styles.iosContent');
+		expect(spawn).toContain("iosContent: { paddingTop: space.huge }");
+	});
+
 	it("waits for the Android destination route before closing the drawer", () => {
 		const drawer = source("./sidebar-navigation-shell.android.tsx");
 		expect(drawer).toContain("pendingClosePath");
