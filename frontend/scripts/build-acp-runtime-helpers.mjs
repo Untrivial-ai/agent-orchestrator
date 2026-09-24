@@ -96,13 +96,13 @@ export function patchClaudeContextUsage(adapterPath) {
 		throw new Error("claude-agent-acp result usage block no longer matches AO's context patch");
 	}
 	const block = source.slice(start, end);
-	if (block.includes("_ao/contextSource")) return false;
+	if (source.includes("// AO: use the SDK's full context snapshot.")) return false;
 	if (!block.includes("used: lastAssistantTotalUsage,") || !block.includes("size: session.contextWindowSize,")) {
 		throw new Error("claude-agent-acp result usage block no longer matches AO's context patch");
 	}
 
 	const snapshot = [
-		"// AO: replace the message-only proxy with the SDK's full context snapshot.",
+		"// AO: use the SDK's full context snapshot.",
 		"                            let contextUsageTimer;",
 		"                            try {",
 		"                                const contextUsage = await Promise.race([",
@@ -116,15 +116,6 @@ export function patchClaudeContextUsage(adapterPath) {
 		"                                    lastAssistantTotalUsage = contextUsage.totalTokens;",
 		"                                    session.contextWindowSize = contextUsage.rawMaxTokens;",
 		"                                    session.contextWindowAuthoritative = true;",
-		"                                    await sendUpdate({",
-		"                                        sessionId: params.sessionId,",
-		"                                        update: {",
-		"                                            sessionUpdate: 'usage_update',",
-		"                                            used: contextUsage.totalTokens,",
-		"                                            size: contextUsage.rawMaxTokens,",
-		"                                            _meta: { '_ao/contextSource': 'claude_agent_sdk' },",
-		"                                        },",
-		"                                    });",
 		"                                }",
 		"                            } catch (error) {",
 		"                                this.logger.error('Failed to fetch Claude SDK context usage:', error);",
@@ -133,7 +124,7 @@ export function patchClaudeContextUsage(adapterPath) {
 		"                            }",
 		"                            ",
 	].join("\n");
-	writeFileSync(adapterPath, source.slice(0, end) + snapshot + source.slice(end));
+	writeFileSync(adapterPath, source.slice(0, start) + snapshot + source.slice(start));
 	return true;
 }
 

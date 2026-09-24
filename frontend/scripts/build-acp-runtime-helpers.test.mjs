@@ -130,14 +130,13 @@ describe("patchClaudeContextUsage", () => {
 		expect(patchClaudeContextUsage(adapterPath)).toBe(false);
 		const patched = readFileSync(adapterPath, "utf8");
 		expect(patched).toContain("session.query.getContextUsage()");
-		expect(patched).toContain("used: contextUsage.totalTokens");
-		expect(patched).toContain("size: contextUsage.rawMaxTokens");
-		expect(patched).toContain("_ao/contextSource");
+		expect(patched).toContain("lastAssistantTotalUsage = contextUsage.totalTokens");
+		expect(patched).toContain("session.contextWindowSize = contextUsage.rawMaxTokens");
 
-		const start = patched.indexOf("// Send usage_update notification");
+		const start = patched.indexOf("// AO: use the SDK's full context snapshot.");
 		const end = patched.indexOf("if (session.cancelled) {", start);
 		const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-		const run = new AsyncFunction("session", "sendUpdate", "params", `
+		const run = new AsyncFunction("session", "sendUpdate", `
 			let lastAssistantTotalUsage = 9;
 			${patched.slice(start, end)}
 		`);
@@ -149,10 +148,21 @@ describe("patchClaudeContextUsage", () => {
 		};
 		await run.call({ logger: { error: () => {} } }, session, (notification) => {
 			updates.push(notification.update);
-		}, { sessionId: "session-1" });
-		expect(updates.map(({ used, size }) => [used, size])).toEqual([[9, 100], [17, 200]]);
-		expect(updates[1]._meta).toEqual({ "_ao/contextSource": "claude_agent_sdk" });
+		});
+		expect(updates.map(({ used, size }) => [used, size])).toEqual([[17, 200]]);
 		expect(session.contextWindowAuthoritative).toBe(true);
+
+		const fallback = {
+			contextWindowSize: 100,
+			contextWindowAuthoritative: false,
+			query: { getContextUsage: async () => { throw new Error("unavailable"); } },
+		};
+		const fallbackUpdates = [];
+		await run.call({ logger: { error: () => {} } }, fallback, (notification) => {
+			fallbackUpdates.push(notification.update);
+		});
+		expect(fallbackUpdates.map(({ used, size }) => [used, size])).toEqual([[9, 100]]);
+		expect(fallback.contextWindowAuthoritative).toBe(false);
 	});
 });
 

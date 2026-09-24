@@ -144,7 +144,6 @@ export const ChatComposer = memo(function ChatComposer({
 	disabled,
 	disabledPlaceholder,
 	settings,
-	contextIndicator,
 	approval,
 	elicitation,
 	skills = [],
@@ -187,7 +186,6 @@ export const ChatComposer = memo(function ChatComposer({
 		retainedContent?: number[],
 	) => void | Promise<unknown>;
 	settings?: ReactNode;
-	contextIndicator?: ReactNode;
 	/** A provider decision that temporarily replaces ordinary message entry. */
 	approval?: ReactNode;
 	/** A provider question, docked above the composer until it is answered. */
@@ -1592,7 +1590,6 @@ export const ChatComposer = memo(function ChatComposer({
 								</Tooltip>
 							</>
 						) : null}
-						{contextIndicator}
 						{settings}
 					</div>
 
