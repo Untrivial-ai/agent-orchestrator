@@ -163,7 +163,7 @@ func (p *Plugin) GetPromptDeliveryStrategy(ctx context.Context, _ ports.LaunchCo
 
 // GetRestoreCommand rebuilds the argv that continues an existing Goose session:
 //
-//	[env GOOSE_MODE=<mode>] goose run --system <text> --resume --session-id <agentSessionId>
+//	[env GOOSE_MODE=<mode>] goose run --system <text> -t "" --interactive --resume --session-id <agentSessionId>
 //
 // ok is false when the hook-derived native session id has not landed yet, so
 // callers can fall back to fresh launch behavior. AO deliberately uses run
@@ -193,7 +193,11 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		cmd = append(cmd, "--system", systemPrompt)
 	}
 	appendModelFlag(&cmd, cfg.Config)
-	cmd = append(cmd, "--resume", "--session-id", agentSessionID)
+	// Goose 1.45+ requires every `run` invocation to include instructions, text,
+	// or a recipe even when resuming. Empty text satisfies that parser contract
+	// without replaying the session's original task. Interactive mode keeps the
+	// restored terminal input-ready for AO's post-start prompt delivery.
+	cmd = append(cmd, "-t", "", "--interactive", "--resume", "--session-id", agentSessionID)
 	return cmd, true, nil
 }
 
