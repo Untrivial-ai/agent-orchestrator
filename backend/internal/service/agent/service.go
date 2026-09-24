@@ -643,7 +643,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 		persistCtx = context.Background()
 	}
 	if errors.Is(discoverErr, ports.ErrAgentModelDiscoverySignInRequired) {
-		return s.keepCatalogUntilSignIn(persistCtx, item.Manifest.Name, cached, hasCached, policy, version, generation), nil
+		return s.keepCatalogUntilSignIn(persistCtx, projectID, item.Manifest.Name, cached, hasCached, policy, version, generation), nil
 	}
 	if discoverErr != nil {
 		// Provider model IDs are credential-scoped. Reuse a cached catalog only
@@ -713,7 +713,7 @@ func (s *Service) loadModels(ctx context.Context, agentID, projectID string, mod
 // loaded: a sign-in made outside AO (for example from a terminal) is picked up
 // by the next picker read or daemon start, not only by AO's own auth probe.
 // The refresh state stays idle because the picker shows a spinner for queued.
-func (s *Service) keepCatalogUntilSignIn(ctx context.Context, agentName string, cached decodedCatalog, hasCached bool, policy ports.AgentModelCatalog, version string, generation int64) ports.AgentModelCatalog {
+func (s *Service) keepCatalogUntilSignIn(ctx context.Context, projectID, agentName string, cached decodedCatalog, hasCached bool, policy ports.AgentModelCatalog, version string, generation int64) ports.AgentModelCatalog {
 	catalog := cached.Catalog
 	if !hasCached {
 		catalog = policy
@@ -728,7 +728,7 @@ func (s *Service) keepCatalogUntilSignIn(ctx context.Context, agentName string, 
 	catalog.RefreshError = ""
 	catalog.RetryAt = nil
 	catalog.RefreshRecommended = false
-	if err := s.saveCatalog(ctx, cached.ProjectID, catalog, generation, 0); err != nil {
+	if err := s.saveCatalog(ctx, projectID, catalog, generation, 0); err != nil {
 		catalog.Warning = appendCacheWarning(catalog.Warning)
 	}
 	return catalog
