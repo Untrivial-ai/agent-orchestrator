@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/browsercontract"
@@ -16,7 +15,11 @@ import (
 	"github.com/coder/websocket"
 )
 
-const browserStreamWireLimit = browserstream.MaxFrameBytes + 512
+const (
+	browserStreamWireLimit    = browserstream.MaxFrameBytes + 512
+	browserStreamWriteTimeout = 5 * time.Second
+	browserFirstFrameTimeout  = 25 * time.Second
+)
 
 // BrowserStreamDialer opens the worker side of the browser relay.
 type BrowserStreamDialer interface {
@@ -27,6 +30,10 @@ type browserWireMessage struct {
 	kind    websocket.MessageType
 	payload []byte
 	err     error
+}
+
+type browserWireWriter interface {
+	Write(context.Context, websocket.MessageType, []byte) error
 }
 
 // RunBrowserStream keeps the outbound control-plane socket connected. The
@@ -74,16 +81,40 @@ func RunBrowserStream(
 }
 
 func bridgeBrowserStream(ctx context.Context, controlPlane *websocket.Conn, browserAPIURL, capability string) error {
+	return bridgeBrowserStreamWithFrameTimeout(ctx, controlPlane, browserAPIURL, capability, browserFirstFrameTimeout)
+}
+
+func bridgeBrowserStreamWithFrameTimeout(
+	ctx context.Context,
+	controlPlane *websocket.Conn,
+	browserAPIURL, capability string,
+	firstFrameTimeout time.Duration,
+) error {
 	controlPlane.SetReadLimit(browserstream.MaxControlBytes)
 	cpMessages := readBrowserWire(ctx, controlPlane)
 	var local *websocket.Conn
 	var localCancel context.CancelFunc
 	var localMessages <-chan browserWireMessage
 	var reconnectLocal <-chan time.Time
+	var firstFrameTimer *time.Timer
+	var firstFrameDeadline <-chan time.Time
 	localBackoff := streamRedialFloor
-	var cpWriteMu sync.Mutex
+
+	stopFirstFrameTimer := func() {
+		if firstFrameTimer != nil {
+			if !firstFrameTimer.Stop() {
+				select {
+				case <-firstFrameTimer.C:
+				default:
+				}
+			}
+		}
+		firstFrameTimer = nil
+		firstFrameDeadline = nil
+	}
 
 	closeLocal := func() {
+		stopFirstFrameTimer()
 		if localCancel != nil {
 			localCancel()
 			localCancel = nil
@@ -97,18 +128,18 @@ func bridgeBrowserStream(ctx context.Context, controlPlane *websocket.Conn, brow
 	defer closeLocal()
 
 	writeControlPlane := func(kind websocket.MessageType, payload []byte) error {
-		cpWriteMu.Lock()
-		defer cpWriteMu.Unlock()
-		return controlPlane.Write(ctx, kind, payload)
+		return writeBrowserWire(ctx, controlPlane, browserStreamWriteTimeout, kind, payload)
 	}
-	writeError := func(code, message string) {
+	writeError := func(code, message string) error {
 		payload, _ := json.Marshal(browserstream.Control{
 			Type: "error", Version: browserstream.Version, Code: code, Message: message,
 		})
-		_ = writeControlPlane(websocket.MessageText, payload)
+		return writeControlPlane(websocket.MessageText, payload)
 	}
 	attachLocal := func() bool {
-		connection, err := dialBrowserd(ctx, browserAPIURL, capability)
+		dialCtx, cancel := context.WithTimeout(ctx, browserStreamWriteTimeout)
+		connection, err := dialBrowserd(dialCtx, browserAPIURL, capability)
+		cancel()
 		if err != nil {
 			reconnectLocal = time.After(localBackoff)
 			if localBackoff < streamRedialCeiling {
@@ -125,6 +156,10 @@ func bridgeBrowserStream(ctx context.Context, controlPlane *websocket.Conn, brow
 		localMessages = readBrowserWire(localCtx, local)
 		reconnectLocal = nil
 		localBackoff = streamRedialFloor
+		if firstFrameTimeout > 0 {
+			firstFrameTimer = time.NewTimer(firstFrameTimeout)
+			firstFrameDeadline = firstFrameTimer.C
+		}
 		return true
 	}
 
@@ -135,15 +170,22 @@ func bridgeBrowserStream(ctx context.Context, controlPlane *websocket.Conn, brow
 		case message, ok := <-localMessages:
 			if !ok || message.err != nil {
 				closeLocal()
-				writeError("BROWSER_RESTARTING", "The session browser is reconnecting.")
+				if err := writeError("BROWSER_RESTARTING", "The session browser is reconnecting."); err != nil {
+					return err
+				}
 				reconnectLocal = time.After(localBackoff)
 				continue
 			}
 			if err := validateBrowserdMessage(message); err != nil {
 				closeLocal()
-				writeError("BROWSER_STREAM_INVALID", "The session browser sent an invalid message.")
+				if writeErr := writeError("BROWSER_STREAM_INVALID", "The session browser sent an invalid message."); writeErr != nil {
+					return writeErr
+				}
 				reconnectLocal = time.After(localBackoff)
 				continue
+			}
+			if message.kind == websocket.MessageBinary {
+				stopFirstFrameTimer()
 			}
 			if err := writeControlPlane(message.kind, message.payload); err != nil {
 				return err
@@ -166,7 +208,9 @@ func bridgeBrowserStream(ctx context.Context, controlPlane *websocket.Conn, brow
 			case "attach":
 				closeLocal()
 				if !attachLocal() {
-					writeError("BROWSER_SESSION_UNAVAILABLE", "The session browser is not available.")
+					if err := writeError("BROWSER_SESSION_UNAVAILABLE", "The session browser is not available."); err != nil {
+						return err
+					}
 				}
 			case "detach":
 				closeLocal()
@@ -177,21 +221,45 @@ func bridgeBrowserStream(ctx context.Context, controlPlane *websocket.Conn, brow
 					return errors.New("unsupported browser control-plane message")
 				}
 				if local == nil {
-					writeError("BROWSER_SESSION_UNAVAILABLE", "The session browser is not attached.")
+					if err := writeError("BROWSER_SESSION_UNAVAILABLE", "The session browser is not attached."); err != nil {
+						return err
+					}
 					continue
 				}
-				if err := local.Write(ctx, websocket.MessageText, message.payload); err != nil {
+				if err := writeBrowserWire(ctx, local, browserStreamWriteTimeout, websocket.MessageText, message.payload); err != nil {
 					closeLocal()
-					writeError("BROWSER_RESTARTING", "The session browser is reconnecting.")
+					if writeErr := writeError("BROWSER_RESTARTING", "The session browser is reconnecting."); writeErr != nil {
+						return writeErr
+					}
 					reconnectLocal = time.After(localBackoff)
 				}
 			}
+		case <-firstFrameDeadline:
+			closeLocal()
+			if err := writeError("BROWSER_RESTARTING", "The session browser did not deliver a frame and is reconnecting."); err != nil {
+				return err
+			}
+			reconnectLocal = time.After(localBackoff)
 		case <-reconnectLocal:
 			if !attachLocal() {
-				writeError("BROWSER_SESSION_UNAVAILABLE", "The session browser is not available.")
+				if err := writeError("BROWSER_SESSION_UNAVAILABLE", "The session browser is not available."); err != nil {
+					return err
+				}
 			}
 		}
 	}
+}
+
+func writeBrowserWire(
+	ctx context.Context,
+	writer browserWireWriter,
+	timeout time.Duration,
+	kind websocket.MessageType,
+	payload []byte,
+) error {
+	writeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return writer.Write(writeCtx, kind, payload)
 }
 
 func dialBrowserd(ctx context.Context, browserAPIURL, capability string) (*websocket.Conn, error) {

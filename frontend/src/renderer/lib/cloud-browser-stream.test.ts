@@ -219,6 +219,51 @@ describe("CloudBrowserStream", () => {
 		stream.dispose();
 	});
 
+	it("reconnects an open viewer that never delivers its first frame", async () => {
+		vi.useFakeTimers();
+		const sockets: FakeSocket[] = [];
+		const issue = vi.fn().mockResolvedValue({
+			ticket: "ticket",
+			expiresIn: 300,
+			protocolVersion: 1,
+			canOperate: true,
+		});
+		vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:recovered");
+		vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+		const stream = new CloudBrowserStream({
+			baseUrl: "https://cloud.example",
+			orgId: "org",
+			sessionId: "session",
+			client: { createBrowserViewerTicket: issue },
+			createSocket: () => {
+				const socket = new FakeSocket();
+				sockets.push(socket);
+				return socket;
+			},
+		});
+
+		stream.retain();
+		await Promise.resolve();
+		await Promise.resolve();
+		sockets[0]!.open();
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(sockets[0]!.closed).toBe(true);
+		expect(stream.getSnapshot()).toMatchObject({
+			status: "connecting",
+			error: "The browser stream did not deliver a frame.",
+		});
+
+		await vi.advanceTimersByTimeAsync(250);
+		await Promise.resolve();
+		expect(sockets).toHaveLength(2);
+		sockets[1]!.open();
+		sockets[1]!.message(frame(2n, 1n));
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(sockets[1]!.closed).toBe(false);
+		expect(stream.getSnapshot()).toMatchObject({ status: "ready", frameUrl: "blob:recovered" });
+		stream.dispose();
+	});
+
 	it("measures bounded viewer latency, reconnects, and never replays input", async () => {
 		vi.useFakeTimers();
 		let now = 0;

@@ -7,6 +7,7 @@ const FRAME_HEADER_BYTES = 35;
 const FRAME_MAGIC = "AOBR";
 const MAX_FRAME_BYTES = 1024 * 1024 + 512;
 const RETRY_DELAYS = [250, 500, 1000, 2000, 5000] as const;
+const FIRST_FRAME_TIMEOUT_MS = 30_000;
 
 export type CloudBrowserStatus = "idle" | "connecting" | "waiting" | "ready" | "reconnecting" | "fatal";
 
@@ -158,6 +159,8 @@ export class CloudBrowserStream {
 	private retryTimer: number | undefined;
 	private releaseTimer: number | undefined;
 	private pingTimer: number | undefined;
+	private firstFrameTimer: number | undefined;
+	private connectingGeneration = 0;
 	private missedPongs = 0;
 	private inputSeq = 0;
 	private readonly retiredEpochs = new Set<number>();
@@ -184,7 +187,9 @@ export class CloudBrowserStream {
 			window.clearTimeout(this.releaseTimer);
 			this.releaseTimer = undefined;
 		}
-		if (this.refs === 1 && this.socket === null) void this.connect();
+		if (this.socket === null && this.retryTimer === undefined && this.connectingGeneration === 0) {
+			void this.connect();
+		}
 	}
 
 	release(): void {
@@ -213,9 +218,11 @@ export class CloudBrowserStream {
 	retryNow(): void {
 		if (this.refs === 0) return;
 		this.generation += 1;
+		this.connectingGeneration = 0;
 		if (this.retryTimer !== undefined) window.clearTimeout(this.retryTimer);
 		this.retryTimer = undefined;
 		this.stopPing();
+		this.stopFirstFrameTimer();
 		if (this.socket?.readyState === WebSocket.OPEN) {
 			this.socket.send(JSON.stringify({ type: "detach", version: PROTOCOL_VERSION }));
 		}
@@ -319,7 +326,9 @@ export class CloudBrowserStream {
 	}
 
 	private async connect(): Promise<void> {
+		if (this.refs === 0 || this.connectingGeneration !== 0) return;
 		const generation = ++this.generation;
+		this.connectingGeneration = generation;
 		this.connectStartedAt = this.now();
 		this.connectionIsReconnect = this.hasOpened;
 		this.receivedFrameForConnection = false;
@@ -343,6 +352,7 @@ export class CloudBrowserStream {
 				this.retry = 0;
 				this.update({ status: this.snapshot.frameUrl ? "reconnecting" : "waiting", error: "", errorRequestId: "" });
 				this.startPing();
+				this.startFirstFrameTimer(generation, socket);
 			};
 			socket.onmessage = (event) => {
 				if (generation !== this.generation) return;
@@ -355,6 +365,7 @@ export class CloudBrowserStream {
 				if (generation !== this.generation) return;
 				this.socket = null;
 				this.stopPing();
+				this.stopFirstFrameTimer();
 				this.scheduleReconnect();
 			};
 		} catch (error) {
@@ -368,6 +379,8 @@ export class CloudBrowserStream {
 			}
 			this.update({ error: message });
 			this.scheduleReconnect();
+		} finally {
+			if (this.connectingGeneration === generation) this.connectingGeneration = 0;
 		}
 	}
 
@@ -385,9 +398,11 @@ export class CloudBrowserStream {
 
 	private disconnect(): void {
 		this.generation += 1;
+		this.connectingGeneration = 0;
 		if (this.retryTimer !== undefined) window.clearTimeout(this.retryTimer);
 		this.retryTimer = undefined;
 		this.stopPing();
+		this.stopFirstFrameTimer();
 		if (this.socket?.readyState === WebSocket.OPEN) {
 			this.socket.send(JSON.stringify({ type: "detach", version: PROTOCOL_VERSION }));
 		}
@@ -507,6 +522,7 @@ export class CloudBrowserStream {
 		if (this.retiredEpochs.has(epoch)) return;
 		if (epoch !== this.snapshot.streamEpoch) this.changeEpoch(epoch);
 		if (epoch === this.snapshot.streamEpoch && sequence <= this.snapshot.frameSequence) return;
+		this.stopFirstFrameTimer();
 		const frameUrl = URL.createObjectURL(new Blob([buffer.slice(jpegOffset)], { type: "image/jpeg" }));
 		if (this.snapshot.frameUrl) URL.revokeObjectURL(this.snapshot.frameUrl);
 		this.update({
@@ -615,6 +631,25 @@ export class CloudBrowserStream {
 		if (this.pingTimer !== undefined) window.clearInterval(this.pingTimer);
 		this.pingTimer = undefined;
 		this.missedPongs = 0;
+	}
+
+	private startFirstFrameTimer(generation: number, socket: BrowserSocket): void {
+		this.stopFirstFrameTimer();
+		this.firstFrameTimer = window.setTimeout(() => {
+			this.firstFrameTimer = undefined;
+			if (generation !== this.generation || socket !== this.socket || this.receivedFrameForConnection) return;
+			this.generation += 1;
+			this.socket = null;
+			this.stopPing();
+			socket.close(1011, "browser viewer first frame timed out");
+			this.update({ error: "The browser stream did not deliver a frame." });
+			this.scheduleReconnect();
+		}, FIRST_FRAME_TIMEOUT_MS);
+	}
+
+	private stopFirstFrameTimer(): void {
+		if (this.firstFrameTimer !== undefined) window.clearTimeout(this.firstFrameTimer);
+		this.firstFrameTimer = undefined;
 	}
 
 	private emit(): void {
