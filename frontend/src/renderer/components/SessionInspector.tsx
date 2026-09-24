@@ -13,7 +13,9 @@ import {
 	InspectorSection as Section,
 	SessionInspectorShellView,
 	SessionInspectorSummaryView,
+	UserAvatar,
 	inspectorEmptyClass,
+	scmUserAvatarUrl,
 	type InspectorPullRequest,
 	type InspectorInlineComment,
 	type InspectorGithubReview,
@@ -1239,16 +1241,52 @@ function PRSummaryCard({
 		},
 	});
 	const mergeError = mergePr.error instanceof Error ? mergePr.error.message : null;
+	const reviewers = Array.from(
+		new Set(
+			(pr.review.reviews ?? [])
+				.slice()
+				.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))
+				.map((review) => review.reviewerId.trim())
+				.filter(Boolean),
+		),
+	);
+	const reviewDetailsAction = canOpenReviews && (reviewers.length > 0 || pr.review.decision !== "none") ? (
+		<button
+			aria-label={t("pr.review.viewDetails")}
+			className="flex items-center pl-1 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+			onClick={onOpenReviews}
+			title={t("pr.review.viewDetails")}
+			type="button"
+		>
+			{reviewers.length > 0 ? (
+				<>
+					{reviewers.slice(0, 3).map((reviewer, index) => (
+						<UserAvatar
+							className={cn("size-5 border border-(--color-bg-settings-input)", index > 0 && "-ml-1.5")}
+							imageUrl={scmUserAvatarUrl(pr.provider, prBrowserUrl(pr), reviewer)}
+							key={reviewer}
+							name={reviewer}
+						/>
+					))}
+					{reviewers.length > 3 ? (
+						<span className="-ml-1.5 inline-flex size-5 items-center justify-center rounded-full border border-(--color-bg-settings-input) bg-muted text-micro text-muted-foreground">
+							+{reviewers.length - 3}
+						</span>
+					) : null}
+				</>
+			) : (
+				<span className="whitespace-nowrap text-2xs text-settings-muted underline-offset-2 hover:underline">
+					{t("pr.review.viewDetails")} ↗
+				</span>
+			)}
+		</button>
+	) : undefined;
 	const viewModel: InspectorPullRequest = {
 		...pr,
 		card: presentation,
 		href: prBrowserUrl(pr),
 		stateLabel: t(prStateLabelKeys[pr.state]),
-		reviewDetailsAction: canOpenReviews && pr.review.decision !== "none" ? (
-			<button className="whitespace-nowrap text-2xs text-settings-muted underline-offset-2 hover:underline" onClick={onOpenReviews} type="button">
-				{t("pr.review.viewDetails")} ↗
-			</button>
-		) : undefined,
+		reviewDetailsAction,
 	};
 	return (
 		<InspectorPullRequestCardView

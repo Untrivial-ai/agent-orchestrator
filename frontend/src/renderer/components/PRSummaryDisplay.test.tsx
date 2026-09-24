@@ -51,7 +51,7 @@ describe("PRSummaryParts", () => {
 		);
 	});
 
-	it("keeps pending merge status compact beside a higher-priority review blocker", () => {
+	it("shows pending checks, review, and merge state as separate rows", () => {
 		const { container } = render(
 			<PRCardStatusSummary
 				pr={summary({
@@ -66,40 +66,33 @@ describe("PRSummaryParts", () => {
 			/>,
 		);
 
-		expect(screen.getByText("Review required")).toBeInTheDocument();
-		expect(screen.getByText("Merge blocked until a required review is submitted.")).toBeInTheDocument();
+		expect(screen.getByText("Review status")).toBeInTheDocument();
+		expect(screen.getByText("Required review not submitted")).toBeInTheDocument();
 		const pendingStatus = screen.getByRole("link", { name: "Merge pending" });
 		expect(pendingStatus).toHaveAttribute(
 			"href",
 			"https://github.com/acme/repo/pull/7",
 		);
-		const statusLayout = pendingStatus.closest('[data-slot="pr-status-layout"]');
-		expect(statusLayout).toContainElement(screen.getByText("Review required"));
-		expect(statusLayout).toContainElement(screen.getByRole("link", { name: "Checks pending" }));
-		expect(pendingStatus.closest('[data-slot="pr-secondary-statuses"]')).not.toContainElement(
-			screen.getByText("Review required"),
-		);
+		expect(screen.getByRole("link", { name: "Checks pending" })).toBeInTheDocument();
 		expect(container.querySelector("svg.animate-spin")).not.toBeInTheDocument();
-		expect(container.querySelector(".animate-status-pulse")).not.toBeInTheDocument();
+		expect(container.querySelector(".animate-status-pulse")).toBeInTheDocument();
 	});
 
-	it("aligns the primary status marker with the first status line", () => {
+	it("renders a status marker for each checks, review, and merge row", () => {
 		const { container } = render(<PRCardStatusSummary pr={summary()} />);
 
-		const marker = container.querySelector(".size-dot-sm");
-		expect(marker).toHaveClass("size-dot-sm");
-		expect(marker).toHaveClass("mt-1");
+		expect(container.querySelectorAll(".size-dot-sm")).toHaveLength(3);
 	});
 
-	it("centers a supplied primary action beside the compact status stack", () => {
+	it("places a supplied merge action on the merge-status row", () => {
 		const { container } = render(<PRCardStatusSummary action={<button type="button">Merge</button>} pr={summary()} />);
 
 		const action = screen.getByRole("button", { name: "Merge" });
 		const supportingStatus = screen.getByRole("link", { name: "Checks passing" });
-		expect(action.parentElement).toHaveClass("shrink-0", "self-center");
-		expect(action.parentElement?.parentElement).toHaveClass("items-center");
+		expect(action.parentElement).toHaveClass("shrink-0");
+		expect(action.parentElement?.parentElement).toContainElement(screen.getByRole("link", { name: "Ready to merge" }));
 		expect(container).toContainElement(supportingStatus);
-		expect(screen.getByText("Review approved")).toBeInTheDocument();
+		expect(screen.getByText("Review status")).toBeInTheDocument();
 		expect(screen.getByRole("link", { name: "Ready to merge" })).toBeInTheDocument();
 	});
 

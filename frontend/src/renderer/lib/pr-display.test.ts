@@ -204,15 +204,52 @@ describe("prDiffSummary", () => {
 
 describe("prCardPresentation", () => {
 	const priorityCases: Array<[string, Partial<SessionPRSummary>, string, string]> = [
-		["conflict + passing + approval", { mergeability: { state: "conflicting", reasons: [], prUrl: "" } }, "Merge conflict", "Merge conflict"],
-		["clean + passing + approval", { mergeability: { state: "mergeable", reasons: [], prUrl: "" } }, "Review approved", "Ready to merge"],
-		["clean + failing + approval", { ci: { autoInjectCI: true, state: "failing", failingChecks: [] }, mergeability: { state: "mergeable", reasons: [], prUrl: "" } }, "Checks failing", "Merge blocked"],
+		[
+			"conflict + passing + approval",
+			{ mergeability: { state: "conflicting", reasons: [], prUrl: "" } },
+			"Merge conflict",
+			"Merge conflict",
+		],
+		[
+			"conflict + failing + approval",
+			{
+				ci: { autoInjectCI: true, state: "failing", failingChecks: [] },
+				mergeability: { state: "conflicting", reasons: [], prUrl: "" },
+			},
+			"Checks failing",
+			"Merge conflict",
+		],
+		[
+			"clean + passing + approval",
+			{ mergeability: { state: "mergeable", reasons: [], prUrl: "" } },
+			"Review approved",
+			"Ready to merge",
+		],
+		[
+			"clean + failing + approval",
+			{
+				ci: { autoInjectCI: true, state: "failing", failingChecks: [] },
+				mergeability: { state: "mergeable", reasons: [], prUrl: "" },
+			},
+			"Checks failing",
+			"Merge blocked",
+		],
+		[
+			"provider blocked + passing + approval",
+			{ mergeability: { state: "blocked", reasons: [], prUrl: "" } },
+			"Merge unavailable",
+			"Merge blocked",
+		],
 	];
-	it.each(priorityCases)("keeps %s concise while exposing merge readiness", (_name, overrides, primaryLabel, readinessLabel) => {
+	it.each(priorityCases)("shows %s as explicit status rows", (_name, overrides, primaryLabel, readinessLabel) => {
 		const presentation = prCardPresentation(summary(overrides));
 		expect(presentation.primary.label).toBe(primaryLabel);
-		expect(presentation.statusRows).toBeUndefined();
-		expect(presentation.readiness?.label).toBe(readinessLabel);
+		expect(presentation.statusRows?.map((status) => status.label)).toEqual([
+			overrides.ci?.state === "failing" ? "Checks failing" : "Checks passing",
+			"Review status",
+			readinessLabel,
+		]);
+		expect(presentation.readiness).toBeUndefined();
 	});
 
 	it("shows a required review once instead of repeating it as a merge blocker", () => {
@@ -234,7 +271,11 @@ describe("prCardPresentation", () => {
 			tone: "review",
 		});
 		expect(presentation.supporting.map((status) => status.label)).toEqual(["Checks passing"]);
-		expect(presentation.readiness?.label).toBe("Merge blocked");
+		expect(presentation.statusRows?.map((status) => status.label)).toEqual([
+			"Checks passing",
+			"Review status",
+			"Merge blocked",
+		]);
 	});
 
 	it("uses the primary status while provider state is pending", () => {
@@ -246,8 +287,11 @@ describe("prCardPresentation", () => {
 		);
 
 		expect(presentation.primary.label).toBe("Checks running");
-		expect(presentation.statusRows).toBeUndefined();
-		expect(presentation.readiness?.label).toBe("Merge pending");
+		expect(presentation.statusRows?.map((status) => status.label)).toEqual([
+			"Checks running",
+			"Review status",
+			"Merge pending",
+		]);
 	});
 
 	it("keeps reviewer attention left while exposing failing checks and readiness separately", () => {
@@ -273,7 +317,8 @@ describe("prCardPresentation", () => {
 			tone: "error",
 		});
 		expect(presentation.supporting[0].links[0]).toMatchObject({ label: "unit", href: "https://ci/unit" });
-		expect(presentation.readiness?.label).toBe("Merge blocked");
+		expect(presentation.statusRows?.[0]?.links[0]).toMatchObject({ label: "unit", href: "https://ci/unit" });
+		expect(presentation.statusRows?.[2]?.label).toBe("Merge blocked");
 	});
 
 	it("retains running checks as linked supporting state when review is the primary action", () => {
@@ -295,7 +340,12 @@ describe("prCardPresentation", () => {
 			href: "https://github.com/acme/repo/pull/7/checks",
 			breathe: true,
 		});
-		expect(presentation.readiness?.label).toBe("Merge blocked");
+		expect(presentation.statusRows?.[0]).toMatchObject({
+			label: "Checks running",
+			href: "https://github.com/acme/repo/pull/7/checks",
+			breathe: true,
+		});
+		expect(presentation.statusRows?.[2]?.label).toBe("Merge blocked");
 	});
 
 	it("shows running checks instead of an internal provider blocker", () => {

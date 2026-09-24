@@ -154,7 +154,7 @@ describe("portable leaf components", () => {
 		expect(container.querySelector(".animate-spin")).not.toBeInTheDocument();
 	});
 
-	it("keeps review details compact and inline with the review detail", () => {
+	it("places review details action on the review-status row", () => {
 		const reviewDetailsAction = <button type="button">View review details ↗</button>;
 		render(
 			<PRCardStatusSummary
@@ -166,15 +166,16 @@ describe("portable leaf components", () => {
 						{ key: "ci", label: "Checks passing", tone: "success", links: [] },
 						{ key: "review", label: "Review status", detail: "Required review not submitted", tone: "review", links: [] },
 					],
-					readiness: { label: "Not mergeable yet", detail: "A required review is pending.", tone: "error" },
 				}}
 				reviewDetailsAction={reviewDetailsAction}
 			/>,
 		);
 
 		const detail = screen.getByText("Required review not submitted");
-		expect(detail.parentElement).toHaveClass("flex", "items-baseline");
-		expect(detail.parentElement).toContainElement(screen.getByRole("button", { name: "View review details ↗" }));
+		const reviewRow = detail.parentElement;
+		expect(reviewRow).toContainElement(screen.getByText("Review status"));
+		expect(reviewRow).toContainElement(detail);
+		expect(reviewRow).toContainElement(screen.getByRole("button", { name: "View review details ↗" }));
 		expect(detail.closest(".grid")).toHaveClass("grid-cols-1");
 	});
 

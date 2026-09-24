@@ -539,6 +539,70 @@ describe("SessionInspector PR section", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows the latest submitted reviewer avatars on the review row", () => {
+    renderWithQuery(
+      <SessionInspector session={session([pr(7, "open")])} />,
+      undefined,
+      (client) => {
+        client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
+          prSummary(7, "open", {
+            review: {
+              decision: "approved",
+              hasUnresolvedHumanComments: false,
+              unresolvedBy: [
+                { reviewerId: "thread-commenter", count: 1, links: [] },
+              ],
+              reviews: [
+                {
+                  reviewerId: "grace-hopper",
+                  verdict: "approved",
+                  submittedAt: "2026-09-20T12:00:00Z",
+                  autoInjectReview: false,
+                },
+                {
+                  reviewerId: "ada-lovelace",
+                  verdict: "approved",
+                  submittedAt: "2026-09-22T12:00:00Z",
+                  autoInjectReview: false,
+                },
+                {
+                  reviewerId: "ronishrohan",
+                  verdict: "approved",
+                  submittedAt: "2026-09-23T12:00:00Z",
+                  autoInjectReview: false,
+                },
+                {
+                  reviewerId: "ada-lovelace",
+                  verdict: "approved",
+                  submittedAt: "2026-09-19T12:00:00Z",
+                  autoInjectReview: false,
+                },
+                {
+                  reviewerId: "linus-torvalds",
+                  verdict: "approved",
+                  submittedAt: "2026-09-21T12:00:00Z",
+                  autoInjectReview: false,
+                },
+              ],
+            },
+          }),
+        ]);
+      },
+    );
+
+    const action = prSection("Pull request").getByRole("button", {
+      name: "View review details",
+    });
+    const avatars = Array.from(action.querySelectorAll("img"));
+    expect(avatars.map((avatar) => avatar.getAttribute("src"))).toEqual([
+      "https://avatars.githubusercontent.com/ronishrohan?size=64",
+      "https://avatars.githubusercontent.com/ada-lovelace?size=64",
+      "https://avatars.githubusercontent.com/linus-torvalds?size=64",
+    ]);
+    expect(action).toHaveTextContent("+1");
+    expect(action).not.toHaveTextContent("thread-commenter");
+  });
+
   it("merges a ready pull request directly through the daemon", async () => {
     const readyPR = prSummary(7, "open", {
       url: "https://example.com/pr/7",
@@ -638,7 +702,7 @@ describe("SessionInspector PR section", () => {
     );
 
     expect(screen.getByRole("button", { name: "Merge PR #7" })).toBeEnabled();
-	expect(prSection("Pull request").getByText("Ready to merge")).toBeInTheDocument();
+    expect(prSection("Pull request").getByText("Ready to merge")).toBeInTheDocument();
     expect(prSection("Pull request").queryByText("Review pending")).not.toBeInTheDocument();
   });
 

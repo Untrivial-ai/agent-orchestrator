@@ -215,8 +215,29 @@ export function prCardPresentation(pr: SessionPRSummary): PRCardPresentation {
 			supporting.push(cardStatus("ci", "pr.card.checksLoading", "passive", undefined, [], prChecksUrl(pr), true));
 		}
 	}
-	const readiness = pr.state === "open" ? mergeReadiness(pr) : undefined;
-	return { primary, supporting, readiness };
+	if (pr.state === "open") {
+		const checks = pr.ci.state === "failing"
+			? cardStatus("ci", "pr.card.checksFailing", "error", ciSummary(pr), ciLinks(pr), prChecksUrl(pr))
+			: pr.ci.state === "passing"
+				? cardStatus("ci", "pr.card.checksPassing", "success", undefined, [], prChecksUrl(pr))
+				: cardStatus(
+					"ci",
+					pr.ci.state === "pending" ? "pr.card.checksPending" : "pr.card.checksLoading",
+					pr.ci.state === "pending" ? "neutral" : "passive",
+					undefined,
+					[],
+					prChecksUrl(pr),
+					true,
+				);
+		const review = cardStatus(
+			"review",
+			"pr.card.reviewStatus",
+			reviewTone(pr.review.decision, pr.review.hasUnresolvedHumanComments),
+			reviewStatusDetail(pr),
+		);
+		return { primary, supporting, statusRows: [checks, review, mergeReadiness(pr)] };
+	}
+	return { primary, supporting };
 }
 
 export function prCanMerge(pr: SessionPRSummary): boolean {
@@ -229,7 +250,7 @@ export function prCanMerge(pr: SessionPRSummary): boolean {
 	);
 }
 
-function mergeReadiness(pr: SessionPRSummary): NonNullable<PRCardPresentation["readiness"]> {
+function mergeReadiness(pr: SessionPRSummary): PRCardStatus {
 	let status: PRCardStatus;
 	if (pr.mergeability.state === "conflicting") {
 		status = cardStatus("merge", "pr.card.mergeConflict", "error", undefined, [], prBrowserUrl(pr));
@@ -242,13 +263,23 @@ function mergeReadiness(pr: SessionPRSummary): NonNullable<PRCardPresentation["r
 	} else if (
 		pr.mergeability.state === "mergeable" &&
 		pr.ci.state === "passing" &&
-		pr.review.decision === "approved"
+		(pr.review.decision === "approved" || pr.review.decision === "none") &&
+		!pr.review.hasUnresolvedHumanComments
 	) {
 		status = cardStatus("merge", "pr.card.readyToMerge", "success", undefined, [], prBrowserUrl(pr));
 	} else {
 		status = cardStatus("merge", "pr.card.mergePending", "passive", undefined, [], prBrowserUrl(pr));
 	}
-	return { label: status.label, detail: status.detail ?? "", href: status.href, tone: status.tone };
+	return status;
+}
+
+function reviewStatusDetail(pr: SessionPRSummary): string {
+	switch (pr.review.decision) {
+		case "approved": return appI18n.t("pr.review.requirementSatisfied");
+		case "changes_requested": return appI18n.t("pr.review.changesActive");
+		case "review_required": return appI18n.t("pr.review.requiredNotSubmitted");
+		case "none": return appI18n.t("pr.review.notRequired");
+	}
 }
 
 function cardStatus(
