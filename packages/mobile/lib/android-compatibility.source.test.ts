@@ -132,11 +132,17 @@ describe("Android native compatibility boundaries", () => {
 
 	it("keeps the iOS Spawn prompt geometry aligned with Android", () => {
 		const ios = source("./spawn-prompt-input.ios.tsx");
-		// 112 is now the default for the optional `height` prop rather than a literal
-		// in the style, so the field can grow into whatever room the sheet has left.
+		// Expo's universal TextInput maps `numberOfLines` to SwiftUI's
+		// `lineLimit(..., reservesSpace: true)`. Reserving every available line
+		// vertically centres an empty prompt and makes a long prompt grow behind the
+		// selector rail. Keep one visible line at the top and treat the calculated
+		// line count as a cap so additional text scrolls inside the bounded field.
 		expect(ios).toContain("height = 112");
 		expect(ios).toMatch(/paddingHorizontal:\s*space\.lg/);
 		expect(ios).toMatch(/paddingVertical:\s*space\.md/);
+		expect(ios).toContain("lineLimit({ min: 1, max: lines })");
+		expect(ios).toContain('alignment: "topLeading"');
+		expect(ios).not.toContain("numberOfLines={lines}");
 		expect(ios).not.toContain("height: 154");
 	});
 
