@@ -97,7 +97,6 @@ export function AgentModelPicker({
 				aria-label={t("newTask.model")}
 				value={effectiveMode}
 				options={options}
-				placeholder={t("settings.models.modeNotReported")}
 				disabled={disabled || agentId === "" || options.length === 0}
 				triggerClassName="composer-chip composer-toolbar-option w-full justify-between"
 				menuAlign="start"
@@ -137,7 +136,6 @@ export function AgentModelPicker({
 			refreshError={catalog?.refreshError}
 			retryAt={catalog?.retryAt}
 			disabled={disabled || agentId === ""}
-			emptyLabel={t("settings.models.modelNotReported")}
 			onChange={selectCatalogModel}
 			onCustom={selectCustomModel}
 			compact

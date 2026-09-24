@@ -12,7 +12,7 @@ describe("ReviewerSelect", () => {
 		useUiStore.setState({ settingsModal: null });
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		render(<QueryClientProvider client={client}><ReviewerSelect
-			ariaLabel="Reviewer" value="codex" onChange={onChange}
+			ariaLabel="Reviewer" value="codex" defaultHarness="claude-code" onChange={onChange}
 			agents={[agentReadiness("claude-code", "Claude Code"), agentReadiness("codex", "Codex", { authentication: "unauthorized" })]}
 		/></QueryClientProvider>);
 		const trigger = screen.getByRole("button", { name: "Reviewer" });
@@ -27,7 +27,7 @@ describe("ReviewerSelect", () => {
 	it("shows the resolved reviewer while keeping the inherited selection", async () => {
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		render(<QueryClientProvider client={client}><ReviewerSelect
-			ariaLabel="Reviewer" value="" defaultHarness="codex" defaultOptionLabel="Project default" onChange={() => undefined}
+			ariaLabel="Reviewer" value="" defaultHarness="codex" onChange={() => undefined}
 			agents={[agentReadiness("codex", "Codex", { authentication: "unauthorized" })]}
 		/></QueryClientProvider>);
 		const trigger = screen.getByRole("button", { name: "Reviewer" });
@@ -35,15 +35,13 @@ describe("ReviewerSelect", () => {
 		expect(trigger).not.toHaveTextContent("default");
 		await userEvent.click(trigger);
 		expect(screen.getByRole("menuitem", { name: /Codex/ })).toBeInTheDocument();
-		expect(screen.queryByRole("menuitem", { name: /Project default/ })).not.toBeInTheDocument();
-		expect(screen.queryByText("No agents ready")).not.toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: "Manage agents…" })).toBeInTheDocument();
 	});
 
 	it("keeps fallback reviewers usable until a readiness snapshot arrives", async () => {
 		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 		render(<QueryClientProvider client={client}><ReviewerSelect
-			ariaLabel="Reviewer" value="codex" onChange={() => undefined}
+			ariaLabel="Reviewer" value="codex" defaultHarness="claude-code" onChange={() => undefined}
 		/></QueryClientProvider>);
 
 		const trigger = screen.getByRole("button", { name: "Reviewer" });
@@ -73,7 +71,7 @@ describe("ReviewerSelect", () => {
 		});
 		const onConfigChange = vi.fn();
 		render(<QueryClientProvider client={client}><ReviewerSelect
-			ariaLabel="Reviewer" value="codex" onChange={() => undefined} onConfigChange={onConfigChange}
+			ariaLabel="Reviewer" value="codex" defaultHarness="claude-code" onChange={() => undefined} onConfigChange={onConfigChange}
 		/></QueryClientProvider>);
 
 		const trigger = screen.getByRole("button", { name: "Reviewer" });
