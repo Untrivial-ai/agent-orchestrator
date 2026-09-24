@@ -571,7 +571,7 @@ func (c *readinessCoordinator) checkAuthentication(item agentregistry.HarnessAge
 	case ports.AgentAuthStatusUnauthorized:
 		return successfulAuthentication(attempted, domain.AgentAuthenticationUnauthorized, domain.AgentReadinessReasonUnauthorized, item.Manifest.Name+" needs authentication."), false
 	default:
-		return failedAuthentication(attempted, domain.AgentReadinessReasonAuthCheckInconclusive, "Authentication check was inconclusive."), true
+		return successfulAuthentication(attempted, domain.AgentAuthenticationUnknown, domain.AgentReadinessReasonAuthCheckInconclusive, item.Manifest.Name+" auth check was inconclusive."), false
 	}
 }
 

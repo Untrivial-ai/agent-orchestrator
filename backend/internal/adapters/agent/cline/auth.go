@@ -112,7 +112,7 @@ func providerAuthorized(settings clineProviderSettings) bool {
 		return false
 	}
 	if strings.TrimSpace(settings.Auth.RefreshToken) != "" {
-		return true
+		return len(strings.TrimSpace(settings.Auth.RefreshToken)) >= 8
 	}
 	if strings.TrimSpace(settings.Auth.AccessToken) == "" {
 		return false
