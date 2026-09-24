@@ -491,7 +491,8 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 		if !sessionIDPattern.MatchString(reviewSessionID) {
 			return nil
 		}
-		return c.runReviewHook(ctx, agent, event, reviewSessionID)
+		c.runReviewHook(ctx, agent, event, reviewSessionID)
+		return nil
 	}
 	sessionID := strings.TrimSpace(os.Getenv("AO_SESSION_ID"))
 	if !sessionIDPattern.MatchString(sessionID) {
@@ -688,7 +689,7 @@ func isAgyModernHookEvent(agent, event string) bool {
 	}
 }
 
-func (c *commandContext) runReviewHook(ctx context.Context, agent, event, reviewSessionID string) error {
+func (c *commandContext) runReviewHook(ctx context.Context, agent, event, reviewSessionID string) {
 	var payload []byte
 	if hookReadsStdin(agent, event) {
 		var err error
@@ -703,7 +704,7 @@ func (c *commandContext) runReviewHook(ctx context.Context, agent, event, review
 		if err := json.NewEncoder(c.deps.Out).Encode(out); err != nil {
 			c.reportHookFailure(agent, event, reviewSessionID, fmt.Errorf("write permission response: %w", err))
 		}
-		return nil
+		return
 	}
 	state, hasActivity := activitydispatch.Derive(agent, event, payload)
 	agentSessionID := ""
@@ -713,7 +714,7 @@ func (c *commandContext) runReviewHook(ctx context.Context, agent, event, review
 		agentSessionID = hookAgentSessionID(payload)
 	}
 	if !hasActivity && agentSessionID == "" {
-		return nil
+		return
 	}
 	launchID := validLaunchID(os.Getenv("AO_RUNTIME_LAUNCH_ID"))
 	if launchID == "" {
@@ -731,7 +732,6 @@ func (c *commandContext) runReviewHook(ctx context.Context, agent, event, review
 	if err := c.postJSON(ctx, path, req, nil); err != nil {
 		c.reportHookFailure(agent, event, reviewSessionID, err)
 	}
-	return nil
 }
 
 // Aider's notification callback is synchronous and inherits the interactive
