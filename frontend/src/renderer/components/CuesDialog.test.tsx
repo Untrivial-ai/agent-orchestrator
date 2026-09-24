@@ -207,7 +207,34 @@ test("reopening the menu keeps cached cues visible while the refresh runs", asyn
 
 	await screen.findByRole("menuitem", { name: "Tests" });
 	expect(screen.queryByRole("menuitem", { name: /Loading/ })).toBeNull();
-	await act(async () => refresh.resolve([cue]));
+	expect(screen.getByRole("menuitem", { name: "Tests" })).toHaveAttribute("data-disabled");
+	await act(async () => refresh.resolve([{ ...cue, name: "Updated tests" }]));
+	await waitFor(() => expect(screen.queryByRole("menuitem", { name: "Tests" })).toBeNull());
+	expect(await screen.findByRole("menuitem", { name: "Updated tests" })).not.toHaveAttribute("data-disabled");
+});
+
+test("cached cues cannot run after reopening until refresh succeeds", async () => {
+	const refresh = deferred<cues.CueDTO[]>();
+	setup(<CueRunMenu projectId="project" sessionId="session" />);
+	const trigger = screen.getByRole("button", { name: "Run a cue" });
+	fireEvent.pointerOver(trigger, { pointerType: "mouse" });
+	await screen.findByRole("menuitem", { name: "Tests" });
+	fireEvent.pointerOut(trigger, { pointerType: "mouse" });
+	await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+
+	vi.mocked(cues.fetchProjectCues).mockReturnValueOnce(refresh.promise);
+	fireEvent.pointerOver(trigger, { pointerType: "mouse" });
+	const stale = await screen.findByRole("menuitem", { name: "Tests" });
+	expect(stale).toHaveAttribute("data-disabled");
+	fireEvent.click(stale);
+	expect(cues.invokeCue).not.toHaveBeenCalled();
+
+	await act(async () => refresh.reject(new Error("offline")));
+	await screen.findByRole("alert");
+	fireEvent.click(screen.getByRole("menuitem", { name: "Try again" }));
+	await waitFor(() => expect(screen.getByRole("menuitem", { name: "Tests" })).not.toHaveAttribute("data-disabled"));
+	fireEvent.click(screen.getByRole("menuitem", { name: "Tests" }));
+	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledTimes(1));
 });
 
 test("menu rows stay on the cue name and reveal the description on hover", async () => {

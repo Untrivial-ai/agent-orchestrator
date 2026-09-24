@@ -318,6 +318,12 @@ export function sessionAgentExited(session: WorkspaceSession | undefined): boole
 	return Boolean(session && session.activity?.state === "exited" && sessionIsActive(session));
 }
 
+/** Whether a session can accept a Cue from its topbar. The daemon makes the
+ * final decision, including whether a command Cue's worktree still exists. */
+export function sessionCueTargetAvailable(session: WorkspaceSession | undefined): boolean {
+	return Boolean(session && sessionIsActive(session) && session.activity?.state !== "exited" && session.activity?.state !== "blocked");
+}
+
 export function sessionNeedsAttention(session: WorkspaceSession): boolean {
 	return presentationAttentionZone(session) === "action";
 }

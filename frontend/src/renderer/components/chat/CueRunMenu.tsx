@@ -274,6 +274,7 @@ function CueMenuItems({
 	// cues render straight away: the background refresh that keeps them fresh must
 	// not blank the list into a loading row first. Loading is only for a cold read.
 	const loading = query.isFetching && query.data === undefined && !query.isError;
+	const canInvoke = query.isFetchedAfterMount && !query.isFetching && !query.isError;
 	return (
 		<DropdownMenuContent
 			align="end"
@@ -299,7 +300,7 @@ function CueMenuItems({
 			) : loading ? (
 				<DropdownMenuItem disabled>{t("cues.loading")}</DropdownMenuItem>
 			) : query.data?.length ? (
-				query.data.map((cue) => <CueMenuItem key={cue.id} cue={cue} busy={busy} onInvoke={onInvoke} />)
+				query.data.map((cue) => <CueMenuItem key={cue.id} cue={cue} busy={busy || !canInvoke} onInvoke={onInvoke} />)
 			) : (
 				<DropdownMenuItem disabled>{t("cues.emptyMenu")}</DropdownMenuItem>
 			)}

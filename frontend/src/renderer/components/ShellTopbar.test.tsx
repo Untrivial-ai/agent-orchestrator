@@ -371,6 +371,16 @@ describe("ShellTopbar orchestrator actions", () => {
 		expect(screen.getByTestId("workspace-topbar-actions")).toContainElement(runner);
 	});
 
+	it.each(["exited", "blocked"] as const)("disables the cue runner for %s workers", (state) => {
+		renderTopbar(sessionWith({ activity: { state, lastActivityAt: "2026-09-25T00:00:00Z" } }));
+		expect(screen.getByRole("button", { name: "Run a cue" })).toBeDisabled();
+	});
+
+	it("disables the cue runner for terminated workers", () => {
+		renderTopbar(sessionWith({ isTerminated: true }));
+		expect(screen.getByRole("button", { name: "Run a cue" })).toBeDisabled();
+	});
+
 	it("owns the responsive action container on the full board topbar", () => {
 		renderTopbarSessions([orchestrator], "");
 

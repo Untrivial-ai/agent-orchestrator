@@ -13,6 +13,7 @@ import {
 	isOrchestratorSession,
 	resolveNextNavigationAfterSessionKill,
 	sessionIsActive,
+	sessionCueTargetAvailable,
 	STANDALONE_PROJECT_KIND,
 	STANDALONE_WORKSPACE_ID,
 	type WorkspaceSession,
@@ -283,7 +284,7 @@ export function ShellTopbar({
 								<CueRunMenu
 									projectId={session.workspaceId}
 									sessionId={session.id}
-									disabled={session.isTerminated}
+									disabled={!sessionCueTargetAvailable(session)}
 								/>
 							</span>
 						) : null}
