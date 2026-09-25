@@ -493,7 +493,7 @@ export function WipeLoader() {
 			className="flex size-7 items-center justify-center rounded-md text-muted-foreground"
 		>
 			<span className="grid size-4 grid-cols-6 grid-rows-6 gap-px" aria-hidden="true">
-				{PULSE_LOADER_FRAMES[frame].map((active, index) => (
+				{WIPE_LOADER_FRAMES[frame].map((active, index) => (
 					<span
 						key={index}
 						className={active ? "rounded-[1px] bg-current" : "rounded-[1px] bg-current/20"}
