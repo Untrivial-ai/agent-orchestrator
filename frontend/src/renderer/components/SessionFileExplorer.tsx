@@ -197,16 +197,20 @@ export function SessionFileExplorer({
 	return (
 		<section className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label={t("files.sessionFiles")}>
 			{/* In the tree + preview split the header gets a hairline divider with
-			    only a sliver of space above it, so content never touches the line. */}
-			<header className={cn("flex min-h-10 shrink-0 items-center gap-1 px-3 pt-1", splitView ? "border-b border-border pb-1" : showChanges ? "pb-3" : "pb-1")}>
+			    only a sliver of space above it, so content never touches the line.
+			    The trailing actions sit 4px from the right edge with 4px gaps, the same
+			    as the pinned top-bar buttons above them and the review rows below. */}
+			<header className={cn("flex min-h-10 shrink-0 items-center gap-1 pl-3 pr-1 pt-1", splitView ? "border-b border-border pb-1" : showChanges ? "pb-3" : "pb-1")}>
 				{/* One dropdown for "what am I reviewing", laid out like a VCS review
 				    picker: working scopes at the top, then Commits › and Branch ›
 				    flyouts (Branch = Workspace or a PR). */}
+				{/* -ml-2 cancels the trigger's own 8px inline padding so its label
+				    starts on the same 12px gutter as the context row's text below. */}
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild>
 						<SettingsMenuTrigger
 							aria-label={t("files.explorer.source")}
-							className="h-control-md min-w-0 max-w-72 shrink text-xs"
+							className="-ml-2 h-control-md min-w-0 max-w-72 shrink text-xs"
 							title={currentSourceLabel}
 						>
 							<span className="min-w-0 truncate">{currentSourceLabel}</span>

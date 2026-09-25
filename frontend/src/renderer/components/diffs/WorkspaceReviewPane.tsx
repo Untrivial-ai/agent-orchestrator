@@ -444,8 +444,10 @@ export function WorkspaceReviewPane({
 			ref={reviewRef}
 		>
 			{/* Context row (like a VCS "Committed ▾ <subject> +x −y" bar): what is
-			    being reviewed on the left, review progress on the right. */}
-			<div className="flex h-8 shrink-0 items-center gap-2 border-b border-border px-3 pb-1">
+			    being reviewed on the left, review progress on the right. Trailing
+			    controls sit on the Files header's action columns (18px / 50px from
+			    the right edge), so the right side reads as one aligned column. */}
+			<div className="flex h-8 shrink-0 items-center gap-2 border-b border-border pb-1 pl-3 pr-1">
 				{onSourceMenuChange ? null : <div className="flex shrink-0 items-center rounded-md bg-[var(--color-bg-settings-trigger)]">{sourceControls}</div>}
 				{commitBrowserOpen ? (
 					<span className="min-w-0 truncate text-caption text-muted-foreground">{t("files.selectCommit")}</span>
@@ -538,7 +540,7 @@ export function WorkspaceReviewPane({
 									{/* The whole row toggles the file (the chevron just rotates);
 									    name + stats on the left, every action grouped on the right
 									    with "viewed" pinned to the far edge. */}
-									<div className="group/file-header flex h-9 min-w-0 cursor-pointer items-center gap-2 pl-4 pr-3 hover:bg-interactive-hover/40" onClick={() => toggleCollapsed(file.path)}>
+									<div className="group/file-header flex h-9 min-w-0 cursor-pointer items-center gap-2 pl-4 pr-1.5 hover:bg-interactive-hover/40" onClick={() => toggleCollapsed(file.path)}>
 										<ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform duration-150 group-hover/file-header:text-foreground", !isCollapsed && "rotate-90")} />
 										<WorkspaceEntryIcon className="size-icon-xl" kind="file" name={file.path.split("/").pop() ?? file.path} />
 										<div className="flex min-w-0 shrink items-baseline gap-2.5">
@@ -558,7 +560,7 @@ export function WorkspaceReviewPane({
 												<span className="text-error">−{file.deletions}</span>
 											</span>
 										</div>
-										<div className="ml-auto flex shrink-0 items-center gap-1.5 pl-2" onClick={(event) => event.stopPropagation()}>
+										<div className="ml-auto flex shrink-0 items-center gap-2 pl-2" onClick={(event) => event.stopPropagation()}>
 											<div className={FILE_HEADER_HOVER_ACTIONS}>
 												{file.editable && file.fileFingerprint ? (
 													<HeaderActionTooltip label={t("files.editFile")}>
@@ -578,13 +580,17 @@ export function WorkspaceReviewPane({
 												<Button aria-label={t("files.addFeedback")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint })} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
 											</HeaderActionTooltip>
 											<HeaderActionTooltip label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}>
-												<Checkbox
-													aria-label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}
-													checked={isViewed}
-													className="size-4 border border-muted-foreground/70 bg-transparent"
-													onCheckedChange={() => toggleViewed(file)}
-													style={isViewed ? { backgroundColor: "#fff", borderColor: "#fff", color: "#000" } : undefined}
-												/>
+												{/* A 24px slot like the buttons beside it keeps the checkbox
+												    centred on the header's trailing action column. */}
+												<span className="grid size-6 place-items-center">
+													<Checkbox
+														aria-label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}
+														checked={isViewed}
+														className="size-4 border border-muted-foreground/70 bg-transparent"
+														onCheckedChange={() => toggleViewed(file)}
+														style={isViewed ? { backgroundColor: "#fff", borderColor: "#fff", color: "#000" } : undefined}
+													/>
+												</span>
 											</HeaderActionTooltip>
 										</div>
 									</div>
