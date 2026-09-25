@@ -718,8 +718,10 @@ export function FileAnnotationComposer({ annotation }: { annotation: FileAnnotat
 					{annotation.error}
 				</p>
 			) : null}
-			<div className="mt-2 flex items-center justify-end gap-1.5">
-				<span className="mr-auto text-caption text-passive">{t("files.feedbackShortcut")}</span>
+			{/* In a narrow split column the buttons wrap under the hint instead of
+			    squeezing it into a one-letter-wide column. */}
+			<div className="mt-2 flex flex-wrap items-center justify-end gap-x-1.5 gap-y-1">
+				<span className="mr-auto min-w-0 max-w-full truncate text-caption text-passive">{t("files.feedbackShortcut")}</span>
 				<Button
 					disabled={annotation.status === "sending" || annotation.status === "sent"}
 					onClick={annotation.cancel}

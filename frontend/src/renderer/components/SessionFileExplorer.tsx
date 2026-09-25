@@ -171,7 +171,7 @@ export function SessionFileExplorer({
 
 	return (
 		<section className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label={t("files.sessionFiles")}>
-			<header className="flex min-h-10 shrink-0 items-center gap-1 px-3 pb-3 pt-1">
+			<header className={cn("flex min-h-10 shrink-0 items-center gap-1 px-3 pt-1", showChanges ? "pb-3" : "pb-1")}>
 				{/* One dropdown for "what am I reviewing", laid out like a VCS review
 				    picker: working scopes at the top, then Commits › and Branch ›
 				    flyouts (Branch = Workspace or a PR). */}

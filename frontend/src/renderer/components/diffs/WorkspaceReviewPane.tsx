@@ -495,6 +495,7 @@ export function WorkspaceReviewPane({
 							expansionLineCount: 20,
 							hunkSeparators: "line-info",
 							lineDiffType: "word-alt",
+							layout: { gap: 0, paddingBottom: 8, paddingTop: 0 },
 							lineHoverHighlight: "line",
 							loadDiffFiles,
 							maxLineDiffLength: 400,
