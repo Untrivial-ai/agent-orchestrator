@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +50,56 @@ func TestModelDiscoveryErrorExplainsTimeout(t *testing.T) {
 	err := modelDiscoveryError(deadlineCtx, "kilocode", errors.New("signal: killed"))
 	if !strings.Contains(err.Error(), "kilocode model discovery timed out after 20s") {
 		t.Fatalf("error = %q, want clear timeout", err)
+	}
+}
+
+// TestModelDiscoveryErrorExplainsWaitDelayExpiration covers the failure shape
+// reported when an agent CLI exits promptly but leaves a descendant holding
+// the output pipe open: CombinedOutput returns exec.ErrWaitDelay while the
+// discovery context is still live, so the message must explain the pipe stall
+// instead of surfacing the raw sentinel ("agy model discovery: exec: WaitDelay
+// expired before I/O complete").
+func TestModelDiscoveryErrorExplainsWaitDelayExpiration(t *testing.T) {
+	err := modelDiscoveryError(context.Background(), "agy", exec.ErrWaitDelay)
+	if err == nil {
+		t.Fatal("error = nil, want WaitDelay explanation")
+	}
+	if !strings.Contains(err.Error(), "agy model discovery timed out") {
+		t.Fatalf("error = %q, want the timeout prefix", err)
+	}
+	if !strings.Contains(err.Error(), "holding the output pipe") {
+		t.Fatalf("error = %q, want the pipe-holding explanation", err)
+	}
+	if strings.Contains(err.Error(), "WaitDelay expired before I/O complete") {
+		t.Fatalf("error = %q, want the raw sentinel rewritten, not passed through", err)
+	}
+}
+
+// TestDiscoverRewritesWaitDelayFromARealCommand runs discovery against a fake
+// agent binary that exits immediately while a backgrounded descendant keeps
+// stdout/stderr open — the same shape as agy (Antigravity), whose launcher
+// leaves estate processes behind. CombinedOutput must terminate via WaitDelay
+// and the surfaced error must describe the pipe stall.
+func TestDiscoverRewritesWaitDelayFromARealCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture needs POSIX")
+	}
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "fake-agy")
+	script := "#!/bin/sh\n(sleep 5) &\nexit 0\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	gotCatalog, gotErr := Discover(context.Background(), "agy", fake, dir, nil)
+	if gotErr == nil {
+		t.Fatalf("Discover err = nil, want WaitDelay error; catalog = %#v", gotCatalog)
+	}
+	if !strings.Contains(gotErr.Error(), "agy model discovery timed out") {
+		t.Fatalf("Discover err = %q, want the timeout prefix", gotErr)
+	}
+	if !strings.Contains(gotErr.Error(), "holding the output pipe") {
+		t.Fatalf("Discover err = %q, want the pipe-holding explanation", gotErr)
 	}
 }
 

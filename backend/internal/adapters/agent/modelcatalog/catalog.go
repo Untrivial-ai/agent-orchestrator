@@ -643,6 +643,9 @@ func modelDiscoveryError(runCtx context.Context, agentID string, commandErr erro
 	if errors.Is(runCtx.Err(), context.Canceled) {
 		return fmt.Errorf("%s model discovery canceled: %w", agentID, context.Canceled)
 	}
+	if errors.Is(commandErr, exec.ErrWaitDelay) {
+		return fmt.Errorf("%s model discovery timed out: the agent CLI exited but left a descendant process holding the output pipe (WaitDelay %s exceeded)", agentID, commandTerminationWait)
+	}
 	return fmt.Errorf("%s model discovery: %w", agentID, commandErr)
 }
 
