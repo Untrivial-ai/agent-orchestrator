@@ -610,7 +610,7 @@ describe("ChatWorkspace timeline", () => {
 
 		expect(screen.queryByTestId("live-turn-status")).not.toBeInTheDocument();
 		expect(screen.queryByText(/^Working for /)).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: "Copy message as markdown" })).toBeInTheDocument();
+		expect(screen.getByTestId("braille-loader")).toBeInTheDocument();
 
 		const stop = screen.getByRole("button", { name: "Stop turn" });
 		expect(screen.getByLabelText("Message the agent").closest("form")).toContainElement(stop);
