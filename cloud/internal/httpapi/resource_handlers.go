@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
@@ -941,7 +942,12 @@ func validSessionInput(request createSessionRequest) bool {
 		(request.Kind != "worker" && request.Kind != "orchestrator") ||
 		(request.Mode != "read-only" && request.Mode != "standard" && request.Mode != "trusted") ||
 		len(request.Harness) < 1 || len(request.Harness) > 120 ||
-		len(request.DisplayName) < 1 || len(request.DisplayName) > 80 ||
+		// Count runes, not bytes: the renderer derives this name from the task
+		// brief with a 100-CHARACTER slice, so a byte cap would reject a valid
+		// multibyte name. 100 matches that slice (was 80, which #5125 outgrew when
+		// it raised the renderer slice to 100 and left cloud task creation failing
+		// with "Session ... is invalid" for any brief over 80 chars).
+		len(request.DisplayName) < 1 || utf8.RuneCountInString(request.DisplayName) > 100 ||
 		len(request.Prompt) > 65536 ||
 		len(request.DeniedCommands) > 128 {
 		return false

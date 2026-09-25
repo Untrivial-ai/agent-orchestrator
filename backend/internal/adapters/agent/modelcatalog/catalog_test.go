@@ -244,6 +244,32 @@ func TestMuseReturnsStaticCatalogWithoutStartingAgent(t *testing.T) {
 	}
 }
 
+func TestUnrealCatalogShowsEffectiveModelAndAllowsOverride(t *testing.T) {
+	t.Setenv("UNREAL_HARNESS_LLM_PROVIDER", "openai-codex")
+	t.Setenv("UNREAL_HARNESS_LLM_MODEL", "gpt-6-sol")
+	request := ports.AgentModelDiscoveryRequest{AgentID: "unreal-agent"}
+	got, err := (Discoverer{}).Discover(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AllowCustom || got.CustomModelEntry != ports.CustomModelEntryDirect ||
+		len(got.Models) != 1 || got.Models[0].ID != "gpt-6-sol" || !got.Models[0].IsDefault {
+		t.Fatalf("Unreal catalog = %#v", got)
+	}
+	before := (Discoverer{}).CatalogFingerprint(context.Background(), request)
+	request.Env = map[string]string{"UNREAL_HARNESS_LLM_MODEL": "custom-model"}
+	got, err = (Discoverer{}).Discover(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "custom-model" || !got.Models[0].IsDefault {
+		t.Fatalf("project override catalog = %#v", got)
+	}
+	if before == (Discoverer{}).CatalogFingerprint(context.Background(), request) {
+		t.Fatal("Unreal model override did not invalidate catalog")
+	}
+}
+
 func TestClaudeReturnsStaticCatalogWithConfiguredFallback(t *testing.T) {
 	claudeRequest(t)
 	t.Setenv("ANTHROPIC_MODEL", "")

@@ -20,6 +20,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/opencode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/pi"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/qwen"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/unrealagent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/claudeacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/codexappserver"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/cursoracp"
@@ -30,6 +31,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/opencodeacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/piacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/qwenacp"
+	unrealchat "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/unrealagent"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -61,6 +63,7 @@ func New(drivers ...ports.ChatDriver) *Registry {
 // Cursor, OpenCode, Droid, Kimi, Kimchi, Pi, OMP, and Qwen expose ACP themselves,
 // so AO launches the exact executable resolved by each existing agent plugin. No
 // path scrapes terminal output or packages a second provider CLI.
+// Unreal Agent is compiled into AO and runs behind the same detached host seam.
 //
 // Every other harness stays TUI-only until the same is true of it. The driver
 // reuses the harness's existing agent plugin for binary resolution and auth, so
@@ -77,6 +80,7 @@ func Build(log *slog.Logger, onClaudeAuthRejected func()) *Registry {
 		cursoracp.New(cursor.New(), log),
 		ompacp.New(omp.New(), log),
 		qwenacp.New(qwen.New(), log),
+		unrealchat.New(unrealagent.New(), log),
 	)
 }
 

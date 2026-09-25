@@ -179,7 +179,7 @@ func Manual(agentID string) ports.AgentModelCatalog {
 func customModelEntryMode(agentID string) ports.CustomModelEntryMode {
 	switch agentID {
 	case "claude-code", "codex", "opencode", "grok", "cursor", "qwen",
-		"kimi", "muse", "aider", "goose", "autohand":
+		"kimi", "muse", "aider", "goose", "autohand", "unreal-agent":
 		return ports.CustomModelEntryDirect
 	case "continue", "cline", "kilocode", "vibe", "pi", "kimchi", "prime-agent":
 		return ports.CustomModelEntryConfigured
@@ -367,6 +367,9 @@ func (Discoverer) Manual(agentID string) ports.AgentModelCatalog { return Manual
 // Discover executes model catalog discovery for an agent binary.
 func Discover(ctx context.Context, agentID, binary, workingDir string, env map[string]string) (ports.AgentModelCatalog, error) {
 	base := Base(agentID)
+	if agentID == "unreal-agent" {
+		return discoverUnrealCatalog(env), nil
+	}
 	if agentID == "claude-code" {
 		// This package-level entry point has no injected provider lister, so it
 		// yields the static aliases. Daemon wiring uses Discoverer, which does.
@@ -413,6 +416,35 @@ func Discover(ctx context.Context, agentID, binary, workingDir string, env map[s
 	base.Source = "cli"
 	base.FetchedAt = time.Now().UTC()
 	return base, nil
+}
+
+func discoverUnrealCatalog(env map[string]string) ports.AgentModelCatalog {
+	base := Base("unreal-agent")
+	base.SelectionMode = ports.ModelSelectionCatalog
+	base.Source = "config"
+	_, selected := unrealConfiguredModel(env)
+	if selected != "" {
+		base.Models = []ports.AgentModelInfo{model(selected, selected, true)}
+	}
+	return base
+}
+
+func unrealConfiguredModel(env map[string]string) (provider, selected string) {
+	value := func(key string) string {
+		if configured, ok := env[key]; ok {
+			return strings.TrimSpace(configured)
+		}
+		return strings.TrimSpace(os.Getenv(key))
+	}
+	provider = value("UNREAL_HARNESS_LLM_PROVIDER")
+	if provider == "" {
+		provider = "openai"
+	}
+	selected = value("UNREAL_HARNESS_LLM_MODEL")
+	if selected == "" && provider == "openai" {
+		selected = "gpt-6-astra"
+	}
+	return provider, selected
 }
 
 func discoverCodexCatalog(ctx context.Context, request ports.AgentModelDiscoveryRequest, list CodexModelListFunc) (ports.AgentModelCatalog, error) {
@@ -662,6 +694,10 @@ func CatalogFingerprint(ctx context.Context, agentID, binary, workingDir string,
 // discoveryConfigInputs returns the configuration an agent's discovery consults,
 // or "" when the catalog depends on the binary alone.
 func discoveryConfigInputs(ctx context.Context, agentID, workingDir string, env map[string]string) string {
+	if agentID == "unreal-agent" {
+		provider, selected := unrealConfiguredModel(env)
+		return "provider=" + provider + ";model=" + selected
+	}
 	if agentID == "claude-code" {
 		return "config=" + claudeCodeDiscoveryFingerprint(ctx, workingDir, env)
 	}

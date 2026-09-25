@@ -456,7 +456,7 @@ func (s *Service) checkoutRepositoryIDs(
 	if len(fullNames) == 0 {
 		return []int64{primary}
 	}
-	extraIDs, err := s.client.resolveInstallationRepositoryIDs(
+	extraIDs, unresolved, err := s.client.resolveInstallationRepositoryIDs(
 		ctx,
 		authorization.GitHubInstallationID,
 		fullNames,
@@ -465,6 +465,18 @@ func (s *Service) checkoutRepositoryIDs(
 		s.logger.Warn("resolve extra repositories for checkout scope",
 			"error", err, "org_id", orgID, "session_id", sessionID)
 		return []int64{primary}
+	}
+	if len(unresolved) > 0 {
+		// A declared extra the installation cannot access is dropped from the
+		// checkout token scope, so the worker's clone of it will fail. Surface it
+		// loudly (rather than silently narrowing the scope) so the gap is
+		// diagnosable: the usual cause is the repository not being granted to the
+		// GitHub App installation.
+		s.logger.Warn("extra repositories excluded from checkout scope; not accessible to the installation",
+			"unresolved", unresolved,
+			"org_id", orgID,
+			"session_id", sessionID,
+			"installation_id", authorization.GitHubInstallationID)
 	}
 	ids := make([]int64, 0, len(extraIDs)+1)
 	ids = append(ids, primary)

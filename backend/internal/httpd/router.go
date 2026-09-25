@@ -189,7 +189,10 @@ func mountControl(r chi.Router, deps ControlDeps) {
 			"service": daemonmeta.ServiceName,
 			"pid":     os.Getpid(),
 		})
-		deps.RequestShutdown()
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		go deps.RequestShutdown()
 	})
 }
 

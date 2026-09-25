@@ -28,6 +28,7 @@ describe("mobile Chat API boundaries", () => {
 		expect(JSON.parse(String(init?.body))).toMatchObject({ projectId: "p-1", harness: "codex", kind: "worker", mode: "chat" });
 		expect(session.mode).toBe("chat");
 		expect(init?.headers).toMatchObject({ Authorization: "Bearer secret12" });
+		expect(init?.headers).not.toHaveProperty("X-AO-Attachment-Upload");
 	});
 
 	it("loads a project-scoped model catalog for the selected agent", async () => {
@@ -133,6 +134,31 @@ describe("mobile Chat API boundaries", () => {
 			mode: "chat",
 			attachments: [{ mimeType: "text/plain", data: "aGVsbG8=" }],
 		});
+	});
+
+	it.each([
+		["spawn", () => spawnSession(cfg, { projectId: "p-1", attachments: [{ mimeType: "text/plain", data: "aGVsbG8=" }] }), { session: { id: "w-1", projectId: "p-1" } }],
+		["delegate", () => delegateTask(cfg, { projectId: "p-1", brief: "Review", mode: "chat", attachments: [{ mimeType: "text/plain", data: "aGVsbG8=" }] }), { workerId: "w-1" }],
+		["chat message", () => chatApi.sendConversationMessage(cfg, "w-1", { text: "Review", clientMessageId: "m-1", attachments: [{ mimeType: "image/png", data: "aGVsbG8=" }] }), { turnId: "t-1" }],
+		["chat staging", () => chatApi.stageConversationAttachments(cfg, "w-1", [{ mimeType: "image/png", data: "aGVsbG8=" }]), { paths: ["image.png"] }],
+	])("keeps %s attachment uploads alive past the ordinary timeout", async (_name, request, body) => {
+		vi.useFakeTimers();
+		try {
+			let reply!: (res: Response) => void;
+			vi.mocked(fetch).mockResolvedValue(response({ session: { id: "w-1", projectId: "p-1" } }));
+			vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>((resolve) => { reply = resolve; }));
+			const pending = request();
+			const [, init] = vi.mocked(fetch).mock.calls[0];
+			if (_name !== "chat staging") {
+				expect(init?.headers).toMatchObject({ "X-AO-Attachment-Upload": "1" });
+			}
+			await vi.advanceTimersByTimeAsync(12_001);
+			expect(init?.signal?.aborted).toBe(false);
+			reply(response(body));
+			await pending;
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("keeps an explicit TUI orchestrator request explicit", async () => {
