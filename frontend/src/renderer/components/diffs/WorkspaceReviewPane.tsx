@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { useQueries } from "@tanstack/react-query";
 import { parsePatchFiles, type CodeViewItem, type FileDiffMetadata } from "@pierre/diffs";
 import { CodeView } from "@pierre/diffs/react";
-import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, FileCode2, GitCommitHorizontal, MessageSquarePlus, Pencil } from "lucide-react";
+import { ChevronRight, ChevronsDownUp, ChevronsUpDown, FileCode2, GitCommitHorizontal, MessageSquarePlus, Pencil } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
 	fetchWorkspaceFileRevision,
@@ -25,7 +25,7 @@ import { MENU_TRIGGER_CHROME } from "../ui/option-menu";
 import { SettingsMenuTrigger } from "../settings/SettingsMenuTrigger";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { formatTimeTerse } from "../../lib/format-time";
-import { AO_PIERRE_SURFACE_CSS } from "./pierreTheme";
+import { AO_PIERRE_FILES_REVIEW_CSS, AO_PIERRE_SURFACE_CSS } from "./pierreTheme";
 import { usePersistentGutterUtility } from "./usePersistentGutterUtility";
 
 const PATCH_BATCH_SIZE = 100;
@@ -443,7 +443,7 @@ export function WorkspaceReviewPane({
 		>
 			{/* Context row (like a VCS "Committed ▾ <subject> +x −y" bar): what is
 			    being reviewed on the left, review progress on the right. */}
-			<div className="flex h-inspector-tabs shrink-0 items-center gap-2 border-b border-border px-3">
+			<div className="flex h-8 shrink-0 items-center gap-2 border-b border-border px-3 pb-1">
 				{onSourceMenuChange ? null : <div className="flex shrink-0 items-center rounded-md bg-[var(--color-bg-settings-trigger)]">{sourceControls}</div>}
 				{commitBrowserOpen ? (
 					<span className="min-w-0 truncate text-caption text-muted-foreground">{t("files.selectCommit")}</span>
@@ -505,7 +505,7 @@ export function WorkspaceReviewPane({
 							themeType: resolvedTheme,
 							tokenizeMaxLength: 200_000,
 							tokenizeMaxLineLength: 2_000,
-							unsafeCSS: AO_PIERRE_SURFACE_CSS,
+							unsafeCSS: AO_PIERRE_SURFACE_CSS + AO_PIERRE_FILES_REVIEW_CSS,
 						}}
 						renderAnnotation={() => <FileAnnotationComposer annotation={annotation} />}
 						renderGutterUtility={(getHoveredLine, item) => (
@@ -529,26 +529,17 @@ export function WorkspaceReviewPane({
 							const fileAnnotationActive = annotation.target?.surface !== "focused" && annotation.target?.path === file.path && annotation.target.side === "file";
 							return (
 								<div className="relative bg-background">
-									{/* Name first (dim folder + bright file name), then what you
-									    act on right beside it; secondary opens reveal on hover,
-									    and "viewed" stays pinned to the far edge. */}
-									<div className="group/file-header flex h-10 min-w-0 items-center gap-1.5 border-b border-border pl-1 pr-3 hover:bg-interactive-hover/40">
-										<Button
-											aria-label={isCollapsed ? t("files.expandFile", { file: file.path }) : t("files.collapseFile", { file: file.path })}
-											className="shrink-0 text-muted-foreground hover:text-foreground"
-											onClick={() => toggleCollapsed(file.path)}
-											size="icon-sm"
-											type="button"
-											variant="ghost"
-										>
-											{isCollapsed ? <ChevronRight aria-hidden="true" className="size-icon-sm" /> : <ChevronDown aria-hidden="true" className="size-icon-sm" />}
-										</Button>
+									{/* The whole row toggles the file (the chevron just rotates);
+									    name + stats on the left, every action grouped on the right
+									    with "viewed" pinned to the far edge. */}
+									<div className="group/file-header flex h-9 min-w-0 cursor-pointer items-center gap-1.5 px-3 hover:bg-interactive-hover/40" onClick={() => toggleCollapsed(file.path)}>
+										<ChevronRight aria-hidden="true" className={cn("size-icon-sm shrink-0 text-muted-foreground transition-transform duration-150 group-hover/file-header:text-foreground", !isCollapsed && "rotate-90")} />
 										<WorkspaceEntryIcon className="size-icon-base" kind="file" name={file.path.split("/").pop() ?? file.path} />
 										<div className="flex min-w-0 shrink items-baseline gap-2.5">
 											<button
+												aria-expanded={!isCollapsed}
 												aria-label={isCollapsed ? t("files.expandFile", { file: file.path }) : t("files.collapseFile", { file: file.path })}
-												className="flex min-w-0 shrink items-baseline text-left text-[length:var(--font-size-base)]"
-												onClick={() => toggleCollapsed(file.path)}
+												className="flex min-w-0 shrink items-baseline text-left text-[length:var(--font-size-base)] outline-none focus-visible:underline"
 												title={file.path}
 												type="button"
 											>
@@ -561,11 +552,11 @@ export function WorkspaceReviewPane({
 												<span className="text-error">−{file.deletions}</span>
 											</span>
 										</div>
-										<div className="flex shrink-0 items-center">
+										<div className="ml-auto flex shrink-0 items-center gap-1.5 pl-2" onClick={(event) => event.stopPropagation()}>
 											<div className={FILE_HEADER_HOVER_ACTIONS}>
 												{file.editable && file.fileFingerprint ? (
 													<HeaderActionTooltip label={t("files.editFile")}>
-														<Button aria-label={t("files.editFile")} className="size-6 text-muted-foreground hover:text-foreground" onClick={(event) => { event.stopPropagation(); onOpenFile?.(file.path, { editing: true, mode: "file", scope }); }} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button>
+														<Button aria-label={t("files.editFile")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { editing: true, mode: "file", scope })} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button>
 													</HeaderActionTooltip>
 												) : null}
 												<HeaderActionTooltip label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}>
@@ -577,10 +568,8 @@ export function WorkspaceReviewPane({
 													</HeaderActionTooltip>
 												) : null}
 											</div>
-										</div>
-										<div className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
 											<HeaderActionTooltip label={t("files.addFeedback")}>
-												<Button aria-label={t("files.addFeedback")} className="size-6 text-muted-foreground hover:text-foreground" onClick={(event) => { event.stopPropagation(); annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint }); }} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
+												<Button aria-label={t("files.addFeedback")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint })} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
 											</HeaderActionTooltip>
 											<HeaderActionTooltip label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}>
 												<Checkbox

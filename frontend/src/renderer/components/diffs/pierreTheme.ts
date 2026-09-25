@@ -5,11 +5,14 @@ export const AO_PIERRE_SURFACE_CSS = `
 :host {
 	--diffs-bg: var(--color-bg-primary);
 }
+`;
 
-/* Filler rows (the empty side of a split hunk, and the row an inline feedback
-   composer opens in) keep their content treatment, but their line-number
-   gutter should not paint a grey block; let it sit on the canvas like the
-   other gutters. */
+// Files panel review only (WorkspaceReviewPane): filler rows — the empty side
+// of a split hunk and the row an inline feedback composer opens in — keep their
+// content treatment, but their line-number gutter sits on the canvas instead of
+// painting a grey block. Not part of the shared surface CSS, so the center diff
+// tab, file view, and cloud diffs are unchanged.
+export const AO_PIERRE_FILES_REVIEW_CSS = `
 [data-gutter-buffer="buffer"][data-gutter-buffer] {
 	--diffs-line-bg: var(--diffs-bg);
 }

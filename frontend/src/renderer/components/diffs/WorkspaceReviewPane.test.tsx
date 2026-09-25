@@ -122,9 +122,9 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
 		expect(await screen.findByTestId("code-view")).toBeInTheDocument();
 
-		await userEvent.click(screen.getAllByRole("button", { name: "Collapse src/App.tsx" })[1]);
+		await userEvent.click(screen.getByRole("button", { name: "Collapse src/App.tsx" }));
 		expect(screen.getByTestId("code-view").querySelector("[data-collapsed]"))?.toHaveAttribute("data-collapsed", "true");
-		await userEvent.click(screen.getAllByRole("button", { name: "Expand src/App.tsx" })[1]);
+		await userEvent.click(screen.getByRole("button", { name: "Expand src/App.tsx" }));
 		expect(screen.getByTestId("code-view").querySelector("[data-collapsed]"))?.toHaveAttribute("data-collapsed", "false");
 	});
 
@@ -150,7 +150,7 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={model} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
 		expect(await screen.findByRole("textbox", { name: /Feedback for src\/App\.tsx/ })).toBeInTheDocument();
 
-		await userEvent.click(screen.getAllByRole("button", { name: "Collapse src/App.tsx" })[1]);
+		await userEvent.click(screen.getByRole("button", { name: "Collapse src/App.tsx" }));
 		expect(model.cancel).toHaveBeenCalledOnce();
 	});
 
@@ -212,7 +212,7 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={model} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
 
 		const composer = await screen.findByRole("textbox", { name: /Feedback for src\/App\.tsx/ });
-		expect(composer.closest(".relative.bg-background")).toContainElement(screen.getAllByRole("button", { name: "Collapse src/App.tsx" })[1]);
+		expect(composer.closest(".relative.bg-background")).toContainElement(screen.getByRole("button", { name: "Collapse src/App.tsx" }));
 	});
 
 	it("opens deleted markdown as source because no current rendered revision exists", async () => {
