@@ -133,6 +133,84 @@ func TestPersistentProjectionNeverAcknowledgesPastFailedOutput(t *testing.T) {
 	}
 }
 
+type flakyBatchStore struct {
+	*sqlite.Store
+	failures atomic.Int32
+	calls    atomic.Int32
+}
+
+func (s *flakyBatchStore) ProjectCoalescedProviderEvents(
+	ctx context.Context,
+	conversationID string,
+	session domain.SessionID,
+	generation string,
+	providerEventIDs, methods, payloads []string,
+	now time.Time,
+	projectAll func(context.Context) error,
+	projectOne func(context.Context, int) error,
+) (bool, error) {
+	s.calls.Add(1)
+	if s.failures.Load() > 0 {
+		s.failures.Add(-1)
+		return false, errors.New("injected batch rollback")
+	}
+	return s.Store.ProjectCoalescedProviderEvents(ctx, conversationID, session, generation, providerEventIDs, methods, payloads, now, projectAll, projectOne)
+}
+
+func TestProseBatchStaysReplayableUntilTheWriteCommits(t *testing.T) {
+	acknowledged := make(chan string, 8)
+	conv := &receiptConversation{
+		terminatingConversation: &terminatingConversation{fakeConversation: newFakeConversation()},
+		ack:                     func(id string) error { acknowledged <- id; return nil },
+	}
+	var batch *flakyBatchStore
+	h := newHarnessWithConversationAndStore(t, conv, func(st *sqlite.Store) chatsvc.Store {
+		batch = &flakyBatchStore{Store: st}
+		batch.failures.Store(1)
+		return batch
+	})
+	conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "pt-1"},
+		ports.ChatEvent{
+			Kind: ports.ChatEventActivityStarted, ProviderTurnID: "pt-1", ProviderItemID: "rs_1",
+			ActivityKind: domain.ActivityKindReasoning, ActivityStatus: domain.ActivityStatusRunning,
+		},
+		ports.ChatEvent{Kind: ports.ChatEventReasoningDelta, ProviderItemID: "rs_1", ProviderEventID: "d1", Delta: "aa"},
+		ports.ChatEvent{Kind: ports.ChatEventReasoningDelta, ProviderItemID: "rs_1", ProviderEventID: "d2", Delta: "bb"},
+		ports.ChatEvent{Kind: ports.ChatEventReasoningDelta, ProviderItemID: "rs_1", ProviderEventID: "d3", Delta: "cc"},
+	)
+	deadline := time.Now().Add(3 * time.Second)
+	got := map[string]bool{}
+	for len(got) < 3 && time.Now().Before(deadline) {
+		select {
+		case id := <-acknowledged:
+			got[id] = true
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if !got["d1"] || !got["d2"] || !got["d3"] {
+		t.Fatalf("acks = %#v, want d1 d2 d3 after the committed batch", got)
+	}
+	if batch.calls.Load() < 2 {
+		t.Fatalf("batch attempts = %d, want the failed attempt retried", batch.calls.Load())
+	}
+	snapshot, err := h.st.LoadConversationSnapshot(context.Background(), h.ctrl.ConversationID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	var revision int64
+	for _, activity := range snapshot.Activities {
+		if activity.ProviderItemID == "rs_1" {
+			text = activity.StreamedText
+			revision = activity.Revision
+		}
+	}
+	if text != "aabbcc" || revision != 1 {
+		t.Fatalf("streamed text = %q revision %d, want aabbcc written once", text, revision)
+	}
+}
+
 func TestPersistentCompletionIsAcknowledgedBeforeQueuedTurnDispatch(t *testing.T) {
 	for _, ackFails := range []bool{false, true} {
 		name := "acknowledged"

@@ -71,6 +71,29 @@ func TestReasoningStreamsThenSettles(t *testing.T) {
 	}
 }
 
+// Several tokens of one thought commit as one rewrite. The archive still has
+// each token, so a crash before the commit can replay them, but the timeline
+// row is not rewritten once per token.
+func TestStreamedProseCommitsAsOneRewrite(t *testing.T) {
+	h := newHarness(t)
+	h.conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: "pt-1"},
+		ports.ChatEvent{
+			Kind: ports.ChatEventActivityStarted, ProviderTurnID: "pt-1", ProviderItemID: "rs_1",
+			ActivityKind: domain.ActivityKindReasoning, ActivityStatus: domain.ActivityStatusRunning,
+		},
+		ports.ChatEvent{Kind: ports.ChatEventReasoningDelta, ProviderItemID: "rs_1", ProviderEventID: "d1", Delta: "one"},
+		ports.ChatEvent{Kind: ports.ChatEventReasoningDelta, ProviderItemID: "rs_1", ProviderEventID: "d2", Delta: "two"},
+		ports.ChatEvent{Kind: ports.ChatEventReasoningDelta, ProviderItemID: "rs_1", ProviderEventID: "d3", Delta: "three"},
+	)
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return activityByItem(s, "rs_1").StreamedText == "onetwothree"
+	})
+	if got := activityByItem(snapshot, "rs_1").Revision; got != 1 {
+		t.Fatalf("revision = %d, want 1 write for three tokens", got)
+	}
+}
+
 // A completion carrying no settled text must not wipe what streamed. A reasoning
 // item with an empty summary array is the normal shape on a provider that streams
 // no summaries, and erasing the accumulation on it would delete reasoning the user

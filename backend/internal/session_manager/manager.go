@@ -408,6 +408,11 @@ type Manager struct {
 	clock                       func() time.Time
 	reconcileWorkers            int
 	defaultBranchRefreshTimeout time.Duration
+	// deferredSpawnWork is git fetch and post-create install that run after the
+	// agent has started. Spawn does not wait for it.
+	deferredSpawnWork    sync.WaitGroup
+	deferredProvisionMu  sync.Mutex
+	deferredProvisionErr map[domain.SessionID]error
 	// openTranscriptFile is os.Open in production. The narrow seam lets tests
 	// deterministically prove that a post-stop transcript read failure falls
 	// back without advertising the provider path.
@@ -1001,7 +1006,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if branch == "" {
 		branch = DefaultSpawnBranch(id, cfg.Kind, sessionPrefix(project), projectKind, m.dataDir)
 	}
-	baseRefs := m.refreshDefaultBranchesBestEffort(ctx, project)
+	baseRefs, fetchTargets := m.resolveDefaultBranchTargets(ctx, project)
 	ws, workspaceProject, err := m.createSessionWorkspace(ctx, project, cfg, id, branch, baseRefs)
 	if err != nil {
 		// Nothing observable exists yet — no worktree, no runtime — so the seed
@@ -1011,8 +1016,9 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrWorkspaceCreate, err)
 	}
 
-	// Per-project workspace provisioning: symlink shared files, then run any
-	// post-create commands (e.g. `pnpm install`) before the agent launches.
+	// Required workspace provision stays on the launch path: shared files the
+	// agent reads must exist before it starts. Install commands and the network
+	// default-branch fetch run after the agent is up.
 	if err := m.provisionWorkspace(ctx, project, ws.Path); err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, false)
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrWorkspaceProvision, err)
@@ -1054,6 +1060,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		if err != nil {
 			return domain.SessionRecord{}, 0, 0, err
 		}
+		m.scheduleDeferredSpawnWork(project, fetchTargets, ws.Path, project.Config.PostCreate, id)
 		return rec, promptBytes, systemPromptBytes, nil
 	}
 
@@ -1185,6 +1192,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, err
 	}
+	m.scheduleDeferredSpawnWork(project, fetchTargets, ws.Path, project.Config.PostCreate, id)
 	return rec, promptBytes, systemPromptBytes, nil
 }
 
@@ -1326,15 +1334,25 @@ type defaultBranchRefreshTarget struct {
 }
 
 func (m *Manager) refreshDefaultBranchesBestEffort(ctx context.Context, project domain.ProjectRecord) map[string]string {
+	baseRefs, targets := m.resolveDefaultBranchTargets(ctx, project)
+	// One deadline covers the complete workspace refresh. A slow or offline
+	// repository cannot multiply spawn latency by the number of child repos.
+	fetchCtx, cancel := context.WithTimeout(ctx, m.defaultBranchRefreshTimeout)
+	defer cancel()
+	m.fetchDefaultBranchTargets(fetchCtx, project, targets)
+	return baseRefs
+}
+
+func (m *Manager) resolveDefaultBranchTargets(ctx context.Context, project domain.ProjectRecord) (map[string]string, []defaultBranchRefreshTarget) {
 	if project.Kind.WithDefault() == domain.ProjectKindScratch {
-		return nil
+		return nil, nil
 	}
 	if strings.TrimSpace(project.Path) == "" {
-		return nil
+		return nil, nil
 	}
 	refresher, ok := m.workspace.(ports.WorkspaceDefaultBranchRefresher)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	baseRefs := make(map[string]string)
 	targets := []defaultBranchRefreshTarget{{
@@ -1363,7 +1381,8 @@ func (m *Manager) refreshDefaultBranchesBestEffort(ctx context.Context, project 
 
 	// Resolve every canonical ref before starting network I/O. This preserves
 	// each repository's own inferred origin/HEAD even if an earlier fetch uses
-	// the entire shared refresh budget.
+	// the entire shared refresh budget. Spawn creates the worktree from these
+	// local refs and fetches after the agent has started.
 	for i := range targets {
 		resolved, err := refresher.ResolveDefaultBranch(ctx, targets[i].repoPath, targets[i].configuredBranch)
 		if err != nil {
@@ -1380,16 +1399,19 @@ func (m *Manager) refreshDefaultBranchesBestEffort(ctx context.Context, project 
 			baseRefs[filepath.Clean(targets[i].repoPath)] = resolved.BaseRef
 		}
 	}
+	return baseRefs, targets
+}
 
-	// One deadline covers the complete workspace refresh. A slow or offline
-	// repository cannot multiply spawn latency by the number of child repos.
-	fetchCtx, cancel := context.WithTimeout(ctx, m.defaultBranchRefreshTimeout)
-	defer cancel()
+func (m *Manager) fetchDefaultBranchTargets(ctx context.Context, project domain.ProjectRecord, targets []defaultBranchRefreshTarget) {
+	refresher, ok := m.workspace.(ports.WorkspaceDefaultBranchRefresher)
+	if !ok {
+		return
+	}
 	for _, target := range targets {
 		if target.resolved.BaseRef == "" {
 			continue
 		}
-		if err := refresher.FetchDefaultBranch(fetchCtx, target.repoPath, target.resolved); err != nil {
+		if err := refresher.FetchDefaultBranch(ctx, target.repoPath, target.resolved); err != nil {
 			m.logger.Warn("spawn: default branch refresh failed; continuing with local refs",
 				"projectID", project.ID,
 				"repoPath", target.repoPath,
@@ -1400,7 +1422,62 @@ func (m *Manager) refreshDefaultBranchesBestEffort(ctx context.Context, project 
 			)
 		}
 	}
-	return baseRefs
+}
+
+func (m *Manager) scheduleDeferredSpawnWork(project domain.ProjectRecord, targets []defaultBranchRefreshTarget, workspacePath string, commands []string, id domain.SessionID) {
+	commands = nonEmptyCommands(commands)
+	if len(targets) == 0 && len(commands) == 0 {
+		return
+	}
+	m.deferredSpawnWork.Add(1)
+	go func() {
+		defer m.deferredSpawnWork.Done()
+		parent := m.backgroundContext
+		if parent == nil {
+			parent = context.Background()
+		}
+		if len(commands) > 0 {
+			if err := runPostCreate(parent, workspacePath, commands); err != nil {
+				m.noteDeferredProvisionError(id, err)
+				m.logger.Error("spawn: post-create install failed after the agent started", "sessionID", id, "error", err)
+			}
+		}
+		if len(targets) == 0 {
+			return
+		}
+		fetchCtx, cancel := context.WithTimeout(parent, m.defaultBranchRefreshTimeout)
+		defer cancel()
+		m.fetchDefaultBranchTargets(fetchCtx, project, targets)
+	}()
+}
+
+func (m *Manager) waitDeferredSpawnWork() {
+	m.deferredSpawnWork.Wait()
+}
+
+func (m *Manager) noteDeferredProvisionError(id domain.SessionID, err error) {
+	m.deferredProvisionMu.Lock()
+	defer m.deferredProvisionMu.Unlock()
+	if m.deferredProvisionErr == nil {
+		m.deferredProvisionErr = map[domain.SessionID]error{}
+	}
+	m.deferredProvisionErr[id] = err
+}
+
+func (m *Manager) deferredProvisionError(id domain.SessionID) error {
+	m.deferredProvisionMu.Lock()
+	defer m.deferredProvisionMu.Unlock()
+	return m.deferredProvisionErr[id]
+}
+
+func nonEmptyCommands(commands []string) []string {
+	out := make([]string, 0, len(commands))
+	for _, command := range commands {
+		if strings.TrimSpace(command) != "" {
+			out = append(out, command)
+		}
+	}
+	return out
 }
 
 func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.ProjectRecord, cfg ports.SpawnConfig, id domain.SessionID, branch string, baseRefs map[string]string) (ports.WorkspaceInfo, *ports.WorkspaceProjectInfo, error) {
@@ -4925,15 +5002,11 @@ func HookPATH(executable func() (string, error), getenv func(string) string, pro
 	return agentlaunch.PinnedPATH(executable, getenv, projectEnv, dataDir)
 }
 
-// provisionWorkspace applies the project's per-workspace setup after the
-// worktree exists: symlink shared files from the project repo, then run any
-// post-create commands. Either failing aborts the spawn so a half-provisioned
-// workspace never launches an agent.
-func (m *Manager) provisionWorkspace(ctx context.Context, project domain.ProjectRecord, workspacePath string) error {
-	if err := applySymlinks(project.Path, workspacePath, project.Config.Symlinks); err != nil {
-		return err
-	}
-	return runPostCreate(ctx, workspacePath, project.Config.PostCreate)
+// provisionWorkspace links shared project files into the worktree before the
+// agent launches. A link failure aborts the spawn. Post-create install commands
+// are not part of this step; they run after the agent has started.
+func (m *Manager) provisionWorkspace(_ context.Context, project domain.ProjectRecord, workspacePath string) error {
+	return applySymlinks(project.Path, workspacePath, project.Config.Symlinks)
 }
 
 // applySymlinks links each repo-relative path into the workspace. A source that

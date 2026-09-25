@@ -115,46 +115,31 @@ const dateFormatter = new Intl.DateTimeFormat(undefined, {
 const ORIGIN_REPORT_COLLAPSE_AT = 600;
 const ORIGIN_REPORT_PREVIEW_LENGTH = 240;
 
-/** Smooth baseline, with adaptive catch-up when provider chunks outrun playback. */
-const STREAM_BASE_CHARACTERS_PER_SECOND = 58;
-const STREAM_TARGET_BACKLOG_CHARACTERS = 72;
-const STREAM_MAX_CHARACTERS_PER_SECOND = 720;
-const STREAM_MAX_FRAME_DELTA_MS = 100;
-const STREAM_MAX_DISPLAY_LAG_MS = 200;
-const STREAM_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+// Same word split and gap as Vercel AI SDK smoothStream: a burst stays buffered
+// and one finished word is released, then the next waits. An unfinished word
+// stays hidden until whitespace arrives or the stream ends.
+const STREAM_WORD_DELAY_MS = 10;
+const STREAM_WORD_CHUNK = /\S+\s+/m;
 
-function streamGraphemes(text: string): string[] {
-	return Array.from(STREAM_GRAPHEME_SEGMENTER.segment(text), ({ segment }) => segment);
+function detectWordChunk(buffer: string): string | null {
+	const match = STREAM_WORD_CHUNK.exec(buffer);
+	if (!match?.[0]) return null;
+	return buffer.slice(0, match.index) + match[0];
 }
 
-function reconciledStreamPrefix(visibleText: string, targetGraphemes: string[]) {
-	let boundary = 0;
-	let count = 0;
-	for (const grapheme of targetGraphemes) {
-		const nextBoundary = boundary + grapheme.length;
-		if (nextBoundary > visibleText.length) break;
-		boundary = nextBoundary;
-		count++;
-	}
-	return { text: visibleText.slice(0, boundary), count };
-}
-
-function useSmoothStreamingText(message: ConversationMessage): string {
+function useSmoothStreamingText(source: { id: string; text: string; streaming?: boolean }): string {
 	// A snapshot can first reach the renderer after the provider has already emitted
-	// text. Keep that first durable burst visible; only later deltas need smoothing.
-	const [visibleText, setVisibleText] = useState(() => message.text);
+	// text. Keep that first durable text visible; only later growth is smoothed.
+	const [visibleText, setVisibleText] = useState(() => source.text);
 	const visibleRef = useRef(visibleText);
-	const targetRef = useRef(message.text);
-	const targetGraphemes = useMemo(() => streamGraphemes(message.text), [message.text]);
-	const visibleGraphemeCountRef = useRef(targetGraphemes.length);
-	const targetGraphemesRef = useRef(targetGraphemes);
-	const messageIdRef = useRef(message.id);
-	const frameRef = useRef<number | undefined>(undefined);
-	const lastFrameAtRef = useRef<number | undefined>(undefined);
-	const fractionalCharactersRef = useRef(0);
+	const targetRef = useRef(source.text);
+	const streamingRef = useRef(Boolean(source.streaming));
+	const sourceIdRef = useRef(source.id);
+	const timerRef = useRef<number | undefined>(undefined);
 	const [reducedMotion, setReducedMotion] = useState(
 		() => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
 	);
+	const reducedMotionRef = useRef(reducedMotion);
 
 	useEffect(() => {
 		const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -163,118 +148,71 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 		return () => mediaQuery.removeEventListener("change", update);
 	}, []);
 
-	const cancelDrain = useCallback(() => {
-		if (frameRef.current !== undefined) {
-			window.cancelAnimationFrame(frameRef.current);
-			frameRef.current = undefined;
-		}
-		lastFrameAtRef.current = undefined;
-		fractionalCharactersRef.current = 0;
+	useEffect(() => {
+		reducedMotionRef.current = reducedMotion;
+	}, [reducedMotion]);
+
+	const show = useCallback((text: string) => {
+		visibleRef.current = text;
+		setVisibleText(text);
 	}, []);
 
-	const scheduleDrain = useCallback(() => {
-		if (frameRef.current !== undefined) return;
-		const drainStartedAt = performance.now();
+	const cancelDrain = useCallback(() => {
+		if (timerRef.current !== undefined) {
+			window.clearTimeout(timerRef.current);
+			timerRef.current = undefined;
+		}
+	}, []);
 
-		const tick = (now: number) => {
-			frameRef.current = undefined;
-			const previousFrameAt = lastFrameAtRef.current ?? now;
-			lastFrameAtRef.current = now;
-			const backlog = targetGraphemesRef.current.length - visibleGraphemeCountRef.current;
-			if (backlog <= 0) {
-				fractionalCharactersRef.current = 0;
-				return;
-			}
+	const releaseOne = useCallback(() => {
+		const target = targetRef.current;
+		const visible = visibleRef.current;
+		if (!streamingRef.current || reducedMotionRef.current || !target.startsWith(visible)) {
+			if (visible !== target) show(target);
+			return false;
+		}
+		const chunk = detectWordChunk(target.slice(visible.length));
+		if (!chunk) return false;
+		show(visible + chunk);
+		return true;
+	}, [show]);
 
-			// New snapshots share this drain's deadline. Use real elapsed time so a
-			// background tab catches up even if it has not received its first frame.
-			if (now - drainStartedAt >= STREAM_MAX_DISPLAY_LAG_MS) {
-				visibleRef.current = targetRef.current;
-				visibleGraphemeCountRef.current = targetGraphemesRef.current.length;
-				setVisibleText(targetRef.current);
-				cancelDrain();
-				return;
-			}
-
-			// Keep a small, intentional buffer for smoothness. As it grows, increase
-			// throughput instead of letting a long response fall further behind.
-			const catchup = Math.max(0, backlog - STREAM_TARGET_BACKLOG_CHARACTERS);
-			const charactersPerSecond = Math.min(
-				STREAM_MAX_CHARACTERS_PER_SECOND,
-				STREAM_BASE_CHARACTERS_PER_SECOND + catchup * 2,
-			);
-			const elapsedMs = Math.min(STREAM_MAX_FRAME_DELTA_MS, Math.max(0, now - previousFrameAt));
-			fractionalCharactersRef.current += charactersPerSecond * elapsedMs / 1000;
-			const count = Math.floor(fractionalCharactersRef.current);
-			if (count < 1) {
-				frameRef.current = window.requestAnimationFrame(tick);
-				return;
-			}
-			fractionalCharactersRef.current -= count;
-			const currentCount = visibleGraphemeCountRef.current;
-			const target = targetGraphemesRef.current;
-			const nextCount = Math.min(target.length, currentCount + count);
-			const next = visibleRef.current + target.slice(currentCount, nextCount).join("");
-			visibleRef.current = next;
-			visibleGraphemeCountRef.current = nextCount;
-			setVisibleText(next);
-			if (visibleGraphemeCountRef.current < targetGraphemesRef.current.length) {
-				frameRef.current = window.requestAnimationFrame(tick);
-			}
-		};
-
-		lastFrameAtRef.current = undefined;
-		fractionalCharactersRef.current = 0;
-		frameRef.current = window.requestAnimationFrame(tick);
-	}, [cancelDrain]);
+	const scheduleDrain = useCallback((delay: number) => {
+		if (timerRef.current !== undefined) return;
+		timerRef.current = window.setTimeout(() => {
+			timerRef.current = undefined;
+			if (releaseOne()) scheduleDrain(STREAM_WORD_DELAY_MS);
+		}, delay);
+	}, [releaseOne]);
 
 	useEffect(() => {
-		if (message.id !== messageIdRef.current) {
+		if (source.id !== sourceIdRef.current) {
 			cancelDrain();
-			messageIdRef.current = message.id;
-			targetRef.current = message.text;
-			targetGraphemesRef.current = targetGraphemes;
-			const initial = message.text;
-			visibleRef.current = initial;
-			visibleGraphemeCountRef.current = targetGraphemes.length;
-			setVisibleText(initial);
+			sourceIdRef.current = source.id;
+			targetRef.current = source.text;
+			streamingRef.current = Boolean(source.streaming);
+			show(source.text);
 			return;
 		}
 
-		targetRef.current = message.text;
-		targetGraphemesRef.current = targetGraphemes;
-		if (!message.streaming || reducedMotion) {
+		targetRef.current = source.text;
+		streamingRef.current = Boolean(source.streaming);
+		if (!source.streaming || reducedMotion) {
 			cancelDrain();
-			visibleRef.current = message.text;
-			visibleGraphemeCountRef.current = targetGraphemes.length;
-			setVisibleText(message.text);
+			show(source.text);
 			return;
 		}
-		// A provider correction or rollback can replace the current prefix. In that
-		// case the durable snapshot is authoritative and should be shown immediately.
-		if (!message.text.startsWith(visibleRef.current)) {
+		// A provider correction or rollback can replace the current prefix. The
+		// durable snapshot is what should be on screen.
+		if (!source.text.startsWith(visibleRef.current)) {
 			cancelDrain();
-			visibleRef.current = message.text;
-			visibleGraphemeCountRef.current = targetGraphemes.length;
-			setVisibleText(message.text);
+			show(source.text);
 			return;
 		}
-		// A later combining mark or ZWJ can merge the last visible grapheme into a
-		// different target grapheme. Reconcile that trailing fragment before using
-		// the old grapheme count, otherwise the drain can skip the merged suffix.
-		const reconciled = reconciledStreamPrefix(visibleRef.current, targetGraphemesRef.current);
-		if (reconciled.text !== visibleRef.current) {
-			visibleRef.current = reconciled.text;
-			visibleGraphemeCountRef.current = reconciled.count;
-			setVisibleText(reconciled.text);
-		}
-		if (visibleGraphemeCountRef.current < targetGraphemesRef.current.length) scheduleDrain();
-	}, [cancelDrain, message.id, message.text, message.streaming, reducedMotion, scheduleDrain, targetGraphemes]);
+		if (visibleRef.current.length < source.text.length) scheduleDrain(0);
+	}, [cancelDrain, reducedMotion, scheduleDrain, show, source.id, source.streaming, source.text]);
 
-	useEffect(
-		() => cancelDrain,
-		[cancelDrain],
-	);
+	useEffect(() => cancelDrain, [cancelDrain]);
 
 	return visibleText;
 }
@@ -1490,8 +1428,9 @@ function Patch({ patch, truncated }: { patch: string; truncated?: boolean }) {
  */
 function ReasoningBlock({ activity }: { activity: ConversationActivity }) {
 	const text = activity.detail?.text ?? activity.detail?.reason ?? "";
-	if (!text) return null;
 	const streaming = activity.status === "running";
+	const visibleText = useSmoothStreamingText({ id: activity.id, text, streaming });
+	if (!text) return null;
 
 	return (
 		<div className="flex gap-2.5 border-l-2 border-border-strong py-0.5 pl-3">
@@ -1508,7 +1447,7 @@ function ReasoningBlock({ activity }: { activity: ConversationActivity }) {
 						/>
 					) : null}
 				</div>
-				<ChatMarkdown text={text} streaming={streaming} muted />
+				<ChatMarkdown text={visibleText} streaming={streaming || visibleText.length < text.length} muted />
 				{activity.detail?.textTruncated ? (
 					<p className="mt-1 text-[10px] text-muted-foreground/70">
 						This summary is longer than AO stores, so it stops early.

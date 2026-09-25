@@ -148,6 +148,27 @@ type Store interface {
 	ProjectProviderEvent(ctx context.Context, conversationID string, session domain.SessionID, generation, providerEventID, method, payloadJSON string, now time.Time, project func(context.Context) error) (bool, error)
 }
 
+// proseBatchStore writes several streamed prose events in one transaction.
+// A store that does not implement it keeps the one-event path.
+type proseBatchStore interface {
+	ProjectCoalescedProviderEvents(
+		ctx context.Context,
+		conversationID string,
+		session domain.SessionID,
+		generation string,
+		providerEventIDs, methods, payloads []string,
+		now time.Time,
+		projectAll func(context.Context) error,
+		projectOne func(context.Context, int) error,
+	) (bool, error)
+}
+
+const (
+	proseBatchWindow    = 40 * time.Millisecond
+	maxProseBatchEvents = 32
+	maxProseBatchBytes  = 8 * 1024
+)
+
 // ActivityRecorder feeds derived session status.
 //
 // Chat reports activity through the SAME lifecycle reduction terminal sessions
@@ -2495,56 +2516,8 @@ func (c *Controller) project() {
 	ctx := context.WithoutCancel(context.Background())
 	acknowledger, persistent := c.conv.(ports.ChatProviderEventAcknowledger)
 
-	for event := range c.conv.Events() {
-		c.mu.Lock()
-		preserveProvider := c.preserveProviderOnStop
-		c.mu.Unlock()
-		if preserveProvider && event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerStopped {
-			continue
-		}
-		// A lifecycle event and a concurrent Send must agree on whether the root
-		// conversation is busy. Holding the same lock Send/dispatch use closes the
-		// window between the durable projection and the in-memory ownership update.
-		lifecycle := event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted
-		if lifecycle {
-			c.sendMu.Lock()
-		}
-		projected, primaryTurn, err := c.projectEvent(ctx, event)
-		// A terminal receipt compacts the entire prompt, so it cannot pass a
-		// failed earlier projection. Retry transient store errors in order; if
-		// still failing, detach and leave the journal for a replacement controller.
-		for attempt := 0; err != nil && persistent && attempt < 3; attempt++ {
-			time.Sleep(20 * time.Millisecond)
-			projected, primaryTurn, err = c.projectEvent(ctx, event)
-		}
-		if err == nil && persistent && event.ProviderEventID != "" {
-			err = acknowledger.AcknowledgeProviderEvent(ctx, event.ProviderEventID)
-		}
-		if err != nil && persistent {
-			c.log.Error("persistent chat projection stopped; provider retained for replay",
-				"session", c.sessionID, "kind", event.Kind, "error", err)
-			c.mu.Lock()
-			c.preserveProviderOnStop = true
-			c.state = ports.ChatControllerStopped
-			c.mu.Unlock()
-			if lifecycle {
-				c.sendMu.Unlock()
-			}
-			c.once.Do(func() { c.closeErr = c.conv.Close() })
-			return
-		}
-		if err != nil {
-			// A projection failure must not kill the provider stream. The store
-			// rolls the archive back with its projection, so durable state remains
-			// internally consistent and a later provider replay may retry it.
-			c.log.Error("failed to project chat event",
-				"session", c.sessionID, "kind", event.Kind, "error", err)
-		} else if projected {
-			c.afterProject(ctx, event, primaryTurn)
-		}
-		if lifecycle {
-			c.sendMu.Unlock()
-		}
+	if !c.projectStream(ctx, acknowledger, persistent) {
+		return
 	}
 
 	c.mu.Lock()
@@ -2581,9 +2554,207 @@ func (c *Controller) project() {
 	}
 }
 
+// projectStream reads provider events. Consecutive prose deltas for one item
+// commit together, so SQLite is not written once per token. Events stay
+// unacknowledged until that commit, and a crash leaves them for the provider
+// to replay.
+func (c *Controller) projectStream(ctx context.Context, acknowledger ports.ChatProviderEventAcknowledger, persistent bool) bool {
+	var pending []ports.ChatEvent
+	var flushTimer <-chan time.Time
+	flush := func() bool {
+		if len(pending) == 0 {
+			flushTimer = nil
+			return true
+		}
+		events := pending
+		pending = nil
+		flushTimer = nil
+		return c.projectProse(ctx, acknowledger, persistent, events)
+	}
+	events := c.conv.Events()
+	for {
+		var timer <-chan time.Time
+		if len(pending) > 0 {
+			timer = flushTimer
+		}
+		select {
+		case event, ok := <-events:
+			if !ok {
+				return flush()
+			}
+			c.mu.Lock()
+			preserveProvider := c.preserveProviderOnStop
+			c.mu.Unlock()
+			if preserveProvider && event.Kind == ports.ChatEventControllerState && event.ControllerState == ports.ChatControllerStopped {
+				continue
+			}
+			if proseDeltaEvent(event) && proseBatchAccepts(pending, event) {
+				if flushTimer == nil {
+					flushTimer = time.After(proseBatchWindow)
+				}
+				pending = append(pending, event)
+				if len(pending) >= maxProseBatchEvents || proseBatchBytes(pending) >= maxProseBatchBytes {
+					if !flush() {
+						return false
+					}
+				}
+				continue
+			}
+			if !flush() {
+				return false
+			}
+			if proseDeltaEvent(event) {
+				pending = append(pending, event)
+				flushTimer = time.After(proseBatchWindow)
+				continue
+			}
+			if !c.projectOne(ctx, acknowledger, persistent, event) {
+				return false
+			}
+		case <-timer:
+			if !flush() {
+				return false
+			}
+		}
+	}
+}
+
+func proseDeltaEvent(event ports.ChatEvent) bool {
+	switch event.Kind {
+	case ports.ChatEventMessageDelta, ports.ChatEventReasoningDelta, ports.ChatEventCommandInput, ports.ChatEventActivityText, ports.ChatEventCommandOutputDelta:
+		return event.Delta != "" && event.Err == nil
+	default:
+		return false
+	}
+}
+
+func proseBatchAccepts(pending []ports.ChatEvent, event ports.ChatEvent) bool {
+	if len(pending) == 0 {
+		return true
+	}
+	if len(pending) >= maxProseBatchEvents || proseBatchBytes(pending)+len(event.Delta) > maxProseBatchBytes {
+		return false
+	}
+	first := pending[0]
+	return first.Kind == event.Kind &&
+		first.ProviderItemID == event.ProviderItemID &&
+		first.ProviderTurnID == event.ProviderTurnID &&
+		first.ProviderConversationID == event.ProviderConversationID
+}
+
+func proseBatchBytes(events []ports.ChatEvent) int {
+	n := 0
+	for _, event := range events {
+		n += len(event.Delta)
+	}
+	return n
+}
+
+func (c *Controller) projectProse(ctx context.Context, acknowledger ports.ChatProviderEventAcknowledger, persistent bool, events []ports.ChatEvent) bool {
+	if len(events) < 2 {
+		for _, event := range events {
+			if !c.projectOne(ctx, acknowledger, persistent, event) {
+				return false
+			}
+		}
+		return true
+	}
+	batcher, ok := c.store.(proseBatchStore)
+	if !ok {
+		for _, event := range events {
+			if !c.projectOne(ctx, acknowledger, persistent, event) {
+				return false
+			}
+		}
+		return true
+	}
+	ids := make([]string, len(events))
+	methods := make([]string, len(events))
+	payloads := make([]string, len(events))
+	for i, event := range events {
+		method, payload, err := c.providerEventArchive(event)
+		if err != nil {
+			return c.finishProjection(ctx, persistent, event, false, false, err)
+		}
+		ids[i] = event.ProviderEventID
+		methods[i] = method
+		payloads[i] = payload
+	}
+	combined := events[0]
+	var text strings.Builder
+	for _, event := range events {
+		text.WriteString(event.Delta)
+	}
+	combined.Delta = text.String()
+	projectAll := func(txCtx context.Context) error { return c.apply(txCtx, combined) }
+	projectOne := func(txCtx context.Context, index int) error { return c.apply(txCtx, events[index]) }
+	projected, err := batcher.ProjectCoalescedProviderEvents(ctx, c.conversation.ID, c.sessionID, c.generation, ids, methods, payloads, c.now(), projectAll, projectOne)
+	for attempt := 0; err != nil && persistent && attempt < 3; attempt++ {
+		time.Sleep(20 * time.Millisecond)
+		projected, err = batcher.ProjectCoalescedProviderEvents(ctx, c.conversation.ID, c.sessionID, c.generation, ids, methods, payloads, c.now(), projectAll, projectOne)
+	}
+	if err == nil && persistent {
+		for _, event := range events {
+			if event.ProviderEventID == "" {
+				continue
+			}
+			if ackErr := acknowledger.AcknowledgeProviderEvent(ctx, event.ProviderEventID); ackErr != nil {
+				err = ackErr
+				break
+			}
+		}
+	}
+	return c.finishProjection(ctx, persistent, events[len(events)-1], projected, false, err)
+}
+
+func (c *Controller) projectOne(ctx context.Context, acknowledger ports.ChatProviderEventAcknowledger, persistent bool, event ports.ChatEvent) bool {
+	lifecycle := event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted
+	if lifecycle {
+		c.sendMu.Lock()
+	}
+	projected, primaryTurn, err := c.projectEvent(ctx, event)
+	for attempt := 0; err != nil && persistent && attempt < 3; attempt++ {
+		time.Sleep(20 * time.Millisecond)
+		projected, primaryTurn, err = c.projectEvent(ctx, event)
+	}
+	if err == nil && persistent && event.ProviderEventID != "" {
+		err = acknowledger.AcknowledgeProviderEvent(ctx, event.ProviderEventID)
+	}
+	// Close can wait for this goroutine. Release the send lock before it runs.
+	if err != nil && persistent && lifecycle {
+		c.sendMu.Unlock()
+		lifecycle = false
+	}
+	ok := c.finishProjection(ctx, persistent, event, projected, primaryTurn, err)
+	if lifecycle {
+		c.sendMu.Unlock()
+	}
+	return ok
+}
+
+func (c *Controller) finishProjection(ctx context.Context, persistent bool, event ports.ChatEvent, projected, primaryTurn bool, err error) bool {
+	if err != nil && persistent {
+		c.log.Error("persistent chat projection stopped; provider retained for replay",
+			"session", c.sessionID, "kind", event.Kind, "error", err)
+		c.mu.Lock()
+		c.preserveProviderOnStop = true
+		c.state = ports.ChatControllerStopped
+		c.mu.Unlock()
+		c.once.Do(func() { c.closeErr = c.conv.Close() })
+		return false
+	}
+	if err != nil {
+		c.log.Error("failed to project chat event",
+			"session", c.sessionID, "kind", event.Kind, "error", err)
+	} else if projected {
+		c.afterProject(ctx, event, primaryTurn)
+	}
+	return true
+}
+
 // projectEvent archives one normalized provider event and applies its durable
 // projection in the same SQLite transaction.
-func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (bool, bool, error) {
+func (c *Controller) providerEventArchive(event ports.ChatEvent) (string, string, error) {
 	record := map[string]any{
 		"kind":                   event.Kind,
 		"providerEventId":        event.ProviderEventID,
@@ -2632,10 +2803,18 @@ func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (b
 	}
 	payload, err := json.Marshal(record)
 	if err != nil {
-		return false, false, fmt.Errorf("encode provider event archive: %w", err)
+		return "", "", fmt.Errorf("encode provider event archive: %w", err)
+	}
+	return string(event.Kind), string(payload), nil
+}
+
+func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (bool, bool, error) {
+	method, payload, err := c.providerEventArchive(event)
+	if err != nil {
+		return false, false, err
 	}
 	projected, err := c.store.ProjectProviderEvent(ctx, c.conversation.ID, c.sessionID,
-		c.generation, event.ProviderEventID, string(event.Kind), string(payload), c.now(),
+		c.generation, event.ProviderEventID, method, payload, c.now(),
 		func(txCtx context.Context) error { return c.apply(txCtx, event) })
 	if err != nil || !projected {
 		return projected, false, err

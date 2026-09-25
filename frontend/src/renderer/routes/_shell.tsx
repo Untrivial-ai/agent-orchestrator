@@ -9,6 +9,7 @@ import { CommandPalette } from "../components/CommandPalette";
 import { CenterPanelShell } from "../components/CenterPanelShell";
 import { DaemonFailureBanner } from "../components/DaemonFailureBanner";
 import { DaemonStartupLoader } from "../components/DaemonStartupLoader";
+import { StartupSessionDraft } from "../components/StartupSessionDraft";
 import { NotificationRuntime } from "../components/NotificationCenter";
 import { TrayRuntime } from "../components/TrayRuntime";
 import { GlobalNewTaskDialog } from "../components/GlobalNewTaskDialog";
@@ -52,6 +53,8 @@ import {
 	usesFramedAppTopbar,
 	hidesShellTopbar,
 } from "../lib/platform";
+import { releaseColdSessionCopies } from "../lib/session-copy-lease";
+import { forgetLastSession, lastSessionTarget, readLastSession, rememberLastSession } from "../lib/last-session";
 import { sidebarIsVisible, sidebarOccupiesLayout, useUiStore } from "../stores/ui-store";
 import { matchesRendererShortcut } from "../stores/keybindings-store";
 import { CLOUD_PROJECT_KIND, sessionIsActive, STANDALONE_WORKSPACE_ID, toProjectKind, type WorkspaceSummary } from "../types/workspace";
@@ -231,6 +234,17 @@ function ShellLayout() {
 	const [isKeyboardShortcutsOpen, setIsKeyboardShortcutsOpen] = useState(false);
 	const [isKeyboardShortcutsSettingsOpen, setIsKeyboardShortcutsSettingsOpen] = useState(false);
 	const routeParams = useParams({ strict: false }) as { projectId?: string; sessionId?: string };
+	// The open session and the one just left keep their screen copies. Older
+	// copies are dropped. This does not terminate a session, and parked
+	// terminals stay in the terminal cache.
+	const sessionCopyLeaseRef = useRef<string[]>([]);
+	useEffect(() => {
+		sessionCopyLeaseRef.current = releaseColdSessionCopies(
+			queryClient,
+			routeParams.sessionId,
+			sessionCopyLeaseRef.current,
+		);
+	}, [queryClient, routeParams.sessionId]);
 	const linkSession = workspaces.flatMap((workspace) => workspace.sessions).find((session) => session.id === routeParams.sessionId);
 	const openBrowserLink = useSessionBrowserLink(linkSession);
 	const canOpenBrowserLink = linkSession?.kind === "worker" && sessionIsActive(linkSession);
@@ -361,6 +375,54 @@ function ShellLayout() {
 		!usesPreviewWorkspaceData &&
 		!daemonStatus.code &&
 		(daemonStatus.state !== "ready" || workspaceStartupState === "loading" || (!workspaceQuery.isSuccess && !workspaceQuery.isError));
+	const startupRestoreRef = useRef<"pending" | "done">("pending");
+	const startupRestorePendingRef = useRef(false);
+	useEffect(() => {
+		if (isStartupLoading) return;
+		if (routeParams.sessionId) {
+			startupRestoreRef.current = "done";
+			startupRestorePendingRef.current = false;
+			const session = workspaces
+				.flatMap((workspace) => workspace.sessions)
+				.find((candidate) => candidate.id === routeParams.sessionId);
+			if (!session?.createdAt) return;
+			const workspace = workspaces.find((candidate) =>
+				candidate.sessions.some((item) => item.id === session.id),
+			);
+			rememberLastSession({
+				sessionId: session.id,
+				projectId: routeParams.projectId ?? workspace?.id,
+				incarnation: session.createdAt,
+				title: session.title,
+			});
+			return;
+		}
+		if (startupRestoreRef.current === "pending") {
+			if (!workspaceQuery.isSuccess) return;
+			startupRestoreRef.current = "done";
+			const last = readLastSession();
+			if (!last) return;
+			const listed = workspaces.some((workspace) => workspace.sessions.some((session) => session.id === last.sessionId));
+			if (!listed) {
+				forgetLastSession();
+				return;
+			}
+			startupRestorePendingRef.current = true;
+			void navigate(lastSessionTarget(last)).catch(() => {
+				startupRestorePendingRef.current = false;
+			});
+			return;
+		}
+		if (startupRestorePendingRef.current) return;
+		if (workspaceQuery.isSuccess) forgetLastSession();
+	}, [
+		isStartupLoading,
+		navigate,
+		routeParams.projectId,
+		routeParams.sessionId,
+		workspaceQuery.isSuccess,
+		workspaces,
+	]);
 	const navigateSession = useCallback(
 		(direction: -1 | 1) => {
 			if (!scopedProjectId) return;
@@ -981,7 +1043,14 @@ function ShellLayout() {
 	// Keep the shell chrome and its first route behind the same readiness gate.
 	// Rendering the sidebar with an empty query while the home outlet shows its
 	// loader creates a visible two-stage launch and can make the home page flash
-	// before the project list arrives.
+	// before the project list arrives. A remembered session is the exception:
+	// its title and unsent draft are local, and Send stays off until the daemon
+	// confirms the real composer.
+	const startupSession = isStartupLoading ? readLastSession() : null;
+	const startupMatchesRoute = !routeParams.sessionId || routeParams.sessionId === startupSession?.sessionId;
+	if (isStartupLoading && startupSession && startupMatchesRoute) {
+		return <StartupSessionDraft session={startupSession} />;
+	}
 	if (isStartupLoading) return <DaemonStartupLoader />;
 
 	return (

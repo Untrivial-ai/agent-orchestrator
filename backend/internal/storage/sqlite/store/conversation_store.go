@@ -2472,6 +2472,81 @@ func (s *Store) ProjectProviderEvent(
 	return projected, nil
 }
 
+// ProjectCoalescedProviderEvents archives several streamed prose events and
+// applies them in one transaction. When every event is new, projectAll runs
+// once for the joined text. A crash before commit acknowledges nothing, so the
+// provider can replay the same events. A replay that finds the archive rows
+// already present does not append the text again.
+func (s *Store) ProjectCoalescedProviderEvents(
+	ctx context.Context,
+	conversationID string,
+	session domain.SessionID,
+	generation string,
+	providerEventIDs, methods, payloads []string,
+	now time.Time,
+	projectAll func(context.Context) error,
+	projectOne func(context.Context, int) error,
+) (bool, error) {
+	if len(providerEventIDs) != len(methods) || len(methods) != len(payloads) {
+		return false, fmt.Errorf("coalesced provider events: mismatched archive columns")
+	}
+	if len(providerEventIDs) == 0 {
+		return false, nil
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin coalesced provider events: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	q := s.qw.WithTx(tx)
+	owner, err := q.GetSession(ctx, session)
+	if err != nil {
+		return false, fmt.Errorf("read controller generation for %s: %w", session, err)
+	}
+	if owner.ControllerGeneration != generation {
+		return false, nil
+	}
+	inserted := make([]int, 0, len(providerEventIDs))
+	for i := range providerEventIDs {
+		wrote, err := q.InsertConversationProviderEvent(ctx, gen.InsertConversationProviderEventParams{
+			ConversationID:  conversationID,
+			SessionID:       session,
+			ProviderEventID: providerEventIDs[i],
+			Method:          methods[i],
+			PayloadJson:     payloads[i],
+			ReceivedAt:      now,
+		})
+		if err != nil {
+			return false, fmt.Errorf("archive provider event %s: %w", methods[i], err)
+		}
+		if wrote > 0 {
+			inserted = append(inserted, i)
+		}
+	}
+	if len(inserted) == 0 {
+		return false, nil
+	}
+	txCtx := context.WithValue(ctx, conversationProjectionTxKey{}, q)
+	if len(inserted) == len(providerEventIDs) {
+		if err := projectAll(txCtx); err != nil {
+			return false, fmt.Errorf("project coalesced provider events: %w", err)
+		}
+	} else {
+		for _, index := range inserted {
+			if err := projectOne(txCtx, index); err != nil {
+				return false, fmt.Errorf("project provider event %s: %w", methods[index], err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit coalesced provider events: %w", err)
+	}
+	return true, nil
+}
+
 func projectProviderEventTx(
 	ctx context.Context,
 	q *gen.Queries,

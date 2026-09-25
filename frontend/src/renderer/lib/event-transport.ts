@@ -1,4 +1,4 @@
-import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import type { InfiniteData, QueryClient, QueryFunctionContext, QueryKey } from "@tanstack/react-query";
 import { aoBridge } from "./bridge";
 import { getApiBaseUrl, hasTrustedApiBaseUrl, subscribeApiBaseUrl } from "./api-client";
 import { setEventsConnectionState } from "./events-connection";
@@ -25,6 +25,67 @@ const INVALIDATE_WINDOW_MS = 150;
 // EventSource.CLOSED, referenced numerically so test stubs without the static
 // constants still work.
 const EVENTSOURCE_CLOSED = 2;
+
+type ConversationRefreshMode = "head" | "full";
+
+type ConversationHeadPage = {
+	latestSequence?: number;
+	oldestSequence?: number;
+};
+
+function isInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value);
+}
+
+// A contiguous head update names a row the loaded live page already covers, or
+// the single next row. Anything else — a gap, a truncated replay, an edit on an
+// older page, or an event that does not name a sequence — still refetches the
+// whole loaded snapshot.
+function conversationRefreshMode(
+	queryClient: QueryClient,
+	sessionId: string,
+	itemSequence: unknown,
+	headSequence: unknown,
+): ConversationRefreshMode {
+	if (!isInteger(itemSequence) || !isInteger(headSequence)) return "full";
+	const cached = queryClient.getQueryData<InfiniteData<ConversationHeadPage>>(conversationQueryKey(sessionId));
+	const page = cached?.pages[0];
+	if (!page || !isInteger(page.latestSequence) || !isInteger(page.oldestSequence)) return "full";
+	if (headSequence > page.latestSequence + 1 || itemSequence > page.latestSequence + 1) return "full";
+	if (itemSequence < page.oldestSequence) return "full";
+	return "head";
+}
+
+// Refetch the live page through the query the screen already registered, then
+// replace only that page. Older pages stay mounted. A missing query falls back
+// to a full snapshot refetch.
+async function refetchConversationHead(queryClient: QueryClient, queryKey: QueryKey): Promise<void> {
+	const cached = queryClient.getQueryData<InfiniteData<unknown>>(queryKey);
+	const query = queryClient.getQueryCache().find({ queryKey, exact: true });
+	const queryFn = query?.options.queryFn;
+	if (!query || !cached?.pages.length || typeof queryFn !== "function") {
+		await queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
+		return;
+	}
+	const controller = new AbortController();
+	try {
+		const page = await queryFn({
+			client: queryClient,
+			queryKey: query.queryKey,
+			signal: controller.signal,
+			pageParam: cached.pageParams[0],
+			meta: query.options.meta,
+		} as QueryFunctionContext);
+		queryClient.setQueryData<InfiniteData<unknown>>(queryKey, (current) => {
+			if (!current?.pages.length) return current;
+			const pages = current.pages.slice();
+			pages[0] = page;
+			return { pages, pageParams: current.pageParams };
+		});
+	} catch {
+		await queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
+	}
+}
 
 // CDC event types the daemon pushes over the SSE stream (see
 // backend/internal/cdc/event.go). The SSE writer tags each frame with
@@ -58,7 +119,11 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 		connect() {
 			let healthAttempt = 0;
 			let refreshTimer: ReturnType<typeof setTimeout> | undefined;
-			const pendingConversationSessions = new Set<string>();
+			const pendingConversationSessions = new Map<string, ConversationRefreshMode>();
+			const noteConversation = (sessionId: string, mode: ConversationRefreshMode) => {
+				const current = pendingConversationSessions.get(sessionId);
+				pendingConversationSessions.set(sessionId, current === "full" || mode === "full" ? "full" : "head");
+			};
 			const pendingReviewerConversations = new Set<string>();
 			const pendingInterfaceTransitionSessions = new Set<string>();
 			const pendingEditorHandoffSessions = new Set<string>();
@@ -74,25 +139,34 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 			let disposed = false;
 			// Do not repeatedly cancel a slow fetch under continuous CDC traffic. A
 			// key receives at most one in-flight refresh and one queued catch-up.
-			const refreshes = new Map<string, { dirty: boolean }>();
-			const invalidate = (queryKey: QueryKey) => {
+			const refreshes = new Map<string, { dirty: boolean; next: ConversationRefreshMode }>();
+			const refreshKey = (queryKey: QueryKey, mode: ConversationRefreshMode) => {
 				if (disposed) return;
 				const key = JSON.stringify(queryKey);
 				const running = refreshes.get(key);
 				if (running) {
 					running.dirty = true;
+					if (mode === "full") running.next = "full";
 					return;
 				}
 				// A fetch from polling/mounting may already predate this event. Wait
 				// for it, then refresh once so joining its promise cannot lose the event.
-				const state = { dirty: queryClient.isFetching({ queryKey, type: "active" }) > 0 };
+				const state = {
+					dirty: queryClient.isFetching({ queryKey, type: "active" }) > 0,
+					next: mode,
+				};
 				refreshes.set(key, state);
+				const run =
+					mode === "head" && !state.dirty
+						? refetchConversationHead(queryClient, queryKey)
+						: queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
 				const settled = () => {
 					refreshes.delete(key);
-					if (state.dirty && !disposed) invalidate(queryKey);
+					if (state.dirty && !disposed) refreshKey(queryKey, state.next);
 				};
-				void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false }).then(settled, settled);
+				void Promise.resolve(run).then(settled, settled);
 			};
+			const invalidate = (queryKey: QueryKey) => refreshKey(queryKey, "full");
 			const applyAccountEvent = (event: Event) => {
 				if (disposed || !("data" in event)) return;
 				try {
@@ -128,8 +202,8 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 					}
 					pendingEditorHandoffSessions.clear();
 				}
-				for (const sessionId of pendingConversationSessions) {
-					invalidate(conversationQueryKey(sessionId));
+				for (const [sessionId, mode] of pendingConversationSessions) {
+					refreshKey(conversationQueryKey(sessionId), mode);
 				}
 				pendingConversationSessions.clear();
 				for (const reviewId of pendingReviewerConversations) {
@@ -177,6 +251,8 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 										conversationId?: unknown;
 										reviewId?: unknown;
 										interfaceTransitionId?: unknown;
+										itemSequence?: unknown;
+										headSequence?: unknown;
 										kind?: unknown;
 										agentId?: unknown;
 										projectId?: unknown;
@@ -211,7 +287,15 @@ export function createEventTransport(queryClient: QueryClient): EventTransport {
 							typeof payload?.conversationId === "string" &&
 							payload.conversationId
 						) {
-							pendingConversationSessions.add(decoded.sessionId);
+							noteConversation(
+								decoded.sessionId,
+								conversationRefreshMode(
+									queryClient,
+									decoded.sessionId,
+									payload.itemSequence,
+									payload.headSequence,
+								),
+							);
 							conversationOnly = true;
 						}
 						if (

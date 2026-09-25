@@ -158,6 +158,7 @@ var shippedMigrations = map[int64]string{
 	153: "0153_reports.sql",
 	154: "0154_report_delivery.sql",
 	155: "0155_allow_unreal_agent_harness.sql",
+	156: "0156_conversation_cdc_sequence.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they

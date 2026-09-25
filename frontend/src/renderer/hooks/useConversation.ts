@@ -113,8 +113,8 @@ type ConversationDispatchTrackingBySession = Record<string, ConversationDispatch
 
 /**
  * Renderer-only acknowledgement of a human send. It is deliberately separate
- * from the durable snapshot: CDC identifies a conversation, not one exact new
- * item, so treating it as a partial server update would make ordering unsafe.
+ * from the durable snapshot: the live event names the changed sequence, not the
+ * message text, so treating the event itself as the new row would make ordering unsafe.
  */
 export type ConversationLocalEcho = {
 	clientMessageId: string;

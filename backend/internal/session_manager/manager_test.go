@@ -413,6 +413,8 @@ type fakeRuntime struct {
 	destroyErrSequence []error
 	onDestroy          func(call int, handle ports.RuntimeHandle)
 	created, destroyed int
+	onCreate           func()
+	createGate         chan struct{}
 	lastCfg            ports.RuntimeConfig
 	outputs            []string
 	outputCalls        int
@@ -531,6 +533,12 @@ func (r *blockingRestartRuntime) Destroy(ctx context.Context, handle ports.Runti
 }
 
 func (r *fakeRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+	if r.onCreate != nil {
+		r.onCreate()
+	}
+	if r.createGate != nil {
+		<-r.createGate
+	}
 	createErr := r.createErr
 	if len(r.createErrSequence) > 0 {
 		createErr = r.createErrSequence[0]
@@ -4543,17 +4551,24 @@ func TestPromptProjectContextOmitsAutomaticBranchSentinel(t *testing.T) {
 	}
 }
 
-func TestSpawn_FetchesDefaultBranchBeforeCreatingWorkerWorktree(t *testing.T) {
-	m, st, _, ws := newManager()
+func TestSpawn_FetchesDefaultBranchAfterTheAgentStarts(t *testing.T) {
+	m, st, rt, ws := newManager()
 	cfg := testRoleAgents()
 	cfg.DefaultBranch = "main"
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Config: cfg}
 	var calls []string
 	ws.sharedLog = &calls
+	ws.fetchFunc = func(context.Context, string, ports.WorkspaceDefaultBranch) error {
+		if rt.created == 0 {
+			t.Errorf("default branch fetch ran before the agent runtime started")
+		}
+		return nil
+	}
 
 	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
 		t.Fatal(err)
 	}
+	m.waitDeferredSpawnWork()
 
 	if got, want := ws.fetches, []fetchDefaultBranchCall{{repoPath: "/repo/mer", remote: "origin", branch: "main", baseRef: "refs/remotes/origin/main"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("fetches = %#v, want %#v", got, want)
@@ -4561,8 +4576,82 @@ func TestSpawn_FetchesDefaultBranchBeforeCreatingWorkerWorktree(t *testing.T) {
 	if got, want := ws.lastCfg.BaseRef, "refs/remotes/origin/main"; got != want {
 		t.Fatalf("create base ref = %q, want %q", got, want)
 	}
-	if got, want := calls[:2], []string{"FetchDefaultBranch:origin/main", "Create"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("workspace call order = %#v, want %#v", calls, want)
+	createAt, fetchAt := -1, -1
+	for i, call := range calls {
+		if call == "Create" && createAt < 0 {
+			createAt = i
+		}
+		if strings.HasPrefix(call, "FetchDefaultBranch:") && fetchAt < 0 {
+			fetchAt = i
+		}
+	}
+	if createAt < 0 || fetchAt < 0 || createAt > fetchAt {
+		t.Fatalf("workspace call order = %#v, want Create before FetchDefaultBranch", calls)
+	}
+}
+
+func TestSpawn_RunsInstallAfterTheAgentStarts(t *testing.T) {
+	m, st, rt, ws := newManager()
+	workspace := t.TempDir()
+	ws.path = workspace
+	project := st.projects["mer"]
+	project.Config.PostCreate = []string{"echo ok > installed.txt"}
+	st.projects["mer"] = project
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	rt.createGate = release
+	rt.onCreate = func() { close(entered) }
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker})
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the agent runtime to start")
+	}
+	marker := filepath.Join(workspace, "installed.txt")
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("install marker = %v, want absent until the agent has started", err)
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for spawn to return")
+	}
+	m.waitDeferredSpawnWork()
+	body, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(body)) != "ok" {
+		t.Fatalf("install marker = %q, want ok", body)
+	}
+}
+
+func TestSpawn_InstallFailureDoesNotUnstartTheAgent(t *testing.T) {
+	m, st, rt, ws := newManager()
+	ws.path = t.TempDir()
+	project := st.projects["mer"]
+	project.Config.PostCreate = []string{"exit 3"}
+	st.projects["mer"] = project
+
+	session, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt.created != 1 {
+		t.Fatalf("runtime creates = %d, want 1", rt.created)
+	}
+	m.waitDeferredSpawnWork()
+	if m.deferredProvisionError(session.ID) == nil {
+		t.Fatal("install failure was dropped")
 	}
 }
 
@@ -4574,6 +4663,7 @@ func TestSpawn_FetchesWorkspaceChildDefaultBranchesBeforeCreatingProject(t *test
 	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
 		t.Fatal(err)
 	}
+	m.waitDeferredSpawnWork()
 	want := []fetchDefaultBranchCall{
 		{repoPath: "/repo/mer", remote: "origin", branch: "main", baseRef: "refs/remotes/origin/main"},
 		{repoPath: filepath.Join("/repo/mer", "api"), remote: "origin", branch: "release/2026", baseRef: "refs/remotes/origin/release/2026"},
@@ -4601,6 +4691,7 @@ func TestSpawn_InfersEmptyWorkspaceChildDefaultBeforeFetchAndCreate(t *testing.T
 	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
 		t.Fatal(err)
 	}
+	m.waitDeferredSpawnWork()
 
 	if got, want := ws.resolves[1], (resolveDefaultBranchCall{repoPath: childPath, configuredBranch: ""}); got != want {
 		t.Fatalf("child resolution = %#v, want %#v", got, want)
@@ -4642,6 +4733,7 @@ func TestSpawn_SkipsNeedsInitWorkspaceChildrenDuringRefreshAndCreate(t *testing.
 	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
 		t.Fatal(err)
 	}
+	m.waitDeferredSpawnWork()
 
 	if got, want := len(ws.fetches), 2; got != want {
 		t.Fatalf("fetch calls = %d, want root plus ready child (%d)", got, want)
@@ -4700,6 +4792,7 @@ func TestSpawn_FetchesQualifiedDefaultBranchRemote(t *testing.T) {
 	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
 		t.Fatal(err)
 	}
+	m.waitDeferredSpawnWork()
 
 	if got, want := ws.resolves, []resolveDefaultBranchCall{{repoPath: "/repo/mer", configuredBranch: "upstream/main"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolutions = %#v, want %#v", got, want)
@@ -4721,6 +4814,7 @@ func TestSpawn_SlashDefaultBranchWithoutKnownRemoteFetchesFromOrigin(t *testing.
 	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
 		t.Fatal(err)
 	}
+	m.waitDeferredSpawnWork()
 
 	if got, want := ws.resolves, []resolveDefaultBranchCall{{repoPath: "/repo/mer", configuredBranch: "release/2026"}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolutions = %#v, want %#v", got, want)
@@ -4738,6 +4832,7 @@ func TestSpawn_DefaultBranchFetchFailureDoesNotBlockWorkerSpawn(t *testing.T) {
 	if _, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker}); err != nil {
 		t.Fatal(err)
 	}
+	m.waitDeferredSpawnWork()
 	if len(ws.fetches) != 1 {
 		t.Fatalf("fetches = %d, want 1", len(ws.fetches))
 	}

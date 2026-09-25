@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -1332,5 +1333,83 @@ func TestCleanupOwnedControllerWorkOnlySettlesReboundSessionWork(t *testing.T) {
 		if activityStates[id] != domain.ActivityStatusPending {
 			t.Errorf("%s status = %q, want pending", id, activityStates[id])
 		}
+	}
+}
+
+// A live conversation change names the timeline row and its revision. The
+// payload stays an invalidation signal: the message text is never copied into
+// change_log, so a client refreshes the row instead of rendering the event.
+func TestConversationCDCNamesSequenceWithoutProse(t *testing.T) {
+	s, sessionID, conversationID := conversationFixture(t)
+	ctx := context.Background()
+	const userText = "sequence-cdc-secret-user"
+	const firstDelta = "stream-secret-one"
+	const nextDelta = "stream-secret-two"
+
+	created, err := s.AppendUserMessage(ctx, conversationID, sessionID, "gen-1", domain.ConversationMessage{
+		ID: "user-msg", Text: userText, Origin: domain.MessageOriginHuman,
+	}, "user-turn", histClock)
+	if err != nil || !created {
+		t.Fatalf("append user message: created=%v err=%v", created, err)
+	}
+	if err := s.BindTurnToProvider(ctx, "user-turn", "provider-turn", histClock); err != nil {
+		t.Fatalf("bind turn: %v", err)
+	}
+	if err := s.AppendAssistantDelta(ctx, conversationID, "assistant-item", "provider-turn", firstDelta, "assistant-msg", histClock); err != nil {
+		t.Fatalf("append first delta: %v", err)
+	}
+	if err := s.AppendAssistantDelta(ctx, conversationID, "assistant-item", "provider-turn", nextDelta, "assistant-msg", histClock.Add(time.Second)); err != nil {
+		t.Fatalf("append next delta: %v", err)
+	}
+	const activitySummary = "activity-secret-summary"
+	if err := s.UpsertActivity(ctx, conversationID, "provider-turn", domain.ConversationActivity{
+		ID: "activity-1", Kind: domain.ActivityKindCommand, Status: domain.ActivityStatusRunning,
+		Summary: activitySummary, ProviderItemID: "activity-item",
+	}, histClock.Add(2*time.Second)); err != nil {
+		t.Fatalf("insert activity: %v", err)
+	}
+	if err := s.UpsertActivity(ctx, conversationID, "provider-turn", domain.ConversationActivity{
+		ID: "activity-1", Kind: domain.ActivityKindCommand, Status: domain.ActivityStatusCompleted,
+		Summary: activitySummary, ProviderItemID: "activity-item",
+	}, histClock.Add(3*time.Second)); err != nil {
+		t.Fatalf("settle activity: %v", err)
+	}
+
+	events, err := s.EventsAfter(ctx, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type sequenceEvent struct {
+		ConversationID string `json:"conversationId"`
+		ItemSequence   int    `json:"itemSequence"`
+		ItemRevision   int    `json:"itemRevision"`
+		HeadSequence   int    `json:"headSequence"`
+	}
+	var got []sequenceEvent
+	for _, event := range events {
+		if event.Type != "session_updated" || !strings.Contains(string(event.Payload), `"itemSequence"`) {
+			continue
+		}
+		payload := string(event.Payload)
+		for _, prose := range []string{userText, firstDelta, nextDelta, activitySummary} {
+			if strings.Contains(payload, prose) {
+				t.Fatalf("conversation CDC payload contains chat prose %q: %s", prose, payload)
+			}
+		}
+		var decoded sequenceEvent
+		if err := json.Unmarshal(event.Payload, &decoded); err != nil {
+			t.Fatalf("decode payload %s: %v", payload, err)
+		}
+		got = append(got, decoded)
+	}
+	want := []sequenceEvent{
+		{ConversationID: conversationID, ItemSequence: 1, ItemRevision: 0, HeadSequence: 1},
+		{ConversationID: conversationID, ItemSequence: 2, ItemRevision: 0, HeadSequence: 2},
+		{ConversationID: conversationID, ItemSequence: 2, ItemRevision: 1, HeadSequence: 2},
+		{ConversationID: conversationID, ItemSequence: 3, ItemRevision: 0, HeadSequence: 3},
+		{ConversationID: conversationID, ItemSequence: 3, ItemRevision: 1, HeadSequence: 3},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sequence events = %+v, want %+v", got, want)
 	}
 }

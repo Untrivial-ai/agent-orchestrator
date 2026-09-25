@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { QueryClient, QueryObserver } from "@tanstack/react-query";
+import { InfiniteQueryObserver, QueryClient, QueryObserver } from "@tanstack/react-query";
 import { computeSseRetryDelayMs } from "./sse-backoff";
 
 const {
@@ -739,4 +739,76 @@ it("refreshes again when a root catch-up joins an older targeted conversation fe
 		client.clear();
 		vi.useRealTimers();
 	}
+});
+
+describe("sequence-addressed conversation refresh", () => {
+	type Page = { latestSequence: number; oldestSequence: number; hasMoreBefore: boolean; headFetch: number };
+
+	async function loadedConversation() {
+		const calls: unknown[] = [];
+		let headFetch = 0;
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		const observer = new InfiniteQueryObserver(client, {
+			queryKey: ["conversation", "chat-1"],
+			initialPageParam: undefined as number | undefined,
+			staleTime: Infinity,
+			queryFn: ({ pageParam }) => {
+				calls.push(pageParam);
+				if (pageParam === undefined) {
+					return Promise.resolve({ latestSequence: 5, oldestSequence: 3, hasMoreBefore: true, headFetch: ++headFetch });
+				}
+				return Promise.resolve({ latestSequence: 5, oldestSequence: 1, hasMoreBefore: false, headFetch: 0 });
+			},
+			getNextPageParam: (page: Page) => (page.hasMoreBefore ? page.oldestSequence : undefined),
+		});
+		const unsubscribe = observer.subscribe(() => undefined);
+		await vi.advanceTimersByTimeAsync(0);
+		await observer.fetchNextPage();
+		await vi.advanceTimersByTimeAsync(0);
+		return { client, unsubscribe, calls };
+	}
+
+	function emit(sessionId: string, itemSequence?: number, headSequence?: number) {
+		const payload: Record<string, unknown> = { conversationId: sessionId === "chat-1" ? "conv-1" : "conv-x" };
+		if (itemSequence !== undefined) {
+			payload.itemSequence = itemSequence;
+			payload.itemRevision = 1;
+			payload.headSequence = headSequence;
+		}
+		cdcSources()[0].emit("session_updated", JSON.stringify({ sessionId, payload }));
+	}
+
+	afterEach(() => vi.useRealTimers());
+
+	it.each([
+		["next row", [[6, 6]], 0, [undefined, 3, undefined], true],
+		["rewritten row", [[5, 5]], 0, [undefined, 3, undefined], true],
+		["older page", [[1, 5]], 0, [undefined, 3, undefined, 3], false],
+		["sequence gap", [[9, 9]], 0, [undefined, 3, undefined, 3], false],
+		["unnamed event", [[]], 0, [undefined, 3, undefined, 3], false],
+		["gap beats a contiguous row", [[6, 6], [9, 9]], 150, [undefined, 3, undefined, 3], false],
+	] as const)("refetches %s", async (name, events, wait, want, headOnly) => {
+		vi.useFakeTimers();
+		const { client, unsubscribe, calls } = await loadedConversation();
+		const disconnect = createEventTransport(client).connect();
+		try {
+			if (name === "gap beats a contiguous row") emit("other");
+			for (const event of events) {
+				if (event.length === 0) emit("chat-1");
+				else emit("chat-1", event[0], event[1]);
+			}
+			await vi.advanceTimersByTimeAsync(wait);
+			expect(calls).toEqual([...want]);
+			if (headOnly) {
+				const pages = client.getQueryData<{ pages: Page[] }>(["conversation", "chat-1"])?.pages;
+				expect(pages).toHaveLength(2);
+				expect(pages?.[0].headFetch).toBe(2);
+				expect(pages?.[1].headFetch).toBe(0);
+			}
+		} finally {
+			disconnect();
+			unsubscribe();
+			client.clear();
+		}
+	});
 });
