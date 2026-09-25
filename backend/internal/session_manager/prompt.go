@@ -300,6 +300,7 @@ Use `+"`ao report`"+` to persist meaningful progress for the active project orch
 - When a decision or missing input blocks progress, run `+"`ao report --needs-input --note <text>`"+`.
 - When work cannot proceed for another reason, run `+"`ao report --stuck --note <text>`"+`.
 - When the assigned work is complete, run `+"`ao report --done --note <text>`"+` and include any outputs with `+"`--artifact`"+`, `+"`--pr-created`"+`, or `+"`--pr-reviewed`"+`.
+- Whenever you produce an artifact the orchestrator or the human should be able to open directly — a published Claude Artifact link, a generated document, a rendered dashboard, or similar durable output — attach it with `+"`--artifact <reference>`"+` on the report for that milestone. Report it as soon as it exists; do not wait for `+"`--done`"+` and do not let it go unreported.
 - Do not narrate routine commands. Report meaningful transitions, decisions, blockers, outputs, and completion. Outputs do not imply completion, and `+"`--done`"+` does not terminate the session.
 
 %s
