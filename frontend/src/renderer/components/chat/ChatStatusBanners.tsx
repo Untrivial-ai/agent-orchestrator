@@ -154,9 +154,11 @@ export const ThreadStateBanner = memo(function ThreadStateBanner({
  */
 export const McpServerBanner = memo(function McpServerBanner({
 	servers,
+	placement = "above",
 }: {
 	/** Only the broken ones. The caller filters, so an empty list means nothing to say. */
 	servers: McpServer[];
+	placement?: "above" | "below";
 }) {
 	const fingerprint = servers
 		.map((server) => `${server.name}:${server.status}:${server.failureReason ?? ""}:${server.error ?? ""}`)
@@ -191,7 +193,7 @@ export const McpServerBanner = memo(function McpServerBanner({
 			initial={{ scale: 0.96, opacity: 0 }}
 			animate={dismissing ? { scale: 0.96, opacity: 0 } : { scale: 1, opacity: 1 }}
 			transition={{ duration: reducedMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
-			className="absolute bottom-full left-1/2 w-fit -translate-x-1/2 origin-center pb-2"
+			className={`absolute left-1/2 w-fit -translate-x-1/2 origin-center ${placement === "below" ? "top-full pt-2" : "bottom-full pb-2"}`}
 		>
 			<div
 				role={dismissing ? undefined : "status"}

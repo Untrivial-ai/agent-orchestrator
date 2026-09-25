@@ -124,6 +124,11 @@ describe("McpServerBanner", () => {
 		expect(screen.getByRole("status")).toHaveTextContent("Playwright, Notion MCPs unavailable");
 	});
 
+	it("can place the notice below the composer", () => {
+		render(<McpServerBanner servers={broken} placement="below" />);
+		expect(screen.getByRole("status").parentElement).toHaveClass("top-full");
+	});
+
 	// A healthy server is not news. The caller filters, and an empty list must not
 	// leave a permanent bar above the conversation saying nothing is wrong.
 	it("says nothing when no server is broken", () => {
