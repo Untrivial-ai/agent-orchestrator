@@ -223,15 +223,29 @@ describe("provider state chrome", () => {
 		expect(screen.queryByText(/agent controller stopped/i)).not.toBeInTheDocument();
 	});
 
-	it("places a brief tool-server notice beneath the composer", () => {
+	it("places a brief tool-server notice immediately above the composer", () => {
 		render(<ChatWorkspace snapshot={{ ...chatFixtureMcpFailed, controller: { state: "ready" } }} />);
 		const notice = screen.getByRole("status");
-		expect(notice).toHaveTextContent("playwright, postgres unavailable");
+		const composer = notice.parentElement?.nextElementSibling;
+		expect(notice).toHaveTextContent("Playwright, Postgres MCPs unavailable");
 		expect(document.querySelector(".cursor-chat-composer-dock")).toContainElement(notice);
+		expect(composer?.querySelector(".cursor-chat-composer")).not.toBeNull();
 	});
 
 	it("keeps an empty chat centered without a tool-server notice", () => {
 		render(<ChatWorkspace snapshot={{ ...chatFixtureEmpty, mcpServers: chatFixtureMcpFailed.mcpServers }} />);
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+
+	it("does not reveal an existing tool-server failure after the first message", () => {
+		const { rerender } = render(
+			<ChatWorkspace snapshot={{ ...chatFixtureEmpty, mcpServers: chatFixtureMcpFailed.mcpServers }} />,
+		);
+
+		rerender(
+			<ChatWorkspace snapshot={{ ...chatFixtureMcpFailed, sessionId: chatFixtureEmpty.sessionId }} />,
+		);
+
 		expect(screen.queryByRole("status")).not.toBeInTheDocument();
 	});
 

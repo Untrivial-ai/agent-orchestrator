@@ -13,6 +13,7 @@
 
 import { memo, useEffect, useState } from "react";
 import { KeyRound, Plug, TriangleAlert } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
 import type { ConversationAccount, ConversationThreadState, McpServer } from "../../types/conversation";
 
 /**
@@ -161,26 +162,45 @@ export const McpServerBanner = memo(function McpServerBanner({
 		.map((server) => `${server.name}:${server.status}:${server.failureReason ?? ""}:${server.error ?? ""}`)
 		.join("|");
 	const [dismissedFingerprint, setDismissedFingerprint] = useState<string | null>(null);
+	const [dismissingFingerprint, setDismissingFingerprint] = useState<string | null>(null);
+	const reducedMotion = useReducedMotion();
 
 	useEffect(() => {
 		if (!fingerprint) return;
-		const timeout = window.setTimeout(() => setDismissedFingerprint(fingerprint), 3_000);
+		const timeout = window.setTimeout(() => setDismissingFingerprint(fingerprint), 3_000);
 		return () => window.clearTimeout(timeout);
 	}, [fingerprint]);
 
-	if (servers.length === 0) return null;
-	if (dismissedFingerprint === fingerprint) return null;
+	useEffect(() => {
+		if (dismissingFingerprint !== fingerprint) return;
+		const timeout = window.setTimeout(() => setDismissedFingerprint(fingerprint), reducedMotion ? 0 : 200);
+		return () => window.clearTimeout(timeout);
+	}, [dismissingFingerprint, fingerprint, reducedMotion]);
 
-	const message = `${servers.map((server) => server.name).join(", ")} unavailable`;
+	const visible = servers.length > 0 && dismissedFingerprint !== fingerprint;
+	const dismissing = dismissingFingerprint === fingerprint;
+	const serverNames = servers
+		.map((server) => `${server.name.slice(0, 1).toUpperCase()}${server.name.slice(1)}`)
+		.join(", ");
+	const message = `${serverNames} ${servers.length === 1 ? "MCP" : "MCPs"} unavailable`;
+
+	if (!visible) return null;
 
 	return (
-		<div
-			role="status"
-			aria-atomic="true"
-			className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground"
+		<motion.div
+			initial={{ scale: 0.96, opacity: 0 }}
+			animate={dismissing ? { scale: 0.96, opacity: 0 } : { scale: 1, opacity: 1 }}
+			transition={{ duration: reducedMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
+			className="absolute inset-x-0 bottom-full origin-center pb-2"
 		>
-			<Plug aria-hidden="true" className="size-3 shrink-0 text-warning" />
-			<span>{message}</span>
-		</div>
+			<div
+				role={dismissing ? undefined : "status"}
+				aria-atomic="true"
+				className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground"
+			>
+				<Plug aria-hidden="true" className="size-3 shrink-0 text-warning" />
+				<span>{message}</span>
+			</div>
+		</motion.div>
 	);
 });

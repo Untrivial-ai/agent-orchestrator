@@ -1212,7 +1212,7 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getByRole("alert")).toHaveTextContent("thread hit an internal error");
 
 		rerender(<ChatWorkspace snapshot={chatFixtureMcpFailed} />);
-		expect(screen.getByRole("status")).toHaveTextContent("playwright, postgres unavailable");
+		expect(screen.getByRole("status")).toHaveTextContent("Playwright, Postgres MCPs unavailable");
 	});
 
 	it("reuses anchor measurements while scrolling and refreshes after content mutations", () => {
@@ -1511,7 +1511,7 @@ describe("ChatWorkspace timeline", () => {
 		const random = vi.spyOn(Math, "random").mockReturnValue(0);
 		render(<ChatWorkspace snapshot={chatFixtureEmpty} />);
 		expect(screen.queryByRole("log")).not.toBeInTheDocument();
-		expect(screen.getByRole("heading", { name: "What do you want to work on?" })).toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "What do you want to work on?" })).toHaveClass("font-normal");
 		expect(screen.getByLabelText("Message the agent")).toHaveAttribute(
 			"aria-placeholder",
 			"Fix a failing test in this project",

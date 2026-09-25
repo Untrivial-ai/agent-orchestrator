@@ -1246,6 +1246,12 @@ function ChatWorkspaceContent({
 	// Empty chats center the prompt; once a turn or item exists the composer docks
 	// at the bottom and stays there for the rest of the session.
 	const conversationEmpty = snapshot.items.length === 0 && !turn && (localEchos?.length ?? 0) === 0;
+	const mcpNoticeSessionRef = useRef(snapshot.sessionId);
+	const mcpNoticeStartedEmptyRef = useRef(conversationEmpty);
+	if (mcpNoticeSessionRef.current !== snapshot.sessionId) {
+		mcpNoticeSessionRef.current = snapshot.sessionId;
+		mcpNoticeStartedEmptyRef.current = conversationEmpty;
+	}
 	const [emptyChatPlaceholder] = useState(
 		() => EMPTY_CHAT_PLACEHOLDERS[Math.min(EMPTY_CHAT_PLACEHOLDERS.length - 1, Math.floor(Math.random() * EMPTY_CHAT_PLACEHOLDERS.length))],
 	);
@@ -1464,11 +1470,15 @@ function ChatWorkspaceContent({
 							>
 								{discarded > 0 ? <RolledBackNotice count={discarded} /> : null}
 								{conversationEmpty ? (
-									<h1 className="mb-5 text-center text-2xl font-medium tracking-tight text-foreground sm:text-3xl">
+									<h1 className="mb-5 text-center text-2xl font-normal tracking-tight text-foreground sm:text-3xl">
 										What do you want to work on?
 									</h1>
 								) : null}
-								<ChatComposer
+								<div className="relative">
+									{!conversationEmpty && !mcpNoticeStartedEmptyRef.current ? (
+										<McpServerBanner servers={brokenServers} />
+									) : null}
+									<ChatComposer
 									key={`${draftScopeKey}:${queueEdit ? `${queueEdit.turnId}:${queueEdit.ownerId ?? queueEdit.expectedRevision ?? "legacy"}` : "composer"}`}
 									queuedDock={composerQueuedDock}
 									approval={composerApproval}
@@ -1518,8 +1528,8 @@ function ChatWorkspaceContent({
 									draftSessionId={queueEdit ? undefined : snapshot.sessionId}
 									draftSessionIncarnation={draftScope.incarnation}
 									acceptedClientMessageIds={acceptedClientMessageIds}
-								/>
-								{!conversationEmpty ? <McpServerBanner servers={brokenServers} /> : null}
+									/>
+								</div>
 							</div>
 						</div>
 					</div>
