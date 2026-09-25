@@ -737,6 +737,7 @@ export function AssistantMessage({
 	message,
 	showCopy = false,
 	onRollback,
+	rollbackDisabled = false,
 	durationMs,
 }: {
 	message: ConversationMessage;
@@ -747,6 +748,8 @@ export function AssistantMessage({
 	 * answer owns both "keep this" and "undo from here".
 	 */
 	onRollback?: () => void;
+	/** Keep the rollback action mounted while another response is streaming. */
+	rollbackDisabled?: boolean;
 	/** How long the finished turn took; sits next to rollback on the action row. */
 	durationMs?: number;
 }) {
@@ -778,8 +781,9 @@ export function AssistantMessage({
 								<button
 									type="button"
 									onClick={onRollback}
+									disabled={rollbackDisabled}
 									aria-label="Roll back to here"
-									className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
+									className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 motion-reduce:transition-none motion-reduce:active:scale-100"
 								>
 									<Undo2 aria-hidden="true" className="size-3" />
 								</button>
