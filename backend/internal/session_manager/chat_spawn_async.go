@@ -343,7 +343,11 @@ func (m *Manager) cleanupAsyncChatWorkspace(ctx context.Context, id domain.Sessi
 	if m.destroySpawnWorkspace(cleanupCtx, ws, workspaceProject) {
 		m.clearProvisionedWorkspace(cleanupCtx, id, ws.Path)
 	} else {
-		m.preserveFailedSpawnWorkspace(cleanupCtx, id, ws, true)
+		updated, err := m.store.SetSessionProvisionedWorkspace(
+			cleanupCtx, id, ws.Branch, ws.Path, ws.RepoPath, m.clock())
+		if err != nil || !updated {
+			m.logger.Warn("spawn: preserve failed workspace", "sessionID", id, "workspacePath", ws.Path, "updated", updated, "error", err)
+		}
 	}
 }
 

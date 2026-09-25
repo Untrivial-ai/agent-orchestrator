@@ -573,6 +573,7 @@ func TestSpawnAsyncChat_FailedCleanupRetainsWorkspacePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	st.updateSessionErr = errors.New("full-row update rejected")
 	(*deferred)[0]()
 	stored := st.sessions[rec.ID]
 	if stored.ProvisionState != domain.SessionProvisionFailed || stored.Metadata.WorkspacePath != ws.path {
