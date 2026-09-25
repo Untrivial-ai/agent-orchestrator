@@ -585,18 +585,20 @@ func TestDestroySpawnWorkspace_FailedProjectCleanupRetainsWorktreeRows(t *testin
 	ws := m.workspace.(*fakeWorkspace)
 	ws.destroyErr = errors.New("dirty worktree")
 	info := ports.WorkspaceInfo{SessionID: "mer-1", Path: t.TempDir()}
-	if err := st.UpsertSessionWorktree(context.Background(), domain.SessionWorktreeRecord{
-		SessionID: info.SessionID, RepoName: "root", WorktreePath: info.Path,
-	}); err != nil {
-		t.Fatal(err)
+	for _, repo := range []string{domain.RootWorkspaceRepoName, "api"} {
+		if err := st.UpsertSessionWorktree(context.Background(), domain.SessionWorktreeRecord{
+			SessionID: info.SessionID, RepoName: repo, WorktreePath: filepath.Join(info.Path, repo),
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	project := &ports.WorkspaceProjectInfo{Root: info}
 	if m.destroySpawnWorkspace(context.Background(), info, project) {
 		t.Fatal("failed workspace cleanup reported success")
 	}
 	rows, err := st.ListSessionWorktrees(context.Background(), info.SessionID)
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("preserved workspace rows = %v, %v; want one", rows, err)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("preserved workspace rows = %v, %v; want root and child", rows, err)
 	}
 }
 
