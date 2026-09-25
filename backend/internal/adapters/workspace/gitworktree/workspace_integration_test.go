@@ -1115,6 +1115,35 @@ func TestWorkspaceIntegrationWorkspaceProjectCreateRecoversExistingPreparation(t
 	}
 }
 
+func TestWorkspaceIntegrationDestroyWorkspaceProjectPreservesDirtyChild(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	childRepo := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": rootRepo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := ws.CreateWorkspaceProject(context.Background(), ports.WorkspaceProjectConfig{
+		ProjectID: "proj", SessionID: "sess", Kind: "worker", Branch: "ao/dirty-child",
+		RootRepoPath: rootRepo,
+		Repos:        []ports.WorkspaceProjectRepoConfig{{Name: "child", RelativePath: "child", RepoPath: childRepo}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirtyFile := filepath.Join(info.Worktrees[1].Path, "user-change.txt")
+	if err := os.WriteFile(dirtyFile, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.DestroyWorkspaceProject(context.Background(), info); !errors.Is(err, ports.ErrWorkspaceDirty) {
+		t.Fatalf("destroy dirty workspace project = %v, want ErrWorkspaceDirty", err)
+	}
+	if content, err := os.ReadFile(dirtyFile); err != nil || string(content) != "keep me" {
+		t.Fatalf("dirty child was lost: %q, %v", content, err)
+	}
+}
+
 func TestWorkspaceIntegrationWorkspaceProjectCopiesAssetsAndCleansSessionCopy(t *testing.T) {
 	git := requireGit(t)
 	tmp := t.TempDir()
@@ -1170,8 +1199,17 @@ func TestWorkspaceIntegrationWorkspaceProjectCopiesAssetsAndCleansSessionCopy(t 
 	if _, err := os.Stat(filepath.Join(info.Root.Path, "api", "README.md")); err != nil {
 		t.Fatalf("child worktree missing: %v", err)
 	}
+	if err := ws.DestroyWorkspaceProject(context.Background(), info); !errors.Is(err, ports.ErrWorkspaceDirty) {
+		t.Fatalf("destroy workspace project with untracked asset = %v, want ErrWorkspaceDirty", err)
+	}
+	if _, err := os.Lstat(filepath.Join(info.Root.Path, "notes", "latest")); err != nil {
+		t.Fatalf("untracked asset was deleted: %v", err)
+	}
+	if err := os.Remove(filepath.Join(info.Root.Path, "notes", "latest")); err != nil {
+		t.Fatal(err)
+	}
 	if err := ws.DestroyWorkspaceProject(context.Background(), info); err != nil {
-		t.Fatalf("destroy workspace project: %v", err)
+		t.Fatalf("destroy clean workspace project: %v", err)
 	}
 	if _, err := os.Stat(info.Root.Path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("session copy still exists after cleanup: %v", err)

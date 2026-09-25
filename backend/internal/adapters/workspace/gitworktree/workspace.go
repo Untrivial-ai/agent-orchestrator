@@ -784,10 +784,8 @@ func hasWorkspaceManagedComponent(path string) bool {
 	return false
 }
 
-// DestroyWorkspaceProject removes every worktree in a workspace project,
-// children first and the parent/root last. It uses the same force path as spawn
-// rollback because normal interactive cleanup still goes through Destroy and
-// the full dirty-preserve matrix is implemented separately.
+// DestroyWorkspaceProject removes worktrees children first, preserving any
+// uncommitted changes even when a start is cancelled after publication.
 func (w *Workspace) DestroyWorkspaceProject(ctx context.Context, info ports.WorkspaceProjectInfo) error {
 	var firstErr error
 	for i := len(info.Worktrees) - 1; i >= 0; i-- {
@@ -802,7 +800,15 @@ func (w *Workspace) DestroyWorkspaceProject(ctx context.Context, info ports.Work
 			}
 			continue
 		}
-		if err := w.forceDestroyPath(ctx, repoPath, wt.Path); err != nil && firstErr == nil {
+		baseSHA := wt.CreationSHA
+		if baseSHA == "" {
+			baseSHA = wt.BaseSHA
+		}
+		err := w.Destroy(ctx, ports.WorkspaceInfo{Path: wt.Path, Branch: wt.Branch, BaseSHA: baseSHA, SessionID: wt.SessionID, ProjectID: wt.ProjectID, RepoPath: repoPath})
+		if errors.Is(err, ports.ErrWorkspaceDirty) {
+			return err
+		}
+		if err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

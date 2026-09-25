@@ -11,7 +11,7 @@ import (
 )
 
 // ErrNotProvisioning refuses intake when no controller is starting.
-var ErrNotProvisioning = errors.New("session is not provisioning")
+var ErrNotProvisioning = domain.ErrSessionNotProvisioning
 
 // QueueUserMessage records a turn for a session whose controller does not exist
 // yet. It is the opening prompt's delivery path for an asynchronous spawn, and

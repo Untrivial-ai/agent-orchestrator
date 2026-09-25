@@ -58,6 +58,38 @@ func provisioningService(t *testing.T, st *sqlite.Store) *chatsvc.Service {
 	})
 }
 
+type staleProvisioningReader struct{ record domain.SessionRecord }
+
+func (r staleProvisioningReader) GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error) {
+	return r.record, true, nil
+}
+
+func TestSendDoesNotQueueAfterConcurrentKill(t *testing.T) {
+	st, id := openProvisioningStore(t, domain.SessionProvisionProvisioning)
+	ctx := context.Background()
+	stale, ok, err := st.GetSession(ctx, id)
+	if err != nil || !ok {
+		t.Fatalf("read provisioning session: found=%v err=%v", ok, err)
+	}
+	terminated := stale
+	terminated.IsTerminated = true
+	if err := st.UpdateSession(ctx, terminated); err != nil {
+		t.Fatal(err)
+	}
+	next := 0
+	svc := chatsvc.New(chatsvc.Options{
+		Store: st, Sessions: staleProvisioningReader{record: stale}, Reader: fullSnapshotReader(st),
+		Drivers: fakeRegistry{driver: fakeDriver{conv: newFakeConversation()}},
+		Log:     slog.New(slog.DiscardHandler), NewID: func() string {
+			next++
+			return fmt.Sprintf("late-%d", next)
+		},
+	})
+	if _, err := svc.Send(ctx, id, ports.ChatUserMessage{Text: "late message", Origin: domain.MessageOriginHuman}); !errors.Is(err, chatsvc.ErrNotProvisioning) {
+		t.Fatalf("send after Kill = %v, want ErrNotProvisioning", err)
+	}
+}
+
 func TestSendWhileProvisioningQueuesInOrder(t *testing.T) {
 	st, provisioningSession := openProvisioningStore(t, domain.SessionProvisionProvisioning)
 	svc := provisioningService(t, st)

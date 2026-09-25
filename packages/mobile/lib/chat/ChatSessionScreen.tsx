@@ -109,6 +109,9 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	const keyboardVisible = useKeyboardState((state) => state.isVisible);
 	const turnOptionsRequestedFor = useRef<string | undefined>(undefined);
 	const terminated = "projectName" in session ? Boolean(session.isTerminal) : Boolean(session.isTerminated);
+	const failedStart = "projectName" in session || session.provisionState !== "failed"
+		? undefined
+		: session.provisionError || "The session did not finish starting.";
 	const interfaceTransitionActive = mobileInterfaceTransitionIsActive(interfaceSwitch.transition);
 	const interfaceTransitionNotice =
 		!interfaceTransitionActive &&
@@ -402,6 +405,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		onSecondary: recheckingTransition ? undefined : () => void retryInterfaceCheck(),
 	};
 
+	if (failedStart && !conversation.snapshot) return <Centered icon="alert-triangle" title="Session failed to start" message={failedStart} action={resuming ? "Retrying…" : "Retry"} onAction={() => void resume()} />;
 	if (conversation.loading && !conversation.snapshot) return <Centered icon="message-square" title="Loading conversation…" spinning />;
 	if (conversation.unavailable) return <Unavailable message={conversation.unavailable.message} onShell={() => void openShell()} openingShell={openingShell} />;
 	if (!conversation.snapshot) return <Centered icon="alert-triangle" title="Couldn't load the conversation" message={conversation.error || "The daemon did not return a conversation."} action="Retry" onAction={() => void conversation.refresh()} />;
@@ -458,6 +462,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 			) : null}
 			<ConversationBanners
 				snapshot={snapshot}
+				startFailure={failedStart}
 				brokenServers={brokenServers}
 				resuming={resuming}
 				terminated={terminated}
@@ -510,7 +515,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				configOptions={conversation.configOptions}
 				models={conversation.models}
 				steerUnavailable={steerUnsupported}
-				disabled={interfaceTransitionActive}
+				disabled={interfaceTransitionActive || Boolean(failedStart)}
 				pending={mobileInterfaceTransitionIsBusy(interfaceSwitch.transition) || conversation.pendingSends.some((item) => item.state === "sending")}
 				interrupting={conversation.pendingActions.includes("interrupt")}
 				onSend={conversation.send}
@@ -527,14 +532,14 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	);
 }
 
-function ConversationBanners({ snapshot, brokenServers, resuming, terminated, mcpReloading, mcpError, mcpReloadSupported, turnInFlight, onResume, onReload, onOpenShell, dismissed, onDismiss }: { snapshot: NonNullable<ReturnType<typeof useMobileConversation>["snapshot"]>; brokenServers: ReturnType<typeof brokenMcpServers>; resuming: boolean; terminated: boolean; mcpReloading: boolean; mcpError?: string; mcpReloadSupported: boolean; turnInFlight: boolean; onResume(): void; onReload(): void; onOpenShell(): void; dismissed: ReadonlySet<string>; onDismiss(key: string): void }) {
+function ConversationBanners({ snapshot, startFailure, brokenServers, resuming, terminated, mcpReloading, mcpError, mcpReloadSupported, turnInFlight, onResume, onReload, onOpenShell, dismissed, onDismiss }: { snapshot: NonNullable<ReturnType<typeof useMobileConversation>["snapshot"]>; startFailure?: string; brokenServers: ReturnType<typeof brokenMcpServers>; resuming: boolean; terminated: boolean; mcpReloading: boolean; mcpError?: string; mcpReloadSupported: boolean; turnInFlight: boolean; onResume(): void; onReload(): void; onOpenShell(): void; dismissed: ReadonlySet<string>; onDismiss(key: string): void }) {
 	const thread = snapshot.threadState;
 	const reauthAt = snapshot.account?.reauthRequiredAt;
 	return <>
 		{reauthAt ? <DismissibleBanner copy={reauthBanner(reauthAt, signInCommand(snapshot.harness))} dismissed={dismissed} onDismiss={onDismiss} tone="danger" icon="key" action="Open shell" onPress={onOpenShell} /> : null}
-		{snapshot.controller.state === "stopped" ? <DismissibleBanner copy={controllerStoppedBanner(terminated, snapshot.controller.error)} dismissed={dismissed} onDismiss={onDismiss} tone="danger" icon="power" action={terminated ? (resuming ? "Restoring…" : "Restore") : (resuming ? "Resuming…" : "Resume")} secondary="Shell" onPress={resuming ? undefined : onResume} onSecondary={onOpenShell} /> : null}
+		{startFailure ? <DismissibleBanner copy={{ key: `start:${startFailure}`, title: "Session failed to start", body: startFailure }} dismissed={dismissed} onDismiss={onDismiss} tone="danger" icon="alert-triangle" action={resuming ? "Retrying…" : "Retry"} secondary="Shell" onPress={resuming ? undefined : onResume} onSecondary={onOpenShell} /> : snapshot.controller.state === "stopped" ? <DismissibleBanner copy={controllerStoppedBanner(terminated, snapshot.controller.error)} dismissed={dismissed} onDismiss={onDismiss} tone="danger" icon="power" action={terminated ? (resuming ? "Restoring…" : "Restore") : (resuming ? "Resuming…" : "Resume")} secondary="Shell" onPress={resuming ? undefined : onResume} onSecondary={onOpenShell} /> : null}
 		{/* Passing states clear themselves, so there is nothing to close. */}
-		{snapshot.controller.state === "recovering" || snapshot.controller.state === "connecting" ? <InlineBanner tone="warning" icon="loader" title={snapshot.controller.state === "recovering" ? "Reconnecting to the agent…" : "Starting the agent…"} /> : null}
+		{!startFailure && (snapshot.controller.state === "recovering" || snapshot.controller.state === "connecting") ? <InlineBanner tone="warning" icon="loader" title={snapshot.controller.state === "recovering" ? "Reconnecting to the agent…" : "Starting the agent…"} /> : null}
 		{threadBanner(thread?.status) ? <DismissibleBanner copy={threadBanner(thread?.status)!} dismissed={dismissed} onDismiss={onDismiss} tone={thread?.status === "system_error" ? "danger" : "warning"} icon="alert-triangle" /> : null}
 		{brokenServers.length ? <DismissibleBanner copy={mcpBanner(brokenServers, mcpError)!} dismissed={dismissed} onDismiss={onDismiss} tone="warning" icon="tool" action={mcpReloadSupported && !turnInFlight ? (mcpReloading ? "Reloading…" : "Reload") : undefined} onPress={mcpReloading ? undefined : onReload} /> : null}
 	</>;

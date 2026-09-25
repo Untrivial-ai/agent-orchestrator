@@ -1068,6 +1068,16 @@ func (s *Service) Send(
 		// Keep messages on the durable queue until provisioning finishes so a
 		// new message cannot overtake the opening prompt during handoff.
 		turn, err = s.queueWithoutController(ctx, record, msg)
+		if errors.Is(err, ErrNotProvisioning) {
+			// Startup may have become ready after the first read. The store
+			// refused a stale queue append; hand the message to its controller.
+			latest, readErr := s.requireChatSession(ctx, id)
+			if readErr == nil && !latest.IsTerminated && latest.ProvisionState.WithDefault() == domain.SessionProvisionReady {
+				if controller, controllerErr := s.Controller(id); controllerErr == nil {
+					turn, err = controller.Send(ctx, msg)
+				}
+			}
+		}
 	} else {
 		var controller *Controller
 		controller, err = s.Controller(id)
