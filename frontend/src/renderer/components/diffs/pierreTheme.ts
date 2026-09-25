@@ -5,6 +5,22 @@ export const AO_PIERRE_SURFACE_CSS = `
 :host {
 	--diffs-bg: var(--color-bg-primary);
 }
+
+/* Split diff with an inline composer open: the opposite side's annotation cell
+   (no slot, so nothing mounted in it) reads as filler, like the empty side of a
+   split hunk — Pierre's [data-content-buffer] stripes on the canvas instead of
+   a solid grey block. */
+[data-line-annotation][data-line-annotation]:not(:has(slot)) {
+	--diffs-annotation-bg: var(--diffs-bg);
+	background-image: repeating-linear-gradient(-45deg,
+		transparent,
+		transparent calc(3px * 1.414),
+		var(--diffs-bg-buffer) calc(3px * 1.414),
+		var(--diffs-bg-buffer) calc(4px * 1.414));
+	background-size: 8px 8px;
+	background-position: 5px 0;
+	background-origin: border-box;
+}
 `;
 
 // Files panel review only (WorkspaceReviewPane): filler rows — the empty side
