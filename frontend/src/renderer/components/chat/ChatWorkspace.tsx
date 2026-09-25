@@ -331,6 +331,7 @@ export interface ChatWorkspaceProps {
 	onResumeAgent?: () => void;
 	resumingAgent?: boolean;
 	resumeError?: string;
+	resumeWorkspaceUnavailable?: boolean;
 	onOpenShell?: () => void;
 	openingShell?: boolean;
 	shellError?: string;
@@ -371,6 +372,8 @@ export interface ChatWorkspaceProps {
 		value: ChatConfigOptionValue,
 	) => Promise<unknown> | void;
 	configOptionPending?: boolean;
+	/** The provider option currently being saved, if the provider catalog owns it. */
+	configOptionPendingOptionId?: string;
 	configOptionError?: string;
 	/** Summarize earlier history to reclaim context. */
 	onCompact?: () => void;
@@ -575,6 +578,7 @@ function ChatWorkspaceContent({
 	onResumeAgent,
 	resumingAgent,
 	resumeError,
+	resumeWorkspaceUnavailable,
 	onOpenShell,
 	openingShell,
 	shellError,
@@ -589,6 +593,7 @@ function ChatWorkspaceContent({
 	configOptions,
 	onChooseConfigOption,
 	configOptionPending,
+	configOptionPendingOptionId,
 	configOptionError,
 	onCompact,
 	compacting,
@@ -1154,15 +1159,17 @@ function ChatWorkspaceContent({
 					configOptions={configOptions ?? []}
 					onChangeConfigOption={newWorkDisabled ? undefined : onChooseConfigOption}
 					configPending={configOptionPending}
+					configPendingOptionId={configOptionPendingOptionId}
 					error={configOptionError}
 					disabled={
-						snapshot.controller.state === "stopped" || controllerTransitioning || configOptionPending || newWorkDisabled
+						snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled
 					}
 				/>
 			) : null,
 		[
 			configOptionError,
 			configOptionPending,
+			configOptionPendingOptionId,
 			configOptions,
 			controllerTransitioning,
 			models,
@@ -1408,6 +1415,7 @@ function ChatWorkspaceContent({
 						onResume={newWorkDisabled ? undefined : onResumeAgent}
 						resuming={resumingAgent}
 						resumeError={resumeError}
+						resumeWorkspaceUnavailable={resumeWorkspaceUnavailable}
 						onOpenShell={onOpenShell}
 						openingShell={openingShell}
 						shellError={shellError}
@@ -1869,6 +1877,7 @@ function ControllerBanner({
 	onResume,
 	resuming,
 	resumeError,
+	resumeWorkspaceUnavailable,
 	onOpenShell,
 	openingShell,
 	shellError,
@@ -1878,6 +1887,7 @@ function ControllerBanner({
 	onResume?: () => void;
 	resuming?: boolean;
 	resumeError?: string;
+	resumeWorkspaceUnavailable?: boolean;
 	onOpenShell?: () => void;
 	openingShell?: boolean;
 	shellError?: string;
@@ -1926,38 +1936,51 @@ function ControllerBanner({
 				) : null}
 				{controller.state === "stopped" ? (
 					<>
-						<span className="text-[11px] leading-snug text-muted-foreground">
-							History is kept. Resume the agent or open a shell in the same worktree.
-						</span>
-						{resumeError || shellError ? (
-							<span className="text-[11px] leading-snug text-destructive">
-								{resumeError ?? shellError}
-							</span>
-						) : null}
-						<div className="mt-1.5 flex flex-wrap gap-2">
-							{onResume ? (
-								<Button
-									type="button"
-									size="sm"
-									variant="outline"
-									onClick={onResume}
-									disabled={resuming}
-								>
-									{resuming ? "Resuming…" : "Resume agent"}
-								</Button>
-							) : null}
-							{onOpenShell ? (
-								<Button
-									type="button"
-									size="sm"
-									variant="ghost"
-									onClick={onOpenShell}
-									disabled={openingShell}
-								>
-									{openingShell ? "Opening shell…" : "Open shell"}
-								</Button>
-							) : null}
-						</div>
+						{resumeWorkspaceUnavailable ? (
+							<>
+								<span className="text-[11px] leading-snug text-muted-foreground">
+									This session’s worktree is no longer available, so its agent cannot be resumed.
+								</span>
+								<span className="text-[11px] leading-snug text-muted-foreground">
+									Create a new task to continue in a fresh worktree.
+								</span>
+							</>
+						) : (
+							<>
+								<span className="text-[11px] leading-snug text-muted-foreground">
+									History is kept. Resume the agent or open a shell in the same worktree.
+								</span>
+								{resumeError || shellError ? (
+									<span className="text-[11px] leading-snug text-destructive">
+										{resumeError ?? shellError}
+									</span>
+								) : null}
+								<div className="mt-1.5 flex flex-wrap gap-2">
+									{onResume ? (
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											onClick={onResume}
+											disabled={resuming}
+										>
+											{resuming ? "Resuming…" : "Resume agent"}
+										</Button>
+									) : null}
+									{onOpenShell ? (
+										<Button
+											type="button"
+											size="sm"
+											variant="ghost"
+											onClick={onOpenShell}
+											disabled={openingShell}
+										>
+											{openingShell ? "Opening shell…" : "Open shell"}
+										</Button>
+									) : null}
+								</div>
+							</>
+						)}
 					</>
 				) : null}
 			</div>

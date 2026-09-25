@@ -1162,6 +1162,24 @@ describe("ChatWorkspace timeline", () => {
 		expect(openShell).toHaveBeenCalledOnce();
 	});
 
+	it("explains a missing workspace instead of offering an impossible resume", () => {
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...chatFixtureSettled,
+					controller: { state: "stopped" },
+				}}
+				onResumeAgent={vi.fn()}
+				onOpenShell={vi.fn()}
+				resumeWorkspaceUnavailable
+			/>,
+		);
+
+		expect(screen.getByRole("alert")).toHaveTextContent("worktree is no longer available");
+		expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Open shell" })).not.toBeInTheDocument();
+	});
+
 	it("shows connecting during the controller gap, then restores the composer when ready", () => {
 		const { rerender } = render(
 			<ChatWorkspace

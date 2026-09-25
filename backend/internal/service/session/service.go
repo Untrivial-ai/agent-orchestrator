@@ -665,6 +665,12 @@ func (s *Service) ExitAgent(ctx context.Context, id domain.SessionID) (ExitAgent
 // ResumeAgent relaunches an exited agent without restoring a terminated
 // session or recreating its workspace.
 func (s *Service) ResumeAgent(ctx context.Context, id domain.SessionID) (ResumeAgentOutcome, error) {
+	// An exited agent can only be resumed in its original workspace. Checking it
+	// before reconnecting to a detached Chat host avoids turning a deleted
+	// worktree into an opaque agent-host failure (or a generic 500).
+	if _, err := s.WorkspaceLocation(ctx, id); err != nil {
+		return ResumeAgentOutcome{}, err
+	}
 	res, err := s.manager.ResumeAgentWithMode(ctx, id)
 	if err != nil {
 		return ResumeAgentOutcome{}, toAPIError(err)
@@ -1277,6 +1283,9 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("CHAT_DRIVER_UNAVAILABLE", err.Error(), nil)
 	case errors.Is(err, ports.ErrChatDriverIncompatible):
 		return apierr.Conflict("CHAT_DRIVER_INCOMPATIBLE", err.Error(), nil)
+	case errors.Is(err, ports.ErrChatRecoveryInconclusive):
+		return apierr.Conflict("CHAT_RECOVERY_INCONCLUSIVE",
+			"AO could not safely reconnect to this agent. It may still be running in another AO instance.", nil)
 	case errors.Is(err, ports.ErrChatAuthRequired):
 		return apierr.Conflict("CHAT_AUTH_REQUIRED", "The agent is installed but not authenticated", nil)
 	case errors.Is(err, ports.ErrAgentAuthRequired):

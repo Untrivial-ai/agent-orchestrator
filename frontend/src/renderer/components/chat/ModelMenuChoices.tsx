@@ -9,7 +9,7 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 	children,
 }: {
 	models: T[];
-	children: (models: T[]) => ReactNode;
+	children: (models: T[], searchActiveID?: string) => ReactNode;
 }) {
 	const { t } = useTranslation();
 	const [search, setSearch] = useState("");
@@ -20,6 +20,7 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 		if (!normalizedQuery) return models;
 		return models.filter((model) => model.label.toLocaleLowerCase().includes(normalizedQuery));
 	}, [models, normalizedQuery]);
+	const searchActiveID = normalizedQuery ? matches[0]?.id : undefined;
 	const searchRef = useRef<HTMLInputElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const [canScrollDown, setCanScrollDown] = useState(false);
@@ -52,6 +53,11 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 						}
 						if (event.key === "Escape") return;
 						event.stopPropagation();
+						if (event.key === "Enter") {
+							event.preventDefault();
+							scrollRef.current?.querySelector<HTMLElement>('[role="menuitemradio"]')?.click();
+							return;
+						}
 						if (event.key === "ArrowDown" || event.key === "ArrowUp") {
 							event.preventDefault();
 							const items = scrollRef.current?.querySelectorAll<HTMLElement>('[role="menuitemradio"]');
@@ -110,7 +116,7 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 						}
 					}}
 				>
-					{children(matches)}
+					{children(matches, searchActiveID)}
 					{matches.length === 0 && (
 						<p className="px-2 py-1.5 text-xs text-settings-muted">{t("settings.models.noMatches")}</p>
 					)}
@@ -120,14 +126,6 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 					aria-hidden="true"
 				/>
 			</div>
-			{showSearch && (
-				<p className="shrink-0 px-2 py-1.5 text-xs text-settings-muted" aria-live="polite">
-					{t("settings.models.matchingCount", {
-						visible: matches.length.toLocaleString(),
-						total: matches.length.toLocaleString(),
-					})}
-				</p>
-			)}
 		</div>
 	);
 }
