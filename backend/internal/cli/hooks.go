@@ -695,6 +695,23 @@ func (c *commandContext) runReviewHook(ctx context.Context, agent, event, review
 		}
 		return nil
 	}
+	if domain.AgentHarness(agent) == domain.HarnessClaudeCode {
+		// Issue #5701: deny the call that completes a no-op probe stream or an
+		// exact-repeat streak, and clear the counters at turn boundaries so a
+		// streak never leaks into the next turn.
+		dataDir := strings.TrimSpace(os.Getenv("AO_DATA_DIR"))
+		switch event {
+		case "pre-tool-use":
+			if out, denied := reviewLoopGuardDecision(payload, dataDir, reviewSessionID); denied {
+				if err := json.NewEncoder(c.deps.Out).Encode(out); err != nil {
+					c.reportHookFailure(agent, event, reviewSessionID, fmt.Errorf("write loop-guard denial: %w", err))
+				}
+				return nil
+			}
+		case "stop", "user-prompt-submit":
+			reviewLoopGuardReset(dataDir, reviewSessionID)
+		}
+	}
 	state, hasActivity := activitydispatch.Derive(agent, event, payload)
 	agentSessionID := ""
 	if activitydispatch.SupportsHarness(domain.AgentHarness(agent)) {
