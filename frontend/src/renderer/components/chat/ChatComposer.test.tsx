@@ -1092,6 +1092,14 @@ describe("slash commands", () => {
 		expect(screen.getAllByRole("option")).toHaveLength(3);
 	});
 
+	it("shows skills without menu chrome that competes with the suggestions", async () => {
+		const { field } = renderComposer({ skills: SKILLS });
+		await typeInComposer(field, "/");
+
+		expect(screen.queryByText("Skills", { exact: true })).toBeNull();
+		expect(screen.getByRole("listbox")).toHaveClass("scrollbar-none", "overflow-y-auto");
+	});
+
 	it("hides the generic agent source and keeps the AO source label", async () => {
 		const { field } = renderComposer({
 			skills: [
@@ -1333,6 +1341,14 @@ describe("file mentions", () => {
 		// The row reads as a file name plus where it lives, not as one long path.
 		expect(options[0]?.textContent).toContain("chat.go");
 		expect(options[0]?.textContent).toContain("backend/internal/ports");
+	});
+
+	it("shows file matches without a worktree header or visible scrollbar", async () => {
+		const { field } = renderComposer({ filePaths: FILES });
+		await typeInComposer(field, "@chat");
+
+		expect(screen.queryByText("Files in this worktree", { exact: true })).toBeNull();
+		expect(screen.getByRole("listbox")).toHaveClass("scrollbar-none", "overflow-y-auto");
 	});
 
 	// The label is a name; what the agent has to resolve is the whole path.
