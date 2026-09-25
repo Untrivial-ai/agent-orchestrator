@@ -393,7 +393,14 @@ func (l *fakeLCM) ActivateChatAgentSwitchTarget(ctx context.Context, activation 
 	}
 	return store.ActivateChatAgentSwitchTarget(ctx, activation)
 }
-func (l *fakeLCM) MarkTerminated(_ context.Context, id domain.SessionID) error {
+
+// MarkTerminated mirrors the real lifecycle.Manager, which refuses to write on
+// a dead context. The fake used to ignore ctx entirely, which hid the fact that
+// Kill was recording terminal intent on its own expiring teardown budget.
+func (l *fakeLCM) MarkTerminated(ctx context.Context, id domain.SessionID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if l.terminated == nil {
 		l.terminated = map[domain.SessionID]int{}
 	}
@@ -920,11 +927,14 @@ type fakeWorkspace struct {
 	// destroyCtxErr records ctx.Err() as seen by Destroy, so a test can prove
 	// teardown does not inherit a caller's cancellation.
 	destroyCtxErr error
-	fetchErr      error
-	fetches       []fetchDefaultBranchCall
-	resolves      []resolveDefaultBranchCall
-	resolved      map[string]ports.WorkspaceDefaultBranch
-	fetchFunc     func(context.Context, string, ports.WorkspaceDefaultBranch) error
+	// destroyHook runs at the top of Destroy, so a test can make teardown burn
+	// real time against Kill's budget.
+	destroyHook func()
+	fetchErr    error
+	fetches     []fetchDefaultBranchCall
+	resolves    []resolveDefaultBranchCall
+	resolved    map[string]ports.WorkspaceDefaultBranch
+	fetchFunc   func(context.Context, string, ports.WorkspaceDefaultBranch) error
 	// createRepoPath, when set, is returned as the RepoPath of a single-repo
 	// Create so tests can assert it survives the spawn->teardown metadata round
 	// trip (production Create resolves this path; the zero default keeps every
@@ -1069,6 +1079,9 @@ func (w *fakeWorkspace) CreateWorkspaceProject(_ context.Context, cfg ports.Work
 }
 func (w *fakeWorkspace) Destroy(ctx context.Context, info ports.WorkspaceInfo) error {
 	w.lastDestroyInfo = info
+	if w.destroyHook != nil {
+		w.destroyHook()
+	}
 	w.destroyCtxErr = ctx.Err()
 	if info.RepoPath != "" {
 		entry := "Destroy:" + fakeWorkspaceRepoName(info)
@@ -3445,14 +3458,76 @@ func TestKill_DeletesStaleRestoreMarker(t *testing.T) {
 	}
 }
 
-// TestKill_OtherWorkspaceErrorStillFails: only the typed dirty refusal is a
-// success-with-preserved-workspace; any other teardown failure keeps erroring.
-func TestKill_OtherWorkspaceErrorStillFails(t *testing.T) {
+// TestKill_UnnamedWorkspaceErrorPreservesAndTerminates is the #5463 regression
+// on the workspace half. A teardown failure AO has no typed name for (a locked
+// worktree git will not prune, a path that no longer resolves to a live
+// worktree) used to fail the kill, which left `terminated` false — and
+// `ao session cleanup` only walks terminated sessions, so the row was reachable
+// by no path at all. Nothing is force-removed: the worktree stays on disk for
+// cleanup to retry and report on. Only the session's claim on the sidebar goes.
+func TestKill_UnnamedWorkspaceErrorPreservesAndTerminates(t *testing.T) {
 	m, st, _, ws := newManager()
 	st.sessions["mer-1"] = mkLive("mer-1")
-	ws.destroyErr = errors.New("disk on fire")
-	if _, err := m.Kill(ctx, "mer-1"); err == nil || !strings.Contains(err.Error(), "disk on fire") {
-		t.Fatalf("kill err = %v, want workspace error surfaced", err)
+	ws.destroyErr = errors.New("path is still registered after git worktree prune")
+
+	freed, err := m.Kill(ctx, "mer-1")
+	if err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if freed {
+		t.Fatal("freed = true, want false: the worktree was left on disk")
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session must be marked terminated so cleanup can reach it")
+	}
+	if calls := strings.Join(ws.calls, ","); strings.Contains(calls, "ForceDestroy") {
+		t.Fatalf("calls = %s, want no ForceDestroy: a refused teardown is never forced", calls)
+	}
+}
+
+// TestKill_ConclusivelyAbsentRuntimeStillTerminates is the #5463 regression on
+// the runtime half. tmux answering "no server running" is evidence the runtime
+// is already gone: there is nothing left to release, so failing the kill would
+// strand the session for a condition no retry can clear.
+func TestKill_ConclusivelyAbsentRuntimeStillTerminates(t *testing.T) {
+	m, st, rt, ws := newManager()
+	st.sessions["mer-1"] = mkLive("mer-1")
+	rt.destroyErr = fmt.Errorf("tmux runtime: no server running: %w", ports.ErrRuntimeUnavailable)
+
+	freed, err := m.Kill(ctx, "mer-1")
+	if err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if !freed {
+		t.Fatal("freed = false: workspace teardown must still run")
+	}
+	if ws.destroyed != 1 {
+		t.Fatalf("workspace destroys = %d, want 1", ws.destroyed)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session must be marked terminated")
+	}
+}
+
+// TestKill_InconclusiveRuntimeProbeStaysFailClosed pins the other side.
+// ErrRuntimeProbeInconclusive means the runtime may still be live, and its port
+// contract forbids callers from treating the session as dead. Terminating here
+// would leave a possibly-live agent running with no row pointing at it, so the
+// kill must keep failing and the workspace must stay untouched.
+func TestKill_InconclusiveRuntimeProbeStaysFailClosed(t *testing.T) {
+	m, st, rt, ws := newManager()
+	st.sessions["mer-1"] = mkLive("mer-1")
+	rt.destroyErr = fmt.Errorf("conpty: pty registry scan incomplete: %w", ports.ErrRuntimeProbeInconclusive)
+
+	freed, err := m.Kill(ctx, "mer-1")
+	if err == nil || !errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("freed=%v err=%v, want the inconclusive probe surfaced", freed, err)
+	}
+	if ws.destroyed != 0 {
+		t.Fatalf("workspace destroys = %d, want 0: teardown must stop at the runtime", ws.destroyed)
+	}
+	if st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session must stay active while the runtime may be live")
 	}
 }
 func TestKill_WorkspaceProjectDestroysChildrenBeforeRoot(t *testing.T) {
@@ -10201,5 +10276,35 @@ func TestRestoreRetainsSpawnPermissionsAfterProjectChange(t *testing.T) {
 		if agent.lastRestore.Permissions != want || agent.lastRestore.Config.Permissions != want {
 			t.Fatalf("restore=%#v want %q", agent.lastRestore, want)
 		}
+	}
+}
+
+// TestKill_TerminatesEvenWhenTeardownBudgetExpires is the third #5463 path,
+// and the one that most likely produced the reported state: a slow teardown
+// (a large worktree on NTFS) runs past killTeardownBudget, so the context that
+// carried it is already dead by the time Kill records terminal intent. Every
+// destructive step has happened at that point — the agent is gone, the worktree
+// is gone — and refusing the one remaining write leaves a session that is dead
+// everywhere except the row the UI reads, reachable by no path afterwards.
+func TestKill_TerminatesEvenWhenTeardownBudgetExpires(t *testing.T) {
+	m, st, rt, ws := newManager()
+	st.sessions["mer-1"] = mkLive("mer-1")
+	// Smaller than the time the fake workspace burns below, so the budget is
+	// already expired when Kill reaches its terminal-intent write.
+	m.killTeardown = 20 * time.Millisecond
+	ws.destroyHook = func() { time.Sleep(60 * time.Millisecond) }
+
+	freed, err := m.Kill(ctx, "mer-1")
+	if err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if !freed {
+		t.Fatal("freed = false: the workspace was torn down")
+	}
+	if rt.destroyed != 1 || ws.destroyed != 1 {
+		t.Fatalf("teardown incomplete: runtime=%d workspace=%d", rt.destroyed, ws.destroyed)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("session must be marked terminated even though the teardown budget expired")
 	}
 }
