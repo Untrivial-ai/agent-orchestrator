@@ -11,10 +11,15 @@ declare module "better-sqlite3" {
 		run: (...parameters: unknown[]) => unknown;
 	};
 
+	type BackupResult = {
+		totalPages: number;
+		remainingPages: number;
+	};
+
 	class Database {
 		constructor(filename: string, options?: DatabaseOptions);
 		pragma(source: string): unknown;
-		backup(filename: string): Promise<unknown>;
+		backup(filename: string): Promise<BackupResult>;
 		exec(source: string): this;
 		prepare(source: string): Statement;
 		close(): void;
