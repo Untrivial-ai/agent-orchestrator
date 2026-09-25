@@ -75,6 +75,7 @@ type Service struct {
 	resolverMu      map[string]*sync.Mutex
 	modelCallMu     sync.Mutex
 	modelCalls      map[string]*modelCatalogCall
+	modelRefreshes  map[string]struct{}
 	modelGeneration map[string]int64
 	discoverySlots  chan struct{}
 	ctx             context.Context
@@ -172,7 +173,7 @@ func newService(agents []agentregistry.HarnessAgent, cache ports.AgentModelCatal
 	for _, item := range agents {
 		resolverMu[string(item.Harness)] = &sync.Mutex{}
 	}
-	return &Service{agents: agents, readiness: newReadinessCoordinator(readinessCoordinatorConfig{Agents: agents}), cache: cache, discoverer: discoverer, projects: projects, resolverMu: resolverMu, modelCalls: map[string]*modelCatalogCall{}, modelGeneration: map[string]int64{}, discoverySlots: make(chan struct{}, 2), ctx: context.Background(), now: time.Now, logger: slog.Default()}
+	return &Service{agents: agents, readiness: newReadinessCoordinator(readinessCoordinatorConfig{Agents: agents}), cache: cache, discoverer: discoverer, projects: projects, resolverMu: resolverMu, modelCalls: map[string]*modelCatalogCall{}, modelRefreshes: map[string]struct{}{}, modelGeneration: map[string]int64{}, discoverySlots: make(chan struct{}, 2), ctx: context.Background(), now: time.Now, logger: slog.Default()}
 }
 
 // WarmModelCatalogs starts the bounded cache scheduler. Readiness is never held
@@ -348,7 +349,7 @@ func (s *Service) Models(ctx context.Context, agentID, projectID string, refresh
 			retriesExhausted := modelCatalogRetriesExhausted(cached)
 			cached.Catalog.RefreshRecommended = !retriesExhausted && (due || needsRecovery || cached.RefreshState == "error" || cached.RefreshState == "queued")
 			if !retriesExhausted && (due || needsRecovery) && (cached.RetryAt.IsZero() || !s.now().Before(cached.RetryAt)) {
-				go func() { _, _ = s.RevalidateModels(s.ctx, agentID, projectID) }()
+				s.revalidateModelsInBackground(agentID, projectID)
 			} else if !due || retriesExhausted {
 				go s.revalidateChangedInputs(agentID, projectID, cached.BinaryVersion)
 			}
@@ -360,6 +361,49 @@ func (s *Service) Models(ctx context.Context, agentID, projectID string, refresh
 		mode = modelLoadRefresh
 	}
 	return s.coalesceModelLoad(ctx, agentID, projectID, mode)
+}
+
+// revalidateModelsInBackground schedules at most one automatic refresh for a
+// catalog key. Registration happens before Models returns, so concurrent aged
+// cache reads cannot each enqueue their own discovery after the first finishes.
+func (s *Service) revalidateModelsInBackground(agentID, projectID string) {
+	key := agentID + "\x00" + projectID
+	s.modelCallMu.Lock()
+	if _, active := s.modelRefreshes[key]; active {
+		s.modelCallMu.Unlock()
+		return
+	}
+	s.modelRefreshes[key] = struct{}{}
+	s.modelCallMu.Unlock()
+
+	go func() {
+		defer func() {
+			s.modelCallMu.Lock()
+			delete(s.modelRefreshes, key)
+			s.modelCallMu.Unlock()
+		}()
+
+		refreshCtx := s.ctx
+		if refreshCtx == nil {
+			refreshCtx = context.Background()
+		}
+		if refreshCtx.Err() != nil {
+			return
+		}
+
+		// Another refresh can complete after this read was scheduled but before
+		// its goroutine runs. Recheck freshness to avoid a redundant discovery.
+		cached, found, err := s.cachedCatalog(refreshCtx, agentID, projectID)
+		if err != nil || !found {
+			return
+		}
+		due := catalogNeedsRevalidation(catalogLastSuccess(cached.Catalog), s.now())
+		needsRecovery := cached.RefreshState == "refreshing"
+		if modelCatalogRetriesExhausted(cached) || (!due && !needsRecovery) || (!cached.RetryAt.IsZero() && s.now().Before(cached.RetryAt)) {
+			return
+		}
+		_, _ = s.RevalidateModels(refreshCtx, agentID, projectID)
+	}()
 }
 
 func (s *Service) revalidateChangedInputs(agentID, projectID, cachedFingerprint string) {

@@ -27,6 +27,9 @@ type Server struct {
 
 	shutdownRequested chan struct{}
 	shutdownOnce      sync.Once
+	connMu            sync.Mutex
+	connStates        map[net.Conn]http.ConnState
+	shuttingDown      bool
 }
 
 // NewWithDeps constructs a Server with API dependencies supplied by the daemon
@@ -63,6 +66,7 @@ func NewWithDeps(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager,
 		log:               log,
 		listen:            ln,
 		shutdownRequested: make(chan struct{}),
+		connStates:        make(map[net.Conn]http.ConnState),
 	}
 	srv.http = &http.Server{
 		Handler: NewRouterWithControl(cfg, log, termMgr, deps, ControlDeps{
@@ -72,6 +76,7 @@ func NewWithDeps(cfg config.Config, log *slog.Logger, termMgr *terminal.Manager,
 		// ReadHeaderTimeout guards against slow-loris even on loopback;
 		// per-request body/handler timeouts are applied per-surface.
 		ReadHeaderTimeout: 10 * time.Second,
+		ConnState:         srv.trackConnectionState,
 	}
 	return srv, nil
 }
@@ -148,6 +153,7 @@ func (s *Server) run(ctx context.Context, onReady func()) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
 	defer cancel()
 
+	s.closeUnstartedConnections()
 	if err := s.http.Shutdown(shutdownCtx); err != nil {
 		// The deadline elapsed with connections still open; force them closed.
 		s.log.Warn("graceful shutdown timed out, forcing close", "err", err)
@@ -170,6 +176,39 @@ func (s *Server) requestShutdown() {
 	s.shutdownOnce.Do(func() {
 		close(s.shutdownRequested)
 	})
+}
+
+func (s *Server) trackConnectionState(conn net.Conn, state http.ConnState) {
+	s.connMu.Lock()
+	closeNow := s.shuttingDown && state == http.StateNew
+	if state == http.StateClosed || state == http.StateHijacked || closeNow {
+		delete(s.connStates, conn)
+	} else {
+		s.connStates[conn] = state
+	}
+	s.connMu.Unlock()
+	if closeNow {
+		_ = conn.Close()
+	}
+}
+
+// closeUnstartedConnections closes sockets that were accepted but never began
+// a request. net/http otherwise waits five seconds before considering StateNew
+// connections idle, which can consume the entire graceful-shutdown deadline.
+func (s *Server) closeUnstartedConnections() {
+	s.connMu.Lock()
+	s.shuttingDown = true
+	connections := make([]net.Conn, 0, len(s.connStates))
+	for conn, state := range s.connStates {
+		if state == http.StateNew {
+			delete(s.connStates, conn)
+			connections = append(connections, conn)
+		}
+	}
+	s.connMu.Unlock()
+	for _, conn := range connections {
+		_ = conn.Close()
+	}
 }
 
 // RequestShutdown triggers the same clean shutdown as POST /shutdown: it makes

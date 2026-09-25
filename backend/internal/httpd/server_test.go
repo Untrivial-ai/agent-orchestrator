@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -262,6 +263,67 @@ func TestServerShutdownEndpoint(t *testing.T) {
 
 	if after, _ := runfile.Read(runPath); after != nil {
 		t.Error("run-file still present after shutdown endpoint; want it removed")
+	}
+}
+
+func TestServerShutdownClosesUnstartedConnections(t *testing.T) {
+	runPath := filepath.Join(t.TempDir(), "running.json")
+	cfg := config.Config{
+		Host:            "127.0.0.1",
+		Port:            0,
+		ShutdownTimeout: 200 * time.Millisecond,
+		RunFilePath:     runPath,
+	}
+
+	srv, err := NewWithDeps(cfg, discardLogger(), nil, APIDeps{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	runErr := make(chan error, 1)
+	go func() { runErr <- srv.Run(context.Background()) }()
+
+	base := "http://" + srv.Addr().String()
+	waitForHealth(t, base)
+	countNewConnections := func() int {
+		srv.connMu.Lock()
+		defer srv.connMu.Unlock()
+		count := 0
+		for _, state := range srv.connStates {
+			if state == http.StateNew {
+				count++
+			}
+		}
+		return count
+	}
+	baselineNewConnections := countNewConnections()
+	pending, err := net.Dial("tcp", srv.Addr().String())
+	if err != nil {
+		t.Fatalf("open unstarted connection: %v", err)
+	}
+	defer pending.Close()
+	deadline := time.Now().Add(time.Second)
+	for countNewConnections() <= baselineNewConnections && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if countNewConnections() <= baselineNewConnections {
+		t.Fatal("unstarted connection was not tracked")
+	}
+
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	resp, err := client.Post(base+"/shutdown", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /shutdown: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run returned error with an unstarted connection: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after shutdown endpoint")
 	}
 }
 
