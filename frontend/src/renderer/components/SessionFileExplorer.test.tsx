@@ -205,6 +205,8 @@ describe("SessionFileExplorer", () => {
 		expect(screen.queryByRole("tab", { name: "Changes" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("tab", { name: "Files" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Split diff view" })).not.toBeInTheDocument();
+		// Nothing to review and no PR: the picker's only entry would be Workspace.
+		expect(screen.queryByRole("button", { name: "File source" })).not.toBeInTheDocument();
 	});
 
 	it("switches to an associated PR without changing the workspace", async () => {
@@ -293,7 +295,8 @@ describe("SessionFileExplorer", () => {
 		});
 		const first = renderWithQuery(<SessionFileExplorer sessionId="sess-duplicate-pr" />);
 
-		await userEvent.click(screen.getByRole("button", { name: "File source" }));
+		// The picker appears once the PR list gives it something to switch to.
+		await userEvent.click(await screen.findByRole("button", { name: "File source" }));
 		await userEvent.click(await screen.findByRole("menuitem", { name: "Branch" }));
 		await userEvent.click(await screen.findByRole("menuitem", { name: "PR #42 · canonical" }));
 		await waitFor(() => expect(getMock).toHaveBeenCalledWith(

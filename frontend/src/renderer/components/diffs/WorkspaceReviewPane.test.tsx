@@ -322,23 +322,12 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={model} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
 
 		const composer = await screen.findByRole("textbox", { name: /Feedback for src\/App\.tsx/ });
-		// Pierre's file-level slot (line 0): in the file's flow under its header,
-		// not an overlay inside the header that the next file could cover.
-		expect(composer.closest("[data-annotation-line]")).toHaveAttribute("data-annotation-line", "0");
-		expect(composer.closest(".relative.bg-background")).toBeNull();
-	});
-
-	it("opens a collapsed file when its whole-file feedback starts", async () => {
-		const model = annotation();
-		const data = committedWorkspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "file-1" }]);
-		renderWithQuery(<WorkspaceReviewPane annotation={model} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
-		await userEvent.click(await screen.findByRole("button", { name: "Collapse src/App.tsx" }));
-		expect(screen.getByTestId("code-view").querySelector("[data-collapsed]")).toHaveAttribute("data-collapsed", "true");
-
-		// The header toggle (the gutter "+" shares its name but has no pressed state).
-		await userEvent.click(screen.getByRole("button", { name: "Add feedback", pressed: false }));
-		expect(screen.getByTestId("code-view").querySelector("[data-collapsed]")).toHaveAttribute("data-collapsed", "false");
-		expect(model.begin).toHaveBeenCalledWith(expect.objectContaining({ path: "src/App.tsx", side: "file", surface: "review" }));
+		// A popover under the header, portaled above the list (so a later file's
+		// header can't cover it), not a row inside one diff column.
+		// (jsdom boxes are zero-sized, so Radix's hideWhenDetached hides it from role queries.)
+		expect(composer.closest('[role="dialog"]')).toHaveAttribute("aria-label", "Add feedback");
+		expect(composer.closest("[data-annotation-line]")).toBeNull();
+		expect(screen.getByTestId("code-view").querySelector("[data-annotation-line]")).toBeNull();
 	});
 
 	it("opens deleted markdown as source because no current rendered revision exists", async () => {

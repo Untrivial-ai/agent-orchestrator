@@ -158,6 +158,10 @@ export function SessionFileExplorer({
 		{ value: "workspace", label: t("files.explorer.workspaceSource") },
 		...(scmQuery.data ?? []).map((pr) => ({ value: pr.url, label: `PR #${pr.number} · ${pr.sourceBranch || pr.title}` })),
 	];
+	// With no review scopes or commits (nothing changed) and no PR to switch to,
+	// the picker's only entry is the already-selected Workspace, so it is hidden
+	// until there is something to choose.
+	const showSourcePicker = reviewMenu !== null || source.kind !== "workspace" || sourceOptions.length > 1;
 	const currentSourceLabel = sourceOptions.find((option) => option.value === sourceValue)?.label;
 	const selectSource = (value: string) => {
 		setSourceNotice("");
@@ -203,6 +207,7 @@ export function SessionFileExplorer({
 				    flyouts (Branch = Workspace or a PR). */}
 				{/* -ml-2 cancels the trigger's own 8px inline padding so its label
 				    starts on the same 12px gutter as the context row's text below. */}
+				{showSourcePicker ? (
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild>
 						<SettingsMenuTrigger
@@ -259,6 +264,7 @@ export function SessionFileExplorer({
 						</DropdownMenuSub>
 					</DropdownMenuContent>
 				</DropdownMenu>
+				) : null}
 				{/* Inline (maximized) the filter sits centred between the picker and the actions. */}
 				{filesTopbarHost ? null : <span aria-hidden="true" className="flex-1" />}
 				{filesTopbarHost ? createPortal(filterField, filesTopbarHost) : filterField}

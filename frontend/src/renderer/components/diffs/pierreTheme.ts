@@ -21,13 +21,23 @@ export const AO_PIERRE_SURFACE_CSS = `
 	background-position: 5px 0;
 	background-origin: border-box;
 }
+
+/* The row an open feedback composer mounts in (it has the slot) sits on the
+   canvas, hovered or not, so the composer reads as a card on the code like the
+   browser's comment box instead of a card on a grey band. */
+[data-line-annotation][data-line-annotation]:has(slot) {
+	--diffs-annotation-bg: var(--diffs-bg);
+	--diffs-line-bg: var(--diffs-bg);
+}
+[data-gutter-buffer="annotation"][data-gutter-buffer] {
+	--diffs-annotation-bg: var(--diffs-bg);
+}
 `;
 
-// Files panel review only (WorkspaceReviewPane): filler rows — the empty side
-// of a split hunk and the row an inline feedback composer opens in — keep their
-// content treatment, but their line-number gutter sits on the canvas instead of
-// painting a grey block. Not part of the shared surface CSS, so the center diff
-// tab, file view, and cloud diffs are unchanged.
+// Local Files diffs (the review list, the Files preview and centre file tabs):
+// an inset line-number column, and the empty side of a split hunk keeps its
+// line-number gutter on the canvas instead of painting a grey block. Cloud diffs
+// use only the shared surface CSS above.
 export const AO_PIERRE_FILES_REVIEW_CSS = `
 /* Inset the line-number column so numbers sit in from the panel edge instead
    of lining up under the file header's chevron: a wider right-aligned column
@@ -43,9 +53,5 @@ export const AO_PIERRE_FILES_REVIEW_CSS = `
 
 [data-gutter-buffer="buffer"][data-gutter-buffer] {
 	--diffs-line-bg: var(--diffs-bg);
-}
-
-[data-gutter-buffer="annotation"][data-gutter-buffer] {
-	--diffs-annotation-bg: var(--diffs-bg);
 }
 `;

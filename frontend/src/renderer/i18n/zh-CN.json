@@ -1658,7 +1658,7 @@
 	"files.lineFeedbackTarget": "{{file}} · {{side}}第 {{line}} 行",
 	"files.feedbackLabel": "针对 {{target}} 的反馈",
 	"files.feedbackPlaceholder": "描述希望代理进行的更改...",
-	"files.feedbackShortcut": "⌘/Ctrl + Enter 发送 · Esc 取消",
+	"files.feedbackShortcut": "⌘/Ctrl + Enter 发送",
 	"files.cancelFeedback": "取消",
 	"files.sendFeedback": "发送反馈",
 	"files.sendingFeedback": "发送中...",

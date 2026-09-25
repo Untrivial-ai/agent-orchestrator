@@ -1672,7 +1672,7 @@
 	"files.lineFeedbackTarget": "{{file}} · ligne {{side}} {{line}}",
 	"files.feedbackLabel": "Commentaire pour {{target}}",
 	"files.feedbackPlaceholder": "Décrivez ce que l'agent doit modifier...",
-	"files.feedbackShortcut": "⌘/Ctrl + Entrée pour envoyer · Échap pour annuler",
+	"files.feedbackShortcut": "⌘/Ctrl + Entrée pour envoyer",
 	"files.cancelFeedback": "Annuler",
 	"files.sendFeedback": "Envoyer le commentaire",
 	"files.sendingFeedback": "Envoi...",

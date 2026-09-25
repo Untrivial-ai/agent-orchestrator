@@ -23,6 +23,7 @@ import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { MENU_TRIGGER_CHROME } from "../ui/option-menu";
 import { SettingsMenuTrigger } from "../settings/SettingsMenuTrigger";
+import { Popover, PopoverAnchor, PopoverContent } from "../ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { formatTimeTerse } from "../../lib/format-time";
 import { AO_PIERRE_FILES_REVIEW_CSS, AO_PIERRE_SURFACE_CSS } from "./pierreTheme";
@@ -383,12 +384,6 @@ export function WorkspaceReviewPane({
 						lineNumber: activeTarget.line,
 						side: activeTarget.side === "old" ? "deletions" : "additions",
 						metadata: "feedback",
-					}] : fileAnnotationActive ? [{
-						// Line 0 is Pierre's file-level slot: whole-file feedback renders in
-						// the file's flow right under its header, measured like any row.
-						lineNumber: 0,
-						side: file.status === "deleted" ? "deletions" : "additions",
-						metadata: "feedback",
 					}] : undefined,
 					// CodeView only re-reads an item when its version changes: the content
 					// part lets changed or newly hydrated diffs through, the low bits carry
@@ -620,68 +615,89 @@ export function WorkspaceReviewPane({
 							const renderedAvailable = canOpenRendered(file);
 							const fileAnnotationActive = annotation.target?.surface !== "focused" && annotation.target?.path === file.path && annotation.target.side === "file";
 							return (
-								<div className="relative bg-background">
-									{/* The whole row toggles the file (the chevron just rotates);
-									    name + stats on the left, every action grouped on the right
-									    with "viewed" pinned to the far edge. */}
-									<div className="group/file-header flex h-9 min-w-0 cursor-pointer items-center gap-2 pl-4 pr-1.5 hover:bg-interactive-hover/40" onClick={() => toggleCollapsed(file.path)}>
-										<ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform duration-150 group-hover/file-header:text-foreground", !isCollapsed && "rotate-90")} />
-										<WorkspaceEntryIcon className="size-icon-xl" kind="file" name={file.path.split("/").pop() ?? file.path} />
-										<div className="flex min-w-0 shrink items-baseline gap-3">
-											<button
-												aria-expanded={!isCollapsed}
-												aria-label={isCollapsed ? t("files.expandFile", { file: file.path }) : t("files.collapseFile", { file: file.path })}
-												className="flex min-w-0 shrink items-baseline text-left text-[length:var(--font-size-base)] outline-none focus-visible:underline"
-												title={file.path}
-												type="button"
-											>
-												{file.path.includes("/") ? <span className="min-w-0 truncate text-muted-foreground">{file.path.slice(0, file.path.lastIndexOf("/") + 1)}</span> : null}
-												<span className="max-w-full shrink-0 truncate text-foreground">{file.path.slice(file.path.lastIndexOf("/") + 1)}</span>
-											</button>
-											<span className="flex shrink-0 items-baseline gap-2.5 text-xs tabular-nums">
-												<span className={cn("font-semibold", statusTone[file.status])}>{statusLabel[file.status]}</span>
-												<span className="flex items-baseline gap-1.5">
-													<span className="text-success">+{file.additions}</span>
-													<span className="text-error">−{file.deletions}</span>
-												</span>
-											</span>
-										</div>
-										{/* Every action is always visible in a 24px slot, 8px apart: the same
-										    32px pitch as the Files header buttons, so the checkbox and feedback
-										    button sit under the header's trailing columns. */}
-										<div className="ml-auto flex shrink-0 items-center gap-2 pl-2" onClick={(event) => event.stopPropagation()}>
-											{file.editable && file.fileFingerprint ? (
-												<HeaderActionTooltip label={t("files.editFile")}>
-													<Button aria-label={t("files.editFile")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { editing: true, mode: "file", scope })} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button>
-												</HeaderActionTooltip>
-											) : null}
-											<HeaderActionTooltip label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}>
-												<Button aria-label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: renderedAvailable ? "rendered" : "file" })} size="icon-sm" type="button" variant="ghost"><FileCode2 aria-hidden="true" className="size-icon-sm" /></Button>
-											</HeaderActionTooltip>
-											{onOpenFile ? (
-												<HeaderActionTooltip label={t("files.openDiffInCenter")}>
-													<Button aria-label={t("files.openDiffInCenter")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile(file.path, { ...fileOpenContext, mode: "diff" })} size="icon-sm" type="button" variant="ghost"><VscodeGoToFileIcon aria-hidden="true" className="size-icon-sm" /></Button>
-												</HeaderActionTooltip>
-											) : null}
-											<HeaderActionTooltip label={t("files.addFeedback")}>
-												<Button aria-label={t("files.addFeedback")} aria-pressed={fileAnnotationActive} className={cn("size-6 text-muted-foreground hover:text-foreground", fileAnnotationActive && "bg-interactive-active text-foreground")} onClick={() => { if (isCollapsed) toggleCollapsed(file.path); annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint }); }} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
-											</HeaderActionTooltip>
-											<HeaderActionTooltip label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}>
-												{/* A 24px slot like the buttons beside it keeps the checkbox
-												    centred on the header's trailing action column. */}
-												<span className="grid size-6 place-items-center">
-													<Checkbox
-														aria-label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}
-														checked={isViewed}
-														className="size-4 border border-muted-foreground/70 bg-transparent"
-														onCheckedChange={() => toggleViewed(file)}
-														style={isViewed ? { backgroundColor: "#fff", borderColor: "#fff", color: "#000" } : undefined}
-													/>
-												</span>
-											</HeaderActionTooltip>
-										</div>
+								<Popover onOpenChange={(open) => { if (!open) annotation.cancel(); }} open={fileAnnotationActive}>
+									<div className="relative bg-background">
+										{/* The whole row toggles the file (the chevron just rotates);
+										    name + stats on the left, every action grouped on the right
+										    with "viewed" pinned to the far edge. */}
+										<PopoverAnchor asChild>
+											<div className="group/file-header flex h-9 min-w-0 cursor-pointer items-center gap-2 pl-4 pr-1.5 hover:bg-interactive-hover/40" onClick={() => toggleCollapsed(file.path)}>
+												<ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform duration-150 group-hover/file-header:text-foreground", !isCollapsed && "rotate-90")} />
+												<WorkspaceEntryIcon className="size-icon-xl" kind="file" name={file.path.split("/").pop() ?? file.path} />
+												<div className="flex min-w-0 shrink items-baseline gap-3">
+													<button
+														aria-expanded={!isCollapsed}
+														aria-label={isCollapsed ? t("files.expandFile", { file: file.path }) : t("files.collapseFile", { file: file.path })}
+														className="flex min-w-0 shrink items-baseline text-left text-[length:var(--font-size-base)] outline-none focus-visible:underline"
+														title={file.path}
+														type="button"
+													>
+														{file.path.includes("/") ? <span className="min-w-0 truncate text-muted-foreground">{file.path.slice(0, file.path.lastIndexOf("/") + 1)}</span> : null}
+														<span className="max-w-full shrink-0 truncate text-foreground">{file.path.slice(file.path.lastIndexOf("/") + 1)}</span>
+													</button>
+													<span className="flex shrink-0 items-baseline gap-2.5 text-xs tabular-nums">
+														<span className={cn("font-semibold", statusTone[file.status])}>{statusLabel[file.status]}</span>
+														<span className="flex items-baseline gap-1.5">
+															<span className="text-success">+{file.additions}</span>
+															<span className="text-error">−{file.deletions}</span>
+														</span>
+													</span>
+												</div>
+												{/* Every action is always visible in a 24px slot, 8px apart: the same
+												    32px pitch as the Files header buttons, so the checkbox and feedback
+												    button sit under the header's trailing columns. */}
+												<div className="ml-auto flex shrink-0 items-center gap-2 pl-2" onClick={(event) => event.stopPropagation()}>
+													{file.editable && file.fileFingerprint ? (
+														<HeaderActionTooltip label={t("files.editFile")}>
+															<Button aria-label={t("files.editFile")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { editing: true, mode: "file", scope })} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button>
+														</HeaderActionTooltip>
+													) : null}
+													<HeaderActionTooltip label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}>
+														<Button aria-label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: renderedAvailable ? "rendered" : "file" })} size="icon-sm" type="button" variant="ghost"><FileCode2 aria-hidden="true" className="size-icon-sm" /></Button>
+													</HeaderActionTooltip>
+													{onOpenFile ? (
+														<HeaderActionTooltip label={t("files.openDiffInCenter")}>
+															<Button aria-label={t("files.openDiffInCenter")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile(file.path, { ...fileOpenContext, mode: "diff" })} size="icon-sm" type="button" variant="ghost"><VscodeGoToFileIcon aria-hidden="true" className="size-icon-sm" /></Button>
+														</HeaderActionTooltip>
+													) : null}
+													<HeaderActionTooltip label={t("files.addFeedback")}>
+														<Button aria-label={t("files.addFeedback")} aria-pressed={fileAnnotationActive} className={cn("size-6 text-muted-foreground hover:text-foreground", fileAnnotationActive && "bg-interactive-active text-foreground")} onClick={() => annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint })} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
+													</HeaderActionTooltip>
+													<HeaderActionTooltip label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}>
+														{/* A 24px slot like the buttons beside it keeps the checkbox
+														    centred on the header's trailing action column. */}
+														<span className="grid size-6 place-items-center">
+															<Checkbox
+																aria-label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}
+																checked={isViewed}
+																className="size-4 border border-muted-foreground/70 bg-transparent"
+																onCheckedChange={() => toggleViewed(file)}
+																style={isViewed ? { backgroundColor: "#fff", borderColor: "#fff", color: "#000" } : undefined}
+															/>
+														</span>
+													</HeaderActionTooltip>
+												</div>
+											</div>
+										</PopoverAnchor>
 									</div>
-								</div>
+									{/* Whole-file feedback floats under the header's right edge, like the
+									    browser's comment box: portaled above the list so no later file
+									    header can cover it, and the same in split and unified views. It
+									    stays open on outside clicks so a draft isn't lost; the close
+									    button, Esc, or this file's feedback button close it. */}
+									<PopoverContent
+										align="end"
+										aria-label={t("files.addFeedback")}
+										className="w-[min(32rem,var(--radix-popover-trigger-width))] rounded-2xl border-0 bg-transparent p-0"
+										hideWhenDetached
+										onInteractOutside={(event) => event.preventDefault()}
+										onOpenAutoFocus={(event) => event.preventDefault()}
+										side="bottom"
+										sideOffset={0}
+									>
+										<FileAnnotationComposer annotation={annotation} />
+									</PopoverContent>
+								</Popover>
 							);
 						}}
 						style={{ height: "100%" }}

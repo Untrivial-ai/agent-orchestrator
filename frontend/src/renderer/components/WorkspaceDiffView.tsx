@@ -1,5 +1,6 @@
 import {
 	memo,
+	useCallback,
 	useEffect,
 	useLayoutEffect,
 	useMemo,
@@ -11,7 +12,7 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { ArrowUp, Check, LoaderCircle, Plus, X } from "lucide-react";
+import { Check, LoaderCircle, Plus, Send as SendIcon } from "lucide-react";
 import type { FileAnnotationTarget } from "../../shared/file-annotations";
 import {
 	type WorkspaceCompareMode,
@@ -662,9 +663,10 @@ export function LineFeedbackButtonControl({
 	);
 }
 
-// Like the browser's annotation box: one rounded card with a close control,
-// a single auto-growing line, and a send arrow. Enter sends, Shift+Enter adds a
-// line, Esc closes.
+// Like the browser's annotation box: one rounded card with a single
+// auto-growing line, and the send shortcut, Cancel and Send underneath so the
+// way out and the way forward are both obvious. ⌘/Ctrl+Enter sends (plain Enter
+// adds a line, as the hint says), Esc cancels.
 const COMPOSER_MAX_HEIGHT_PX = 160;
 
 export function FileAnnotationComposer({ annotation }: { annotation: FileAnnotationModel }) {
@@ -685,12 +687,29 @@ export function FileAnnotationComposer({ annotation }: { annotation: FileAnnotat
 		const frame = window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
 		return () => window.cancelAnimationFrame(frame);
 	}, [target]);
-	useLayoutEffect(() => {
+	const fitHeight = useCallback(() => {
 		const textarea = textareaRef.current;
 		if (!textarea) return;
-		textarea.style.height = "auto";
+		// Back to one row first; an empty box stays one row, so a placeholder that
+		// wrapped while a popover was still settling its width can't size it.
+		textarea.style.height = "";
+		if (!textarea.value) return;
 		textarea.style.height = `${Math.min(textarea.scrollHeight, COMPOSER_MAX_HEIGHT_PX)}px`;
-	}, [text, target]);
+	}, []);
+	useLayoutEffect(fitHeight, [fitHeight, text, target]);
+	// Text rewraps when the box's width changes (popover settling, panel resize).
+	useEffect(() => {
+		const textarea = textareaRef.current;
+		if (!textarea || typeof ResizeObserver === "undefined") return;
+		let width = textarea.clientWidth;
+		const observer = new ResizeObserver(() => {
+			if (textarea.clientWidth === width) return;
+			width = textarea.clientWidth;
+			fitHeight();
+		});
+		observer.observe(textarea);
+		return () => observer.disconnect();
+	}, [fitHeight, target]);
 	if (!target) return null;
 	const side = target.side === "file" ? "" : t(target.side === "old" ? "files.oldSide" : "files.newSide");
 	const targetLabel =
@@ -713,56 +732,61 @@ export function FileAnnotationComposer({ annotation }: { annotation: FileAnnotat
 					submit();
 				}}
 			>
-				<div className="flex min-w-0 items-start gap-2">
+				<textarea
+					aria-label={t("files.feedbackLabel", { target: targetLabel })}
+					className={cn(
+						"board-scrollbar block min-h-7 w-full resize-none border-0 bg-transparent py-1 text-[13px] leading-5 text-foreground outline-none placeholder:text-muted-foreground disabled:opacity-60",
+						// Empty, a placeholder that wraps in a narrow column is clipped rather
+						// than growing a scrollbar in a one-line box.
+						text ? "overflow-y-auto" : "overflow-hidden",
+					)}
+					disabled={sending || sent}
+					onChange={(event) => setText(event.target.value)}
+					onKeyDown={(event) => {
+						if (event.key === "Escape") {
+							event.preventDefault();
+							annotation.cancel();
+						} else if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+							event.preventDefault();
+							submit();
+						}
+					}}
+					placeholder={t("files.feedbackPlaceholder")}
+					ref={textareaRef}
+					rows={1}
+					title={targetLabel}
+					value={text}
+				/>
+				{annotation.status === "error" ? (
+					<p className="pt-1 text-xs text-error" role="alert">
+						{annotation.error}
+					</p>
+				) : null}
+				<div className="mt-1 flex items-center justify-end gap-1">
+					{/* Truncates rather than squeezing the buttons in a narrow split column. */}
+					<span className="mr-auto min-w-0 truncate text-caption text-passive">{t("files.feedbackShortcut")}</span>
 					<Button
-						aria-label={t("files.cancelFeedback")}
-						className="shrink-0 text-muted-foreground hover:text-foreground"
+						className="px-2 text-xs text-muted-foreground hover:text-foreground"
 						disabled={sending}
 						onClick={annotation.cancel}
-						size="icon-sm"
-						title={t("files.cancelFeedback")}
+						size="sm"
 						type="button"
 						variant="ghost"
 					>
-						<X aria-hidden="true" />
+						{t("files.cancelFeedback")}
 					</Button>
-					<textarea
-						aria-label={t("files.feedbackLabel", { target: targetLabel })}
-						className="board-scrollbar min-h-7 min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent py-1 text-[13px] leading-5 text-foreground outline-none placeholder:text-passive disabled:opacity-60"
-						disabled={sending || sent}
-						onChange={(event) => setText(event.target.value)}
-						onKeyDown={(event) => {
-							if (event.key === "Escape") {
-								event.preventDefault();
-								annotation.cancel();
-							} else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-								event.preventDefault();
-								submit();
-							}
-						}}
-						placeholder={t("files.feedbackPlaceholder")}
-						ref={textareaRef}
-						rows={1}
-						title={targetLabel}
-						value={text}
-					/>
 					<Button
 						aria-label={sent ? t("files.feedbackSent") : t("files.sendFeedback")}
-						className="shrink-0 text-muted-foreground hover:text-foreground disabled:opacity-100"
+						className="text-muted-foreground hover:text-foreground disabled:opacity-100"
 						disabled={!text.trim() || sending || sent}
 						size="icon-sm"
 						title={sent ? t("files.feedbackSent") : t("files.sendFeedback")}
 						type="submit"
 						variant="ghost"
 					>
-						{sending ? <LoaderCircle aria-hidden="true" className="animate-spin" /> : sent ? <Check aria-hidden="true" className="text-success" /> : <ArrowUp aria-hidden="true" className={cn(!text.trim() && "opacity-50")} />}
+						{sending ? <LoaderCircle aria-hidden="true" className="animate-spin" /> : sent ? <Check aria-hidden="true" className="text-success" /> : <SendIcon aria-hidden="true" className={cn(!text.trim() && "opacity-50")} />}
 					</Button>
 				</div>
-				{annotation.status === "error" ? (
-					<p className="px-9 pt-1 text-xs text-error" role="alert">
-						{annotation.error}
-					</p>
-				) : null}
 			</form>
 		</div>
 	);

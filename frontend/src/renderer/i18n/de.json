@@ -1646,7 +1646,7 @@
 	"files.lineFeedbackTarget": "{{file}} · {{side}}-Zeile {{line}}",
 	"files.feedbackLabel": "Feedback für {{target}}",
 	"files.feedbackPlaceholder": "Beschreiben Sie, was der Agent ändern soll...",
-	"files.feedbackShortcut": "⌘/Ctrl + Enter zum Senden · Esc zum Abbrechen",
+	"files.feedbackShortcut": "⌘/Ctrl + Enter zum Senden",
 	"files.cancelFeedback": "Abbrechen",
 	"files.sendFeedback": "Feedback senden",
 	"files.sendingFeedback": "Wird gesendet...",
