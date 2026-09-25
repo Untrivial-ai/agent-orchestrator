@@ -1358,6 +1358,79 @@ func delayedCancelSpawn(
 	}
 }
 
+func TestACPDriverStartsCwdOnlyWhenAdditionalDirectoriesAreUnsupported(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	root := t.TempDir()
+	conv, err := driver.Start(context.Background(), ports.ChatStartConfig{
+		WorkspacePath:         root,
+		AdditionalDirectories: []string{t.TempDir()},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer conv.Close()
+
+	agent.mu.Lock()
+	params := agent.newParams
+	agent.mu.Unlock()
+	if params.Cwd != root {
+		t.Fatalf("session/new cwd = %q, want %q", params.Cwd, root)
+	}
+	if len(params.AdditionalDirectories) != 0 {
+		t.Fatalf("session/new additional directories = %#v, want none", params.AdditionalDirectories)
+	}
+}
+
+func TestACPDriverResumesCwdOnlyWhenAdditionalDirectoriesAreUnsupported(t *testing.T) {
+	agent := &fakeAgent{
+		capabilities: &acpsdk.AgentCapabilities{
+			SessionCapabilities: acpsdk.SessionCapabilities{
+				Resume: &acpsdk.SessionResumeCapabilities{},
+			},
+		},
+	}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	root := t.TempDir()
+	conv, err := driver.Resume(context.Background(), ports.ChatResumeConfig{
+		ProviderConversationID: "provider-session-1",
+		WorkspacePath:          root,
+		AdditionalDirectories:  []string{t.TempDir()},
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	defer conv.Close()
+
+	agent.mu.Lock()
+	params := agent.resumeParams
+	resumeCalls := agent.resumeCalls
+	agent.mu.Unlock()
+	if resumeCalls != 1 {
+		t.Fatalf("session/resume calls = %d, want 1", resumeCalls)
+	}
+	if params.Cwd != root {
+		t.Fatalf("session/resume cwd = %q, want %q", params.Cwd, root)
+	}
+	if len(params.AdditionalDirectories) != 0 {
+		t.Fatalf("session/resume additional directories = %#v, want none", params.AdditionalDirectories)
+	}
+}
+
 func TestACPDriverNegotiatesRichClientCapabilitiesAndNativePromptContent(t *testing.T) {
 	agent := &fakeAgent{
 		promptNoPermission: true,
