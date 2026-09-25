@@ -1500,7 +1500,11 @@ function ChatWorkspaceContent({
 									disabledPlaceholder={
 										controllerTransitioning || newWorkDisabled ? "" : undefined
 									}
-									emptyPlaceholder={conversationEmpty ? emptyChatPlaceholder : undefined}
+									// Keep the composer useful outside the centered welcome state too. A
+									// task can have non-message activity (for example MCP status) before
+									// its first visible chat message, and the generic placeholder makes
+									// that still-empty composer look like a regression.
+									emptyPlaceholder={emptyChatPlaceholder}
 									skills={skills}
 									filePaths={filePaths}
 									filePathsTruncated={filePathsTruncated}
