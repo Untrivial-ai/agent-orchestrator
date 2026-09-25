@@ -112,6 +112,26 @@ func TestRegistryIncludesOMP(t *testing.T) {
 	t.Fatal("Harnessed does not contain omp")
 }
 
+func TestRegistryIncludesOpenHands(t *testing.T) {
+	reg, err := Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := reg.Get("openhands")
+	if !ok {
+		t.Fatal("registry does not contain openhands")
+	}
+	if name := adapter.Manifest().Name; name != "OpenHands" {
+		t.Fatalf("openhands manifest name = %q, want OpenHands", name)
+	}
+	for _, item := range Harnessed() {
+		if item.Harness == domain.HarnessOpenHands {
+			return
+		}
+	}
+	t.Fatal("Harnessed does not contain openhands")
+}
+
 func TestHarnessedExcludesFakeHarness(t *testing.T) {
 	for _, ha := range Harnessed() {
 		if ha.Harness == domain.HarnessFake {

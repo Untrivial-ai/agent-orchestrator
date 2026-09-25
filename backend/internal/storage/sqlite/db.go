@@ -1749,7 +1749,8 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 	needsPrimeAgent := !strings.Contains(schema, "'prime-agent'")
 	needsOMP := !strings.Contains(schema, "'omp'")
 	needsUnreal := !strings.Contains(schema, "'unreal-agent'")
-	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP && !needsUnreal {
+	needsOpenHands := !strings.Contains(schema, "'openhands'")
+	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP && !needsUnreal && !needsOpenHands {
 		return nil
 	}
 	if _, err := db.Exec(`PRAGMA writable_schema = ON`); err != nil {
@@ -1796,6 +1797,14 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 			replacement{sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnreal},
 		)
 	}
+	if needsOpenHands {
+		// Runs after the Unreal Agent repair above, so a legacy constraint that
+		// reached the Unreal shape through it is widened too. Both known
+		// variants keep the legacy QM value.
+		for _, old := range []string{sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnreal, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnreal} {
+			repairs = append(repairs, replacement{old, strings.Replace(old, "'unreal-agent'", "'unreal-agent', 'openhands'", 1)})
+		}
+	}
 	for _, r := range repairs {
 		if _, err := db.Exec(
 			`UPDATE sqlite_master
@@ -1829,6 +1838,9 @@ WHERE type = 'table' AND name = 'sessions'`,
 	}
 	if !strings.Contains(schema, "'unreal-agent'") {
 		return fmt.Errorf("schema repair: sessions harness constraint is missing Unreal Agent and did not match known pre-Unreal-Agent schema")
+	}
+	if !strings.Contains(schema, "'openhands'") {
+		return fmt.Errorf("schema repair: sessions harness constraint is missing OpenHands and did not match known pre-OpenHands schema")
 	}
 	return nil
 }

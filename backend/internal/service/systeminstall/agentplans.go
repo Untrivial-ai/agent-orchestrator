@@ -36,6 +36,7 @@ var agentDocumentationURLs = map[Target]string{
 	TargetPrimeAgent: "https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/quickstart.md",
 	TargetOMP:        "https://github.com/can1357/oh-my-pi",
 	TargetUnreal:     "https://github.com/unreallabsai/unreal-agent",
+	TargetOpenHands:  "https://docs.openhands.dev/openhands/usage/cli/installation",
 }
 
 func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation) []Plan {
@@ -203,6 +204,14 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 			Target: target, Unsupported: true, Method: "manual",
 			Reason: "Unreal Agent is built into AO; update AO to update the harness.",
 		}}
+	case TargetOpenHands:
+		// The package pins Requires-Python ==3.12.*, which uv resolves (and
+		// downloads if needed) on its own; pipx would need a 3.12 interpreter
+		// already on PATH, so it is not offered.
+		plans = []Plan{s.planUV(target, "openhands")}
+		if s.goos == "darwin" || s.goos == "linux" {
+			plans = append(plans, s.planShellInstaller(target, "https://install.openhands.dev/install.sh", "sh"))
+		}
 	default:
 		plans = []Plan{{Target: target, Unsupported: true, Method: "manual", Reason: "unknown install target"}}
 	}

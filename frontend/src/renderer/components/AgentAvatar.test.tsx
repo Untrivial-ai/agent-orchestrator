@@ -17,4 +17,13 @@ describe("AgentAvatar", () => {
 
 		expect(screen.getByRole("img", { name: "omp" })).toHaveAttribute("src", expect.stringContaining("omp.png"));
 	});
+
+	it("renders the OpenHands brand asset", () => {
+		render(<AgentAvatar provider="openhands" />);
+
+		expect(screen.getByRole("img", { name: "openhands" })).toHaveAttribute(
+			"src",
+			expect.stringContaining("openhands.svg"),
+		);
+	});
 });

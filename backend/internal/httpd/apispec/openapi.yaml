@@ -10128,6 +10128,7 @@ components:
           - pi
           - kimchi
           - omp
+          - openhands
           - prime-agent
           - autohand
           - unreal-agent
@@ -10755,6 +10756,7 @@ components:
           - prime-agent
           - omp
           - unreal-agent
+          - openhands
           - cloudflared
           type: string
         updatedAt:
@@ -12899,6 +12901,7 @@ components:
           - pi
           - kimchi
           - omp
+          - openhands
           - prime-agent
           - autohand
           - unreal-agent
