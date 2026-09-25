@@ -808,6 +808,8 @@ export function AssistantMessage({
 	durationMs?: number;
 	/** Start time for the live elapsed clock while the response is streaming. */
 	startedAt?: string;
+	/** Keep the working label mounted while this response is still arriving. */
+	showWorking?: boolean;
 }) {
 	const visibleText = useSmoothStreamingText(message);
 	const renderingStreaming = message.streaming || visibleText.length < message.text.length;
@@ -818,6 +820,7 @@ export function AssistantMessage({
 	return (
 		<div className="group/message relative">
 			<ChatMarkdown text={visibleText} streaming={renderingStreaming} />
+			{showCopy ? <WorkingLabel visible={Boolean(showWorking && renderingStreaming)} /> : null}
 			{showActions ? (
 				// One action row for the completed answer, not one after every prose
 				// fragment the provider emitted while working. Copy, rollback, and
@@ -867,6 +870,18 @@ export function AssistantMessage({
 					</span>
 				</div>
 			) : null}
+		</div>
+	);
+}
+
+export function WorkingLabel({ visible }: { visible: boolean }) {
+	return (
+		<div className={cn("chat-working-label-container", visible && "chat-working-label-container-visible")}>
+			<div className="min-h-0 overflow-hidden pl-1 text-xs font-medium">
+				<span role="status" data-testid="live-working-label" className="chat-working-shimmer">
+					Working
+				</span>
+			</div>
 		</div>
 	);
 }

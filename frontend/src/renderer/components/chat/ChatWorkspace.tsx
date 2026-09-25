@@ -103,6 +103,7 @@ import {
 	TurnChangedFiles,
 	TurnDuration,
 	TurnOutcome,
+	WorkingLabel,
 	type TurnOutcomeRetryControl,
 } from "./ChatTimelineItems";
 import { HumanMessageEditor } from "./HumanMessageEditor";
@@ -3267,7 +3268,8 @@ const TurnGroup = memo(function TurnGroup({
 						busy={busy}
 						queued={queued}
 						newHumanMessageIds={newHumanMessageIds}
-					showCopy={run.items[0]?.id === copyableMessageId}
+						showCopy={run.items[0]?.id === copyableMessageId}
+						showWorking={group.live && run.items[0]?.id === copyableMessageId}
 						onRollback={
 							canRollback && run.items[0]?.id === copyableMessageId
 								? () => onRollback(group.turnId as string)
@@ -3303,13 +3305,7 @@ const TurnGroup = memo(function TurnGroup({
 			{!copyableMessageId &&
 			(group.live || canRollback || (group.outcome?.durationMs !== undefined && group.outcome.durationMs > 0)) ? (
 				<>
-				{group.live ? (
-					<div className="mb-0.5 pl-1 text-xs font-medium">
-						<span role="status" data-testid="live-working-label" className="chat-working-shimmer">
-							Working
-						</span>
-					</div>
-				) : null}
+				<WorkingLabel visible={Boolean(group.live)} />
 				<div className="flex h-7 items-center gap-0.5">
 					{group.live ? (
 						<div className="-ml-1.5 size-7 shrink-0">
@@ -3414,6 +3410,7 @@ function TimelineItem({
 	queued,
 	newHumanMessageIds,
 	showCopy,
+	showWorking,
 	onRollback,
 	rollbackDisabled,
 	durationMs,
@@ -3449,6 +3446,8 @@ function TimelineItem({
 	newHumanMessageIds: ReadonlySet<string>;
 	/** This is the final assistant response of a turn that has finished. */
 	showCopy?: boolean;
+	/** Keep the working label mounted while the final assistant response streams. */
+	showWorking?: boolean;
 	/** Undo this finished turn from the answer that owns its copy action. */
 	onRollback?: () => void;
 	/** Keep the action row mounted while another turn is running. */
@@ -3466,6 +3465,7 @@ function TimelineItem({
 				<AssistantMessage
 					message={item}
 					showCopy={showCopy}
+					showWorking={showWorking}
 					onRollback={onRollback}
 					rollbackDisabled={rollbackDisabled}
 					durationMs={durationMs}
