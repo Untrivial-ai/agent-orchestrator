@@ -18,8 +18,11 @@ import { useUiStore } from "../../stores/ui-store";
 import { type FileOpenOptions } from "../FileContentPane";
 import { PanelMessage, RetryButton, FileAnnotationComposer, LineFeedbackButtonControl, type FileAnnotationModel } from "../WorkspaceDiffView";
 import { VscodeGoToFileIcon } from "../icons/VscodeGoToFileIcon";
+import { WorkspaceEntryIcon } from "../WorkspaceEntryIcon";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
+import { MENU_TRIGGER_CHROME } from "../ui/option-menu";
+import { SettingsMenuTrigger } from "../settings/SettingsMenuTrigger";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { formatTimeTerse } from "../../lib/format-time";
 import { AO_PIERRE_SURFACE_CSS } from "./pierreTheme";
@@ -29,6 +32,17 @@ const PATCH_BATCH_SIZE = 100;
 const parsedPatchCache = new Map<string, FileDiffMetadata[]>();
 const MAX_PARSED_GROUPS = 24;
 const workingScopeOrder = ["unstaged", "staged"] as const;
+const SOURCE_CONTROL = MENU_TRIGGER_CHROME;
+// Secondary file actions stay out of the way until the row is hovered or a
+// control inside it has keyboard focus (so they remain reachable by Tab).
+const FILE_HEADER_HOVER_ACTIONS = "flex items-center opacity-0 transition-opacity duration-fast group-hover/file-header:opacity-100 group-focus-within/file-header:opacity-100";
+
+export type ReviewSourceMenu = {
+	/** Short description of the current review source, shown on the trigger. */
+	label: string;
+	scopes: { key: string; label: string; count: number; selected: boolean; select: () => void }[];
+	commits: { sha: string; subject: string; timestamp: string; selected: boolean; select: () => void }[];
+};
 
 function chunked<T>(items: readonly T[], size: number): T[][] {
 	const chunks: T[][] = [];
@@ -125,10 +139,16 @@ export function WorkspaceReviewPane({
 	filter,
 	onBrowseAll,
 	onOpenFile,
+	onSourceMenuChange,
 	sessionId,
 	split,
 }: {
 	annotation: FileAnnotationModel;
+	/**
+	 * When set, the scope/commit choices are handed to the parent's source menu
+	 * (one dropdown for "what am I reviewing") instead of rendering inline.
+	 */
+	onSourceMenuChange?: (menu: ReviewSourceMenu | null) => void;
 	data: WorkspaceFilesResponse;
 	filter: string;
 	onBrowseAll: () => void;
@@ -361,6 +381,59 @@ export function WorkspaceReviewPane({
 	const commitHashForButton = (selectedCommit?.sha ?? data.commits[0]?.sha)?.slice(0, 7);
 	const showReviewScopeSwitcher = hasAnyReviewFiles && workingSourceOptions.length > 0;
 
+	// Handlers change with the annotation model; read them through a ref so the
+	// published menu only changes when what it shows changes.
+	const menuActionsRef = useRef({ selectCommit, selectScope });
+	menuActionsRef.current = { selectCommit, selectScope };
+	const sourceMenu = useMemo<ReviewSourceMenu>(() => {
+		const label = (entry: WorkspaceDiffScope) => entry === "combined" ? t("files.reviewChanges") : t(`files.section.${entry}`);
+		const scopeEntries: WorkspaceDiffScope[] = showCombinedWorkingSource ? ["combined"] : [...visibleWorkingScopes];
+		return {
+			label: selectedCommit ? selectedCommit.sha.slice(0, 7) : label(scope),
+			scopes: showReviewScopeSwitcher
+				? scopeEntries.map((entry) => ({ key: entry, label: label(entry), count: sectionFiles(data, entry).length, selected: scope === entry, select: () => menuActionsRef.current.selectScope(entry) }))
+				: [],
+			commits: data.commits.map((commit) => ({ sha: commit.sha, subject: commit.subject, timestamp: commit.timestamp, selected: scope === "committed" && selectedCommit?.sha === commit.sha, select: () => menuActionsRef.current.selectCommit(commit) })),
+		};
+	}, [data, scope, selectedCommit, showCombinedWorkingSource, showReviewScopeSwitcher, t, visibleWorkingScopes]);
+	useEffect(() => {
+		onSourceMenuChange?.(sourceMenu);
+	}, [onSourceMenuChange, sourceMenu]);
+	useEffect(() => () => onSourceMenuChange?.(null), [onSourceMenuChange]);
+	const totalAdditions = allFiles.reduce((sum, file) => sum + file.additions, 0);
+	const totalDeletions = allFiles.reduce((sum, file) => sum + file.deletions, 0);
+	// Scope + Commits pickers wear the same trigger chrome as the source picker
+	// they sit next to; an unselected scope stays a quiet ghost.
+	const sourceControls = (
+		<>
+			{showReviewScopeSwitcher ? workingSourceOptions.map((entry) => (
+				<button
+					aria-pressed={scope === entry}
+					className={cn(SOURCE_CONTROL, "h-control-md shrink-0 bg-transparent text-xs", scope === entry ? "text-foreground" : "text-muted-foreground")}
+					disabled={!entry}
+					key={entry}
+					onClick={() => selectScope(entry)}
+					type="button"
+				>
+					{workingSourceLabel(entry)}
+					<span className="font-mono text-caption tabular-nums text-passive">{sectionFiles(data, entry).length}</span>
+				</button>
+			)) : null}
+			<SettingsMenuTrigger
+				aria-expanded={commitBrowserOpen}
+				aria-pressed={scope === "committed"}
+				className={cn("h-control-md min-w-0 shrink bg-transparent text-xs", scope === "committed" || commitBrowserOpen ? "text-foreground" : "text-muted-foreground")}
+				data-state={commitBrowserOpen ? "open" : "closed"}
+				disabled={data.commits.length === 0}
+				onClick={() => setCommitBrowserOpen((open) => !open)}
+			>
+				<GitCommitHorizontal aria-hidden="true" className="size-icon-sm" />
+				<span className="shrink-0">{t("files.commits")}</span>
+				{commitHashForButton ? <span className="min-w-0 truncate font-mono text-caption text-passive">{commitHashForButton}</span> : null}
+			</SettingsMenuTrigger>
+		</>
+	);
+
 	return (
 		<div
 			className="flex h-full min-h-0 flex-col"
@@ -368,34 +441,32 @@ export function WorkspaceReviewPane({
 			onPointerMove={gutterHover.onPointerMove}
 			ref={reviewRef}
 		>
-			<div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border bg-surface px-2 py-1.5">
-				{showReviewScopeSwitcher ? workingSourceOptions.map((entry) => (
-					<Button
-						aria-pressed={scope === entry}
-						disabled={!entry}
-						key={entry}
-						onClick={() => selectScope(entry)}
-						size="sm"
-						type="button"
-						variant={scope === entry ? "secondary" : "ghost"}
-					>
-						{workingSourceLabel(entry)}
-						<span className="text-caption text-passive">{sectionFiles(data, entry).length}</span>
-					</Button>
-				)) : null}
-				<Button aria-expanded={commitBrowserOpen} aria-pressed={scope === "committed"} className="gap-1.5" disabled={data.commits.length === 0} onClick={() => setCommitBrowserOpen((open) => !open)} size="sm" type="button" variant={scope === "committed" ? "secondary" : "ghost"}>
-					<GitCommitHorizontal aria-hidden="true" className="size-icon-sm" />
-					<span>{t("files.commits")}</span>
-					{commitHashForButton ? <span className="text-caption text-passive">{commitHashForButton}</span> : null}
-				</Button>
-				{!commitBrowserOpen ? <div className="ml-auto flex items-center gap-1 text-caption text-muted-foreground">
-					<span>{t("files.reviewProgress", { total: allFiles.length, viewed: viewedCount })}</span>
-					<HeaderActionTooltip label={t(allFilesCollapsed ? "files.expandAll" : "files.collapseAll")}>
-						<Button aria-label={t(allFilesCollapsed ? "files.expandAll" : "files.collapseAll")} onClick={toggleAll} size="icon-sm" type="button" variant="ghost">
-							{allFilesCollapsed ? <ChevronsUpDown aria-hidden="true" /> : <ChevronsDownUp aria-hidden="true" />}
-						</Button>
-					</HeaderActionTooltip>
-				</div> : <span className="ml-auto text-caption text-muted-foreground">{t("files.selectCommit")}</span>}
+			{/* Context row (like a VCS "Committed ▾ <subject> +x −y" bar): what is
+			    being reviewed on the left, review progress on the right. */}
+			<div className="flex h-inspector-tabs shrink-0 items-center gap-2 border-b border-border px-3">
+				{onSourceMenuChange ? null : <div className="flex shrink-0 items-center rounded-md bg-[var(--color-bg-settings-trigger)]">{sourceControls}</div>}
+				{commitBrowserOpen ? (
+					<span className="min-w-0 truncate text-caption text-muted-foreground">{t("files.selectCommit")}</span>
+				) : (
+					<>
+						<span className="min-w-0 truncate text-xs text-foreground" title={selectedCommit?.subject}>
+							{selectedCommit ? selectedCommit.subject : workingSourceLabel(scope)}
+						</span>
+						{selectedCommit ? <span className="shrink-0 font-mono text-caption text-passive">{selectedCommit.sha.slice(0, 7)}</span> : null}
+						<span className="flex shrink-0 items-center gap-1.5 font-mono text-caption tabular-nums">
+							<span className="text-success">+{totalAdditions}</span>
+							<span className="text-error">−{totalDeletions}</span>
+						</span>
+						<div className="ml-auto flex shrink-0 items-center gap-1 text-caption text-muted-foreground">
+							<span className="tabular-nums">{t("files.reviewProgress", { total: allFiles.length, viewed: viewedCount })}</span>
+							<HeaderActionTooltip label={t(allFilesCollapsed ? "files.expandAll" : "files.collapseAll")}>
+								<Button aria-label={t(allFilesCollapsed ? "files.expandAll" : "files.collapseAll")} onClick={toggleAll} size="icon-sm" type="button" variant="ghost">
+									{allFilesCollapsed ? <ChevronsUpDown aria-hidden="true" /> : <ChevronsDownUp aria-hidden="true" />}
+								</Button>
+							</HeaderActionTooltip>
+						</div>
+					</>
+				)}
 			</div>
 			{commitBrowserOpen ? (
 				<CommitBrowser
@@ -457,10 +528,14 @@ export function WorkspaceReviewPane({
 							const renderedAvailable = canOpenRendered(file);
 							const fileAnnotationActive = annotation.target?.surface !== "focused" && annotation.target?.path === file.path && annotation.target.side === "file";
 							return (
-								<div className="relative bg-surface">
-									<div className="flex h-10 min-w-0 items-center gap-2 border-b border-border px-2">
+								<div className="relative bg-background">
+									{/* Name first (dim folder + bright file name), then what you
+									    act on right beside it; secondary opens reveal on hover,
+									    and "viewed" stays pinned to the far edge. */}
+									<div className="group/file-header flex h-10 min-w-0 items-center gap-1.5 border-b border-border pl-1 pr-3 hover:bg-interactive-hover/40">
 										<Button
 											aria-label={isCollapsed ? t("files.expandFile", { file: file.path }) : t("files.collapseFile", { file: file.path })}
+											className="shrink-0 text-muted-foreground hover:text-foreground"
 											onClick={() => toggleCollapsed(file.path)}
 											size="icon-sm"
 											type="button"
@@ -468,35 +543,45 @@ export function WorkspaceReviewPane({
 										>
 											{isCollapsed ? <ChevronRight aria-hidden="true" className="size-icon-sm" /> : <ChevronDown aria-hidden="true" className="size-icon-sm" />}
 										</Button>
-										<span className={cn("font-mono text-xs font-semibold", statusTone[file.status])}>{statusLabel[file.status]}</span>
-										<button
-											aria-label={isCollapsed ? t("files.expandFile", { file: file.path }) : t("files.collapseFile", { file: file.path })}
-											className="min-w-0 flex-1 truncate text-left font-mono text-xs hover:underline"
-											onClick={() => toggleCollapsed(file.path)}
-											title={file.path}
-											type="button"
-										>
-											{file.path}
-										</button>
-										<span className="text-caption text-success">+{file.additions}</span>
-										<span className="text-caption text-error">−{file.deletions}</span>
+										<WorkspaceEntryIcon className="size-icon-base" kind="file" name={file.path.split("/").pop() ?? file.path} />
+										<div className="flex min-w-0 shrink items-baseline gap-2.5">
+											<button
+												aria-label={isCollapsed ? t("files.expandFile", { file: file.path }) : t("files.collapseFile", { file: file.path })}
+												className="flex min-w-0 shrink items-baseline text-left text-[length:var(--font-size-base)]"
+												onClick={() => toggleCollapsed(file.path)}
+												title={file.path}
+												type="button"
+											>
+												{file.path.includes("/") ? <span className="min-w-0 truncate text-muted-foreground">{file.path.slice(0, file.path.lastIndexOf("/") + 1)}</span> : null}
+												<span className="max-w-full shrink-0 truncate text-foreground">{file.path.slice(file.path.lastIndexOf("/") + 1)}</span>
+											</button>
+											<span className="flex shrink-0 items-baseline gap-1.5 font-mono text-xs tabular-nums">
+												<span className={cn("font-semibold", statusTone[file.status])}>{statusLabel[file.status]}</span>
+												<span className="text-success">+{file.additions}</span>
+												<span className="text-error">−{file.deletions}</span>
+											</span>
+										</div>
 										<div className="flex shrink-0 items-center">
-											{file.editable && file.fileFingerprint ? (
-												<HeaderActionTooltip label={t("files.editFile")}>
-											<Button aria-label={t("files.editFile")} className="size-6" onClick={(event) => { event.stopPropagation(); onOpenFile?.(file.path, { editing: true, mode: "file", scope }); }} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button>
+											<div className={FILE_HEADER_HOVER_ACTIONS}>
+												{file.editable && file.fileFingerprint ? (
+													<HeaderActionTooltip label={t("files.editFile")}>
+														<Button aria-label={t("files.editFile")} className="size-6 text-muted-foreground hover:text-foreground" onClick={(event) => { event.stopPropagation(); onOpenFile?.(file.path, { editing: true, mode: "file", scope }); }} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button>
+													</HeaderActionTooltip>
+												) : null}
+												<HeaderActionTooltip label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}>
+													<Button aria-label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: renderedAvailable ? "rendered" : "file" })} size="icon-sm" type="button" variant="ghost"><FileCode2 aria-hidden="true" className="size-icon-sm" /></Button>
 												</HeaderActionTooltip>
-											) : null}
+												{onOpenFile ? (
+													<HeaderActionTooltip label={t("files.openDiffInCenter")}>
+														<Button aria-label={t("files.openDiffInCenter")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile(file.path, { ...fileOpenContext, mode: "diff" })} size="icon-sm" type="button" variant="ghost"><VscodeGoToFileIcon aria-hidden="true" className="size-icon-sm" /></Button>
+													</HeaderActionTooltip>
+												) : null}
+											</div>
+										</div>
+										<div className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
 											<HeaderActionTooltip label={t("files.addFeedback")}>
-												<Button aria-label={t("files.addFeedback")} className="size-6" onClick={(event) => { event.stopPropagation(); annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint }); }} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
+												<Button aria-label={t("files.addFeedback")} className="size-6 text-muted-foreground hover:text-foreground" onClick={(event) => { event.stopPropagation(); annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint }); }} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
 											</HeaderActionTooltip>
-											<HeaderActionTooltip label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}>
-										<Button aria-label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")} className="size-6" onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: renderedAvailable ? "rendered" : "file" })} size="icon-sm" type="button" variant="ghost"><FileCode2 aria-hidden="true" className="size-icon-sm" /></Button>
-											</HeaderActionTooltip>
-											{onOpenFile ? (
-												<HeaderActionTooltip label={t("files.openDiffInCenter")}>
-											<Button aria-label={t("files.openDiffInCenter")} className="size-6" onClick={() => onOpenFile(file.path, { ...fileOpenContext, mode: "diff" })} size="icon-sm" type="button" variant="ghost"><VscodeGoToFileIcon aria-hidden="true" className="size-icon-sm" /></Button>
-												</HeaderActionTooltip>
-											) : null}
 											<HeaderActionTooltip label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}>
 												<Checkbox
 													aria-label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}

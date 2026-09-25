@@ -68,6 +68,7 @@ import {
 import { getAgentActivityView, getSessionTimelinePillView } from "../lib/session-presentation";
 import { BrowserPanelView, type BrowserAnnotationQueueModel } from "./BrowserPanel";
 import type { BrowserViewModel } from "../hooks/useBrowserView";
+import { FilesTopbarHostContext } from "./files-topbar-host";
 import { useUiStore } from "../stores/ui-store";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
@@ -199,6 +200,7 @@ export const SessionInspector = memo(function SessionInspector({
 	const { t } = useTranslation();
 	const [internalView, setInternalView] = useState<InspectorView>("summary");
 	const [browserTopbarHost, setBrowserTopbarHost] = useState<HTMLDivElement | null>(null);
+	const [filesTopbarHost, setFilesTopbarHost] = useState<HTMLDivElement | null>(null);
 	const requestedView = viewProp ?? internalView;
 	// Badge the Browser tab when a preview target arrived without us opening it.
 	const browserUnseen = useUiStore((state) =>
@@ -273,11 +275,22 @@ export const SessionInspector = memo(function SessionInspector({
 						/>
 					) : undefined
 				}
-				filesView={session ? <FilesView filesView={filesView} onOpenFiles={onOpenFiles} /> : undefined}
+				filesView={
+					session ? (
+						<FilesTopbarHostContext.Provider value={filesTopbarHost}>
+							<FilesView filesView={filesView} onOpenFiles={onOpenFiles} />
+						</FilesTopbarHostContext.Provider>
+					) : undefined
+				}
 						headerActions={
 							view === "browser" && !browserPoppedOut ? (
 								<>
 									<div className="browser-panel__topbar-host min-w-0 flex-1" ref={setBrowserTopbarHost} />
+									<span aria-hidden="true" className="session-inspector-actions-spacer" />
+								</>
+							) : view === "files" && filesView ? (
+								<>
+									<div className="files-panel__topbar-host min-w-0 flex-1" ref={setFilesTopbarHost} />
 									<span aria-hidden="true" className="session-inspector-actions-spacer" />
 								</>
 							) : (

@@ -213,11 +213,15 @@ describe("SessionFileExplorer", () => {
 			};
 		});
 		renderWithQuery(<SessionFileExplorer sessionId="sess-pr" />);
+		expect(await screen.findByRole("tablist", { name: "File view" })).toBeInTheDocument();
 
-		await userEvent.click(screen.getByRole("combobox", { name: "File source" }));
-		await userEvent.click(await screen.findByRole("option", { name: "PR #42 · feature/files" }));
+		await userEvent.click(screen.getByRole("button", { name: "File source" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Branch" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "PR #42 · feature/files" }));
 
-		expect(screen.getByText("PR #42 · feature/files", { selector: "div" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "File source" })).toHaveTextContent("PR #42 · feature/files");
+		// The Changes view is workspace-only, so a PR source hides the switch.
+		expect(screen.queryByRole("tablist", { name: "File view" })).not.toBeInTheDocument();
 		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("true");
 		expect(getMock).toHaveBeenCalledWith(
 			"/api/v1/sessions/{sessionId}/pr/{prNumber}/files",
@@ -275,8 +279,9 @@ describe("SessionFileExplorer", () => {
 		});
 		const first = renderWithQuery(<SessionFileExplorer sessionId="sess-duplicate-pr" />);
 
-		await userEvent.click(screen.getByRole("combobox", { name: "File source" }));
-		await userEvent.click(await screen.findByRole("option", { name: "PR #42 · canonical" }));
+		await userEvent.click(screen.getByRole("button", { name: "File source" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Branch" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "PR #42 · canonical" }));
 		await waitFor(() => expect(getMock).toHaveBeenCalledWith(
 			"/api/v1/sessions/{sessionId}/pr/{prNumber}/files",
 			expect.objectContaining({ params: { path: { sessionId: "sess-duplicate-pr", prNumber: 42 }, query: { sourceUrl: "https://gitlab.example/acme/app/-/merge_requests/42" } } }),

@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
+	Check,
 	Columns2,
+	Folders,
 	Maximize2,
 	Minimize2,
 	Rows3,
@@ -19,17 +22,33 @@ import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
 import { buildChangedOnlyTree, type TreeNode } from "../hooks/useSessionWorkspaceTree";
 import { useFileAnnotation } from "../hooks/useFileAnnotation";
 import { useUiStore } from "../stores/ui-store";
+import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./ui/resizable";
+import { SettingsMenuTrigger } from "./settings/SettingsMenuTrigger";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuSeparator,
+	DropdownMenuSub,
+	DropdownMenuSubContent,
+	DropdownMenuSubTrigger,
+	DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
+import { useFilesTopbarHost } from "./files-topbar-host";
 import { FileTree } from "./FileTree";
 import { FileContentPane, type FileOpenOptions } from "./FileContentPane";
 import { PanelMessage, RetryButton } from "./WorkspaceDiffView";
-import { WorkspaceReviewPane } from "./diffs/WorkspaceReviewPane";
+import { WorkspaceReviewPane, type ReviewSourceMenu } from "./diffs/WorkspaceReviewPane";
+import { formatTimeTerse } from "../lib/format-time";
 
 const WORKSPACE_SOURCE: FilesSource = { kind: "workspace" };
+// Mirrors the browser panel's tab strip (.browser-panel__tab): no container
+// box, 28px rounded tabs, filled only when active.
+const viewTabClass = "inline-flex h-control-md items-center rounded-md px-2.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50";
 
 type SessionFileExplorerProps = {
 	sessionId: string;
@@ -56,6 +75,8 @@ export function SessionFileExplorer({
 	const split = controlledSplit ?? internalSplit;
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
 	const [sourceNotice, setSourceNotice] = useState("");
+	const [reviewMenu, setReviewMenu] = useState<ReviewSourceMenu | null>(null);
+	const filesTopbarHost = useFilesTopbarHost();
 	const scmQuery = useSessionScmSummary(sessionId);
 	const queryClient = useQueryClient();
 	const connectionState = useWorkspaceFileConnectionState(sessionId);
@@ -119,6 +140,11 @@ export function SessionFileExplorer({
 	const treeSelectedPath = selectedPath;
 	const selectedPreviousPath = filesQuery.data?.files.find((file) => file.path === selectedPath)?.previousPath;
 	const sourceValue = source.kind === "workspace" ? "workspace" : source.url;
+	const sourceOptions: { value: string; label: string }[] = [
+		{ value: "workspace", label: t("files.explorer.workspaceSource") },
+		...(scmQuery.data ?? []).map((pr) => ({ value: pr.url, label: `PR #${pr.number} · ${pr.sourceBranch || pr.title}` })),
+	];
+	const currentSourceLabel = sourceOptions.find((option) => option.value === sourceValue)?.label;
 	const selectSource = (value: string) => {
 		setSourceNotice("");
 		setSelectedPath(null);
@@ -130,58 +156,112 @@ export function SessionFileExplorer({
 		if (pr) setFilesSource(sessionId, { kind: "pull_request", number: pr.number, url: pr.url, label: `PR #${pr.number} · ${pr.sourceBranch || pr.title}` });
 	};
 
+	const filterField = (
+		<label className={cn("relative min-w-0", filesTopbarHost ? "block w-full" : "mr-1 flex-1")}>
+			<Search className="pointer-events-none absolute left-2.5 top-1/2 size-icon-sm -translate-y-1/2 text-passive" />
+			<Input
+				aria-label={t("files.explorer.filter")}
+				className="inspector-field-input pl-8"
+				onChange={(event) => setFilter(event.target.value)}
+				placeholder={t("files.explorer.filterPlaceholder")}
+				value={filter}
+			/>
+		</label>
+	);
+
 	return (
 		<section className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label={t("files.sessionFiles")}>
-			<header className="flex min-h-10 shrink-0 flex-wrap items-center gap-0.5 border-b border-border bg-surface px-2 py-1">
-				<Select onValueChange={selectSource} value={sourceValue}>
-					<SelectTrigger aria-label={t("files.explorer.source")} className="h-8 max-w-56 min-w-32 text-xs">
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						<SelectItem value="workspace">{t("files.explorer.workspaceSource")}</SelectItem>
-						{scmQuery.data?.map((pr) => (
-							<SelectItem key={pr.url} value={pr.url}>{`PR #${pr.number} · ${pr.sourceBranch || pr.title}`}</SelectItem>
+			<header className="flex min-h-10 shrink-0 items-center gap-1 border-b border-border px-2 py-1">
+				{/* One dropdown for "what am I reviewing", laid out like a VCS review
+				    picker: working scopes at the top, then Commits › and Branch ›
+				    flyouts (Branch = Workspace or a PR). */}
+				<DropdownMenu>
+					<DropdownMenuTrigger asChild>
+						<SettingsMenuTrigger
+							aria-label={t("files.explorer.source")}
+							className="h-control-md min-w-0 max-w-72 shrink text-xs"
+							title={currentSourceLabel}
+						>
+							<span className="min-w-0 truncate">{currentSourceLabel}</span>
+							{reviewMenu ? <span className={cn("shrink-0 text-caption text-passive", reviewMenu.commits.some((commit) => commit.selected) && "font-mono")}>{reviewMenu.label}</span> : null}
+						</SettingsMenuTrigger>
+					</DropdownMenuTrigger>
+					<DropdownMenuContent align="start" className="w-56">
+						{reviewMenu?.scopes.map((scope) => (
+							<DropdownMenuItem className="gap-1.5" key={scope.key} onSelect={scope.select}>
+								<span className="min-w-0 flex-1 truncate">{scope.label}</span>
+								<span className="shrink-0 font-mono text-caption tabular-nums text-passive">{scope.count}</span>
+								<span className="flex size-4 shrink-0 items-center justify-center">
+									{scope.selected ? <Check aria-hidden="true" className="text-accent" /> : null}
+								</span>
+							</DropdownMenuItem>
 						))}
-					</SelectContent>
-				</Select>
-				<label className="relative mr-1 min-w-0 flex-1">
-					<Search className="pointer-events-none absolute left-2.5 top-1/2 size-icon-sm -translate-y-1/2 text-passive" />
-					<Input
-						aria-label={t("files.explorer.filter")}
-						className="h-8 pl-8 font-mono text-xs"
-						onChange={(event) => setFilter(event.target.value)}
-						placeholder={t("files.explorer.filterPlaceholder")}
-						value={filter}
-					/>
-				</label>
-				{hasChanges ? (
-					<div
-						aria-label={t("files.viewMode")}
-						className="flex shrink-0 items-center rounded-md border border-border bg-muted/30 p-0.5"
-						role="tablist"
-					>
-						<Button
+						{reviewMenu && reviewMenu.scopes.length > 0 ? <DropdownMenuSeparator /> : null}
+						{reviewMenu && reviewMenu.commits.length > 0 ? (
+							<DropdownMenuSub>
+								<DropdownMenuSubTrigger className={cn(reviewMenu.commits.some((commit) => commit.selected) && "text-foreground")}>
+									{t("files.commits")}
+								</DropdownMenuSubTrigger>
+								<DropdownMenuSubContent className="w-[28rem] max-w-[calc(100vw-2rem)]">
+									<div className="board-scrollbar flex max-h-72 flex-col gap-px overflow-y-auto pr-0.5">
+										{reviewMenu.commits.map((commit) => (
+											<DropdownMenuItem className="gap-2" key={commit.sha} onSelect={commit.select}>
+												<span className="min-w-0 flex-1 truncate">{commit.subject}</span>
+												<span className="shrink-0 text-caption text-passive">{formatTimeTerse(commit.timestamp)}</span>
+												<span className="flex size-4 shrink-0 items-center justify-center">
+													{commit.selected ? <Check aria-hidden="true" className="text-accent" /> : null}
+												</span>
+											</DropdownMenuItem>
+										))}
+									</div>
+								</DropdownMenuSubContent>
+							</DropdownMenuSub>
+						) : null}
+						<DropdownMenuSub>
+							<DropdownMenuSubTrigger>{t("files.branch")}</DropdownMenuSubTrigger>
+							<DropdownMenuSubContent className="w-[28rem] max-w-[calc(100vw-2rem)]">
+								{sourceOptions.map((option) => (
+									<DropdownMenuItem className="gap-2" key={option.value} onSelect={() => selectSource(option.value)}>
+										<span className="min-w-0 flex-1 truncate">{option.label}</span>
+										<span className="flex size-4 shrink-0 items-center justify-center">
+											{option.value === sourceValue ? <Check aria-hidden="true" className="text-accent" /> : null}
+										</span>
+									</DropdownMenuItem>
+								))}
+							</DropdownMenuSubContent>
+						</DropdownMenuSub>
+					</DropdownMenuContent>
+				</DropdownMenu>
+				{filesTopbarHost ? createPortal(filterField, filesTopbarHost) : filterField}
+				{filesTopbarHost ? <span aria-hidden="true" className="flex-1" /> : null}
+				{/* The Changes view only exists for the workspace; for a PR the
+				    switch would do nothing, so it is not shown. */}
+				{hasChanges && source.kind === "workspace" ? (
+					<div aria-label={t("files.viewMode")} className="flex shrink-0 items-center gap-0.5" role="tablist">
+						<button
 							aria-selected={showChanges}
-							className="h-6 rounded px-2 text-2xs"
+							className={cn(viewTabClass, showChanges ? "bg-interactive-active text-foreground" : "text-muted-foreground hover:bg-interactive-hover hover:text-foreground")}
 							onClick={() => handleViewChange(true)}
 							role="tab"
-							size="sm"
 							type="button"
-							variant={showChanges ? "secondary" : "ghost"}
 						>
 							{t("files.reviewChanges")}
-						</Button>
-						<Button
-							aria-selected={!showChanges}
-							className="h-6 rounded px-2 text-2xs"
-							onClick={() => handleViewChange(false)}
-							role="tab"
-							size="sm"
-							type="button"
-							variant={!showChanges ? "secondary" : "ghost"}
-						>
-							{t("files.allFiles")}
-						</Button>
+						</button>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<button
+									aria-label={t("files.allFiles")}
+									aria-selected={!showChanges}
+									className={cn(viewTabClass, "w-control-md justify-center px-0", !showChanges ? "bg-interactive-active text-foreground" : "text-muted-foreground hover:bg-interactive-hover hover:text-foreground")}
+									onClick={() => handleViewChange(false)}
+									role="tab"
+									type="button"
+								>
+									<Folders aria-hidden="true" className="size-icon-base" />
+								</button>
+							</TooltipTrigger>
+							<TooltipContent side="bottom">{t("files.allFiles")}</TooltipContent>
+						</Tooltip>
 					</div>
 				) : null}
 				{showChanges ? (
@@ -232,10 +312,13 @@ export function SessionFileExplorer({
 					</Tooltip>
 				) : null}
 			</header>
-			<div className="shrink-0 border-b border-border px-3 py-1 text-2xs text-muted-foreground">
-				{source.kind === "workspace" ? t("files.explorer.workspaceSource") : source.label}
-				{sourceNotice ? ` — ${sourceNotice}` : ""}
-			</div>
+			{/* The source name already shows in the picker; this row only appears
+			    to explain an automatic fall back to Workspace. */}
+			{sourceNotice ? (
+				<p className="shrink-0 border-b border-border px-3 py-1 text-2xs text-muted-foreground" role="status">
+					{sourceNotice}
+				</p>
+			) : null}
 			{showChanges ? (
 				filesQuery.isPending ? (
 					<PanelMessage>{t("files.loading")}</PanelMessage>
@@ -250,6 +333,7 @@ export function SessionFileExplorer({
 						filter={filter}
 						onBrowseAll={() => source.kind === "workspace" && handleViewChange(false)}
 						onOpenFile={onOpenFile}
+						onSourceMenuChange={setReviewMenu}
 						sessionId={sessionId}
 						split={split}
 					/>

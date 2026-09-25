@@ -212,7 +212,7 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={model} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
 
 		const composer = await screen.findByRole("textbox", { name: /Feedback for src\/App\.tsx/ });
-		expect(composer.closest(".relative.bg-surface")).toContainElement(screen.getAllByRole("button", { name: "Collapse src/App.tsx" })[1]);
+		expect(composer.closest(".relative.bg-background")).toContainElement(screen.getAllByRole("button", { name: "Collapse src/App.tsx" })[1]);
 	});
 
 	it("opens deleted markdown as source because no current rendered revision exists", async () => {

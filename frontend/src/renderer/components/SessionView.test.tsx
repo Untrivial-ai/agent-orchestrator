@@ -3084,7 +3084,7 @@ describe("SessionView", () => {
 		expect(inspectorPanelWidthVariable()).toBe("400px");
 	});
 
-	it("grows Browser into a co-work canvas while utility surfaces stay consistent", async () => {
+	it("grows Browser and Files into a co-work canvas while utility surfaces stay consistent", async () => {
 		render(<SessionView sessionId="sess-1" />);
 		expect(screen.getByTestId("panel-group")).toHaveAttribute("data-workspace-mode", "utility");
 		expect(inspectorWidthVariable()).toBe("500px");
@@ -3101,10 +3101,17 @@ describe("SessionView", () => {
 		act(() => useUiStore.getState().setInspectorView("sess-1", "files"));
 		await waitFor(() => {
 			expect(screen.getByTestId("panel-group")).toHaveAttribute("data-workspace-mode", "files");
-			expect(inspectorWidthVariable()).toBe("500px");
+			// Files shares the Browser's panel geometry.
+			expect(inspectorWidthVariable()).toBe("900px");
 			expect(
 				screen.getByTestId("panel-group").style.getPropertyValue("--session-inspector-max-width"),
-			).toBe("min(55%, max(300px, calc(100% - 560px)))");
+			).toBe("min(68%, max(300px, calc(100% - 440px)))");
+		});
+
+		act(() => useUiStore.getState().setInspectorView("sess-1", "summary"));
+		await waitFor(() => {
+			expect(screen.getByTestId("panel-group")).toHaveAttribute("data-workspace-mode", "utility");
+			expect(inspectorWidthVariable()).toBe("500px");
 		});
 	});
 

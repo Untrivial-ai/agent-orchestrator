@@ -212,13 +212,15 @@ type InspectorSizing = {
 };
 
 function inspectorSizing(view: InspectorView): InspectorSizing {
-	if (view === "browser") {
+	// Files shares the Browser's geometry (and remembered width): both carry a
+	// top-bar field and a wide content surface, so they get the same panel.
+	if (view === "browser" || view === "files") {
 		return {
 			chatMinWidth: BROWSER_CHAT_MIN_PX,
 			defaultWidth: BROWSER_WORKSPACE_DEFAULT_PX,
 			minWidth: BROWSER_WORKSPACE_MIN_PX,
 			maxPercent: BROWSER_WORKSPACE_MAX_PERCENT,
-			mode: "browser",
+			mode: view === "browser" ? "browser" : "files",
 			storageKey: browserWorkspaceWidthStorageKey,
 		};
 	}
@@ -227,7 +229,7 @@ function inspectorSizing(view: InspectorView): InspectorSizing {
 		defaultWidth: WORKSPACE_DEFAULT_PX,
 		minWidth: WORKSPACE_MIN_PX,
 		maxPercent: WORKSPACE_MAX_PERCENT,
-		mode: view === "files" ? "files" : "utility",
+		mode: "utility",
 		storageKey: inspectorWidthStorageKey,
 	};
 }
