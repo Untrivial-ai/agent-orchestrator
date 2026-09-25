@@ -487,7 +487,7 @@ export function BrailleLoader() {
 			role="status"
 			aria-label="Generating response"
 			data-testid="braille-loader"
-			className="flex size-7 items-center justify-center rounded-md font-mono text-sm text-muted-foreground"
+			className="-ml-1.5 flex size-7 items-center justify-center rounded-md font-mono text-[13px] leading-none text-muted-foreground"
 		>
 			{BRAILLE_LOADER_FRAMES[frame]}
 		</span>
