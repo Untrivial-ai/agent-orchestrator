@@ -1026,69 +1026,13 @@ func (s *Service) InstallationCompletionHTML(success bool) []byte {
 func (s *Service) completionHTML(success bool) []byte {
 	title := "Connection failed"
 	message := "GitHub could not finish the connection. Return to AO and try again."
-	nextStep := "Try connecting GitHub again from project setup. If the issue continues, check your GitHub App installation."
-	statusClass := "error"
-	statusIcon := "!"
 	if success {
 		title = "GitHub connected"
-		message = "AO can now access the repositories you selected during installation."
-		nextStep = "Return to AO. Your repositories will appear in the project picker as soon as they finish syncing."
-		statusClass = "success"
-		statusIcon = "✓"
+		message = "Return to AO. Your repositories will appear in the project picker as soon as they finish syncing. You can close this tab."
 	}
 	return []byte(fmt.Sprintf(
-		`<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark">
-<title>%s · AO</title>
-<style>
-:root{color-scheme:dark;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#090b0f;color:#f4f5f7}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;background:radial-gradient(circle at 50%% -15%%,#193025 0,transparent 45%%),#090b0f}
-main{min-height:100vh;display:grid;place-items:center;padding:24px}
-.content{width:min(100%%,520px);overflow:hidden;border:1px solid #2b3238;border-radius:18px;background:#12171b;box-shadow:0 28px 90px rgba(0,0,0,.42)}
-.brand{display:flex;align-items:center;gap:11px;padding:21px 28px;border-bottom:1px solid #273036;color:#cbd1d4;font-size:13px;font-weight:600}
-.brand-mark{display:grid;place-items:center;width:31px;height:31px;border:1px solid #4b6158;border-radius:9px;background:#1b3028;color:#d8ffe8;font-size:12px;font-weight:800}
-.body{padding:36px 32px 34px}
-.status{display:grid;place-items:center;width:52px;height:52px;margin-bottom:24px;border:1px solid;border-radius:15px;font-size:25px;font-weight:700}
-.status.success{border-color:#376d50;background:#1b3a29;color:#87e9a7}
-.status.error{border-color:#854f4b;background:#3b2222;color:#ffaaa2}
-.eyebrow{margin:0 0 9px;color:#8cb99c;font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase}
-.error~.eyebrow{color:#e3a29b}
-h1{margin:0;font-size:27px;line-height:1.2;letter-spacing:-.025em;font-weight:700}
-p{margin:12px 0 0;color:#aeb8bb;font-size:14px;line-height:1.6}
-.next{margin-top:30px;padding:18px 19px;border:1px solid #34443e;border-radius:12px;background:#18251f}
-.error~.next{border-color:#55413f;background:#281d1d}
-.next strong{display:block;color:#eef7f0;font-size:13px}
-.next p{margin-top:6px;font-size:13px}
-.foot{margin-top:18px;color:#7f8c8c;font-size:12px}
-@media(max-width:520px){main{padding:16px}.brand{padding:18px 22px}.body{padding:29px 23px}h1{font-size:24px}}
-</style>
-</head>
-<body>
-<main>
-<section class="content" aria-labelledby="title">
-<div class="brand"><span class="brand-mark" aria-hidden="true">AO</span><span>Agent Orchestrator</span></div>
-<div class="body">
-<div class="status %s" aria-hidden="true">%s</div>
-<div class="eyebrow">GitHub connection</div>
-<h1 id="title">%s</h1>
-<p>%s</p>
-<div class="next"><strong>Return to AO</strong><p>%s</p></div>
-<p class="foot">You can close this browser tab after returning to the desktop app.</p>
-</div>
-</section>
-</main>
-</body>
-</html>`,
-		title,
-		statusClass,
-		statusIcon,
-		title,
-		message,
-		nextStep,
-	))
+		`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title>
+<body style="font:15px -apple-system,system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.5rem;color:#111">
+<main><h1 style="font-size:1.25rem">%s</h1><p style="color:#555">%s</p></main></body></html>`,
+		title, title, message))
 }

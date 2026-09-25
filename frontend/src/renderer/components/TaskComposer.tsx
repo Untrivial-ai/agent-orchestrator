@@ -58,7 +58,7 @@ type CreateTaskInput = {
 	agent?: DelegateAgent;
 	model?: string;
 	effort?: string;
-	mode?: "tui";
+	mode?: "chat" | "tui";
 	approvalMode?: "bypass-permissions";
 	attachments?: FileAttachmentPayload[];
 	taskPreparation?: string;
@@ -168,6 +168,7 @@ export function TaskComposer({
 
 	const createCloudTask = useCallback(
 		async (input: CreateTaskInput): Promise<string> => {
+			if (input.attachments?.length) throw new Error(t("newTask.cloudAttachmentsUnsupported", { defaultValue: "File attachments are not supported for cloud tasks yet." }));
 			void captureRendererEvent("ao.renderer.task_create_requested", { project_id: input.projectId });
 			if (!cloudOrg?.id) throw new Error(t("newTask.unableToStart"));
 			try {
@@ -197,6 +198,7 @@ export function TaskComposer({
 			void captureRendererEvent("ao.renderer.task_create_requested", { project_id: input.projectId });
 			try {
 				const { data, error } = await apiClient.POST("/api/v1/orchestrators/delegate", {
+					headers: input.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 					body: {
 						projectId: input.projectId,
 						brief: input.brief,
@@ -245,6 +247,7 @@ export function TaskComposer({
 			void captureRendererEvent("ao.renderer.task_create_requested", { scope: "standalone" });
 			const displayName = input.brief.trim().slice(0, 100) || input.agent || "Standalone agent";
 			const { data, error } = await apiClient.POST("/api/v1/sessions", {
+				headers: input.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 				body: {
 					kind: "worker",
 					harness: input.agent as components["schemas"]["SpawnSessionRequest"]["harness"],
@@ -253,6 +256,7 @@ export function TaskComposer({
 					model: input.model,
 					...(input.effort ? { effort: input.effort } : {}),
 					...(input.mode ? { mode: input.mode } : {}),
+					...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
 					...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
 				},
 			});
@@ -530,7 +534,7 @@ export function TaskComposer({
 
 	const submitTask = async (
 		brief: string,
-		interfaceMode?: "tui",
+		interfaceMode?: "chat" | "tui",
 		approvalMode?: "bypass-permissions",
 	) => {
 		if (!projectId || !canSubmit || isSubmitting) return;
@@ -597,7 +601,7 @@ export function TaskComposer({
 			setFallbackAction(
 				canBypassApprovals
 					? "bypass-permissions"
-					: interfaceMode !== "tui" &&
+					: selectedAgent !== "unreal-agent" && interfaceMode !== "tui" &&
 							err instanceof TaskCreateError &&
 							Boolean(err.code && CHAT_PREFLIGHT_CODES.has(err.code))
 						? "tui"
@@ -706,9 +710,9 @@ export function TaskComposer({
 				modelWarning,
 				onFallbackAction: (brief) =>
 					void (fallbackAction === "bypass-permissions"
-						? submitTask(brief, undefined, "bypass-permissions")
+						? submitTask(brief, selectedAgent === "unreal-agent" ? "chat" : undefined, "bypass-permissions")
 						: submitTask(brief, "tui")),
-				onSubmit: (brief) => void submitTask(brief, requiresTuiFallback ? "tui" : undefined),
+				onSubmit: (brief) => void submitTask(brief, selectedAgent === "unreal-agent" ? "chat" : requiresTuiFallback ? "tui" : undefined),
 			}}
 			renderAgentControl={(control) => <DesktopAgentControl {...control} manageAgents={!isCloudProject} />}
 			renderEffortControl={(control) => <TaskEffortPicker {...control} />}

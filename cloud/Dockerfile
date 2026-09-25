@@ -4,7 +4,7 @@ ARG BUILDPLATFORM
 ARG TARGETOS=linux
 ARG TARGETARCH
 
-FROM --platform=${BUILDPLATFORM} golang:1.26.5-bookworm AS build
+FROM --platform=${BUILDPLATFORM} golang:1.27.1-bookworm AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src

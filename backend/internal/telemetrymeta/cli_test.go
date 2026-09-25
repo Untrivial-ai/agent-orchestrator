@@ -19,6 +19,7 @@ func TestIsRoutineInternalCLICommandNormalizesLegacyShapes(t *testing.T) {
 		"ao session handoff submit --switch switch-1",
 		"ao project ls",
 		"ao pty-host session-1",
+		"ao unreal-provider /tmp/config.json",
 	} {
 		if !IsRoutineInternalCLICommand(commandPath) {
 			t.Errorf("IsRoutineInternalCLICommand(%q) = false, want true", commandPath)

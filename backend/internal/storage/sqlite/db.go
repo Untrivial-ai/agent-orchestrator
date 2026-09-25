@@ -359,9 +359,9 @@ func migrate(db *sql.DB) error {
 }
 
 // repairRenumberedTaskProvisioningMigrationHistory preserves development
-// databases that applied this branch's migrations at 0149/0150 or 0150/0151.
-// Main owns those numbers now; map the physical schema to 0155/0156 before
-// Goose replays the missing main migrations.
+// databases that applied this branch's migrations at 0149/0150, 0150/0151,
+// or 0155/0156/0157. Main owns those numbers now; map the physical schema to
+// 0156/0157/0158 before Goose replays the missing main migrations.
 func repairRenumberedTaskProvisioningMigrationHistory(db *sql.DB) error {
 	var gooseTable int
 	if err := db.QueryRow(
@@ -373,7 +373,7 @@ func repairRenumberedTaskProvisioningMigrationHistory(db *sql.DB) error {
 		return nil
 	}
 
-	var provisionColumns, taskPreparationColumn, reviewerColumn, catalogColumn int
+	var provisionColumns, taskPreparationColumn, creationSHAColumn, reviewerColumn, catalogColumn, unrealHarness int
 	if err := db.QueryRow(
 		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('provision_state', 'provision_error')`,
 	).Scan(&provisionColumns); err != nil {
@@ -382,6 +382,11 @@ func repairRenumberedTaskProvisioningMigrationHistory(db *sql.DB) error {
 	if err := db.QueryRow(
 		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'is_task_preparation'`,
 	).Scan(&taskPreparationColumn); err != nil {
+		return err
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('session_worktrees') WHERE name = 'creation_sha'`,
+	).Scan(&creationSHAColumn); err != nil {
 		return err
 	}
 	if err := db.QueryRow(
@@ -396,6 +401,11 @@ func repairRenumberedTaskProvisioningMigrationHistory(db *sql.DB) error {
 	}
 	if provisionColumns != 2 && taskPreparationColumn == 0 {
 		return nil
+	}
+	if err := db.QueryRow(
+		`SELECT instr(sql, 'unreal-agent') FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`,
+	).Scan(&unrealHarness); err != nil {
+		return err
 	}
 
 	tx, err := db.Begin()
@@ -428,9 +438,30 @@ SELECT COALESCE((
 		}
 		return true, nil
 	}
+	oldProvision155, err := applied(155)
+	if err != nil {
+		return err
+	}
+	if oldProvision155 && provisionColumns == 2 && unrealHarness == 0 {
+		// This branch used 0155 before main shipped the Unreal Agent migration
+		// at that number. Shift highest first so each applied marker survives.
+		if creationSHAColumn != 0 {
+			if _, err := mapVersion(157, 158); err != nil {
+				return err
+			}
+		}
+		if taskPreparationColumn != 0 {
+			if _, err := mapVersion(156, 157); err != nil {
+				return err
+			}
+		}
+		if _, err := mapVersion(155, 156); err != nil {
+			return err
+		}
+	}
 
 	provisionMappedFrom150 := false
-	canonicalProvisionApplied, err := applied(155)
+	canonicalProvisionApplied, err := applied(156)
 	if err != nil {
 		return err
 	}
@@ -445,7 +476,7 @@ SELECT COALESCE((
 			}
 		}
 		if legacyVersion != 0 {
-			mapped, err := mapVersion(legacyVersion, 155)
+			mapped, err := mapVersion(legacyVersion, 156)
 			if err != nil {
 				return err
 			}
@@ -453,7 +484,7 @@ SELECT COALESCE((
 		}
 	}
 
-	canonicalPreparationApplied, err := applied(156)
+	canonicalPreparationApplied, err := applied(157)
 	if err != nil {
 		return err
 	}
@@ -463,7 +494,7 @@ SELECT COALESCE((
 		if catalogColumn != 0 || provisionMappedFrom150 {
 			legacyVersion = 151
 		}
-		mapped, err := mapVersion(legacyVersion, 156)
+		mapped, err := mapVersion(legacyVersion, 157)
 		if err != nil {
 			return err
 		}
@@ -1862,6 +1893,11 @@ const (
 	sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'qm', 'fake'))`
 )
 
+const (
+	sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnreal   = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'fake'))`
+	sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnreal = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'qm', 'fake'))`
+)
+
 func reconcileHarnessConstraint(db *sql.DB) error {
 	var schema string
 	if err := db.QueryRow(
@@ -1873,7 +1909,8 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 	needsKimchi := !strings.Contains(schema, "'kimchi'")
 	needsPrimeAgent := !strings.Contains(schema, "'prime-agent'")
 	needsOMP := !strings.Contains(schema, "'omp'")
-	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP {
+	needsUnreal := !strings.Contains(schema, "'unreal-agent'")
+	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP && !needsUnreal {
 		return nil
 	}
 	if _, err := db.Exec(`PRAGMA writable_schema = ON`); err != nil {
@@ -1914,6 +1951,12 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 			replacement{sessionsHarnessCheckWithMuseQMKimchiPrimeAgent, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP},
 		)
 	}
+	if needsUnreal {
+		repairs = append(repairs,
+			replacement{sessionsHarnessCheckWithMuseKimchiPrimeAgentOMP, sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnreal},
+			replacement{sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnreal},
+		)
+	}
 	for _, r := range repairs {
 		if _, err := db.Exec(
 			`UPDATE sqlite_master
@@ -1944,6 +1987,9 @@ WHERE type = 'table' AND name = 'sessions'`,
 	}
 	if !strings.Contains(schema, "'omp'") {
 		return fmt.Errorf("schema repair: sessions harness constraint is missing OMP and did not match known pre-OMP schema")
+	}
+	if !strings.Contains(schema, "'unreal-agent'") {
+		return fmt.Errorf("schema repair: sessions harness constraint is missing Unreal Agent and did not match known pre-Unreal-Agent schema")
 	}
 	return nil
 }

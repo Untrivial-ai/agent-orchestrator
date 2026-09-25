@@ -1130,6 +1130,33 @@ func TestDefaultChatSpawnUsesChatWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestUnrealSpawnDefaultsToChatWithBypassPermissions(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, _, runtime := newChatManager(launcher)
+	mgr.defaults = fixedSessionModeDefaults(domain.SessionModeTUI)
+
+	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID: chatTestProject,
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessUnreal,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if rec.Mode != domain.SessionModeChat {
+		t.Fatalf("mode = %q, want chat", rec.Mode)
+	}
+	if runtime.created != 0 {
+		t.Fatalf("Unreal spawn created %d terminal runtimes, want 0", runtime.created)
+	}
+	if len(launcher.preflightPermissions) != 1 || launcher.preflightPermissions[0] != ports.PermissionModeBypassPermissions {
+		t.Fatalf("preflight permissions = %v, want bypass-permissions", launcher.preflightPermissions)
+	}
+	if len(launcher.started) != 1 || launcher.started[0].Permissions != ports.PermissionModeBypassPermissions {
+		t.Fatalf("started controllers = %#v, want one bypass-permissions controller", launcher.started)
+	}
+}
+
 // A TUI spawn must never reach the chat launcher, even when one is wired.
 func TestTUISpawnNeverTouchesTheChatLauncher(t *testing.T) {
 	launcher := &recordingLauncher{}
