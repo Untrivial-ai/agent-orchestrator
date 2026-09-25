@@ -73,6 +73,7 @@ import { useCloudPendingSession } from "../lib/cloud-pending-session";
 import { useTerminalResetStore } from "../stores/terminal-reset-store";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
+import { useSettings } from "../hooks/useSettings";
 import { clearSwitchAgentState } from "../hooks/useSwitchAgent";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
@@ -442,7 +443,14 @@ function CloudSessionLifecycleLoader() {
 	], [t]);
 	return (
 		<div
-			className="absolute inset-0 z-[200] grid place-items-center bg-background"
+			// Sits at the session-pane chrome level: it must cover the loading
+			// pane's content (topbar/terminal) but MUST stay below the app overlay
+			// layer (`z-overlay`, dialogs/dropdowns). A raw high z (this was `z-[200]`)
+			// painted over any shell modal opened while a cloud session loads — the
+			// New Task dialog, the project three-dots menu — leaving it invisible
+			// behind the loader while Radix still applied `body{pointer-events:none}`,
+			// which froze the whole UI (sidebar included). Keep this <= z-overlay.
+			className="absolute inset-0 z-chrome grid place-items-center bg-background"
 			data-testid="cloud-session-loader-screen"
 		>
 			<MultiStepLoader
@@ -1479,8 +1487,19 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[beginInterfaceSwitch, interfaceBusy, interfaceSwitch, interfaceTarget, session],
 	);
 	// Adapters without a Chat driver cannot offer a switch into Chat UI; hide
-	// the button entirely rather than showing a permanently disabled control.
-	const interfaceSwitchUnsupported = interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED";
+	// the switch entirely rather than showing a permanently disabled control.
+	// The daemon's Chat harness list knows this before the session's status
+	// loads, and for terminated sessions, whose status only reports
+	// SESSION_TERMINATED. An empty list (settings still loading, or Chat off
+	// entirely) proves nothing, so the status decides then.
+	const { settings } = useSettings();
+	const chatHarnesses = settings?.chatHarnesses ?? [];
+	const interfaceSwitchUnsupported =
+		interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED" ||
+		(interfaceTarget === "chat" &&
+			session !== undefined &&
+			chatHarnesses.length > 0 &&
+			!chatHarnesses.includes(session.provider));
 	// Harnesses without a TUI/Chat handoff cannot convert a running terminal
 	// session. Say so plainly instead of showing the daemon's reason.
 	const interfaceSwitchBlockedReason =
@@ -1715,12 +1734,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			switchError={handoffSwitchError}
 		/>
 	) : null, [handoffAgentSwitch, handoffControlPresentation, handoffDialogOpen, handoffSwitchError, handleHandoffDialogOpenChange, session]);
-	const sessionTabActions = useMemo(() => (
+	// The ⋮ only holds the Chat/Terminal switch and Switch agent, and agent
+	// switching is limited to Claude Code and Codex, which both have Chat. A
+	// harness without Chat therefore gets no ⋮ instead of an empty menu.
+	const sessionTabActions = useMemo(() => interfaceSwitchUnsupported ? null : (
 		<SessionActionsMenu inlineStatus={interfaceSwitchInlineStatus}>
 			{interfaceSwitchMenuItem}
 			{handoffMenuItem}
 		</SessionActionsMenu>
-	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem]);
+	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem, interfaceSwitchUnsupported]);
 	// Spinner replaces the ⋮ at the same size, so the tab title does not need a
 	// wider action slot while switching.
 	const sessionTabActionWide = false;

@@ -12,6 +12,10 @@ describe("workspaceFilesRefetchInterval", () => {
 		expect(workspaceFilesRefetchInterval("connected")).toBe(false);
 		expect(workspaceFilesRefetchInterval("degraded")).toBe(30_000);
 	});
+
+	it("polls while Git-state enrichment is degraded", () => {
+		expect(workspaceFilesRefetchInterval("connected", true)).toBe(30_000);
+	});
 });
 
 describe("pull request file query keys", () => {
