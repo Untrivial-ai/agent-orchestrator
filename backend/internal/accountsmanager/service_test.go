@@ -72,7 +72,7 @@ func TestServiceRoutesMirroredNativeCodexAccount(t *testing.T) {
 	}
 }
 
-func TestServiceGlobalSwitchRepinsExistingAndFutureSessions(t *testing.T) {
+func TestServiceGlobalSwitchPreservesExistingAndPinsFutureSessions(t *testing.T) {
 	dataDir := t.TempDir()
 	nativeRoot := filepath.Join(dataDir, "native")
 	for _, accountID := range []string{"native-account-1", "native-account-2"} {
@@ -104,8 +104,8 @@ func TestServiceGlobalSwitchRepinsExistingAndFutureSessions(t *testing.T) {
 		t.Fatalf("selected account = %q, want native-account-2", selected)
 	}
 	for _, sessionID := range []string{"session-1", "session-2"} {
-		if got, ok := service.routes.accountForSession(sessionID); !ok || got != "ao-native-native-account-2.json" {
-			t.Fatalf("session %s pin = (%q, %t), want account 2", sessionID, got, ok)
+		if got, ok := service.routes.accountForSession(sessionID); !ok || got != "ao-native-native-account-1.json" {
+			t.Fatalf("session %s pin = (%q, %t), want account 1", sessionID, got, ok)
 		}
 	}
 	if _, err := service.RouteForSession(context.Background(), "session-3"); err != nil {

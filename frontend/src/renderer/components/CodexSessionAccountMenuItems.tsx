@@ -5,31 +5,31 @@ import { DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from "./ui
 import { switchCodexSessionAccount, useCodexAccountsQuery } from "../hooks/useCodexAccountsQuery";
 import { apiErrorMessage } from "../lib/api-client";
 
-const sessionAccountSelectionCache = new Map<string, { accountId: string; globalAccountId?: string }>();
+const sessionAccountSelectionCache = new Map<string, string>();
 
 /**
- * Account pins are session-scoped. The global Codex account switcher updates
- * every existing route; this menu exposes the same account choices for a
- * session-local override and marks the currently active account.
+ * Account pins are session-scoped. The global Codex account switcher changes
+ * the default for future sessions; this menu exposes the account choices for
+ * a session-local override and marks the selected account.
  */
 export function CodexSessionAccountMenuItems({ sessionId, enabled }: { sessionId: string; enabled: boolean }) {
 	const { t } = useTranslation();
 	const query = useCodexAccountsQuery(enabled);
 	const [pendingAccountId, setPendingAccountId] = useState<string | null>(null);
-	const [sessionAccountId, setSessionAccountId] = useState<string | null>(() => sessionAccountSelectionCache.get(sessionId)?.accountId ?? null);
+	const [sessionAccountId, setSessionAccountId] = useState<string | null>(() => sessionAccountSelectionCache.get(sessionId) ?? null);
 	const [error, setError] = useState<string | null>(null);
-	const globalAccountId = query.data?.activeAccountId;
 	useEffect(() => {
 		const selected = sessionAccountSelectionCache.get(sessionId);
-		// A global switch rewrites every session route, so discard a local
-		// selection that was made under the previous global account.
-		if (selected && selected.globalAccountId !== globalAccountId) {
-			sessionAccountSelectionCache.delete(sessionId);
-			setSessionAccountId(null);
+		if (selected) {
+			setSessionAccountId(selected);
 			return;
 		}
-		setSessionAccountId(selected?.accountId ?? null);
-	}, [globalAccountId, sessionId]);
+		const active = query.data?.activeAccountId;
+		if (active) {
+			sessionAccountSelectionCache.set(sessionId, active);
+			setSessionAccountId(active);
+		}
+	}, [query.data?.activeAccountId, sessionId]);
 	if (!enabled || !query.data) return null;
 
 	const accounts = query.data.accounts.filter(
@@ -50,14 +50,14 @@ export function CodexSessionAccountMenuItems({ sessionId, enabled }: { sessionId
 						data-account-selected={selectedAccountId === account.id ? "true" : "false"}
 						className={selectedAccountId === account.id ? "bg-interactive-hover text-foreground" : undefined}
 						disabled={pendingAccountId !== null}
-							onSelect={() => {
-								setError(null);
-								setPendingAccountId(account.id);
-								void switchCodexSessionAccount(sessionId, account.id)
-									.then(() => {
-										sessionAccountSelectionCache.set(sessionId, { accountId: account.id, globalAccountId });
-										setSessionAccountId(account.id);
-									})
+						onSelect={() => {
+							setError(null);
+							setPendingAccountId(account.id);
+							void switchCodexSessionAccount(sessionId, account.id)
+								.then(() => {
+									sessionAccountSelectionCache.set(sessionId, account.id);
+									setSessionAccountId(account.id);
+								})
 								.catch((switchError: unknown) => setError(apiErrorMessage(switchError, t("settings.codexAccounts.switch.failed"))))
 								.finally(() => setPendingAccountId(null));
 						}}

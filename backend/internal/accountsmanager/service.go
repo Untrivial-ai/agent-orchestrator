@@ -355,9 +355,8 @@ func (s *Service) RouteForSession(ctx context.Context, sessionID string) (ports.
 	}, nil
 }
 
-// SwitchAllSessionsAccount updates the route pin for every existing Codex
-// session without restarting its process. The selected account is also
-// persisted as the default for sessions that start after the switch.
+// SwitchAllSessionsAccount selects the default account for future Codex
+// sessions. Existing session pins are intentionally preserved.
 func (s *Service) SwitchAllSessionsAccount(ctx context.Context, accountRef string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err

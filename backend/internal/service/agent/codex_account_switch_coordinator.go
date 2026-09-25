@@ -354,6 +354,8 @@ func (m *codexAccountSwitchCoordinator) switchAllCodexSessionRoutes(ctx context.
 	if m.routeProvider == nil {
 		return true
 	}
+	// The route provider keeps existing session pins intact and only changes
+	// the default used when a future session is first routed.
 	_, err := m.routeProvider.SwitchAllSessionsAccount(ctx, accountID)
 	return err == nil
 }

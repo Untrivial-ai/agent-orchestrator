@@ -95,9 +95,9 @@ func (s *routeState) setAccountForSession(sessionID, accountID string) error {
 	return nil
 }
 
-// setAccountForAllSessions atomically changes the account used by every
-// session that has already been routed and records it as the default for
-// sessions started after the global switch.
+// setAccountForAllSessions records the selected account as the default for
+// sessions that have not been routed yet. Existing session pins are retained
+// so one session's account switch cannot change another session's account.
 func (s *routeState) setAccountForAllSessions(accountID string) error {
 	if s == nil {
 		return ports.ErrCodexProxyUnavailable
@@ -109,9 +109,6 @@ func (s *routeState) setAccountForAllSessions(accountID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	candidate := cloneStringMap(s.sessions)
-	for sessionID := range candidate {
-		candidate[sessionID] = accountID
-	}
 	if err := s.persist(persistedRouteState{ActiveAccount: accountID, Sessions: candidate}); err != nil {
 		return err
 	}

@@ -37,7 +37,7 @@ type CodexAccountService interface {
 
 // CodexSessionAccountService changes the account pin used by one running Codex
 // session's proxy route. The device-global account switch is wired separately
-// through the agent service and updates every managed session route.
+// through the agent service and changes the default for future routes.
 type CodexSessionAccountService interface {
 	SwitchSessionAccount(context.Context, string, string) (string, error)
 }
