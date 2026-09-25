@@ -341,6 +341,28 @@ describe("SessionFileExplorer", () => {
 		expect(onOpenFile).toHaveBeenCalledWith("README.md", { mode: "rendered" });
 	});
 
+	it("edits a review file in place when maximized instead of the hidden center", async () => {
+		const onOpenFile = vi.fn();
+		renderWithQuery(<SessionFileExplorer isMaximized onOpenFile={onOpenFile} sessionId="sess-review-edit-maximized" />);
+
+		await userEvent.click(await screen.findByRole("button", { name: "Edit src/App.tsx" }));
+		const pane = await screen.findByTestId("content-pane");
+		expect(pane).toHaveTextContent("src/App.tsx");
+		expect(pane).toHaveAttribute("data-editing", "true");
+		expect(pane).toHaveAttribute("data-mode", "file");
+		expect(onOpenFile).not.toHaveBeenCalled();
+	});
+
+	it("opens the rich preview in place when maximized", async () => {
+		renderWithQuery(<SessionFileExplorer isMaximized sessionId="sess-review-rendered-maximized" />);
+
+		await userEvent.click(await screen.findByRole("button", { name: "Render README.md" }));
+		const pane = await screen.findByTestId("content-pane");
+		expect(pane).toHaveTextContent("README.md");
+		expect(pane).toHaveAttribute("data-mode", "rendered");
+		expect(pane).toHaveAttribute("data-editing", "false");
+	});
+
 	it("always wraps file content and does not expose a wrap toggle", async () => {
 		renderWithQuery(<SessionFileExplorer sessionId="sess-wrap" />);
 		expect(await screen.findByTestId("review-pane")).toBeInTheDocument();

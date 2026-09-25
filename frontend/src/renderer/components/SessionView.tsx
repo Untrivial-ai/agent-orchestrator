@@ -1800,13 +1800,6 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[sessionId, setInspectorOpenForSession, transitionInspectorView],
 	);
 
-	// The maximized Files overlay covers the center pane, so opening a file from
-	// it docks the overlay first; otherwise the file would open out of sight.
-	const openCenterFileFromFilesPopOut = useCallback((path: string, options?: FileOpenOptions) => {
-		setFilesPoppedOut(false);
-		openCenterFile(path, options);
-	}, [openCenterFile]);
-
 	const handleToggleBrowserPopOut = useCallback(
 		(next: boolean) => {
 			if (next) setFilesPoppedOut(false);
@@ -2313,11 +2306,10 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							)}
 						>
 							{session.cloud ? (
-								<CloudWorkspaceDiff annotation={fileAnnotation} isMaximized onOpenFile={openCenterFileFromFilesPopOut} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
+								<CloudWorkspaceDiff annotation={fileAnnotation} isMaximized onOpenFile={openCenterFile} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
 							) : (
 								<SessionFileExplorer
 									isMaximized
-									onOpenFile={openCenterFileFromFilesPopOut}
 									onSplitChange={setFilesSplit}
 									onToggleMaximized={handleToggleFilesPopOut}
 									sessionId={session.id}

@@ -78,6 +78,9 @@ export function SessionFileExplorer({
 	const [internalSplit, setInternalSplit] = useState(() => window.localStorage.getItem("ao.files.diffStyle") === "split");
 	const split = controlledSplit ?? internalSplit;
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
+	// Maximized, the review pane's edit/preview actions open the file in this
+	// view's own preview (the center pane is hidden behind the overlay).
+	const [previewRequest, setPreviewRequest] = useState<(FileOpenOptions & { key: number }) | null>(null);
 	const [sourceNotice, setSourceNotice] = useState("");
 	const [reviewMenu, setReviewMenu] = useState<ReviewSourceMenu | null>(null);
 	const filesTopbarHost = useFilesTopbarHost();
@@ -137,12 +140,19 @@ export function SessionFileExplorer({
 	}, [isMaximized, onOpenFile, revealRequest, sessionId, setFilesChangedOnly]);
 
 	const handleSelectPath = (node: TreeNode) => {
+		setPreviewRequest(null);
 		setSelectedPath(node.path);
 		if (!isMaximized && source.kind === "workspace") onOpenFile?.(node.path, { mode: "file" });
 	};
 	const handleViewChange = (next: boolean) => {
+		setPreviewRequest(null);
 		setSelectedPath(null);
 		setFilesChangedOnly(sessionId, next);
+	};
+	const openInMaximizedPreview = (path: string, options?: FileOpenOptions) => {
+		setPreviewRequest((current) => ({ ...options, key: (current?.key ?? 0) + 1 }));
+		setSelectedPath(path);
+		setFilesChangedOnly(sessionId, false);
 	};
 	const treeSelectedPath = selectedPath;
 	const selectedPreviousPath = filesQuery.data?.files.find((file) => file.path === selectedPath)?.previousPath;
@@ -154,6 +164,7 @@ export function SessionFileExplorer({
 	const currentSourceLabel = sourceOptions.find((option) => option.value === sourceValue)?.label;
 	const selectSource = (value: string) => {
 		setSourceNotice("");
+		setPreviewRequest(null);
 		setSelectedPath(null);
 		if (value === "workspace") {
 			setFilesSource(sessionId, WORKSPACE_SOURCE);
@@ -205,9 +216,11 @@ export function SessionFileExplorer({
 					<DropdownMenuContent align="start" className="w-56">
 						{reviewMenu?.scopes.map((scope) => (
 							<DropdownMenuItem className="gap-1.5" key={scope.key} onSelect={scope.select}>
-								<span className="min-w-0 flex-1 truncate">{scope.label}</span>
-								<span className="shrink-0 font-mono text-caption tabular-nums text-passive">{scope.count}</span>
-								<span className="flex size-4 shrink-0 items-center justify-center">
+								<span className="flex min-w-0 items-baseline gap-1.5">
+									<span className="min-w-0 truncate">{scope.label}</span>
+									<span className="shrink-0 tabular-nums text-muted-foreground">{scope.count}</span>
+								</span>
+								<span className="ml-auto flex size-4 shrink-0 items-center justify-center">
 									{scope.selected ? <Check aria-hidden="true" className="text-accent" /> : null}
 								</span>
 							</DropdownMenuItem>
@@ -372,7 +385,7 @@ export function SessionFileExplorer({
 						data={filesQuery.data}
 						filter={filter}
 						onBrowseAll={() => source.kind === "workspace" && handleViewChange(false)}
-						onOpenFile={onOpenFile}
+						onOpenFile={isMaximized ? openInMaximizedPreview : onOpenFile}
 						onSourceMenuChange={setReviewMenu}
 						sessionId={sessionId}
 						split={split}
@@ -386,7 +399,7 @@ export function SessionFileExplorer({
 						<ContentScrollArea onWidthChange={setPreviewWidth}>
 							{/* A narrow preview (small panel and/or the tree rail open) falls
 							    back to a unified diff; side-by-side needs room for both columns. */}
-							<FileContentPane annotation={annotation} path={selectedPath} previousPath={selectedPreviousPath} sessionId={sessionId} source={querySource} split={split && previewWidth >= SPLIT_DIFF_MIN_WIDTH_PX} toolbar="compact" />
+							<FileContentPane annotation={annotation} commitSha={previewRequest?.commitSha} initialEditing={previewRequest?.editing ?? false} initialMode={previewRequest?.mode} initialRequestKey={previewRequest?.key ?? 0} path={selectedPath} previousPath={selectedPreviousPath} scope={previewRequest?.scope} sessionId={sessionId} source={querySource} split={split && previewWidth >= SPLIT_DIFF_MIN_WIDTH_PX} toolbar="compact" />
 						</ContentScrollArea>
 					</ResizablePanel>
 					{treeOpen ? (
