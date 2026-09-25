@@ -47,6 +47,8 @@ export function AoDiffFile({
 	split,
 	commitSha,
 	source = { kind: "workspace" },
+	hideFileHeader = false,
+	extraCSS = "",
 }: {
 	annotation: FileAnnotationModel;
 	detail: WorkspaceFileDetail;
@@ -57,6 +59,10 @@ export function AoDiffFile({
 	split: boolean;
 	commitSha?: string;
 	source?: FilesSource;
+	/** Opt-in (Files panel preview): the caller's toolbar already names the file. */
+	hideFileHeader?: boolean;
+	/** Opt-in extra surface CSS appended after the shared surface CSS. */
+	extraCSS?: string;
 }) {
 	const { t } = useTranslation();
 	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
@@ -136,6 +142,7 @@ export function AoDiffFile({
 					collapsedContextThreshold: 8,
 					diffIndicators: "classic",
 					diffStyle: split ? "split" : "unified",
+					disableFileHeader: hideFileHeader,
 					enableGutterUtility: true,
 					expansionLineCount: 20,
 					hunkSeparators: "line-info",
@@ -149,7 +156,7 @@ export function AoDiffFile({
 					themeType: resolvedTheme,
 					tokenizeMaxLength: 200_000,
 					tokenizeMaxLineLength: 2_000,
-					unsafeCSS: AO_PIERRE_SURFACE_CSS,
+					unsafeCSS: AO_PIERRE_SURFACE_CSS + extraCSS,
 				}}
 				renderAnnotation={() => <FileAnnotationComposer annotation={annotation} />}
 				renderGutterUtility={(getHoveredLine) => (

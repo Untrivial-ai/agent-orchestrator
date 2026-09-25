@@ -3848,6 +3848,35 @@ html.sidebar-reordering * {
 	}
 }
 
+/* Files filter field. Visually matches the browser address field, but is its
+   own rule set so browser styles never change because of the Files panel. */
+.inspector-field-input {
+	width: 100%;
+	box-sizing: border-box;
+	height: var(--size-control-md);
+	border-color: var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--bg);
+	font-family: var(--font-family-base);
+	font-size: 12px;
+	transition:
+		border-color var(--duration-fast) ease,
+		box-shadow var(--duration-fast) ease;
+}
+
+.inspector-field-input:focus,
+.inspector-field-input:focus-visible {
+	border-color: color-mix(in oklab, var(--ring) 60%, var(--color-border));
+	box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
+	outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.inspector-field-input {
+		transition: none;
+	}
+}
+
 /* Files tab: the filter field sits in the inspector top bar exactly where the
    browser's address field does, with the same centered track and focus
    widening. It always stays on the top row; the panel shares the browser's
@@ -5173,10 +5202,7 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	color: var(--fg);
 }
 
-/* Inspector text fields share the browser URL bar's chrome: hairline border on
- * the canvas, control-md height, and the same focus ring. */
-.browser-panel__url-input,
-.inspector-field-input {
+.browser-panel__url-input {
 	width: 100%;
 	box-sizing: border-box;
 	height: var(--size-control-md);
@@ -5185,24 +5211,15 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 	background: var(--bg);
 	font-family: var(--font-family-base);
 	font-size: 12px;
+	text-align: center;
 	transition:
 		border-color var(--duration-fast) ease,
 		box-shadow var(--duration-fast) ease;
 }
 
-.browser-panel__url-input {
-	text-align: center;
-}
-
 .browser-panel__url-input:focus,
 .browser-panel__url-input:focus-visible {
 	text-align: left;
-}
-
-.browser-panel__url-input:focus,
-.browser-panel__url-input:focus-visible,
-.inspector-field-input:focus,
-.inspector-field-input:focus-visible {
 	border-color: color-mix(in oklab, var(--ring) 60%, var(--color-border));
 	box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
 	outline: none;
@@ -5427,7 +5444,6 @@ html[data-native-browser-composition="true"] .browser-popout-frame {
 	.browser-panel__toolbar button,
 	.browser-panel__toolbar > :not(.browser-panel__url-wrap),
 	.browser-panel__url-input,
-	.inspector-field-input,
 	.browser-panel__tab-new,
 	.browser-panel__tab-close {
 		transition: none;

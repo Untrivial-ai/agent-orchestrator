@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useRef, useState, type HTMLAttributes, type RefObject } from "react";
+import { createContext, forwardRef, useCallback, useContext, useEffect, useRef, useState, type HTMLAttributes, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Tree, type NodeApi, type NodeRendererProps, type RowRendererProps, type TreeApi } from "react-arborist";
@@ -80,7 +80,10 @@ export function FileTree({
 	changedOnlyData,
 	selectedPath,
 	onSelectPath,
+	flushTop = false,
 }: {
+	/** Start the first row at the top edge (the Files split view's divider). */
+	flushTop?: boolean;
 	filterText: string;
 	sessionId: string;
 	changedOnly: boolean;
@@ -163,30 +166,33 @@ export function FileTree({
 			) : null}
 			{isEmpty ? <p className="p-3 text-xs text-muted-foreground">{t("files.explorer.empty")}</p> : null}
 			{size.width > 0 && size.height > 0 ? (
-				<Tree<TreeNode>
-					data={data}
-					ref={treeApiRef}
-					idAccessor="path"
-					onToggle={handleToggle}
-					onActivate={handleActivate}
-					openByDefault={!changedOnly && normalizedFilter.length > 0}
-					selection={selectedPath ?? undefined}
-					disableDrag
-					disableDrop
-					disableEdit
-					disableMultiSelection
-					searchTerm={changedOnly ? filterText : ""}
-					rowHeight={ROW_HEIGHT}
-					indent={INDENT}
-					width={size.width}
-					height={size.height}
-					padding={4}
-					aria-label={t("files.explorer.tree")}
-					outerElementType={FileTreeScrollElement}
-					renderRow={FileTreeRowContainer}
-				>
-					{FileTreeRow}
-				</Tree>
+				<FlatTreeContext.Provider value={!data.some((node) => node.type === "dir")}>
+					<Tree<TreeNode>
+						data={data}
+						ref={treeApiRef}
+						idAccessor="path"
+						onToggle={handleToggle}
+						onActivate={handleActivate}
+						openByDefault={!changedOnly && normalizedFilter.length > 0}
+						selection={selectedPath ?? undefined}
+						disableDrag
+						disableDrop
+						disableEdit
+						disableMultiSelection
+						searchTerm={changedOnly ? filterText : ""}
+						rowHeight={ROW_HEIGHT}
+						indent={INDENT}
+						width={size.width}
+						height={size.height}
+						paddingBottom={4}
+						paddingTop={flushTop ? 0 : 4}
+						aria-label={t("files.explorer.tree")}
+						outerElementType={FileTreeScrollElement}
+						renderRow={FileTreeRowContainer}
+					>
+						{FileTreeRow}
+					</Tree>
+				</FlatTreeContext.Provider>
 			) : null}
 		</div>
 	);
@@ -214,8 +220,13 @@ function FileTreeRowContainer<T>({ node, attrs, innerRef, children }: RowRendere
 	);
 }
 
+// A tree with no folders anywhere (e.g. a flat list of changed files) has no
+// chevrons to line file icons up with, so rows drop the empty chevron slot.
+const FlatTreeContext = createContext(false);
+
 function FileTreeRow({ node, style, dragHandle }: NodeRendererProps<TreeNode>) {
 	const { t } = useTranslation();
+	const flat = useContext(FlatTreeContext);
 	const entry = node.data;
 	const isDir = entry.type === "dir";
 	return (
@@ -236,7 +247,7 @@ function FileTreeRow({ node, style, dragHandle }: NodeRendererProps<TreeNode>) {
 					aria-hidden="true"
 					className={cn("size-3.5 shrink-0 text-passive transition-transform", node.isOpen && "rotate-90")}
 				/>
-			) : (
+			) : flat ? null : (
 				<span aria-hidden="true" className="size-3.5 shrink-0" />
 			)}
 			{isDir ? (

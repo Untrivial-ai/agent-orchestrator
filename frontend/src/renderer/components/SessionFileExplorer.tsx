@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
 	Check,
 	Columns2,
+	FolderTree,
 	Folders,
+	GitCompareArrows,
 	Maximize2,
 	Minimize2,
 	Rows3,
@@ -46,6 +48,8 @@ import { WorkspaceReviewPane, type ReviewSourceMenu } from "./diffs/WorkspaceRev
 import { formatTimeTerse } from "../lib/format-time";
 
 const WORKSPACE_SOURCE: FilesSource = { kind: "workspace" };
+// Below this preview width a side-by-side diff squeezes each column too far.
+const SPLIT_DIFF_MIN_WIDTH_PX = 720;
 // Mirrors the browser panel's tab strip (.browser-panel__tab): no container
 // box, 28px rounded tabs, filled only when active.
 const viewTabClass = "inline-flex h-control-md items-center rounded-md px-2.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50";
@@ -77,6 +81,8 @@ export function SessionFileExplorer({
 	const [sourceNotice, setSourceNotice] = useState("");
 	const [reviewMenu, setReviewMenu] = useState<ReviewSourceMenu | null>(null);
 	const filesTopbarHost = useFilesTopbarHost();
+	const [treeOpen, setTreeOpen] = useState(true);
+	const [previewWidth, setPreviewWidth] = useState(Number.POSITIVE_INFINITY);
 	const scmQuery = useSessionScmSummary(sessionId);
 	const queryClient = useQueryClient();
 	const connectionState = useWorkspaceFileConnectionState(sessionId);
@@ -102,6 +108,7 @@ export function SessionFileExplorer({
 	);
 	const hasChanges = filesQuery.data?.files.some((file) => file.status !== "unmodified") ?? false;
 	const showChanges = source.kind === "workspace" && changedOnly && (!filesQuery.data || hasChanges);
+	const splitView = !showChanges && (isMaximized || source.kind === "pull_request");
 	const sourceUnavailable = source.kind === "pull_request"
 		&& (filesQuery.isError || Boolean(scmQuery.data && !scmQuery.data.some((pr) => pr.url === source.url)));
 
@@ -156,8 +163,15 @@ export function SessionFileExplorer({
 		if (pr) setFilesSource(sessionId, { kind: "pull_request", number: pr.number, url: pr.url, label: `PR #${pr.number} · ${pr.sourceBranch || pr.title}` });
 	};
 
+	// The Changes view only exists for the workspace; for a PR the switch would
+	// do nothing, so it is not shown.
+	const hasViewTabs = hasChanges && source.kind === "workspace";
+	// In the preview + tree split the (already active) All-files tab doubles as
+	// the tree toggle, so the header doesn't carry two file-tree buttons.
+	const allFilesTabLabel = !showChanges && splitView ? (treeOpen ? t("files.hideFileTree") : t("files.showFileTree")) : t("files.allFiles");
+
 	const filterField = (
-		<label className={cn("relative min-w-0", filesTopbarHost ? "block w-full" : "mr-1 flex-1")}>
+		<label className={cn("relative min-w-0", filesTopbarHost ? "block w-full" : "w-64 shrink")}>
 			<Search className="pointer-events-none absolute left-2.5 top-1/2 size-icon-sm -translate-y-1/2 text-passive" />
 			<Input
 				aria-label={t("files.explorer.filter")}
@@ -171,7 +185,9 @@ export function SessionFileExplorer({
 
 	return (
 		<section className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label={t("files.sessionFiles")}>
-			<header className={cn("flex min-h-10 shrink-0 items-center gap-1 px-3 pt-1", showChanges ? "pb-3" : "pb-1")}>
+			{/* In the tree + preview split the header gets a hairline divider with
+			    only a sliver of space above it, so content never touches the line. */}
+			<header className={cn("flex min-h-10 shrink-0 items-center gap-1 px-3 pt-1", splitView ? "border-b border-border pb-1" : showChanges ? "pb-3" : "pb-1")}>
 				{/* One dropdown for "what am I reviewing", laid out like a VCS review
 				    picker: working scopes at the top, then Commits › and Branch ›
 				    flyouts (Branch = Workspace or a PR). */}
@@ -232,38 +248,10 @@ export function SessionFileExplorer({
 						</DropdownMenuSub>
 					</DropdownMenuContent>
 				</DropdownMenu>
+				{/* Inline (maximized) the filter sits centred between the picker and the actions. */}
+				{filesTopbarHost ? null : <span aria-hidden="true" className="flex-1" />}
 				{filesTopbarHost ? createPortal(filterField, filesTopbarHost) : filterField}
-				{filesTopbarHost ? <span aria-hidden="true" className="flex-1" /> : null}
-				{/* The Changes view only exists for the workspace; for a PR the
-				    switch would do nothing, so it is not shown. */}
-				{hasChanges && source.kind === "workspace" ? (
-					<div aria-label={t("files.viewMode")} className="flex shrink-0 items-center gap-0.5" role="tablist">
-						<button
-							aria-selected={showChanges}
-							className={cn(viewTabClass, showChanges ? "bg-interactive-active text-foreground" : "text-muted-foreground hover:bg-interactive-hover hover:text-foreground")}
-							onClick={() => handleViewChange(true)}
-							role="tab"
-							type="button"
-						>
-							{t("files.reviewChanges")}
-						</button>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<button
-									aria-label={t("files.allFiles")}
-									aria-selected={!showChanges}
-									className={cn(viewTabClass, "w-control-md justify-center px-0", !showChanges ? "bg-interactive-active text-foreground" : "text-muted-foreground hover:bg-interactive-hover hover:text-foreground")}
-									onClick={() => handleViewChange(false)}
-									role="tab"
-									type="button"
-								>
-									<Folders aria-hidden="true" className="size-icon-base" />
-								</button>
-							</TooltipTrigger>
-							<TooltipContent side="bottom">{t("files.allFiles")}</TooltipContent>
-						</Tooltip>
-					</div>
-				) : null}
+				<span aria-hidden="true" className="flex-1" />
 				{showChanges ? (
 					<Tooltip>
 						<TooltipTrigger asChild>
@@ -288,6 +276,58 @@ export function SessionFileExplorer({
 							</Button>
 						</TooltipTrigger>
 						<TooltipContent side="bottom">{split ? t("files.unifiedDiff") : t("files.splitDiff")}</TooltipContent>
+					</Tooltip>
+				) : null}
+				{hasViewTabs ? (
+					<div aria-label={t("files.viewMode")} className="flex shrink-0 items-center gap-0.5" role="tablist">
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<button
+									aria-label={t("files.reviewChanges")}
+									aria-selected={showChanges}
+									className={cn(viewTabClass, "w-control-md justify-center px-0", showChanges ? "bg-interactive-active text-foreground" : "text-muted-foreground hover:bg-interactive-hover hover:text-foreground")}
+									onClick={() => handleViewChange(true)}
+									role="tab"
+									type="button"
+								>
+									<GitCompareArrows aria-hidden="true" className="size-icon-base" />
+								</button>
+							</TooltipTrigger>
+							<TooltipContent side="bottom">{t("files.reviewChanges")}</TooltipContent>
+						</Tooltip>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<button
+									aria-label={allFilesTabLabel}
+									aria-selected={!showChanges}
+									className={cn(viewTabClass, "w-control-md justify-center px-0", !showChanges ? "bg-interactive-active text-foreground" : "text-muted-foreground hover:bg-interactive-hover hover:text-foreground")}
+									onClick={() => (!showChanges && splitView ? setTreeOpen((open) => !open) : handleViewChange(false))}
+									role="tab"
+									type="button"
+								>
+									<Folders aria-hidden="true" className="size-icon-base" />
+								</button>
+							</TooltipTrigger>
+							<TooltipContent side="bottom">{allFilesTabLabel}</TooltipContent>
+						</Tooltip>
+					</div>
+				) : null}
+				{splitView && !hasViewTabs ? (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								aria-label={treeOpen ? t("files.hideFileTree") : t("files.showFileTree")}
+								aria-pressed={treeOpen}
+								className="shrink-0"
+								onClick={() => setTreeOpen((open) => !open)}
+								size="icon-sm"
+								type="button"
+								variant="ghost"
+							>
+								<FolderTree className="size-icon-sm" aria-hidden="true" />
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent side="bottom">{treeOpen ? t("files.hideFileTree") : t("files.showFileTree")}</TooltipContent>
 					</Tooltip>
 				) : null}
 				{onToggleMaximized ? (
@@ -339,25 +379,31 @@ export function SessionFileExplorer({
 					/>
 				) : null
 			) : isMaximized || source.kind === "pull_request" ? (
-				// Maximized gives the explorer the full window — plenty of room for
-				// the tree and the content side by side, like a real editor.
+				// Preview on the left, tree on the right (collapsible from the header),
+				// like an editor's changed-files rail.
 				<ResizablePanelGroup className="min-h-0 flex-1">
-					<ResizablePanel defaultSize="26%" minSize="18%" maxSize="50%">
-						<FileTree
-							changedOnly={source.kind === "pull_request"}
-							changedOnlyData={changedOnlyData}
-							filterText={filter}
-							onSelectPath={handleSelectPath}
-							selectedPath={treeSelectedPath}
-							sessionId={sessionId}
-						/>
-					</ResizablePanel>
-					<ResizableHandle />
 					<ResizablePanel defaultSize="74%" minSize="40%">
-						<ContentScrollArea>
-							<FileContentPane annotation={annotation} path={selectedPath} previousPath={selectedPreviousPath} sessionId={sessionId} source={querySource} split={split} />
+						<ContentScrollArea onWidthChange={setPreviewWidth}>
+							{/* A narrow preview (small panel and/or the tree rail open) falls
+							    back to a unified diff; side-by-side needs room for both columns. */}
+							<FileContentPane annotation={annotation} path={selectedPath} previousPath={selectedPreviousPath} sessionId={sessionId} source={querySource} split={split && previewWidth >= SPLIT_DIFF_MIN_WIDTH_PX} toolbar="compact" />
 						</ContentScrollArea>
 					</ResizablePanel>
+					{treeOpen ? (
+						<>
+							<ResizableHandle />
+							<ResizablePanel defaultSize="26%" minSize="18%" maxSize="50%">
+								<FileTree
+									changedOnly={source.kind === "pull_request"}
+									changedOnlyData={changedOnlyData}
+									filterText={filter}
+									onSelectPath={handleSelectPath}
+									selectedPath={treeSelectedPath}
+									sessionId={sessionId}
+								/>
+							</ResizablePanel>
+						</>
+					) : null}
 				</ResizablePanelGroup>
 			) : (
 				// The right rail remains a persistent navigator. File contents open
@@ -375,10 +421,19 @@ export function SessionFileExplorer({
 	);
 }
 
-function ContentScrollArea({ children }: { children: ReactNode }) {
+function ContentScrollArea({ children, onWidthChange }: { children: ReactNode; onWidthChange?: (width: number) => void }) {
+	const ref = useRef<HTMLDivElement>(null);
+	useEffect(() => {
+		const element = ref.current;
+		if (!element || !onWidthChange || typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(([entry]) => onWidthChange(entry.contentRect.width));
+		observer.observe(element);
+		return () => observer.disconnect();
+	}, [onWidthChange]);
 	return (
 		<div
-			className="board-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-background"
+			ref={ref}
+			className="board-scrollbar h-full min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-background"
 			data-files-scroll-root=""
 		>
 			<div className="flex w-full flex-col px-0">{children}</div>

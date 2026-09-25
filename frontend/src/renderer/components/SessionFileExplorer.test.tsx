@@ -160,10 +160,18 @@ describe("SessionFileExplorer", () => {
 		expect(screen.getByTestId("content-pane")).toHaveTextContent("src/App.tsx");
 		expect(screen.getByTestId("tree-changed-only")).toBeInTheDocument();
 
+		// Preview first, tree on the right.
 		const panels = container.querySelectorAll('[data-slot="resizable-panel"]');
 		expect(panels).toHaveLength(2);
-		expect(panels[0]).toHaveStyle({ flexGrow: "26" });
-		expect(panels[1]).toHaveStyle({ flexGrow: "74" });
+		expect(panels[0]).toHaveStyle({ flexGrow: "74" });
+		expect(panels[1]).toHaveStyle({ flexGrow: "26" });
+
+		// With the view tabs showing, the active Files tab doubles as the tree toggle.
+		await userEvent.click(screen.getByRole("tab", { name: "Hide file tree" }));
+		expect(screen.queryByTestId("tree-changed-only")).not.toBeInTheDocument();
+		expect(screen.getByTestId("content-pane")).toHaveTextContent("src/App.tsx");
+		await userEvent.click(screen.getByRole("tab", { name: "Show file tree" }));
+		expect(screen.getByTestId("tree-changed-only")).toBeInTheDocument();
 		widthSpy.mockRestore();
 	});
 

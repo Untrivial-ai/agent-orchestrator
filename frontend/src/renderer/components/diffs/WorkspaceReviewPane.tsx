@@ -33,6 +33,8 @@ const parsedPatchCache = new Map<string, FileDiffMetadata[]>();
 const MAX_PARSED_GROUPS = 24;
 const workingScopeOrder = ["unstaged", "staged"] as const;
 const SOURCE_CONTROL = MENU_TRIGGER_CHROME;
+// Height of the custom per-file header row below (h-9).
+const FILE_HEADER_HEIGHT_PX = 36;
 // Secondary file actions stay out of the way until the row is hovered or a
 // control inside it has keyboard focus (so they remain reachable by Tab).
 const FILE_HEADER_HOVER_ACTIONS = "flex items-center opacity-0 transition-opacity duration-fast group-hover/file-header:opacity-100 group-focus-within/file-header:opacity-100";
@@ -495,7 +497,10 @@ export function WorkspaceReviewPane({
 							expansionLineCount: 20,
 							hunkSeparators: "line-info",
 							lineDiffType: "word-alt",
-							layout: { gap: 0, paddingBottom: 8, paddingTop: 0 },
+							layout: { gap: 4, paddingBottom: 8, paddingTop: 0 },
+							// Must match the custom file header height (h-9 = 36px). Pierre's default
+							// (44px) reserves the difference and pushes the header down by 8px.
+							itemMetrics: { diffHeaderHeight: FILE_HEADER_HEIGHT_PX },
 							lineHoverHighlight: "line",
 							loadDiffFiles,
 							maxLineDiffLength: 400,
@@ -533,9 +538,9 @@ export function WorkspaceReviewPane({
 									{/* The whole row toggles the file (the chevron just rotates);
 									    name + stats on the left, every action grouped on the right
 									    with "viewed" pinned to the far edge. */}
-									<div className="group/file-header flex h-9 min-w-0 cursor-pointer items-center gap-1.5 px-3 hover:bg-interactive-hover/40" onClick={() => toggleCollapsed(file.path)}>
-										<ChevronRight aria-hidden="true" className={cn("size-icon-sm shrink-0 text-muted-foreground transition-transform duration-150 group-hover/file-header:text-foreground", !isCollapsed && "rotate-90")} />
-										<WorkspaceEntryIcon className="size-icon-base" kind="file" name={file.path.split("/").pop() ?? file.path} />
+									<div className="group/file-header flex h-9 min-w-0 cursor-pointer items-center gap-2 pl-4 pr-3 hover:bg-interactive-hover/40" onClick={() => toggleCollapsed(file.path)}>
+										<ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform duration-150 group-hover/file-header:text-foreground", !isCollapsed && "rotate-90")} />
+										<WorkspaceEntryIcon className="size-icon-xl" kind="file" name={file.path.split("/").pop() ?? file.path} />
 										<div className="flex min-w-0 shrink items-baseline gap-2.5">
 											<button
 												aria-expanded={!isCollapsed}

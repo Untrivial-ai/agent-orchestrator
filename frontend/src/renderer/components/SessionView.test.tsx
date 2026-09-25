@@ -3149,6 +3149,18 @@ describe("SessionView", () => {
 		expect(inspectorWidthVariable()).toBe("500px");
 	});
 
+	it("keeps Files and Browser widths independent even though they share the same defaults", async () => {
+		window.localStorage.setItem("ao.workspace.browser.canvasWidthPx", "820");
+		render(<SessionView sessionId="sess-1" />);
+
+		act(() => useUiStore.getState().setInspectorView("sess-1", "browser"));
+		await waitFor(() => expect(inspectorWidthVariable()).toBe("820px"));
+
+		act(() => useUiStore.getState().setInspectorView("sess-1", "files"));
+		await waitFor(() => expect(inspectorWidthVariable()).toBe("900px"));
+		expect(window.localStorage.getItem("ao.workspace.files.canvasWidthPx")).not.toBe("820");
+	});
+
 	it("never changes the sidebar preference while browser surfaces open and close", async () => {
 		render(<SessionView sessionId="sess-1" />);
 		expect(useUiStore.getState().isSidebarOpen).toBe(true);

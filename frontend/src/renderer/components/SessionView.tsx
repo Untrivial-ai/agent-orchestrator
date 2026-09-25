@@ -123,6 +123,12 @@ const CHAT_READABLE_MIN_PX = 560;
 // canvas workflow. This is still wide enough for the timeline and composer, and
 // is separate from the roomier utility-view floor above.
 const BROWSER_CHAT_MIN_PX = 440;
+// Files uses the same numbers as Browser, but is its own profile (own constants
+// and remembered width) so changing one surface never moves the other.
+const FILES_WORKSPACE_DEFAULT_PX = 900;
+const FILES_WORKSPACE_MIN_PX = 460;
+const FILES_WORKSPACE_MAX_PERCENT = 68;
+const FILES_CHAT_MIN_PX = 440;
 type CenterFileOpenRequest = { commitSha?: string; editing: boolean; key: number; mode: FileViewMode; scope?: FileOpenOptions["scope"] };
 const EMPTY_AUXILIARY_TAB_ORDER: string[] = [];
 // The inspector tab labels respond to the tablist's remaining width. The
@@ -134,6 +140,7 @@ const inspectorWidthStorageKey = "ao.inspector.widthPx";
 // The canvas profile has different constraints from the earlier Browser rail;
 // use a new preference namespace so an old narrow width cannot silently pin it.
 const browserWorkspaceWidthStorageKey = "ao.workspace.browser.canvasWidthPx";
+const filesWorkspaceWidthStorageKey = "ao.workspace.files.canvasWidthPx";
 const inspectorWidthVar = "--ao-inspector-w";
 // Closely matches SHELL_PANEL_SPRING's visual settle time. Keeping the CSS
 // width interpolation on the same clock prevents the sidebar from stopping
@@ -212,16 +219,24 @@ type InspectorSizing = {
 };
 
 function inspectorSizing(view: InspectorView): InspectorSizing {
-	// Files shares the Browser's geometry (and remembered width): both carry a
-	// top-bar field and a wide content surface, so they get the same panel.
-	if (view === "browser" || view === "files") {
+	if (view === "browser") {
 		return {
 			chatMinWidth: BROWSER_CHAT_MIN_PX,
 			defaultWidth: BROWSER_WORKSPACE_DEFAULT_PX,
 			minWidth: BROWSER_WORKSPACE_MIN_PX,
 			maxPercent: BROWSER_WORKSPACE_MAX_PERCENT,
-			mode: view === "browser" ? "browser" : "files",
+			mode: "browser",
 			storageKey: browserWorkspaceWidthStorageKey,
+		};
+	}
+	if (view === "files") {
+		return {
+			chatMinWidth: FILES_CHAT_MIN_PX,
+			defaultWidth: FILES_WORKSPACE_DEFAULT_PX,
+			minWidth: FILES_WORKSPACE_MIN_PX,
+			maxPercent: FILES_WORKSPACE_MAX_PERCENT,
+			mode: "files",
+			storageKey: filesWorkspaceWidthStorageKey,
 		};
 	}
 	return {
@@ -1785,6 +1800,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[sessionId, setInspectorOpenForSession, transitionInspectorView],
 	);
 
+	// The maximized Files overlay covers the center pane, so opening a file from
+	// it docks the overlay first; otherwise the file would open out of sight.
+	const openCenterFileFromFilesPopOut = useCallback((path: string, options?: FileOpenOptions) => {
+		setFilesPoppedOut(false);
+		openCenterFile(path, options);
+	}, [openCenterFile]);
+
 	const handleToggleBrowserPopOut = useCallback(
 		(next: boolean) => {
 			if (next) setFilesPoppedOut(false);
@@ -2291,10 +2313,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							)}
 						>
 							{session.cloud ? (
-								<CloudWorkspaceDiff annotation={fileAnnotation} isMaximized onOpenFile={openCenterFile} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
+								<CloudWorkspaceDiff annotation={fileAnnotation} isMaximized onOpenFile={openCenterFileFromFilesPopOut} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
 							) : (
 								<SessionFileExplorer
 									isMaximized
+									onOpenFile={openCenterFileFromFilesPopOut}
 									onSplitChange={setFilesSplit}
 									onToggleMaximized={handleToggleFilesPopOut}
 									sessionId={session.id}

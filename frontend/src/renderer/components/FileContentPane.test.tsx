@@ -152,6 +152,37 @@ describe("FileContentPane", () => {
 		expect(await screen.findByText((_, element) => element?.tagName === "CODE" && element.textContent === "export const next = 2;\n")).toBeInTheDocument();
 	});
 
+	it("uses a breadcrumb and icon mode switches in the compact Files-panel toolbar", async () => {
+		getMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				path: "src/App.tsx",
+				status: "modified",
+				additions: 1,
+				deletions: 1,
+				size: 18,
+				binary: false,
+				deleted: false,
+				content: "export const next = 2;\n",
+				contentTruncated: false,
+				diff: "@@ -1,1 +1,1 @@\n-export const next = 1;\n+export const next = 2;\n",
+				diffTruncated: false,
+			},
+		});
+
+		renderWithQuery(<FileContentPane annotation={noopAnnotation()} path="src/App.tsx" sessionId="sess-1" split={false} toolbar="compact" />);
+
+		const breadcrumb = await screen.findByRole("navigation", { name: "File path" });
+		expect(breadcrumb).toHaveTextContent("src/App.tsx");
+		// The change counts live beside the name, replacing the diff's own header row.
+		expect(breadcrumb).toHaveTextContent("+1−1");
+		// The tree already shows the status, so the compact toolbar does not repeat it.
+		expect(screen.queryByText("M")).not.toBeInTheDocument();
+		expect(screen.getByRole("tab", { name: "Diff" })).toHaveAttribute("aria-selected", "true");
+		await userEvent.click(screen.getByRole("tab", { name: "File" }));
+		expect(await screen.findByText((_, element) => element?.tagName === "CODE" && element.textContent === "export const next = 2;\n")).toBeInTheDocument();
+	});
+
 	it("opens a changed markdown file directly in rendered mode while retaining its status", async () => {
 		getMock.mockResolvedValue({
 			data: {
