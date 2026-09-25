@@ -232,6 +232,7 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 		Effort:        "high",
 		Permissions:   ports.PermissionModeDefault,
 		SystemPrompt:  "standing rules",
+		Ephemeral:     true,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -253,6 +254,7 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 		DeveloperInstructions string            `json:"developerInstructions"`
 		Model                 string            `json:"model"`
 		Config                map[string]string `json:"config"`
+		Ephemeral             bool              `json:"ephemeral"`
 	}
 	if err := json.Unmarshal(start.Params, &params); err != nil {
 		t.Fatalf("thread/start params: %v", err)
@@ -265,6 +267,9 @@ func TestStartCompletesHandshakeAndOpensThread(t *testing.T) {
 	}
 	if params.Model != "gpt-test" || params.Config["model_reasoning_effort"] != "high" {
 		t.Errorf("model tuning = %#v", params)
+	}
+	if !params.Ephemeral {
+		t.Error("thread/start did not mark the background conversation ephemeral")
 	}
 	var rawParams map[string]json.RawMessage
 	if err := json.Unmarshal(start.Params, &rawParams); err != nil {

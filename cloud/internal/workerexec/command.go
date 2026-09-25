@@ -38,6 +38,38 @@ type HarnessBuilder struct {
 	CodexLogin func(binary, home, credentialType, secret string) error
 }
 
+// extraReposPromptNote describes the additional repositories the worker checked
+// out beside the primary workspace, so the agent knows they exist and where to
+// find them. Paths mirror worker.ExtraRepoPath (siblings of the primary
+// checkout), so what the agent is told matches what is on disk.
+func extraReposPromptNote(workspace string, repos []worker.RepoRef) string {
+	if len(repos) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Additional repositories\n\n")
+	b.WriteString("This session was set up with extra repositories checked out alongside your primary repository. Your working directory is the primary repository; the others are sibling directories you can read and edit directly:\n\n")
+	wrote := false
+	for _, repo := range repos {
+		if strings.TrimSpace(repo.URL) == "" {
+			continue
+		}
+		abs := worker.ExtraRepoPath(workspace, repo.URL)
+		name := filepath.Base(abs)
+		branch := ""
+		if strings.TrimSpace(repo.Branch) != "" {
+			branch = fmt.Sprintf(" (branch %s)", repo.Branch)
+		}
+		fmt.Fprintf(&b, "- %s%s: %s (relative to your working directory: ../%s)\n", name, branch, abs, name)
+		wrote = true
+	}
+	if !wrote {
+		return ""
+	}
+	b.WriteString("\nMake changes, commit, and open pull requests per repository as appropriate. If one is missing it could not be cloned (for example it is outside this session's GitHub access); continue with the primary repository.")
+	return b.String()
+}
+
 // BuildInteractive prepares the provider's native TUI command. Unlike Build,
 // it deliberately omits headless print/JSON flags so the browser terminal is
 // the conversation surface.
@@ -76,6 +108,17 @@ func (b HarnessBuilder) BuildInteractive(
 	}
 	if projectPrompt := strings.TrimSpace(launch.SystemPrompt); projectPrompt != "" {
 		systemPrompt += "\n\n" + projectPrompt
+	}
+	// Multi-repo dev kit: tell a worker about the additional repositories checked
+	// out beside its primary repo, and where to find them, so it can edit them
+	// directly. This concrete sibling-path note is worker-only: an orchestrator
+	// codes nothing itself, so it gets multi-repo awareness from the shared
+	// project context (roleprompt) instead — enough to coordinate work across the
+	// repos without being pointed at sibling directories to edit.
+	if launch.Kind != "orchestrator" {
+		if note := extraReposPromptNote(workspace, launch.ExtraRepos); note != "" {
+			systemPrompt += "\n\n" + note
+		}
 	}
 	systemPromptFile, err := b.writeSystemPromptFile(launch.SessionID, systemPrompt)
 	if err != nil {

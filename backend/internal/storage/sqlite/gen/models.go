@@ -26,12 +26,20 @@ type AgentInstallJob struct {
 }
 
 type AgentModelCatalog struct {
-	AgentID       string
-	ProjectID     string
-	BinaryVersion string
-	CatalogJson   string
-	Source        string
-	FetchedAt     time.Time
+	AgentID          string
+	ProjectID        string
+	BinaryVersion    string
+	CatalogJson      string
+	Source           string
+	FetchedAt        time.Time
+	MetadataJson     string
+	InputFingerprint string
+	LastSuccessAt    sql.NullTime
+	RefreshState     string
+	RefreshError     string
+	RetryCount       int64
+	RetryAt          sql.NullTime
+	Generation       int64
 }
 
 type AgentNativeSession struct {
@@ -492,6 +500,39 @@ type Project struct {
 	Kind          string
 }
 
+type Report struct {
+	ID                 string
+	SessionID          string
+	ProjectID          string
+	State              string
+	Note               string
+	Message            string
+	CreatedAt          time.Time
+	DeliveryState      string
+	AvailableAt        time.Time
+	SettlementDeadline sql.NullTime
+	RepeatCount        int64
+	ClaimToken         string
+	ClaimedAt          sql.NullTime
+	DeliveryAttempts   int64
+	AcknowledgedAt     sql.NullTime
+	LastError          string
+	DeliveryBatchID    string
+}
+
+type ReportOutput struct {
+	ReportID  string
+	Position  int64
+	Kind      string
+	Reference string
+	Label     string
+}
+
+type ReportWorkerInterrupt struct {
+	SessionID         string
+	LastInterruptedAt time.Time
+}
+
 type Review struct {
 	ID                     string
 	SessionID              domain.SessionID
@@ -582,6 +623,7 @@ type Session struct {
 	NativeCheckpointEvidence         string
 	LatestAssistantUpdateAt          sql.NullTime
 	NativeIdentityObservedAt         sql.NullTime
+	Effort                           string
 }
 
 type SessionCleanupFact struct {

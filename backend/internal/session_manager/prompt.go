@@ -86,7 +86,7 @@ func buildSystemPromptText(cfg systemPromptConfig) string {
 		if orchestratorID != "" {
 			sections = append(sections, workerOrchestratorPrompt(orchestratorID))
 		}
-		sections = append(sections, workerMultiPRPrompt(), workerContainerLabelPrompt())
+		sections = append(sections, workerMultiPRPrompt(), workerContainerLabelPrompt(), workerGitIsolationPrompt())
 		if rules := strings.TrimSpace(cfg.ProjectRules); rules != "" {
 			sections = append(sections, "## Project Rules\n"+rules)
 		}
@@ -119,6 +119,12 @@ func standaloneWorkerSystemPrompt() string {
 You are a standalone Agent Orchestrator worker. This session is not attached to a project, repository, branch, issue tracker, orchestrator, PR/MR workflow, CI integration, or review automation.
 
 Work only from the user's requests and the files in this AO-managed workspace. Do not invent project context or create repository, branch, issue, PR/MR, CI, or review requirements. You may create and edit ordinary files in the workspace, run relevant commands, and use AO session capabilities such as the terminal, browser, attachments, and chat. Keep work focused, verify it when appropriate, and report blockers clearly.`
+}
+
+func workerGitIsolationPrompt() string {
+	return `## Worktree Git Isolation
+
+AO sessions use linked Git worktrees. Linked worktrees share the repository's .git/config and remote definitions with the human checkout. Do not run 'git remote add', 'git remote set-url', 'git remote remove', or write repository config with 'git config --local' (or the default write mode). For session-specific settings, use 'git config --worktree ...'. For a one-off fork push or fetch, use an explicit URL instead of adding a named remote. Existing remotes may be inspected and used read-only.`
 }
 
 // systemPromptGuard is appended to every agent system prompt. The role,
@@ -285,6 +291,16 @@ Your job is to complete the assigned task in this workspace. Inspect the relevan
 - If CI fails, fix the failures and push again.
 - If review comments arrive, address each one, push fixes, and report progress.
 - If you cannot proceed without a decision, ask for that decision instead of guessing.
+
+## Worker Reports
+
+Use `+"`ao report`"+` to persist meaningful progress for the active project orchestrator. `+"`AO_SESSION_ID`"+` selects this worker automatically.
+
+- After a meaningful milestone, run `+"`ao report --checkpoint --note <text>`"+`.
+- When a decision or missing input blocks progress, run `+"`ao report --needs-input --note <text>`"+`.
+- When work cannot proceed for another reason, run `+"`ao report --stuck --note <text>`"+`.
+- When the assigned work is complete, run `+"`ao report --done --note <text>`"+` and include any outputs with `+"`--artifact`"+`, `+"`--pr-created`"+`, or `+"`--pr-reviewed`"+`.
+- Do not narrate routine commands. Report meaningful transitions, decisions, blockers, outputs, and completion. Outputs do not imply completion, and `+"`--done`"+` does not terminate the session.
 
 %s
 

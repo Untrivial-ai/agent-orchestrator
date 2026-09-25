@@ -190,6 +190,7 @@ if (typeof window !== "undefined") {
 				isLoading: false,
 			}),
 		setBounds: () => undefined,
+		onBoundsApplied: () => () => undefined,
 		setOverlayOpen: () => undefined,
 		navigate: async ({ viewId }: { viewId: string }) => ({
 				viewId,
@@ -340,6 +341,14 @@ if (typeof window !== "undefined") {
 		featureBuilds: {
 			list: async () => [],
 			getActive: async () => null,
+		},
+		remotes: {
+			list: async () => [],
+			add: async () => "offline" as const,
+			update: async () => "offline" as const,
+			remove: async () => undefined,
+			probe: async () => "offline" as const,
+			request: async () => ({ status: 0, body: null }),
 		},
 		cloud: {
 			getSession: async () => null,

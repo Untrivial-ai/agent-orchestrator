@@ -2,7 +2,7 @@ import { isOrchestratorSession, type WorkspaceSession } from "../types/workspace
 
 export type AgentInfo = {
 	authentication: {
-		state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
+		state: "authorized" | "unauthorized" | "unknown" | "not_applicable" | "configured";
 		freshness: "fresh" | "stale" | "checking";
 	};
 	effectiveReadiness: "ready" | "not_ready" | "unknown";
@@ -116,6 +116,12 @@ function agentStatus(agent: AgentInfo): Pick<RankedAgentOption, "status" | "stat
 	if (agent.authentication.state === "unknown") {
 		return { status: "Auth unknown", statusTone: "warning" };
 	}
+	// A credential exists but nothing proved it works. It must not fall through
+	// to the known-good branch below: rendering an unverified credential green
+	// is precisely how a revoked key came to look like a working agent.
+	if (agent.authentication.state === "configured") {
+		return { status: "Unverified", statusTone: "muted" };
+	}
 	// Known-good agents stay selectable even while stale or checking; freshness
 	// is informative coordinator state, not a reason for the renderer to block.
 	return { status: "", statusTone: "success" };
@@ -148,7 +154,11 @@ export function buildRankedAgentOptions({
 				? agent
 				: unknownAgentReadiness(agent.id, agent.label);
 			const isInstallationUnknown = safeAgent.installation.state === "unknown";
-			const isAuthUnknown = safeAgent.authentication.state === "unknown";
+			// Configured ranks with unknown, not below it: a credential AO could
+			// not validate is still more evidence than no observation at all,
+			// and neither is a reason to make the agent unselectable.
+			const isAuthUnknown =
+				safeAgent.authentication.state === "unknown" || safeAgent.authentication.state === "configured";
 			const isAuthorized =
 				safeAgent.authentication.state === "authorized" || safeAgent.authentication.state === "not_applicable";
 			const isDefinitelyUnavailable =

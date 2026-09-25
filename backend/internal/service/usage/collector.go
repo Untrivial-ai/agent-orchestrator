@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -106,6 +107,7 @@ type collectorStore interface {
 	InsertUsageSource(context.Context, domain.UsageSourceRecord) (domain.UsageSourceRecord, error)
 	ReplaceUsageSource(context.Context, int64, string, domain.UsageSourceRecord, time.Time) (domain.UsageSourceRecord, error)
 	ListUsageSourcesForBinding(context.Context, int64) ([]domain.UsageSourceRecord, error)
+	HasUsageSourceByPath(context.Context, string) (bool, error)
 	ReactivateUsageSource(context.Context, int64, time.Time) (bool, error)
 }
 
@@ -118,6 +120,7 @@ type Collector struct {
 	notifyRouteResolved     func()
 	codexLogicalSourceLimit int
 	now                     func() time.Time
+	logger                  *slog.Logger
 	mu                      sync.Mutex
 	// Guarded separately from mu, which RecordHook holds across the whole hook.
 	routeMu sync.RWMutex
@@ -162,6 +165,7 @@ func newCollectorWithCodexSourceLimit(
 		notifySourcesChanged:    notifySourcesChanged,
 		codexLogicalSourceLimit: limit,
 		now:                     time.Now,
+		logger:                  slog.Default(),
 	}
 }
 
@@ -487,6 +491,8 @@ func (c *Collector) hookSession(
 	}
 	if signal.LaunchID != "" && session.Metadata.RuntimeLaunchID != "" &&
 		signal.LaunchID != session.Metadata.RuntimeLaunchID {
+		c.logger.Warn("usage hook dropped: launch id mismatch",
+			"session", sessionID, "event", signal.Event, "hook_launch_id", signal.LaunchID)
 		return session, false, nil
 	}
 	if signal.Harness != "" && signal.Harness != session.Harness {
@@ -498,6 +504,9 @@ func (c *Collector) hookSession(
 	}
 	sessionLive := !session.IsTerminated && session.Activity.State != domain.ActivityExited
 	if session.IsTerminated || (!finalizing && !sessionLive) {
+		c.logger.Warn("usage hook dropped: session not live",
+			"session", sessionID, "event", signal.Event,
+			"terminated", session.IsTerminated, "activity_state", session.Activity.State)
 		return session, false, nil
 	}
 	return session, true, nil
@@ -888,6 +897,9 @@ func (c *Collector) reconcileBinding(ctx context.Context, binding domain.UsageBi
 	switch binding.Harness {
 	case domain.HarnessClaudeCode:
 		if err := c.registerDiscoveredClaudeSubagents(ctx, binding, path, now, false); err != nil {
+			return err
+		}
+		if err := c.discoverClaudeContinuations(ctx, binding, session, path, now); err != nil {
 			return err
 		}
 	case domain.HarnessCodex:
@@ -1379,6 +1391,209 @@ func (c *Collector) codexSourceBudgetExceeded(
 		return false
 	}
 	return len(inventory.codexLogicalIDs) >= c.codexLogicalSourceLimit
+}
+
+// maxClaudeContinuationScanBytes bounds the size of one transcript record that
+// is parsed while extracting its session id and cwd.
+const maxClaudeContinuationScanBytes = 256 << 10
+
+// maxClaudeContinuationScanTotalBytes bounds the total bytes read per
+// candidate, so a pathological run-on record cannot make the scan unbounded.
+const maxClaudeContinuationScanTotalBytes = 8 << 20
+
+// maxClaudeContinuationScanRecords bounds the leading-record window.
+const maxClaudeContinuationScanRecords = 128
+
+// discoverClaudeContinuations registers resume transcripts that Claude Code
+// wrote beside an already-registered transcript without ever emitting an AO
+// hook: `claude --resume` continues the conversation in a new native session
+// file inside the same project directory, and nothing else in the pipeline
+// learns about it, so all post-resume usage would stay invisible forever. AO
+// gives every session its own worktree, so a transcript's recorded cwd
+// identifies its AO session; two live AO sessions never share one workspace by
+// design. If that invariant ever changes, cwd alone no longer attributes a
+// continuation and this scan needs a stronger discriminator.
+func (c *Collector) discoverClaudeContinuations(
+	ctx context.Context,
+	binding domain.UsageBindingRecord,
+	session domain.SessionRecord,
+	mainPath string,
+	now time.Time,
+) error {
+	workspace := strings.TrimSpace(session.Metadata.WorkspacePath)
+	if workspace == "" {
+		return nil
+	}
+	candidates, err := filepath.Glob(filepath.Join(filepath.Dir(mainPath), "*.jsonl"))
+	if err != nil {
+		return err
+	}
+	if len(candidates) > maxClaudeContinuationScanRecords {
+		candidates = candidates[:maxClaudeContinuationScanRecords]
+	}
+	known, err := c.store.ListUsageSourcesForBinding(ctx, binding.ID)
+	if err != nil {
+		return err
+	}
+	knownPaths := make(map[string]struct{}, len(known))
+	for _, source := range known {
+		knownPaths[source.ArtifactPath] = struct{}{}
+	}
+	var errs []error
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, ok := knownPaths[candidate]; ok {
+			continue
+		}
+		// registerSource re-validates authoritatively; this pre-check only
+		// keeps one unreadable candidate from aborting the whole scan.
+		resolved, _, _, err := c.validateSourcePath(ctx, domain.HarnessClaudeCode, candidate)
+		if err != nil {
+			continue
+		}
+		claimed, err := c.store.HasUsageSourceByPath(ctx, resolved)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if claimed {
+			continue
+		}
+		nativeID, cwd, ok := readClaudeTranscriptMeta(ctx, resolved)
+		if !ok || !nativeUsageIDPattern.MatchString(nativeID) || !sameWorkspacePath(cwd, workspace) {
+			continue
+		}
+		if filepath.Base(resolved) != nativeID+".jsonl" {
+			// validateSourceAttribution rejects a claude_main source whose file
+			// name does not carry the native id, so upserting the binding first
+			// would strand a zero-source binding and fail every reconcile pass.
+			continue
+		}
+		newBinding, err := c.upsertContinuationBinding(ctx, session, nativeID, now)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if _, err := c.registerSource(
+			ctx,
+			newBinding,
+			domain.UsageSourceClaudeMain,
+			nativeID,
+			"",
+			resolved,
+			now,
+			false,
+		); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := c.registerDiscoveredClaudeSubagents(ctx, newBinding, resolved, now, false); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if newBinding.State == domain.UsageBindingFinalizing {
+			if err := c.settleFinalizingBinding(ctx, newBinding.ID, now); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		c.logger.Info("usage continuation source registered",
+			"session", session.ID, "native_root_id", nativeID, "path", resolved)
+	}
+	return errors.Join(errs...)
+}
+
+func (c *Collector) upsertContinuationBinding(
+	ctx context.Context,
+	session domain.SessionRecord,
+	nativeID string,
+	now time.Time,
+) (domain.UsageBindingRecord, error) {
+	existing, exists, err := c.store.GetUsageBinding(ctx, session.ID, session.Harness, nativeID)
+	if err != nil {
+		return domain.UsageBindingRecord{}, err
+	}
+	if exists {
+		// Preserve state and provider evidence already recorded for this
+		// native session; only the source registration below matters here.
+		return existing, nil
+	}
+	state := domain.UsageBindingActive
+	if session.IsTerminated || session.Activity.State == domain.ActivityExited {
+		state = domain.UsageBindingFinalizing
+	}
+	return c.store.UpsertUsageBinding(ctx, domain.UsageBindingRecord{
+		SessionID:    session.ID,
+		Harness:      session.Harness,
+		NativeRootID: nativeID,
+		State:        state,
+		UpdatedAt:    now,
+	})
+}
+
+type claudeTranscriptMetaRecord struct {
+	SessionID string `json:"sessionId"`
+	Cwd       string `json:"cwd"`
+}
+
+// readClaudeTranscriptMeta extracts the native session id and working directory
+// from a bounded window of leading records. sessionId is present on every
+// transcript record but cwd first appears on user/assistant records, so the
+// first line alone is not enough. A record larger than maxClaudeContinuationScanBytes
+// is drained and skipped instead of aborting the scan: a transcript that opens
+// with a large paste or tool result must not become permanently undiscoverable.
+func readClaudeTranscriptMeta(ctx context.Context, path string) (string, string, bool) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", "", false
+	}
+	defer func() { _ = file.Close() }()
+	reader := bufio.NewReader(io.LimitReader(file, maxClaudeContinuationScanTotalBytes))
+	sessionID := ""
+	cwd := ""
+	for scanned := 0; scanned < maxClaudeContinuationScanRecords; {
+		if err := ctx.Err(); err != nil {
+			return "", "", false
+		}
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 && len(line) <= maxClaudeContinuationScanBytes {
+			scanned++
+			var record claudeTranscriptMetaRecord
+			if json.Unmarshal(line, &record) == nil {
+				if sessionID == "" {
+					sessionID = strings.TrimSpace(record.SessionID)
+				}
+				if cwd == "" {
+					cwd = strings.TrimSpace(record.Cwd)
+				}
+			}
+		}
+		if sessionID != "" && cwd != "" {
+			return sessionID, cwd, true
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	return "", "", false
+}
+
+// sameWorkspacePath compares the transcript's recorded cwd with the session
+// workspace after cleaning, falling back to symlink resolution when the direct
+// comparison misses.
+func sameWorkspacePath(cwd, workspace string) bool {
+	cwd = strings.TrimSpace(cwd)
+	workspace = strings.TrimSpace(workspace)
+	if cwd == "" || workspace == "" {
+		return false
+	}
+	if filepath.Clean(cwd) == filepath.Clean(workspace) {
+		return true
+	}
+	resolvedCwd, cwdErr := filepath.EvalSymlinks(filepath.Clean(cwd))
+	resolvedWorkspace, workspaceErr := filepath.EvalSymlinks(filepath.Clean(workspace))
+	return cwdErr == nil && workspaceErr == nil && resolvedCwd == resolvedWorkspace
 }
 
 func (c *Collector) registerDiscoveredClaudeSubagents(

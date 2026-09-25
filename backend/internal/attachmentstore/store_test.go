@@ -74,6 +74,31 @@ func TestStorePutWritesCanonicalAndWorkspaceCopies(t *testing.T) {
 	}
 }
 
+func TestStorePutAcceptsFileAbovePreviousLimit(t *testing.T) {
+	const size = 11 << 20
+	store := New(t.TempDir())
+	workspace := t.TempDir()
+	name := "attachment-video.mov"
+	if err := store.Put(context.Background(), "ao-1", workspace, name, make([]byte, size)); err != nil {
+		t.Fatalf("Put 11 MiB video: %v", err)
+	}
+	file, info, err := store.Open(context.Background(), "ao-1", name)
+	if err != nil {
+		t.Fatalf("Open canonical video: %v", err)
+	}
+	defer func() { _ = file.Close() }()
+	if info.Size() != size {
+		t.Fatalf("canonical video size = %d, want %d", info.Size(), size)
+	}
+	projection, err := os.Stat(filepath.Join(workspace, filepath.FromSlash(WorkspaceDir), name))
+	if err != nil {
+		t.Fatalf("stat workspace video: %v", err)
+	}
+	if projection.Size() != size {
+		t.Fatalf("workspace video size = %d, want %d", projection.Size(), size)
+	}
+}
+
 func TestStorePutRequiresCanonicalDataDirectory(t *testing.T) {
 	workspace := t.TempDir()
 	name := "attachment-no-store.bin"
@@ -313,9 +338,8 @@ func TestStorePutRetainsAttachmentSizeLimit(t *testing.T) {
 	if err := store.Put(context.Background(), "ao-1", workspace, "attachment-empty.bin", nil); err == nil {
 		t.Fatal("Put accepted an empty attachment")
 	}
-	const maxAttachmentBytes = 10 << 20
-	if err := store.Put(context.Background(), "ao-1", workspace, "attachment-large.bin", make([]byte, maxAttachmentBytes+1)); err == nil {
-		t.Fatal("Put accepted an attachment larger than 10 MiB")
+	if err := store.Put(context.Background(), "ao-1", workspace, "attachment-large.bin", make([]byte, MaxFileBytes+1)); err == nil {
+		t.Fatal("Put accepted an attachment larger than MaxFileBytes")
 	}
 }
 

@@ -13,7 +13,7 @@
 // hook command as JSON on stdin, run with cwd set to the worktree so AO can
 // correlate the opencode session to its AO session. Every invocation is
 // best-effort and must never crash the user's opencode session: a missing `ao`
-// binary is a guarded no-op (`command -v ao`), and spawn exceptions, non-zero
+// binary is a guarded no-op (`Bun.which`), and spawn exceptions, non-zero
 // exit codes, and malformed event payloads are caught and surfaced through
 // opencode's structured logger (client.app.log) for diagnosis — never rethrown.
 //
@@ -39,10 +39,11 @@ export const aoActivity: Plugin = async ({ directory, client }) => {
   const launchID: string = (process.env.AO_RUNTIME_LAUNCH_ID ?? "").trim()
   const messageStore = new Map<string, any>()
 
-  // Wrap in `sh -c` with a guard so a missing `ao` binary is a silent no-op
-  // (exit 0) rather than a per-event error in the user's session.
-  function hookCmd(hookName: string): string[] {
-    return ["sh", "-c", `if ! command -v ao >/dev/null 2>&1; then exit 0; fi; exec ao hooks opencode ${hookName}`]
+  // Resolve AO through Bun so the same command works on Unix and Windows. A
+  // missing binary remains a silent no-op rather than a per-event error.
+  function hookCmd(hookName: string): string[] | null {
+    const ao = Bun.which("ao")
+    return ao ? [ao, "hooks", "opencode", hookName] : null
   }
 
   // Report a hook failure through opencode's structured logger. Best-effort: the
@@ -73,7 +74,9 @@ export const aoActivity: Plugin = async ({ directory, client }) => {
   // rethrown, so reporting failures are diagnosable without crashing opencode.
   function callHookSync(hookName: string, payload: Record<string, unknown>) {
     try {
-      const result = Bun.spawnSync(hookCmd(hookName), {
+      const command = hookCmd(hookName)
+      if (!command) return
+      const result = Bun.spawnSync(command, {
         cwd: directory,
         env: { ...process.env, AO_RUNTIME_LAUNCH_ID: launchID },
         stdin: new TextEncoder().encode(JSON.stringify({ ...payload, launch_id: launchID }) + "\n"),
@@ -86,7 +89,7 @@ export const aoActivity: Plugin = async ({ directory, client }) => {
         logHookFailure(hookName, `exited ${result.exitCode}${stderr ? `: ${stderr}` : ""}`)
       }
     } catch (err) {
-      // The spawn itself failed (e.g. no `sh` on PATH). Never propagate.
+      // The spawn itself failed. Never propagate.
       logHookFailure(hookName, err instanceof Error ? err.message : String(err))
     }
   }

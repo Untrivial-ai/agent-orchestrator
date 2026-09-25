@@ -11,10 +11,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/sandbox"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
 
 // projectOrchestratorStore finds a project's single active orchestrator so a
@@ -30,6 +33,26 @@ type createProjectRequest struct {
 	RepositoryURL string         `json:"repositoryUrl"`
 	DefaultBranch string         `json:"defaultBranch"`
 	Config        map[string]any `json:"config,omitempty"`
+	// Coder carries the optional coder dev-kit config chosen at project setup
+	// (template picker + size/startup + extra repos). Stored on the project and
+	// inherited by every coder session of the project. Absent = default template,
+	// single repo (unchanged behavior).
+	Coder *coderConfigInput `json:"coder,omitempty"`
+}
+
+type coderConfigInput struct {
+	// TemplateID is a Coder template UUID from GET /orgs/{orgId}/sandbox/coder/templates.
+	// Empty selects the deployment default template.
+	TemplateID string `json:"templateId,omitempty"`
+	// Size is a t-shirt size ("small"/"medium"/"large"); only meaningful with a
+	// non-default template that declares a `size` parameter.
+	Size string `json:"size,omitempty"`
+	// StartupScript is an optional shell snippet the template runs after checkout;
+	// only meaningful with a template that declares a `startup_script` parameter.
+	StartupScript string `json:"startupScript,omitempty"`
+	// ExtraRepos are additional repositories every session of the project clones
+	// alongside the primary repo.
+	ExtraRepos []createSessionRepo `json:"extraRepos,omitempty"`
 }
 
 type updateProjectRequest struct {
@@ -62,6 +85,11 @@ type createSessionRequest struct {
 	// is optional: an empty value uses the control plane default. When set it
 	// must be one of the providers the deployment offers (see /me).
 	Provider string `json:"provider,omitempty"`
+}
+
+type createSessionRepo struct {
+	URL    string `json:"url"`
+	Branch string `json:"branch,omitempty"`
 }
 
 type sessionResponse struct {
@@ -182,6 +210,26 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Project configuration is invalid.")
 		return
+	}
+	// Store the coder dev-kit config (template + size/startup + extra repos)
+	// under the project's config, so every coder session of the project inherits
+	// it. Absent = default template, single repo (unchanged behavior).
+	if request.Coder != nil {
+		coderConfig, verr := parseCoderConfigInput(request.Coder)
+		if verr != nil {
+			writeError(w, r, http.StatusUnprocessableEntity, "validation_error", verr.Error())
+			return
+		}
+		// Defense in depth behind the picker's own gating: never persist a rich
+		// parameter the chosen template does not declare, since Coder would reject
+		// every session build for the project. Best-effort — if the template's
+		// parameters cannot be read, store the config as-is rather than block.
+		coderConfig = s.sanitizeCoderConfig(r.Context(), coderConfig, requestID(r))
+		config, err = domain.MergeProjectCoderConfig(config, coderConfig)
+		if err != nil {
+			writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Project coder configuration is invalid.")
+			return
+		}
 	}
 	principal := principalFrom(r)
 	userStore, ok := s.store.(userProviderConnectionStore)
@@ -452,10 +500,34 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	}
+	// Coder sessions inherit the project's dev-kit config (template + size +
+	// startup), chosen once at project setup and stored on the project. Non-coder
+	// providers, and projects without a coder config, keep the default-template
+	// behavior. (Extra repos also live on the project config; the worker reads
+	// them from the project at launch — see launchContextFrom.)
+	effectiveProvider := request.Provider
+	if effectiveProvider == "" {
+		effectiveProvider = s.sandboxProvider
+	}
+	var coderOpts *sandbox.CoderSessionOptions
+	if effectiveProvider == sandbox.ProviderCoder {
+		project, projectErr := s.store.GetProject(r.Context(), principalFrom(r), orgID, request.ProjectID)
+		if projectErr != nil {
+			s.writeStoreError(w, r, projectErr)
+			return
+		}
+		if cfg, ok := domain.DecodeProjectCoderConfig(project.Config); ok {
+			coderOpts = &sandbox.CoderSessionOptions{
+				TemplateID:    cfg.TemplateID,
+				Size:          cfg.Size,
+				StartupScript: cfg.StartupScript,
+			}
+		}
+	}
 	// The plan is resolved once, here, and stamped onto the sandbox row. The
 	// reconciler reads it back from the row rather than from configuration, so
 	// a later config change cannot disturb a session already in flight.
-	plan, err := s.provisioning.SessionPlanForProvider(request.Harness, request.Provider)
+	plan, err := s.provisioning.SessionPlanForProviderWithCoder(request.Harness, request.Provider, coderOpts)
 	if err != nil {
 		s.logger.Error("resolve sandbox provisioning plan", "error", err, "request_id", requestID(r))
 		writeError(
@@ -686,6 +758,100 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 var githubPathRegex = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
 
 // parseGitHubRepo validates and extracts the owner and repo from a GitHub URL.
+const (
+	maxCoderExtraRepos    = 10
+	maxCoderStartupScript = 64 * 1024
+)
+
+var coderSizes = map[string]bool{"small": true, "medium": true, "large": true}
+
+// parseCoderConfigInput validates the coder dev-kit config chosen at project
+// setup (template + size/startup + extra repos) into a domain.ProjectCoderConfig
+// stored on the project. Size and startup require a chosen (non-default)
+// template, since the default template does not declare those rich parameters.
+// sanitizeCoderConfig drops size/startup from a coder project config when the
+// chosen template does not declare the matching coder_parameter. It is
+// best-effort: the default template (empty ID), a missing template lister, an
+// unreadable template list, or an unknown template all leave the config
+// untouched, so a transient Coder read never blocks creating a project.
+func (s *Server) sanitizeCoderConfig(ctx context.Context, cfg domain.ProjectCoderConfig, reqID string) domain.ProjectCoderConfig {
+	if cfg.TemplateID == "" || s.coderTemplates == nil {
+		return cfg
+	}
+	if cfg.Size == "" && strings.TrimSpace(cfg.StartupScript) == "" {
+		return cfg
+	}
+	templates, err := s.coderTemplates.ListTemplates(ctx)
+	if err != nil {
+		s.logger.Warn("sanitize coder config: list templates", "error", err, "request_id", reqID)
+		return cfg
+	}
+	var params []string
+	found := false
+	for _, t := range templates {
+		if t.ID == cfg.TemplateID {
+			params = t.Parameters
+			found = true
+			break
+		}
+	}
+	if !found {
+		return cfg
+	}
+	if cfg.Size != "" && !slices.Contains(params, "size") {
+		cfg.Size = ""
+	}
+	if strings.TrimSpace(cfg.StartupScript) != "" && !slices.Contains(params, "startup_script") {
+		cfg.StartupScript = ""
+	}
+	return cfg
+}
+
+func parseCoderConfigInput(in *coderConfigInput) (domain.ProjectCoderConfig, error) {
+	cfg := domain.ProjectCoderConfig{}
+	if id := strings.TrimSpace(in.TemplateID); id != "" {
+		if _, err := uuid.Parse(id); err != nil {
+			return domain.ProjectCoderConfig{}, fmt.Errorf("coder template ID must be a UUID")
+		}
+		cfg.TemplateID = id
+	}
+	if size := strings.ToLower(strings.TrimSpace(in.Size)); size != "" {
+		if !coderSizes[size] {
+			return domain.ProjectCoderConfig{}, fmt.Errorf("coder size must be one of small, medium, large")
+		}
+		cfg.Size = size
+	}
+	if len(in.StartupScript) > maxCoderStartupScript {
+		return domain.ProjectCoderConfig{}, fmt.Errorf("coder startup script must be at most 64 KiB")
+	}
+	cfg.StartupScript = in.StartupScript
+	if cfg.TemplateID == "" && (cfg.Size != "" || strings.TrimSpace(cfg.StartupScript) != "") {
+		return domain.ProjectCoderConfig{}, fmt.Errorf("coder size and startup script require choosing a template")
+	}
+	if len(in.ExtraRepos) > maxCoderExtraRepos {
+		return domain.ProjectCoderConfig{}, fmt.Errorf("at most %d extra repositories are allowed", maxCoderExtraRepos)
+	}
+	repos := make([]domain.RepoRef, 0, len(in.ExtraRepos))
+	for _, repo := range in.ExtraRepos {
+		raw := strings.TrimSpace(repo.URL)
+		if raw == "" {
+			continue
+		}
+		owner, name, ok := parseGitHubRepo(raw)
+		if !ok {
+			return domain.ProjectCoderConfig{}, fmt.Errorf("extra repository %q must be an https github.com URL", raw)
+		}
+		repos = append(repos, domain.RepoRef{
+			URL:    fmt.Sprintf("https://github.com/%s/%s", owner, name),
+			Branch: strings.TrimSpace(repo.Branch),
+		})
+	}
+	if len(repos) > 0 {
+		cfg.ExtraRepos = repos
+	}
+	return cfg, nil
+}
+
 func parseGitHubRepo(repoURL string) (owner, repo string, ok bool) {
 	parsed, err := url.ParseRequestURI(repoURL)
 	if err != nil || parsed.Scheme != "https" {
@@ -775,7 +941,12 @@ func validSessionInput(request createSessionRequest) bool {
 		(request.Kind != "worker" && request.Kind != "orchestrator") ||
 		(request.Mode != "read-only" && request.Mode != "standard" && request.Mode != "trusted") ||
 		len(request.Harness) < 1 || len(request.Harness) > 120 ||
-		len(request.DisplayName) < 1 || len(request.DisplayName) > 80 ||
+		// Count runes, not bytes: the renderer derives this name from the task
+		// brief with a 100-CHARACTER slice, so a byte cap would reject a valid
+		// multibyte name. 100 matches that slice (was 80, which #5125 outgrew when
+		// it raised the renderer slice to 100 and left cloud task creation failing
+		// with "Session ... is invalid" for any brief over 80 chars).
+		len(request.DisplayName) < 1 || utf8.RuneCountInString(request.DisplayName) > 100 ||
 		len(request.Prompt) > 65536 ||
 		len(request.DeniedCommands) > 128 {
 		return false

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -16,6 +17,7 @@ import (
 // GitHubPATService is the controller-facing contract for local GitHub PAT management.
 type GitHubPATService interface {
 	StorePAT(ctx context.Context, token string) error
+	StoreOAuthToken(ctx context.Context, token, refreshToken string, expiresAt, refreshTokenExpiresAt time.Time) error
 	HasPAT(ctx context.Context) bool
 	DeletePAT(ctx context.Context) error
 	ListRepos(ctx context.Context) ([]githubpat.Repo, error)
@@ -34,9 +36,17 @@ func (c *GitHubController) Register(r chi.Router) {
 	r.Get("/github/repos", c.listRepos)
 }
 
-// PutGitHubPATRequest is the request body for storing a GitHub PAT.
+// PutGitHubPATRequest is the request body for storing a GitHub PAT. For an
+// expiring GitHub App OAuth token, the optional refresh fields let the daemon
+// renew the token without a manual reconnect; a plain PAT sends only 'pat'.
 type PutGitHubPATRequest struct {
 	PAT string `json:"pat"`
+	// Optional OAuth refresh material. RefreshToken empty => stored as a plain,
+	// non-refreshable credential. ExpiresIn / RefreshTokenExpiresIn are seconds
+	// from now, as returned by GitHub's token exchange.
+	RefreshToken          string `json:"refreshToken,omitempty"`
+	ExpiresIn             int    `json:"expiresIn,omitempty"`
+	RefreshTokenExpiresIn int    `json:"refreshTokenExpiresIn,omitempty"`
 }
 
 func (c *GitHubController) putPAT(w http.ResponseWriter, r *http.Request) {
@@ -49,7 +59,21 @@ func (c *GitHubController) putPAT(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_REQUEST", "A non-empty 'pat' field is required.", nil)
 		return
 	}
-	if err := c.Svc.StorePAT(r.Context(), body.PAT); err != nil {
+	var err error
+	if body.RefreshToken != "" {
+		now := time.Now().UTC()
+		var expiresAt, refreshExpiresAt time.Time
+		if body.ExpiresIn > 0 {
+			expiresAt = now.Add(time.Duration(body.ExpiresIn) * time.Second)
+		}
+		if body.RefreshTokenExpiresIn > 0 {
+			refreshExpiresAt = now.Add(time.Duration(body.RefreshTokenExpiresIn) * time.Second)
+		}
+		err = c.Svc.StoreOAuthToken(r.Context(), body.PAT, body.RefreshToken, expiresAt, refreshExpiresAt)
+	} else {
+		err = c.Svc.StorePAT(r.Context(), body.PAT)
+	}
+	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
 	}

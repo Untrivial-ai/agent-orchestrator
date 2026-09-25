@@ -158,20 +158,17 @@ async function reconcileAndPersist(
 // checkForUpdates.
 //
 // When settings.feature is set, the feed tracks the pr<N> prerelease channel
-// (e.g. "pr2270") with allowPrerelease enabled. Downgrades require a channel
-// transition, including one saved on an earlier launch. Otherwise falls back to the home
-// channel logic (latest vs nightly).
+// (e.g. "pr2270") with allowPrerelease enabled. Otherwise it uses the home
+// channel (latest vs nightly). An older binary cannot safely read a database
+// already migrated by this one, so a channel switch must wait for a newer build.
 export function configureFeed(
   settings: Pick<UpdateSettings, "channel" | "feature">,
 ): void {
-  // A saved channel choice remains intent until the running build reaches it.
-  // Assign after channel: electron-updater's channel setter enables downgrades.
-  const allowDowngrade = isChannelTransition(settings);
   if (settings.feature !== null && settings.feature !== undefined) {
     // Feature build: pin to the pr<N> semver prerelease identifier channel.
     autoUpdater.channel = `pr${settings.feature.pr}`;
     autoUpdater.allowPrerelease = true;
-    autoUpdater.allowDowngrade = allowDowngrade;
+    autoUpdater.allowDowngrade = false;
     return;
   }
 
@@ -182,7 +179,7 @@ export function configureFeed(
   // release and looks for nightly-mac.yml there, which 404s. Enable prerelease
   // scanning on the nightly channel only; stable must never pull prereleases.
   autoUpdater.allowPrerelease = channel === "nightly";
-  autoUpdater.allowDowngrade = allowDowngrade;
+  autoUpdater.allowDowngrade = false;
 }
 
 let lastStatus: UpdateStatus = { state: "idle" };
@@ -409,6 +406,15 @@ let offeredReleaseNotes: string | undefined;
 // Notes resolved out-of-band for a feed whose provider cannot carry them.
 // Used only as a fallback, so a provider that does supply notes always wins.
 let directFeedReleaseNotes: string | undefined;
+// A build strictly newer than the running one, discovered through the GitHub
+// API during direct-prerelease feed setup. That discovery hits api.github.com,
+// a host that answers even for users whose network cannot reach the release
+// asset CDN, and it already verified the channel manifest asset exists. So it
+// is a truthful "update available" even when the electron-updater check that
+// follows hangs fetching that manifest from the CDN. Set per direct-feed setup,
+// read only by the automatic check to surface the update the hung check could
+// not. Undefined when discovery found nothing newer or is not a direct feed.
+let directFeedDiscoveredAvailable: { version: string; notes?: string } | undefined;
 // Which feed channel the staged build came from. A build staged from one
 // channel is already armed with the OS installer, so switching channels has
 // to notice that it no longer belongs (see stagedBuildIsStale).
@@ -421,17 +427,10 @@ let escalationStateDir: string | undefined;
 // Automatic re-check cadence for a long-running session. A fresh check also
 // runs on every launch (startAutoUpdates), so most users are current the moment
 // they open the app; this interval only governs sessions left open for a long
-// stretch. Kept to once a day on every channel: 15-minute nightly polling and
-// hourly stable polling were redundant background work and, on a cold network,
-// a source of launch-time check errors. Trade-off: the failing-checks nudge
-// needs consecutive automatic failures, and every launch supplies one, so users
-// who restart still trip it quickly; but a session left open continuously on a
-// broken updater now waits days rather than hours before the nudge appears.
-// Feature pins (a pr<N> channel) are the case a daily interval bites hardest: a
-// new build pushed to that PR is not noticed until relaunch, and the 30-minute
-// retirement poll only catches the PR closing, not a fresh build on it. Accepted
-// deliberately, since a pinned session is short-lived and relaunch re-checks.
-const AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// stretch. Kept short so a session left open picks up a nightly or hotfix build
+// within minutes rather than waiting out a day: a daily interval meant any
+// release we published took up to 24h to reach users who keep the app running.
+const AUTOMATIC_UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 let automaticUpdateTimer: ReturnType<typeof setInterval> | undefined;
 let automaticUpdateTimerIntervalMs: number | undefined;
 type UpdaterOperation =
@@ -650,7 +649,7 @@ function broadcastUpdaterStatus(status: UpdateStatus): void {
 }
 
 function broadcastCompletedCheck(status: UpdateStatus): void {
-  if (status.state !== "error" && status.state !== "unsupported") {
+  if (status.state !== "error") {
     lastCheckedAtMs = Date.now();
     lastCheckError = undefined;
   }
@@ -778,6 +777,9 @@ function directPrereleaseChannel(
 async function configureDirectPrereleaseFeed(
   settings: UpdateSettings,
 ): Promise<(() => void) | undefined> {
+  // Cleared up front so a discovery that finds nothing newer (or bails below)
+  // never leaves a stale build from a previous check readable by the caller.
+  directFeedDiscoveredAvailable = undefined;
   const channel = directPrereleaseChannel(settings);
   if (!channel) return undefined;
   const coordinates = await readAppUpdateYml();
@@ -801,6 +803,19 @@ async function configureDirectPrereleaseFeed(
   // Stand in for what the generic provider cannot supply. Overwritten by the
   // real thing if a later event does carry notes.
   directFeedReleaseNotes = normalizeReleaseNotes(release.body);
+  // Record the discovered build when it is strictly newer than what is running,
+  // so the automatic check can still show it if the manifest fetch stalls. An
+  // unparseable running version is treated as "older" so the discovered build
+  // still surfaces rather than being silently dropped.
+  if (
+    semver.valid(tag) !== null &&
+    (semver.valid(runningVersion) === null || semver.gt(tag, runningVersion))
+  ) {
+    directFeedDiscoveredAvailable = {
+      version: tag,
+      ...(directFeedReleaseNotes !== undefined ? { notes: directFeedReleaseNotes } : {}),
+    };
+  }
   autoUpdater.setFeedURL({
     provider: "generic",
     url: `https://github.com/${coordinates.owner}/${coordinates.repo}/releases/download/${tag}`,
@@ -918,9 +933,8 @@ function forgetPersistedStagedBuild(stateDir: string | undefined): void {
 /**
  * Reload provenance for a build staged by an earlier run.
  *
- * Discards it when the running build already matches, or supersedes a staged
- * build from the same channel. In both cases nothing remains pending. An older
- * build from another channel can still be an intentional channel transition.
+ * Discards it when the running build already matches or supersedes the staged
+ * build. An older binary cannot safely read a database migrated by this one.
  * Unreadable provenance is also discarded because inventing it is worse than
  * having none.
  */
@@ -934,17 +948,19 @@ function restoreStagedBuild(stateDir: string): void {
   } catch {
     return;
   }
+  const olderStaged = typeof raw.version === "string" &&
+    semver.valid(raw.version) !== null &&
+    semver.valid(app.getVersion()) !== null &&
+    semver.lt(raw.version, app.getVersion());
   if (
     typeof raw.version !== "string" ||
     typeof raw.stagedAt !== "number" ||
     !Number.isFinite(raw.stagedAt) ||
     raw.version === app.getVersion() ||
-    (raw.channel === installedUpdateChannel() &&
-      semver.valid(raw.version) !== null &&
-      semver.valid(app.getVersion()) !== null &&
-      semver.lt(raw.version, app.getVersion()))
+    olderStaged
   ) {
-    forgetPersistedStagedBuild(stateDir);
+    if (olderStaged) discardStagedBuild();
+    else forgetPersistedStagedBuild(stateDir);
     return;
   }
   stagedVersion = raw.version;
@@ -968,6 +984,18 @@ function installedUpdateChannel(): string {
 
 function isChannelTransition(settings: Pick<UpdateSettings, "channel" | "feature">): boolean {
   return effectiveChannel(settings) !== installedUpdateChannel();
+}
+
+function unavailableChannelStatus(version?: string): UpdateStatus {
+  if (version && isChannelTransition(lastAppliedUpdateSettings) &&
+      semver.valid(version) && semver.valid(app.getVersion()) &&
+      semver.lt(version, app.getVersion())) {
+    return {
+      state: "unsupported",
+      message: "This channel's latest release is older than the installed build. AO will switch when a newer release is available.",
+    };
+  }
+  return { state: "not-available" };
 }
 
 /**
@@ -1148,8 +1176,31 @@ function settleCheckStatus(result: UpdateCheckOutcome): void {
     return;
   }
   broadcastCompletedCheck(
-    hasStagedBuild() ? stagedDownloadedStatus() : { state: "not-available" },
+    hasStagedBuild() ? stagedDownloadedStatus() : unavailableChannelStatus(version),
   );
+}
+
+// Surface an update that GitHub-API discovery found but the electron-updater
+// check could not confirm, because its manifest fetch from the release asset
+// CDN stalled or timed out. Only fills a gap: it never overrides a status that
+// already reflects this or a newer build, and never downgrades a staged build
+// the discovered one does not supersede. Called after the automatic check so a
+// user on a network that cannot reach the CDN still learns an update exists.
+function broadcastDiscoveredAvailable(): void {
+  const discovered = directFeedDiscoveredAvailable;
+  if (discovered === undefined) return;
+  if (
+    lastStatus.state === "available" ||
+    lastStatus.state === "downloading" ||
+    lastStatus.state === "preparing" ||
+    lastStatus.state === "downloaded"
+  ) {
+    return;
+  }
+  if (hasStagedBuild() && !supersedesStagedBuild(discovered.version)) return;
+  pendingUpdateVersion = discovered.version;
+  offeredReleaseNotes = discovered.notes ?? offeredReleaseNotes;
+  broadcastCompletedCheck({ state: "available", version: discovered.version });
 }
 
 // stagedDownloadedStatus rebuilds the enriched downloaded status from module
@@ -1743,12 +1794,12 @@ function wireUpdaterEvents(): void {
   autoUpdater.on("update-cancelled", () => {
     clearDownloadStallWatchdog();
   });
-  autoUpdater.on("update-not-available", () => {
+  autoUpdater.on("update-not-available", (info) => {
     // A successful check proves the network stack is healthy.
     consecutiveAutomaticNetFailures = 0;
     consecutiveAutomaticCheckFailures = 0;
     failingChecksPublished = false;
-    broadcastCompletedCheck({ state: "not-available" });
+    broadcastCompletedCheck(unavailableChannelStatus(info?.version));
     // The staged build outlives a "nothing newer" answer (e.g. after a channel
     // switch); follow up so the restart row returns.
     if (stagedAtMs !== undefined)
@@ -2149,6 +2200,10 @@ async function runAutomaticUpdateCheck(
         // the direct provider, and later background checks start from the
         // normal GitHub feed again.
         restoreFeed?.();
+        // If the check could not confirm the update (a stalled or timed-out
+        // manifest fetch on a network that cannot reach the asset CDN), fall
+        // back to the build API discovery already found on a host that answers.
+        broadcastDiscoveredAvailable();
       }
     });
   } catch (err) {

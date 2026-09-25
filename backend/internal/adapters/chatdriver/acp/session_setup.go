@@ -38,9 +38,6 @@ func normalizeMCPServers(configs []ports.ChatMCPServerConfig, caps acpsdk.McpCap
 	if len(configs) == 0 {
 		return []acpsdk.McpServer{}, nil
 	}
-	if !caps.Acp && !caps.Http && !caps.Sse {
-		return nil, fmt.Errorf("ACP agent does not support per-session MCP servers")
-	}
 	servers := make([]acpsdk.McpServer, 0, len(configs))
 	for _, config := range configs {
 		name := strings.TrimSpace(config.Name)

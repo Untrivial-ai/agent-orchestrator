@@ -71,6 +71,8 @@ func Build() ([]byte, error) {
 			"Code-review runs and findings"),
 		*(&openapi31.Tag{Name: "notifications"}).WithDescription(
 			"Durable dashboard notifications"),
+		*(&openapi31.Tag{Name: "reports"}).WithDescription(
+			"Durable worker reports"),
 		*(&openapi31.Tag{Name: "usage"}).WithDescription(
 			"Token usage telemetry for AO sessions"),
 		*(&openapi31.Tag{Name: "push"}).WithDescription(
@@ -382,6 +384,12 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersNotificationEnvelope":             "NotificationEnvelope",
 	"ControllersMarkAllNotificationsReadRequest":  "MarkAllNotificationsReadRequest",
 	"ControllersMarkAllNotificationsReadResponse": "MarkAllNotificationsReadResponse",
+	"ControllersCreateReportRequest":              "CreateReportRequest",
+	"ControllersReportOutputRequest":              "ReportOutputRequest",
+	"ControllersCreateReportResponse":             "CreateReportResponse",
+	"ControllersReportOutputResponse":             "ReportOutputResponse",
+	"ControllersReportResponse":                   "ReportResponse",
+	"ControllersListReportsResponse":              "ListReportsResponse",
 	"ControllersClearNotificationsResponse":       "ClearNotificationsResponse",
 	"ControllersUsageHookMetadata":                "UsageHookMetadata",
 	"ControllersListUsageSessionsQuery":           "ListUsageSessionsQuery",
@@ -572,6 +580,7 @@ func operations() []operation {
 	ops = append(ops, prOperations()...)
 	ops = append(ops, reviewOperations()...)
 	ops = append(ops, notificationOperations()...)
+	ops = append(ops, reportOperations()...)
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
@@ -639,6 +648,31 @@ func identityOperations() []operation {
 			},
 		},
 	}
+}
+
+func reportOperations() []operation {
+	return []operation{{
+		method: http.MethodGet, path: "/api/v1/reports", id: "listReports", tag: "reports",
+		summary:    "List persisted project reports without changing delivery state",
+		pathParams: []any{controllers.ListReportsQuery{}},
+		resps: []respUnit{
+			{http.StatusOK, controllers.ListReportsResponse{}},
+			{http.StatusBadRequest, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}, {
+		method: http.MethodPost, path: "/api/v1/reports", id: "createReport", tag: "reports",
+		summary: "Persist a worker report for later orchestrator delivery",
+		reqBody: controllers.CreateReportRequest{},
+		resps: []respUnit{
+			{http.StatusCreated, controllers.CreateReportResponse{}},
+			{http.StatusBadRequest, envelope.APIError{}},
+			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}}
 }
 
 // systemOperations declares the startup requirements gate the desktop loading
@@ -2602,7 +2636,7 @@ func sessionOperations() []operation {
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/orchestrators/delegate", id: "delegateTask", tag: "sessions",
-			summary: "Start a worker task and ask the orchestrator to title it",
+			summary: "Start a worker task and refine its title in the background",
 			reqBody: controllers.DelegateTaskRequest{},
 			resps: []respUnit{
 				{http.StatusAccepted, controllers.DelegateTaskResponse{}},

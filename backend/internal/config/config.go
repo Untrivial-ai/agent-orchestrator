@@ -45,8 +45,9 @@ const (
 	ClientElevenX = "eleven_x"
 
 	// defaultCloudControlPlaneURL is the control plane a build talks to when no
-	// override is set. Staging while the offering is in its dogfooding phase.
-	defaultCloudControlPlaneURL = "https://staging-api.aoagents.dev"
+	// override is set. Production, now that the hosted offering is live;
+	// AO_CLOUD_CONTROL_PLANE_URL still overrides it (e.g. staging-api for dev).
+	defaultCloudControlPlaneURL = "https://api.aoagents.dev"
 )
 
 // TelemetryRemote selects the remote telemetry exporter.
