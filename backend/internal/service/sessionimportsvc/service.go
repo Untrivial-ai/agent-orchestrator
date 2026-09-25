@@ -50,6 +50,11 @@ var (
 	// ErrImportProjectUnresolved is returned when the selected project is
 	// missing or the conversation is already imported into another project.
 	ErrImportProjectUnresolved = errors.New("cannot resolve a project for the session working directory")
+	// ErrImportRecordMissing is returned when a batch registered fewer sessions
+	// than it was given conversations. Without it the caller reports a result
+	// carrying neither a session nor an error, which renders as a success that
+	// never happened.
+	ErrImportRecordMissing = errors.New("import returned no session for this conversation")
 )
 
 // Service discovers on-disk agent conversations and imports one as a resumable
@@ -185,7 +190,6 @@ func importConfig(target sessionimport.ImportableSession, projectID domain.Proje
 	return ports.SpawnConfig{
 		ProjectID: projectID, Kind: domain.KindWorker, Harness: target.Provider,
 		RequestedMode: domain.SessionModeChat, DisplayName: importDisplayName(target.Title),
-		Branch: adoptableBranch(target.Branch),
 		ResumeNativeSession: &ports.ResumeNativeSession{
 			Provider: target.Provider, NativeSessionID: target.NativeSessionID,
 			ConfigDir: target.ConfigDir, TranscriptPath: target.TranscriptPath,
@@ -292,58 +296,4 @@ func importDisplayName(title string) string {
 	}
 	runes := []rune(title)
 	return strings.TrimSpace(string(runes[:maxImportDisplayName-1])) + "…"
-}
-
-// defaultBranchNames are branches a session must never be checked out on. AO's
-// model is one session per branch, and putting a worktree directly on the trunk
-// would let session commits land there. A conversation recorded on the trunk
-// therefore keeps AO's own fresh branch and simply forgoes pull-request
-// association, which costs nothing: the trunk does not have a PR.
-var defaultBranchNames = map[string]struct{}{
-	"main": {}, "master": {}, "trunk": {}, "develop": {}, "development": {}, "default": {},
-}
-
-// adoptableBranch returns the branch an imported session may be created on, or
-// "" to let AO mint its usual session branch.
-//
-// Claude records gitBranch "HEAD" for a detached checkout, and git rejects that
-// as a branch name, so passing it through would fail the whole import. Anything
-// that is not plainly a usable working branch is dropped rather than risked:
-// losing the pull-request link degrades gracefully, a failed import does not.
-func adoptableBranch(branch string) string {
-	branch = strings.TrimSpace(branch)
-	if branch == "" || branch == "HEAD" {
-		return ""
-	}
-	if _, isDefault := defaultBranchNames[strings.ToLower(branch)]; isDefault {
-		return ""
-	}
-	if !validBranchName(branch) {
-		return ""
-	}
-	return branch
-}
-
-// validBranchName applies the parts of git's check-ref-format that matter here.
-// It is deliberately conservative: a name this rejects only costs the PR link.
-func validBranchName(branch string) bool {
-	if strings.HasPrefix(branch, "-") || strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") {
-		return false
-	}
-	if strings.HasSuffix(branch, ".") || strings.HasSuffix(branch, ".lock") {
-		return false
-	}
-	if strings.Contains(branch, "..") || strings.Contains(branch, "@{") || strings.Contains(branch, "//") {
-		return false
-	}
-	for _, r := range branch {
-		if r <= 0x20 || r == 0x7f {
-			return false
-		}
-		switch r {
-		case '~', '^', ':', '?', '*', '[', '\\':
-			return false
-		}
-	}
-	return true
 }

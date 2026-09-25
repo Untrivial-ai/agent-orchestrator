@@ -107,10 +107,11 @@ func (s *Service) ImportBatch(ctx context.Context, project domain.ProjectID, sel
 			} else if canBatch {
 				if batchErr != nil {
 					result.Error = batchErr.Error()
-				} else {
-					record := created[key]
+				} else if record, ok := created[key]; ok {
 					result.SessionID = string(record.ID)
 					existing[key] = record
+				} else {
+					result.Error = ErrImportRecordMissing.Error()
 				}
 			} else {
 				session, err := s.registerTarget(ctx, target, project)

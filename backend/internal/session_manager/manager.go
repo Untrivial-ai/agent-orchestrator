@@ -409,8 +409,9 @@ type Manager struct {
 	clock                       func() time.Time
 	reconcileWorkers            int
 	defaultBranchRefreshTimeout time.Duration
-	// defaultBranchRefreshes reuses a project's resolved base refs across a
-	// burst of spawns, which is what importing a history is.
+	// defaultBranchRefreshes reuses a project's locally resolved base refs
+	// across a burst of imports. Ordinary spawns bypass it so they keep
+	// fetching.
 	defaultBranchRefreshes *defaultBranchCache
 	// openTranscriptFile is os.Open in production. The narrow seam lets tests
 	// deterministically prove that a post-stop transcript read failure falls
@@ -1016,23 +1017,6 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	baseRefs := m.refreshDefaultBranchesBestEffort(ctx, project, cfg.ResumeNativeSession == nil)
 	ws, workspaceProject, err := m.createSessionWorkspace(ctx, project, cfg, id, branch, baseRefs)
-	// An imported conversation asks for the branch it actually ran on, so the
-	// SCM observer can find its pull request and the board can place it in
-	// review, ready to merge, or merged. That branch is often still checked out
-	// in the user's own clone, and git permits one checkout per branch. Falling
-	// back to a fresh session branch keeps the import working; it only costs the
-	// pull-request association, which is better than refusing to import at all.
-	// Any failure to create the workspace on the conversation's own branch is
-	// retried once on a fresh one. The branch is only ever an optimization for
-	// pull-request discovery, so no reason for it to be unusable — checked out
-	// elsewhere, unfetched, malformed — is worth failing an import over.
-	if err != nil && cfg.ResumeNativeSession != nil && strings.TrimSpace(cfg.Branch) != "" {
-		fallback := m.importSpawnBranch(cfg, project, id)
-		m.logger.Info("import: conversation branch is checked out elsewhere; using a fresh session branch",
-			"sessionID", id, "conversationBranch", branch, "branch", fallback)
-		branch = fallback
-		ws, workspaceProject, err = m.createSessionWorkspace(ctx, project, cfg, id, branch, baseRefs)
-	}
 	if err != nil {
 		// Nothing observable exists yet — no worktree, no runtime — so the seed
 		// row is deleted outright instead of accumulating as a terminated orphan
@@ -1363,8 +1347,12 @@ func (m *Manager) refreshDefaultBranchesBestEffort(ctx context.Context, project 
 	if strings.TrimSpace(project.Path) == "" {
 		return nil
 	}
-	if cached, ok := m.defaultBranchRefreshes.lookup(project.ID); ok {
-		return cached
+	// Only the import path shares refs. An ordinary spawn fetches, and reusing a
+	// minute-old answer there would base a fresh worktree on a stale origin.
+	if !fetch {
+		if cached, ok := m.defaultBranchRefreshes.lookup(project.ID); ok {
+			return cached
+		}
 	}
 	refresher, ok := m.workspace.(ports.WorkspaceDefaultBranchRefresher)
 	if !ok {
@@ -1424,8 +1412,11 @@ func (m *Manager) refreshDefaultBranchesBestEffort(ctx context.Context, project 
 	}
 
 	// Imports resume local history and must not wait for an unrelated remote
-	// refresh. Do not seed the refresh cache: a later ordinary spawn still fetches.
+	// refresh. A burst of them resolves the same project repeatedly, so the
+	// locally resolved refs are shared between them; an ordinary spawn neither
+	// reads nor writes this, and still fetches.
 	if !fetch {
+		m.defaultBranchRefreshes.store(project.ID, baseRefs)
 		return baseRefs
 	}
 
@@ -1448,7 +1439,6 @@ func (m *Manager) refreshDefaultBranchesBestEffort(ctx context.Context, project 
 			)
 		}
 	}
-	m.defaultBranchRefreshes.store(project.ID, baseRefs)
 	return baseRefs
 }
 

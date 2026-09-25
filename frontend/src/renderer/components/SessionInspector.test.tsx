@@ -1325,9 +1325,10 @@ describe("SessionInspector Activity section", () => {
 
 		const activity = activitySection();
 		const resumeButton = activity.getByRole("button", { name: "Resume agent" });
+		// The resume control sits below the timeline, under its own divider.
 		const timeline = activity.getAllByTestId("inspector-timeline-event")[0];
 		expect(
-			resumeButton.compareDocumentPosition(timeline) & Node.DOCUMENT_POSITION_FOLLOWING,
+			timeline.compareDocumentPosition(resumeButton) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).not.toBe(0);
 		await userEvent.click(resumeButton);
 

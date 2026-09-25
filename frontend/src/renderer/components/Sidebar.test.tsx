@@ -577,7 +577,7 @@ describe("Sidebar", () => {
 		const user = userEvent.setup();
 		renderSidebar();
 
-		await user.click(screen.getByRole("button", { name: "Agent Orchestrator" }));
+		await user.click(screen.getByRole("button", { name: "Go to home" }));
 
 		expect(navigateMock).toHaveBeenCalledWith({ to: "/" });
 	});

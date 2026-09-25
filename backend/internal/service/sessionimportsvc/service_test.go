@@ -185,11 +185,14 @@ func TestImportSpawnsChatSessionBoundToNativeID(t *testing.T) {
 	if projects.added.Path != "" {
 		t.Errorf("a covering project existed; no new project should be registered (added %q)", projects.added.Path)
 	}
-	// The branch the conversation ran on is a repository fact, and recording it
-	// is what lets the SCM observer find the pull request and the board place
-	// the session in review / ready to merge / merged without inventing state.
-	if cfg.Branch != "feat/payments" {
-		t.Errorf("the conversation branch must be carried into the spawn, got %q", cfg.Branch)
+	// An imported session always takes its own generated branch, so the branch
+	// the conversation ran on is recorded separately. That is what lets the SCM
+	// observer find its pull request without the checkout owning that branch.
+	if cfg.ResumeNativeSession.SourceBranch != "feat/payments" {
+		t.Errorf("the conversation branch must be recorded, got %q", cfg.ResumeNativeSession.SourceBranch)
+	}
+	if cfg.Branch != "" {
+		t.Errorf("an import must not request the conversation's branch for its checkout, got %q", cfg.Branch)
 	}
 }
 
@@ -305,57 +308,8 @@ func TestDiscoverScopedToProject(t *testing.T) {
 	}
 }
 
-func TestAdoptableBranch(t *testing.T) {
-	cases := []struct {
-		branch string
-		want   string
-		why    string
-	}{
-		{"feat/payments", "feat/payments", "a normal working branch is adopted"},
-		{"  feat/payments  ", "feat/payments", "surrounding space is trimmed"},
-		{"HEAD", "", "Claude records HEAD for a detached checkout and git rejects it as a branch name"},
-		{"main", "", "a session must never be created directly on the trunk"},
-		{"Master", "", "trunk names are matched regardless of case"},
-		{"develop", "", "long-lived integration branches are trunks too"},
-		{"", "", "nothing recorded means nothing to adopt"},
-		{"-dashed", "", "git rejects a leading dash"},
-		{"has space", "", "git rejects whitespace"},
-		{"a..b", "", "git rejects a double dot"},
-		{"ends/", "", "git rejects a trailing slash"},
-		{"we.lock", "", "git rejects a .lock suffix"},
-		{"tilde~1", "", "git rejects a tilde"},
-		{"colon:name", "", "git rejects a colon"},
-	}
-	for _, tc := range cases {
-		if got := adoptableBranch(tc.branch); got != tc.want {
-			t.Errorf("adoptableBranch(%q) = %q, want %q — %s", tc.branch, got, tc.want, tc.why)
-		}
-	}
-}
-
 // A detached-HEAD conversation must still import. Passing "HEAD" through would
 // fail git's branch validation and take the whole import down with it.
-func TestImportOfDetachedHeadConversationDropsTheBranch(t *testing.T) {
-	target := sessionimport.ImportableSession{
-		TokenCount: MinimumTokens, LastActivity: time.Now(),
-		Provider:        domain.HarnessClaudeCode,
-		NativeSessionID: "detached-1",
-		CWD:             "/Users/dev/code",
-		Branch:          "HEAD",
-		Title:           "Work from a detached checkout",
-	}
-	src := &fakeSource{provider: domain.HarnessClaudeCode, sessions: []sessionimport.ImportableSession{target}}
-	sessions := &fakeSessions{}
-	projects := &fakeProjects{list: []projectsvc.Summary{{ID: "proj-existing", Path: "/Users/dev/code"}}}
-	svc := New(sessions, &fakeStore{}, projects, src)
-
-	if _, _, err := svc.Import(context.Background(), domain.HarnessClaudeCode, "detached-1", "proj-existing"); err != nil {
-		t.Fatalf("a detached-HEAD conversation must still import: %v", err)
-	}
-	if sessions.spawned.Branch != "" {
-		t.Errorf("HEAD must not be requested as a branch, got %q", sessions.spawned.Branch)
-	}
-}
 
 // An imported conversation must keep the branch it ran on even when the session
 // cannot be created there, because that branch is the only link back to its
@@ -388,30 +342,6 @@ func TestImportRecordsTheConversationBranchForPRDiscovery(t *testing.T) {
 
 // The trunk is refused as a session branch, but it is still worth recording as
 // where the conversation ran.
-func TestImportRecordsTrunkAsSourceEvenThoughItIsNotAdopted(t *testing.T) {
-	target := sessionimport.ImportableSession{
-		TokenCount: MinimumTokens, LastActivity: time.Now(),
-		Provider:        domain.HarnessClaudeCode,
-		NativeSessionID: "nat-main",
-		CWD:             "/Users/dev/code",
-		Branch:          "main",
-		Title:           "Work on main",
-	}
-	src := &fakeSource{provider: domain.HarnessClaudeCode, sessions: []sessionimport.ImportableSession{target}}
-	sessions := &fakeSessions{}
-	projects := &fakeProjects{list: []projectsvc.Summary{{ID: "proj", Path: "/Users/dev/code"}}}
-	svc := New(sessions, &fakeStore{}, projects, src)
-
-	if _, _, err := svc.Import(context.Background(), domain.HarnessClaudeCode, "nat-main", "proj"); err != nil {
-		t.Fatalf("import: %v", err)
-	}
-	if sessions.spawned.Branch != "" {
-		t.Errorf("a session must never be created on the trunk, got %q", sessions.spawned.Branch)
-	}
-	if sessions.spawned.ResumeNativeSession.SourceBranch != "main" {
-		t.Errorf("the source branch should still be recorded, got %q", sessions.spawned.ResumeNativeSession.SourceBranch)
-	}
-}
 
 // A project's listing must not pay to fully read every conversation on the
 // machine just to show its own handful.

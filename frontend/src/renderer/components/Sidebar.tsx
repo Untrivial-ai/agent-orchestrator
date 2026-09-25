@@ -1668,7 +1668,6 @@ const ProjectItem = memo(function ProjectItem({
 					{t("shell.newTask")}
 				</ContextMenuItem>
 				{workspace.kind !== STANDALONE_PROJECT_KIND && <>
-				<ContextMenuSeparator />
 				<ContextMenuItem onSelect={() => setImportOpen(true)}>{importLabel}{!!importRun?.errors.length && ` (${importRun.errors.length})`}</ContextMenuItem>
 				<ContextMenuItem onSelect={() => selection.goSettings(workspace.id)}>
 					<Settings aria-hidden="true" />
@@ -2230,7 +2229,6 @@ function SessionRow({
 					{/* The timestamp is stable at the right edge. Pin and kill use label
 					    space while idle, then reveal without changing the row footprint. */}
 					<SessionActions
-						active={active}
 						isDragging={Boolean(reorder?.isDragging)}
 						onKilled={onKilled}
 						session={session}
@@ -2267,17 +2265,14 @@ const SessionMessageAge = memo(function SessionMessageAge({ session }: { session
 
 const SessionActions = memo(function SessionActions({
 	session,
-	active,
 	isDragging,
 	onKilled,
 }: {
 	session: WorkspaceSession;
-	active: boolean;
 	isDragging: boolean;
 	onKilled?: (session: WorkspaceSession) => void;
 }) {
 	const { t } = useTranslation();
-	const navigate = useNavigate();
 	const { mutate: pinSession } = usePinSession();
 	const { mutate: unpinSession } = useUnpinSession();
 	// Optimistic: navigate + drop the row as soon as kill starts (onMutate),

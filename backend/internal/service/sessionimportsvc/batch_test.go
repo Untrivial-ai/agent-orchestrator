@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimport"
@@ -71,5 +72,61 @@ func TestBatchDoesNotScanUnselectedProvider(t *testing.T) {
 	got := svc.ImportBatch(context.Background(), "p", []Selection{{Provider: string(domain.HarnessCodex), NativeSessionID: "selected"}})
 	if len(got) != 1 || got[0].Error != "" || got[0].SessionID == "" {
 		t.Fatalf("unrelated provider blocked selected import: %+v", got)
+	}
+}
+
+// partialBulkSessions registers every conversation but one, reproducing a batch
+// that comes back shorter than the configs it was given.
+type partialBulkSessions struct {
+	fakeSessions
+	drop string
+}
+
+func (p *partialBulkSessions) RegisterImports(_ context.Context, configs []ports.SpawnConfig) ([]domain.SessionRecord, error) {
+	var out []domain.SessionRecord
+	for i, cfg := range configs {
+		native := ""
+		if cfg.ResumeNativeSession != nil {
+			native = cfg.ResumeNativeSession.NativeSessionID
+		}
+		if native == p.drop {
+			continue
+		}
+		out = append(out, domain.SessionRecord{
+			ID:       domain.SessionID(fmt.Sprintf("p-%d", i)),
+			Harness:  cfg.Harness,
+			Metadata: domain.SessionMetadata{ProviderConversationID: native},
+		})
+	}
+	return out, nil
+}
+
+// A conversation the batch silently dropped must be reported as a failure. With
+// neither a session id nor an error the renderer shows it as imported.
+func TestBatchReportsAConversationTheRegistrationDropped(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	source := &fakeSource{provider: domain.HarnessCodex, sessions: []sessionimport.ImportableSession{
+		{Provider: domain.HarnessCodex, NativeSessionID: "kept", CWD: dir, TranscriptPath: "/h/kept.jsonl", LastActivity: time.Now(), TokenCount: 15000},
+		{Provider: domain.HarnessCodex, NativeSessionID: "dropped", CWD: dir, TranscriptPath: "/h/dropped.jsonl", LastActivity: time.Now(), TokenCount: 15000},
+	}}
+	svc := New(&partialBulkSessions{drop: "dropped"}, &fakeStore{}, &fakeProjects{list: []projectsvc.Summary{{ID: "p", Path: dir}}}, source)
+
+	results := svc.ImportBatch(ctx, "p", []Selection{
+		{Provider: "codex", NativeSessionID: "kept"},
+		{Provider: "codex", NativeSessionID: "dropped"},
+	})
+	if len(results) != 2 {
+		t.Fatalf("results=%d", len(results))
+	}
+	byID := map[string]ImportResult{}
+	for _, r := range results {
+		byID[r.NativeSessionID] = r
+	}
+	if got := byID["kept"]; got.Error != "" || got.SessionID == "" {
+		t.Fatalf("the registered conversation should succeed: %+v", got)
+	}
+	if got := byID["dropped"]; got.Error == "" || got.SessionID != "" {
+		t.Fatalf("a dropped conversation must report an error, got %+v", got)
 	}
 }

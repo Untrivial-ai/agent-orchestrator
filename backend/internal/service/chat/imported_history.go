@@ -6,11 +6,10 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
-	"github.com/aoagents/agent-orchestrator/backend/internal/service/sessionimport"
 )
 
 func importedHistorySnapshot(ctx context.Context, rec domain.SessionRecord, before, limit int64) (Snapshot, error) {
-	all, err := sessionimport.ReadMessages(ctx, rec.Harness, rec.Metadata.NativeTranscriptPath)
+	all, err := readImportedMessages(ctx, rec.Harness, rec.Metadata.NativeTranscriptPath)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read imported history: %w", err)
 	}

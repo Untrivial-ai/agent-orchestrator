@@ -5,20 +5,15 @@ import (
 	"time"
 )
 
-// defaultBranchCacheTTL is how long a project's resolved base refs may be
-// reused across spawns.
+// defaultBranchCacheTTL is how long a project's locally resolved base refs may
+// be reused across imports.
 //
-// It exists for bulk work. Importing a history spawns many sessions into the
-// same few projects, and each spawn was resolving and fetching that project's
-// default branch again. Where a repository has no usable remote those calls do
-// not fail fast, they wait: measured on a real import, nine of thirty-one
-// imports took over ten seconds each and accounted for 87% of the total time,
-// every one of them sitting on this refresh.
-//
-// A repository's default branch does not meaningfully change inside such a
-// window, and the refresh is already best-effort: it falls back to local refs
-// on failure, so reusing a recent answer is no weaker than the failure the
-// caller already tolerates.
+// Importing a history registers many sessions into the same few projects, and
+// each one was resolving that project's default branch again. Only the import
+// path shares the answer: it resolves locally and never fetches, so a reused
+// ref is exactly what the next import would have computed. An ordinary spawn
+// fetches from the remote and bypasses this entirely, because basing a fresh
+// worktree on a minute-old origin is a real regression.
 const defaultBranchCacheTTL = 60 * time.Second
 
 type defaultBranchCache struct {
