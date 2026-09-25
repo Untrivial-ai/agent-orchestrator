@@ -543,7 +543,7 @@ export function WorkspaceReviewPane({
 									<div className="group/file-header flex h-9 min-w-0 cursor-pointer items-center gap-2 pl-4 pr-1.5 hover:bg-interactive-hover/40" onClick={() => toggleCollapsed(file.path)}>
 										<ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform duration-150 group-hover/file-header:text-foreground", !isCollapsed && "rotate-90")} />
 										<WorkspaceEntryIcon className="size-icon-xl" kind="file" name={file.path.split("/").pop() ?? file.path} />
-										<div className="flex min-w-0 shrink items-baseline gap-2.5">
+										<div className="flex min-w-0 shrink items-baseline gap-3">
 											<button
 												aria-expanded={!isCollapsed}
 												aria-label={isCollapsed ? t("files.expandFile", { file: file.path }) : t("files.collapseFile", { file: file.path })}
@@ -554,10 +554,12 @@ export function WorkspaceReviewPane({
 												{file.path.includes("/") ? <span className="min-w-0 truncate text-muted-foreground">{file.path.slice(0, file.path.lastIndexOf("/") + 1)}</span> : null}
 												<span className="max-w-full shrink-0 truncate text-foreground">{file.path.slice(file.path.lastIndexOf("/") + 1)}</span>
 											</button>
-											<span className="flex shrink-0 items-baseline gap-1.5 font-mono text-xs tabular-nums">
+											<span className="flex shrink-0 items-baseline gap-2.5 font-mono text-xs tabular-nums">
 												<span className={cn("font-semibold", statusTone[file.status])}>{statusLabel[file.status]}</span>
-												<span className="text-success">+{file.additions}</span>
-												<span className="text-error">−{file.deletions}</span>
+												<span className="flex items-baseline gap-1.5">
+													<span className="text-success">+{file.additions}</span>
+													<span className="text-error">−{file.deletions}</span>
+												</span>
 											</span>
 										</div>
 										<div className="ml-auto flex shrink-0 items-center gap-2 pl-2" onClick={(event) => event.stopPropagation()}>

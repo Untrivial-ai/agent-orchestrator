@@ -225,7 +225,7 @@ export function SessionFileExplorer({
 									<span className="shrink-0 tabular-nums text-muted-foreground">{scope.count}</span>
 								</span>
 								<span className="ml-auto flex size-4 shrink-0 items-center justify-center">
-									{scope.selected ? <Check aria-hidden="true" className="text-accent" /> : null}
+									{scope.selected ? <Check aria-hidden="true" className="text-logo-accent" /> : null}
 								</span>
 							</DropdownMenuItem>
 						))}
@@ -242,7 +242,7 @@ export function SessionFileExplorer({
 												<span className="min-w-0 flex-1 truncate">{commit.subject}</span>
 												<span className="shrink-0 text-caption text-passive">{formatTimeTerse(commit.timestamp)}</span>
 												<span className="flex size-4 shrink-0 items-center justify-center">
-													{commit.selected ? <Check aria-hidden="true" className="text-accent" /> : null}
+													{commit.selected ? <Check aria-hidden="true" className="text-logo-accent" /> : null}
 												</span>
 											</DropdownMenuItem>
 										))}
@@ -257,7 +257,7 @@ export function SessionFileExplorer({
 									<DropdownMenuItem className="gap-2" key={option.value} onSelect={() => selectSource(option.value)}>
 										<span className="min-w-0 flex-1 truncate">{option.label}</span>
 										<span className="flex size-4 shrink-0 items-center justify-center">
-											{option.value === sourceValue ? <Check aria-hidden="true" className="text-accent" /> : null}
+											{option.value === sourceValue ? <Check aria-hidden="true" className="text-logo-accent" /> : null}
 										</span>
 									</DropdownMenuItem>
 								))}
@@ -286,9 +286,9 @@ export function SessionFileExplorer({
 								variant="ghost"
 							>
 								{split ? (
-									<Columns2 className="size-icon-sm" aria-hidden="true" />
+									<Columns2 className="size-icon-base" aria-hidden="true" />
 								) : (
-									<Rows3 className="size-icon-sm" aria-hidden="true" />
+									<Rows3 className="size-icon-base" aria-hidden="true" />
 								)}
 							</Button>
 						</TooltipTrigger>
@@ -296,7 +296,7 @@ export function SessionFileExplorer({
 					</Tooltip>
 				) : null}
 				{hasViewTabs ? (
-					<div aria-label={t("files.viewMode")} className="flex shrink-0 items-center gap-0.5" role="tablist">
+					<div aria-label={t("files.viewMode")} className="flex shrink-0 items-center gap-1" role="tablist">
 						<Tooltip>
 							<TooltipTrigger asChild>
 								<button
@@ -341,7 +341,7 @@ export function SessionFileExplorer({
 								type="button"
 								variant="ghost"
 							>
-								<FolderTree className="size-icon-sm" aria-hidden="true" />
+								<FolderTree className="size-icon-base" aria-hidden="true" />
 							</Button>
 						</TooltipTrigger>
 						<TooltipContent side="bottom">{treeOpen ? t("files.hideFileTree") : t("files.showFileTree")}</TooltipContent>
@@ -359,9 +359,9 @@ export function SessionFileExplorer({
 								variant="ghost"
 							>
 								{isMaximized ? (
-									<Minimize2 className="size-icon-sm" aria-hidden="true" />
+									<Minimize2 className="size-icon-base" aria-hidden="true" />
 								) : (
-									<Maximize2 className="size-icon-sm" aria-hidden="true" />
+									<Maximize2 className="size-icon-base" aria-hidden="true" />
 								)}
 							</Button>
 						</TooltipTrigger>
