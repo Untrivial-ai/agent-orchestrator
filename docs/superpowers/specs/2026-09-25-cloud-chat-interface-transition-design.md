@@ -4,7 +4,7 @@
 
 Port the cloud Chat UI and working two-way TUI ↔ Chat switching from [PR #4683](https://github.com/Untrivial-ai/agent-orchestrator/pull/4683) onto `cloud/chatui`. A user must be able to open a cloud session in its current interface, switch to Chat without losing the session or native conversation, and switch back to the terminal. Only one agent controller may be active for a session at a time. Local-only sessions and their existing handoff must keep working.
 
-The source PR is an implementation reference, not a unit to merge wholesale. Exclude unrelated changes to deployment, GitHub connection, browser fetch, telemetry, updater, credentials, model/effort selection, and general workspace UI. Bring in a source-PR fix outside the transition files only when a test or direct dependency shows that it is necessary for this flow.
+The source PR is an implementation reference, not a unit to merge wholesale. Exclude unrelated changes to deployment, GitHub connection, browser fetch, telemetry, updater, credentials, and general workspace UI. The Cloud Chat model and effort controls are in scope because the user explicitly requested local Chat parity. Bring in a source-PR fix outside the transition files only when a test or direct dependency shows that it is necessary for this flow.
 
 ## Approach
 
@@ -31,3 +31,11 @@ Port or adapt focused tests from the source PR for both directions, duplicate re
 ## Delivery
 
 Keep commits reviewable by boundary: cloud transition state and coordinator; worker execution/transport; Cloud API and typed client; renderer Chat UI and switch; focused tests/fixes. No push or PR update is implied by this spec; those remain separate user requests.
+
+## Branch cleanup and upstream sync
+
+The user asked to reduce the roughly 9,000-line branch delta by removing dead, stale, or unused work while preserving the now-working two-way Cloud Chat/TUI flow, explicit interruption for ongoing work, terminal continuity, and model/effort selection. Line count is a review signal, not a deletion target: tests, required migrations, and generated API contracts must not be removed merely to make the number smaller.
+
+Audit added files and changed paths against production callers and the current requirements. Remove unused adapters, obsolete branches, duplicate logic, and redundant tests only when their behavior is already covered elsewhere. Keep one Cloud handoff state table, required recovery and terminal-ticket handling, organization-scoped storage, and the worker/renderer boundary. Regenerate rather than hand-edit generated contracts. Record before/after added and deleted lines and explain retained large files that are necessary to the feature.
+
+`cloud/chatui` has ten local commits and uncommitted changes. Preserve both by protecting the complete worktree (including untracked files), fetching and merging the latest `upstream/main` without rewriting history, then restoring the worktree and resolving overlaps. Do not push. Verify the integrated result with focused handoff/Chat tests, complete Cloud Go tests and build, frontend typecheck and renderer tests, and `git diff --check`. If upstream conflicts force a behavioral choice, preserve the documented Cloud Chat behavior and report the conflict before discarding any work.
