@@ -670,7 +670,7 @@ export function HumanMessage({
 					<span>Queued · sends when the agent finishes</span>
 				</div>
 			) : null}
-			{message.delivery && message.delivery !== "accepted" ? (
+			{message.delivery && message.delivery !== "accepted" && message.delivery !== "sending" ? (
 				<DeliveryNote state={message.delivery} />
 			) : null}
 		</div>
