@@ -34,6 +34,13 @@ AO sends structured events in a few broad categories:
   input
 - Basic environment information, such as the AO version, operating system,
   release channel, and which supported agent types are available
+- Desktop journey timings from native window creation to a usable shell, plus a
+  5% sample of session selection to usable chat or terminal and task submission
+  to a usable new session.
+  These events contain a bounded duration (at most five minutes), a fixed
+  outcome (`ready`, `failed`, `timeout`, or `cancelled`), and where relevant a
+  fixed surface (`chat` or `tui`) and scope (`local`, `standalone`, or `cloud`).
+  They contain no session or project identifiers, paths, prompts, or content
 - A random installation identifier and one-way hashes of project or session
   identifiers when an event needs them
 - Coarse mobile-app usage, such as pairing, reconnecting, completing onboarding,
@@ -56,6 +63,27 @@ The installation identifier lets PostHog group activity from one AO
 installation over time. Hashed project and session identifiers can likewise
 group events for the same project or session without sending those identifiers
 in plain text. Neither is linked to an AO account.
+
+For the three desktop timing events, compare the 75th percentile of `ready`
+durations by platform, app version, and release channel. Count `failed` and
+`timeout` outcomes alongside the percentile so a journey that never became
+usable cannot disappear from the result.
+
+Startup is recorded once per app window; session opening and task creation use
+a 5% random sample per completed attempt to reduce event volume. Counts for
+those two events are sampled counts.
+All three events remain subject to the shared per-name cap of five per minute
+and 200 per day, so capped counts are not fleet totals.
+
+| Event | Starts | Ends at `ready` |
+| --- | --- | --- |
+| `ao.renderer.startup_timing` | Native window creation | Daemon and workspace data have resolved and the shell has painted |
+| `ao.renderer.session_open_timing` | Navigation to an existing session | Chat conversation has painted, or terminal attachment and replay have painted |
+| `ao.renderer.task_create_timing` | Valid task submission | The new session reaches the same chat or terminal point, including readiness checks and spawn time |
+
+Startup and session navigation are timed out after two minutes; task creation after five
+minutes. Navigating away records `cancelled`. Startup begins after pre-window
+Electron initialization, so it does not represent process launch time.
 
 ## What AO does not intentionally send
 

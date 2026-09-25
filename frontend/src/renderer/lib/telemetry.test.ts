@@ -407,6 +407,43 @@ describe("telemetry sanitizers", () => {
 		}
 	});
 
+	it("keeps only bounded desktop journey timings and fixed outcome categories", async () => {
+		for (const event of [
+			"ao.renderer.startup_timing",
+			"ao.renderer.session_open_timing",
+			"ao.renderer.task_create_timing",
+		]) {
+			expect(await sanitizeRendererProperties(event, {
+				duration_ms: 300_000,
+				outcome: "ready",
+				surface: "chat",
+				scope: "local",
+				session_id: "session-123",
+				project_id: "project-123",
+				path: "/Users/alice/private",
+				prompt: "my private task",
+			})).toEqual({ duration_ms: 300_000, outcome: "ready", surface: "chat", scope: "local" });
+			expect(await sanitizeRendererProperties(event, {
+				duration_ms: -1,
+				outcome: "https://secret.example",
+				surface: "terminal output",
+				scope: "/Users/alice/private",
+			})).toEqual({});
+			for (const duration_ms of [Infinity, NaN, 300_001]) {
+				expect(await sanitizeRendererProperties(event, { duration_ms })).toEqual({});
+			}
+		}
+		for (const outcome of ["failed", "timeout", "cancelled"]) {
+			expect(await sanitizeRendererProperties("ao.renderer.session_open_timing", { outcome })).toEqual({ outcome });
+		}
+		expect(await sanitizeRendererProperties("ao.renderer.session_open_timing", {
+			duration_ms: 0, surface: "tui", scope: "standalone",
+		})).toEqual({ duration_ms: 0, surface: "tui", scope: "standalone" });
+		expect(await sanitizeRendererProperties("ao.renderer.task_create_timing", { scope: "cloud" })).toEqual({
+			scope: "cloud",
+		});
+	});
+
 	it("keeps only the source enum on orchestrator_spawn events", async () => {
 		const props = await sanitizeRendererProperties("ao.renderer.orchestrator_spawn_requested", {
 			project_id: "demo-project",

@@ -14,6 +14,7 @@ import { RequiredAgentField } from "./CreateProjectAgentSheet";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
 import { captureRendererEvent } from "../lib/telemetry";
+import { startTaskCreate, taskCreateFailed, taskCreateReturned } from "../lib/journey-timing";
 import {
 	cacheAgentReadiness,
 	ensureAgentReadiness,
@@ -509,6 +510,7 @@ export function TaskComposer({
 		approvalMode?: "bypass-permissions",
 	) => {
 		if (!projectId || !canSubmit || isSubmitting) return;
+		const timingAttempt = startTaskCreate(isStandalone ? "standalone" : isCloudProject ? "cloud" : "local");
 
 		const cleanModel = selectedModel.trim();
 		const cleanMode = selectedMode.trim();
@@ -553,8 +555,10 @@ export function TaskComposer({
 				agentDrafts[selectedAgent] = preference;
 				rememberTaskComposerPreference(preferenceContext, selectedAgent, preference);
 			}
+			taskCreateReturned(timingAttempt, sessionId);
 			onCreated(sessionId);
 		} catch (err) {
+			taskCreateFailed(timingAttempt);
 			const canBypassApprovals =
 				err instanceof TaskCreateError &&
 				err.code === "SESSION_MODE_UNSUPPORTED" &&

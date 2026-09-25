@@ -281,6 +281,8 @@ async function clearRendererTelemetryQueues(): Promise<void> {
 }
 
 let mainWindow: BaseWindow | null = null;
+let windowCreationStartedAt: number | null = null;
+let startupTimingRead = false;
 let trayController: TrayController | null = null;
 const trayLifecycle = createTrayLifecycle({
 	getWindow: () => null,
@@ -642,6 +644,8 @@ async function createWindowInternal(): Promise<void> {
 						trafficLightPosition: { x: MAC_WINDOW_BUTTON_X, y: MAC_WINDOW_BUTTON_Y },
 					}),
 	};
+	windowCreationStartedAt = performance.now();
+	startupTimingRead = false;
 	mainWindow = new BaseWindow(windowOptions);
 	const composition = createWindowComposition({
 		mainWindow,
@@ -1999,6 +2003,11 @@ ipcMain.handle("app:openExternal", async (_event, url: string) => {
 
 ipcMain.handle("window:isFullScreen", () => mainWindow?.isFullScreen() ?? false);
 ipcMain.handle("window:isMaximized", () => mainWindow?.isMaximized() ?? false);
+ipcMain.handle("window:startupElapsed", (event) => {
+	if (event.sender !== getShellWebContents() || windowCreationStartedAt === null || startupTimingRead) return null;
+	startupTimingRead = true;
+	return performance.now() - windowCreationStartedAt;
+});
 
 // Drive Electron's nativeTheme from the app's theme preference so embedded
 // preview WebContentsViews (which follow prefers-color-scheme) flip in step with

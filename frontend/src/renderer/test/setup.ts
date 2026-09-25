@@ -130,6 +130,7 @@ if (typeof window !== "undefined") {
 			onFontSizeShortcut: () => () => undefined,
 		},
 		window: {
+			startupElapsed: async () => null,
 			isMaximized: async () => false,
 			onMaximized: () => () => undefined,
 			isFullScreen: async () => false,

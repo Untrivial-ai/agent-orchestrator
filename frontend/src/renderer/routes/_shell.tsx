@@ -37,6 +37,7 @@ import { apiClient, apiErrorCode, apiErrorDetails, apiErrorMessage, apiErrorRequ
 import { refreshDaemonStatus } from "../lib/daemon-status";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { addRendererExceptionStep, captureRendererEvent, captureRendererException } from "../lib/telemetry";
+import { recordStartupTiming } from "../lib/journey-timing";
 import { ShellProvider } from "../lib/shell-context";
 import { restartProjectOrchestrator } from "../lib/restart-orchestrator";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
@@ -185,6 +186,7 @@ function ShellLayout() {
 	workspacesRef.current = workspaces;
 	const daemonStatus = useDaemonStatus(queryClient);
 	const [workspaceStartupState, setWorkspaceStartupState] = useState<"loading" | "ready" | "error">("loading");
+	const startupTimingRequestedRef = useRef(false);
 	const workspaceStartupBaselineRef = useRef(0);
 	const sidebarDragStripRef = useRef<HTMLDivElement>(null);
 	const themePreference = useUiStore((state) => state.themePreference);
@@ -361,6 +363,35 @@ function ShellLayout() {
 		!usesPreviewWorkspaceData &&
 		!daemonStatus.code &&
 		(daemonStatus.state !== "ready" || workspaceStartupState === "loading" || (!workspaceQuery.isSuccess && !workspaceQuery.isError));
+	useEffect(() => {
+		if (usesPreviewWorkspaceData) return;
+		const readElapsed = aoBridge.window.startupElapsed;
+		if (!readElapsed) return;
+		const timer = setTimeout(() => {
+			if (startupTimingRequestedRef.current) return;
+			startupTimingRequestedRef.current = true;
+			void readElapsed()
+				.then((elapsed) => {
+					if (elapsed !== null) recordStartupTiming(elapsed, "timeout");
+				})
+				.catch(() => undefined);
+		}, 120_000);
+		return () => clearTimeout(timer);
+	}, []);
+	useEffect(() => {
+		if (usesPreviewWorkspaceData || isStartupLoading || startupTimingRequestedRef.current) return;
+		const readElapsed = aoBridge.window.startupElapsed;
+		if (!readElapsed) return;
+		startupTimingRequestedRef.current = true;
+		const outcome = daemonStatus.state === "ready" && workspaceStartupState === "ready" ? "ready" : "failed";
+		requestAnimationFrame(() => requestAnimationFrame(() => {
+			void readElapsed()
+				.then((elapsed) => {
+					if (elapsed !== null) recordStartupTiming(elapsed, outcome);
+				})
+				.catch(() => undefined);
+		}));
+	}, [daemonStatus.state, isStartupLoading, workspaceStartupState]);
 	const navigateSession = useCallback(
 		(direction: -1 | 1) => {
 			if (!scopedProjectId) return;
