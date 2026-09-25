@@ -593,7 +593,7 @@ describe("ChatWorkspace timeline", () => {
 		expect(composer?.parentElement).toHaveClass("mx-auto", "w-full", "max-w-3xl");
 	});
 
-	it("shows live working state inline with the current turn while the composer owns the stop action", async () => {
+	it("keeps the live action row in the response while the composer owns the stop action", async () => {
 		const user = userEvent.setup();
 		const onInterrupt = vi.fn();
 		const snapshot = structuredClone(chatFixture);
@@ -608,12 +608,9 @@ describe("ChatWorkspace timeline", () => {
 
 		render(<ChatWorkspace snapshot={snapshot} onInterrupt={onInterrupt} />);
 
-		const status = screen.getByTestId("live-turn-status");
-		expect(screen.getByRole("log", { name: "Conversation" })).toContainElement(status);
-		expect(status).toHaveClass("min-h-6", "px-1");
-		expect(status).not.toHaveClass("border", "bg-surface", "rounded-md");
-		expect(status).toHaveTextContent(/^Working for /);
-		expect(within(status).queryByRole("button")).not.toBeInTheDocument();
+		expect(screen.queryByTestId("live-turn-status")).not.toBeInTheDocument();
+		expect(screen.queryByText(/^Working for /)).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Copy message as markdown" })).toBeInTheDocument();
 
 		const stop = screen.getByRole("button", { name: "Stop turn" });
 		expect(screen.getByLabelText("Message the agent").closest("form")).toContainElement(stop);
@@ -3035,8 +3032,8 @@ describe("ChatWorkspace message actions", () => {
 		const snapshot = structuredClone(chatFixture);
 		snapshot.items = snapshot.items.filter((item) => item.sequence <= 12);
 		render(<ChatWorkspace snapshot={snapshot} />);
-		// The latest assistant message is mid-stream; half a message is not what the
-		// reader means by "copy this", and streaming has no extra visual indicator.
+		// The latest assistant message is mid-stream; its copy action remains mounted
+		// in the bottom row while the response continues.
 		expect(screen.queryByLabelText("still writing")).not.toBeInTheDocument();
 		expect(screen.queryByText("Writing…")).not.toBeInTheDocument();
 	});

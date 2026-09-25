@@ -454,6 +454,21 @@ function formatDuration(ms: number): string {
 	return `${Math.round(ms / 60_000)}m`;
 }
 
+function useElapsedDuration(startedAt: string | undefined, active: boolean): number | undefined {
+	const [now, setNow] = useState(() => Date.now());
+
+	useEffect(() => {
+		if (!active || !startedAt) return;
+		setNow(Date.now());
+		const interval = window.setInterval(() => setNow(Date.now()), 100);
+		return () => window.clearInterval(interval);
+	}, [active, startedAt]);
+
+	if (!startedAt) return undefined;
+	const start = Date.parse(startedAt);
+	return Number.isNaN(start) ? undefined : Math.max(0, now - start);
+}
+
 function formatTime(iso: string): string {
 	const parsed = new Date(iso);
 	return Number.isNaN(parsed.getTime()) ? "" : timeFormatter.format(parsed);
@@ -740,9 +755,10 @@ export function AssistantMessage({
 	onRollback,
 	rollbackDisabled = false,
 	durationMs,
+	startedAt,
 }: {
 	message: ConversationMessage;
-	/** Only the final answer of a finished turn owns the turn's copy action. */
+	/** The final answer owns the copy action; it stays available while that answer streams. */
 	showCopy?: boolean;
 	/**
 	 * Discard this turn and everything after it. Lives next to copy so the finished
@@ -751,13 +767,17 @@ export function AssistantMessage({
 	onRollback?: () => void;
 	/** Keep the rollback action mounted while another response is streaming. */
 	rollbackDisabled?: boolean;
-	/** How long the finished turn took; sits next to rollback on the action row. */
+	/** How long the turn took; sits next to rollback on the action row. */
 	durationMs?: number;
+	/** Start time for the live elapsed clock while the response is streaming. */
+	startedAt?: string;
 }) {
 	const visibleText = useSmoothStreamingText(message);
 	const renderingStreaming = message.streaming || visibleText.length < message.text.length;
+	const liveDurationMs = useElapsedDuration(startedAt, renderingStreaming);
 	const hasDuration = durationMs !== undefined && durationMs > 0;
-	const showActions = !renderingStreaming && (showCopy || Boolean(onRollback) || hasDuration);
+	const showLiveActions = renderingStreaming && (showCopy || Boolean(onRollback));
+	const showActions = showLiveActions || (!renderingStreaming && (showCopy || Boolean(onRollback) || hasDuration));
 	return (
 		<div className="group/message relative">
 			<ChatMarkdown text={visibleText} streaming={renderingStreaming} />
@@ -792,7 +812,10 @@ export function AssistantMessage({
 							<TooltipContent side="bottom">Roll back to here</TooltipContent>
 						</Tooltip>
 					) : null}
-					{hasDuration ? <TurnDuration durationMs={durationMs} /> : null}
+					{showLiveActions && liveDurationMs !== undefined ? (
+						<TurnDuration durationMs={Math.max(1, liveDurationMs)} />
+					) : null}
+					{!showLiveActions && hasDuration ? <TurnDuration durationMs={durationMs} /> : null}
 					<span
 						className="w-auto shrink-0 px-1 text-[11px] tabular-nums text-muted-foreground/75 opacity-0 transition-opacity duration-150 ease-out group-hover/message:opacity-100 group-focus-within/message:opacity-100 motion-reduce:transition-none"
 						aria-label={`Sent ${formatMessageTimestamp(message.createdAt)}`}
@@ -2754,7 +2777,10 @@ function fileBasename(path: string): string {
 export function TurnDuration({ durationMs }: { durationMs: number }) {
 	if (durationMs <= 0) return null;
 	return (
-		<span className="shrink-0 px-1 font-sans text-[12px] leading-none tabular-nums text-muted-foreground">
+		<span
+			className="shrink-0 px-1 font-sans text-[12px] leading-none tabular-nums text-muted-foreground"
+			aria-label={`Time spent: ${formatDuration(durationMs)}`}
+		>
 			{formatDuration(durationMs)}
 		</span>
 	);

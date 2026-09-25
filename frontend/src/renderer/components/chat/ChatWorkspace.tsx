@@ -2977,10 +2977,9 @@ function Timeline({
 									onActivateBranch={canActivateBranch ? activateBranch : undefined}
 									activateBranchPending={activateBranchPending}
 									activateBranchError={activateBranchError}
-									// Only a turn the provider actually accepted can be undone: a turn it
-									// never saw holds no history to discard, and the daemon refuses it
-									// rather than hiding rows the agent still remembers.
-									canRollback={Boolean(onRollback && group.turnId && group.rollbackable)}
+									// Reserve the rollback slot as soon as a turn is live; it stays disabled
+									// until the provider has accepted the turn and the daemon can act on it.
+									canRollback={Boolean(onRollback && group.turnId && (group.rollbackable || group.live))}
 									rollbackDisabled={rollbackDisabled}
 									busy={busy}
 									queued={Boolean(group.turnId && queued.has(group.turnId))}
@@ -2989,7 +2988,7 @@ function Timeline({
 						);
 					})}
 					{turn && !groups.some((group) => group.turnId === turn.id) ? (
-						<TurnLiveStatus startedAt={turn.startedAt ?? turn.requestedAt} />
+						<TurnLiveStatus />
 					) : null}
 					{messageEdit && !editedMessageVisible ? (
 						<div className="flex justify-end" data-chat-scroll-anchor="">
@@ -3225,7 +3224,7 @@ const TurnGroup = memo(function TurnGroup({
 			),
 		[group.items, group.liveProviderFailure, group.outcome?.error, hasTerminalFailure],
 	);
-	const copyableMessageId = group.outcome
+	const copyableMessageId = group.live || group.outcome
 		? [...group.items]
 				.reverse()
 				.find((item) => item.kind === "message" && item.role === "assistant")?.id
@@ -3277,6 +3276,7 @@ const TurnGroup = memo(function TurnGroup({
 						durationMs={
 							run.items[0]?.id === copyableMessageId ? group.outcome?.durationMs : undefined
 						}
+						startedAt={run.items[0]?.id === copyableMessageId && group.live ? group.liveStartedAt : undefined}
 					/>
 				),
 			)}
@@ -3295,13 +3295,7 @@ const TurnGroup = memo(function TurnGroup({
 					onOpenFile={onOpenFile}
 				/>
 			) : null}
-			{group.live ? (
-				<TurnLiveStatus
-					startedAt={group.liveStartedAt}
-					blocked={group.blocked}
-					providerFailure={group.liveProviderFailure}
-				/>
-			) : null}
+			{group.live ? <TurnLiveStatus blocked={group.blocked} providerFailure={group.liveProviderFailure} /> : null}
 			{/* No assistant prose to hang the undo / duration on — still offer them
 			    before the outcome divider so a tool-only turn is not stuck without a
 			    way back or a record of how long it took. */}
@@ -3337,22 +3331,12 @@ const TurnGroup = memo(function TurnGroup({
 });
 
 function TurnLiveStatus({
-	startedAt,
 	blocked,
 	providerFailure,
 }: {
-	startedAt?: string;
 	blocked?: boolean;
 	providerFailure?: ConversationActivity;
 }) {
-	const [elapsed, setElapsed] = useState(() => elapsedSince(startedAt));
-
-	useEffect(() => {
-		if (blocked) return;
-		const timer = setInterval(() => setElapsed(elapsedSince(startedAt)), 1000);
-		return () => clearInterval(timer);
-	}, [blocked, startedAt]);
-
 	if (blocked) {
 		return (
 			<span role="alert" className="sr-only">
@@ -3386,28 +3370,7 @@ function TurnLiveStatus({
 		);
 	}
 
-	return (
-		<div className="flex min-h-6 items-center gap-2 px-1 py-0.5" data-testid="live-turn-status">
-			<Loader2
-				aria-hidden="true"
-				className="size-3 shrink-0 animate-spin text-status-working opacity-100"
-			/>
-			<span role="status" aria-live="polite" className="text-xs font-medium text-muted-foreground">
-				Working for {elapsed}
-			</span>
-		</div>
-	);
-}
-
-function elapsedSince(iso?: string): string {
-	if (!iso) return "0s";
-	const start = new Date(iso).getTime();
-	if (Number.isNaN(start)) return "0s";
-	const seconds = Math.max(0, Math.round((Date.now() - start) / 1000));
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	if (minutes < 60) return `${minutes}m`;
-	return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+	return null;
 }
 
 function TimelineItem({
@@ -3439,6 +3402,7 @@ function TimelineItem({
 	onRollback,
 	rollbackDisabled,
 	durationMs,
+	startedAt,
 }: {
 	item: ConversationItem;
 	sessionId: string;
@@ -3476,6 +3440,8 @@ function TimelineItem({
 	rollbackDisabled?: boolean;
 	/** Finished-turn duration; shown next to rollback on the final answer. */
 	durationMs?: number;
+	/** Start time for the live elapsed clock while the response is streaming. */
+	startedAt?: string;
 	/** This message is the live edge of its turn, rather than an earlier fragment
 	 * followed by tool activity. */
 }) {
@@ -3488,6 +3454,7 @@ function TimelineItem({
 					onRollback={onRollback}
 					rollbackDisabled={rollbackDisabled}
 					durationMs={durationMs}
+					startedAt={startedAt}
 				/>
 			);
 		}

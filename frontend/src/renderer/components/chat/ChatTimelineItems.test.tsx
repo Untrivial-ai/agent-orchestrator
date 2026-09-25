@@ -256,11 +256,11 @@ describe("AssistantMessage streaming", () => {
 		expect(screen.getByRole("button", { name: "Copy message as markdown" })).toBeInTheDocument();
 	});
 
-	it("hides message actions while text is still buffered", () => {
+	it("keeps the copy action available while text is still buffered", () => {
 		const view = render(<AssistantMessage message={message()} showCopy />);
 		view.rerender(<AssistantMessage message={message({ text: "a buffered answer" })} showCopy />);
 
-		expect(screen.queryByRole("button", { name: "Copy message as markdown" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Copy message as markdown" })).toBeInTheDocument();
 	});
 
 	it("shows the message timestamp on hover", () => {
