@@ -157,12 +157,9 @@ export function ComposerSuggestMenu({
 								) : null}
 								{index === highlighted ? (
 									<span
-										aria-label="Press Tab or Enter to insert"
+										aria-label="Press Enter to insert"
 										className="flex shrink-0 items-center gap-1 text-micro text-muted-foreground"
 									>
-										<kbd className="rounded border border-border-strong bg-background/40 px-1 py-0.5 font-sans text-[10px] leading-none">
-											Tab
-										</kbd>
 										<CornerDownLeft aria-hidden="true" className="size-3" />
 									</span>
 								) : null}

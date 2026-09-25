@@ -1097,6 +1097,7 @@ describe("slash commands", () => {
 		await typeInComposer(field, "/");
 
 		expect(screen.queryByText("Skills", { exact: true })).toBeNull();
+		expect(screen.queryByText("Tab", { exact: true })).toBeNull();
 		expect(screen.getByRole("listbox")).toHaveClass("scrollbar-none", "overflow-y-auto");
 	});
 
