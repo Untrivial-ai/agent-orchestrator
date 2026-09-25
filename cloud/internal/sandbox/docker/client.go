@@ -268,7 +268,7 @@ type listedContainer struct {
 func (c *Client) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Environment, error) {
 	labels, workspace, err := c.labelsFor(spec)
 	if err != nil {
-		return sandbox.Environment{}, err
+		return sandbox.Environment{}, errors.Join(sandbox.ErrCreateRejected, err)
 	}
 	if err := c.ensureWorkspace(ctx, workspace, labels); err != nil {
 		return sandbox.Environment{}, err
@@ -408,6 +408,28 @@ func (c *Client) Delete(ctx context.Context, id sandbox.ID) error {
 	return err
 }
 
+func (c *Client) CleanupSession(ctx context.Context, orgID, sessionID string) error {
+	labels, name, err := c.labelsFor(sandbox.Spec{OrgID: orgID, SessionID: sessionID})
+	if err != nil {
+		return err
+	}
+	var volume volumeView
+	path := "/volumes/" + url.QueryEscape(name)
+	if err := c.do(ctx, http.MethodGet, path, nil, &volume); err != nil {
+		if errors.Is(err, sandbox.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if err := c.validateWorkspace(volume, labels); err != nil {
+		return err
+	}
+	if err := c.do(ctx, http.MethodDelete, path, nil, nil); err != nil && !errors.Is(err, sandbox.ErrNotFound) {
+		return err
+	}
+	return nil
+}
+
 // Recreate replaces only compute. The deterministic workspace volume remains
 // intact and the replacement starts with the fresh bootstrap token in spec.
 func (c *Client) Recreate(
@@ -471,10 +493,13 @@ func (c *Client) ensureWorkspace(
 	var existing volumeView
 	err := c.do(ctx, http.MethodGet, "/volumes/"+url.PathEscape(name), nil, &existing)
 	if err == nil {
-		return c.validateWorkspace(existing, labels)
+		if err := c.validateWorkspace(existing, labels); err != nil {
+			return errors.Join(sandbox.ErrCreateRejected, err)
+		}
+		return nil
 	}
 	if !errors.Is(err, sandbox.ErrNotFound) {
-		return err
+		return errors.Join(sandbox.ErrCreateRejected, err)
 	}
 	var created volumeView
 	if err := c.do(ctx, http.MethodPost, "/volumes/create", createVolumeRequest{
@@ -552,7 +577,7 @@ func (c *Client) validateOwnership(labels map[string]string, resource string) er
 	return nil
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+func (c *Client) do(ctx context.Context, method, path string, body, out any) (err error) {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -574,6 +599,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		return fmt.Errorf("docker: %s %s: %w", method, path, err)
 	}
 	defer response.Body.Close()
+	if method == http.MethodPost && (strings.HasPrefix(path, "/containers/create?") || path == "/volumes/create") {
+		defer func() { err = sandbox.CreateResponseError(err, response.StatusCode) }()
+	}
 	if response.StatusCode == http.StatusNotFound {
 		return sandbox.ErrNotFound
 	}

@@ -295,12 +295,12 @@ func (c *Client) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Environ
 		name = WorkspaceName(spec.SessionID)
 	}
 	if name == "" {
-		return sandbox.Environment{}, errors.New("coder: workspace name is required")
+		return sandbox.Environment{}, fmt.Errorf("%w: coder workspace name is required", sandbox.ErrCreateRejected)
 	}
 	if c.expectedWorkspaceName != "" && name != c.expectedWorkspaceName {
 		return sandbox.Environment{}, fmt.Errorf(
-			"coder: session workspace name mismatch: got %q, want %q",
-			name, c.expectedWorkspaceName,
+			"%w: coder session workspace name mismatch: got %q, want %q",
+			sandbox.ErrCreateRejected, name, c.expectedWorkspaceName,
 		)
 	}
 	parameterNames := make([]string, 0, len(c.parameters))
@@ -1068,7 +1068,7 @@ func sanitizePTYOutput(output string) string {
 	return strings.TrimSpace(output)
 }
 
-func (c *Client) do(ctx context.Context, method, requestPath string, body, output any) error {
+func (c *Client) do(ctx context.Context, method, requestPath string, body, output any) (err error) {
 	var requestBody io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -1090,6 +1090,9 @@ func (c *Client) do(ctx context.Context, method, requestPath string, body, outpu
 		return fmt.Errorf("coder: %s %s: %w", method, requestPath, err)
 	}
 	defer response.Body.Close()
+	if method == http.MethodPost && requestPath == "/api/v2/users/"+url.PathEscape(c.owner)+"/workspaces" {
+		defer func() { err = sandbox.CreateResponseError(err, response.StatusCode) }()
+	}
 	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone {
 		return sandbox.ErrNotFound
 	}

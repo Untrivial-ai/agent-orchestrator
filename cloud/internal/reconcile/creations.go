@@ -71,3 +71,12 @@ func (r *Reconciler) waitForCreation(ctx context.Context, record domain.Sandbox,
 	}
 	return r.observe(ctx, record, record.ProviderEnvironmentID, state, message, 5*time.Second)
 }
+
+func (r *Reconciler) completeSandboxDeletion(ctx context.Context, record domain.Sandbox, provider sandbox.Provider) error {
+	if cleaner, ok := provider.(sandbox.SessionCleaner); ok {
+		if err := cleaner.CleanupSession(ctx, record.OrgID, record.SessionID); err != nil {
+			return r.fail(ctx, record, err)
+		}
+	}
+	return r.store.CompleteSandboxDeletion(ctx, r.owner, record.OrgID, record.SessionID)
+}

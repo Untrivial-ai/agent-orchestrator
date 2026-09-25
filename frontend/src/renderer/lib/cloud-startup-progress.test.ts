@@ -41,6 +41,23 @@ function session(observedState: string, runtimeConnected = false): WorkspaceSess
 }
 
 describe("cloud startup progress", () => {
+	it.each(["CREDENTIAL_FAILED", "TERMINAL_PREPARE_FAILED"])("preserves %s through parallel milestones", (code) => {
+		let projection = reduceCloudStartupEvent({ latestSequence: 0 }, event(1, "startup.failed", {
+			epoch: 1, phase: "starting_agent", code, message: "Startup stopped",
+		}));
+		for (const type of ["checkout.completed", "restore.started", "restore.completed", "workspace.ready", "agent.launch_started"]) {
+			projection = reduceCloudStartupEvent(projection, event(projection.latestSequence + 1, type, { epoch: 1 }));
+			expect(deriveCloudStartupProgress(attempt, session("running", true), projection)).toMatchObject({
+				phase: "failed", failure: { code },
+			});
+		}
+		const recovered = reduceCloudStartupEvent(projection, event(10, "agent.ready", { epoch: 1 }));
+		expect(recovered.failure).toBeUndefined();
+		const restarted = reduceCloudStartupEvent(projection, event(10, "worker.connected", { epoch: 2 }));
+		expect(restarted.failure).toBeUndefined();
+		expect(restarted.workerEpoch).toBe(2);
+	});
+
 	it("projects each stable startup phase from replayed milestones", () => {
 		let projection: CloudStartupProjection = { latestSequence: 0 };
 		expect(deriveCloudStartupProgress(attempt, session("requested"), projection).phase).toBe("allocating_workspace");

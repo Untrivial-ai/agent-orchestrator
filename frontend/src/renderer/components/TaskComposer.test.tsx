@@ -1052,6 +1052,27 @@ describe("TaskComposer", () => {
 		expect(keys).toEqual(["local-request-1", "local-request-1"]);
 	});
 
+	it.each([
+		"TASK_DELEGATION_RECOVERY_REQUIRED", "TASK_DELEGATION_COMMIT_FAILED",
+		"TASK_DELEGATION_IN_PROGRESS", "SPAWN_INTERNAL", "SPAWN_TIMEOUT", "SPAWN_CANCELLED",
+	])("retains the local request identity after %s", async (code) => {
+		let sequence = 0;
+		vi.stubGlobal("crypto", { randomUUID: vi.fn(() => `local-request-${++sequence}`) });
+		h.post
+			.mockResolvedValueOnce({ error: { code, message: "Inspect the existing session before retrying" } })
+			.mockResolvedValueOnce({ data: { workerId: "existing-worker" } });
+		const onCreated = vi.fn();
+		render(<Wrap><TaskComposer projectId="proj-1" onCreated={onCreated} /></Wrap>);
+		fireEvent.change(task(), { target: { value: "Retry safely" } });
+		await waitForTaskReady();
+		fireEvent.click(startTask());
+		await screen.findByText("Inspect the existing session before retrying");
+		fireEvent.click(startTask());
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("existing-worker"));
+		expect(h.post.mock.calls.map(([, request]) => request.body.idempotencyKey))
+			.toEqual(["local-request-1", "local-request-1"]);
+	});
+
 	it("uses a new local idempotency key after a definitive server rejection", async () => {
 		let sequence = 0;
 		vi.stubGlobal("crypto", { randomUUID: vi.fn(() => `local-request-${++sequence}`) });

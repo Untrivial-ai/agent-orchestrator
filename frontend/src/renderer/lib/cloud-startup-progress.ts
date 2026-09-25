@@ -99,7 +99,8 @@ export function reduceCloudStartupEvent(
 	}
 	if (event.type in milestonePhases) {
 		next.latestMilestone = event.type;
-		next.failure = undefined;
+		// Parallel checkout progress does not recover failed harness startup.
+		if (event.type === "agent.ready") next.failure = undefined;
 	}
 	return next;
 }

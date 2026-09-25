@@ -84,9 +84,11 @@ const CHAT_PREFLIGHT_CODES = new Set([
 ]);
 
 const READINESS_RECONCILE_CODES = new Set(["AGENT_BINARY_NOT_FOUND", "AGENT_AUTH_REQUIRED", "CHAT_AUTH_REQUIRED"]);
-const LOCAL_IDEMPOTENCY_RETAIN_CODES = new Set([
-	"TASK_DELEGATION_IN_PROGRESS",
-	"TASK_DELEGATION_COMMIT_FAILED",
+// Only preflight rejection proves that starting a fresh request is safe.
+const LOCAL_IDEMPOTENCY_RESET_CODES = new Set([
+	...CHAT_PREFLIGHT_CODES,
+	...READINESS_RECONCILE_CODES,
+	"UNKNOWN_HARNESS",
 ]);
 
 class TaskCreateError extends Error {
@@ -747,7 +749,7 @@ export function TaskComposer({
 				!isCloudProject &&
 				!isStandalone &&
 				err instanceof TaskCreateError &&
-				!LOCAL_IDEMPOTENCY_RETAIN_CODES.has(err.code ?? "")
+				LOCAL_IDEMPOTENCY_RESET_CODES.has(err.code ?? "")
 			) {
 				localSubmissionRef.current = undefined;
 			}

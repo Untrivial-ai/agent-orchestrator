@@ -18,13 +18,14 @@ import (
 )
 
 type lifecycleStore struct {
-	creationMu     sync.Mutex
-	acceptedPause  bool
-	acceptCalls    int
-	observations   []string
-	renewError     error
-	creations      []domain.SandboxCreation
-	creationStates map[string]string
+	creationMu         sync.Mutex
+	acceptedPause      bool
+	acceptCalls        int
+	observations       []string
+	renewError         error
+	creations          []domain.SandboxCreation
+	creationStates     map[string]string
+	completedDeletions int
 }
 
 func (s *lifecycleStore) BeginSandboxCreation(_ context.Context, _ string, record domain.Sandbox, id string) error {
@@ -99,6 +100,7 @@ func (s *lifecycleStore) MarkSandboxDeletionRequested(context.Context, string, s
 	return nil
 }
 func (s *lifecycleStore) CompleteSandboxDeletion(context.Context, string, string, string) error {
+	s.completedDeletions++
 	return nil
 }
 func (s *lifecycleStore) DisconnectSessionWorkers(context.Context, string, string) error {

@@ -728,7 +728,7 @@ func (r *Reconciler) reconcileDeletion(
 			return r.fail(ctx, record, err)
 		}
 		if !found {
-			return r.store.CompleteSandboxDeletion(ctx, r.owner, record.OrgID, record.SessionID)
+			return r.completeSandboxDeletion(ctx, record, provider)
 		}
 		record.ProviderEnvironmentID = string(environment.ID)
 	}
@@ -736,11 +736,11 @@ func (r *Reconciler) reconcileDeletion(
 	environment, err := provider.Get(ctx, sandbox.ID(record.ProviderEnvironmentID))
 	switch {
 	case errors.Is(err, sandbox.ErrNotFound):
-		return r.store.CompleteSandboxDeletion(ctx, r.owner, record.OrgID, record.SessionID)
+		return r.completeSandboxDeletion(ctx, record, provider)
 	case err != nil:
 		return r.fail(ctx, record, err)
 	case environment.State == sandbox.StateDeleted:
-		return r.store.CompleteSandboxDeletion(ctx, r.owner, record.OrgID, record.SessionID)
+		return r.completeSandboxDeletion(ctx, record, provider)
 	}
 
 	// The box has not converged to gone. Bound the attempt: some providers cannot
@@ -1067,10 +1067,12 @@ func (r *Reconciler) provision(
 	}
 
 	if err != nil {
-		if errors.Is(err, sandbox.ErrAtCapacity) && environment.ID == "" {
+		if environment.ID == "" && (errors.Is(err, sandbox.ErrAtCapacity) || errors.Is(err, sandbox.ErrCreateRejected)) {
 			if resolveErr := r.store.ResolveSandboxCreation(resultCtx, record.OrgID, record.SessionID, creationID, "deleted"); resolveErr != nil {
 				return errors.Join(err, resolveErr)
 			}
+		}
+		if errors.Is(err, sandbox.ErrAtCapacity) && environment.ID == "" {
 			r.log.Info("provider at capacity; will retry",
 				"session_id", record.SessionID, "provider", record.Provider)
 			return r.observe(ctx, record, record.ProviderEnvironmentID,

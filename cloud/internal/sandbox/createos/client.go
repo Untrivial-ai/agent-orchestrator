@@ -149,7 +149,7 @@ type createSandboxRequest struct {
 func (c *Client) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Environment, error) {
 	shape := firstNonEmpty(spec.Shape, c.defaultShape)
 	if shape == "" {
-		return sandbox.Environment{}, errors.New("createos: no shape configured for this sandbox")
+		return sandbox.Environment{}, fmt.Errorf("%w: createos has no shape configured for this sandbox", sandbox.ErrCreateRejected)
 	}
 	// The caller names a sandbox for AO's own vocabulary, which is longer than
 	// CreateOS accepts. Deriving the name here keeps that limit inside the one
@@ -572,7 +572,7 @@ func (c *Client) uploadFile(ctx context.Context, id sandbox.ID, guestPath string
 	return nil
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+func (c *Client) do(ctx context.Context, method, path string, body, out any) (err error) {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -596,6 +596,9 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		return fmt.Errorf("createos: %s %s: %w", method, path, err)
 	}
 	defer response.Body.Close()
+	if method == http.MethodPost && path == "/v1/sandboxes" {
+		defer func() { err = sandbox.CreateResponseError(err, response.StatusCode) }()
+	}
 
 	if err := statusError(response); err != nil {
 		return err
