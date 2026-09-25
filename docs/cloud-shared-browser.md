@@ -100,3 +100,7 @@ Native DevTools Network is available for human inspection. The separate
 profile persistence across sandbox replacement, and side-by-side DevTools are
 not implemented by this change. Earlier Stage 1 notes are historical; this
 runbook and the DevTools spec describe the current browser scope.
+
+See the [split validation report](superpowers/reports/2026-09-26-cloud-shared-browser-validation.md)
+and [native desktop evidence](screenshots/pr-5543/README.md) for observed results
+and the remaining hosted-provider and platform coverage gaps.
