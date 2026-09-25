@@ -90,7 +90,8 @@ func (s *Store) ClaimWorkerTurn(
 				claimed.attempt_count, claimed.worker_epoch,
 				claimed.state, session.agent_session_id,
 				claimed.user_message_sequence,
-				COALESCE(claimed_turn.mode_cap, ''), COALESCE(claimed_turn.denied_commands, ARRAY[]::text[])
+				COALESCE(claimed_turn.mode_cap, ''), COALESCE(claimed_turn.denied_commands, ARRAY[]::text[]),
+				COALESCE(event.payload->>'model', ''), COALESCE(event.payload->>'reasoningEffort', '')
 			FROM claimed
 			JOIN ao_sessions session
 				ON session.org_id = $1 AND session.id = claimed.session_id
@@ -117,6 +118,8 @@ func (s *Store) ClaimWorkerTurn(
 			&turn.UserEventSequence,
 			&turnModeCap,
 			&turnDeniedCommands,
+			&turn.Model,
+			&turn.ReasoningEffort,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil

@@ -872,6 +872,8 @@ func (s *Server) workerClaimTurn(w http.ResponseWriter, r *http.Request) {
 		response.Turn = &worker.Turn{
 			ID:              turn.ID,
 			Prompt:          turn.Prompt,
+			Model:           turn.Model,
+			ReasoningEffort: turn.ReasoningEffort,
 			Mode:            turn.Mode,
 			DeniedCommands:  turn.DeniedCommands,
 			Harness:         turn.Harness,

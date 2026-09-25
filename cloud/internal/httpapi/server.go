@@ -57,7 +57,7 @@ type Store interface {
 	CreateSession(context.Context, domain.Principal, string, string, int, domain.CreateSession) (domain.Session, error)
 	ListSessions(context.Context, domain.Principal, string, string, *domain.Cursor, int) ([]domain.Session, bool, error)
 	GetSession(context.Context, domain.Principal, string, string) (domain.Session, error)
-	SendMessage(context.Context, domain.Principal, string, string, string, string) (domain.ClientEvent, error)
+	SendMessage(context.Context, domain.Principal, string, string, string, string, domain.ChatTurnSettings) (domain.ClientEvent, error)
 	ListClientEvents(context.Context, domain.Principal, string, string, int64, int) ([]domain.ClientEvent, bool, error)
 	SetSandboxDesiredState(ctx context.Context, principal domain.Principal, orgID, sessionID, desiredState string) error
 	TerminateSession(ctx context.Context, principal domain.Principal, orgID, sessionID string) error
@@ -117,7 +117,6 @@ type Store interface {
 	RedeemProjectShareLink(context.Context, domain.Principal, string, string) (domain.SharedProject, error)
 	ListSharedProjects(context.Context, domain.Principal) ([]domain.SharedProject, error)
 	ListSharedProjectSessions(context.Context, domain.Principal, string, string) ([]domain.Session, error)
-	GetSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, error)
 	StartSessionInterfaceTransition(context.Context, domain.Principal, string, string, domain.SessionInterface, domain.SessionInterface, domain.SessionInterfaceTransitionPolicy, string) (domain.SessionInterfaceTransition, error)
 	GetActiveSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, bool, error)
 	GetLatestRelevantSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, bool, error)
@@ -454,6 +453,7 @@ func New(options Options) *Server {
 			router.Get("/sessions/{sessionId}/children", server.listSessionChildren)
 			router.Delete("/sessions/{sessionId}", server.deleteSession)
 			router.Post("/sessions/{sessionId}/messages", server.sendMessage)
+			router.Get("/sessions/{sessionId}/chat-models", server.getChatModels)
 			router.Post("/sessions/{sessionId}/turns/{turnId}/cancel", server.cancelTurn)
 			router.Post("/sessions/{sessionId}/turns/{turnId}/steer", server.steerTurn)
 			router.Get("/sessions/{sessionId}/chat-events", server.replayClientEvents)

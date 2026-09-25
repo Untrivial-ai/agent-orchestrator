@@ -34,7 +34,7 @@ func (s *Server) workerEnsureAgentTerminal(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, worker.AgentTerminalResponse{
-		TerminalID: terminal.ID,
+		TerminalID: terminal.ID, NextOutputSequence: terminal.NextOutputSequence,
 	})
 }
 

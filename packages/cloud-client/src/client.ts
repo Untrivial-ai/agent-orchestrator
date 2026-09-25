@@ -2,6 +2,8 @@ import type {
   AgentProfile,
   ClientEvent,
   ClientEventPage,
+  ChatMessageInput,
+  ChatModelsResponse,
   CreateWorkerChildInput,
   CreateGitHubProjectInput,
   CreateGitHubScratchProjectInput,
@@ -437,7 +439,7 @@ export class CloudClient {
   sendMessage(
     orgId: string,
     sessionId: string,
-    text: string,
+    message: string | ChatMessageInput,
     options: IdempotentRequestOptions,
   ): Promise<{ event: UserMessageEvent }> {
     return this.request(
@@ -447,10 +449,21 @@ export class CloudClient {
       ),
       {
         method: "POST",
-        body: { text },
+        body: typeof message === "string" ? { text: message } : message,
         idempotencyKey: options.idempotencyKey,
         signal: options.signal,
       },
+    );
+  }
+
+  listChatModels(
+    orgId: string,
+    sessionId: string,
+    options: RequestOptions = {},
+  ): Promise<ChatModelsResponse> {
+    return this.request(
+      this.orgPath(orgId, `/sessions/${encodeURIComponent(sessionId)}/chat-models`),
+      options,
     );
   }
 

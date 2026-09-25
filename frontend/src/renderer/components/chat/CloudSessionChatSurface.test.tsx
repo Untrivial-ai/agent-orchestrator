@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { CloudCpClientEvent } from "../../lib/cloud-cp";
+import { CloudCpError } from "../../lib/cloud-cp/errors";
 import type { WorkspaceSession } from "../../types/workspace";
 import { appendCloudEvents, CloudSessionChatSurface, loadCloudChatEvents, toSnapshot } from "./CloudSessionChatSurface";
 
@@ -10,6 +11,8 @@ const cloudMocks = vi.hoisted(() => ({
 	sendSessionMessage: vi.fn(),
 	cancelTurn: vi.fn(),
 	steerTurn: vi.fn(),
+	listChatModels: vi.fn(),
+	resumeSession: vi.fn(),
 	chatProps: vi.fn(),
 }));
 vi.mock("../../hooks/useCloudCp", () => ({
@@ -36,6 +39,64 @@ const session = {
 } satisfies WorkspaceSession;
 
 describe("CloudSessionChatSurface", () => {
+	it("wakes a paused worker before loading model choices", async () => {
+		cloudMocks.listChatEvents.mockResolvedValue({ events: [], hasMore: false, nextAfter: 0 });
+		cloudMocks.listChatModels.mockReset()
+			.mockRejectedValueOnce(new CloudCpError("The session worker is not connected.", { status: 409, code: "WORKER_UNAVAILABLE" }))
+			.mockResolvedValue({ models: [{ id: "codex-test", displayName: "Codex Test", default: true }] });
+		cloudMocks.resumeSession.mockReset().mockResolvedValue({});
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		render(
+			<QueryClientProvider client={queryClient}>
+				<CloudSessionChatSurface session={{ ...session, cloud: { orgId: "org-1" } }} />
+			</QueryClientProvider>,
+		);
+		await waitFor(() => expect(cloudMocks.resumeSession).toHaveBeenCalledWith("org-1", session.id, { signal: expect.any(AbortSignal) }));
+		await waitFor(() => expect(cloudMocks.chatProps.mock.lastCall?.[0].models).toEqual([
+			{ id: "codex-test", displayName: "Codex Test", default: true },
+		]));
+	});
+
+	it("shows provider models and sends the selected model and effort with the next turn", async () => {
+		cloudMocks.listChatEvents.mockResolvedValue({ events: [], hasMore: false, nextAfter: 0 });
+		cloudMocks.listChatModels.mockResolvedValue({ models: [{ id: "codex-test", displayName: "Codex Test", default: true, efforts: ["low", "high"] }] });
+		cloudMocks.sendSessionMessage.mockResolvedValue({ event: {} });
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+		render(
+			<QueryClientProvider client={queryClient}>
+				<CloudSessionChatSurface session={{ ...session, cloud: { orgId: "org-1" } }} />
+			</QueryClientProvider>,
+		);
+		await waitFor(() => expect(cloudMocks.chatProps.mock.lastCall?.[0].models).toEqual([
+			{ id: "codex-test", displayName: "Codex Test", default: true, efforts: ["low", "high"] },
+		]));
+		cloudMocks.chatProps.mock.lastCall?.[0].onChooseSettings({ model: "codex-test", reasoningEffort: "high" });
+		await cloudMocks.chatProps.mock.lastCall?.[0].onSend("hello", [], "message-2");
+		expect(cloudMocks.sendSessionMessage).toHaveBeenCalledWith("org-1", session.id, {
+			text: "hello", model: "codex-test", reasoningEffort: "high",
+		}, { idempotencyKey: "message-2" });
+	});
+
+	it("does not carry one Cloud session's model selection into another session", async () => {
+		cloudMocks.listChatEvents.mockResolvedValue({ events: [], hasMore: false, nextAfter: 0 });
+		cloudMocks.listChatModels.mockResolvedValue({ models: [{ id: "codex-test", displayName: "Codex Test", default: true }] });
+		cloudMocks.sendSessionMessage.mockResolvedValue({ event: {} });
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+		const view = render(
+			<QueryClientProvider client={queryClient}>
+				<CloudSessionChatSurface session={{ ...session, cloud: { orgId: "org-1" } }} />
+			</QueryClientProvider>,
+		);
+		cloudMocks.chatProps.mock.lastCall?.[0].onChooseSettings({ model: "codex-test" });
+		view.rerender(
+			<QueryClientProvider client={queryClient}>
+				<CloudSessionChatSurface session={{ ...session, id: "session-2", cloud: { orgId: "org-1" } }} />
+			</QueryClientProvider>,
+		);
+		await cloudMocks.chatProps.mock.lastCall?.[0].onSend("next", [], "message-3");
+		expect(cloudMocks.sendSessionMessage).toHaveBeenLastCalledWith("org-1", "session-2", { text: "next" }, { idempotencyKey: "message-3" });
+	});
+
 	it("surfaces send errors and sends cancellation to the active turn", async () => {
 		cloudMocks.listChatEvents.mockReset().mockResolvedValue({
 			events: [

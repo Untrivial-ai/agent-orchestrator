@@ -30,6 +30,11 @@ var clientEventTypes = []string{
 	"chat.turn_steered",
 }
 
+type chatMessagePayload struct {
+	Text string `json:"text"`
+	domain.ChatTurnSettings
+}
+
 func (s *Store) SendMessage(
 	ctx context.Context,
 	principal domain.Principal,
@@ -37,6 +42,7 @@ func (s *Store) SendMessage(
 	sessionID string,
 	idempotencyKey string,
 	text string,
+	settings domain.ChatTurnSettings,
 ) (domain.ClientEvent, error) {
 	var event domain.ClientEvent
 	err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, access sessionAccess) error {
@@ -46,7 +52,7 @@ func (s *Store) SendMessage(
 		var err error
 		event, err = sendMessageTx(
 			ctx, tx, orgID, sessionID, idempotencyKey, text, principal.UserID, "",
-			access.ModeCap, access.DeniedCommands,
+			access.ModeCap, access.DeniedCommands, settings,
 		)
 		return err
 	})
@@ -59,8 +65,9 @@ func sendMessageTx(
 	orgID, sessionID, idempotencyKey, text, actorUserID, actorSessionID string,
 	modeCap string,
 	deniedCommands []string,
+	settings domain.ChatTurnSettings,
 ) (domain.ClientEvent, error) {
-	payload, err := json.Marshal(map[string]string{"text": text})
+	payload, err := json.Marshal(chatMessagePayload{Text: text, ChatTurnSettings: settings})
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -84,7 +91,7 @@ func sendMessageTx(
 	if err != nil {
 		return domain.ClientEvent{}, normalizeConstraintError(err)
 	}
-	event, err := appendUserMessage(ctx, tx, orgID, sessionID, idempotencyKey, text, modeCap, deniedCommands)
+	event, err := appendUserMessage(ctx, tx, orgID, sessionID, idempotencyKey, text, modeCap, deniedCommands, settings)
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -299,8 +306,9 @@ func appendUserMessage(
 	text string,
 	modeCap string,
 	deniedCommands []string,
+	settings domain.ChatTurnSettings,
 ) (domain.ClientEvent, error) {
-	event, err := appendUserMessageEvent(ctx, tx, orgID, sessionID, text)
+	event, err := appendUserMessageEvent(ctx, tx, orgID, sessionID, text, settings)
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -445,6 +453,7 @@ func appendUserMessageEvent(
 	orgID string,
 	sessionID string,
 	text string,
+	selected ...domain.ChatTurnSettings,
 ) (domain.ClientEvent, error) {
 	var sequence int64
 	err := tx.QueryRow(
@@ -478,7 +487,11 @@ func appendUserMessageEvent(
 		return domain.ClientEvent{}, err
 	}
 
-	payload, err := json.Marshal(map[string]string{"text": text})
+	settings := domain.ChatTurnSettings{}
+	if len(selected) > 0 {
+		settings = selected[0]
+	}
+	payload, err := json.Marshal(chatMessagePayload{Text: text, ChatTurnSettings: settings})
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}

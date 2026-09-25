@@ -569,13 +569,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [text]
-              properties:
-                text:
-                  type: string
-                  minLength: 1
-                  maxLength: 65536
+              $ref: "#/components/schemas/ChatMessageInput"
       responses:
         "202":
           description: Message accepted and durably appended.
@@ -587,6 +581,23 @@ paths:
                 properties:
                   event:
                     $ref: "#/components/schemas/UserMessageEvent"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/chat-models:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: listChatModels
+      tags: [Sessions]
+      description: Model and reasoning-effort choices available to this session's agent.
+      responses:
+        "200":
+          description: Available Chat models.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatModelsResponse"
         default:
           $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/turns/{turnId}/cancel:
@@ -2574,6 +2585,49 @@ components:
         sandboxProviderConnectionId:
           type: string
           format: uuid
+    ChatMessageInput:
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 65536
+        model:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$'
+        reasoningEffort:
+          type: string
+          enum: [none, minimal, low, medium, high, xhigh, max, ultra]
+    ChatModel:
+      type: object
+      additionalProperties: false
+      required: [id, displayName, default]
+      properties:
+        id:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        default:
+          type: boolean
+        efforts:
+          type: array
+          items:
+            type: string
+        defaultEffort:
+          type: string
+    ChatModelsResponse:
+      type: object
+      additionalProperties: false
+      required: [models]
+      properties:
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatModel"
     SendMessageInput:
       type: object
       additionalProperties: false

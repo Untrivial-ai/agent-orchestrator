@@ -196,6 +196,8 @@ type WorkerTurn struct {
 	ID                string
 	SessionID         string
 	Prompt            string
+	Model             string
+	ReasoningEffort   string
 	Mode              string
 	DeniedCommands    []string
 	Harness           string
@@ -204,6 +206,11 @@ type WorkerTurn struct {
 	CancelRequested   bool
 	AgentSessionID    string
 	UserEventSequence int64
+}
+
+type ChatTurnSettings struct {
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 }
 
 // WorkerCredential is the encrypted coding-agent credential selected by the
@@ -235,15 +242,16 @@ type WorkerRequest struct {
 }
 
 type TerminalSession struct {
-	ID           string
-	OrgID        string
-	SessionID    string
-	WorkerEpoch  int64
-	Kind         string
-	State        string
-	Scopes       []string
-	ErrorMessage string
-	ExpiresAt    time.Time
+	ID                 string
+	OrgID              string
+	SessionID          string
+	WorkerEpoch        int64
+	NextOutputSequence int64
+	Kind               string
+	State              string
+	Scopes             []string
+	ErrorMessage       string
+	ExpiresAt          time.Time
 }
 
 type TerminalOutput struct {

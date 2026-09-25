@@ -14,6 +14,7 @@ import type {
 	CloudCpCancelTurnResponse,
 	CloudCpChatEventsQuery,
 	CloudCpChatEventsResponse,
+	CloudCpChatModelsResponse,
 	CloudCpCoderTemplatesResponse,
 	CloudCpClientEvent,
 	CloudCpCreateOrganizationRequest,
@@ -224,6 +225,7 @@ export interface CloudCpClient {
 		body: CloudCpSendMessageRequest,
 		options?: CloudCpMutationOptions,
 	): Promise<CloudCpSendMessageResponse>;
+	listChatModels(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpChatModelsResponse>;
 	cancelTurn(
 		orgId: string,
 		sessionId: string,
@@ -582,6 +584,8 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 				signal: o?.signal,
 				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
 			}),
+		listChatModels: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/chat-models`, { signal: o?.signal }),
 		cancelTurn: (orgId, sessionId, turnId, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/turns/${seg(turnId)}/cancel`, {
 				signal: o?.signal,

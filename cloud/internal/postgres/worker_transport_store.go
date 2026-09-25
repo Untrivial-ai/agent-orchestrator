@@ -352,6 +352,51 @@ func (s *Store) finishWorkerRequest(
 	})
 }
 
+// A closed TUI is expected while either direction of an interface handoff is
+// in progress. The worker can reopen it after the mode commit, so callers must
+// see worker-unavailable (retryable), not a permanent terminal-exited verdict.
+func agentTerminalExited(terminated, activityExited, terminalClosed, handoffInProgress bool) bool {
+	return terminated || activityExited || (terminalClosed && !handoffInProgress)
+}
+
+func agentTerminalExitVerdict(ctx context.Context, tx pgx.Tx, orgID, sessionID string) (bool, error) {
+	var terminated, activityExited, terminalClosed, handoffInProgress bool
+	err := tx.QueryRow(ctx, `SELECT session.is_terminated, session.activity_state = 'exited',
+		EXISTS (
+			SELECT 1 FROM ao_terminal_sessions terminal
+			WHERE terminal.org_id = session.org_id
+			  AND terminal.session_id = session.id
+			  AND terminal.kind = 'agent'
+			  AND terminal.state IN ('closed', 'failed')
+			  AND NOT EXISTS (
+				SELECT 1 FROM ao_terminal_sessions live
+				WHERE live.org_id = terminal.org_id
+				  AND live.session_id = terminal.session_id
+				  AND live.kind = 'agent'
+				  AND live.state IN ('opening', 'open')
+				  AND live.worker_epoch = terminal.worker_epoch
+			  )
+			  AND terminal.worker_epoch = (
+				SELECT MAX(latest.worker_epoch) FROM ao_terminal_sessions latest
+				WHERE latest.org_id = session.org_id
+				  AND latest.session_id = session.id
+				  AND latest.kind = 'agent'
+			  )
+		), EXISTS (
+			SELECT 1 FROM ao_interface_transitions transition
+			WHERE transition.org_id = session.org_id
+			  AND transition.session_id = session.id
+			  AND transition.phase NOT IN ('completed', 'failed', 'cancelled')
+		)
+		FROM ao_sessions session
+		WHERE session.org_id = $1 AND session.id = $2`, orgID, sessionID,
+	).Scan(&terminated, &activityExited, &terminalClosed, &handoffInProgress)
+	if err != nil {
+		return false, err
+	}
+	return agentTerminalExited(terminated, activityExited, terminalClosed, handoffInProgress), nil
+}
+
 func (s *Store) IssueTerminalTicket(
 	ctx context.Context,
 	principal domain.Principal,
@@ -364,40 +409,9 @@ func (s *Store) IssueTerminalTicket(
 	if kind == "agent" {
 		var exited bool
 		err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, _ sessionAccess) error {
-			return tx.QueryRow(ctx,
-				// Exit detection must look only at the LATEST worker epoch's agent
-				// terminal. A restore provisions a fresh box under a NEW epoch and
-				// closes the old epoch's terminal, so an old 'closed' row is expected
-				// and must NOT read as "agent exited" while a newer epoch is live.
-				// Scoping the closed/failed check to MAX(worker_epoch) is provider
-				// agnostic: it does not depend on ao_worker_connections, which nodeops
-				// sessions do not populate (so the previous open+live-worker guard
-				// false-fired a 410 on every nodeops restore).
-				`SELECT session.is_terminated OR session.activity_state = 'exited' OR EXISTS (
-					SELECT 1 FROM ao_terminal_sessions terminal
-					WHERE terminal.org_id = session.org_id
-					  AND terminal.session_id = session.id
-					  AND terminal.kind = 'agent'
-					  AND terminal.state IN ('closed', 'failed')
-					  AND NOT EXISTS (
-					  	SELECT 1 FROM ao_terminal_sessions live
-					  	WHERE live.org_id = terminal.org_id
-					  	  AND live.session_id = terminal.session_id
-					  	  AND live.kind = 'agent'
-					  	  AND live.state IN ('opening', 'open')
-					  	  AND live.worker_epoch = terminal.worker_epoch
-					  )
-					  AND terminal.worker_epoch = (
-						SELECT MAX(latest.worker_epoch) FROM ao_terminal_sessions latest
-						WHERE latest.org_id = session.org_id
-						  AND latest.session_id = session.id
-						  AND latest.kind = 'agent'
-					  )
-				)
-				FROM ao_sessions session
-				WHERE session.org_id = $1 AND session.id = $2`,
-				orgID, sessionID,
-			).Scan(&exited)
+			var lookupErr error
+			exited, lookupErr = agentTerminalExitVerdict(ctx, tx, orgID, sessionID)
+			return lookupErr
 		})
 		if err != nil {
 			return "", nil, err
@@ -502,36 +516,7 @@ func (s *Store) IssueTerminalTicket(
 			// evidence that retrying cannot reconnect it. Preserve the distinction
 			// so the browser does not spin on "Connecting…" forever.
 			if kind == "agent" {
-				var exited bool
-				lookupErr := tx.QueryRow(ctx,
-					// See IssueTerminalTicket: only the LATEST epoch's agent terminal
-					// state signals a real exit. An old 'closed' row from a restore
-					// under a superseded epoch must not read as exited.
-					`SELECT session.is_terminated OR session.activity_state = 'exited' OR EXISTS (
-						SELECT 1 FROM ao_terminal_sessions terminal
-						WHERE terminal.org_id = session.org_id
-						  AND terminal.session_id = session.id
-						  AND terminal.kind = 'agent'
-						  AND terminal.state IN ('closed', 'failed')
-						  AND NOT EXISTS (
-						  	SELECT 1 FROM ao_terminal_sessions live
-						  	WHERE live.org_id = terminal.org_id
-						  	  AND live.session_id = terminal.session_id
-						  	  AND live.kind = 'agent'
-						  	  AND live.state IN ('opening', 'open')
-						  	  AND live.worker_epoch = terminal.worker_epoch
-						  )
-						  AND terminal.worker_epoch = (
-							SELECT MAX(latest.worker_epoch) FROM ao_terminal_sessions latest
-							WHERE latest.org_id = session.org_id
-							  AND latest.session_id = session.id
-							  AND latest.kind = 'agent'
-						  )
-					)
-					FROM ao_sessions session
-					WHERE session.org_id = $1 AND session.id = $2`,
-					orgID, sessionID,
-				).Scan(&exited)
+				exited, lookupErr := agentTerminalExitVerdict(ctx, tx, orgID, sessionID)
 				if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
 					return lookupErr
 				}
@@ -683,9 +668,9 @@ func (s *Store) EnsureWorkerAgentTerminal(
 				ORDER BY created_at DESC
 				LIMIT 1
 			)
-			RETURNING id, state, expires_at`,
+			RETURNING id, state, expires_at, next_output_sequence`,
 			intervalString(ttl), orgID, sessionID, epoch,
-		).Scan(&terminal.ID, &terminal.State, &terminal.ExpiresAt)
+		).Scan(&terminal.ID, &terminal.State, &terminal.ExpiresAt, &terminal.NextOutputSequence)
 		if err == nil {
 			return nil
 		}
@@ -708,9 +693,9 @@ func (s *Store) EnsureWorkerAgentTerminal(
 				ORDER BY created_at DESC
 				LIMIT 1
 			)
-			RETURNING id, state, expires_at`,
+			RETURNING id, state, expires_at, next_output_sequence`,
 			epoch, intervalString(ttl), orgID, sessionID,
-		).Scan(&terminal.ID, &terminal.State, &terminal.ExpiresAt)
+		).Scan(&terminal.ID, &terminal.State, &terminal.ExpiresAt, &terminal.NextOutputSequence)
 		if err == nil {
 			return nil
 		}
@@ -721,9 +706,9 @@ func (s *Store) EnsureWorkerAgentTerminal(
 			`INSERT INTO ao_terminal_sessions (
 				org_id, session_id, worker_epoch, kind, state, expires_at
 			) VALUES ($1, $2, $3, 'agent', 'open', now() + $4::interval)
-			RETURNING id, state, expires_at`,
+			RETURNING id, state, expires_at, next_output_sequence`,
 			orgID, sessionID, epoch, intervalString(ttl),
-		).Scan(&terminal.ID, &terminal.State, &terminal.ExpiresAt)
+		).Scan(&terminal.ID, &terminal.State, &terminal.ExpiresAt, &terminal.NextOutputSequence)
 	})
 	return terminal, err
 }

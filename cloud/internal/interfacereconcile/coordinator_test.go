@@ -64,6 +64,8 @@ func (f *fakeStore) AdvanceCoordinatedInterfaceTransition(ctx context.Context, o
 			return postgres.ErrTransitionStale
 		}
 		f.transitions[index].Phase = to
+		f.transitions[index].ErrorCode = errorCode
+		f.transitions[index].ErrorDetail = errorDetail
 		if nativeConversationID != "" {
 			f.transitions[index].NativeConversationID = nativeConversationID
 		}
@@ -78,6 +80,10 @@ func (f *fakeStore) CommitCoordinatedSessionInterface(ctx context.Context, owner
 	f.committed = v
 	f.commitCalls++
 	return true, nil
+}
+func (f *fakeStore) RollbackCoordinatedSessionInterface(context.Context, string, string, string) error {
+	f.committed = domain.SessionInterfaceTUI
+	return nil
 }
 func (f *fakeStore) CompleteCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string) error {
 	f.advances = append(f.advances, domain.SessionInterfaceTransitionCompleted)
@@ -94,23 +100,27 @@ func (f *fakeStore) ReleaseCoordinatedInterfaceClaim(ctx context.Context, owner,
 }
 
 type fakeDriver struct {
-	Inspection  SourceInspection
-	inspectErr  error
-	stopErr     error
-	startErr    error
-	preflight   error
-	interrupt   bool
-	nativeID    string
-	nativeIDErr error
+	Inspection          SourceInspection
+	inspectErr          error
+	stopErr             error
+	stopFailedTargetErr error
+	startErr            error
+	restoreErr          error
+	preflight           error
+	interrupt           bool
+	nativeID            string
+	nativeIDErr         error
 
-	preflightCalls int
-	inspectCalls   int
-	interruptCalls int
-	stopCalls      int
-	nativeIDCalls  int
-	startCalls     int
-	readyCalls     int
-	readyErr       error
+	preflightCalls    int
+	inspectCalls      int
+	interruptCalls    int
+	stopCalls         int
+	stoppedInterfaces []domain.SessionInterface
+	nativeIDCalls     int
+	startCalls        int
+	startedInterfaces []domain.SessionInterface
+	readyCalls        int
+	readyErr          error
 
 	startedWithNativeID string
 }
@@ -128,9 +138,14 @@ func (f *fakeDriver) InterruptSource(context.Context, postgres.CoordinatedInterf
 	f.interruptCalls++
 	return nil
 }
-func (f *fakeDriver) StopSource(context.Context, postgres.CoordinatedInterfaceTransition) error {
+func (f *fakeDriver) StopSource(_ context.Context, transition postgres.CoordinatedInterfaceTransition) error {
 	f.stopCalls++
+	f.stoppedInterfaces = append(f.stoppedInterfaces, transition.SourceInterface)
 	return f.stopErr
+}
+func (f *fakeDriver) StopFailedTarget(_ context.Context, transition postgres.CoordinatedInterfaceTransition) error {
+	f.stoppedInterfaces = append(f.stoppedInterfaces, transition.TargetInterface)
+	return f.stopFailedTargetErr
 }
 func (f *fakeDriver) ResolveNativeConversationID(context.Context, postgres.CoordinatedInterfaceTransition) (string, error) {
 	f.nativeIDCalls++
@@ -139,10 +154,17 @@ func (f *fakeDriver) ResolveNativeConversationID(context.Context, postgres.Coord
 	}
 	return f.nativeID, nil
 }
-func (f *fakeDriver) StartTarget(_ context.Context, _ postgres.CoordinatedInterfaceTransition, nativeID string) error {
+func (f *fakeDriver) StartTarget(_ context.Context, transition postgres.CoordinatedInterfaceTransition, nativeID string) error {
 	f.startCalls++
+	f.startedInterfaces = append(f.startedInterfaces, transition.TargetInterface)
 	f.startedWithNativeID = nativeID
-	return f.startErr
+	if transition.TargetInterface == domain.SessionInterfaceChat {
+		return f.startErr
+	}
+	if f.startCalls > 1 {
+		return f.restoreErr
+	}
+	return nil
 }
 func (f *fakeDriver) VerifyControllerReady(context.Context, postgres.CoordinatedInterfaceTransition) error {
 	f.readyCalls++
@@ -354,19 +376,83 @@ func TestReconcileDrainDecisionPendingFails(t *testing.T) {
 	}
 }
 
-func TestReconcileTargetStartFailureRecovers(t *testing.T) {
+func TestReconcileTargetStartFailureRestoresSourceTerminal(t *testing.T) {
 	store := &fakeStore{transitions: []postgres.CoordinatedInterfaceTransition{testTransition(domain.SessionInterfaceTransitionRequested)}}
 	driver := &fakeDriver{Inspection: SourceInspection{Idle: true}, startErr: errors.New("harness unavailable")}
-	err := newCoordinator(store, driver).ReconcileOnce(context.Background())
+	coordinator := newCoordinator(store, driver)
+	err := coordinator.ReconcileOnce(context.Background())
 	if err != nil && !errors.Is(err, errCoordinationLost) {
 		t.Fatalf("unexpected reconcile error: %v", err)
 	}
-	if store.committed != domain.SessionInterfaceChat {
-		t.Fatalf("expected interface committed to chat before target start, got %q", store.committed)
+	if store.committed != domain.SessionInterfaceChat || store.transitions[0].Phase != domain.SessionInterfaceTransitionRecovery {
+		t.Fatalf("target-start failure did not fence recovery: interface=%q phase=%q", store.committed, store.transitions[0].Phase)
+	}
+	if err := coordinator.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("restore source: %v", err)
+	}
+	if store.committed != domain.SessionInterfaceTUI {
+		t.Fatalf("source terminal was not restored after target failure: %q", store.committed)
 	}
 	last := store.advances[len(store.advances)-1]
-	if last != domain.SessionInterfaceTransitionRecovery {
-		t.Fatalf("expected terminal phase recovery_required, got %q", last)
+	if last != domain.SessionInterfaceTransitionFailed {
+		t.Fatalf("expected failed transition after source restoration, got %q", last)
+	}
+	if !store.heldMessagesReleased {
+		t.Fatal("held messages were not released to the restored terminal")
+	}
+	if len(driver.stoppedInterfaces) != 2 || driver.stoppedInterfaces[0] != domain.SessionInterfaceTUI || driver.stoppedInterfaces[1] != domain.SessionInterfaceChat {
+		t.Fatalf("controller stop order = %v, want tui then chat", driver.stoppedInterfaces)
+	}
+	if len(driver.startedInterfaces) != 2 || driver.startedInterfaces[0] != domain.SessionInterfaceChat || driver.startedInterfaces[1] != domain.SessionInterfaceTUI {
+		t.Fatalf("controller start order = %v, want chat then tui", driver.startedInterfaces)
+	}
+}
+
+func TestReconcileTargetStartFailureKeepsWorkFencedUntilTargetStops(t *testing.T) {
+	store := &fakeStore{transitions: []postgres.CoordinatedInterfaceTransition{testTransition(domain.SessionInterfaceTransitionRequested)}}
+	driver := &fakeDriver{
+		Inspection:          SourceInspection{Idle: true},
+		startErr:            errors.New("chat failed to start"),
+		stopFailedTargetErr: errors.New("target stop unconfirmed"),
+	}
+	coordinator := newCoordinator(store, driver)
+	if err := coordinator.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.committed != domain.SessionInterfaceChat || store.transitions[0].Phase != domain.SessionInterfaceTransitionRecovery {
+		t.Fatalf("unsafe rollback despite uncertain target stop: interface=%q phase=%q", store.committed, store.transitions[0].Phase)
+	}
+	if store.heldMessagesReleased {
+		t.Fatal("released held messages before the failed target stopped")
+	}
+}
+
+func TestReconcileTargetStartFailureKeepsWorkFencedUntilSourceRestarts(t *testing.T) {
+	store := &fakeStore{transitions: []postgres.CoordinatedInterfaceTransition{testTransition(domain.SessionInterfaceTransitionRequested)}}
+	driver := &fakeDriver{
+		Inspection: SourceInspection{Idle: true},
+		startErr:   errors.New("chat failed to start"),
+		restoreErr: errors.New("terminal failed to restart"),
+	}
+	coordinator := newCoordinator(store, driver)
+	if err := coordinator.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.transitions[0].Phase != domain.SessionInterfaceTransitionRecovery || store.heldMessagesReleased {
+		t.Fatalf("source restart failure released work: phase=%q released=%t", store.transitions[0].Phase, store.heldMessagesReleased)
+	}
+	driver.restoreErr = nil
+	if err := coordinator.ReconcileOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.transitions[0].Phase != domain.SessionInterfaceTransitionFailed || !store.heldMessagesReleased {
+		t.Fatalf("source recovery did not complete: phase=%q released=%t", store.transitions[0].Phase, store.heldMessagesReleased)
 	}
 }
 

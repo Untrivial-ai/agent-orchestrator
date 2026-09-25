@@ -144,6 +144,9 @@ export type WorkerCheckoutGrantResponse =
   Schemas["WorkerCheckoutGrantResponse"];
 export type CreateWorkerChildInput = Schemas["CreateWorkerChildInput"];
 export type SendMessageInput = Schemas["SendMessageInput"];
+export type ChatMessageInput = Schemas["ChatMessageInput"];
+export type ChatModel = Schemas["ChatModel"];
+export type ChatModelsResponse = Schemas["ChatModelsResponse"];
 export type WorkerWorkspaceListPayload =
   Schemas["WorkerWorkspaceListPayload"];
 export type WorkerWorkspaceReadPayload =

@@ -476,6 +476,12 @@ func codexArgs(turn worker.Turn) ([]string, error) {
 	case "trusted":
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
 	}
+	if turn.Model != "" {
+		args = append(args, "-m", turn.Model)
+	}
+	if turn.ReasoningEffort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+turn.ReasoningEffort)
+	}
 	if turn.AgentSessionID != "" {
 		args = append(args, "resume", turn.AgentSessionID)
 	}

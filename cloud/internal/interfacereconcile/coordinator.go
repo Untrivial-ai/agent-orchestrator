@@ -11,41 +11,30 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/aoagents/agent-orchestrator/backend/pkg/interfacehandoff"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/interfacehandoff"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 	"github.com/google/uuid"
 )
 
-// Store is the durable state the coordinator converges.
 type Store interface {
 	ClaimCoordinatedInterfaceTransitions(ctx context.Context, owner string, limit int, lease time.Duration) ([]postgres.CoordinatedInterfaceTransition, error)
 	RenewCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string, lease time.Duration) error
 	AdvanceCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string, from, to domain.SessionInterfaceTransitionPhase, nativeConversationID, errorCode, errorDetail string, releaseHeldMessages bool) error
 	CommitCoordinatedSessionInterface(ctx context.Context, owner, orgID, transitionID string, interfaceValue domain.SessionInterface) (bool, error)
+	RollbackCoordinatedSessionInterface(ctx context.Context, owner, orgID, transitionID string) error
 	CompleteCoordinatedInterfaceTransition(ctx context.Context, owner, transitionID string) error
 	ReleaseCoordinatedInterfaceClaim(ctx context.Context, owner, transitionID string) error
 }
 
-// WorkerDriver is the worker-facing side of a handoff. Because the control
-// plane is stateless and the worker owns the agent process, each phase step is
-// dispatched to the worker and its completion is awaited through a bounded
-// lease rather than an in-memory goroutine.
+// WorkerDriver executes handoff steps on the worker that owns the agent process.
 type WorkerDriver interface {
-	// PreflightTarget validates that the target controller can start. It returns
-	// a fail-closed reason code when the target is unsupported.
 	PreflightTarget(ctx context.Context, transition postgres.CoordinatedInterfaceTransition) error
-	// InspectSource reports whether the source controller is quiescent. Drain
-	// waits for true; interrupt sends an explicit cancellation first.
 	InspectSource(ctx context.Context, transition postgres.CoordinatedInterfaceTransition) (SourceInspection, error)
-	// InterruptSource cancels an in-flight turn on the source controller.
 	InterruptSource(ctx context.Context, transition postgres.CoordinatedInterfaceTransition) error
-	// StopSource stops the source controller conclusively.
 	StopSource(ctx context.Context, transition postgres.CoordinatedInterfaceTransition) error
-	// ResolveNativeConversationID resolves the provider-native conversation
-	// identity shared by both controllers.
+	StopFailedTarget(ctx context.Context, transition postgres.CoordinatedInterfaceTransition) error
 	ResolveNativeConversationID(ctx context.Context, transition postgres.CoordinatedInterfaceTransition) (string, error)
-	// StartTarget starts the target controller and commits it as active.
 	StartTarget(ctx context.Context, transition postgres.CoordinatedInterfaceTransition, nativeConversationID string) error
 	// VerifyControllerReady proves that the committed controller has restarted
 	// after a recovery-required handoff. Held prompts remain fenced until this
@@ -53,7 +42,6 @@ type WorkerDriver interface {
 	VerifyControllerReady(ctx context.Context, transition postgres.CoordinatedInterfaceTransition) error
 }
 
-// SourceInspection is the drain quiescence verdict for a source controller.
 type SourceInspection struct {
 	Idle                 bool `json:"idle"`
 	WaitingForInput      bool `json:"waitingForInput"`
@@ -62,13 +50,11 @@ type SourceInspection struct {
 	QuiescenceUnverified bool `json:"quiescenceUnverified"`
 }
 
-// Options configures a Coordinator. Zero values fall back to defaults.
 type Options struct {
 	Interval time.Duration
 	// StepTimeout bounds one phase advance. It must exceed a worker's slowest
 	// command so a healthy handoff is never abandoned mid-flight.
-	StepTimeout time.Duration
-	// MaxConcurrent bounds handoffs processed per tick.
+	StepTimeout   time.Duration
 	MaxConcurrent int
 	// MaxPendingRetries bounds how many ticks a pending worker command may be
 	// retried before the handoff fails. A worker that never completes a command
@@ -85,7 +71,6 @@ const (
 	defaultMaxRetries    = 10
 )
 
-// Coordinator converges durable interface handoffs.
 type Coordinator struct {
 	store   Store
 	driver  WorkerDriver
@@ -143,8 +128,7 @@ func (c *Coordinator) Run(ctx context.Context) error {
 	}
 }
 
-// ReconcileOnce performs a single pass. Run calls it on a ticker; tests call it
-// directly so a phase assertion never depends on wall-clock timing.
+// ReconcileOnce performs a single pass of pending handoffs.
 func (c *Coordinator) ReconcileOnce(ctx context.Context) error {
 	transitions, err := c.store.ClaimCoordinatedInterfaceTransitions(
 		ctx, c.owner, c.options.MaxConcurrent, c.lease,
@@ -167,8 +151,6 @@ func (c *Coordinator) ReconcileOnce(ctx context.Context) error {
 	return nil
 }
 
-// errCoordinationLost means the claim was stolen or the row moved on; no
-// recovery action is owed and the row is already owned by someone else.
 var errCoordinationLost = errors.New("interface transition coordination lost")
 
 // errPendingWorkerCommand means a worker command is still in flight. It is not
@@ -286,6 +268,9 @@ func (c *Coordinator) reconcile(ctx context.Context, transition *postgres.Coordi
 			transition.Phase = domain.SessionInterfaceTransitionCompleted
 			return nil
 		case domain.SessionInterfaceTransitionRecovery:
+			if transition.ErrorCode == "TARGET_START_FAILED" {
+				return c.restoreSource(runCtx, *transition)
+			}
 			// Recovery is terminal until a replacement worker proves that the
 			// committed controller is live. Only then may the store atomically
 			// release prompts held by this transition.
@@ -304,6 +289,39 @@ func (c *Coordinator) reconcile(ctx context.Context, transition *postgres.Coordi
 			return nil
 		}
 	}
+}
+
+// restoreSource follows the local handoff's rollback rule. Each operation is
+// idempotent across coordinator restarts: stop only the failed target, restore
+// the durable source mode, then start and verify that source before releasing
+// held messages. An uncertain stop or restart leaves recovery fenced.
+func (c *Coordinator) restoreSource(ctx context.Context, transition postgres.CoordinatedInterfaceTransition) error {
+	if err := c.driver.StopFailedTarget(ctx, transition); err != nil {
+		return fmt.Errorf("stop failed target before rollback: %w", err)
+	}
+	if err := c.store.RollbackCoordinatedSessionInterface(ctx, c.owner, transition.OrgID, transition.ID); err != nil {
+		return fmt.Errorf("restore committed source interface: %w", err)
+	}
+	source := transition
+	source.TargetInterface = transition.SourceInterface
+	if err := c.driver.StartTarget(ctx, source, transition.NativeConversationID); err != nil {
+		return fmt.Errorf("restart source controller: %w", err)
+	}
+	if err := c.driver.VerifyControllerReady(ctx, source); err != nil {
+		return fmt.Errorf("verify restored source controller: %w", err)
+	}
+	// Recovery is already a terminal checkpoint in the normal state table.
+	// After proving the original controller is live, close this specific
+	// recovery attempt as failed and release held messages atomically.
+	err := c.store.AdvanceCoordinatedInterfaceTransition(
+		ctx, c.owner, transition.ID, domain.SessionInterfaceTransitionRecovery,
+		domain.SessionInterfaceTransitionFailed, transition.NativeConversationID,
+		"TARGET_START_FAILED", transition.ErrorDetail, true,
+	)
+	if errors.Is(err, postgres.ErrTransitionStale) {
+		return errCoordinationLost
+	}
+	return err
 }
 
 // retryOrFail releases a pending retryable worker command, or fails the

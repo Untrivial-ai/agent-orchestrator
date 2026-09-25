@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useCloudCp } from "../../hooks/useCloudCp";
 import type { CloudCpClient, CloudCpClientEvent } from "../../lib/cloud-cp";
-import type { ConversationItem, ConversationMessage, ConversationSnapshot, ConversationTurn } from "../../types/conversation";
+import { CloudCpError } from "../../lib/cloud-cp/errors";
+import type { ConversationItem, ConversationMessage, ConversationSnapshot, ConversationTurn, TurnSettings } from "../../types/conversation";
 import type { WorkspaceSession } from "../../types/workspace";
 import { ChatWorkspace } from "./ChatWorkspace";
 
@@ -13,6 +14,19 @@ type EventPayload = {
 	text?: unknown;
 	turnId?: unknown;
 };
+
+function readCloudTurnSettings(key: string): TurnSettings {
+	try {
+		const saved = JSON.parse(localStorage.getItem(key) ?? "null");
+		if (!saved || typeof saved !== "object") return {};
+		return {
+			model: typeof saved.model === "string" ? saved.model : undefined,
+			reasoningEffort: typeof saved.reasoningEffort === "string" ? saved.reasoningEffort : undefined,
+		};
+	} catch {
+		return {};
+	}
+}
 
 function eventPayload(event: CloudCpClientEvent): EventPayload {
 	return event.payload && typeof event.payload === "object" ? (event.payload as EventPayload) : {};
@@ -50,7 +64,6 @@ export async function loadCloudChatEvents(
 	}
 }
 
-/** Builds the shared ChatWorkspace projection from Cloud's durable event log. */
 export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent[]): ConversationSnapshot {
 	const turns = new Map<string, ConversationTurn>();
 	const assistant = new Map<string, ConversationMessage>();
@@ -119,11 +132,6 @@ export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent
 	};
 }
 
-/**
- * The Cloud adapter deliberately renders the same ChatWorkspace as local AO.
- * Only the data/command transport differs: Cloud reads its durable event log
- * and posts messages to the control plane instead of calling the loopback daemon.
- */
 export function CloudSessionChatSurface({
 	session,
 	headerActions,
@@ -146,6 +154,37 @@ export function CloudSessionChatSurface({
 	const cloud = session.cloud;
 	const { client, ready } = useCloudCp();
 	const queryClient = useQueryClient();
+	const settingsKey = `cloud-chat-settings:${cloud?.orgId ?? ""}:${session.id}`;
+	const [selected, setSelected] = useState(() => ({ key: settingsKey, settings: readCloudTurnSettings(settingsKey) }));
+	const settings = selected.key === settingsKey ? selected.settings : readCloudTurnSettings(settingsKey);
+	const settingsRef = useRef({ key: settingsKey, settings });
+	if (settingsRef.current.key !== settingsKey) settingsRef.current = { key: settingsKey, settings };
+	const modelsQuery = useQuery({
+		queryKey: ["cloud-chat-models", cloud?.orgId ?? "", session.id],
+		enabled: Boolean(cloud && ready && session.provider === "codex"),
+		staleTime: 5 * 60 * 1000,
+		retry: false,
+		queryFn: async ({ signal }) => {
+			const orgId = cloud!.orgId;
+			try {
+				return await client.listChatModels(orgId, session.id, { signal });
+			} catch (error) {
+				if (!(error instanceof CloudCpError) || error.code !== "WORKER_UNAVAILABLE") throw error;
+			}
+			// A paused sandbox cannot answer a worker-backed catalog request. Wake
+			// this session and wait for its worker before hiding the model picker.
+			await client.resumeSession(orgId, session.id, { signal });
+			for (let attempt = 0; attempt < 20; attempt++) {
+				await new Promise((resolve) => setTimeout(resolve, 500));
+				try {
+					return await client.listChatModels(orgId, session.id, { signal });
+				} catch (error) {
+					if (!(error instanceof CloudCpError) || error.code !== "WORKER_UNAVAILABLE" || attempt === 19) throw error;
+				}
+			}
+			throw new Error("The Cloud worker did not become available.");
+		},
+	});
 	const eventsQuery = useQuery({
 		queryKey: ["cloud-chat-events", cloud?.orgId ?? "", session.id],
 		enabled: Boolean(cloud && ready),
@@ -161,11 +200,18 @@ export function CloudSessionChatSurface({
 	const send = useMutation({
 		mutationFn: async ({ text, clientMessageId }: { text: string; clientMessageId?: string }) => {
 			if (!cloud) throw new Error("Cloud session context is unavailable.");
-			return client.sendSessionMessage(cloud.orgId, session.id, { text }, { idempotencyKey: clientMessageId });
+			const selectedSettings = settingsRef.current.key === settingsKey ? settingsRef.current.settings : {};
+			return client.sendSessionMessage(cloud.orgId, session.id, {
+				text,
+				...(selectedSettings.model ? { model: selectedSettings.model } : {}),
+				...(selectedSettings.reasoningEffort ? { reasoningEffort: selectedSettings.reasoningEffort } : {}),
+			}, { idempotencyKey: clientMessageId });
 		},
 		onSuccess: () => void invalidate(),
 	});
-	const snapshot = useMemo(() => toSnapshot(session, eventsQuery.data ?? []), [eventsQuery.data, session]);
+	const snapshot = useMemo(() => ({
+		...toSnapshot(session, eventsQuery.data ?? []), settings,
+	}), [eventsQuery.data, session, settings]);
 	const activeTurn = snapshot.turns.find((turn) => turn.state === "running");
 	const queuedTurnCount = snapshot.turns.filter((turn) => turn.state === "queued").length;
 	useEffect(() => {
@@ -193,6 +239,16 @@ export function CloudSessionChatSurface({
 	return (
 		<ChatWorkspace
 			snapshot={snapshot}
+			models={modelsQuery.data?.models ?? []}
+			onChooseSettings={(next) => {
+				settingsRef.current = { key: settingsKey, settings: next };
+				setSelected({ key: settingsKey, settings: next });
+				try {
+					localStorage.setItem(settingsKey, JSON.stringify(next));
+				} catch {
+					// The choice still applies for this mounted session when storage is unavailable.
+				}
+			}}
 			busy={send.isPending}
 			controllerTransitioning={controllerTransitioning}
 			newWorkDisabled={newWorkDisabled}
@@ -203,8 +259,10 @@ export function CloudSessionChatSurface({
 						? steer.error.message
 						: eventsQuery.error instanceof Error
 							? eventsQuery.error.message
-							: send.error instanceof Error
-								? send.error.message
+						: send.error instanceof Error
+							? send.error.message
+							: modelsQuery.error instanceof Error
+								? `Model choices unavailable: ${modelsQuery.error.message}`
 								: undefined
 			}
 			headerActions={headerActions}

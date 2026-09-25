@@ -228,7 +228,7 @@ func run(logger *slog.Logger) error {
 		compareBase = "origin/" + defaultBranch
 	}
 	transportSupervisor := workertransport.Supervisor{
-		Control: client, Workspace: workspace, CompareBase: compareBase, Logger: logger,
+		Control: client, Workspace: workspace, DataDir: dataDir, Harness: bootstrap.Launch.Harness, CompareBase: compareBase, Logger: logger,
 		AgentCommandFactory: agentCommandFactory,
 		Started:             started, ChatRunner: chatRunner,
 		ChatWorkspaceReady: chatWorkspaceReady,
@@ -449,7 +449,7 @@ func startInteractiveAgent(
 		}
 		return fmt.Errorf("initialize agent terminal: %w", err)
 	}
-	if err := transportSupervisor.StartAgent(ctx, agentCommand, agentTerminal.TerminalID); err != nil {
+	if err := transportSupervisor.StartAgent(ctx, agentCommand, agentTerminal); err != nil {
 		return fmt.Errorf("start interactive coding-agent terminal: %w", err)
 	}
 	if err := client.publishEvent(ctx, "agent.ready", map[string]any{

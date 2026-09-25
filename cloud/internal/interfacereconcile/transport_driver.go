@@ -30,7 +30,6 @@ type TransportDriver struct {
 	log   *slog.Logger
 }
 
-// NewTransportDriver builds a worker-backed interface driver.
 func NewTransportDriver(store RequestStore, owner string, step time.Duration, log *slog.Logger) *TransportDriver {
 	if step <= 0 {
 		step = defaultStepTimeout
@@ -81,7 +80,25 @@ func (d *TransportDriver) StopSource(
 	ctx context.Context,
 	transition postgres.CoordinatedInterfaceTransition,
 ) error {
-	payload, _ := json.Marshal(map[string]any{"sourceInterface": transition.SourceInterface})
+	payload, _ := json.Marshal(map[string]any{
+		"sourceInterface": transition.SourceInterface,
+		"policy":          transition.Policy,
+	})
+	return d.dispatch(ctx, transition, "interface.stop", payload, nil)
+}
+
+// StopFailedTarget is retried while recovery_required is fenced. The worker
+// stops only the expected target, so a retry after source restoration cannot
+// tear down the source controller it is trying to recover.
+func (d *TransportDriver) StopFailedTarget(
+	ctx context.Context,
+	transition postgres.CoordinatedInterfaceTransition,
+) error {
+	payload, _ := json.Marshal(map[string]any{
+		"sourceInterface": transition.TargetInterface,
+		"policy":          domain.SessionInterfaceTransitionInterrupt,
+		"rollback":        true,
+	})
 	return d.dispatch(ctx, transition, "interface.stop", payload, nil)
 }
 
@@ -140,8 +157,6 @@ func (d *TransportDriver) VerifyControllerReady(
 	return nil
 }
 
-// dispatch enqueues a worker command and awaits its result within the step
-// budget. A no-result interaction (interrupt) is acknowledged on enqueue.
 func (d *TransportDriver) dispatch(
 	ctx context.Context,
 	transition postgres.CoordinatedInterfaceTransition,

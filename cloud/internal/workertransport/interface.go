@@ -9,16 +9,16 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 )
 
-// Interface describes the two controller surfaces a cloud session can commit.
 const (
 	InterfaceTUI  = "tui"
 	InterfaceChat = "chat"
 )
 
-// interfacePayload is the worker-side payload of an interface command.
 type interfacePayload struct {
 	SourceInterface      string `json:"sourceInterface"`
 	TargetInterface      string `json:"targetInterface"`
+	Policy               string `json:"policy"`
+	Rollback             bool   `json:"rollback"`
 	NativeConversationID string `json:"nativeConversationId"`
 	SessionID            string `json:"sessionId"`
 }
@@ -56,9 +56,6 @@ func (t *InterfaceTransition) Current() string {
 	return t.current
 }
 
-// handleInterface dispatches an interface command to the worker. kind is one of
-// interface.inspect, interface.interrupt, interface.stop, interface.native-id,
-// interface.start, interface.ready.
 func (s *Supervisor) handleInterface(
 	ctx context.Context,
 	input interfacePayload,
@@ -72,7 +69,10 @@ func (s *Supervisor) handleInterface(
 	case "interface.interrupt":
 		return map[string]bool{"ok": true}, s.interruptInterface(ctx)
 	case "interface.stop":
-		return map[string]bool{"ok": true}, s.stopInterface(ctx)
+		if input.Rollback && s.iface.Current() != input.SourceInterface {
+			return map[string]bool{"ok": true}, nil
+		}
+		return map[string]bool{"ok": true}, s.stopInterface(ctx, input.Policy)
 	case "interface.start":
 		return map[string]bool{"ok": true}, s.startInterface(ctx, input)
 	case "interface.ready":
@@ -108,17 +108,11 @@ func (s *Supervisor) controllerReady(expected string) interfaceReadyResult {
 func (s *Supervisor) inspectInterface() (any, error) {
 	s.iface.mu.Lock()
 	defer s.iface.mu.Unlock()
-	// The interactive TUI has no durable provider-idle signal. An open agent PTY
-	// must therefore fail closed for drain mode: closing it while the provider is
-	// working loses the in-flight interaction. Stop-now uses the explicit
-	// interrupt path instead.
 	if s.iface.current == InterfaceTUI {
-		s.mu.Lock()
-		_, active := s.terminals[s.AgentTerminalID]
-		s.mu.Unlock()
+		idle, unverified := s.tuiSourceIdle()
 		return interfaceInspectResult{
-			Idle:                 !active,
-			QuiescenceUnverified: active,
+			Idle:                 idle,
+			QuiescenceUnverified: unverified,
 		}, nil
 	}
 	// Chat work is headless, so it can report its actual turn activity.
@@ -153,9 +147,43 @@ func (s *Supervisor) interruptInterface(ctx context.Context) error {
 	return err
 }
 
-func (s *Supervisor) stopInterface(ctx context.Context) error {
+func (s *Supervisor) tuiSourceIdle() (bool, bool) {
+	stopAt, err := worker.ReadTUIStop(s.DataDir)
+	s.mu.Lock()
+	_, open := s.terminals[s.AgentTerminalID]
+	startedAt, inputAt := s.tuiStartedAt, s.lastTUIInputAt
+	s.mu.Unlock()
+	if !open {
+		return true, false
+	}
+	verified := err == nil && !startedAt.IsZero() && stopAt.After(startedAt) && stopAt.After(inputAt)
+	return verified, !verified
+}
+
+func (s *Supervisor) stopInterface(ctx context.Context, policy string) error {
 	if s.iface.Current() == InterfaceTUI {
-		return s.closeTerminalForInterfaceHandoff(ctx, s.agentTerminalID())
+		// The drain verdict is checked again at the actual stop boundary. A
+		// keystroke arriving between inspect and stop must not be interrupted.
+		stopAt, stopErr := worker.ReadTUIStop(s.DataDir)
+		s.mu.Lock()
+		if policy != "interrupt" {
+			verified := stopErr == nil && !s.tuiStartedAt.IsZero() &&
+				stopAt.After(s.tuiStartedAt) && stopAt.After(s.lastTUIInputAt)
+			if !verified {
+				s.mu.Unlock()
+				return errors.New("terminal activity changed before stop; retry after the agent finishes")
+			}
+		}
+		s.tuiHandoffClosing = true
+		id := s.AgentTerminalID
+		s.mu.Unlock()
+		err := s.closeTerminalForInterfaceHandoff(ctx, id)
+		if err != nil {
+			s.mu.Lock()
+			s.tuiHandoffClosing = false
+			s.mu.Unlock()
+		}
+		return err
 	} else {
 		return s.stopChat(ctx)
 	}
@@ -195,8 +223,9 @@ func (s *Supervisor) startInterface(ctx context.Context, input interfacePayload)
 	s.iface.current = InterfaceTUI
 	s.iface.mu.Unlock()
 	if err := s.openTerminal(ctx, worker.TerminalCommand{
-		TerminalID: terminal.TerminalID,
-		Kind:       "agent",
+		TerminalID:         terminal.TerminalID,
+		NextOutputSequence: terminal.NextOutputSequence,
+		Kind:               "agent",
 	}); err != nil {
 		return err
 	}

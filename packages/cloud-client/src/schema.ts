@@ -404,6 +404,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/chat-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        /** @description Model and reasoning-effort choices available to this session's agent. */
+        get: operations["listChatModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/turns/{turnId}/cancel": {
         parameters: {
             query?: never;
@@ -1401,6 +1421,23 @@ export interface components {
             deniedCommands?: string[];
             /** Format: uuid */
             sandboxProviderConnectionId?: string;
+        };
+        ChatMessageInput: {
+            text: string;
+            model?: string;
+            /** @enum {string} */
+            reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+        };
+        ChatModel: {
+            id: string;
+            displayName: string;
+            description?: string;
+            default: boolean;
+            efforts?: string[];
+            defaultEffort?: string;
+        };
+        ChatModelsResponse: {
+            models: components["schemas"]["ChatModel"][];
         };
         SendMessageInput: {
             text: string;
@@ -2919,9 +2956,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    text: string;
-                };
+                "application/json": components["schemas"]["ChatMessageInput"];
             };
         };
         responses: {
@@ -2934,6 +2969,30 @@ export interface operations {
                     "application/json": {
                         event: components["schemas"]["UserMessageEvent"];
                     };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listChatModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Available Chat models. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatModelsResponse"];
                 };
             };
             default: components["responses"]["Error"];

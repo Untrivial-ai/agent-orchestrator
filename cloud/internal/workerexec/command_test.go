@@ -66,6 +66,24 @@ func TestCodexArgsResumesNativeConversation(t *testing.T) {
 	}
 }
 
+func TestCodexArgsAppliesSelectedModelAndReasoningEffort(t *testing.T) {
+	got, err := codexArgs(worker.Turn{
+		Mode: "trusted", Prompt: "continue", AgentSessionID: "thread-1",
+		Model: "codex-test", ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatalf("codex args: %v", err)
+	}
+	want := []string{
+		"exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-hook-trust",
+		"--dangerously-bypass-approvals-and-sandbox", "-m", "codex-test",
+		"-c", "model_reasoning_effort=high", "resume", "thread-1", "--", "continue",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
 func TestClaudeArgsStreamsJSONWithVerboseAndResume(t *testing.T) {
 	got, err := claudeArgs(worker.Turn{
 		Mode:           "trusted",

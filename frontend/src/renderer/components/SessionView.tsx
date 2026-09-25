@@ -1420,6 +1420,9 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 			session.activity?.state === "blocked"),
 	);
 	const chatToTerminal = session?.mode === "chat" && interfaceTarget === "tui";
+	const cloudTerminalNeedsExplicitStop = Boolean(
+		interfaceContext && session?.mode === "tui" && interfaceTarget === "chat" && interfaceBusy,
+	);
 	const beginInterfaceSwitch = useCallback(
 		async (
 			policy: "drain" | "interrupt",
@@ -1488,13 +1491,13 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 	);
 	const requestInterfaceSwitch = useCallback(() => {
 		interfaceSwitch.resetStartError();
-		if (!interfaceBusy) {
+		if (!interfaceBusy && !cloudTerminalNeedsExplicitStop) {
 			void beginInterfaceSwitch("drain", interfaceTarget);
 			return;
 		}
 		if (!session) return;
 		setInterfaceSwitchDialogScope({ sessionId: session.id, targetMode: interfaceTarget });
-	}, [beginInterfaceSwitch, interfaceBusy, interfaceSwitch, interfaceTarget, session]);
+	}, [beginInterfaceSwitch, cloudTerminalNeedsExplicitStop, interfaceBusy, interfaceSwitch, interfaceTarget, session]);
 	const chooseInterfaceSwitchPolicy = useCallback(
 		(policy: "drain" | "interrupt") => {
 			if (
@@ -1520,16 +1523,15 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 			const failed = interfaceSwitch.transition;
 			if (!session || !failed || failed.sessionId !== session.id || failed.targetMode !== interfaceTarget) return;
 			interfaceSwitch.resetStartError();
-			// A failed attempt's interrupt policy is stale consent. Re-evaluate the
-			// current Terminal state and either choose the safe drain default or ask
-			// again before cancelling newly started work.
-			if (!interfaceBusy) {
+			// A failed attempt's interrupt policy is stale consent. Ask again
+			// before stopping a Cloud Terminal, whose idle state cannot be verified.
+			if (!interfaceBusy && !cloudTerminalNeedsExplicitStop) {
 				void beginInterfaceSwitch("drain", failed.targetMode, undefined, historyPolicy);
 				return;
 			}
 			setInterfaceSwitchDialogScope({ sessionId: session.id, targetMode: failed.targetMode, historyPolicy });
 		},
-		[beginInterfaceSwitch, interfaceBusy, interfaceSwitch, interfaceTarget, session],
+		[beginInterfaceSwitch, cloudTerminalNeedsExplicitStop, interfaceBusy, interfaceSwitch, interfaceTarget, session],
 	);
 	// Adapters without a Chat driver cannot offer a switch into Chat UI; hide
 	// the switch entirely rather than showing a permanently disabled control.
@@ -1681,14 +1683,6 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 		session !== undefined &&
 		renderedSessionMode === "chat" &&
 		(chatTargetKind === "worker" || chatTargetKind === "reviewer" || chatTargetKind === "shell");
-	// A Cloud Chat -> TUI handoff must not reuse the TUI cache entry that was
-	// intentionally closed when Chat started. The committed mode changes to TUI
-	// only after the coordinator has stopped Chat, so using the completed
-	// transition id here is safe and gives the new PTY a deterministic generation.
-	const terminalGeneration =
-		session?.cloud && session.mode === "tui" && interfaceSwitch.transition?.targetMode === "tui"
-			? interfaceSwitch.transition.id
-			: undefined;
 	const {
 		agentSwitch: handoffAgentSwitch,
 		switchControlPresentation: handoffControlPresentation,
@@ -2207,7 +2201,6 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 									reviewerChatSelected={Boolean(reviewerChatId)}
 									reviewerChatContent={reviewerChatId ? <ReviewerChatSurface hideHeader reviewId={reviewerChatId} /> : undefined}
 									session={session}
-									terminalGeneration={terminalGeneration}
 									shellTerminals={shellTerminals}
 									terminalTarget={routedTerminalTarget}
 									theme={theme}
@@ -2388,6 +2381,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 			<SessionInterfaceSwitchDialog
 				open={interfaceSwitchDialogOpen}
 				target={interfaceSwitchDialogScope?.targetMode ?? interfaceTarget}
+				requireExplicitTerminalStop={cloudTerminalNeedsExplicitStop}
 				waitingForInput={interfaceWaitingForInput}
 				busy={interfaceSwitch.starting}
 				error={interfaceSwitch.startError}

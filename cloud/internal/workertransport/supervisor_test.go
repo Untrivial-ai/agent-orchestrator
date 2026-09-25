@@ -15,10 +15,55 @@ import (
 )
 
 type supervisorControlStub struct {
-	claimTurnCalls int
-	turn           *worker.Turn
-	agentSessionID string
-	agentTerminal  string
+	claimTurnCalls          int
+	turn                    *worker.Turn
+	agentSessionID          string
+	agentTerminal           string
+	agentNextOutputSequence int64
+}
+
+type outputSequenceControl struct {
+	supervisorControlStub
+	output chan int64
+}
+
+func (s *outputSequenceControl) PublishTerminalOutput(_ context.Context, _ string, sequence int64, _ []byte) error {
+	s.output <- sequence
+	return nil
+}
+
+func TestStartAgentContinuesReopenedTerminalOutputAndAcceptsInput(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	terminalID := "00000000-0000-0000-0000-000000000040"
+	control := &outputSequenceControl{output: make(chan int64, 8)}
+	supervisor := &Supervisor{Control: control, Workspace: t.TempDir(), Shell: "/bin/sh", terminals: make(map[string]*terminalProcess)}
+	defer supervisor.closeAllTerminals()
+	command := workerexec.Command{Path: "/bin/sh", Args: []string{"-c", "printf ready; cat"}, Dir: supervisor.Workspace}
+	if err := supervisor.StartAgent(ctx, command, worker.AgentTerminalResponse{
+		TerminalID: terminalID, NextOutputSequence: 40,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case sequence := <-control.output:
+		if sequence != 40 {
+			t.Fatalf("first reopened output sequence = %d, want 40", sequence)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reopened terminal produced no output")
+	}
+	if err := supervisor.writeTerminal(worker.TerminalCommand{TerminalID: terminalID, Data: []byte("hello\n")}); err != nil {
+		t.Fatalf("reopened terminal rejected input: %v", err)
+	}
+	select {
+	case sequence := <-control.output:
+		if sequence <= 40 {
+			t.Fatalf("output after input sequence = %d, want after 40", sequence)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reopened terminal did not publish input echo")
+	}
 }
 
 type chatRunnerStub struct{ idle bool }
@@ -84,7 +129,38 @@ func (s *supervisorControlStub) AgentSessionID(context.Context) (string, error) 
 	return s.agentSessionID, nil
 }
 func (s *supervisorControlStub) EnsureAgentTerminal(context.Context) (worker.AgentTerminalResponse, error) {
-	return worker.AgentTerminalResponse{TerminalID: s.agentTerminal}, nil
+	return worker.AgentTerminalResponse{TerminalID: s.agentTerminal, NextOutputSequence: s.agentNextOutputSequence}, nil
+}
+
+func TestChatToTerminalContinuesReopenedTerminalOutputSequence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	terminalID := "00000000-0000-0000-0000-000000000041"
+	control := &outputSequenceControl{
+		supervisorControlStub: supervisorControlStub{agentTerminal: terminalID, agentNextOutputSequence: 41},
+		output:                make(chan int64, 8),
+	}
+	supervisor := &Supervisor{
+		Control: control, Workspace: t.TempDir(),
+		AgentCommand: workerexec.Command{Path: "/bin/sh", Args: []string{"-c", "printf resumed; cat"}},
+		terminals:    make(map[string]*terminalProcess),
+	}
+	defer supervisor.closeAllTerminals()
+	supervisor.iface.current = InterfaceChat
+	if err := supervisor.startInterface(ctx, interfacePayload{TargetInterface: InterfaceTUI}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case sequence := <-control.output:
+		if sequence != 41 {
+			t.Fatalf("first Chat-to-TUI output sequence = %d, want 41", sequence)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Chat-to-TUI produced no terminal output")
+	}
+	if err := supervisor.writeTerminal(worker.TerminalCommand{TerminalID: terminalID, Data: []byte("hello\n")}); err != nil {
+		t.Fatalf("Chat-to-TUI rejected input: %v", err)
+	}
 }
 
 func TestRefreshAgentCommandUsesLatestConversationID(t *testing.T) {
@@ -204,7 +280,7 @@ func TestStopInterfaceWaitsForInteractiveProcessExit(t *testing.T) {
 		t.Fatal("agent terminal was not registered")
 	}
 
-	if err := supervisor.stopInterface(context.Background()); err != nil {
+	if err := supervisor.stopInterface(context.Background(), "interrupt"); err != nil {
 		t.Fatalf("stop interface: %v", err)
 	}
 	select {
@@ -234,7 +310,7 @@ func TestStopInterfaceWaitsForChatProcessExit(t *testing.T) {
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- supervisor.stopInterface(context.Background()) }()
+	go func() { done <- supervisor.stopInterface(context.Background(), "drain") }()
 	select {
 	case <-stopped:
 	case <-time.After(time.Second):
@@ -281,7 +357,7 @@ func TestControllerReadyWaitsForChatWorkspaceAndRunner(t *testing.T) {
 		t.Fatalf("chat controller readiness = %+v, want ready", got)
 	}
 
-	if err := supervisor.stopInterface(context.Background()); err != nil {
+	if err := supervisor.stopInterface(context.Background(), "drain"); err != nil {
 		t.Fatalf("stop chat: %v", err)
 	}
 	if got := supervisor.controllerReady(InterfaceChat); got.Ready {
@@ -360,6 +436,69 @@ func TestInspectInterfaceDoesNotTreatOpenTUIAsIdle(t *testing.T) {
 	inspection := result.(interfaceInspectResult)
 	if inspection.Idle || !inspection.QuiescenceUnverified {
 		t.Fatalf("inspection = %+v, want active/unverified", inspection)
+	}
+}
+
+func TestInspectInterfaceAcceptsNativeStopOnlyAfterLatestTerminalInput(t *testing.T) {
+	dataDir := t.TempDir()
+	supervisor := &Supervisor{DataDir: dataDir, AgentTerminalID: "agent", terminals: map[string]*terminalProcess{"agent": {}}}
+	supervisor.iface.current = InterfaceTUI
+	supervisor.tuiStartedAt = time.Now()
+	supervisor.lastTUIInputAt = supervisor.tuiStartedAt.Add(time.Millisecond)
+	if err := worker.RecordTUIStop(dataDir, supervisor.lastTUIInputAt.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := supervisor.inspectInterface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection := result.(interfaceInspectResult)
+	if !inspection.Idle || inspection.QuiescenceUnverified {
+		t.Fatalf("native stop should verify idle: %+v", inspection)
+	}
+	supervisor.lastTUIInputAt = supervisor.lastTUIInputAt.Add(2 * time.Millisecond)
+	result, err = supervisor.inspectInterface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection = result.(interfaceInspectResult)
+	if inspection.Idle || !inspection.QuiescenceUnverified {
+		t.Fatalf("new input must invalidate stop: %+v", inspection)
+	}
+}
+
+func TestDrainStopRejectsInputAfterIdleInspection(t *testing.T) {
+	dataDir := t.TempDir()
+	supervisor := &Supervisor{DataDir: dataDir, AgentTerminalID: "agent", terminals: map[string]*terminalProcess{"agent": {}}}
+	supervisor.iface.current = InterfaceTUI
+	supervisor.tuiStartedAt = time.Now()
+	if err := worker.RecordTUIStop(dataDir, supervisor.tuiStartedAt.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := supervisor.inspectInterface()
+	if err != nil || !result.(interfaceInspectResult).Idle {
+		t.Fatalf("initial inspection = %+v, %v", result, err)
+	}
+	supervisor.lastTUIInputAt = supervisor.tuiStartedAt.Add(2 * time.Millisecond)
+	if err := supervisor.stopInterface(context.Background(), "drain"); err == nil {
+		t.Fatal("drain stopped a terminal after newer input")
+	}
+	if supervisor.tuiHandoffClosing {
+		t.Fatal("rejected drain left terminal input fenced")
+	}
+}
+
+func TestRollbackStopDoesNotCloseAlreadyRestoredTerminal(t *testing.T) {
+	supervisor := &Supervisor{AgentTerminalID: "agent", terminals: map[string]*terminalProcess{"agent": {}}}
+	supervisor.iface.current = InterfaceTUI
+	response, err := supervisor.handleInterface(context.Background(), interfacePayload{
+		SourceInterface: InterfaceChat, Policy: "interrupt", Rollback: true,
+	}, "interface.stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response == nil || supervisor.tuiHandoffClosing || supervisor.terminals["agent"] == nil {
+		t.Fatal("rollback retry stopped or fenced the restored terminal")
 	}
 }
 

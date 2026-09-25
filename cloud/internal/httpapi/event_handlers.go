@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +21,26 @@ const (
 )
 
 type sendMessageRequest struct {
-	Text string `json:"text"`
+	Text            string `json:"text"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+}
+
+var chatModelIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
+
+func validateSendMessageRequest(request sendMessageRequest) error {
+	if strings.TrimSpace(request.Text) == "" || len(request.Text) > 65536 {
+		return errors.New("Message text must be between 1 and 65536 bytes.")
+	}
+	if request.Model != "" && !chatModelIDPattern.MatchString(request.Model) {
+		return errors.New("The model selection is invalid.")
+	}
+	switch request.ReasoningEffort {
+	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
+	default:
+		return errors.New("The reasoning effort selection is invalid.")
+	}
+	return nil
 }
 
 type clientEventResponse struct {
@@ -48,8 +68,8 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "The request body is invalid.")
 		return
 	}
-	if strings.TrimSpace(request.Text) == "" || len(request.Text) > 65536 {
-		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Message text must be between 1 and 65536 bytes.")
+	if err := validateSendMessageRequest(request); err != nil {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", err.Error())
 		return
 	}
 	event, err := s.store.SendMessage(
@@ -59,6 +79,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		sessionID,
 		key,
 		request.Text,
+		domain.ChatTurnSettings{Model: request.Model, ReasoningEffort: request.ReasoningEffort},
 	)
 	if err != nil {
 		s.writeStoreError(w, r, err)

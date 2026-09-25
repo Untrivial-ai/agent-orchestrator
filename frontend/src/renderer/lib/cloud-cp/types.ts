@@ -571,6 +571,19 @@ export interface CloudCpRestoreSessionResponse {
 export interface CloudCpSendMessageRequest {
 	/** 1-65536 bytes. */
 	text: string;
+	model?: string;
+	reasoningEffort?: string;
+}
+
+export interface CloudCpChatModelsResponse {
+	models: Array<{
+		id: string;
+		displayName: string;
+		description?: string;
+		default: boolean;
+		efforts?: string[];
+		defaultEffort?: string;
+	}>;
 }
 
 export interface CloudCpClientEvent {

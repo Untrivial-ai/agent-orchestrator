@@ -41,3 +41,22 @@ func TestActiveTransitionConstraintReportsTransitionInProgress(t *testing.T) {
 		t.Fatalf("duplicate active transition error = %v, want ErrTransitionInProgress", err)
 	}
 }
+
+func TestLatestRelevantTransitionDoesNotResurfaceFailureAfterSuccess(t *testing.T) {
+	// The store selects the newest attempt before applying this rule. A
+	// completed attempt supersedes an earlier failed notice.
+	for _, tc := range []struct {
+		phase domain.SessionInterfaceTransitionPhase
+		want  bool
+	}{
+		{domain.SessionInterfaceTransitionRequested, true},
+		{domain.SessionInterfaceTransitionFailed, true},
+		{domain.SessionInterfaceTransitionRecovery, true},
+		{domain.SessionInterfaceTransitionCompleted, false},
+		{domain.SessionInterfaceTransitionCancelled, false},
+	} {
+		if got := latestTransitionIsRelevant(tc.phase); got != tc.want {
+			t.Errorf("phase %q relevant = %v, want %v", tc.phase, got, tc.want)
+		}
+	}
+}

@@ -3,7 +3,7 @@ package domain
 import (
 	"time"
 
-	"github.com/aoagents/agent-orchestrator/backend/pkg/interfacehandoff"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/interfacehandoff"
 )
 
 // SessionInterface is the conversation controller currently committed for a
@@ -55,7 +55,7 @@ const (
 )
 
 // SessionInterfaceTransitionPhase is the durable checkpoint of one controller
-// handoff. Its shared state table lives in backend/pkg/interfacehandoff so the
+// handoff. Its state table lives in cloud/internal/interfacehandoff so the
 // Cloud and local adapters use the same durable edges and terminal semantics.
 type SessionInterfaceTransitionPhase = interfacehandoff.Phase
 

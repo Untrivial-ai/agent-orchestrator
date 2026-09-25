@@ -1,9 +1,9 @@
-// Package interfacehandoff defines the storage- and transport-independent
+// Package interfacehandoff defines Cloud's storage- and transport-independent
 // state table for moving a session between its Chat and terminal controllers.
 //
 // It deliberately contains no session, process, lease, or database concepts.
 // Adapters own the effects performed at each checkpoint and whether they can
-// restore a stopped source controller after a failed effect. They must all use
+// restore a stopped source controller after a failed effect. Cloud adapters use
 // this package for durable phase validity and terminal-state semantics.
 package interfacehandoff
 

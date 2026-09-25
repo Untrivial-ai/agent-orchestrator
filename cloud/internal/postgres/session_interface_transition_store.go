@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/aoagents/agent-orchestrator/backend/pkg/interfacehandoff"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/interfacehandoff"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -45,22 +45,6 @@ const commitCoordinatedSessionInterfaceSQL = `UPDATE ao_sessions AS session
 			  AND transition.phase = 'source_stopped'
 			  AND transition.org_id = session.org_id
 			  AND transition.session_id = session.id`
-
-// GetSessionInterfaceTransition returns one transition row by id under the
-// caller's tenant context.
-func (s *Store) GetSessionInterfaceTransition(
-	ctx context.Context,
-	principal domain.Principal,
-	orgID, transitionID string,
-) (domain.SessionInterfaceTransition, error) {
-	var transition domain.SessionInterfaceTransition
-	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
-		var err error
-		transition, err = getInterfaceTransition(ctx, tx, transitionID)
-		return err
-	})
-	return transition, err
-}
 
 // StartSessionInterfaceTransition durably claims a session for an interface
 // handoff. It returns the committed transition and whether a new row was
@@ -122,10 +106,9 @@ func (s *Store) GetActiveSessionInterfaceTransition(
 	return s.getLatestSessionInterfaceTransition(ctx, principal, orgID, sessionID, false)
 }
 
-// GetLatestRelevantSessionInterfaceTransition returns the active transition or
-// the latest failed/recovery-required transition for a session. Completed and
-// cancelled attempts are intentionally excluded: they are audit history, not
-// actionable status for a client.
+// GetLatestRelevantSessionInterfaceTransition returns the newest attempt only
+// when it remains actionable. A completed or cancelled attempt supersedes any
+// earlier failure, which stays in audit history but must not reappear in status.
 func (s *Store) GetLatestRelevantSessionInterfaceTransition(
 	ctx context.Context,
 	principal domain.Principal,
@@ -145,7 +128,10 @@ func (s *Store) getLatestSessionInterfaceTransition(
 	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
 		phaseFilter := `t.phase NOT IN ('completed', 'failed', 'cancelled', 'recovery_required')`
 		if includeTerminal {
-			phaseFilter = `t.phase IN ('requested', 'preflighting', 'draining', 'source_stopping', 'source_stopped', 'target_starting', 'activating', 'failed', 'recovery_required')`
+			// Select the newest attempt first. Filtering completed/cancelled rows
+			// in SQL would resurrect an older failed notice after a successful
+			// switch.
+			phaseFilter = `TRUE`
 		}
 		var sourceInterface string
 		err := tx.QueryRow(
@@ -184,6 +170,9 @@ func (s *Store) getLatestSessionInterfaceTransition(
 			return err
 		}
 		transition.SourceInterface = domain.SessionInterface(sourceInterface)
+		if includeTerminal && !latestTransitionIsRelevant(transition.Phase) {
+			return nil
+		}
 		found = true
 		return nil
 	})
@@ -191,6 +180,11 @@ func (s *Store) getLatestSessionInterfaceTransition(
 		return domain.SessionInterfaceTransition{}, false, err
 	}
 	return transition, found, nil
+}
+
+func latestTransitionIsRelevant(phase domain.SessionInterfaceTransitionPhase) bool {
+	return phase != domain.SessionInterfaceTransitionCompleted &&
+		phase != domain.SessionInterfaceTransitionCancelled
 }
 
 // ListActiveSessionInterfaceTransitions scans sessions that own an in-progress
@@ -595,6 +589,36 @@ func (s *Store) CommitCoordinatedSessionInterface(
 		return nil
 	})
 	return committed, err
+}
+
+// RollbackCoordinatedSessionInterface restores the source mode only for a
+// claimed target-start failure. Repeating it after a crash is harmless; the
+// coordinator still has to prove the source controller is running before it
+// marks the handoff failed and releases held messages.
+func (s *Store) RollbackCoordinatedSessionInterface(
+	ctx context.Context,
+	owner, orgID, transitionID string,
+) error {
+	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE ao_sessions AS session
+			SET interface = transition.source_interface, updated_at = now()
+			FROM ao_interface_transitions AS transition
+			WHERE transition.id = $1 AND transition.org_id = $2
+			  AND transition.claimed_by = $3
+			  AND transition.phase = 'recovery_required'
+			  AND transition.error_code = 'TARGET_START_FAILED'
+			  AND transition.org_id = session.org_id
+			  AND transition.session_id = session.id
+			  AND session.interface IN (transition.source_interface, transition.target_interface)`,
+			transitionID, orgID, owner)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrTransitionStale
+		}
+		return nil
+	})
 }
 
 // ReleaseCoordinatedInterfaceClaim drops a coordinator's hold on a transition.

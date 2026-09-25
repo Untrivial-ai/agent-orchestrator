@@ -61,6 +61,8 @@ const (
 type Supervisor struct {
 	Control             Control
 	Workspace           string
+	DataDir             string
+	Harness             string
 	CompareBase         string
 	Shell               string
 	AgentCommand        workerexec.Command
@@ -95,6 +97,9 @@ type Supervisor struct {
 	agentStarted             bool
 	pendingAgentTerminalData [][]byte
 	pendingAgentTerminalSize *worker.TerminalCommand
+	tuiStartedAt             time.Time
+	lastTUIInputAt           time.Time
+	tuiHandoffClosing        bool
 }
 
 // ChatRunner executes the headless Chat controller kind for a session. Run
@@ -302,7 +307,8 @@ func (s *Supervisor) DiscardConfiguredAgent(terminalID string) {
 // StartAgent adds the coding-agent PTY after the workspace transport is already
 // serving. ConfigureAgent may have reserved its identity while checkout ran;
 // otherwise this method keeps the original one-step setup behavior.
-func (s *Supervisor) StartAgent(ctx context.Context, command workerexec.Command, terminalID string) error {
+func (s *Supervisor) StartAgent(ctx context.Context, command workerexec.Command, terminal worker.AgentTerminalResponse) error {
+	terminalID := terminal.TerminalID
 	if terminalID == "" {
 		return errors.New("agent terminal id is required")
 	}
@@ -316,7 +322,7 @@ func (s *Supervisor) StartAgent(ctx context.Context, command workerexec.Command,
 		return errors.New("interactive agent terminal is already configured")
 	}
 	s.mu.Unlock()
-	if err := s.openTerminal(ctx, worker.TerminalCommand{TerminalID: terminalID, Kind: "agent"}); err != nil {
+	if err := s.openTerminal(ctx, worker.TerminalCommand{TerminalID: terminalID, NextOutputSequence: terminal.NextOutputSequence, Kind: "agent"}); err != nil {
 		s.mu.Lock()
 		s.AgentCommand = workerexec.Command{}
 		s.AgentTerminalID = ""
@@ -385,6 +391,7 @@ func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 func isConcurrentlyHandledKind(kind string) bool {
 	switch kind {
 	case "browser.fetch",
+		"chat.models",
 		"workspace.list", "workspace.read", "workspace.diff", "workspace.diff-file",
 		"workspace.review.summary", "workspace.review.tree", "workspace.review.search",
 		"workspace.review.file", "workspace.review.diffs", "workspace.review.revision":
@@ -479,6 +486,16 @@ func (s *Supervisor) handle(
 		err = decodePayload(request.Payload, &input)
 		if err == nil {
 			response, err = fetchBrowser(ctx, input)
+		}
+	case "chat.models":
+		if s.Harness != "codex" {
+			err = errors.New("model catalog is unavailable for this provider")
+		} else {
+			var models []worker.ChatModel
+			models, err = workerexec.DiscoverCodexModels(ctx, "codex", s.Workspace)
+			if err == nil {
+				response = worker.ChatModelsResponse{Models: models}
+			}
 		}
 	case "terminal.open":
 		var input worker.TerminalCommand
@@ -578,7 +595,15 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 		cleanup: cleanup,
 		done:    make(chan struct{}),
 	}
+	if input.NextOutputSequence > 1 {
+		terminal.outputID.Store(input.NextOutputSequence - 1)
+	}
 	s.terminals[input.TerminalID] = terminal
+	if input.Kind == "agent" {
+		s.tuiStartedAt = time.Now()
+		s.lastTUIInputAt = time.Time{}
+		s.tuiHandoffClosing = false
+	}
 	s.mu.Unlock()
 
 	go s.copyTerminalOutput(processCtx, input.TerminalID, terminal)
@@ -706,6 +731,13 @@ func (s *Supervisor) writeTerminal(input worker.TerminalCommand) error {
 		return errors.New("invalid terminal input request")
 	}
 	s.mu.Lock()
+	if input.TerminalID == s.AgentTerminalID {
+		if s.tuiHandoffClosing {
+			s.mu.Unlock()
+			return errors.New("agent terminal is switching interfaces")
+		}
+		s.lastTUIInputAt = time.Now()
+	}
 	if s.agentStarting && input.TerminalID == s.AgentTerminalID {
 		s.pendingAgentTerminalData = append(s.pendingAgentTerminalData, append([]byte(nil), input.Data...))
 		s.mu.Unlock()
