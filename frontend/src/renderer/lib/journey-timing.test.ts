@@ -10,6 +10,7 @@ beforeEach(() => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	vi.spyOn(Math, "random").mockReturnValue(0);
 	capture.mockClear();
+	localStorage.clear();
 });
 
 afterEach(() => {
@@ -87,10 +88,24 @@ it("omits hidden file surfaces, counts navigation away, and samples journeys", a
 	vi.mocked(Math.random).mockReturnValue(0.5);
 	timing.startSessionOpen("unsampled-session");
 	timing.sessionUsable("unsampled-session", "chat");
+	timing.recordStartupTiming(500, "ready");
 	expect(capture).not.toHaveBeenCalled();
+	vi.mocked(Math.random).mockReturnValue(0);
 	timing.recordStartupTiming(500, "ready");
 	expect(capture).toHaveBeenCalledExactlyOnceWith("ao.renderer.startup_timing", {
 		duration_ms: 500,
 		outcome: "ready",
 	});
+});
+
+it("limits all timing events together across renderer reloads", async () => {
+	const timing = await import("./journey-timing");
+	for (let i = 0; i < 19; i++) timing.recordStartupTiming(100, "ready");
+	timing.startSessionOpen("session-a");
+	timing.sessionUsable("session-a", "chat");
+	expect(capture).toHaveBeenCalledTimes(20);
+	vi.resetModules();
+	const reloaded = await import("./journey-timing");
+	reloaded.recordStartupTiming(100, "ready");
+	expect(capture).toHaveBeenCalledTimes(20);
 });

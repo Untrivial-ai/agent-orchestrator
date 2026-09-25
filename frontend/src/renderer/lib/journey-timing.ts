@@ -7,6 +7,9 @@ type Outcome = "ready" | "failed" | "timeout" | "cancelled";
 const MAX_DURATION_MS = 300_000;
 const SESSION_TIMEOUT_MS = 120_000;
 const SAMPLE_RATE = 0.05;
+const TIMING_BUDGET_KEY = "ao.telemetry.journeyTimingBudget";
+const TIMING_BUDGET_MS = 24 * 60 * 60_000;
+const MAX_TIMING_EVENTS_PER_DAY = 20;
 
 type PendingSession = {
 	sessionId: string;
@@ -24,8 +27,34 @@ function durationSince(startedAt: number): number {
 	return Math.min(MAX_DURATION_MS, Math.max(0, Math.round(performance.now() - startedAt)));
 }
 
+// Shared across the three timing names and persisted across renderer restarts.
+// If storage is unavailable, skip optional timing telemetry rather than reset
+// the budget on every crash/relaunch.
+function reserveTimingBudget(now = Date.now()): boolean {
+	try {
+		const raw = window.localStorage.getItem(TIMING_BUDGET_KEY);
+		const stored = raw ? (JSON.parse(raw) as { start: number; count: number }) : undefined;
+		if (raw && (!stored || !Number.isFinite(stored.start)
+			|| !Number.isInteger(stored.count) || stored.count < 0)) return false;
+		let start = now;
+		let count = 0;
+		if (stored) {
+			if (now < stored.start) return false;
+			if (now - stored.start < TIMING_BUDGET_MS) {
+				start = stored.start;
+				count = stored.count;
+			}
+		}
+		if (count >= MAX_TIMING_EVENTS_PER_DAY) return false;
+		window.localStorage.setItem(TIMING_BUDGET_KEY, JSON.stringify({ start, count: count + 1 }));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function captureTiming(event: string, durationMs: number, outcome: Outcome, surface?: Surface, scope?: Scope): void {
-	if (event !== "ao.renderer.startup_timing" && Math.random() >= SAMPLE_RATE) return;
+	if (Math.random() >= SAMPLE_RATE || !reserveTimingBudget()) return;
 	void captureRendererEvent(event, {
 		duration_ms: durationMs,
 		outcome,
