@@ -1488,7 +1488,11 @@ function ChatWorkspaceContent({
 									</h1>
 								) : null}
 								<div className="relative">
-									<McpServerBanner servers={brokenServers} placement={conversationEmpty ? "below" : "above"} />
+									<McpServerBanner
+										key={snapshot.sessionId}
+										servers={brokenServers}
+										placement={conversationEmpty ? "below" : "above"}
+									/>
 									<ChatComposer
 									key={`${draftScopeKey}:${queueEdit ? `${queueEdit.turnId}:${queueEdit.ownerId ?? queueEdit.expectedRevision ?? "legacy"}` : "composer"}`}
 									queuedDock={composerQueuedDock}
