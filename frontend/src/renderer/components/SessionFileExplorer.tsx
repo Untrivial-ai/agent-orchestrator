@@ -395,6 +395,7 @@ export function SessionFileExplorer({
 						data={filesQuery.data}
 						filter={filter}
 						onBrowseAll={() => source.kind === "workspace" && handleViewChange(false)}
+						canOpenInCenter={!isMaximized}
 						onOpenFile={isMaximized ? openInMaximizedPreview : onOpenFile}
 						onSourceMenuChange={setReviewMenu}
 						sessionId={sessionId}

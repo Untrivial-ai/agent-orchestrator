@@ -148,6 +148,7 @@ export function WorkspaceReviewPane({
 	filter,
 	onBrowseAll,
 	onOpenFile,
+	canOpenInCenter = true,
 	onSourceMenuChange,
 	sessionId,
 	split,
@@ -162,6 +163,12 @@ export function WorkspaceReviewPane({
 	filter: string;
 	onBrowseAll: () => void;
 	onOpenFile?: (path: string, options?: FileOpenOptions) => void;
+	/**
+	 * False when no center pane is reachable (the maximized Files overlay covers
+	 * it): Edit and rich preview still go through onOpenFile, but "Open diff in
+	 * center" is hidden since it could only re-show the diff in place.
+	 */
+	canOpenInCenter?: boolean;
 	sessionId: string;
 	split: boolean;
 }) {
@@ -655,7 +662,7 @@ export function WorkspaceReviewPane({
 													<HeaderActionTooltip label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}>
 														<Button aria-label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: renderedAvailable ? "rendered" : "file" })} size="icon-sm" type="button" variant="ghost"><FileCode2 aria-hidden="true" className="size-icon-sm" /></Button>
 													</HeaderActionTooltip>
-													{onOpenFile ? (
+													{onOpenFile && canOpenInCenter ? (
 														<HeaderActionTooltip label={t("files.openDiffInCenter")}>
 															<Button aria-label={t("files.openDiffInCenter")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile(file.path, { ...fileOpenContext, mode: "diff" })} size="icon-sm" type="button" variant="ghost"><VscodeGoToFileIcon aria-hidden="true" className="size-icon-sm" /></Button>
 														</HeaderActionTooltip>
@@ -670,9 +677,8 @@ export function WorkspaceReviewPane({
 															<Checkbox
 																aria-label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}
 																checked={isViewed}
-																className="size-4 border border-muted-foreground/70 bg-transparent"
+																className="size-4 border border-muted-foreground/70 bg-transparent data-[state=checked]:border-foreground data-[state=checked]:bg-foreground data-[state=checked]:text-background"
 																onCheckedChange={() => toggleViewed(file)}
-																style={isViewed ? { backgroundColor: "#fff", borderColor: "#fff", color: "#000" } : undefined}
 															/>
 														</span>
 													</HeaderActionTooltip>

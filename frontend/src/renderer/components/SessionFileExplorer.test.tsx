@@ -50,14 +50,14 @@ vi.mock("./FileContentPane", () => ({
 }));
 
 vi.mock("./diffs/WorkspaceReviewPane", () => ({
-	WorkspaceReviewPane: ({ filter, onBrowseAll, onOpenFile }: { filter: string; onBrowseAll: () => void; onOpenFile?: (path: string, options?: { editing?: boolean; mode?: "diff" | "file" | "rendered" }) => void }) => (
+	WorkspaceReviewPane: ({ canOpenInCenter = true, filter, onBrowseAll, onOpenFile }: { canOpenInCenter?: boolean; filter: string; onBrowseAll: () => void; onOpenFile?: (path: string, options?: { editing?: boolean; mode?: "diff" | "file" | "rendered" }) => void }) => (
 		<div data-testid="review-pane">
 			<span data-testid="review-filter">{filter}</span>
 			<button onClick={onBrowseAll} type="button">Browse all files</button>
 			<button onClick={() => onOpenFile?.("src/App.tsx", { mode: "file" })} type="button">Open full file</button>
 			<button onClick={() => onOpenFile?.("README.md", { mode: "rendered" })} type="button">Render README.md</button>
 			<button onClick={() => onOpenFile?.("src/App.tsx", { editing: true, mode: "file" })} type="button">Edit src/App.tsx</button>
-			<button onClick={() => onOpenFile?.("src/App.tsx", { mode: "diff" })} type="button">Open diff in center</button>
+			{canOpenInCenter ? <button onClick={() => onOpenFile?.("src/App.tsx", { mode: "diff" })} type="button">Open diff in center</button> : null}
 		</div>
 	),
 }));
@@ -360,6 +360,13 @@ describe("SessionFileExplorer", () => {
 		expect(pane).toHaveAttribute("data-editing", "true");
 		expect(pane).toHaveAttribute("data-mode", "file");
 		expect(onOpenFile).not.toHaveBeenCalled();
+	});
+
+	it("hides open-in-center when maximized, since the overlay covers the center pane", async () => {
+		renderWithQuery(<SessionFileExplorer isMaximized onOpenFile={vi.fn()} sessionId="sess-review-center-maximized" />);
+
+		expect(await screen.findByRole("button", { name: "Edit src/App.tsx" })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Open diff in center" })).not.toBeInTheDocument();
 	});
 
 	it("opens the rich preview in place when maximized", async () => {

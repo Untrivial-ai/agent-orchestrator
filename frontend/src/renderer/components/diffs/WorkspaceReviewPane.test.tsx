@@ -138,11 +138,12 @@ describe("WorkspaceReviewPane", () => {
 		await userEvent.click(screen.getByRole("checkbox", { name: "Mark src/App.tsx as viewed" }));
 		expect(screen.getByText("1 of 1 viewed")).toBeInTheDocument();
 		expect(screen.getByRole("checkbox", { name: "Mark src/App.tsx as not viewed" })).toHaveClass("size-4");
-		expect(screen.getByRole("checkbox", { name: "Mark src/App.tsx as not viewed" })).toHaveStyle({
-			backgroundColor: "#fff",
-			borderColor: "#fff",
-			color: "#000",
-		});
+		// Checked styling comes from theme tokens (foreground box, background
+		// check), not hardcoded colours, so it follows light and dark mode.
+		const viewedBox = screen.getByRole("checkbox", { name: "Mark src/App.tsx as not viewed" });
+		expect(viewedBox).toHaveAttribute("data-state", "checked");
+		expect(viewedBox).toHaveClass("data-[state=checked]:bg-foreground", "data-[state=checked]:text-background");
+		expect(viewedBox.getAttribute("style") ?? "").not.toMatch(/#fff|#000/);
 	});
 
 	it("loads a file that ends at its last change up front, so its diff has no trailing context row", async () => {
@@ -295,6 +296,15 @@ describe("WorkspaceReviewPane", () => {
 
 		await userEvent.click(screen.getByRole("button", { name: "Open diff in center" }));
 		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx", { commitSha: "commit-1", mode: "diff", scope: "committed" });
+	});
+
+	it("hides the open-in-center action when no center pane is reachable", async () => {
+		const data = committedWorkspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "file-1" }]);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} canOpenInCenter={false} data={data} filter="" onBrowseAll={vi.fn()} onOpenFile={vi.fn()} sessionId="sess-1" split={false} />);
+		expect(await screen.findByTestId("code-view")).toBeInTheDocument();
+
+		expect(screen.queryByRole("button", { name: "Open diff in center" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Open full file" })).toBeInTheDocument();
 	});
 
 	it("opens a changed diff directly in syntax-aware edit mode", async () => {
