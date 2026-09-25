@@ -504,7 +504,7 @@ export function SnakeLoader() {
 			role="status"
 			aria-label="Generating response"
 			data-testid="snake-loader"
-			className="-ml-1.5 flex size-7 items-center justify-center rounded-md font-mono text-[13px] leading-none text-muted-foreground"
+			className="-ml-1.5 flex size-7 items-center justify-center rounded-md font-mono text-[13px] leading-none tracking-[-0.22em] text-muted-foreground"
 		>
 			{SNAKE_LOADER_FRAMES[frame]}
 		</span>
