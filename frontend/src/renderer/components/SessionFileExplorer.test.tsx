@@ -46,7 +46,7 @@ vi.mock("./FileTree", () => ({
 }));
 
 vi.mock("./FileContentPane", () => ({
-	FileContentPane: ({ initialEditing, initialMode, path, previousPath }: { initialEditing?: boolean; initialMode?: string; path: string | null; previousPath?: string }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode ?? "default"} data-previous-path={previousPath} data-testid="content-pane">{path ?? "none"}</div>,
+	FileContentPane: ({ initialEditing, initialMode, path, previousPath, split }: { initialEditing?: boolean; initialMode?: string; path: string | null; previousPath?: string; split?: boolean }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode ?? "default"} data-previous-path={previousPath} data-split={String(Boolean(split))} data-testid="content-pane">{path ?? "none"}</div>,
 }));
 
 vi.mock("./diffs/WorkspaceReviewPane", () => ({
@@ -231,6 +231,12 @@ describe("SessionFileExplorer", () => {
 		// The Changes view is workspace-only, so a PR source hides the switch.
 		expect(screen.queryByRole("tablist", { name: "File view" })).not.toBeInTheDocument();
 		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("true");
+		// The preview beside the tree gets the same unified/split switch as Changes,
+		// and follows it at any width.
+		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-split", "false");
+		await userEvent.click(screen.getByRole("button", { name: "Split diff view" }));
+		expect(screen.getByRole("button", { name: "Unified diff view" })).toHaveAttribute("aria-pressed", "true");
+		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-split", "true");
 		expect(getMock).toHaveBeenCalledWith(
 			"/api/v1/sessions/{sessionId}/pr/{prNumber}/files",
 			expect.objectContaining({

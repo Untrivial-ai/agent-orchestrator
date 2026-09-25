@@ -257,7 +257,7 @@ export function FileContentPane({
 				</span>
 				{unsavedIndicator}
 				{detail.status !== "unmodified" ? (
-					<span className="ml-1.5 flex shrink-0 items-center gap-1.5 font-mono text-xs tabular-nums">
+					<span className="ml-1.5 flex shrink-0 items-center gap-1.5 text-xs tabular-nums">
 						{statusLabel[detail.status] ? <span className={cn("font-semibold", statusTone[detail.status])}>{statusLabel[detail.status]}</span> : null}
 						<span className="text-success">+{detail.additions}</span>
 						<span className="text-error">−{detail.deletions}</span>
@@ -304,15 +304,16 @@ export function FileContentPane({
 					</div>
 				)}
 			</div>
-			{wholeFileAnnotationActive ? (
-				<div className="absolute right-2 top-full z-50 w-[min(32rem,calc(100%-1rem))] overflow-hidden rounded-md border border-border bg-surface shadow-xl">
-					<FileAnnotationComposer annotation={annotation} />
-				</div>
-			) : null}
 		</div>
 	);
 	// Both the Files panel and a centre file tab use the compact icon toolbar.
-	const toolbarNode = compactTabs;
+	// Whole-file feedback opens in the page flow right under it, not over the code.
+	const toolbarNode = (
+		<>
+			{compactTabs}
+			{wholeFileAnnotationActive ? <FileAnnotationComposer annotation={annotation} /> : null}
+		</>
+	);
 
 	if (detail.status !== "unmodified") {
 		const fallback = (

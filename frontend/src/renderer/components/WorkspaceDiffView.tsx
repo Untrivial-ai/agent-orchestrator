@@ -1,6 +1,7 @@
 import {
 	memo,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -10,7 +11,7 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { Check, Plus, Send as SendIcon } from "lucide-react";
+import { ArrowUp, Check, LoaderCircle, Plus, X } from "lucide-react";
 import type { FileAnnotationTarget } from "../../shared/file-annotations";
 import {
 	type WorkspaceCompareMode,
@@ -43,7 +44,8 @@ export type FileAnnotationModel = {
 	begin: (target: ActiveFileAnnotationTarget) => void;
 	setDraft: (draft: string) => void;
 	cancel: () => void;
-	submit: () => Promise<void>;
+	/** Sends `text` (the composer's local draft) or, if omitted, the model's draft. */
+	submit: (text?: string) => Promise<void>;
 };
 
 // Split (old | new) view only means something when both sides have content to
@@ -660,87 +662,109 @@ export function LineFeedbackButtonControl({
 	);
 }
 
+// Like the browser's annotation box: one rounded card with a close control,
+// a single auto-growing line, and a send arrow. Enter sends, Shift+Enter adds a
+// line, Esc closes.
+const COMPOSER_MAX_HEIGHT_PX = 160;
+
 export function FileAnnotationComposer({ annotation }: { annotation: FileAnnotationModel }) {
 	const { t } = useTranslation();
 	const target = annotation.target;
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	// Typing stays local to the box, so the diffs that read the shared model
+	// don't re-render per keystroke; the model hears the text on send, or when
+	// the box goes away (a virtualized row can unmount and remount it).
+	const [text, setText] = useState(annotation.draft);
+	const textRef = useRef(text);
+	textRef.current = text;
+	const setModelDraftRef = useRef(annotation.setDraft);
+	setModelDraftRef.current = annotation.setDraft;
+	useEffect(() => () => setModelDraftRef.current(textRef.current), []);
 	useEffect(() => {
 		if (!target) return;
 		const frame = window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
 		return () => window.cancelAnimationFrame(frame);
 	}, [target]);
+	useLayoutEffect(() => {
+		const textarea = textareaRef.current;
+		if (!textarea) return;
+		textarea.style.height = "auto";
+		textarea.style.height = `${Math.min(textarea.scrollHeight, COMPOSER_MAX_HEIGHT_PX)}px`;
+	}, [text, target]);
 	if (!target) return null;
 	const side = target.side === "file" ? "" : t(target.side === "old" ? "files.oldSide" : "files.newSide");
 	const targetLabel =
 		target.side === "file"
 			? t("files.fileFeedbackTarget", { file: target.path })
 			: t("files.lineFeedbackTarget", { file: target.path, line: target.line, side });
-	const submit = () => void annotation.submit();
+	const sending = annotation.status === "sending";
+	const sent = annotation.status === "sent";
+	const submit = () => {
+		if (!text.trim() || sending || sent) return;
+		void annotation.submit(text);
+	};
 
 	return (
-		<form
-			className="border-y border-border/70 bg-surface px-3 py-2 font-sans"
-			onSubmit={(event) => {
-				event.preventDefault();
-				submit();
-			}}
-		>
-			<div className="mb-1.5 flex items-center justify-between gap-2">
-				<span className="min-w-0 truncate font-mono text-caption text-passive">{targetLabel}</span>
-				{annotation.status === "sent" ? (
-					<span className="inline-flex items-center gap-1 text-caption text-success" role="status">
-						<Check className="size-icon-sm" aria-hidden="true" />
-						{t("files.feedbackSent")}
-					</span>
-				) : null}
-			</div>
-			<textarea
-				aria-label={t("files.feedbackLabel", { target: targetLabel })}
-				autoFocus
-				className="min-h-20 w-full resize-y rounded-md border border-input bg-background px-2.5 py-2 text-sm text-foreground outline-none placeholder:text-passive focus-visible:outline-none disabled:opacity-60"
-				disabled={annotation.status === "sending" || annotation.status === "sent"}
-				onChange={(event) => annotation.setDraft(event.target.value)}
-				onKeyDown={(event) => {
-					if (event.key === "Escape") {
-						event.preventDefault();
-						annotation.cancel();
-					} else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-						event.preventDefault();
-						submit();
-					}
+		<div className="p-2 font-sans">
+			<form
+				className="rounded-2xl border border-border bg-background px-2.5 py-2"
+				onSubmit={(event) => {
+					event.preventDefault();
+					submit();
 				}}
-				placeholder={t("files.feedbackPlaceholder")}
-				ref={textareaRef}
-				value={annotation.draft}
-			/>
-			{annotation.status === "error" ? (
-				<p className="mt-1.5 text-xs text-error" role="alert">
-					{annotation.error}
-				</p>
-			) : null}
-			{/* In a narrow split column the buttons wrap under the hint instead of
-			    squeezing it into a one-letter-wide column. */}
-			<div className="mt-2 flex flex-wrap items-center justify-end gap-x-1.5 gap-y-1">
-				<span className="mr-auto min-w-0 max-w-full truncate text-caption text-passive">{t("files.feedbackShortcut")}</span>
-				<Button
-					disabled={annotation.status === "sending" || annotation.status === "sent"}
-					onClick={annotation.cancel}
-					size="sm"
-					type="button"
-					variant="ghost"
-				>
-					{t("files.cancelFeedback")}
-				</Button>
-				<Button
-					disabled={!annotation.draft.trim() || annotation.status === "sending" || annotation.status === "sent"}
-					size="sm"
-					type="submit"
-				>
-					<SendIcon className="size-icon-sm" aria-hidden="true" />
-					{annotation.status === "sending" ? t("files.sendingFeedback") : t("files.sendFeedback")}
-				</Button>
-			</div>
-		</form>
+			>
+				<div className="flex min-w-0 items-start gap-2">
+					<Button
+						aria-label={t("files.cancelFeedback")}
+						className="shrink-0 text-muted-foreground hover:text-foreground"
+						disabled={sending}
+						onClick={annotation.cancel}
+						size="icon-sm"
+						title={t("files.cancelFeedback")}
+						type="button"
+						variant="ghost"
+					>
+						<X aria-hidden="true" />
+					</Button>
+					<textarea
+						aria-label={t("files.feedbackLabel", { target: targetLabel })}
+						className="board-scrollbar min-h-7 min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent py-1 text-[13px] leading-5 text-foreground outline-none placeholder:text-passive disabled:opacity-60"
+						disabled={sending || sent}
+						onChange={(event) => setText(event.target.value)}
+						onKeyDown={(event) => {
+							if (event.key === "Escape") {
+								event.preventDefault();
+								annotation.cancel();
+							} else if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+								event.preventDefault();
+								submit();
+							}
+						}}
+						placeholder={t("files.feedbackPlaceholder")}
+						ref={textareaRef}
+						rows={1}
+						title={targetLabel}
+						value={text}
+					/>
+					<Button
+						aria-label={sent ? t("files.feedbackSent") : t("files.sendFeedback")}
+						className="shrink-0 text-muted-foreground hover:text-foreground disabled:opacity-100"
+						disabled={!text.trim() || sending || sent}
+						size="icon-sm"
+						title={sent ? t("files.feedbackSent") : t("files.sendFeedback")}
+						type="submit"
+						variant="ghost"
+					>
+						{sending ? <LoaderCircle aria-hidden="true" className="animate-spin" /> : sent ? <Check aria-hidden="true" className="text-success" /> : <ArrowUp aria-hidden="true" className={cn(!text.trim() && "opacity-50")} />}
+					</Button>
+				</div>
+				{annotation.status === "error" ? (
+					<p className="px-9 pt-1 text-xs text-error" role="alert">
+						{annotation.error}
+					</p>
+				) : null}
+			</form>
+		</div>
 	);
 }
 

@@ -41,15 +41,21 @@ vi.mock("@pierre/diffs", () => ({
 }));
 
 vi.mock("@pierre/diffs/react", () => ({
-	CodeView: ({ className, items, options, renderCustomHeader, renderGutterUtility }: {
+	CodeView: ({ className, items, options, renderAnnotation, renderCustomHeader, renderGutterUtility }: {
 		className: string;
-		items: Array<{ id: string; collapsed?: boolean; fileDiff?: { isPartial?: boolean } }>;
+		items: Array<{ id: string; collapsed?: boolean; fileDiff?: { isPartial?: boolean }; annotations?: Array<{ lineNumber: number; side: string }> }>;
 		options: { enableGutterUtility?: boolean; overflow?: string; unsafeCSS?: string };
+		renderAnnotation?: () => ReactNode;
 		renderCustomHeader: (item: { id: string }) => ReactNode;
 		renderGutterUtility?: (getHoveredLine: () => { lineNumber: number; side: "additions" }, item: { id: string }) => ReactNode;
 	}) => (
 		<div className={className} data-gutter-enabled={String(Boolean(options.enableGutterUtility))} data-overflow={options.overflow} data-surface-css={options.unsafeCSS} data-testid="code-view">
-			{items.map((item) => <div data-collapsed={String(Boolean(item.collapsed))} data-partial={String(item.fileDiff?.isPartial)} key={item.id}>{renderCustomHeader(item)}</div>)}
+			{items.map((item) => (
+				<div data-collapsed={String(Boolean(item.collapsed))} data-partial={String(item.fileDiff?.isPartial)} key={item.id}>
+					{renderCustomHeader(item)}
+					{item.annotations?.map((entry) => <div data-annotation-line={entry.lineNumber} data-annotation-side={entry.side} key={`${entry.side}:${entry.lineNumber}`}>{renderAnnotation?.()}</div>)}
+				</div>
+			))}
 			{items[0] ? renderGutterUtility?.(() => ({ lineNumber: 7, side: "additions" }), items[0]) : null}
 		</div>
 	),
@@ -316,7 +322,23 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={model} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
 
 		const composer = await screen.findByRole("textbox", { name: /Feedback for src\/App\.tsx/ });
-		expect(composer.closest(".relative.bg-background")).toContainElement(screen.getByRole("button", { name: "Collapse src/App.tsx" }));
+		// Pierre's file-level slot (line 0): in the file's flow under its header,
+		// not an overlay inside the header that the next file could cover.
+		expect(composer.closest("[data-annotation-line]")).toHaveAttribute("data-annotation-line", "0");
+		expect(composer.closest(".relative.bg-background")).toBeNull();
+	});
+
+	it("opens a collapsed file when its whole-file feedback starts", async () => {
+		const model = annotation();
+		const data = committedWorkspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "file-1" }]);
+		renderWithQuery(<WorkspaceReviewPane annotation={model} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+		await userEvent.click(await screen.findByRole("button", { name: "Collapse src/App.tsx" }));
+		expect(screen.getByTestId("code-view").querySelector("[data-collapsed]")).toHaveAttribute("data-collapsed", "true");
+
+		// The header toggle (the gutter "+" shares its name but has no pressed state).
+		await userEvent.click(screen.getByRole("button", { name: "Add feedback", pressed: false }));
+		expect(screen.getByTestId("code-view").querySelector("[data-collapsed]")).toHaveAttribute("data-collapsed", "false");
+		expect(model.begin).toHaveBeenCalledWith(expect.objectContaining({ path: "src/App.tsx", side: "file", surface: "review" }));
 	});
 
 	it("opens deleted markdown as source because no current rendered revision exists", async () => {

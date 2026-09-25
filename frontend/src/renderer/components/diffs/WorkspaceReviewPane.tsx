@@ -383,6 +383,12 @@ export function WorkspaceReviewPane({
 						lineNumber: activeTarget.line,
 						side: activeTarget.side === "old" ? "deletions" : "additions",
 						metadata: "feedback",
+					}] : fileAnnotationActive ? [{
+						// Line 0 is Pierre's file-level slot: whole-file feedback renders in
+						// the file's flow right under its header, measured like any row.
+						lineNumber: 0,
+						side: file.status === "deleted" ? "deletions" : "additions",
+						metadata: "feedback",
 					}] : undefined,
 					// CodeView only re-reads an item when its version changes: the content
 					// part lets changed or newly hydrated diffs through, the low bits carry
@@ -509,7 +515,7 @@ export function WorkspaceReviewPane({
 			>
 				<GitCommitHorizontal aria-hidden="true" className="size-icon-sm" />
 				<span className="shrink-0">{t("files.commits")}</span>
-				{commitHashForButton ? <span className="min-w-0 truncate font-mono text-caption text-passive">{commitHashForButton}</span> : null}
+				{commitHashForButton ? <span className="min-w-0 truncate text-caption text-passive">{commitHashForButton}</span> : null}
 			</SettingsMenuTrigger>
 		</>
 	);
@@ -534,8 +540,8 @@ export function WorkspaceReviewPane({
 						<span className="min-w-0 truncate text-xs text-foreground" title={selectedCommit?.subject}>
 							{selectedCommit ? selectedCommit.subject : workingSourceLabel(scope)}
 						</span>
-						{selectedCommit ? <span className="shrink-0 font-mono text-caption text-passive">{selectedCommit.sha.slice(0, 7)}</span> : null}
-						<span className="flex shrink-0 items-center gap-1.5 font-mono text-caption tabular-nums">
+						{selectedCommit ? <span className="shrink-0 text-caption text-passive">{selectedCommit.sha.slice(0, 7)}</span> : null}
+						<span className="flex shrink-0 items-center gap-1.5 text-caption tabular-nums">
 							<span className="text-success">+{totalAdditions}</span>
 							<span className="text-error">−{totalDeletions}</span>
 						</span>
@@ -632,7 +638,7 @@ export function WorkspaceReviewPane({
 												{file.path.includes("/") ? <span className="min-w-0 truncate text-muted-foreground">{file.path.slice(0, file.path.lastIndexOf("/") + 1)}</span> : null}
 												<span className="max-w-full shrink-0 truncate text-foreground">{file.path.slice(file.path.lastIndexOf("/") + 1)}</span>
 											</button>
-											<span className="flex shrink-0 items-baseline gap-2.5 font-mono text-xs tabular-nums">
+											<span className="flex shrink-0 items-baseline gap-2.5 text-xs tabular-nums">
 												<span className={cn("font-semibold", statusTone[file.status])}>{statusLabel[file.status]}</span>
 												<span className="flex items-baseline gap-1.5">
 													<span className="text-success">+{file.additions}</span>
@@ -658,7 +664,7 @@ export function WorkspaceReviewPane({
 												</HeaderActionTooltip>
 											) : null}
 											<HeaderActionTooltip label={t("files.addFeedback")}>
-												<Button aria-label={t("files.addFeedback")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint })} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
+												<Button aria-label={t("files.addFeedback")} aria-pressed={fileAnnotationActive} className={cn("size-6 text-muted-foreground hover:text-foreground", fileAnnotationActive && "bg-interactive-active text-foreground")} onClick={() => { if (isCollapsed) toggleCollapsed(file.path); annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint }); }} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
 											</HeaderActionTooltip>
 											<HeaderActionTooltip label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}>
 												{/* A 24px slot like the buttons beside it keeps the checkbox
@@ -675,7 +681,6 @@ export function WorkspaceReviewPane({
 											</HeaderActionTooltip>
 										</div>
 									</div>
-									{fileAnnotationActive ? <div className="absolute right-2 top-full z-50 w-[min(32rem,calc(100%-1rem))] overflow-hidden rounded-md border border-border bg-surface shadow-xl"><FileAnnotationComposer annotation={annotation} /></div> : null}
 								</div>
 							);
 						}}
@@ -690,7 +695,7 @@ export function WorkspaceReviewPane({
 					return (
 					<div className="m-2 flex items-center gap-2 rounded-md border border-border bg-surface p-3" key={file.path}>
 						<FileCode2 aria-hidden="true" className="text-passive" />
-						<div className="min-w-0 flex-1"><p className="truncate font-mono text-xs">{file.path}</p><p className="text-caption text-muted-foreground">{file.binary ? t("files.binaryUnavailable") : deferred ? t("files.deferredDiff") : serverDeferredReason ? t("files.diffUnavailableReason", { reason: serverDeferredReason }) : pending ? t("files.loadingDiff") : t("files.diffUnavailable")}</p></div>
+						<div className="min-w-0 flex-1"><p className="truncate text-xs">{file.path}</p><p className="text-caption text-muted-foreground">{file.binary ? t("files.binaryUnavailable") : deferred ? t("files.deferredDiff") : serverDeferredReason ? t("files.diffUnavailableReason", { reason: serverDeferredReason }) : pending ? t("files.loadingDiff") : t("files.diffUnavailable")}</p></div>
 						{deferred ? <Button onClick={() => setLoadedDeferredPaths((current) => new Set(current).add(file.path))} size="sm" type="button" variant="outline">{t("files.loadDiff")}</Button> : null}
 						{unavailable ? <RetryButton onClick={retryAll} /> : null}
 						<Button onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: "file" })} size="sm" type="button" variant="outline">{t("files.fileView")}</Button>
@@ -730,14 +735,14 @@ function CommitBrowser({ commits, filter, onSelect, selectedSha }: { commits: re
 								<span aria-hidden="true">·</span>
 								<span className="shrink-0">{formatTimeTerse(commit.timestamp)}</span>
 								<span aria-hidden="true">·</span>
-								<span className="shrink-0 font-mono">{commit.sha.slice(0, 7)}</span>
+								<span className="shrink-0">{commit.sha.slice(0, 7)}</span>
 							</p>
 						</div>
 						<span className="shrink-0 text-caption text-passive">{t("files.count", { count: commit.files.length })}</span>
 					</div>
 					<div className="mt-2 space-y-1 pl-5">
 						{commit.files.slice(0, 5).map((file) => (
-							<div className="flex min-w-0 items-center gap-2 font-mono text-2xs text-muted-foreground" key={`${commit.sha}:${file.path}`}>
+							<div className="flex min-w-0 items-center gap-2 text-2xs text-muted-foreground" key={`${commit.sha}:${file.path}`}>
 								<span className={cn("w-3 shrink-0 font-semibold", statusTone[file.status])}>{statusLabel[file.status]}</span>
 								<span className="truncate">{file.path}</span>
 							</div>

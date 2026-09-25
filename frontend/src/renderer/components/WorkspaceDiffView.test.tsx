@@ -234,6 +234,35 @@ describe("ReviewDiffBody", () => {
 		await waitFor(() => expect(textarea).toHaveFocus());
 	});
 
+	it("keeps typing local to the box and sends with Enter, like the browser's comment box", () => {
+		const model = noopAnnotation();
+		model.target = { path: "src/App.tsx", side: "file", surface: "review" };
+		render(<FileAnnotationComposer annotation={model} />);
+
+		const textarea = screen.getByRole("textbox", { name: /Feedback for src\/App\.tsx/ });
+		fireEvent.change(textarea, { target: { value: "Rename this" } });
+		expect(model.setDraft).not.toHaveBeenCalled();
+		fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
+		expect(model.submit).not.toHaveBeenCalled();
+		fireEvent.keyDown(textarea, { key: "Enter" });
+		expect(model.submit).toHaveBeenCalledWith("Rename this");
+	});
+
+	it("closes on Escape or the close button and hands an unsent draft back to the model", () => {
+		const model = noopAnnotation();
+		model.target = { path: "src/App.tsx", side: "new", line: 3, surface: "review" };
+		const { unmount } = render(<FileAnnotationComposer annotation={model} />);
+
+		const textarea = screen.getByRole("textbox", { name: /Feedback for src\/App\.tsx/ });
+		fireEvent.change(textarea, { target: { value: "draft" } });
+		fireEvent.keyDown(textarea, { key: "Escape" });
+		expect(model.cancel).toHaveBeenCalledTimes(1);
+		fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+		expect(model.cancel).toHaveBeenCalledTimes(2);
+		unmount();
+		expect(model.setDraft).toHaveBeenCalledWith("draft");
+	});
+
 	describe("large diff virtualization", () => {
 		const VIEWPORT_HEIGHT = 600;
 

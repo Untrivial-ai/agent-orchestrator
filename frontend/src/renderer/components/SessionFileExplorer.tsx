@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -48,8 +48,6 @@ import { WorkspaceReviewPane, type ReviewSourceMenu } from "./diffs/WorkspaceRev
 import { formatTimeTerse } from "../lib/format-time";
 
 const WORKSPACE_SOURCE: FilesSource = { kind: "workspace" };
-// Below this preview width a side-by-side diff squeezes each column too far.
-const SPLIT_DIFF_MIN_WIDTH_PX = 720;
 // Mirrors the browser panel's tab strip (.browser-panel__tab): no container
 // box, 28px rounded tabs, filled only when active.
 const viewTabClass = "inline-flex h-control-md items-center rounded-md px-2.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent/50";
@@ -85,7 +83,6 @@ export function SessionFileExplorer({
 	const [reviewMenu, setReviewMenu] = useState<ReviewSourceMenu | null>(null);
 	const filesTopbarHost = useFilesTopbarHost();
 	const [treeOpen, setTreeOpen] = useState(true);
-	const [previewWidth, setPreviewWidth] = useState(Number.POSITIVE_INFINITY);
 	const scmQuery = useSessionScmSummary(sessionId);
 	const queryClient = useQueryClient();
 	const connectionState = useWorkspaceFileConnectionState(sessionId);
@@ -214,7 +211,7 @@ export function SessionFileExplorer({
 							title={currentSourceLabel}
 						>
 							<span className="min-w-0 truncate">{currentSourceLabel}</span>
-							{reviewMenu ? <span className={cn("shrink-0 text-caption text-passive", reviewMenu.commits.some((commit) => commit.selected) && "font-mono")}>{reviewMenu.label}</span> : null}
+							{reviewMenu ? <span className="shrink-0 text-caption text-passive">{reviewMenu.label}</span> : null}
 						</SettingsMenuTrigger>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="start" className="w-max max-w-72">
@@ -266,7 +263,9 @@ export function SessionFileExplorer({
 				{filesTopbarHost ? null : <span aria-hidden="true" className="flex-1" />}
 				{filesTopbarHost ? createPortal(filterField, filesTopbarHost) : filterField}
 				<span aria-hidden="true" className="flex-1" />
-				{showChanges ? (
+				{/* Unified/split applies wherever a diff shows: the Changes review and
+				    the preview beside the tree. */}
+				{showChanges || splitView ? (
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<Button
@@ -397,10 +396,8 @@ export function SessionFileExplorer({
 				// like an editor's changed-files rail.
 				<ResizablePanelGroup className="min-h-0 flex-1">
 					<ResizablePanel defaultSize="74%" minSize="40%">
-						<ContentScrollArea onWidthChange={setPreviewWidth}>
-							{/* A narrow preview (small panel and/or the tree rail open) falls
-							    back to a unified diff; side-by-side needs room for both columns. */}
-							<FileContentPane annotation={annotation} commitSha={previewRequest?.commitSha} initialEditing={previewRequest?.editing ?? false} initialMode={previewRequest?.mode} initialRequestKey={previewRequest?.key ?? 0} path={selectedPath} previousPath={selectedPreviousPath} scope={previewRequest?.scope} sessionId={sessionId} source={querySource} split={split && previewWidth >= SPLIT_DIFF_MIN_WIDTH_PX} toolbar="compact" />
+						<ContentScrollArea>
+							<FileContentPane annotation={annotation} commitSha={previewRequest?.commitSha} initialEditing={previewRequest?.editing ?? false} initialMode={previewRequest?.mode} initialRequestKey={previewRequest?.key ?? 0} path={selectedPath} previousPath={selectedPreviousPath} scope={previewRequest?.scope} sessionId={sessionId} source={querySource} split={split} toolbar="compact" />
 						</ContentScrollArea>
 					</ResizablePanel>
 					{treeOpen ? (
@@ -435,18 +432,9 @@ export function SessionFileExplorer({
 	);
 }
 
-function ContentScrollArea({ children, onWidthChange }: { children: ReactNode; onWidthChange?: (width: number) => void }) {
-	const ref = useRef<HTMLDivElement>(null);
-	useEffect(() => {
-		const element = ref.current;
-		if (!element || !onWidthChange || typeof ResizeObserver === "undefined") return;
-		const observer = new ResizeObserver(([entry]) => onWidthChange(entry.contentRect.width));
-		observer.observe(element);
-		return () => observer.disconnect();
-	}, [onWidthChange]);
+function ContentScrollArea({ children }: { children: ReactNode }) {
 	return (
 		<div
-			ref={ref}
 			className="board-scrollbar h-full min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-background"
 			data-files-scroll-root=""
 		>

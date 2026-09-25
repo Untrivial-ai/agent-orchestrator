@@ -255,13 +255,13 @@ function FileTreeRow({ node, style, dragHandle }: NodeRendererProps<TreeNode>) {
 			) : (
 				<WorkspaceEntryIcon className="size-icon-base" kind="file" name={entry.name} testId={`file-icon-${entry.name}`} />
 			)}
-			<span className="min-w-0 flex-1 truncate font-mono">{entry.name}</span>
+			<span className="min-w-0 flex-1 truncate">{entry.name}</span>
 			{isDir && entry.hasChanges ? (
 				<span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-warning" />
 			) : null}
 			{!isDir && entry.status && entry.status !== "unmodified" ? (
 				<span
-					className={cn("shrink-0 font-mono text-xs font-medium", statusTone[entry.status])}
+					className={cn("shrink-0 text-xs font-medium", statusTone[entry.status])}
 					title={t(`files.status.${entry.status}`)}
 				>
 					{statusLabel[entry.status]}

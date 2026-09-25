@@ -382,7 +382,9 @@ describe("FileContentPane", () => {
 		renderWithQuery(<FileContentPane annotation={model} path="src/App.tsx" sessionId="sess-1" split={false} />);
 
 		const composer = await screen.findByRole("textbox", { name: /Feedback for src\/App\.tsx/ });
-		expect(composer.closest(".absolute.top-full")?.parentElement).toHaveClass("sticky", "top-0");
+		// In the page flow right under the sticky toolbar, not floating over the code.
+		expect(composer.closest(".absolute")).toBeNull();
+		expect(screen.getByRole("navigation", { name: "File path" }).closest(".sticky")?.nextElementSibling).toContainElement(composer);
 	});
 
 	it("loads the PR before revision when opening the complete view of a deleted file", async () => {

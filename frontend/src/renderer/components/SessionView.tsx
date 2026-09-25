@@ -123,12 +123,9 @@ const CHAT_READABLE_MIN_PX = 560;
 // canvas workflow. This is still wide enough for the timeline and composer, and
 // is separate from the roomier utility-view floor above.
 const BROWSER_CHAT_MIN_PX = 440;
-// Files uses the same numbers as Browser, but is its own profile (own constants
-// and remembered width) so changing one surface never moves the other.
-const FILES_WORKSPACE_DEFAULT_PX = 900;
+// Files sizes like the other utility views (same default, cap and remembered
+// width); it only keeps a wider floor so its tree + preview stay usable.
 const FILES_WORKSPACE_MIN_PX = 460;
-const FILES_WORKSPACE_MAX_PERCENT = 68;
-const FILES_CHAT_MIN_PX = 440;
 type CenterFileOpenRequest = { commitSha?: string; editing: boolean; key: number; mode: FileViewMode; scope?: FileOpenOptions["scope"] };
 const EMPTY_AUXILIARY_TAB_ORDER: string[] = [];
 // The inspector tab labels respond to the tablist's remaining width. The
@@ -140,7 +137,6 @@ const inspectorWidthStorageKey = "ao.inspector.widthPx";
 // The canvas profile has different constraints from the earlier Browser rail;
 // use a new preference namespace so an old narrow width cannot silently pin it.
 const browserWorkspaceWidthStorageKey = "ao.workspace.browser.canvasWidthPx";
-const filesWorkspaceWidthStorageKey = "ao.workspace.files.canvasWidthPx";
 const inspectorWidthVar = "--ao-inspector-w";
 // Closely matches SHELL_PANEL_SPRING's visual settle time. Keeping the CSS
 // width interpolation on the same clock prevents the sidebar from stopping
@@ -229,22 +225,12 @@ function inspectorSizing(view: InspectorView): InspectorSizing {
 			storageKey: browserWorkspaceWidthStorageKey,
 		};
 	}
-	if (view === "files") {
-		return {
-			chatMinWidth: FILES_CHAT_MIN_PX,
-			defaultWidth: FILES_WORKSPACE_DEFAULT_PX,
-			minWidth: FILES_WORKSPACE_MIN_PX,
-			maxPercent: FILES_WORKSPACE_MAX_PERCENT,
-			mode: "files",
-			storageKey: filesWorkspaceWidthStorageKey,
-		};
-	}
 	return {
 		chatMinWidth: CHAT_READABLE_MIN_PX,
 		defaultWidth: WORKSPACE_DEFAULT_PX,
-		minWidth: WORKSPACE_MIN_PX,
+		minWidth: view === "files" ? FILES_WORKSPACE_MIN_PX : WORKSPACE_MIN_PX,
 		maxPercent: WORKSPACE_MAX_PERCENT,
-		mode: "utility",
+		mode: view === "files" ? "files" : "utility",
 		storageKey: inspectorWidthStorageKey,
 	};
 }

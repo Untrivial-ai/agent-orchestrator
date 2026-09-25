@@ -3084,7 +3084,7 @@ describe("SessionView", () => {
 		expect(inspectorPanelWidthVariable()).toBe("400px");
 	});
 
-	it("grows Browser and Files into a co-work canvas while utility surfaces stay consistent", async () => {
+	it("grows Browser into a co-work canvas while utility surfaces (Files included) stay consistent", async () => {
 		render(<SessionView sessionId="sess-1" />);
 		expect(screen.getByTestId("panel-group")).toHaveAttribute("data-workspace-mode", "utility");
 		expect(inspectorWidthVariable()).toBe("500px");
@@ -3101,11 +3101,11 @@ describe("SessionView", () => {
 		act(() => useUiStore.getState().setInspectorView("sess-1", "files"));
 		await waitFor(() => {
 			expect(screen.getByTestId("panel-group")).toHaveAttribute("data-workspace-mode", "files");
-			// Files shares the Browser's panel geometry.
-			expect(inspectorWidthVariable()).toBe("900px");
+			// Files sizes like Summary/Review: opening it doesn't widen the panel.
+			expect(inspectorWidthVariable()).toBe("500px");
 			expect(
 				screen.getByTestId("panel-group").style.getPropertyValue("--session-inspector-max-width"),
-			).toBe("min(68%, max(300px, calc(100% - 440px)))");
+			).toBe("min(55%, max(300px, calc(100% - 560px)))");
 		});
 
 		act(() => useUiStore.getState().setInspectorView("sess-1", "summary"));
@@ -3149,16 +3149,16 @@ describe("SessionView", () => {
 		expect(inspectorWidthVariable()).toBe("500px");
 	});
 
-	it("keeps Files and Browser widths independent even though they share the same defaults", async () => {
-		window.localStorage.setItem("ao.workspace.browser.canvasWidthPx", "820");
+	it("shares the utility width with Files but keeps Files at least 460px wide", async () => {
+		window.localStorage.setItem("ao.inspector.widthPx", "400");
 		render(<SessionView sessionId="sess-1" />);
-
-		act(() => useUiStore.getState().setInspectorView("sess-1", "browser"));
-		await waitFor(() => expect(inspectorWidthVariable()).toBe("820px"));
+		expect(inspectorWidthVariable()).toBe("400px");
 
 		act(() => useUiStore.getState().setInspectorView("sess-1", "files"));
-		await waitFor(() => expect(inspectorWidthVariable()).toBe("900px"));
-		expect(window.localStorage.getItem("ao.workspace.files.canvasWidthPx")).not.toBe("820");
+		await waitFor(() => expect(inspectorWidthVariable()).toBe("460px"));
+
+		act(() => useUiStore.getState().setInspectorView("sess-1", "summary"));
+		await waitFor(() => expect(inspectorWidthVariable()).toBe("400px"));
 	});
 
 	it("never changes the sidebar preference while browser surfaces open and close", async () => {
