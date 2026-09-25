@@ -167,7 +167,7 @@ export const McpServerBanner = memo(function McpServerBanner({
 
 	useEffect(() => {
 		if (!fingerprint) return;
-		const timeout = window.setTimeout(() => setDismissingFingerprint(fingerprint), 8_000);
+		const timeout = window.setTimeout(() => setDismissingFingerprint(fingerprint), 3_500);
 		return () => window.clearTimeout(timeout);
 	}, [fingerprint]);
 
@@ -191,7 +191,7 @@ export const McpServerBanner = memo(function McpServerBanner({
 			initial={{ scale: 0.96, opacity: 0 }}
 			animate={dismissing ? { scale: 0.96, opacity: 0 } : { scale: 1, opacity: 1 }}
 			transition={{ duration: reducedMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
-			className="absolute inset-x-0 bottom-full origin-center pb-2"
+			className="absolute bottom-full left-1/2 w-fit -translate-x-1/2 origin-center pb-2"
 		>
 			<div
 				role={dismissing ? undefined : "status"}

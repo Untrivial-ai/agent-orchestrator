@@ -98,7 +98,7 @@ describe("McpServerBanner", () => {
 		},
 	];
 
-	it("shows a compact, non-actionable notice for eight seconds", async () => {
+	it("shows a compact, non-actionable notice for three and a half seconds", async () => {
 		vi.useFakeTimers();
 		render(<McpServerBanner servers={broken} />);
 
@@ -109,10 +109,11 @@ describe("McpServerBanner", () => {
 		expect(screen.getByRole("status").parentElement).toHaveClass(
 			"absolute",
 			"bottom-full",
+			"w-fit",
 			"origin-center",
 		);
 
-		act(() => vi.advanceTimersByTime(8_000));
+		act(() => vi.advanceTimersByTime(3_500));
 		vi.useRealTimers();
 		await new Promise((resolve) => window.setTimeout(resolve, 250));
 		expect(screen.queryByRole("status")).not.toBeInTheDocument();
