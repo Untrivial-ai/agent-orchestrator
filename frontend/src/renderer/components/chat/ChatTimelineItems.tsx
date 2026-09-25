@@ -471,7 +471,7 @@ function useElapsedDuration(startedAt: string | undefined, active: boolean): num
 
 const BRAILLE_LOADER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
-function BrailleLoader() {
+export function BrailleLoader() {
 	const [frame, setFrame] = useState(0);
 
 	useEffect(() => {

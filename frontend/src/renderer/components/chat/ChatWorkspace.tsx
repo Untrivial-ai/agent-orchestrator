@@ -95,6 +95,7 @@ import {
 	ActivityRow,
 	ApprovalCard,
 	AssistantMessage,
+	BrailleLoader,
 	CompactionMarker,
 	HumanMessage,
 	OriginMessage,
@@ -3300,8 +3301,9 @@ const TurnGroup = memo(function TurnGroup({
 			    before the outcome divider so a tool-only turn is not stuck without a
 			    way back or a record of how long it took. */}
 			{!copyableMessageId &&
-			(canRollback || (group.outcome?.durationMs !== undefined && group.outcome.durationMs > 0)) ? (
-				<div className="mt-2 flex h-[18px] items-center gap-0.5">
+			(group.live || canRollback || (group.outcome?.durationMs !== undefined && group.outcome.durationMs > 0)) ? (
+				<div className="mt-1 flex h-7 items-center gap-0.5">
+					{group.live ? <BrailleLoader /> : null}
 					{canRollback ? (
 						<button
 							type="button"
