@@ -276,7 +276,7 @@ export function ShellTopbar({
 							>
 								{sessionAction ? <div className="inline-flex shrink-0 items-center">{sessionAction}</div> : null}
 								{sessionIsActive(session) ? (
-									<TopbarKillButton
+									<TopbarArchiveButton
 										key={session.id}
 										session={session}
 										orchestratorId={orchestrator?.id}
@@ -346,8 +346,8 @@ export function ShellTopbar({
 // The control archives rather than deletes, so it carries the Archive icon and
 // the neutral icon treatment instead of the danger-red kill affordance.
 // Mutation-cache state is filtered by worker ID so rapid route switches never
-// carry another worker's Killing/error state into the current topbar.
-export function TopbarKillButton({
+// carry another worker's Archiving/error state into the current topbar.
+export function TopbarArchiveButton({
 	session,
 	orchestratorId,
 	onKilled,
@@ -380,7 +380,7 @@ export function TopbarKillButton({
 							session={session}
 							trigger={
 								<TopbarButton
-									aria-label={isPending ? t("shell.killing") : t("shell.killSession")}
+									aria-label={isPending ? t("shell.archiving") : t("shell.archiveSession")}
 									disabled={isPending}
 									onClick={() => {
 										clearTerminateSessionState(queryClient, session.id);
@@ -395,7 +395,7 @@ export function TopbarKillButton({
 						/>
 					</span>
 				</TooltipTrigger>
-				<TooltipContent side="bottom">{t("shell.killSession")}</TooltipContent>
+				<TooltipContent side="bottom">{t("shell.archiveSession")}</TooltipContent>
 			</Tooltip>
 			{error ? <TopbarActionError>{error}</TopbarActionError> : null}
 		</div>
@@ -419,9 +419,9 @@ function ProjectTerminationFeedback({ projectId }: { projectId: string | undefin
 						className="max-w-40 truncate text-caption text-muted-foreground"
 						key={state.session.id}
 						role="status"
-						title={t("shell.killingNamed", { title: state.session.title })}
+						title={t("shell.archivingNamed", { title: state.session.title })}
 					>
-						{t("shell.killingNamed", { title: state.session.title })}
+						{t("shell.archivingNamed", { title: state.session.title })}
 					</span>
 				),
 			)}

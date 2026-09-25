@@ -176,8 +176,8 @@ function DesktopSessionCard({
 							<button
 								aria-label={
 									termination.isPending
-										? t("shell.killingNamedAria", { title: session.title })
-										: t("shell.terminateNamed", { title: session.title })
+										? t("shell.archivingNamedAria", { title: session.title })
+										: t("shell.archiveNamed", { title: session.title })
 								}
 								className={cn(
 									"inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-[color,background-color,opacity] hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
@@ -205,7 +205,7 @@ function DesktopSessionCard({
 				</span>
 			</TooltipTrigger>
 			<TooltipContent side="bottom">
-				{termination.isPending ? t("shell.killingSession") : t("shell.terminateSession")}
+				{termination.isPending ? t("shell.archivingSession") : t("shell.archiveSession")}
 			</TooltipContent>
 		</Tooltip>
 	) : undefined;

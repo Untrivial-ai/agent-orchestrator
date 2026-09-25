@@ -2336,7 +2336,7 @@ const SessionActions = memo(function SessionActions({
 								session={session}
 								trigger={
 									<button
-										aria-label={t("shell.killSession")}
+										aria-label={t("shell.archiveSession")}
 										className={cn(SESSION_ACTION_CLASS, "focus-visible:text-foreground")}
 										disabled={isKilling}
 										onClick={handleArchive}
@@ -2348,7 +2348,7 @@ const SessionActions = memo(function SessionActions({
 							/>
 						</span>
 					</TooltipTrigger>
-					<TooltipContent side="top">{t("shell.killSession")}</TooltipContent>
+					<TooltipContent side="top">{t("shell.archiveSession")}</TooltipContent>
 				</Tooltip>
 			</div>
 			<SessionMessageAge session={session} />

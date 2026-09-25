@@ -1130,7 +1130,7 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 
 	const terminateAction = (
 		<div className="flex items-center justify-between gap-3 py-1">
-			<span className="min-w-0 text-xs font-medium text-settings-label">{t("inspector.terminateShort")}</span>
+			<span className="min-w-0 text-xs font-medium text-settings-label">{t("inspector.archiveShort")}</span>
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<span className="inline-flex">
@@ -1141,7 +1141,7 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 							session={session}
 							trigger={
 								<button
-									aria-label={t("inspector.terminate")}
+									aria-label={t("inspector.archive")}
 									className="inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
 									onClick={() => {
 										clearTerminateSessionState(queryClient, session.id);
@@ -1156,7 +1156,7 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 						/>
 					</span>
 				</TooltipTrigger>
-				<TooltipContent side="bottom">{t("inspector.terminate")}</TooltipContent>
+				<TooltipContent side="bottom">{t("inspector.archive")}</TooltipContent>
 			</Tooltip>
 		</div>
 	);

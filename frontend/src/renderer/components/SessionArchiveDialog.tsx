@@ -28,23 +28,23 @@ export function SessionArchiveDialog({
 	const isCloud = session?.cloud !== undefined;
 	const body = isCloud
 		? title
-			? t("termination.bodyCloudNamed", { title })
-			: t("termination.bodyCloud")
+			? t("archive.bodyCloudNamed", { title })
+			: t("archive.bodyCloud")
 		: title
-			? t("termination.bodyNamed", { title })
-			: t("termination.body");
+			? t("archive.bodyNamed", { title })
+			: t("archive.body");
 	return (
 		<>
 			{trigger}
 			<ConfirmDialog
 				cancelLabel={t("common.no")}
-				confirmAriaLabel={t("termination.confirmAria")}
+				confirmAriaLabel={t("archive.confirmAria")}
 				confirmLabel={t("confirm.confirm")}
 				description={body}
 				onConfirm={onConfirm}
 				onOpenChange={onOpenChange}
 				open={open}
-				title={title ? t("termination.dialogNamed", { title }) : t("termination.dialog")}
+				title={title ? t("archive.dialogNamed", { title }) : t("archive.dialog")}
 			/>
 		</>
 	);

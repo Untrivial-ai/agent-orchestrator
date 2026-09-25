@@ -12,7 +12,7 @@ import {
 	type WorkspaceSession,
 	type WorkspaceSummary,
 } from "../types/workspace";
-import { ShellTopbar, TopbarKillButton } from "./ShellTopbar";
+import { ShellTopbar, TopbarArchiveButton } from "./ShellTopbar";
 import { TooltipProvider } from "./ui/tooltip";
 import { sessionInterfaceTransitionQueryKey } from "../hooks/useSessionInterfaceTransition";
 import { sessionInterfaceTransitionStatus } from "../test/interface-transition-fixtures";
@@ -184,7 +184,7 @@ function renderKill(session: WorkspaceSession = worker, orchestratorId?: string)
 	const killButton = (currentSession: WorkspaceSession, currentOrchestratorId?: string) => (
 		<QueryClientProvider client={queryClient}>
 			<TooltipProvider>
-				<TopbarKillButton
+				<TopbarArchiveButton
 					session={currentSession}
 					orchestratorId={currentOrchestratorId}
 					onKilled={onKilledMock}
@@ -612,7 +612,7 @@ describe("ShellTopbar open-in-editor control", () => {
 	});
 });
 
-describe("TopbarKillButton", () => {
+describe("TopbarArchiveButton", () => {
 	it("asks for confirmation in the shared modal before archiving", async () => {
 		renderKill();
 
