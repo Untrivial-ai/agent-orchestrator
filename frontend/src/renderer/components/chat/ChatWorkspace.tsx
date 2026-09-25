@@ -3043,7 +3043,7 @@ function Timeline({
 									// Reserve the rollback slot as soon as a turn is live; it stays disabled
 									// until the provider has accepted the turn and the daemon can act on it.
 									canRollback={Boolean(onRollback && group.turnId && (group.rollbackable || group.live))}
-									rollbackDisabled={rollbackDisabled}
+									rollbackDisabled={rollbackDisabled && !(group.outcome && turn?.id === group.turnId)}
 									busy={busy}
 							queued={Boolean(group.turnId && queued.has(group.turnId) && hasEarlierHumanMessage)}
 								/>
@@ -3328,14 +3328,15 @@ const TurnGroup = memo(function TurnGroup({
 						activateBranchError={activateBranchError}
 						busy={busy}
 						queued={queued}
-						newHumanMessageIds={newHumanMessageIds}
-						showCopy={run.items[0]?.id === copyableMessageId}
-						onRollback={
+									newHumanMessageIds={newHumanMessageIds}
+									showCopy={run.items[0]?.id === copyableMessageId}
+									live={group.live}
+									onRollback={
 							canRollback && run.items[0]?.id === copyableMessageId
 								? () => onRollback(group.turnId as string)
 								: undefined
 						}
-						rollbackDisabled={rollbackDisabled}
+									rollbackDisabled={rollbackDisabled}
 						durationMs={
 							run.items[0]?.id === copyableMessageId ? group.outcome?.durationMs : undefined
 						}
@@ -3465,6 +3466,7 @@ function TimelineItem({
 	queued,
 	newHumanMessageIds,
 	showCopy,
+	live,
 	onRollback,
 	rollbackDisabled,
 	durationMs,
@@ -3499,6 +3501,7 @@ function TimelineItem({
 	newHumanMessageIds: ReadonlySet<string>;
 	/** This is the final assistant response of a turn that has finished. */
 	showCopy?: boolean;
+	live?: boolean;
 	/** Undo this finished turn from the answer that owns its copy action. */
 	onRollback?: () => void;
 	/** Keep the action row mounted while another turn is running. */
@@ -3514,6 +3517,7 @@ function TimelineItem({
 				<AssistantMessage
 					message={item}
 					showCopy={showCopy}
+					live={live}
 					onRollback={onRollback}
 					rollbackDisabled={rollbackDisabled}
 					durationMs={durationMs}
