@@ -95,7 +95,7 @@ import {
 	ActivityRow,
 	ApprovalCard,
 	AssistantMessage,
-	PulseLoader,
+	HelixLoader,
 	CompactionMarker,
 	HumanMessage,
 	OriginMessage,
@@ -3311,7 +3311,11 @@ const TurnGroup = memo(function TurnGroup({
 					</div>
 				) : null}
 				<div className="flex h-7 items-center gap-0.5">
-					{group.live ? <PulseLoader /> : null}
+					{group.live ? (
+						<div className="-ml-1.5 size-7 shrink-0">
+							<HelixLoader />
+						</div>
+					) : null}
 					{canRollback ? (
 						<button
 							type="button"
