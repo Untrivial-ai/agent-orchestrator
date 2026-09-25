@@ -85,7 +85,7 @@ func (s *codexAccountSwitchStore) persist(switches []domain.CodexAccountSwitch) 
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("create Codex account switch state directory: %w", err)
 	}
-	if err := os.Chmod(filepath.Dir(s.path), 0o700); err != nil {
+	if err := os.Chmod(filepath.Dir(s.path), 0o700); err != nil { // #nosec G302 -- owner-only permissions are required for a private directory.
 		return fmt.Errorf("protect Codex account switch state directory: %w", err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".switch-state-*.tmp")

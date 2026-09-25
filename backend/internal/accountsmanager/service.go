@@ -99,7 +99,7 @@ func New(options Options) (*Service, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("create accounts manager state directory: %w", err)
 	}
-	if err := os.Chmod(root, 0o700); err != nil {
+	if err := os.Chmod(root, 0o700); err != nil { // #nosec G302 -- owner-only permissions are required for a private directory.
 		return nil, fmt.Errorf("protect accounts manager state directory: %w", err)
 	}
 	managerRoot := filepath.Join(root, "accounts-manager")
@@ -425,6 +425,7 @@ func (s *Service) Accounts(ctx context.Context) ([]Account, error) {
 	return accounts, nil
 }
 
+// CreateCodexAccountSwitch persists a Codex account-switch journal record.
 func (s *Service) CreateCodexAccountSwitch(ctx context.Context, record domain.CodexAccountSwitch) (domain.CodexAccountSwitch, bool, error) {
 	if s == nil || s.switches == nil {
 		return domain.CodexAccountSwitch{}, false, ports.ErrCodexProxyUnavailable
@@ -432,6 +433,7 @@ func (s *Service) CreateCodexAccountSwitch(ctx context.Context, record domain.Co
 	return s.switches.CreateCodexAccountSwitch(ctx, record)
 }
 
+// GetCodexAccountSwitch returns a Codex account-switch journal record by ID.
 func (s *Service) GetCodexAccountSwitch(ctx context.Context, id string) (domain.CodexAccountSwitch, bool, error) {
 	if s == nil || s.switches == nil {
 		return domain.CodexAccountSwitch{}, false, ports.ErrCodexProxyUnavailable
@@ -439,6 +441,7 @@ func (s *Service) GetCodexAccountSwitch(ctx context.Context, id string) (domain.
 	return s.switches.GetCodexAccountSwitch(ctx, id)
 }
 
+// GetCodexAccountSwitchByIdempotency returns a switch record by idempotency key.
 func (s *Service) GetCodexAccountSwitchByIdempotency(ctx context.Context, key string) (domain.CodexAccountSwitch, bool, error) {
 	if s == nil || s.switches == nil {
 		return domain.CodexAccountSwitch{}, false, ports.ErrCodexProxyUnavailable
@@ -446,6 +449,7 @@ func (s *Service) GetCodexAccountSwitchByIdempotency(ctx context.Context, key st
 	return s.switches.GetCodexAccountSwitchByIdempotency(ctx, key)
 }
 
+// GetActiveCodexAccountSwitch returns the current nonterminal switch record.
 func (s *Service) GetActiveCodexAccountSwitch(ctx context.Context) (domain.CodexAccountSwitch, bool, error) {
 	if s == nil || s.switches == nil {
 		return domain.CodexAccountSwitch{}, false, ports.ErrCodexProxyUnavailable
@@ -453,6 +457,7 @@ func (s *Service) GetActiveCodexAccountSwitch(ctx context.Context) (domain.Codex
 	return s.switches.GetActiveCodexAccountSwitch(ctx)
 }
 
+// UpdateCodexAccountSwitch advances a Codex account-switch journal record.
 func (s *Service) UpdateCodexAccountSwitch(ctx context.Context, record domain.CodexAccountSwitch, expected domain.CodexAccountSwitchPhase) (bool, error) {
 	if s == nil || s.switches == nil {
 		return false, ports.ErrCodexProxyUnavailable

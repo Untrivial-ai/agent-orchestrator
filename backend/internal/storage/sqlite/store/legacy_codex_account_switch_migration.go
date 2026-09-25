@@ -18,7 +18,7 @@ import (
 // boundary: new account-switch reads and writes never use SQLite.
 func (s *Store) MigrateLegacyCodexAccountSwitch(ctx context.Context, target ports.CodexAccountSwitchStore) error {
 	if target == nil {
-		return errors.New("Codex account switch migration target is unavailable")
+		return errors.New("codex account switch migration target is unavailable")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -37,7 +37,7 @@ ORDER BY created_at`)
 		}
 		return fmt.Errorf("read legacy Codex account switches: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var records []domain.CodexAccountSwitch
 	for rows.Next() {

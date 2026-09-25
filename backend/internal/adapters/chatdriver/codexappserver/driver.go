@@ -520,7 +520,8 @@ func (d *Driver) connectSession(
 // Codex. The app-server reads the scoped bearer from env_key, so no credential
 // appears in argv while account switches continue to apply to live sessions.
 func codexAppServerArgv(bin string, env map[string]string) []string {
-	argv := []string{bin, "app-server"}
+	argv := make([]string, 0, 14)
+	argv = append(argv, bin, "app-server")
 	baseURL := strings.TrimRight(strings.TrimSpace(env[ports.CodexProxyBaseURLEnv]), "/")
 	if baseURL == "" {
 		return argv
