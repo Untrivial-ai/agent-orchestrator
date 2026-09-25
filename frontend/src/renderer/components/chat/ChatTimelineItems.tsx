@@ -469,7 +469,12 @@ function useElapsedDuration(startedAt: string | undefined, active: boolean): num
 	return Number.isNaN(start) ? undefined : Math.max(0, now - start);
 }
 
-const PULSE_LOADER_FRAMES = ["⠀⠶⠀", "⠰⣿⠆", "⢾⣉⡷", "⣏⠀⣹", "⡁⠀⢈"] as const;
+const PULSE_LOADER_FRAMES = [
+	[0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0],
+	[0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
+	[1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1],
+	[1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1],
+] as const;
 
 export function PulseLoader() {
 	const [frame, setFrame] = useState(0);
@@ -487,9 +492,16 @@ export function PulseLoader() {
 			role="status"
 			aria-label="Generating response"
 			data-testid="pulse-loader"
-			className="flex size-7 items-center justify-center rounded-md font-mono text-[13px] leading-none tracking-[-0.22em] text-muted-foreground"
+			className="flex size-7 items-center justify-center rounded-md text-muted-foreground"
 		>
-			{PULSE_LOADER_FRAMES[frame]}
+			<span className="grid size-4 grid-cols-4 grid-rows-4 gap-px" aria-hidden="true">
+				{PULSE_LOADER_FRAMES[frame].map((active, index) => (
+					<span
+						key={index}
+						className={active ? "rounded-[1px] bg-current" : "rounded-[1px] bg-current/20"}
+					/>
+				))}
+			</span>
 		</span>
 	);
 }

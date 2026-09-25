@@ -260,7 +260,9 @@ describe("AssistantMessage streaming", () => {
 		const view = render(<AssistantMessage message={message()} showCopy />);
 		view.rerender(<AssistantMessage message={message({ text: "a buffered answer" })} showCopy />);
 
-		expect(screen.getByTestId("pulse-loader")).toBeInTheDocument();
+		const loader = screen.getByTestId("pulse-loader");
+		expect(loader).toBeInTheDocument();
+		expect(loader.firstElementChild?.children).toHaveLength(16);
 		expect(screen.queryByRole("button", { name: "Copy message as markdown" })).not.toBeInTheDocument();
 	});
 
