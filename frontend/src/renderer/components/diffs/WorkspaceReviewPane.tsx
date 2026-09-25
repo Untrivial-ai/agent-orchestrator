@@ -36,9 +36,6 @@ const workingScopeOrder = ["unstaged", "staged"] as const;
 const SOURCE_CONTROL = MENU_TRIGGER_CHROME;
 // Height of the custom per-file header row below (h-9).
 const FILE_HEADER_HEIGHT_PX = 36;
-// Secondary file actions stay out of the way until the row is hovered or a
-// control inside it has keyboard focus (so they remain reachable by Tab).
-const FILE_HEADER_HOVER_ACTIONS = "flex items-center opacity-0 transition-opacity duration-fast group-hover/file-header:opacity-100 group-focus-within/file-header:opacity-100";
 // Files whose patch proves they end at the last hunk get their full contents up
 // front, so their diff has no dead "More unchanged context may be available"
 // row. Bounded so a big review doesn't fetch every file; beyond these limits the
@@ -644,22 +641,23 @@ export function WorkspaceReviewPane({
 												</span>
 											</span>
 										</div>
+										{/* Every action is always visible in a 24px slot, 8px apart: the same
+										    32px pitch as the Files header buttons, so the checkbox and feedback
+										    button sit under the header's trailing columns. */}
 										<div className="ml-auto flex shrink-0 items-center gap-2 pl-2" onClick={(event) => event.stopPropagation()}>
-											<div className={FILE_HEADER_HOVER_ACTIONS}>
-												{file.editable && file.fileFingerprint ? (
-													<HeaderActionTooltip label={t("files.editFile")}>
-														<Button aria-label={t("files.editFile")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { editing: true, mode: "file", scope })} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button>
-													</HeaderActionTooltip>
-												) : null}
-												<HeaderActionTooltip label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}>
-													<Button aria-label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: renderedAvailable ? "rendered" : "file" })} size="icon-sm" type="button" variant="ghost"><FileCode2 aria-hidden="true" className="size-icon-sm" /></Button>
+											{file.editable && file.fileFingerprint ? (
+												<HeaderActionTooltip label={t("files.editFile")}>
+													<Button aria-label={t("files.editFile")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { editing: true, mode: "file", scope })} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button>
 												</HeaderActionTooltip>
-												{onOpenFile ? (
-													<HeaderActionTooltip label={t("files.openDiffInCenter")}>
-														<Button aria-label={t("files.openDiffInCenter")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile(file.path, { ...fileOpenContext, mode: "diff" })} size="icon-sm" type="button" variant="ghost"><VscodeGoToFileIcon aria-hidden="true" className="size-icon-sm" /></Button>
-													</HeaderActionTooltip>
-												) : null}
-											</div>
+											) : null}
+											<HeaderActionTooltip label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}>
+												<Button aria-label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: renderedAvailable ? "rendered" : "file" })} size="icon-sm" type="button" variant="ghost"><FileCode2 aria-hidden="true" className="size-icon-sm" /></Button>
+											</HeaderActionTooltip>
+											{onOpenFile ? (
+												<HeaderActionTooltip label={t("files.openDiffInCenter")}>
+													<Button aria-label={t("files.openDiffInCenter")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile(file.path, { ...fileOpenContext, mode: "diff" })} size="icon-sm" type="button" variant="ghost"><VscodeGoToFileIcon aria-hidden="true" className="size-icon-sm" /></Button>
+												</HeaderActionTooltip>
+											) : null}
 											<HeaderActionTooltip label={t("files.addFeedback")}>
 												<Button aria-label={t("files.addFeedback")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint })} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
 											</HeaderActionTooltip>
