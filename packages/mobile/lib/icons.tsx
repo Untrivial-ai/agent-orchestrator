@@ -14,6 +14,7 @@ import Bookmark from "lucide-react-native/icons/bookmark";
 import CameraOff from "lucide-react-native/icons/camera-off";
 import Check from "lucide-react-native/icons/check";
 import CircleCheck from "lucide-react-native/icons/circle-check";
+import CircleDashedCheck from "lucide-react-native/icons/circle-dashed-check";
 import SquareCheck from "lucide-react-native/icons/square-check";
 import ChevronDown from "lucide-react-native/icons/chevron-down";
 import ChevronLeft from "lucide-react-native/icons/chevron-left";
@@ -127,6 +128,7 @@ export const glyphs = {
 	"camera-off": CameraOff,
 	"check": Check,
 	"check-circle": CircleCheck,
+	"circle-dashed-check": CircleDashedCheck,
 	"check-square": SquareCheck,
 	"chevron-down": ChevronDown,
 	"chevron-left": ChevronLeft,

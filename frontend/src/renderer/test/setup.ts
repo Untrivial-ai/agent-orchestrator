@@ -190,6 +190,7 @@ if (typeof window !== "undefined") {
 				isLoading: false,
 			}),
 		setBounds: () => undefined,
+		onBoundsApplied: () => () => undefined,
 		setOverlayOpen: () => undefined,
 		navigate: async ({ viewId }: { viewId: string }) => ({
 				viewId,

@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
 	ensureTargetedReadiness: vi.fn(),
 	agentValues: [] as string[],
 	agentCatalog: undefined as { agents: ReturnType<typeof import("../test/agent-readiness-fixtures").agentReadiness>[] } | undefined,
+	cloudProjects: [] as Array<{ id: string; displayName: string; repositoryUrl: string; defaultBranch: string; config: Record<string, unknown> }>,
 }));
 
 vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
@@ -62,6 +63,22 @@ vi.mock("../lib/api-client", () => ({
 
 vi.mock("../lib/telemetry", () => ({ captureRendererEvent: h.capture }));
 
+vi.mock("../hooks/useWorkspaceQuery", () => ({
+	useCloudProjectsQuery: () => ({ data: h.cloudProjects }),
+	cloudProjectsQueryKey: ["cloud-projects"] as const,
+	useCloudSessionsQuery: () => ({ data: [] }),
+	cloudSessionsQueryKey: ["cloud-sessions"] as const,
+}));
+
+vi.mock("../hooks/useCloudOrg", () => ({
+	useCloudOrg: () => ({ org: undefined }),
+}));
+
+vi.mock("../hooks/useCloudCp", () => ({
+	useCloudCp: () => ({ client: undefined }),
+}));
+
+
 import { TaskComposer } from "./TaskComposer";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
@@ -104,6 +121,7 @@ afterEach(() => {
 	h.ensureReadiness.mockReset();
 	h.ensureTargetedReadiness.mockReset();
 	h.agentCatalog = undefined;
+	h.cloudProjects.length = 0;
 	vi.unstubAllGlobals();
 	h.agentValues.length = 0;
 	window.localStorage.removeItem("ao.taskComposer.preferences.v1");
@@ -126,7 +144,7 @@ describe("TaskComposer", () => {
 		);
 
 		await waitFor(() => expect(screen.getByLabelText("Agent")).toHaveAttribute("data-value", "codex"));
-		expect(screen.queryByRole("status", { name: "Loading models…" })).not.toBeInTheDocument();
+		await waitFor(() => expect(screen.queryByRole("status", { name: "Loading models…" })).not.toBeInTheDocument());
 	});
 
 	it("preserves an explicitly selected standalone agent when readiness rankings refresh", async () => {
@@ -409,6 +427,43 @@ describe("TaskComposer", () => {
 		expect(h.get.mock.calls.some(([path]) => path === "/api/v1/projects/{id}")).toBe(false);
 	});
 
+	it("sends the selected effort when starting a standalone worker", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "codex",
+						selectionMode: "text",
+						models: [{ id: "gpt-5", label: "GPT-5", isDefault: true, efforts: ["high"] }],
+						allowCustom: true,
+						refreshRecommended: false,
+					},
+				};
+			}
+			return { data: { status: "ok", project: { config: {} } } };
+		});
+		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-1" } } });
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="__standalone__" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+
+		fireEvent.click(screen.getByLabelText("Agent"));
+		const effort = await screen.findByRole("button", { name: "Effort" });
+		await userEvent.click(effort);
+		await userEvent.click(screen.getByRole("menuitem", { name: "High" }));
+		fireEvent.click(screen.getByText("Start task"));
+
+		await waitFor(() =>
+			expect(h.post).toHaveBeenCalledWith(
+				"/api/v1/sessions",
+				expect.objectContaining({ body: expect.objectContaining({ effort: "high" }) }),
+			),
+		);
+	});
+
 	it("ensures display readiness for every harness when the composer opens", async () => {
 		render(
 			<Wrap>
@@ -436,15 +491,88 @@ describe("TaskComposer", () => {
 		);
 	});
 
+	it("submits a gateway-backed Claude project when refreshed global readiness is unauthorized", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return { data: { agent: "claude-code", selectionMode: "text", models: [], allowCustom: true } };
+			}
+			return {
+				data: {
+					status: "ok",
+					project: {
+						agent: "claude-code",
+						config: { env: { ANTHROPIC_BASE_URL: "https://gateway.example" } },
+					},
+				},
+			};
+		});
+		const unauthorized = agentReadiness("claude-code", "Claude Code", { authentication: "unauthorized" });
+		h.ensureTargetedReadiness.mockResolvedValueOnce({ agents: [unauthorized] });
+		h.post.mockResolvedValueOnce({ data: { workerId: "worker-1" } });
+		const onCreated = vi.fn();
+
+		render(
+			<Wrap>
+				<TaskComposer projectId="proj-1" onCreated={onCreated} />
+			</Wrap>,
+		);
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
+		fireEvent.click(screen.getByRole("button", { name: "Start task" }));
+
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("worker-1"));
+		expect(h.ensureTargetedReadiness).toHaveBeenCalledWith(["claude-code"], "launch");
+	});
+
+	it("keeps submission enabled for a gateway-backed Claude project when cached global readiness is unauthorized", async () => {
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return { data: { agent: "claude-code", selectionMode: "text", models: [], allowCustom: true } };
+			}
+			return {
+				data: {
+					status: "ok",
+					project: {
+						agent: "claude-code",
+						config: { env: { ANTHROPIC_BASE_URL: "https://gateway.example" } },
+					},
+				},
+			};
+		});
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		h.agentCatalog = {
+			agents: [agentReadiness("claude-code", "Claude Code", { authentication: "unauthorized" })],
+		};
+		h.ensureTargetedReadiness.mockResolvedValueOnce({
+			agents: [agentReadiness("claude-code", "Claude Code", { authentication: "authorized" })],
+		});
+		h.post.mockResolvedValueOnce({ data: { workerId: "worker-1" } });
+
+		render(
+			<Wrap queryClient={queryClient}>
+				<TaskComposer projectId="proj-1" onCreated={vi.fn()} />
+			</Wrap>,
+		);
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "claude-code"));
+		const submit = screen.getByRole("button", { name: "Start task" });
+		expect(submit).toBeEnabled();
+		fireEvent.click(submit);
+
+		await waitFor(() => expect(h.ensureTargetedReadiness).toHaveBeenCalledWith(["claude-code"], "launch"));
+		await waitFor(() => expect(h.post).toHaveBeenCalled());
+	});
+
 	it("waits for project context before allowing a local task to start", async () => {
 		let resolveProject!: (value: unknown) => void;
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
 				return { data: { agent: "codex", selectionMode: "text", models: [], allowCustom: true } };
 			}
-			return new Promise((resolve) => {
-				resolveProject = resolve;
-			});
+			if (path === "/api/v1/projects/{id}") {
+				return new Promise((resolve) => {
+					resolveProject = resolve;
+				});
+			}
+			return { data: undefined };
 		});
 
 		render(
@@ -465,7 +593,10 @@ describe("TaskComposer", () => {
 		await waitForTaskReady();
 	});
 
-	it("waits for and caches targeted readiness after a binary launch failure", async () => {
+	it.each([
+		["binary launch failure", "AGENT_BINARY_NOT_FOUND"],
+		["project credential rejection", "AGENT_AUTH_REQUIRED"],
+	] as const)("waits for and caches targeted readiness after a %s", async (_name, errorCode) => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
 				return { data: { agent: "codex", selectionMode: "text", models: [], allowCustom: true } };
@@ -473,17 +604,19 @@ describe("TaskComposer", () => {
 			return { data: { status: "ok", project: { agent: "codex", config: {} } } };
 		});
 		h.post.mockResolvedValueOnce({
-			error: { code: "AGENT_BINARY_NOT_FOUND", message: "Codex is not installed" },
+			error: { code: errorCode, message: "Codex is not ready" },
 		});
+		const stale = agentReadiness("codex", "Codex", { freshness: "stale" });
+		const completed = agentReadiness("codex", "Codex", { installation: "not_installed" });
 		let finishReadiness!: (value: { agents: ReturnType<typeof agentReadiness>[] }) => void;
-		h.ensureTargetedReadiness.mockReturnValueOnce(
+		h.ensureTargetedReadiness
+			.mockResolvedValueOnce({ agents: [stale] })
+			.mockReturnValueOnce(
 			new Promise((resolve) => {
 				finishReadiness = resolve;
 			}),
-		);
+			);
 		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-		const stale = agentReadiness("codex", "Codex", { freshness: "stale" });
-		const completed = agentReadiness("codex", "Codex", { installation: "not_installed" });
 		queryClient.setQueryData(agentReadinessQueryKey, { agents: [stale] });
 
 		render(
@@ -494,13 +627,12 @@ describe("TaskComposer", () => {
 		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "codex"));
 		fireEvent.click(screen.getByRole("button", { name: "Start task" }));
 
-		await waitFor(() =>
-			expect(h.ensureTargetedReadiness).toHaveBeenCalledWith(["codex"], "launch"),
-		);
-		expect(screen.queryByText("Codex is not installed")).not.toBeInTheDocument();
+		await waitFor(() => expect(h.ensureTargetedReadiness).toHaveBeenCalledTimes(2));
+		expect(h.ensureTargetedReadiness).toHaveBeenLastCalledWith(["codex"], "launch");
+		expect(screen.queryByText("Codex is not ready")).not.toBeInTheDocument();
 
 		await act(async () => finishReadiness({ agents: [completed] }));
-		expect(await screen.findByText("Codex is not installed")).toBeInTheDocument();
+		expect(await screen.findByText("Codex is not ready")).toBeInTheDocument();
 		expect(queryClient.getQueryData(agentReadinessQueryKey)).toEqual({ agents: [completed] });
 	});
 
@@ -772,9 +904,27 @@ describe("TaskComposer", () => {
 		const body = h.post.mock.calls[0][1].body as {
 			attachments?: Array<{ mimeType: string; data: string }>;
 		};
+		expect(h.post.mock.calls[0][1].headers).toEqual({ "X-AO-Attachment-Upload": "1" });
 		expect(body.attachments).toHaveLength(1);
 		expect(body.attachments?.[0].mimeType).toBe("text/plain");
 		expect(body.attachments?.[0].data.length).toBeGreaterThan(0);
+	});
+
+	it("rejects cloud task attachments instead of silently dropping them", async () => {
+		h.cloudProjects.push({ id: "cloud-1", displayName: "Cloud", repositoryUrl: "https://example.com/repo", defaultBranch: "main", config: {} });
+		const onCreated = vi.fn();
+		const { container } = render(<Wrap><TaskComposer projectId="cloud-1" onCreated={onCreated} /></Wrap>);
+		const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+		fireEvent.change(input, { target: { files: [new File(["notes"], "notes.txt", { type: "text/plain" })] } });
+		expect(await screen.findByText("notes.txt")).toBeInTheDocument();
+
+		fireEvent.change(task(), { target: { value: "Read the notes" } });
+		await waitForTaskReady();
+		fireEvent.click(startTask());
+
+		expect(await screen.findByRole("alert")).toHaveTextContent("File attachments are not supported for cloud tasks yet.");
+		expect(onCreated).not.toHaveBeenCalled();
+		expect(h.post).not.toHaveBeenCalled();
 	});
 
 	it("waits for a selected file read before submitting", async () => {
@@ -887,6 +1037,7 @@ describe("TaskComposer", () => {
 		fireEvent.click(screen.getByText("Start task"));
 
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(1));
+		expect(h.post.mock.calls[0][1].headers).toBeUndefined();
 		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("attachments");
 	});
 
@@ -1029,6 +1180,41 @@ describe("TaskComposer", () => {
 		expect(h.post.mock.calls[1][1].body).not.toHaveProperty("mode");
 	});
 
+	it("starts a standalone Unreal task in Chat after approval-less retry", async () => {
+		h.agentCatalog = { agents: [agentReadiness("unreal-agent", "Unreal Agent")] };
+		h.get.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/settings") {
+				return { data: { defaultSessionMode: "tui", chatHarnesses: ["unreal-agent"] } };
+			}
+			if (path.includes("/models")) {
+				return { data: { agent: "unreal-agent", selectionMode: "text", models: [], allowCustom: true } };
+			}
+			return { data: { status: "ok", project: { config: {} } } };
+		});
+		h.post
+			.mockResolvedValueOnce({
+				error: {
+					code: "SESSION_MODE_UNSUPPORTED",
+					message: "This provider cannot satisfy the selected approval policy",
+					details: { missingCapabilities: ["approvals"], allowedApprovalModes: ["bypass-permissions"] },
+				},
+			})
+			.mockResolvedValueOnce({ data: { session: { id: "sess-unreal" } } });
+		const onCreated = vi.fn();
+
+		render(<Wrap><TaskComposer projectId="__standalone__" onCreated={onCreated} /></Wrap>);
+		await waitFor(() => expect(screen.getByTestId("agent-field")).toHaveAttribute("data-value", "unreal-agent"));
+		fireEvent.change(task(), { target: { value: "Say hello" } });
+		fireEvent.click(startTask());
+		fireEvent.click(await screen.findByRole("button", { name: "Start without approvals" }));
+
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("sess-unreal"));
+		expect(h.post.mock.calls[0][1].body).toMatchObject({ harness: "unreal-agent", mode: "chat" });
+		expect(h.post.mock.calls[1][1].body).toMatchObject({
+			harness: "unreal-agent", mode: "chat", approvalMode: "bypass-permissions",
+		});
+	});
+
 	it("reports dirty then clears it on unmount", () => {
 		const onDirtyChange = vi.fn();
 		const { unmount } = render(
@@ -1130,6 +1316,7 @@ describe("TaskComposer", () => {
 			}
 			return { data: { status: "ok", project: { agent: "claude-code", config: {} } } };
 		});
+		h.post.mockResolvedValueOnce({ data: { workerId: "claude-worker" } });
 
 		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
 

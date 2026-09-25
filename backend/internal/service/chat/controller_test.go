@@ -5297,6 +5297,40 @@ func TestServiceLiveReconnectKeepsDurableRunningTurnBusy(t *testing.T) {
 	if after.Metadata.ControllerGeneration == before.Metadata.ControllerGeneration {
 		t.Fatal("generation did not rotate")
 	}
+	// ACP adapters emit their initialized ready state before live reconnect
+	// restores ownership of the durable turn. The queued notification is stale
+	// once that ownership has been restored and must not make the controller
+	// claim it is ready while the durable turn is still running.
+	secondProvider.emit(ports.ChatEvent{
+		Kind: ports.ChatEventControllerState, ProviderEventID: "reconnect-ready",
+		ControllerState: ports.ChatControllerReady,
+	})
+	deadline := time.Now().Add(time.Second)
+	readyProjected := false
+	for time.Now().Before(deadline) {
+		events, readErr := st.ProviderEventsSince(context.Background(), secondController.ConversationID(), 0, 10_000)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		seen := false
+		for _, event := range events {
+			if event.ProviderEventID == "reconnect-ready" {
+				seen = true
+				break
+			}
+		}
+		if seen {
+			readyProjected = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !readyProjected {
+		t.Fatal("reconnect ready event was not projected")
+	}
+	if got := secondController.State(); got != ports.ChatControllerBusy {
+		t.Fatalf("controller state after reconnect ready event = %q, want busy for durable running turn", got)
+	}
 	queued, err := secondController.Send(context.Background(), ports.ChatUserMessage{Text: "after restart"})
 	if err != nil {
 		t.Fatalf("reconnect Send: %v", err)

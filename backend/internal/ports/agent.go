@@ -13,6 +13,9 @@ var (
 	ErrUnsupportedEffort = errors.New("unsupported model effort")
 	// ErrModelCapabilitiesUnavailable reports tuning that cannot be validated safely.
 	ErrModelCapabilitiesUnavailable = errors.New("model capabilities unavailable")
+	// ErrAgentAuthRequired means a launch-fresh provider check rejected the
+	// credential selected by the session's cwd and environment.
+	ErrAgentAuthRequired = errors.New("agent requires authentication")
 )
 
 // ErrAgentBinaryNotFound is returned by agent adapters when neither PATH nor
@@ -28,6 +31,12 @@ var ErrAgentBinaryNotFound = errors.New("agent: binary not found on PATH")
 // callers must not present an unverified name-only match as installed.
 var ErrAgentBinaryIdentityUnknown = errors.New("agent: binary identity unknown")
 
+// ErrAgentModelDiscoverySignInRequired is returned by model discovery when the
+// agent's model-list command would start an interactive sign-in because the
+// CLI is not confirmed as signed in. It is not a discovery failure: callers
+// keep the last catalog and retry once the agent reports a login.
+var ErrAgentModelDiscoverySignInRequired = errors.New("agent: sign-in required to list models")
+
 // AgentAuthStatus describes the result of a short local auth probe for an
 // installed agent. It is advisory only: credentials, quota, selected model
 // availability, or CLI state can still fail at session spawn/model-call time.
@@ -42,6 +51,13 @@ const (
 	AgentAuthStatusUnauthorized AgentAuthStatus = "unauthorized"
 	// AgentAuthStatusUnknown means the daemon could not determine auth status.
 	AgentAuthStatusUnknown AgentAuthStatus = "unknown"
+	// AgentAuthStatusConfigured means a credential is present locally but no
+	// check has proven it valid. Presence is not validity: a key can be
+	// revoked, downgraded, or rate-limited with no change on disk, so only a
+	// provider round-trip may report AgentAuthStatusAuthorized. Local evidence
+	// (a config file, an env var, or a CLI that reports loggedIn) reports
+	// configured instead, and must never render as a ready state.
+	AgentAuthStatusConfigured AgentAuthStatus = "configured"
 )
 
 // Agent is the contract every CLI coding agent adapter (claude-code, codex, …)
@@ -76,6 +92,14 @@ type Agent interface {
 // a cheap local authentication status probe.
 type AgentAuthChecker interface {
 	AuthStatus(ctx context.Context) (AgentAuthStatus, error)
+}
+
+// AgentLaunchAuthValidator is the optional launch gate for adapters whose
+// credential source depends on the project cwd or environment. Implementations
+// must perform a fresh provider check instead of trusting display/readiness
+// caches; unknown or uncheckable credentials remain advisory.
+type AgentLaunchAuthValidator interface {
+	ValidateLaunchAuth(ctx context.Context, workingDir string, env map[string]string) (AgentAuthStatus, error)
 }
 
 // AgentBinaryResolver is the optional capability adapters expose when their
@@ -176,10 +200,15 @@ const (
 
 // AgentModelInfo is one model or mode that an adapter reports as selectable.
 type AgentModelInfo struct {
-	ID            string   `json:"id"`
-	Label         string   `json:"label"`
-	Provider      string   `json:"provider,omitempty"`
-	IsDefault     bool     `json:"isDefault,omitempty"`
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Provider  string `json:"provider,omitempty"`
+	IsDefault bool   `json:"isDefault,omitempty"`
+	// Efforts are the reasoning levels this specific model accepts, in the
+	// provider's own ascending order. Empty means the model takes no effort
+	// setting, which is a real answer rather than a missing one — Sonnet 4.5
+	// and Haiku 4.5 accept none while the 5 family accepts five — so a picker
+	// must render no effort control at all rather than an empty one.
 	Efforts       []string `json:"efforts,omitempty"`
 	DefaultEffort string   `json:"defaultEffort,omitempty"`
 }
@@ -368,6 +397,13 @@ type AgentResolver interface {
 // nudge — see harnessNudgeSafe.
 type SubmitActivitySignaler interface {
 	EmitsSubmitActivity() bool
+}
+
+// SemanticMessageAcceptanceSignaler is implemented only by TUI adapters whose
+// native prompt hook returns the accepted prompt text to AO. It lets internal
+// durable senders correlate a specific message with provider acceptance.
+type SemanticMessageAcceptanceSignaler interface {
+	EmitsSemanticMessageAcceptance() bool
 }
 
 // BlockedActivitySignaler is an OPTIONAL capability an Agent adapter may
