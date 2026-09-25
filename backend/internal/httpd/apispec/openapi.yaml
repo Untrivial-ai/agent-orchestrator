@@ -9122,12 +9122,22 @@ components:
           format: int64
           minimum: 0
           type: integer
+        unpricedReason:
+          description: Why estimatedCost is null, when the session has usage.
+          enum:
+          - pending_attribution
+          - unidentified_route
+          - no_catalog_rates
+          type:
+          - "null"
+          - string
       required:
       - sessionId
       - processedTokens
       - totalTokens
       - incomplete
       - estimatedCost
+      - unpricedReason
       type: object
     ConsumeCodexAccountResetCreditRequest:
       properties:
@@ -13435,6 +13445,17 @@ components:
           type:
           - "null"
           - integer
+        unpricedReason:
+          description: Why estimatedCost is null, when the scope has usage. Distinguishes
+            an estimate that is still pending attribution from one that can never
+            arrive.
+          enum:
+          - pending_attribution
+          - unidentified_route
+          - no_catalog_rates
+          type:
+          - "null"
+          - string
       required:
       - inputTokens
       - cachedInputTokens
@@ -13443,6 +13464,7 @@ components:
       - processedTokens
       - cacheReadTokens
       - estimatedCost
+      - unpricedReason
       type: object
     WorkspaceCommitSummary:
       properties:
