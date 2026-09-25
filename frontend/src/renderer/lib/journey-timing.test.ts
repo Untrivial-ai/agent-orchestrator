@@ -68,13 +68,17 @@ it("records failures and timeouts without late success", async () => {
 	]);
 });
 
-it("cancels a hidden session and samples completed journeys", async () => {
+it("omits hidden file surfaces, counts navigation away, and samples journeys", async () => {
 	const now = vi.spyOn(performance, "now").mockReturnValue(1_000);
 	const timing = await import("./journey-timing");
 	timing.startSessionOpen("file-session");
 	now.mockReturnValue(1_100);
-	timing.cancelHiddenSession("file-session");
+	timing.skipHiddenSession("file-session");
 	timing.sessionUsable("file-session", "tui");
+	expect(capture).not.toHaveBeenCalled();
+	timing.startSessionOpen("old-session");
+	now.mockReturnValue(1_200);
+	timing.startSessionOpen("new-session");
 	expect(capture).toHaveBeenCalledExactlyOnceWith("ao.renderer.session_open_timing", {
 		duration_ms: 100,
 		outcome: "cancelled",

@@ -100,10 +100,16 @@ export function sessionUsable(sessionId: string, surface: Surface): void {
 	if (pendingTask?.sessionId === sessionId) finishTask("ready", surface);
 }
 
-/** A selected file tab hides the chat or terminal surface. */
-export function cancelHiddenSession(sessionId: string): void {
-	if (pendingSession?.sessionId === sessionId) finishSession("cancelled");
-	if (pendingTask?.sessionId === sessionId) finishTask("cancelled");
+/** A selected file tab is outside the chat and terminal journey. */
+export function skipHiddenSession(sessionId: string): void {
+	if (pendingSession?.sessionId === sessionId) {
+		clearTimeout(pendingSession.timer);
+		pendingSession = undefined;
+	}
+	if (pendingTask?.sessionId === sessionId) {
+		clearTimeout(pendingTask.timer);
+		pendingTask = undefined;
+	}
 }
 
 /** Main measures its own monotonic clock from native window creation. */

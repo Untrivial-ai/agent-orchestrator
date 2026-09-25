@@ -382,9 +382,10 @@ function ShellLayout() {
 		if (usesPreviewWorkspaceData || isStartupLoading || startupTimingRequestedRef.current) return;
 		const readElapsed = aoBridge.window.startupElapsed;
 		if (!readElapsed) return;
-		startupTimingRequestedRef.current = true;
 		const outcome = daemonStatus.state === "ready" && workspaceStartupState === "ready" ? "ready" : "failed";
 		requestAnimationFrame(() => requestAnimationFrame(() => {
+			if (startupTimingRequestedRef.current) return;
+			startupTimingRequestedRef.current = true;
 			void readElapsed()
 				.then((elapsed) => {
 					if (elapsed !== null) recordStartupTiming(elapsed, outcome);

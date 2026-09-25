@@ -84,6 +84,8 @@ and 200 per day, so capped counts are not fleet totals.
 Startup and session navigation are timed out after two minutes; task creation after five
 minutes. Navigating away records `cancelled`. Startup begins after pre-window
 Electron initialization, so it does not represent process launch time.
+Opening a session with a file tab selected is omitted from the chat and
+terminal timing events.
 
 ## What AO does not intentionally send
 
