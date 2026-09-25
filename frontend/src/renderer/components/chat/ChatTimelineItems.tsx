@@ -120,7 +120,6 @@ const STREAM_BASE_CHARACTERS_PER_SECOND = 58;
 const STREAM_TARGET_BACKLOG_CHARACTERS = 72;
 const STREAM_MAX_CHARACTERS_PER_SECOND = 720;
 const STREAM_MAX_FRAME_DELTA_MS = 100;
-const STREAM_MAX_DISPLAY_LAG_MS = 200;
 const STREAM_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 function streamGraphemes(text: string): string[] {
@@ -140,11 +139,15 @@ function reconciledStreamPrefix(visibleText: string, targetGraphemes: string[]) 
 }
 
 function useSmoothStreamingText(message: ConversationMessage): string {
+	// STRICT STREAMING INVARIANT: while a message is streaming, provider text is
+	// an append-only target. Never replace the visible prefix with a partial
+	// snapshot or flush the whole target mid-stream; doing either drops the
+	// smooth queue and makes the response jump. Only a completed stream (or a
+	// genuinely late background-tab frame) may flush the target.
 	// A snapshot can first reach the renderer after the provider has already emitted
 	// text. Keep that first durable burst visible; only later deltas need smoothing.
 	const [visibleText, setVisibleText] = useState(() => message.text);
 	const visibleRef = useRef(visibleText);
-	const targetRef = useRef(message.text);
 	const targetGraphemes = useMemo(() => streamGraphemes(message.text), [message.text]);
 	const visibleGraphemeCountRef = useRef(targetGraphemes.length);
 	const targetGraphemesRef = useRef(targetGraphemes);
@@ -174,7 +177,6 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 
 	const scheduleDrain = useCallback(() => {
 		if (frameRef.current !== undefined) return;
-		const drainStartedAt = performance.now();
 
 		const tick = (now: number) => {
 			frameRef.current = undefined;
@@ -185,13 +187,14 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 				fractionalCharactersRef.current = 0;
 				return;
 			}
-
-			// New snapshots share this drain's deadline. Use real elapsed time so a
-			// background tab catches up even if it has not received its first frame.
-			if (now - drainStartedAt >= STREAM_MAX_DISPLAY_LAG_MS) {
-				visibleRef.current = targetRef.current;
+			// A throttled/hidden tab can deliver one very late frame. In that case,
+			// render the current target once instead of replaying stale animation time.
+			const elapsedSincePrevious = now - previousFrameAt;
+			if (elapsedSincePrevious > STREAM_MAX_FRAME_DELTA_MS) {
+				const latest = targetGraphemesRef.current.join("");
+				visibleRef.current = latest;
 				visibleGraphemeCountRef.current = targetGraphemesRef.current.length;
-				setVisibleText(targetRef.current);
+				setVisibleText(latest);
 				cancelDrain();
 				return;
 			}
@@ -223,7 +226,7 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 			}
 		};
 
-		lastFrameAtRef.current = undefined;
+		lastFrameAtRef.current = performance.now();
 		fractionalCharactersRef.current = 0;
 		frameRef.current = window.requestAnimationFrame(tick);
 	}, [cancelDrain]);
@@ -232,7 +235,6 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 		if (message.id !== messageIdRef.current) {
 			cancelDrain();
 			messageIdRef.current = message.id;
-			targetRef.current = message.text;
 			targetGraphemesRef.current = targetGraphemes;
 			const initial = message.text;
 			visibleRef.current = initial;
@@ -241,7 +243,6 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 			return;
 		}
 
-		targetRef.current = message.text;
 		targetGraphemesRef.current = targetGraphemes;
 		if (!message.streaming || reducedMotion) {
 			cancelDrain();
