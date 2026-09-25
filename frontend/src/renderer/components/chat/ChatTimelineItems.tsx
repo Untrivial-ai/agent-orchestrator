@@ -469,31 +469,14 @@ function useElapsedDuration(startedAt: string | undefined, active: boolean): num
 	return Number.isNaN(start) ? undefined : Math.max(0, now - start);
 }
 
-const SNAKE_LOADER_FRAMES = [
-	"⣁⡀",
-	"⣉⠀",
-	"⡉⠁",
-	"⠉⠉",
-	"⠈⠙",
-	"⠀⠛",
-	"⠐⠚",
-	"⠒⠒",
-	"⠖⠂",
-	"⠶⠀",
-	"⠦⠄",
-	"⠤⠤",
-	"⠠⢤",
-	"⠀⣤",
-	"⢀⣠",
-	"⣀⣀",
-] as const;
+const PULSE_LOADER_FRAMES = ["⠀⠀", "⠐⠂", "⠶⠶", "⣿⣿", "⠶⠶", "⠐⠂", "⠀⠀"] as const;
 
-export function SnakeLoader() {
+export function PulseLoader() {
 	const [frame, setFrame] = useState(0);
 
 	useEffect(() => {
 		const interval = window.setInterval(
-			() => setFrame((current) => (current + 1) % SNAKE_LOADER_FRAMES.length),
+			() => setFrame((current) => (current + 1) % PULSE_LOADER_FRAMES.length),
 			80,
 		);
 		return () => window.clearInterval(interval);
@@ -503,10 +486,10 @@ export function SnakeLoader() {
 		<span
 			role="status"
 			aria-label="Generating response"
-			data-testid="snake-loader"
+			data-testid="pulse-loader"
 			className="-ml-1.5 flex size-7 items-center justify-center rounded-md font-mono text-[13px] leading-none tracking-[-0.22em] text-muted-foreground"
 		>
-			{SNAKE_LOADER_FRAMES[frame]}
+			{PULSE_LOADER_FRAMES[frame]}
 		</span>
 	);
 }
@@ -830,7 +813,7 @@ export function AssistantMessage({
 				<div className="mt-1 flex h-7 items-center gap-0.5">
 					{showCopy ? (
 						showLiveActions ? (
-							<SnakeLoader />
+							<PulseLoader />
 						) : (
 							/* The stored markdown, not a re-serialization of what was rendered:
 							   pasting it into an editor has to give back what the agent wrote. */

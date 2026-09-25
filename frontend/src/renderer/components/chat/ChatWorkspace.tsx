@@ -95,7 +95,7 @@ import {
 	ActivityRow,
 	ApprovalCard,
 	AssistantMessage,
-	SnakeLoader,
+	PulseLoader,
 	CompactionMarker,
 	HumanMessage,
 	OriginMessage,
@@ -3302,19 +3302,16 @@ const TurnGroup = memo(function TurnGroup({
 			    way back or a record of how long it took. */}
 			{!copyableMessageId &&
 			(group.live || canRollback || (group.outcome?.durationMs !== undefined && group.outcome.durationMs > 0)) ? (
-				<div className="mt-1 flex h-7 items-center gap-0.5">
-					{group.live ? (
-						<>
-							<SnakeLoader />
-							<span
-								role="status"
-								data-testid="live-working-label"
-								className="chat-working-shimmer text-xs font-medium"
-							>
-								Working
-							</span>
-						</>
-					) : null}
+				<>
+				{group.live ? (
+					<div className="mb-0.5 pl-1 text-xs font-medium">
+						<span role="status" data-testid="live-working-label" className="chat-working-shimmer">
+							Working
+						</span>
+					</div>
+				) : null}
+				<div className="flex h-7 items-center gap-0.5">
+					{group.live ? <PulseLoader /> : null}
 					{canRollback ? (
 						<button
 							type="button"
@@ -3331,6 +3328,7 @@ const TurnGroup = memo(function TurnGroup({
 						<TurnDuration durationMs={group.outcome.durationMs} />
 					) : null}
 				</div>
+				</>
 			) : null}
 			{group.outcome && group.outcome.state !== "completed" ? (
 				<TurnOutcome
