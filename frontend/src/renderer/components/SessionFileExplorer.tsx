@@ -220,10 +220,7 @@ export function SessionFileExplorer({
 					<DropdownMenuContent align="start" className="w-max max-w-72">
 						{reviewMenu?.scopes.map((scope) => (
 							<DropdownMenuItem className="gap-1.5" key={scope.key} onSelect={scope.select}>
-								<span className="flex min-w-0 items-baseline gap-1.5">
-									<span className="min-w-0 truncate">{scope.label}</span>
-									<span className="shrink-0 tabular-nums text-muted-foreground">{scope.count}</span>
-								</span>
+								<span className="min-w-0 truncate">{scope.label}</span>
 								<span className="ml-auto flex size-4 shrink-0 items-center justify-center">
 									{scope.selected ? <Check aria-hidden="true" className="text-logo-accent" /> : null}
 								</span>

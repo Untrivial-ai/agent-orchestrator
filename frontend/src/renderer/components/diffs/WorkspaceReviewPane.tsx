@@ -48,7 +48,7 @@ const END_OF_FILE_HOLD_MS = 1500;
 export type ReviewSourceMenu = {
 	/** Short description of the current review source, shown on the trigger. */
 	label: string;
-	scopes: { key: string; label: string; count: number; selected: boolean; select: () => void }[];
+	scopes: { key: string; label: string; selected: boolean; select: () => void }[];
 	commits: { sha: string; subject: string; timestamp: string; selected: boolean; select: () => void }[];
 };
 
@@ -472,7 +472,7 @@ export function WorkspaceReviewPane({
 		return {
 			label: selectedCommit ? selectedCommit.sha.slice(0, 7) : label(scope),
 			scopes: showReviewScopeSwitcher
-				? scopeEntries.map((entry) => ({ key: entry, label: label(entry), count: sectionFiles(data, entry).length, selected: scope === entry, select: () => menuActionsRef.current.selectScope(entry) }))
+				? scopeEntries.map((entry) => ({ key: entry, label: label(entry), selected: scope === entry, select: () => menuActionsRef.current.selectScope(entry) }))
 				: [],
 			commits: data.commits.map((commit) => ({ sha: commit.sha, subject: commit.subject, timestamp: commit.timestamp, selected: scope === "committed" && selectedCommit?.sha === commit.sha, select: () => menuActionsRef.current.selectCommit(commit) })),
 		};
@@ -497,7 +497,6 @@ export function WorkspaceReviewPane({
 					type="button"
 				>
 					{workingSourceLabel(entry)}
-					<span className="font-mono text-caption tabular-nums text-passive">{sectionFiles(data, entry).length}</span>
 				</button>
 			)) : null}
 			<SettingsMenuTrigger
