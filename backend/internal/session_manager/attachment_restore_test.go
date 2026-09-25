@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,14 +19,14 @@ type blockedRestoreExclude struct {
 	*fakeWorkspace
 	entered chan struct{}
 	release chan struct{}
+	first   atomic.Bool
 	mu      sync.Mutex
 }
 
 func (w *blockedRestoreExclude) AddExclude(ctx context.Context, info ports.WorkspaceInfo, patterns ...string) error {
-	select {
-	case w.entered <- struct{}{}:
+	if w.first.CompareAndSwap(false, true) {
+		close(w.entered)
 		<-w.release
-	default:
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
