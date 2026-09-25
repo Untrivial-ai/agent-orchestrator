@@ -1,4 +1,5 @@
 import { createCloudCpClient, type CloudCpClient } from "./index";
+import { queryClient } from "../query-client";
 
 type CloudCpBridgeRequest = (init: {
 	baseUrl: string;
@@ -40,5 +41,8 @@ export function createRendererCloudCpClient(baseUrl: string): CloudCpClient {
 		baseUrl,
 		getToken: async () => MAIN_PROCESS_TOKEN,
 		fetchImpl: cloudCpFetch,
+		onForbidden: () => {
+			void queryClient.invalidateQueries({ queryKey: ["cloud-org"] });
+		},
 	});
 }

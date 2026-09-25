@@ -81,7 +81,9 @@ function createAutoUpdaterMock(): AutoUpdaterMock {
 // The module persists staged provenance beside the update settings, and that
 // write is fire-and-forget: on a shared state dir a write from one test could
 // land after the next test's cleanup. One fresh directory per test removes the
-// race outright rather than trying to time it.
+// race outright rather than trying to time it. A write from the test's own
+// module can still land while its directory is being removed, so the removal
+// retries rather than failing the run on ENOTEMPTY.
 let stateDir = "";
 const hostPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
 beforeEach(() => {
@@ -90,7 +92,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   Object.defineProperty(process, "platform", hostPlatform);
-  rmSync(stateDir, { recursive: true, force: true });
+  rmSync(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 });
 
 /** Alias kept for readability: a re-import is a simulated relaunch. */
@@ -654,7 +656,7 @@ describe("startAutoUpdates", () => {
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps stable automatic checks on the daily cadence", async () => {
+  it("keeps stable automatic checks on the 15-minute cadence", async () => {
     vi.useFakeTimers();
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const { module, autoUpdater } = await importAutoUpdater();
@@ -662,7 +664,7 @@ describe("startAutoUpdates", () => {
     await module.startAutoUpdates(stateDir);
     const { delay } = latestInterval(setIntervalSpy);
 
-    expect(delay).toBe(24 * 60 * 60 * 1000);
+    expect(delay).toBe(15 * 60 * 1000);
     await vi.advanceTimersByTimeAsync(delay - 1);
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
 
@@ -670,7 +672,7 @@ describe("startAutoUpdates", () => {
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2);
   });
 
-  it("rechecks the nightly channel once a day", async () => {
+  it("rechecks the nightly channel every 15 minutes", async () => {
     vi.useFakeTimers();
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const { module, autoUpdater } = await importAutoUpdater({
@@ -683,7 +685,7 @@ describe("startAutoUpdates", () => {
     await module.startAutoUpdates(stateDir);
     const { delay } = latestInterval(setIntervalSpy);
 
-    expect(delay).toBe(24 * 60 * 60 * 1000);
+    expect(delay).toBe(15 * 60 * 1000);
     await vi.advanceTimersByTimeAsync(delay - 1);
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
 
@@ -765,6 +767,73 @@ describe("startAutoUpdates", () => {
         provider: "github",
         owner: "Untrivial-ai",
         repo: "agent-orchestrator",
+      });
+    } finally {
+      if (originalResourcesPath) {
+        Object.defineProperty(process, "resourcesPath", originalResourcesPath);
+      } else {
+        Reflect.deleteProperty(process, "resourcesPath");
+      }
+      rmSync(resourcesPath, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces the API-discovered nightly build when the check cannot reach the asset CDN", async () => {
+    const platformManifest =
+      process.platform === "darwin"
+        ? "nightly-mac.yml"
+        : process.platform === "linux"
+          ? "nightly-linux.yml"
+          : "nightly.yml";
+    const resourcesPath = mkdtempSync(
+      nodePath.join(os.tmpdir(), "ao-nightly-feed-"),
+    );
+    writeFileSync(
+      nodePath.join(resourcesPath, "app-update.yml"),
+      "provider: github\nowner: Untrivial-ai\nrepo: agent-orchestrator\n",
+    );
+    const originalResourcesPath = Object.getOwnPropertyDescriptor(
+      process,
+      "resourcesPath",
+    );
+    Object.defineProperty(process, "resourcesPath", {
+      configurable: true,
+      value: resourcesPath,
+    });
+    // Discovery answers from api.github.com (the host these users can reach).
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            tag_name: "v1.0.1-nightly.202608231517",
+            draft: false,
+            prerelease: true,
+            assets: [{ name: platformManifest }],
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { module, autoUpdater, statusMessages } = await importAutoUpdater({
+        enabled: true,
+        channel: "nightly",
+        nightlyAck: true,
+        feature: null,
+      });
+      // The manifest fetch the electron-updater check depends on never reaches
+      // the release asset CDN, exactly the failure blocked users hit.
+      autoUpdater.checkForUpdates.mockRejectedValue(new Error("request timed out"));
+
+      await module.startAutoUpdates(stateDir);
+
+      expect(autoUpdater.checkForUpdates).toHaveBeenCalled();
+      // The user still learns an update exists, from what discovery already found.
+      expect(statusMessages().at(-1)?.payload).toMatchObject({
+        state: "available",
+        version: "v1.0.1-nightly.202608231517",
       });
     } finally {
       if (originalResourcesPath) {
@@ -1100,7 +1169,7 @@ describe("startAutoUpdates", () => {
     }
   });
 
-  it("checks stable on launch and once a day when automatic downloads are disabled", async () => {
+  it("checks stable on launch and every 15 minutes when automatic downloads are disabled", async () => {
     vi.useFakeTimers();
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const { module, autoUpdater } = await importAutoUpdater({
@@ -1115,12 +1184,12 @@ describe("startAutoUpdates", () => {
     expect(autoUpdater.autoDownload).toBe(false);
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
     const { delay } = latestInterval(setIntervalSpy);
-    expect(delay).toBe(24 * 60 * 60 * 1000);
+    expect(delay).toBe(15 * 60 * 1000);
     await vi.advanceTimersByTimeAsync(delay);
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2);
   });
 
-  it("checks nightly once a day when automatic downloads are disabled", async () => {
+  it("checks nightly every 15 minutes when automatic downloads are disabled", async () => {
     vi.useFakeTimers();
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const { module, autoUpdater } = await importAutoUpdater({
@@ -1136,7 +1205,7 @@ describe("startAutoUpdates", () => {
     expect(autoUpdater.allowPrerelease).toBe(true);
     expect(autoUpdater.autoDownload).toBe(false);
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
-    expect(latestInterval(setIntervalSpy).delay).toBe(24 * 60 * 60 * 1000);
+    expect(latestInterval(setIntervalSpy).delay).toBe(15 * 60 * 1000);
   });
 
   it("does not stack periodic automatic or retirement timers across repeated startAutoUpdates calls", async () => {
@@ -1152,7 +1221,7 @@ describe("startAutoUpdates", () => {
       setIntervalSpy.mock.calls
         .map(([, delay]) => delay)
         .sort((a, b) => (a ?? 0) - (b ?? 0)),
-    ).toEqual([30 * 60 * 1000, 24 * 60 * 60 * 1000]);
+    ).toEqual([15 * 60 * 1000, 30 * 60 * 1000]);
   });
 
   it("logs periodic check failures without UI and retries on later ticks", async () => {
@@ -2095,9 +2164,9 @@ describe("startAutoUpdates", () => {
       expect.any(Error),
     );
     // Fire only the automatic-check tick, not the unrelated 30-minute retirement
-    // poll that would also fire many times across a full day-long window.
+    // poll, by selecting the timer armed at the automatic-check interval.
     const readsBeforeRetry = readUpdateSettings.mock.calls.length;
-    intervalWithDelay(setIntervalSpy, 24 * 60 * 60 * 1000)();
+    intervalWithDelay(setIntervalSpy, 15 * 60 * 1000)();
     await flushMicrotasks();
 
     expect(readUpdateSettings.mock.calls.length).toBe(readsBeforeRetry + 1);
@@ -2398,7 +2467,7 @@ describe("startAutoUpdates", () => {
 
     await module.setUpdateSettings(stateDir, { ...current, enabled: true });
     expect(setIntervalSpy.mock.calls.map(([, delay]) => delay)).toContain(
-      24 * 60 * 60 * 1000,
+      15 * 60 * 1000,
     );
 
     await module.setUpdateSettings(stateDir, {
@@ -2406,10 +2475,10 @@ describe("startAutoUpdates", () => {
       channel: "nightly",
       nightlyAck: true,
     });
-    expect(latestInterval(setIntervalSpy).delay).toBe(24 * 60 * 60 * 1000);
+    expect(latestInterval(setIntervalSpy).delay).toBe(15 * 60 * 1000);
 
     await module.setUpdateSettings(stateDir, { ...current, enabled: false });
-    expect(latestInterval(setIntervalSpy).delay).toBe(24 * 60 * 60 * 1000);
+    expect(latestInterval(setIntervalSpy).delay).toBe(15 * 60 * 1000);
     // The cadence is one constant, so every reconcile above targets the interval
     // the timer already runs at: the schedule stays a single unbroken timer,
     // never torn down and re-armed. If a future per-channel cadence returns, this
@@ -2418,7 +2487,7 @@ describe("startAutoUpdates", () => {
     expect(clearIntervalSpy).not.toHaveBeenCalled();
 
     // Discovery stays on when updates are disabled; only auto-download is off.
-    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+    await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2);
     expect(autoUpdater.autoDownload).toBe(false);
   });
@@ -2447,7 +2516,7 @@ describe("startAutoUpdates", () => {
     );
 
     await module.startAutoUpdates(stateDir);
-    intervalWithDelay(setIntervalSpy, 24 * 60 * 60 * 1000)();
+    intervalWithDelay(setIntervalSpy, 15 * 60 * 1000)();
     await flushMicrotasks();
     const enable = module.setUpdateSettings(stateDir, {
       ...current,
@@ -2457,11 +2526,11 @@ describe("startAutoUpdates", () => {
     await enable;
     await flushMicrotasks();
 
-    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+    await vi.advanceTimersByTimeAsync(15 * 60 * 1000);
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(3);
   });
 
-  it("coalesces daily ticks while an automatic check is still running", async () => {
+  it("coalesces automatic-check ticks while an automatic check is still running", async () => {
     vi.useFakeTimers();
     const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
     const slowCheck = deferred();
@@ -2472,20 +2541,20 @@ describe("startAutoUpdates", () => {
       .mockResolvedValueOnce(undefined);
 
     await module.startAutoUpdates(stateDir);
-    const runDaily = intervalWithDelay(setIntervalSpy, 24 * 60 * 60 * 1000);
-    runDaily();
+    const runAutoCheck = intervalWithDelay(setIntervalSpy, 15 * 60 * 1000);
+    runAutoCheck();
     await flushMicrotasks();
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2);
 
-    runDaily();
-    runDaily();
-    runDaily();
+    runAutoCheck();
+    runAutoCheck();
+    runAutoCheck();
     await flushMicrotasks();
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2);
 
     slowCheck.resolve();
     await flushMicrotasks();
-    runDaily();
+    runAutoCheck();
     await flushMicrotasks();
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(3);
   });
@@ -2865,7 +2934,7 @@ describe("startAutoUpdates", () => {
     expect(harness.module.getUpdateStatus().staged).toBeUndefined();
   });
 
-  it("retains an older staged build from another channel", async () => {
+  it("drops an older staged build from another channel", async () => {
     writeFileSync(nodePath.join(stateDir, "staged-update.json"), JSON.stringify({
       version: "0.12.10-nightly.1",
       stagedAt: Date.now(),
@@ -2878,9 +2947,9 @@ describe("startAutoUpdates", () => {
     );
     await harness.module.startAutoUpdates(stateDir);
 
-    expect(harness.module.getUpdateStatus().staged).toMatchObject({
-      version: "0.12.10-nightly.1",
-    });
+    expect(harness.module.getUpdateStatus().staged).toBeUndefined();
+    expect(harness.autoUpdater.autoInstallOnAppQuit).toBe(false);
+    await expect(harness.module.quitAndInstallUpdate()).rejects.toThrow(/Check for updates/);
   });
 
   // Regression: electron-updater keeps its request open when a download stops
@@ -3680,15 +3749,35 @@ describe("channel downgrade safety", () => {
     });
   }
 
-  it.each([false, true])("honors saved Stable on startup and later checks (automatic download %s)", async (enabled) => {
+  it.each([
+    { settings: nightly, installed: "0.13.0", offered: "0.13.1-nightly.202609221741" },
+    { settings: stable, installed: "0.13.1-nightly.202609221741", offered: "0.13.1" },
+  ])("allows $installed to switch to newer $offered", async ({ settings, installed, offered }) => {
+    const h = await importAutoUpdater(settings, { version: installed });
+    serveVersion(h, offered, installed);
+    await h.module.startAutoUpdates(stateDir);
+    expect(h.module.getUpdateStatus()).toMatchObject({ state: "available", version: offered });
+    expect(h.autoUpdater.allowDowngrade).toBe(false);
+  });
+
+  it("waits when Nightly is older than installed Stable", async () => {
+    const h = await importAutoUpdater(nightly, { version: "0.13.0" });
+    serveVersion(h, "0.13.0-nightly.202609141844", "0.13.0");
+    await h.module.startAutoUpdates(stateDir);
+    expect(h.module.getUpdateStatus().state).toBe("unsupported");
+    expect(h.autoUpdater.allowDowngrade).toBe(false);
+  });
+
+  it.each([false, true])("waits for a newer Stable on startup and later checks (automatic download %s)", async (enabled) => {
     const h = await importAutoUpdater({ ...stable, enabled }, { version: running });
     serveVersion(h, "0.12.10");
     await h.module.startAutoUpdates(stateDir);
-    expect(h.module.getUpdateStatus()).toMatchObject({ state: enabled ? "downloading" : "available", version: "0.12.10" });
+    expect(h.module.getUpdateStatus()).toMatchObject({ state: "unsupported", message: expect.stringContaining("older than the installed build") });
     expect(h.autoUpdater.autoDownload).toBe(enabled);
     await h.module.checkForUpdatesNow(stateDir);
-    expect(h.module.getUpdateStatus()).toMatchObject({ state: enabled ? "downloading" : "available", version: "0.12.10" });
-    expect(h.autoUpdater.allowDowngrade).toBe(true);
+    expect(h.module.getUpdateStatus().state).toBe("unsupported");
+    expect(h.autoUpdater.allowDowngrade).toBe(false);
+    expect(h.autoUpdater.downloadUpdate).not.toHaveBeenCalled();
   });
 
   it("retains a saved channel switch after its first check fails", async () => {
@@ -3701,9 +3790,10 @@ describe("channel downgrade safety", () => {
     expect(h.module.getUpdateStatus().state).toBe("error");
     serveVersion(h, "0.12.10");
     await h.module.checkForUpdatesNow(stateDir);
-    expect(h.module.getUpdateStatus()).toMatchObject({ state: "available", version: "0.12.10" });
+    expect(h.module.getUpdateStatus()).toMatchObject({ state: "unsupported", checkedAt: expect.any(Number) });
+    expect(h.module.getUpdateStatus().checkError).toBeUndefined();
     await h.module.startAutoUpdates(stateDir);
-    expect(h.module.getUpdateStatus()).toMatchObject({ state: "available", version: "0.12.10" });
+    expect(h.module.getUpdateStatus().state).toBe("unsupported");
   });
 
   it("stops allowing downgrades after relaunching into the selected Stable channel", async () => {
@@ -3750,12 +3840,13 @@ describe("channel downgrade safety", () => {
     expect(h.autoUpdater.allowDowngrade).toBe(false);
   });
 
-  it("allows an explicit channel switch when the preference was saved before checking", async () => {
+  it("keeps an explicit channel switch pending until its release is newer", async () => {
     const h = await importAutoUpdater(stable, { version: running });
     serveVersion(h, "0.12.10");
     await h.module.setUpdateSettings(stateDir, stable);
     await h.module.checkForUpdatesNow(stateDir, { settings: stable });
-    expect(h.module.getUpdateStatus()).toMatchObject({ state: "available", version: "0.12.10" });
+    expect(h.module.getUpdateStatus().state).toBe("unsupported");
+    expect(h.autoUpdater.allowDowngrade).toBe(false);
   });
 
   it("returns an installed feature build home after its pin is retired", async () => {
@@ -3763,14 +3854,14 @@ describe("channel downgrade safety", () => {
     const h = await importAutoUpdater(stable, { version: installed });
     serveVersion(h, "0.12.10", installed);
     await h.module.startAutoUpdates(stateDir);
-    expect(h.module.getUpdateStatus()).toMatchObject({ state: "available", version: "0.12.10" });
+    expect(h.module.getUpdateStatus().state).toBe("unsupported");
   });
 
-  it("permits an explicit return home from nightly", async () => {
+  it("waits for a newer home release when returning from nightly", async () => {
     const h = await importAutoUpdater(stable, { version: running });
     serveVersion(h, "0.12.10");
     await h.module.returnToHome(stateDir);
-    expect(h.module.getUpdateStatus()).toMatchObject({ state: "available", version: "0.12.10" });
+    expect(h.module.getUpdateStatus().state).toBe("unsupported");
   });
 
   it("does not permit a same-channel settings check to downgrade nightly", async () => {

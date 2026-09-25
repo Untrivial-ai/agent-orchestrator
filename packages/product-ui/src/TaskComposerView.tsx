@@ -26,7 +26,9 @@ const ATTACHMENT_ROW_HEIGHT = 70;
 
 export type TaskComposerAgentOption = {
 	authentication: {
-		state: "authorized" | "unauthorized" | "unknown" | "not_applicable";
+		// "configured" means a credential exists locally but nothing has proven
+		// it valid — neither signed in nor signed out.
+		state: "authorized" | "unauthorized" | "unknown" | "not_applicable" | "configured";
 		freshness: "fresh" | "stale" | "checking";
 	};
 	effectiveReadiness: "ready" | "not_ready" | "unknown";
@@ -51,18 +53,25 @@ export type TaskComposerAgentControl = {
 };
 
 export type TaskComposerModelOption = {
+	// Efforts are the reasoning levels this specific model accepts, in the
+	// provider's order. Absent or empty means the model takes no effort
+	// setting, which is a real answer rather than a missing one.
+	efforts?: string[];
 	id: string;
 	isDefault?: boolean;
 	label: string;
 	provider?: string;
-	efforts?: string[];
 	defaultEffort?: string;
 };
 
 export type TaskComposerModelCatalog = {
 	allowCustom: boolean;
 	customModelEntry: "none" | "direct" | "configured";
+	lastSuccessAt?: string | null;
 	models: TaskComposerModelOption[];
+	refreshError?: string;
+	refreshState?: "idle" | "queued" | "refreshing" | "error";
+	retryAt?: string | null;
 	selectionMode: "catalog" | "text" | "mode";
 };
 

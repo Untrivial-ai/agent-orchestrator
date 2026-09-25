@@ -57,6 +57,7 @@ func reviewErrorKind(err error) string {
 
 // Manager is the reviews surface the HTTP controller depends on.
 type Manager interface {
+	RecoverChatReviewers(ctx context.Context) error
 	Trigger(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness, config domain.AgentConfig) (reviewcore.TriggerResult, error)
 	RequestRereview(ctx context.Context, workerID domain.SessionID, prURL, reviewer string) error
 	ResolveReviewComment(ctx context.Context, workerID domain.SessionID, prURL, commentURL string) error
@@ -89,6 +90,13 @@ type Service struct {
 }
 
 var _ Manager = (*Service)(nil)
+
+// RecoverChatReviewers restores durable reviewer-owned Chat controllers after
+// daemon startup. It is intentionally part of the required manager contract so
+// startup wiring cannot silently omit it.
+func (s *Service) RecoverChatReviewers(ctx context.Context) error {
+	return s.engine.RecoverChatReviewers(ctx)
+}
 
 // Store is the review_run persistence surface owned by the service submit path.
 type Store interface {

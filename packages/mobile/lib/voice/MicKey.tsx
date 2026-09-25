@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../icons";
 import { useEffect, useRef } from "react";
 import { Animated, Pressable, StyleSheet, View } from "react-native";
 import type { Theme } from "../theme";
@@ -18,10 +18,11 @@ import { MicGlass } from "./mic-glass";
 // talk to an agent from a phone, and as one more outlined grey pill in the key
 // row it was indistinguishable from `zoom-out`.
 //
-// Glass rather than solid, though. Two identical solid buttons side by side have
-// no hierarchy — the eye can't tell which one commits. Mic is glass, send is
-// filled; the mic only goes solid (red) while it is actually recording, which is
-// the one moment it should outrank everything on screen.
+// It is never the only control that commits. In the chat composer it is a bare
+// glyph beside a filled send button (`variant="plain"`), so the pair still has a
+// clear hierarchy; where it sits in a row of outlined keys it keeps the glass
+// disc (`variant="glass"`). Either way the only state that changes its shape is
+// recording, which goes solid red — the one moment it should outrank the screen.
 //
 /** Matches the send button so the two controls are the same size. */
 export const MIC_SIZE = 40;
@@ -34,6 +35,8 @@ export function MicKey({
 	onPressOut,
 	circular = false,
 	size = MIC_SIZE,
+	variant = "glass",
+	glyphSize = 17,
 }: {
 	state: VoiceState;
 	mode: VoiceMode;
@@ -41,6 +44,14 @@ export function MicKey({
 	onPressOut(): void;
 	circular?: boolean;
 	size?: number;
+	/**
+	 * `glass` is the control in a row of outlined keys, where the material is
+	 * what separates it from its neighbours. `plain` is the one in the chat's
+	 * composer pill: there, the filled send button beside it is the only solid
+	 * shape, and a second disc turned the pair into two equally loud buttons.
+	 */
+	variant?: "glass" | "plain";
+	glyphSize?: number;
 }) {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
@@ -73,7 +84,7 @@ export function MicKey({
 
 	// Idle is the only glass state: recording, denied and unavailable each keep a
 	// fill that says something the material would soften.
-	const glass = !live && !denied && !unavailable;
+	const glass = variant === "glass" && !live && !denied && !unavailable;
 	const fill = live ? t.red : denied ? t.tintRed : unavailable ? t.bgElevated : "transparent";
 	const ink = live ? t.textPrimary : denied ? t.red : unavailable ? t.textFaint : t.textPrimary;
 	const radius = circular ? size / 2 : MIC_RADIUS;
@@ -109,7 +120,7 @@ export function MicKey({
 					styles.mic,
 					controlShape,
 					{ backgroundColor: fill },
-					circular && !glass && styles.circular,
+					variant === "glass" && circular && !glass && styles.circular,
 					latched && styles.latched,
 					unavailable && styles.unavailable,
 					pressed && !disabled && { opacity: 0.85 },
@@ -124,7 +135,7 @@ export function MicKey({
 				// unaffected: it ignores the finger by design.
 				onTouchCancel={onPressOut}
 			>
-				<Feather name={denied || unavailable ? "mic-off" : "mic"} size={18} color={ink} />
+				<Feather name={denied || unavailable ? "mic-off" : "mic"} size={glyphSize} color={ink} />
 			</Pressable>
 		</View>
 	);

@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { useCallback, useMemo, useRef, useState, type ReactElement, type RefObject } from "react";
 import { Alert, FlatList, Platform, Pressable, RefreshControl, StyleSheet, Text } from "react-native";
 import { LayoutAnimationConfig } from "react-native-reanimated";
@@ -13,6 +13,7 @@ import { useTheme, useThemedStyles } from "./ThemeProvider";
 import { ListSectionHeader } from "./ui";
 import { WorkerListRow } from "./worker-list-row";
 import { filterWorkerSessions } from "./worker-search";
+import { type, space } from "./tokens";
 
 // The archive rides along as one more section so it scrolls with the board
 // rather than being pinned like desktop's strip — a phone has no room for a
@@ -24,6 +25,18 @@ type ListSection =
 	| { zone: "search"; label: string; color: string; data: DashboardSession[] };
 
 /**
+ * Sections that never fold, whatever the user has toggled.
+ *
+ * Search results are a transient answer — folding the thing you just asked for
+ * is a way to lose it. `needs_you` is the reason the app was opened at all, and
+ * `pinned` is what someone deliberately put at the top; a board that can hide
+ * either of those behind a chevron can hide the two things that matter most.
+ * Everything else folds and stays folded, because the shape of a long board is
+ * the user's call.
+ */
+const ALWAYS_OPEN = new Set<ListSection["zone"]>(["search", "needs_you", "pinned"]);
+
+/**
  * One flat list, not a SectionList, and that is load-bearing.
  *
  * A row moving between sections has to stay mounted for its layout animation to
@@ -33,7 +46,7 @@ type ListSection =
  * which is exactly what LinearTransition animates.
  */
 export type BoardRow =
-	| { kind: "header"; key: string; label: string }
+	| { kind: "header"; key: string; label: string; open: boolean; collapsible: boolean }
 	| { kind: "archive"; key: string }
 	| { kind: "session"; key: string; session: DashboardSession };
 
@@ -57,6 +70,7 @@ export function WorkerBoardList({
 	ListEmptyComponent,
 	initialArchiveOpen = false,
 	showProject = true,
+	identityKey,
 }: {
 	sessions: DashboardSession[];
 	/** Non-empty switches the board to a single flat "Search results" section. */
@@ -70,6 +84,17 @@ export function WorkerBoardList({
 	initialArchiveOpen?: boolean;
 	/** Off on a project's own page, where every row would repeat its name; the agent shows instead. */
 	showProject?: boolean;
+	/**
+	 * Changes when the *set* of workers changes wholesale — a different project
+	 * filter, or a search. The list is remounted on a new value.
+	 *
+	 * Swapping the filter in place left the board showing two lists at once:
+	 * recycled cells of the old grouping drawn under the new data, the empty state
+	 * on top of rows that were still on screen. A remount has no old cells to
+	 * recycle, and no row-to-row layout animation to run for a change that is not
+	 * a row moving.
+	 */
+	identityKey?: string;
 }) {
 	const t = useTheme();
 	const { projects, kill, renameWorker, setWorkerPinned, restore, resumeAgent } = useApp();
@@ -79,6 +104,13 @@ export function WorkerBoardList({
 	// Collapsed by default, like desktop's archive strip: it is history, and on a
 	// long-running project it is most of the sessions.
 	const [archiveOpen, setArchiveOpen] = useState(initialArchiveOpen);
+	// Every group can be folded away as well. Open by default — the board is a
+	// working view, and a section nobody opened is a section nobody saw — but a
+	// collapsed group keeps its header, so the shape of the board stays readable.
+	const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
+	// Minute-granular, so a memoised row still updates its relative timestamp even
+	// when nothing about the session itself has changed.
+	const nowBucket = Math.floor(Date.now() / 60_000);
 
 	const projectNames = useMemo(
 		() => new Map(projects.map((project) => [project.id, project.name])),
@@ -102,7 +134,7 @@ export function WorkerBoardList({
 	const listSections = useMemo<ListSection[]>(() => {
 		if (query.trim()) {
 			const data = [...filteredGroups.pinned, ...filteredGroups.sections.flatMap((section) => section.data), ...filteredGroups.archived];
-			return data.length === 0 ? [] : [{ zone: "search", label: "Search results", color: t.blue, data }];
+			return data.length === 0 ? [] : [{ zone: "search", label: "Search results", color: t.accent, data }];
 		}
 		const liveSections: ListSection[] = [
 			...(pinned.length ? [{ zone: "pinned" as const, label: "Pinned", color: t.amber, data: pinned }] : []),
@@ -119,14 +151,29 @@ export function WorkerBoardList({
 	// reorder rather than an unmount. See BoardRow.
 	const listData = useMemo<BoardRow[]>(
 		() =>
-			listSections.flatMap((section) => [
-				section.zone === "archive"
-					? ({ kind: "archive", key: "header:archive" } as const)
-					: ({ kind: "header", key: `header:${section.zone}`, label: section.label } as const),
-				...section.data.map((session) => ({ kind: "session", key: `${session.projectId}:${session.id}`, session }) as const),
-			]),
-		[listSections],
+			listSections.flatMap((section): BoardRow[] => {
+				if (section.zone === "archive") {
+					return [
+						{ kind: "archive", key: "header:archive" } as const,
+						...section.data.map((session) => ({ kind: "session", key: `${session.projectId}:${session.id}`, session }) as const),
+					];
+				}
+				const collapsible = !ALWAYS_OPEN.has(section.zone);
+				const open = !collapsible || !collapsedSections[section.zone];
+				return [
+					{ kind: "header", key: `header:${section.zone}`, label: section.label, open, collapsible } as const,
+					...(open
+						? section.data.map((session) => ({ kind: "session", key: `${session.projectId}:${session.id}`, session }) as const)
+						: []),
+				];
+			}),
+		[collapsedSections, listSections],
 	);
+
+	const toggleSection = useCallback((zone: string) => {
+		haptics.tap();
+		setCollapsedSections((current) => ({ ...current, [zone]: !current[zone] }));
+	}, []);
 
 	// Swipeable's Android callbacks arrive after the UI thread has already begun
 	// opening the next rail. Close the previous native row synchronously so two
@@ -188,12 +235,13 @@ export function WorkerBoardList({
 		<LayoutAnimationConfig skipEntering>
 			<FlatList
 				ref={listRef}
+				key={identityKey}
 				data={listData}
 				keyExtractor={(item) => item.key}
 				contentContainerStyle={{ paddingBottom: contentBottomInset }}
 				keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
 				keyboardShouldPersistTaps="handled"
-				refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.blue} />}
+				refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={t.accent} />}
 				ListHeaderComponent={ListHeaderComponent}
 				ListEmptyComponent={ListEmptyComponent}
 				renderItem={({ item }) => {
@@ -209,15 +257,20 @@ export function WorkerBoardList({
 					if (item.kind === "header") {
 						return (
 							<BoardRowTransition>
-								<ListSectionHeader label={item.label} />
+								<ListSectionHeader
+									label={item.label}
+									open={item.open}
+									onToggle={item.collapsible ? () => toggleSection(item.key.replace("header:", "")) : undefined}
+								/>
 							</BoardRowTransition>
 						);
 					}
 					const session = item.session;
-					return (
-						<BoardRowTransition>
-							<WorkerListRow
-								session={session}
+						return (
+							<BoardRowTransition>
+								<WorkerListRow
+									nowBucket={nowBucket}
+									session={session}
 								projectName={showProject ? projectNames.get(session.projectId) : session.harness || "Agent"}
 								isRenaming={renamingWorkerId === session.id}
 								activeSwipeId={activeSwipeId}
@@ -253,7 +306,7 @@ function ArchiveHeader({ count, open, onToggle }: { count: number; open: boolean
 			}}
 			style={({ pressed }) => [styles.archiveHeader, pressed && { opacity: 0.6 }]}
 		>
-			<Feather name={open ? "chevron-down" : "chevron-right"} size={14} color={t.textTertiary} />
+			<Feather name={open ? "chevron-down" : "chevron-right"} size={15} color={t.textTertiary} />
 			<Text style={styles.archiveLabel}>Archive</Text>
 			<Text style={styles.archiveCount}>{count}</Text>
 		</Pressable>
@@ -265,11 +318,11 @@ const makeStyles = (t: Theme) =>
 		archiveHeader: {
 			flexDirection: "row",
 			alignItems: "center",
-			gap: 8,
-			paddingHorizontal: 16,
-			paddingTop: 22,
-			paddingBottom: 10,
+			gap: space.sm,
+			paddingHorizontal: space.lg,
+			paddingTop: space.xl,
+			paddingBottom: space.sm,
 		},
-		archiveLabel: { color: t.textTertiary, fontSize: 12, lineHeight: 16, fontWeight: "500", flex: 1 },
-		archiveCount: { color: t.textFaint, fontSize: 12, fontWeight: "700", fontFamily: t.fontMono },
+		archiveLabel: { fontFamily: "Geist_500Medium", color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500", flex: 1 },
+		archiveCount: { color: t.textFaint, fontSize: type.caption1.fontSize, fontWeight: "600", fontFamily: t.fontMono },
 	});

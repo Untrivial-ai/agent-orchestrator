@@ -1,6 +1,6 @@
 module github.com/aoagents/agent-orchestrator/cloud
 
-go 1.26.5
+go 1.27.1
 
 require (
 	github.com/aoagents/agent-orchestrator/backend v0.0.0

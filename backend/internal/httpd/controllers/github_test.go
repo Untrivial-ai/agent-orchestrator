@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -16,8 +17,13 @@ import (
 type invalidGitHubPATService struct{}
 
 func (invalidGitHubPATService) StorePAT(context.Context, string) error { return nil }
-func (invalidGitHubPATService) HasPAT(context.Context) bool            { return true }
-func (invalidGitHubPATService) DeletePAT(context.Context) error        { return nil }
+func (invalidGitHubPATService) StoreOAuthToken(context.Context, string, string, time.Time, time.Time) error {
+	return nil
+}
+func (invalidGitHubPATService) HasPAT(context.Context) bool { return true }
+func (invalidGitHubPATService) DeletePAT(context.Context) error {
+	return nil
+}
 func (invalidGitHubPATService) ListRepos(context.Context) ([]githubpat.Repo, error) {
 	return nil, githubpat.ErrInvalidCredentials
 }

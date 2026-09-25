@@ -31,4 +31,14 @@ if (provided && path.resolve(provided) !== target) {
 	fs.copyFileSync(provided, target);
 }
 
-module.exports = ({ config }) => config;
+module.exports = ({ config }) => {
+	// Locally the env var is unset and the file is meant to be sitting in the
+	// checkout. When it is not (a fresh clone, or anyone who only needs the
+	// Android app to build), the config above still points at it and `expo
+	// prebuild` stops with "Cannot copy google-services.json ... Ensure the source
+	// and destination paths exist". Dropping the key in that case costs push and
+	// keeps the build. With the file present nothing changes.
+	if (fs.existsSync(target)) return config;
+	const { googleServicesFile: _unused, ...android } = config.android ?? {};
+	return { ...config, android };
+};

@@ -1,5 +1,6 @@
 import { StyleSheet, TextInput } from "react-native";
 import { useTheme } from "./ThemeProvider";
+import { space, type } from "./tokens";
 
 export type SpawnPromptInputProps = {
 	value: string;
@@ -21,7 +22,7 @@ export function SpawnPromptInput({ value, onChangeText }: SpawnPromptInputProps)
 			onChangeText={onChangeText}
 			placeholder="What should this worker do?"
 			placeholderTextColor={t.textTertiary}
-			selectionColor={t.blue}
+			selectionColor={t.accent}
 			multiline
 			numberOfLines={3}
 			maxLength={4096}
@@ -35,14 +36,14 @@ export function SpawnPromptInput({ value, onChangeText }: SpawnPromptInputProps)
 }
 
 const styles = StyleSheet.create({
-	input: {
+	input: { fontFamily: "Geist_400Regular",
 		flex: 1,
 		height: 112,
-		paddingHorizontal: 16,
-		paddingVertical: 14,
+		paddingHorizontal: space.lg,
+		paddingVertical: space.md,
 		borderRadius: 16,
 		borderCurve: "continuous",
-		fontSize: 16,
-		lineHeight: 22,
+		fontSize: type.callout.fontSize,
+		lineHeight: type.callout.lineHeight,
 	},
 });

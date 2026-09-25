@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -35,9 +36,9 @@ func TestShutdownGuard(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fired := false
+			fired := make(chan struct{}, 1)
 			r := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{}, ControlDeps{
-				RequestShutdown: func() { fired = true },
+				RequestShutdown: func() { fired <- struct{}{} },
 			})
 
 			req := httptest.NewRequest(http.MethodPost, "http://"+tc.host+"/shutdown", nil)
@@ -51,8 +52,18 @@ func TestShutdownGuard(t *testing.T) {
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
 			}
-			if fired != tc.wantFired {
-				t.Fatalf("shutdown fired = %v, want %v", fired, tc.wantFired)
+			if tc.wantFired {
+				select {
+				case <-fired:
+				case <-time.After(time.Second):
+					t.Fatal("shutdown did not fire")
+				}
+			} else {
+				select {
+				case <-fired:
+					t.Fatal("shutdown fired")
+				default:
+				}
 			}
 		})
 	}

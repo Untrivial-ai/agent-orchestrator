@@ -25,6 +25,7 @@ import {
 	SessionChatSurface,
 	type ConversationWorkState,
 } from "./chat/SessionChatSurface";
+import { ReviewerChatSurface } from "./chat/ReviewerChatSurface";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { NotificationCenter } from "./NotificationCenter";
 import { ResizeHandle } from "./ResizeHandle";
@@ -69,6 +70,7 @@ import { cloudLifecycleStage } from "../lib/cloud-lifecycle";
 import { useTerminalResetStore } from "../stores/terminal-reset-store";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
+import { useSettings } from "../hooks/useSettings";
 import { clearSwitchAgentState } from "../hooks/useSwitchAgent";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
@@ -156,6 +158,7 @@ const sessionHeaderActions = (
 type ReviewsResponse = components["schemas"]["ListReviewsResponse"];
 type SessionInterfaceTransition = components["schemas"]["SessionInterfaceTransition"];
 type ReviewerTerminalTarget = { handleId: string; harness: string };
+type ReviewerChatTarget = { reviewId: string; harness: string };
 type InterfaceSwitchDialogScope = {
 	sessionId: string;
 	targetMode: "chat" | "tui";
@@ -274,10 +277,17 @@ function browserIsVisible(sessionId: string, browserPoppedOut: boolean): boolean
 }
 
 function reviewerTerminalFromReviews(data?: ReviewsResponse): ReviewerTerminalTarget | undefined {
+	if (data?.reviewerSurface?.mode === "chat") return undefined;
 	const handleId = data?.reviewerHandleId?.trim();
 	if (!handleId) return undefined;
 	const latest = data?.reviews?.find((review) => review.latestRun)?.latestRun;
 	return { handleId, harness: data?.reviewerHarness || latest?.harness || "codex" };
+}
+
+function reviewerChatFromReviews(data?: ReviewsResponse): ReviewerChatTarget | undefined {
+	const surface = data?.reviewerSurface;
+	if (surface?.mode !== "chat" || !surface.reviewId) return undefined;
+	return { reviewId: surface.reviewId, harness: surface.harness || "codex" };
 }
 
 type SessionViewProps = {
@@ -430,7 +440,14 @@ function CloudSessionLifecycleLoader() {
 	], [t]);
 	return (
 		<div
-			className="absolute inset-0 z-[200] grid place-items-center bg-background"
+			// Sits at the session-pane chrome level: it must cover the loading
+			// pane's content (topbar/terminal) but MUST stay below the app overlay
+			// layer (`z-overlay`, dialogs/dropdowns). A raw high z (this was `z-[200]`)
+			// painted over any shell modal opened while a cloud session loads — the
+			// New Task dialog, the project three-dots menu — leaving it invisible
+			// behind the loader while Radix still applied `body{pointer-events:none}`,
+			// which froze the whole UI (sidebar included). Keep this <= z-overlay.
+			className="absolute inset-0 z-chrome grid place-items-center bg-background"
 			data-testid="cloud-session-loader-screen"
 		>
 			<MultiStepLoader
@@ -577,6 +594,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const [inspectorSettledClosed, setInspectorSettledClosed] = useState(!isInspectorOpen);
 	const inspectorPanelVisible = isInspectorOpen || !inspectorSettledClosed;
 	const [terminalTarget, setTerminalTarget] = useState<TerminalTarget>({ kind: "worker" });
+	const [reviewerChatId, setReviewerChatId] = useState<string | null>(null);
 	const [browserPopOutState, setBrowserPopOutState] = useState<BrowserPopOutState>({
 		sessionId,
 		phase: "docked",
@@ -890,6 +908,14 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	});
 	const availableReviewerTerminal = reviewerTerminalFromReviews(reviewerQuery.data);
 	const reviewerTerminal = session && sessionIsActive(session) ? availableReviewerTerminal : undefined;
+	const availableReviewerChat = reviewerChatFromReviews(reviewerQuery.data);
+	const reviewerChat = session && sessionIsActive(session) ? availableReviewerChat : undefined;
+	useEffect(() => {
+		if (!reviewerChatId || !reviewerQuery.isFetched) return;
+		if (availableReviewerChat?.reviewId !== reviewerChatId) {
+			setReviewerChatId(null);
+		}
+	}, [availableReviewerChat?.reviewId, reviewerChatId, reviewerQuery.isFetched]);
 
 	// Shell terminals opened inside a session live beside its pane as extra tabs,
 	// scoped to the session on screen so each session has its own shell set.
@@ -903,6 +929,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		const openShellKeys = shellTerminals.map((shell) => shell.handleId);
 		const available = [
 			...(reviewerTerminal ? [`reviewer:${reviewerTerminal.handleId}`] : []),
+			...(!reviewerTerminal && reviewerChat ? [`reviewer-chat:${reviewerChat.reviewId}`] : []),
 			...openFileKeys,
 			...openShellKeys,
 		];
@@ -912,7 +939,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			if (!resolved.includes(key)) resolved.push(key);
 		}
 		return resolved;
-	}, [auxiliaryTabOrder, fileTabs.openPaths, reviewerTerminal, shellTerminals]);
+	}, [auxiliaryTabOrder, fileTabs.openPaths, reviewerChat, reviewerTerminal, shellTerminals]);
 	useEffect(() => {
 		setAuxiliaryTabOrderBySession((current) => {
 			const currentOrder = current[sessionId] ?? [];
@@ -999,6 +1026,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				}));
 				return;
 			}
+			if (reviewerChat && key === `reviewer-chat:${reviewerChat.reviewId}`) {
+				setActiveShellTerminal(null);
+				setTerminalTarget({ kind: "worker" });
+				setReviewerChatId(reviewerChat.reviewId);
+				setFileTabsBySession((current) => ({
+					...current,
+					[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
+				}));
+				return;
+			}
 			const shell = shellTerminals.find((candidate) => candidate.handleId === key);
 			if (shell) {
 				setActiveShellTerminal(shell.handleId);
@@ -1022,7 +1059,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
 			}));
 		},
-		[reviewerTerminal, sessionId, shellTerminals, setActiveShellTerminal],
+		[reviewerChat, reviewerTerminal, sessionId, shellTerminals, setActiveShellTerminal],
 	);
 	const adjacentAuxiliaryTab = useCallback(
 		(closingKey: string) => {
@@ -1037,6 +1074,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		(handleId: string) => {
 			const shell = shellTerminals.find((s) => s.handleId === handleId);
 			if (!shell) return;
+			setReviewerChatId(null);
 			setActiveShellTerminal(shell.handleId);
 			setFileTabsBySession((current) => ({
 				...current,
@@ -1084,12 +1122,14 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const selectSessionTerminal = useCallback(() => {
 		setActiveShellTerminal(null);
 		setTerminalTarget({ kind: "worker" });
+		setReviewerChatId(null);
 		setFileTabsBySession((current) => ({
 			...current,
 			[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
 		}));
 	}, [sessionId, setActiveShellTerminal]);
 	const selectReviewerTerminal = useCallback((target: ReviewerTerminalTarget) => {
+		setReviewerChatId(null);
 		setActiveShellTerminal(null);
 		setTerminalTarget({ kind: "reviewer", handleId: target.handleId, harness: target.harness, sessionId });
 		setFileTabsBySession((current) => ({
@@ -1097,7 +1137,17 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
 		}));
 	}, [sessionId, setActiveShellTerminal]);
+	const selectReviewerChat = useCallback((reviewId: string) => {
+		setActiveShellTerminal(null);
+		setTerminalTarget({ kind: "worker" });
+		setReviewerChatId(reviewId);
+		setFileTabsBySession((current) => ({
+			...current,
+			[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, null),
+		}));
+	}, [sessionId, setActiveShellTerminal]);
 	const openCenterFile = useCallback((path: string, options?: FileOpenOptions) => {
+		setReviewerChatId(null);
 		setCenterFileRequestsBySession((current) => {
 			const sessionRequests = current[sessionId] ?? {};
 			return {
@@ -1136,6 +1186,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		});
 	}, [sessionId]);
 	const activateCenterFile = useCallback((path: string) => {
+		setReviewerChatId(null);
 		setFileTabsBySession((current) => ({
 			...current,
 			[sessionId]: activateSessionFile(current[sessionId] ?? EMPTY_SESSION_FILE_TABS, path),
@@ -1431,8 +1482,19 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[beginInterfaceSwitch, interfaceBusy, interfaceSwitch, interfaceTarget, session],
 	);
 	// Adapters without a Chat driver cannot offer a switch into Chat UI; hide
-	// the button entirely rather than showing a permanently disabled control.
-	const interfaceSwitchUnsupported = interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED";
+	// the switch entirely rather than showing a permanently disabled control.
+	// The daemon's Chat harness list knows this before the session's status
+	// loads, and for terminated sessions, whose status only reports
+	// SESSION_TERMINATED. An empty list (settings still loading, or Chat off
+	// entirely) proves nothing, so the status decides then.
+	const { settings } = useSettings();
+	const chatHarnesses = settings?.chatHarnesses ?? [];
+	const interfaceSwitchUnsupported =
+		interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED" ||
+		(interfaceTarget === "chat" &&
+			session !== undefined &&
+			chatHarnesses.length > 0 &&
+			!chatHarnesses.includes(session.provider));
 	// Harnesses without a TUI/Chat handoff cannot convert a running terminal
 	// session. Say so plainly instead of showing the daemon's reason.
 	const interfaceSwitchBlockedReason =
@@ -1540,6 +1602,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
 	useLayoutEffect(() => {
 		setTerminalTarget({ kind: "worker" });
+		setReviewerChatId(null);
 		setBrowserPopOutState({ sessionId, phase: "docked" });
 		setFilesPoppedOut(false);
 	}, [sessionId]);
@@ -1654,12 +1717,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			switchError={handoffSwitchError}
 		/>
 	) : null, [handoffAgentSwitch, handoffControlPresentation, handoffDialogOpen, handoffSwitchError, handleHandoffDialogOpenChange, session]);
-	const sessionTabActions = useMemo(() => (
+	// The ⋮ only holds the Chat/Terminal switch and Switch agent, and agent
+	// switching is limited to Claude Code and Codex, which both have Chat. A
+	// harness without Chat therefore gets no ⋮ instead of an empty menu.
+	const sessionTabActions = useMemo(() => interfaceSwitchUnsupported ? null : (
 		<SessionActionsMenu inlineStatus={interfaceSwitchInlineStatus}>
 			{interfaceSwitchMenuItem}
 			{handoffMenuItem}
 		</SessionActionsMenu>
-	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem]);
+	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem, interfaceSwitchUnsupported]);
 	// Spinner replaces the ⋮ at the same size, so the tab title does not need a
 	// wider action slot while switching.
 	const sessionTabActionWide = false;
@@ -1673,9 +1739,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// Publish which one is showing: the notification runtime lives outside this
 	// subtree and must not treat "on the session route" as "watching the agent".
 	useEffect(() => {
-		setVisibleTerminalKind(sessionId, routedTerminalTarget.kind);
+		setVisibleTerminalKind(sessionId, reviewerChatId ? "reviewer" : routedTerminalTarget.kind);
 		return () => clearVisibleTerminalKind(sessionId);
-	}, [clearVisibleTerminalKind, routedTerminalTarget.kind, sessionId, setVisibleTerminalKind]);
+	}, [clearVisibleTerminalKind, reviewerChatId, routedTerminalTarget.kind, sessionId, setVisibleTerminalKind]);
 
 	const prepareFilesInspector = useCallback(() => {
 		if (browserOnly) return;
@@ -1965,11 +2031,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								inert={fileTabs.activePath ? true : undefined}
 							>
 							{showChatSurface ? (
+								<>
 								<SessionChatSurface
 									key={session.id}
 									session={session}
 									reviewerTerminal={reviewerTerminal}
+									reviewerChat={reviewerChat}
+									reviewerChatSelected={Boolean(reviewerChatId)}
 									onOpenReviewerTerminal={selectReviewerTerminal}
+									onOpenReviewerChat={(target) => selectReviewerChat(target.reviewId)}
 									onSessionRenamed={refreshWorkspaces}
 									reviewerTarget={
 										routedTerminalTarget.kind === "reviewer" ? routedTerminalTarget : undefined
@@ -2006,6 +2076,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									onOpenFile={handleOpenFile}
 									onOpenLinkInBrowser={browserView.openLink}
 								/>
+								{reviewerChatId ? (
+									<div className="absolute inset-0">
+										<ReviewerChatSurface hideHeader reviewId={reviewerChatId} />
+									</div>
+								) : null}
+								</>
 							) : (
 								<CenterPane
 									agentInputDisabled={
@@ -2016,8 +2092,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 									onRenameShellTerminal={renameShellTerminalByHandle}
 									onSelectSessionTerminal={selectSessionTerminal}
 									onSelectReviewerTerminal={selectReviewerTerminal}
+									onSelectReviewerChat={(target) => selectReviewerChat(target.reviewId)}
 									onSelectShellTerminal={selectShellTerminal}
 									reviewerTerminal={reviewerTerminal}
+									reviewerChat={reviewerChat}
+									reviewerChatSelected={Boolean(reviewerChatId)}
+									reviewerChatContent={reviewerChatId ? <ReviewerChatSurface hideHeader reviewId={reviewerChatId} /> : undefined}
 									session={session}
 									shellTerminals={shellTerminals}
 									terminalTarget={routedTerminalTarget}
@@ -2140,7 +2220,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							isInspectorVisible={inspectorPanelVisible}
 							onOpenFiles={browserOnly ? undefined : handleOpenFiles}
 							onOpenReviewFile={handleOpenReviewFile}
-							onOpenReviewerTerminal={selectReviewerTerminal}
+								onOpenReviewerTerminal={selectReviewerTerminal}
+								onOpenReviewerChat={selectReviewerChat}
+								onWorkerMessageSent={showChatSurface || reviewerChatId ? selectSessionTerminal : undefined}
 							onToggleBrowserPopOut={handleToggleBrowserPopOut}
 							onViewChange={transitionInspectorView}
 							view={inspectorView}

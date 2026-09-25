@@ -95,7 +95,9 @@ that waitlist as described in the [privacy policy](https://orchestrator.inc/priv
   automatically record screens, clicks, or touches.
 - Person profiles are off for every event except the session-start event that
   carries your GitHub handle. That one event sets a person property so activity
-  can be grouped by GitHub username; every other event stays anonymous.
+  can be grouped by GitHub username, and clears build details (version,
+  platform, surface, build mode) that older AO versions stored on the profile;
+  every other event stays anonymous.
 
 Separately from remote telemetry, the daemon can keep a local copy of
 operational events in AO's SQLite database. While local telemetry is active, AO

@@ -209,7 +209,7 @@ function SettingsBody({
 						worker: {
 							...config.worker,
 							agent: form.workerAgent,
-							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerAgent === "codex" ? form.workerEffort : "", form.workerPermissions),
+							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerEffort, form.workerPermissions),
 						},
 						orchestrator: {
 							...config.orchestrator,
@@ -218,7 +218,7 @@ function SettingsBody({
 								config.orchestrator?.agentConfig,
 								form.orchestratorModel,
 								form.orchestratorMode,
-								form.orchestratorAgent === "codex" ? form.orchestratorEffort : "",
+								form.orchestratorEffort,
 								form.orchestratorPermissions,
 							),
 						},
@@ -237,7 +237,7 @@ function SettingsBody({
 						worker: {
 							...config.worker,
 							agent: form.workerAgent,
-							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerAgent === "codex" ? form.workerEffort : "", form.workerPermissions),
+							agentConfig: buildRoleAgentConfig(config.worker?.agentConfig, form.workerModel, form.workerMode, form.workerEffort, form.workerPermissions),
 						},
 						orchestrator: {
 							...config.orchestrator,
@@ -246,7 +246,7 @@ function SettingsBody({
 								config.orchestrator?.agentConfig,
 								form.orchestratorModel,
 								form.orchestratorMode,
-								form.orchestratorAgent === "codex" ? form.orchestratorEffort : "",
+								form.orchestratorEffort,
 								form.orchestratorPermissions,
 							),
 						},
@@ -257,7 +257,7 @@ function SettingsBody({
 						reviewers: form.reviewerHarness
 							? [{
 									harness: form.reviewerHarness,
-									agentConfig: buildRoleAgentConfig(existingReviewerAgentConfig, form.reviewerModel, form.reviewerMode, form.reviewerHarness === "codex" ? form.reviewerEffort : "", form.reviewerPermissions),
+									agentConfig: buildRoleAgentConfig(existingReviewerAgentConfig, form.reviewerModel, form.reviewerMode, form.reviewerEffort, form.reviewerPermissions),
 								}]
 							: undefined,
 						trackerIntake: buildIntake(intakeForm, config.trackerIntake),
@@ -783,17 +783,21 @@ function AgentModelField({
 						customModelEntry={customModelEntry}
 						agentLabel={agentId}
 						onRefresh={refreshCatalog}
-						disabled={query.isFetching || agentId === ""}
+						refreshing={catalog?.refreshState === "queued" || catalog?.refreshState === "refreshing"}
+						lastSuccessAt={catalog?.lastSuccessAt}
+						refreshError={catalog?.refreshError}
+						retryAt={catalog?.retryAt}
+						disabled={(query.isFetching && !catalog) || agentId === ""}
 						onChange={selectCatalogModel}
 						onCustom={selectCustomModel}
 						triggerClassName="justify-end"
 						compact={agentId === "codex"}
-						tuning={agentId === "codex" ? {
+						tuning={{
 							effort,
 							onEffortChange,
 							onValidityChange,
 							roleLabel: t(`settings.models.${role}Role`),
-						} : undefined}
+						}}
 					/>
 				</div>
 			</SettingsRow>

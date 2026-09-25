@@ -76,6 +76,19 @@ type CoderSessionProfile struct {
 	DurableRoot string            `json:"durableRoot"`
 }
 
+// CoderSessionOptions are the per-session Coder choices a client may make when
+// creating a session (template picker + its curated form). All fields are
+// optional; an empty TemplateID means "use the deployment default template with
+// its default parameters" — i.e. exactly the pre-existing behavior. Size and
+// StartupScript are only applied when a non-default template is chosen, because
+// the default template does not declare those rich parameters and Coder rejects
+// values for parameters a template does not define.
+type CoderSessionOptions struct {
+	TemplateID    string
+	Size          string
+	StartupScript string
+}
+
 // CoderWorkspaceLayout is the provider-specific filesystem contract between AO
 // and a Coder template. DurableRoot must be the template's persistent volume
 // mount point; every path AO must retain across stop/start is derived beneath it.
@@ -282,6 +295,14 @@ func (d ProvisioningDefaults) SessionPlan(harness string) (Plan, error) {
 // The caller is responsible for confirming the provider is one the control
 // plane offers before calling; this method only builds the plan.
 func (d ProvisioningDefaults) SessionPlanForProvider(harness, providerOverride string) (Plan, error) {
+	return d.SessionPlanForProviderWithCoder(harness, providerOverride, nil)
+}
+
+// SessionPlanForProviderWithCoder is SessionPlanForProvider with optional
+// per-session Coder options (chosen template + its size/startup form). A nil
+// coder argument, or an empty TemplateID, yields exactly the default-template
+// plan, so existing callers and the "Default" picker choice are unchanged.
+func (d ProvisioningDefaults) SessionPlanForProviderWithCoder(harness, providerOverride string, coder *CoderSessionOptions) (Plan, error) {
 	provider := normalizeProvider(providerOverride)
 	if provider == "" {
 		provider = normalizeProvider(d.Provider)
@@ -347,10 +368,24 @@ func (d ProvisioningDefaults) SessionPlanForProvider(harness, providerOverride s
 		if err != nil {
 			return Plan{}, err
 		}
+		// Default template + default params unless the client explicitly picked a
+		// non-default template. Only then do we override the template and layer on
+		// its size/startup form values — the default template does not declare
+		// those rich parameters, so sending them would make Coder reject the build.
+		templateID := strings.TrimSpace(d.Coder.TemplateID)
+		if coder != nil && strings.TrimSpace(coder.TemplateID) != "" {
+			templateID = strings.TrimSpace(coder.TemplateID)
+			if size := strings.TrimSpace(coder.Size); size != "" {
+				parameters["size"] = size
+			}
+			if startup := coder.StartupScript; strings.TrimSpace(startup) != "" {
+				parameters["startup_script"] = startup
+			}
+		}
 		resourceProfile["coder"] = map[string]any{
 			"baseUrl":               strings.TrimRight(strings.TrimSpace(d.Coder.BaseURL), "/"),
 			"owner":                 strings.TrimSpace(d.Coder.Owner),
-			"templateId":            strings.TrimSpace(d.Coder.TemplateID),
+			"templateId":            templateID,
 			"agentName":             strings.TrimSpace(d.Coder.AgentName),
 			"parameters":            parameters,
 			"durableRoot":           strings.TrimSpace(d.Coder.DurableRoot),
@@ -358,7 +393,7 @@ func (d ProvisioningDefaults) SessionPlanForProvider(harness, providerOverride s
 		}
 		bootstrapContext["coder"] = map[string]any{
 			"owner":       strings.TrimSpace(d.Coder.Owner),
-			"templateId":  strings.TrimSpace(d.Coder.TemplateID),
+			"templateId":  templateID,
 			"agentName":   strings.TrimSpace(d.Coder.AgentName),
 			"durableRoot": strings.TrimSpace(d.Coder.DurableRoot),
 		}

@@ -24,7 +24,7 @@ describe("cloud control-plane session lifecycle", () => {
 		await client.startGitHubInstallation("org/1");
 		await client.listGitHubInstallations("org/1");
 		await client.listGitHubRepositories("org/1");
-		await client.createProjectFromGitHub("org/1", {
+		await client.createGitHubProject("org/1", {
 			githubRepositoryId: "42",
 			displayName: "widgets",
 			config: { worker: { agent: "codex" } },

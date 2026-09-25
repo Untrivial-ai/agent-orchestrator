@@ -22,6 +22,12 @@ type Reviewer interface {
 	ReviewMessage(ctx context.Context, inv ReviewInvocation) (string, error)
 }
 
+// ReviewerChatProfile opts a reviewer into the typed Chat transport. Reviewers
+// without this capability keep the terminal launch path.
+type ReviewerChatProfile interface {
+	ReviewChatHarness() domain.AgentHarness
+}
+
 // ReviewCancelMode names how AO should stop a running reviewer.
 type ReviewCancelMode string
 

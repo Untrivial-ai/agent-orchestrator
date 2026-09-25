@@ -81,7 +81,7 @@ describe("Android native compatibility boundaries", () => {
 		const android = existsSync(path) ? source("./chat/ChatAttachmentMenu.android.tsx") : "";
 		expect(android).toContain('@expo/ui/community/bottom-sheet');
 		expect(android).toContain("enablePanDownToClose");
-		expect(android).toContain("borderRadius: 21");
+		expect(android).toContain("borderRadius: radius.pill");
 		expect(android).not.toContain("MenuView");
 	});
 
@@ -132,8 +132,8 @@ describe("Android native compatibility boundaries", () => {
 		// 112 is now the default for the optional `height` prop rather than a literal
 		// in the style, so the field can grow into whatever room the sheet has left.
 		expect(ios).toContain("height = 112");
-		expect(ios).toMatch(/paddingHorizontal:\s*16/);
-		expect(ios).toMatch(/paddingVertical:\s*14/);
+		expect(ios).toMatch(/paddingHorizontal:\s*space\.lg/);
+		expect(ios).toMatch(/paddingVertical:\s*space\.md/);
 		expect(ios).not.toContain("height: 154");
 	});
 

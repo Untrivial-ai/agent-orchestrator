@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../lib/icons";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -31,6 +31,8 @@ import { MINUTE_MS, useNow } from "../lib/useNow";
 import type { Theme } from "../lib/theme";
 import { useTheme, useThemedStyles } from "../lib/ThemeProvider";
 import { Dot, EmptyState, HeaderIconButton, ScreenHeader } from "../lib/ui";
+import { press, space, type } from "../lib/tokens";
+import { backOr } from "../lib/backNavigation";
 
 export { RouteErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";
 
@@ -86,7 +88,7 @@ export default function NotificationsScreen() {
 				setNextCursor(page.nextCursor);
 				setUnreadCount(page.unreadCount);
 			} catch (cause) {
-				setError(cause instanceof Error ? cause.message : "Could not load notifications.");
+				setError(cause instanceof Error ? cause.message : "Couldn't load notifications.");
 			} finally {
 				setLoading(false);
 				setRefreshing(false);
@@ -145,7 +147,7 @@ export default function NotificationsScreen() {
 				haptics.success();
 				router.navigate(`/session/${sessionId}`);
 			})
-			.catch((cause) => Alert.alert("Could not restore session", cause instanceof Error ? cause.message : String(cause)))
+			.catch((cause) => Alert.alert("Couldn't restore the session", cause instanceof Error ? cause.message : String(cause)))
 			.finally(() => setRestoringId(undefined));
 	}
 
@@ -177,7 +179,7 @@ export default function NotificationsScreen() {
 			<View style={{ height: insets.top }} />
 			<ScreenHeader
 				title="Notifications"
-				left={<HeaderIconButton icon="back" label="Back" onPress={() => router.back()} />}
+				left={<HeaderIconButton icon="back" label="Back" onPress={() => backOr(router)} />}
 				right={
 					unreadCount > 0 ? (
 						<HeaderIconButton icon="check" label="Mark all read" onPress={() => void markAll()} />
@@ -187,7 +189,7 @@ export default function NotificationsScreen() {
 
 			{loading ? (
 				<View style={styles.center}>
-					<ActivityIndicator color={t.blue} />
+					<ActivityIndicator color={t.accent} />
 				</View>
 			) : (
 				<SectionList
@@ -207,7 +209,7 @@ export default function NotificationsScreen() {
 								haptics.tap();
 								void load("refresh");
 							}}
-							tintColor={t.blue}
+							tintColor={t.accent}
 						/>
 					}
 					onEndReached={() => void load("more")}
@@ -238,7 +240,7 @@ export default function NotificationsScreen() {
 					ListFooterComponent={
 						loadingMore ? (
 							<View style={styles.footer}>
-								<ActivityIndicator color={t.blue} />
+								<ActivityIndicator color={t.accent} />
 							</View>
 						) : null
 					}
@@ -261,7 +263,7 @@ export default function NotificationsScreen() {
 			    this is still on screen and still has a restore button to press. */}
 			{notice ? (
 				<View pointerEvents="none" style={[styles.notice, { bottom: insets.bottom + 24 }]}>
-					<Feather name="alert-circle" size={14} color={t.amber} />
+					<Feather name="alert-circle" size={15} color={t.amber} />
 					<Text style={styles.noticeText}>{notice}</Text>
 				</View>
 			) : null}
@@ -309,7 +311,7 @@ function NotificationRow({ item, now, action, restoring, onPress, onRestore }: {
 					<Text style={[styles.kind, unread && { color: visual.color }]} numberOfLines={1}>
 						{visual.label}
 					</Text>
-					{unread ? <Dot color={t.blue} size={7} /> : null}
+					{unread ? <Dot color={t.accent} size={7} /> : null}
 					<Text style={styles.time}>{relativeTime(item.createdAt, now)}</Text>
 				</View>
 				<Text style={[styles.title, unread && styles.titleUnread]} numberOfLines={1}>
@@ -333,7 +335,7 @@ function NotificationRow({ item, now, action, restoring, onPress, onRestore }: {
 			>
 				{restoring
 					? <ActivityIndicator size="small" color={t.textSecondary} />
-					: <Feather name="rotate-ccw" size={19} color={t.textSecondary} />}
+					: <Feather name="rotate-ccw" size={20} color={t.textSecondary} />}
 			</Pressable>
 		) : null}
 		</View>
@@ -347,29 +349,29 @@ const makeStyles = (t: Theme) =>
 		inlineError: {
 			flexDirection: "row",
 			alignItems: "center",
-			gap: 8,
-			marginHorizontal: 18,
-			paddingHorizontal: 12,
-			paddingVertical: 10,
+			gap: space.sm,
+			marginHorizontal: space.lg,
+			paddingHorizontal: space.md,
+			paddingVertical: space.sm,
 			borderRadius: 12,
 			borderCurve: "continuous",
 			backgroundColor: t.tintRed,
 		},
-		inlineErrorText: { color: t.red, fontSize: 13, lineHeight: 18, flex: 1 },
+		inlineErrorText: { fontFamily: "Geist_400Regular", color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, flex: 1 },
 		sectionHeader: {
 			flexDirection: "row",
 			alignItems: "center",
-			gap: 10,
-			paddingHorizontal: 18,
-			paddingTop: 18,
-			paddingBottom: 5,
+			gap: space.sm,
+			paddingHorizontal: space.lg,
+			paddingTop: space.lg,
+			paddingBottom: space.xxs,
 		},
-		sectionLabel: { color: t.textTertiary, fontSize: 12, lineHeight: 16, fontWeight: "500" },
+		sectionLabel: { fontFamily: "Geist_500Medium", color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "500" },
 		sectionRule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: t.borderSubtle },
-		sectionCount: {
+		sectionCount: { fontFamily: "Geist_600SemiBold",
 			color: t.textFaint,
-			fontSize: 12,
-			lineHeight: 16,
+			fontSize: type.caption1.fontSize,
+			lineHeight: type.caption1.lineHeight,
 			fontWeight: "600",
 			fontVariant: ["tabular-nums"],
 		},
@@ -380,7 +382,7 @@ const makeStyles = (t: Theme) =>
 			borderBottomWidth: StyleSheet.hairlineWidth,
 			borderBottomColor: t.borderSubtle,
 		},
-		rowTap: { flex: 1, minWidth: 0, paddingLeft: 18, paddingRight: 8, paddingVertical: 10 },
+		rowTap: { flex: 1, minWidth: 0, paddingLeft: space.lg, paddingRight: space.sm, paddingVertical: space.sm },
 		// Its own column, wide enough to hit without aiming: restoring is the only
 		// thing a terminated row can do, and it should not share the row's tap.
 		restoreButton: { width: 56, alignSelf: "stretch", alignItems: "center", justifyContent: "center" },
@@ -392,29 +394,29 @@ const makeStyles = (t: Theme) =>
 			right: 18,
 			flexDirection: "row",
 			alignItems: "center",
-			gap: 9,
-			paddingHorizontal: 14,
-			paddingVertical: 11,
-			borderRadius: 14,
+			gap: space.sm,
+			paddingHorizontal: space.md,
+			paddingVertical: space.md,
+			borderRadius: 12,
 			borderCurve: "continuous",
 			backgroundColor: t.bgElevated,
 			borderWidth: StyleSheet.hairlineWidth,
 			borderColor: t.borderDefault,
 		},
-		noticeText: { flex: 1, color: t.textSecondary, fontSize: 13, lineHeight: 17 },
+		noticeText: { fontFamily: "Geist_400Regular", flex: 1, color: t.textSecondary, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
 		rowPressed: { backgroundColor: t.bgElevated },
-		rowCopy: { flex: 1, gap: 3 },
-		metaRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-		kind: { color: t.textTertiary, fontSize: 12, lineHeight: 16, fontWeight: "600" },
-		time: {
+		rowCopy: { flex: 1, gap: space.hair },
+		metaRow: { flexDirection: "row", alignItems: "center", gap: space.sm },
+		kind: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "600" },
+		time: { fontFamily: "Geist_400Regular",
 			color: t.textFaint,
-			fontSize: 12,
-			lineHeight: 16,
+			fontSize: type.caption1.fontSize,
+			lineHeight: type.caption1.lineHeight,
 			fontVariant: ["tabular-nums"],
 			marginLeft: "auto",
 		},
-		title: { color: t.textSecondary, fontSize: 16, lineHeight: 21, fontWeight: "600" },
-		titleUnread: { color: t.textPrimary, fontWeight: "700" },
-		body: { color: t.textTertiary, fontSize: 13, lineHeight: 18 },
-		footer: { paddingVertical: 18 },
+		title: { fontFamily: "Geist_600SemiBold", color: t.textSecondary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight, fontWeight: "600" },
+		titleUnread: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontWeight: "600" },
+		body: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
+		footer: { paddingVertical: space.lg },
 	});

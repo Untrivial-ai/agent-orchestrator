@@ -217,16 +217,20 @@ func (s *Server) githubOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	installationIDValue := strings.TrimSpace(r.URL.Query().Get("installation_id"))
 	var err error
 	if installationIDValue == "" {
+		// Normal two-step completion: the setup callback already minted our PKCE
+		// OAuth state, and GitHub returned only code+state here.
 		_, err = s.github.CompleteOAuth(r.Context(), state, code)
 	} else {
+		// Bundled flow: a GitHub App configured to request user authorization
+		// during installation delivers installation_id + code straight here,
+		// skipping the setup callback. Complete it directly against the install
+		// state (no second authorize redirect, no PKCE verifier).
 		installationID, parseErr := strconv.ParseInt(installationIDValue, 10, 64)
 		if parseErr != nil || installationID <= 0 {
 			s.githubCallbackError(w, r, postgres.ErrInvalid)
 			return
 		}
-		_, err = s.github.CompleteInstallationOAuth(
-			r.Context(), state, code, installationID,
-		)
+		_, err = s.github.CompleteInstallationOAuth(r.Context(), state, code, installationID)
 	}
 	if err != nil {
 		s.githubCallbackError(w, r, err)
@@ -802,7 +806,7 @@ func toGitHubRepositoryResponse(
 
 func setGitHubCallbackHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 }
