@@ -505,6 +505,54 @@ SELECT * FROM conversation_turns
 WHERE conversation_id = ? AND provider_turn_id = ?
 LIMIT 1;
 
+-- Atomically re-evaluate the reconnect watchdog predicate while settling the
+-- turn. Once a provider failure has happened, any later turn-associated message,
+-- activity, or raw provider event is forward progress and restarts the watchdog
+-- clock. The synthetic terminal event is inserted in the same transaction before
+-- this statement, so exclude that one archive row: it is the attempted recovery,
+-- not provider progress. Any real message, activity, or raw event that committed
+-- before this UPDATE prevents the state transition.
+-- name: SettleStaleRunningTurnWithProviderFailure :one
+UPDATE conversation_turns
+SET state = 'failed',
+    error_message = sqlc.arg(error_message),
+    completed_at = COALESCE(completed_at, sqlc.arg(completed_at)),
+    provider_host_termination_pending = sqlc.arg(provider_host_termination_pending)
+WHERE conversation_turns.conversation_id = sqlc.arg(conversation_id)
+  AND conversation_turns.provider_turn_id = sqlc.arg(provider_turn_id)
+  AND conversation_turns.state = 'running'
+  AND conversation_turns.rolled_back_at IS NULL
+  AND conversation_turns.promoted_to_turn_id IS NULL
+  AND COALESCE(conversation_turns.started_at, conversation_turns.requested_at) <= sqlc.arg(updated_before)
+  AND EXISTS (
+      SELECT 1
+      FROM conversation_activities AS provider_failure
+      WHERE provider_failure.turn_id = conversation_turns.id
+        AND provider_failure.kind = 'system'
+        AND json_extract(provider_failure.detail_json, '$.event') = 'provider.failure'
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM conversation_messages AS recent_message
+      WHERE recent_message.turn_id = conversation_turns.id
+        AND recent_message.updated_at > sqlc.arg(updated_before)
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM conversation_activities AS recent_activity
+      WHERE recent_activity.turn_id = conversation_turns.id
+        AND recent_activity.updated_at > sqlc.arg(updated_before)
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM conversation_provider_events AS recent_event
+      WHERE recent_event.conversation_id = conversation_turns.conversation_id
+        AND json_extract(recent_event.payload_json, '$.providerTurnId') = conversation_turns.provider_turn_id
+        AND recent_event.provider_event_id <> sqlc.arg(watchdog_event_id)
+        AND recent_event.received_at > sqlc.arg(updated_before)
+  )
+RETURNING conversation_turns.id;
+
 -- name: BindConversationTurnProviderID :exec
 UPDATE conversation_turns
 SET provider_turn_id = ?, started_at = COALESCE(started_at, ?)
@@ -515,10 +563,13 @@ UPDATE conversation_turns
 SET state = 'running', started_at = COALESCE(started_at, ?)
 WHERE id = ?;
 
--- name: SettleConversationTurn :exec
+-- Known terminal outcomes are immutable. Recovered is deliberately provisional:
+-- native replay may later supply the provider's actual completed/interrupted/failed
+-- outcome, but a delayed duplicate must not rewrite one known outcome as another.
+-- name: SettleConversationTurn :execrows
 UPDATE conversation_turns
 SET state = ?, error_message = ?, completed_at = COALESCE(completed_at, ?)
-WHERE id = ?;
+WHERE id = ? AND state IN ('queued', 'running', 'recovered');
 
 -- A streamed assistant item may not receive item/completed when steering causes
 -- the provider to finish the turn without replaying it: the accumulated text is
@@ -613,6 +664,36 @@ WHERE conversation_turns.conversation_id = sqlc.arg(conversation_id)
         AND lineage_activity.sequence <= path.max_sequence
   ))
 ORDER BY conversation_turns.requested_at, conversation_turns.rowid;
+
+-- A provider host is shared by every turn owned by one session controller for
+-- this conversation. Restart recovery uses the complete set, including nested
+-- turns outside the active timeline path, before destroying that shared host.
+-- name: ListRunningTurnsForConversationHost :many
+SELECT conversation_turns.* FROM conversation_turns
+WHERE conversation_turns.conversation_id = sqlc.arg(conversation_id)
+  AND conversation_turns.handled_by_session_id = sqlc.arg(handled_by_session_id)
+  AND conversation_turns.state = 'running'
+  AND conversation_turns.rolled_back_at IS NULL
+  AND conversation_turns.promoted_to_turn_id IS NULL
+ORDER BY conversation_turns.requested_at, conversation_turns.rowid;
+
+-- The marker remains meaningful after its root turn becomes terminal. Read it
+-- independently of turn state before deciding whether a live provider can be
+-- reactivated.
+-- name: HasPendingProviderHostTermination :one
+SELECT EXISTS (
+    SELECT 1 FROM conversation_turns
+    WHERE conversation_id = sqlc.arg(conversation_id)
+      AND handled_by_session_id = sqlc.arg(handled_by_session_id)
+      AND provider_host_termination_pending = 1
+) AS pending;
+
+-- name: ClearPendingProviderHostTermination :execrows
+UPDATE conversation_turns
+SET provider_host_termination_pending = 0
+WHERE conversation_id = sqlc.arg(conversation_id)
+  AND handled_by_session_id = sqlc.arg(handled_by_session_id)
+  AND provider_host_termination_pending = 1;
 
 -- Overwrite the turn's changed-file summary. The provider re-sends the whole diff
 -- on every update, so the latest payload is the complete answer and there is

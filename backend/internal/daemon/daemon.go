@@ -481,6 +481,7 @@ func Run() error {
 			}
 		},
 	})
+	lcStack.runtimeReaper.SetChatTurnRecovery(chatSvc)
 
 	codexModelDriver := codexappserver.New(codexagent.New(), log)
 	modelDiscoverer := modelcatalog.Discoverer{

@@ -56,6 +56,13 @@ type runtimeObservationSink interface {
 	ApplyRuntimeObservation(ctx context.Context, id domain.SessionID, f ports.RuntimeFacts) error
 }
 
+// ChatTurnRecovery is the Chat-specific observation boundary. Chat sessions do
+// not have a terminal runtime to probe, but their durable provider reconnect
+// activity still needs the reaper's periodic cadence.
+type ChatTurnRecovery interface {
+	RecoverStaleProviderFailure(ctx context.Context, id domain.SessionID, observedAt time.Time) error
+}
+
 type runtimeProber interface {
 	IsAlive(context.Context, ports.RuntimeHandle) (bool, error)
 }
@@ -70,11 +77,22 @@ type Reaper struct {
 	tick     time.Duration
 	clock    func() time.Time
 	logger   *slog.Logger
+	chatMu   sync.RWMutex
+	chat     ChatTurnRecovery
 
 	// The periodic loop and boot-time reconciliation may call Tick on the same
 	// Reaper concurrently, so the per-run warning set needs synchronization.
 	missingHandleMu     sync.Mutex
 	warnedMissingHandle map[domain.SessionID]struct{}
+}
+
+// SetChatTurnRecovery attaches the Chat watchdog after daemon construction. The
+// lifecycle reaper starts before the Chat service is built, so wiring this as a
+// setter avoids a package-order cycle while remaining safe against an early tick.
+func (r *Reaper) SetChatTurnRecovery(recovery ChatTurnRecovery) {
+	r.chatMu.Lock()
+	r.chat = recovery
+	r.chatMu.Unlock()
 }
 
 // New constructs a Reaper. sink is the lifecycle fact destination; sessions
@@ -166,6 +184,18 @@ func (r *Reaper) Tick(ctx context.Context) error {
 	dead := 0
 	for _, sess := range sessions {
 		if sess.IsTerminated {
+			continue
+		}
+		if domain.NormalizeSessionMode(sess.Mode) == domain.SessionModeChat {
+			r.chatMu.RLock()
+			chat := r.chat
+			r.chatMu.RUnlock()
+			if chat != nil {
+				if err := chat.RecoverStaleProviderFailure(ctx, sess.ID, now); err != nil {
+					r.logger.Error("reaper: Chat reconnect watchdog failed",
+						"session", sess.ID, "err", err)
+				}
+			}
 			continue
 		}
 		facts, ok := r.probeOne(ctx, sess, now)

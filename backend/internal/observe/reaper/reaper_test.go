@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -31,6 +32,24 @@ type fakeSessions struct{ rows []domain.SessionRecord }
 
 func (s fakeSessions) ListAllSessions(context.Context) ([]domain.SessionRecord, error) {
 	return s.rows, nil
+}
+
+type chatRecoveryCall struct {
+	id         domain.SessionID
+	observedAt time.Time
+}
+
+type fakeChatRecovery struct {
+	calls []chatRecoveryCall
+}
+
+func (f *fakeChatRecovery) RecoverStaleProviderFailure(
+	_ context.Context,
+	id domain.SessionID,
+	observedAt time.Time,
+) error {
+	f.calls = append(f.calls, chatRecoveryCall{id: id, observedAt: observedAt})
+	return nil
 }
 
 type fakeRuntime struct {
@@ -136,6 +155,29 @@ func TestTick_SkipsTerminatedSession(t *testing.T) {
 	}
 	if _, probed := lcm.observed["mer-1"]; probed {
 		t.Fatal("terminated sessions must not be probed")
+	}
+}
+
+func TestTick_ChecksChatRecoveryWithoutRuntimeProbe(t *testing.T) {
+	lcm := &fakeLCM{}
+	chat := &fakeChatRecovery{}
+	observedAt := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	session := probableSession("chat-1")
+	session.Mode = domain.SessionModeChat
+	r := New(lcm, fakeSessions{rows: []domain.SessionRecord{session}}, fakeRuntime{alive: true}, Config{
+		Clock:  func() time.Time { return observedAt },
+		Logger: quietLogger(),
+	})
+	r.SetChatTurnRecovery(chat)
+
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.calls) != 1 || chat.calls[0].id != session.ID || !chat.calls[0].observedAt.Equal(observedAt) {
+		t.Fatalf("Chat recovery calls = %+v, want one call for %s at %s", chat.calls, session.ID, observedAt)
+	}
+	if len(lcm.observed) != 0 {
+		t.Fatalf("Chat session reached runtime observation path: %+v", lcm.observed)
 	}
 }
 
