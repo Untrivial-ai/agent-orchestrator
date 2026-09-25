@@ -454,21 +454,6 @@ function formatDuration(ms: number): string {
 	return `${Math.round(ms / 60_000)}m`;
 }
 
-function useElapsedDuration(startedAt: string | undefined, active: boolean): number | undefined {
-	const [now, setNow] = useState(() => Date.now());
-
-	useEffect(() => {
-		if (!active || !startedAt) return;
-		setNow(Date.now());
-		const interval = window.setInterval(() => setNow(Date.now()), 100);
-		return () => window.clearInterval(interval);
-	}, [active, startedAt]);
-
-	if (!startedAt) return undefined;
-	const start = Date.parse(startedAt);
-	return Number.isNaN(start) ? undefined : Math.max(0, now - start);
-}
-
 export function ResponseSpinner() {
 	return (
 		<span
@@ -794,8 +779,6 @@ export function AssistantMessage({
 	onRollback,
 	rollbackDisabled = false,
 	durationMs,
-	startedAt,
-	showWorking,
 }: {
 	message: ConversationMessage;
 	/** The final answer owns the copy action; it stays available while that answer streams. */
@@ -809,21 +792,16 @@ export function AssistantMessage({
 	rollbackDisabled?: boolean;
 	/** How long the turn took; sits next to rollback on the action row. */
 	durationMs?: number;
-	/** Start time for the live elapsed clock while the response is streaming. */
-	startedAt?: string;
-	/** Keep the working label mounted while this response is still arriving. */
-	showWorking?: boolean;
 }) {
 	const visibleText = useSmoothStreamingText(message);
 	const renderingStreaming = message.streaming || visibleText.length < message.text.length;
-	const liveDurationMs = useElapsedDuration(startedAt, renderingStreaming);
 	const hasDuration = durationMs !== undefined && durationMs > 0;
-	const showLiveActions = renderingStreaming && (showCopy || Boolean(onRollback));
-	const showActions = showLiveActions || (!renderingStreaming && (showCopy || Boolean(onRollback) || hasDuration));
+	const showLiveStatus = renderingStreaming && (showCopy || Boolean(onRollback));
+	const showActions = !renderingStreaming && (showCopy || Boolean(onRollback) || hasDuration);
 	return (
 		<div className="group/message relative">
 			<ChatMarkdown text={visibleText} streaming={renderingStreaming} />
-			{showCopy ? <WorkingLabel visible={Boolean(showWorking && renderingStreaming)} /> : null}
+			{showLiveStatus ? <LiveResponseStatus /> : null}
 			{showActions ? (
 				// One action row for the completed answer, not one after every prose
 				// fragment the provider emitted while working. Copy, rollback, and
@@ -831,18 +809,14 @@ export function AssistantMessage({
 				<div className="mt-1 flex h-7 items-center gap-0.5">
 					{showCopy ? (
 						<div className="-ml-1.5 size-7 shrink-0">
-							{showLiveActions ? (
-								<ResponseSpinner />
-							) : (
-								/* The stored markdown, not a re-serialization of what was rendered:
-								   pasting it into an editor has to give back what the agent wrote. */
-								<CopyButton
-									text={message.text}
-									label="Copy message as markdown"
-									compact
-									className="size-7 justify-center rounded-md px-0 py-0 transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
-								/>
-							)}
+							{/* The stored markdown, not a re-serialization of what was rendered:
+							   pasting it into an editor has to give back what the agent wrote. */}
+							<CopyButton
+								text={message.text}
+								label="Copy message as markdown"
+								compact
+								className="size-7 justify-center rounded-md px-0 py-0 transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
+							/>
 						</div>
 					) : null}
 					{onRollback ? (
@@ -861,10 +835,7 @@ export function AssistantMessage({
 							<TooltipContent side="bottom">Roll back to here</TooltipContent>
 						</Tooltip>
 					) : null}
-					{showLiveActions && liveDurationMs !== undefined ? (
-						<TurnDuration durationMs={Math.max(1, liveDurationMs)} />
-					) : null}
-					{!showLiveActions && hasDuration ? <TurnDuration durationMs={durationMs} /> : null}
+					{hasDuration ? <TurnDuration durationMs={durationMs} /> : null}
 					<span
 						className="w-auto shrink-0 px-1 text-[11px] tabular-nums text-muted-foreground/75 opacity-0 transition-opacity duration-150 ease-out group-hover/message:opacity-100 group-focus-within/message:opacity-100 motion-reduce:transition-none"
 						aria-label={`Sent ${formatMessageTimestamp(message.createdAt)}`}
@@ -877,14 +848,15 @@ export function AssistantMessage({
 	);
 }
 
-export function WorkingLabel({ visible }: { visible: boolean }) {
+export function LiveResponseStatus() {
 	return (
-		<div className={cn("chat-working-label-container", visible && "chat-working-label-container-visible")}>
-			<div className="min-h-0 overflow-hidden text-sm font-medium">
-				<span role="status" data-testid="live-working-label" className="chat-working-shimmer">
-					Working
-				</span>
+		<div className="mt-1 flex h-7 items-center gap-0.5">
+			<div className="-ml-1.5 size-7 shrink-0">
+				<ResponseSpinner />
 			</div>
+			<span role="status" data-testid="live-working-label" className="chat-working-shimmer text-sm font-medium">
+				Working
+			</span>
 		</div>
 	);
 }

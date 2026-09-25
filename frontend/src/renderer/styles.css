@@ -5531,28 +5531,6 @@ html[data-native-browser-composition="true"] .browser-popout-frame {
 	animation: chat-working-shimmer 1400ms linear infinite;
 }
 
-.chat-working-label-container {
-	display: grid;
-	grid-template-rows: 0fr;
-	margin-bottom: 0;
-	overflow: hidden;
-	transition: grid-template-rows 180ms ease-out, margin-bottom 180ms ease-out;
-}
-
-.chat-working-label-container-visible {
-	grid-template-rows: 1fr;
-	margin-bottom: 2px;
-}
-
-.chat-working-label-container .chat-working-shimmer {
-	opacity: 0;
-	transition: opacity 140ms ease-out;
-}
-
-.chat-working-label-container-visible .chat-working-shimmer {
-	opacity: 1;
-}
-
 .ao-qr-decoy {
 	opacity: 0;
 	animation: ao-qr-decoy-cycle 4800ms linear infinite;
@@ -5590,8 +5568,4 @@ html[data-native-browser-composition="true"] .browser-popout-frame {
 		color: var(--color-muted-foreground);
 	}
 
-	.chat-working-label-container,
-	.chat-working-label-container .chat-working-shimmer {
-		transition: none;
-	}
 }

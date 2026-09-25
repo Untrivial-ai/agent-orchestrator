@@ -95,7 +95,6 @@ import {
 	ActivityRow,
 	ApprovalCard,
 	AssistantMessage,
-	ResponseSpinner,
 	CompactionMarker,
 	HumanMessage,
 	OriginMessage,
@@ -103,7 +102,7 @@ import {
 	TurnChangedFiles,
 	TurnDuration,
 	TurnOutcome,
-	WorkingLabel,
+	LiveResponseStatus,
 	type TurnOutcomeRetryControl,
 } from "./ChatTimelineItems";
 import { HumanMessageEditor } from "./HumanMessageEditor";
@@ -3269,7 +3268,6 @@ const TurnGroup = memo(function TurnGroup({
 						queued={queued}
 						newHumanMessageIds={newHumanMessageIds}
 						showCopy={run.items[0]?.id === copyableMessageId}
-						showWorking={run.items[0]?.id === copyableMessageId}
 						onRollback={
 							canRollback && run.items[0]?.id === copyableMessageId
 								? () => onRollback(group.turnId as string)
@@ -3279,7 +3277,6 @@ const TurnGroup = memo(function TurnGroup({
 						durationMs={
 							run.items[0]?.id === copyableMessageId ? group.outcome?.durationMs : undefined
 						}
-						startedAt={run.items[0]?.id === copyableMessageId && group.live ? group.liveStartedAt : undefined}
 					/>
 				),
 			)}
@@ -3305,13 +3302,8 @@ const TurnGroup = memo(function TurnGroup({
 			{!copyableMessageId &&
 			(group.live || canRollback || (group.outcome?.durationMs !== undefined && group.outcome.durationMs > 0)) ? (
 				<>
-				<WorkingLabel visible={Boolean(group.live)} />
+				{group.live ? <LiveResponseStatus /> : null}
 				<div className="flex h-7 items-center gap-0.5">
-					{group.live ? (
-						<div className="-ml-1.5 size-7 shrink-0">
-							<ResponseSpinner />
-						</div>
-					) : null}
 					{canRollback ? (
 						<button
 							type="button"
@@ -3410,11 +3402,9 @@ function TimelineItem({
 	queued,
 	newHumanMessageIds,
 	showCopy,
-	showWorking,
 	onRollback,
 	rollbackDisabled,
 	durationMs,
-	startedAt,
 }: {
 	item: ConversationItem;
 	sessionId: string;
@@ -3446,16 +3436,12 @@ function TimelineItem({
 	newHumanMessageIds: ReadonlySet<string>;
 	/** This is the final assistant response of a turn that has finished. */
 	showCopy?: boolean;
-	/** Keep the working label mounted while the final assistant response streams. */
-	showWorking?: boolean;
 	/** Undo this finished turn from the answer that owns its copy action. */
 	onRollback?: () => void;
 	/** Keep the action row mounted while another turn is running. */
 	rollbackDisabled?: boolean;
 	/** Finished-turn duration; shown next to rollback on the final answer. */
 	durationMs?: number;
-	/** Start time for the live elapsed clock while the response is streaming. */
-	startedAt?: string;
 	/** This message is the live edge of its turn, rather than an earlier fragment
 	 * followed by tool activity. */
 }) {
@@ -3465,11 +3451,9 @@ function TimelineItem({
 				<AssistantMessage
 					message={item}
 					showCopy={showCopy}
-					showWorking={showWorking}
 					onRollback={onRollback}
 					rollbackDisabled={rollbackDisabled}
 					durationMs={durationMs}
-					startedAt={startedAt}
 				/>
 			);
 		}
