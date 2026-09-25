@@ -223,6 +223,17 @@ func (s *lifecycleStore) UpdateSession(_ context.Context, rec domain.SessionReco
 	return nil
 }
 
+func (s *lifecycleStore) UpdateSessionArtifactOutput(_ context.Context, id domain.SessionID, artifactDir string, outputType domain.SessionOutputType) (bool, error) {
+	rec, ok := s.sessions[id]
+	if !ok {
+		return false, nil
+	}
+	rec.Metadata.ArtifactDir = artifactDir
+	rec.OutputType = outputType
+	s.sessions[id] = rec
+	return true, nil
+}
+
 func (s *lifecycleStore) UpdateSessionFromActivitySignal(_ context.Context, rec domain.SessionRecord, expected int64) (bool, error) {
 	if s.sessions[rec.ID].Revision != expected {
 		return false, nil
