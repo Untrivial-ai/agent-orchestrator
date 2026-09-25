@@ -248,3 +248,27 @@ func TestReconcileRollsBackIncompleteAutomationSession(t *testing.T) {
 		t.Fatalf("run status = %s, want failed", got)
 	}
 }
+
+// A restart before the lease expires skips startup reconciliation, so regular
+// ticks must release an expired claim that never produced a session instead of
+// leaving the run stuck in spawning and blocking every later occurrence.
+func TestTickReleasesExpiredSpawningClaimWithoutSession(t *testing.T) {
+	now := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
+	store := newSchedulerStore()
+	runID := domain.AutomationRunID("run-1")
+	lease := now.Add(-time.Minute)
+	store.runs[runID] = domain.AutomationRun{ID: runID, AutomationID: "automation-1", Status: domain.AutomationRunSpawning, LeaseExpiresAt: &lease}
+	spawner := &recordingSpawner{store: store}
+	svc := New(Deps{Store: store, Spawner: spawner, Clock: func() time.Time { return now }})
+
+	if err := svc.Tick(context.Background(), now); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	run := store.runs[runID]
+	if run.Status != domain.AutomationRunPending || run.LeaseExpiresAt != nil || run.ClaimedAt != nil {
+		t.Fatalf("run = %#v, want released to pending", run)
+	}
+	if len(spawner.calls) != 0 {
+		t.Fatalf("spawns = %d, want 0", len(spawner.calls))
+	}
+}

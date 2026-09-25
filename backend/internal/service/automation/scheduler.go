@@ -231,6 +231,13 @@ func (s *Service) completeAndAdoptActive(ctx context.Context, store schedulerSto
 				if lookupErr = s.rollbackIncompleteLaunch(ctx, store, run, session, now); lookupErr != nil {
 					problems = append(problems, lookupErr)
 				}
+			} else if !ok && run.LeaseExpiresAt != nil && !run.LeaseExpiresAt.After(now) {
+				// The daemon died between claiming and session creation, and
+				// startup reconciliation ran before the lease expired. Release
+				// the claim so later occurrences are not blocked forever.
+				if _, lookupErr = store.ReleaseAutomationRun(ctx, run.ID, "Recovered expired spawn claim", now); lookupErr != nil {
+					problems = append(problems, lookupErr)
+				}
 			}
 			continue
 		}
