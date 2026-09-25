@@ -95,7 +95,7 @@ import {
 	ActivityRow,
 	ApprovalCard,
 	AssistantMessage,
-	WipeLoader,
+	ResponseSpinner,
 	CompactionMarker,
 	HumanMessage,
 	OriginMessage,
@@ -3309,7 +3309,7 @@ const TurnGroup = memo(function TurnGroup({
 				<div className="flex h-7 items-center gap-0.5">
 					{group.live ? (
 						<div className="-ml-1.5 size-7 shrink-0">
-							<WipeLoader />
+							<ResponseSpinner />
 						</div>
 					) : null}
 					{canRollback ? (

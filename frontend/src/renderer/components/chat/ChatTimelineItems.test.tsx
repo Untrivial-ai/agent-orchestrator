@@ -256,13 +256,13 @@ describe("AssistantMessage streaming", () => {
 		expect(screen.getByRole("button", { name: "Copy message as markdown" })).toBeInTheDocument();
 	});
 
-	it("shows the wipe loader while text is still streaming", () => {
+	it("shows the response spinner while text is still streaming", () => {
 		const view = render(<AssistantMessage message={message()} showCopy />);
 		view.rerender(<AssistantMessage message={message({ text: "a buffered answer" })} showCopy />);
 
-		const loader = screen.getByTestId("wipe-loader");
+		const loader = screen.getByTestId("response-spinner");
 		expect(loader).toBeInTheDocument();
-		expect(loader.firstElementChild?.children).toHaveLength(25);
+		expect(loader.querySelector("svg")).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Copy message as markdown" })).not.toBeInTheDocument();
 	});
 
