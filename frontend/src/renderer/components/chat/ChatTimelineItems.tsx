@@ -470,10 +470,11 @@ function useElapsedDuration(startedAt: string | undefined, active: boolean): num
 }
 
 const PULSE_LOADER_FRAMES = [
-	[0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0],
-	[0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0],
-	[1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1],
-	[1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1],
+	[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+	[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+	[0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0],
+	[1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+	[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
 ] as const;
 
 export function PulseLoader() {
@@ -482,7 +483,7 @@ export function PulseLoader() {
 	useEffect(() => {
 		const interval = window.setInterval(
 			() => setFrame((current) => (current + 1) % PULSE_LOADER_FRAMES.length),
-			180,
+			100,
 		);
 		return () => window.clearInterval(interval);
 	}, []);
@@ -494,7 +495,7 @@ export function PulseLoader() {
 			data-testid="pulse-loader"
 			className="flex size-7 items-center justify-center rounded-md text-muted-foreground"
 		>
-			<span className="grid size-4 grid-cols-4 grid-rows-4 gap-px" aria-hidden="true">
+			<span className="grid size-4 grid-cols-6 grid-rows-6 gap-px" aria-hidden="true">
 				{PULSE_LOADER_FRAMES[frame].map((active, index) => (
 					<span
 						key={index}
