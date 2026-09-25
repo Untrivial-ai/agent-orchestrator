@@ -255,7 +255,15 @@ function renderPane(
 ) {
 	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 	const previousAO = window.ao;
-	window.ao = {} as typeof window.ao;
+	window.ao = {
+		editorHandoff: {
+			getState: vi.fn().mockResolvedValue({
+				targets: [],
+				preferredEditorId: "cursor",
+				workspaceAvailable: true,
+			}),
+		},
+	} as typeof window.ao;
 	const result = render(
 		<QueryClientProvider client={queryClient}>
 			<TooltipProvider>
@@ -942,7 +950,7 @@ describe("terminal restore", () => {
 			terminalState.value = "exited";
 			const view = renderPane({ ...session, ...exited });
 			try {
-				await userEvent.click(screen.getByRole("button", { name: "Resume agent" }));
+				await userEvent.click(await screen.findByRole("button", { name: "Resume agent" }));
 				await waitFor(() =>
 					expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", {
 						params: { path: { sessionId: session.id } },
@@ -956,11 +964,11 @@ describe("terminal restore", () => {
 		// An agent can exit while its pane survives on a keep-alive, so the mux
 		// never reports "exited". Without sessionAgentExited in showEndedState the
 		// whole strip stays hidden and the only recovery control goes with it.
-		it("shows the strip even when the mux never reported an exit", () => {
+		it("shows the strip even when the mux never reported an exit", async () => {
 			terminalState.value = "attached";
 			const view = renderPane({ ...orchestrator, ...exited });
 			try {
-				expect(screen.getByRole("button", { name: "Resume agent" })).toBeInTheDocument();
+				expect(await screen.findByRole("button", { name: "Resume agent" })).toBeInTheDocument();
 			} finally {
 				view.restore();
 			}
