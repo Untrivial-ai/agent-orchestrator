@@ -876,7 +876,7 @@ export function AssistantMessage({
 export function WorkingLabel({ visible }: { visible: boolean }) {
 	return (
 		<div className={cn("chat-working-label-container", visible && "chat-working-label-container-visible")}>
-			<div className="min-h-0 overflow-hidden pl-1 text-xs font-medium">
+			<div className="min-h-0 overflow-hidden text-sm font-medium">
 				<span role="status" data-testid="live-working-label" className="chat-working-shimmer">
 					Working
 				</span>
