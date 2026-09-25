@@ -26,6 +26,7 @@ import { SettingsMenuTrigger } from "../settings/SettingsMenuTrigger";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { formatTimeTerse } from "../../lib/format-time";
 import { AO_PIERRE_FILES_REVIEW_CSS, AO_PIERRE_SURFACE_CSS } from "./pierreTheme";
+import { REVIEW_CONTEXT_LINES, diffContentVersion, endsAtLastHunk, hydratedCopy, patchIdentity } from "./trailingContext";
 import { usePersistentGutterUtility } from "./usePersistentGutterUtility";
 
 const PATCH_BATCH_SIZE = 100;
@@ -38,6 +39,14 @@ const FILE_HEADER_HEIGHT_PX = 36;
 // Secondary file actions stay out of the way until the row is hovered or a
 // control inside it has keyboard focus (so they remain reachable by Tab).
 const FILE_HEADER_HOVER_ACTIONS = "flex items-center opacity-0 transition-opacity duration-fast group-hover/file-header:opacity-100 group-focus-within/file-header:opacity-100";
+// Files whose patch proves they end at the last hunk get their full contents up
+// front, so their diff has no dead "More unchanged context may be available"
+// row. Bounded so a big review doesn't fetch every file; beyond these limits the
+// row stays and still loads on click.
+const MAX_END_OF_FILE_PREFETCHES = 40;
+const END_OF_FILE_PREFETCH_MAX_BYTES = 128 * 1024;
+// Longest a first display waits for those contents before showing patch-only diffs.
+const END_OF_FILE_HOLD_MS = 1500;
 
 export type ReviewSourceMenu = {
 	/** Short description of the current review source, shown on the trigger. */
@@ -221,6 +230,8 @@ export function WorkspaceReviewPane({
 	const patchQueries = useQueries({
 		queries: batches.map((paths, index) => ({
 			...sessionWorkspaceDiffsQueryOptions({
+				// endsAtLastHunk reads the trailing context, so request exactly what it assumes.
+				contextLines: REVIEW_CONTEXT_LINES,
 				errorMessage: t("files.error.loadWorkspace"),
 				paths,
 				scope,
@@ -238,13 +249,17 @@ export function WorkspaceReviewPane({
 		if (activeBatchCount < batches.length) setActiveBatchCount((current) => Math.min(current + 4, batches.length));
 	}, [activeBatchCount, batches.length, patchQueries]);
 
-	const metadataByPath = useMemo(() => {
+	const { metadataByPath, endOfFilePaths } = useMemo(() => {
 		const result = new Map<string, FileDiffMetadata>();
+		const endOfFile = new Set<string>();
 		for (const query of patchQueries) {
 			for (const group of query.data?.groups ?? []) {
 				try {
 					for (const metadata of parseGroupPatch(query.data?.workspaceVersion, scope, selectedCommit?.sha, group.repository, group.patch)) {
 						result.set(metadata.name, metadata);
+						// A truncated group can cut its last patch short, which would look
+						// like that file ending early.
+						if (!group.truncated && endsAtLastHunk(metadata)) endOfFile.add(metadata.name);
 					}
 				} catch {
 					// The group retains its retry/error surface below; one malformed patch
@@ -252,7 +267,7 @@ export function WorkspaceReviewPane({
 				}
 			}
 		}
-		return result;
+		return { metadataByPath: result, endOfFilePaths: endOfFile };
 	}, [patchQueries, scope, selectedCommit?.sha]);
 	const serverDeferredByPath = useMemo(() => {
 		const result = new Map<string, string>();
@@ -277,32 +292,6 @@ export function WorkspaceReviewPane({
 	}, [batches, patchQueries]);
 
 	const summaryById = useMemo(() => new Map(files.map((file) => [`${reviewSelectionKey}:${file.path}`, file])), [files, reviewSelectionKey]);
-	const items = useMemo<CodeViewItem<"feedback">[]>(
-		() =>
-			files.flatMap((file) => {
-				if (file.binary) return [];
-				const metadata = metadataByPath.get(file.path);
-				if (!metadata) return [];
-				const collapsed = collapsedPaths.has(file.path);
-				const fileAnnotationActive = annotation.target?.surface !== "focused" && annotation.target?.path === file.path && annotation.target.side === "file";
-				const activeTarget = annotation.target?.surface !== "focused" && annotation.target?.path === file.path && annotation.target.side !== "file"
-					? annotation.target
-					: null;
-				return [{
-					id: `${reviewSelectionKey}:${file.path}`,
-					type: "diff",
-					fileDiff: metadata,
-					collapsed,
-					annotations: activeTarget?.line != null ? [{
-						lineNumber: activeTarget.line,
-						side: activeTarget.side === "old" ? "deletions" : "additions",
-						metadata: "feedback",
-					}] : undefined,
-					version: (collapsed ? 1 : 0) + (activeTarget ? 2 : 0) + (fileAnnotationActive ? 4 : 0),
-				}];
-			}),
-		[annotation.target, collapsedPaths, files, metadataByPath, reviewSelectionKey],
-	);
 
 	const loadDiffFiles = useCallback(
 		async (metadata: FileDiffMetadata) => {
@@ -321,6 +310,99 @@ export function WorkspaceReviewPane({
 		},
 		[data.workspaceVersion, files, scope, selectedCommit?.sha, sessionId, t],
 	);
+
+	// Keyed by patch content (not workspace version), so a refresh that leaves a
+	// file's diff unchanged reuses the contents instead of flashing the row back.
+	const endOfFileFiles = useMemo(
+		() => files.filter((file) => endOfFilePaths.has(file.path) && file.size <= END_OF_FILE_PREFETCH_MAX_BYTES).slice(0, MAX_END_OF_FILE_PREFETCHES),
+		[endOfFilePaths, files],
+	);
+	const endOfFileContents = useQueries({
+		queries: endOfFileFiles.map((file) => {
+			const metadata = metadataByPath.get(file.path);
+			return {
+				queryKey: ["files-review-end-of-file", sessionId, scope, selectedCommit?.sha ?? "", file.path, file.fileFingerprint ?? "", metadata ? patchIdentity(metadata) : ""] as const,
+				queryFn: () => {
+					if (!metadata) throw new Error(t("files.error.loadFile"));
+					return loadDiffFiles(metadata);
+				},
+				enabled: metadata != null,
+				retry: false,
+				staleTime: Infinity,
+			};
+		}),
+	});
+
+	// While a file's full contents load, its patch-only diff would flash Pierre's
+	// trailing row, so it isn't shown: a file already on screen keeps its previous
+	// diff, and a first display waits (showing "Loading diff") so the list doesn't
+	// shift as files arrive. END_OF_FILE_HOLD_MS caps the wait if a request stalls.
+	const shownDiffsRef = useRef(new Map<string, FileDiffMetadata>());
+	const endOfFileLoading = endOfFileContents.some((query) => query.isLoading);
+	const [endOfFileHoldExpired, setEndOfFileHoldExpired] = useState(false);
+	useEffect(() => {
+		if (!endOfFileLoading) {
+			setEndOfFileHoldExpired(false);
+			return;
+		}
+		const timer = window.setTimeout(() => setEndOfFileHoldExpired(true), END_OF_FILE_HOLD_MS);
+		return () => window.clearTimeout(timer);
+	}, [endOfFileLoading]);
+
+	const { items, holdingForEndOfFile } = useMemo(
+		() => {
+			const shown = shownDiffsRef.current;
+			const itemId = (path: string) => `${reviewSelectionKey}:${path}`;
+			const endOfFile = new Map<string, FileDiffMetadata | "loading">();
+			endOfFileFiles.forEach((file, index) => {
+				const metadata = metadataByPath.get(file.path);
+				const query = endOfFileContents[index];
+				const hydrated = metadata && query?.data ? hydratedCopy(metadata, query.data) : null;
+				if (hydrated) endOfFile.set(file.path, hydrated);
+				else if (query?.isLoading && !endOfFileHoldExpired) endOfFile.set(file.path, shown.get(itemId(file.path)) ?? "loading");
+			});
+			let holding = false;
+			const next = files.flatMap((file): CodeViewItem<"feedback">[] => {
+				if (file.binary) return [];
+				const metadata = metadataByPath.get(file.path);
+				if (!metadata) return [];
+				const endOfFileDiff = endOfFile.get(file.path);
+				if (endOfFileDiff === "loading") {
+					holding = true;
+					return [];
+				}
+				const fileDiff = endOfFileDiff ?? metadata;
+				const collapsed = collapsedPaths.has(file.path);
+				const fileAnnotationActive = annotation.target?.surface !== "focused" && annotation.target?.path === file.path && annotation.target.side === "file";
+				const activeTarget = annotation.target?.surface !== "focused" && annotation.target?.path === file.path && annotation.target.side !== "file"
+					? annotation.target
+					: null;
+				return [{
+					id: itemId(file.path),
+					type: "diff",
+					fileDiff,
+					collapsed,
+					annotations: activeTarget?.line != null ? [{
+						lineNumber: activeTarget.line,
+						side: activeTarget.side === "old" ? "deletions" : "additions",
+						metadata: "feedback",
+					}] : undefined,
+					// CodeView only re-reads an item when its version changes: the content
+					// part lets changed or newly hydrated diffs through, the low bits carry
+					// the collapsed/annotation state.
+					version: diffContentVersion(fileDiff) * 8 + (collapsed ? 1 : 0) + (activeTarget ? 2 : 0) + (fileAnnotationActive ? 4 : 0),
+				}];
+			});
+			// Nothing from this review is on screen yet: hold the whole list rather
+			// than inserting the held files later.
+			const firstDisplay = !files.some((file) => shown.has(itemId(file.path)));
+			return { items: holding && firstDisplay ? [] : next, holdingForEndOfFile: holding };
+		},
+		[annotation.target, collapsedPaths, endOfFileContents, endOfFileFiles, endOfFileHoldExpired, files, metadataByPath, reviewSelectionKey],
+	);
+	useEffect(() => {
+		shownDiffsRef.current = new Map(items.flatMap((item) => (item.type === "diff" ? [[item.id, item.fileDiff] as const] : [])));
+	}, [items]);
 
 	const beginLineAnnotation = useCallback((itemId: string, lineNumber: number, side: "deletions" | "additions") => {
 		const file = summaryById.get(itemId);
@@ -483,7 +565,7 @@ export function WorkspaceReviewPane({
 				<>
 			{firstError ? <PanelMessage action={<RetryButton onClick={retryAll} />}>{firstError.message}</PanelMessage> : null}
 			{groupError ? <PanelMessage action={<RetryButton onClick={retryAll} />}>{groupError.message}</PanelMessage> : null}
-			{loading && items.length === 0 ? <PanelMessage compact>{t("files.loadingDiff")}</PanelMessage> : null}
+			{(loading || holdingForEndOfFile) && items.length === 0 ? <PanelMessage compact>{t("files.loadingDiff")}</PanelMessage> : null}
 			{files.length === 0 ? <PanelMessage action={allFiles.length === 0 ? <Button onClick={onBrowseAll}>{t("files.browseAll")}</Button> : undefined} compact>{allFiles.length === 0 ? t(hasAnyReviewFiles ? "files.noneInSource" : "files.noneChanged") : t("files.noFilterMatches")}</PanelMessage> : null}
 			<div className="min-h-0 flex-1 overflow-hidden">
 				{items.length > 0 ? (

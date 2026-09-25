@@ -8,27 +8,48 @@ import type { FileAnnotationModel } from "../WorkspaceDiffView";
 import { TooltipProvider } from "../ui/tooltip";
 import { WorkspaceReviewPane } from "./WorkspaceReviewPane";
 
-const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
+const { getMock, postMock } = vi.hoisted(() => ({ getMock: vi.fn(), postMock: vi.fn() }));
 
 vi.mock("../../lib/api-client", () => ({
-	apiClient: { POST: postMock, GET: vi.fn() },
+	apiClient: { POST: postMock, GET: getMock },
 	apiErrorMessage: (error: unknown, fallback = "Request failed") => error instanceof Error ? error.message : fallback,
 }));
 
+// Minimal patch-only "change" metadata. A patch containing "ends-at-eof" gets a
+// last hunk that ends on a change (the file provably ends there); any other
+// keeps three lines of trailing context (the file may continue).
 vi.mock("@pierre/diffs", () => ({
-	parsePatchFiles: (patch: string) => patch ? [{ files: [{ name: patch.includes("README.md") ? "README.md" : "src/App.tsx", type: "changed" }] }] : [],
+	hydratePartialDiff: (_mode: string, fileDiff: object) => ({ ...fileDiff, isPartial: false }),
+	parsePatchFiles: (patch: string) => patch ? [{ files: [{
+		name: patch.includes("README.md") ? "README.md" : "src/App.tsx",
+		type: "change",
+		isPartial: true,
+		deletionLines: [],
+		additionLines: [],
+		hunks: [{
+			deletionStart: 1,
+			deletionCount: 3,
+			additionStart: 1,
+			additionCount: 4,
+			noEOFCRAdditions: false,
+			noEOFCRDeletions: false,
+			hunkContent: patch.includes("ends-at-eof")
+				? [{ type: "context", lines: 3 }, { type: "change", additions: 1, deletions: 0 }]
+				: [{ type: "change", additions: 1, deletions: 0 }, { type: "context", lines: 3 }],
+		}],
+	}] }] : [],
 }));
 
 vi.mock("@pierre/diffs/react", () => ({
 	CodeView: ({ className, items, options, renderCustomHeader, renderGutterUtility }: {
 		className: string;
-		items: Array<{ id: string; collapsed?: boolean }>;
+		items: Array<{ id: string; collapsed?: boolean; fileDiff?: { isPartial?: boolean } }>;
 		options: { enableGutterUtility?: boolean; overflow?: string; unsafeCSS?: string };
 		renderCustomHeader: (item: { id: string }) => ReactNode;
 		renderGutterUtility?: (getHoveredLine: () => { lineNumber: number; side: "additions" }, item: { id: string }) => ReactNode;
 	}) => (
 		<div className={className} data-gutter-enabled={String(Boolean(options.enableGutterUtility))} data-overflow={options.overflow} data-surface-css={options.unsafeCSS} data-testid="code-view">
-			{items.map((item) => <div data-collapsed={String(Boolean(item.collapsed))} key={item.id}>{renderCustomHeader(item)}</div>)}
+			{items.map((item) => <div data-collapsed={String(Boolean(item.collapsed))} data-partial={String(item.fileDiff?.isPartial)} key={item.id}>{renderCustomHeader(item)}</div>)}
 			{items[0] ? renderGutterUtility?.(() => ({ lineNumber: 7, side: "additions" }), items[0]) : null}
 		</div>
 	),
@@ -86,6 +107,7 @@ function renderWithQuery(children: ReactNode) {
 describe("WorkspaceReviewPane", () => {
 	beforeEach(() => {
 		window.localStorage.clear();
+		getMock.mockReset();
 		postMock.mockReset().mockResolvedValue({
 			data: {
 				sessionId: "sess-1",
@@ -115,6 +137,88 @@ describe("WorkspaceReviewPane", () => {
 			borderColor: "#fff",
 			color: "#000",
 		});
+	});
+
+	it("loads a file that ends at its last change up front, so its diff has no trailing context row", async () => {
+		postMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				workspaceVersion: "workspace-1",
+				groups: [{ repository: "", patch: "diff --git a/README.md b/README.md\nends-at-eof\n", truncated: false, includedPaths: ["README.md"], deferred: [] }],
+			},
+		});
+		getMock.mockImplementation(async (_url: string, init: { params: { query: { side: "before" | "after" } } }) => ({
+			data: { binary: false, content: init.params.query.side === "before" ? "a\n" : "a\nb\n", revision: `rev-${init.params.query.side}`, truncated: false },
+		}));
+		const data = workspace([{ path: "README.md", status: "modified", additions: 1, deletions: 0, size: 20, binary: false }]);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+
+		await waitFor(() => expect(screen.getByTestId("code-view").querySelector("[data-partial]")).toHaveAttribute("data-partial", "false"));
+		for (const side of ["before", "after"]) {
+			expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/file/revision", expect.objectContaining({
+				params: expect.objectContaining({ query: expect.objectContaining({ path: "README.md", side }) }),
+			}));
+		}
+	});
+
+	it("holds a file that ends at its last change until its contents load, instead of flashing the patch-only diff", async () => {
+		postMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				workspaceVersion: "workspace-1",
+				groups: [{ repository: "", patch: "diff --git a/README.md b/README.md\nends-at-eof\n", truncated: false, includedPaths: ["README.md"], deferred: [] }],
+			},
+		});
+		let release = () => {};
+		const contentsReady = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		getMock.mockImplementation(async (_url: string, init: { params: { query: { side: "before" | "after" } } }) => {
+			await contentsReady;
+			return { data: { binary: false, content: init.params.query.side === "before" ? "a\n" : "a\nb\n", revision: `rev-${init.params.query.side}`, truncated: false } };
+		});
+		const data = workspace([{ path: "README.md", status: "modified", additions: 1, deletions: 0, size: 20, binary: false }]);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+
+		await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+		expect(screen.getByText("Loading diff...")).toBeInTheDocument();
+		expect(screen.queryByTestId("code-view")).not.toBeInTheDocument();
+
+		release();
+		await waitFor(() => expect(screen.getByTestId("code-view").querySelector("[data-partial]")).toHaveAttribute("data-partial", "false"));
+		expect(screen.queryByText("Loading diff...")).not.toBeInTheDocument();
+	});
+
+	it("stops holding after a stalled contents request and shows the patch-only diff", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			postMock.mockResolvedValue({
+				data: {
+					sessionId: "sess-1",
+					workspaceVersion: "workspace-1",
+					groups: [{ repository: "", patch: "diff --git a/README.md b/README.md\nends-at-eof\n", truncated: false, includedPaths: ["README.md"], deferred: [] }],
+				},
+			});
+			getMock.mockImplementation(() => new Promise(() => {}));
+			const data = workspace([{ path: "README.md", status: "modified", additions: 1, deletions: 0, size: 20, binary: false }]);
+			renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+
+			await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+			expect(screen.queryByTestId("code-view")).not.toBeInTheDocument();
+			await vi.advanceTimersByTimeAsync(1600);
+			await waitFor(() => expect(screen.getByTestId("code-view").querySelector("[data-partial]")).toHaveAttribute("data-partial", "true"));
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps the patch-only diff (and its load-more row) when the file may continue", async () => {
+		const data = workspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 0, size: 20, binary: false }]);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+
+		expect(await screen.findByTestId("code-view")).toBeInTheDocument();
+		expect(screen.getByTestId("code-view").querySelector("[data-partial]")).toHaveAttribute("data-partial", "true");
+		expect(getMock).not.toHaveBeenCalled();
 	});
 
 	it("collapses and expands file items through controlled CodeView state", async () => {
