@@ -140,10 +140,22 @@ type fakeModelDiscoverer struct {
 	active                 atomic.Int32
 	maxActive              atomic.Int32
 	overlap                atomic.Bool
+	blockAfter             int32
+	blockStarted           chan struct{}
+	blockRelease           chan struct{}
+	blockOnce              sync.Once
 }
 
 func (f *fakeModelDiscoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
-	f.discoverCalls.Add(1)
+	call := f.discoverCalls.Add(1)
+	if f.blockAfter > 0 && call >= f.blockAfter {
+		f.blockOnce.Do(func() { close(f.blockStarted) })
+		select {
+		case <-f.blockRelease:
+		case <-ctx.Done():
+			return ports.AgentModelCatalog{}, ctx.Err()
+		}
+	}
 	active := f.active.Add(1)
 	for {
 		maximum := f.maxActive.Load()
@@ -1987,10 +1999,13 @@ func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 		SelectionMode: ports.ModelSelectionCatalog,
 		Models:        []ports.AgentModelInfo{{ID: "model-one"}},
 		Source:        "cli",
-	}}
+	}, blockAfter: 2, blockStarted: make(chan struct{}), blockRelease: make(chan struct{})}
 	svc := newService([]agentregistry.HarnessAgent{
 		harnessAgent("opencode", "OpenCode", nil),
 	}, cache, nil, discoverer)
+	serviceCtx, cancelService := context.WithCancel(context.Background())
+	svc.ctx = serviceCtx
+	t.Cleanup(cancelService)
 
 	fresh, err := svc.Models(context.Background(), "opencode", "proj-1", false)
 	if err != nil {
@@ -2018,16 +2033,54 @@ func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 
 	// A CLI-backed catalog can drift with no change to the binary or its config,
 	// so an aged cache hit is what replaces the manual "Refresh models" button.
-	stale, err := svc.Models(context.Background(), "opencode", "proj-1", false)
-	if err != nil {
-		t.Fatal(err)
+	type modelResult struct {
+		catalog ports.AgentModelCatalog
+		err     error
+	}
+	result := make(chan modelResult, 1)
+	go func() {
+		catalog, err := svc.Models(context.Background(), "opencode", "proj-1", false)
+		result <- modelResult{catalog: catalog, err: err}
+	}()
+	var stale ports.AgentModelCatalog
+	select {
+	case got := <-result:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		stale = got.catalog
+	case <-time.After(time.Second):
+		t.Fatal("aged cache read waited for background discovery")
 	}
 	if !stale.RefreshRecommended {
 		t.Fatalf("catalog validated %s ago did not ask for revalidation", time.Since(aged.ValidatedAt))
 	}
-	if discoverer.discoverCalls.Load() != 1 {
-		t.Fatalf("discovery calls = %d, want the cached catalog served immediately", discoverer.discoverCalls.Load())
+	select {
+	case <-discoverer.blockStarted:
+	case <-time.After(time.Second):
+		t.Fatal("aged cache read did not start background discovery")
 	}
+	const concurrentReads = 8
+	results := make(chan modelResult, concurrentReads)
+	for range concurrentReads {
+		go func() {
+			catalog, err := svc.Models(context.Background(), "opencode", "proj-1", false)
+			results <- modelResult{catalog: catalog, err: err}
+		}()
+	}
+	for range concurrentReads {
+		got := <-results
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if !got.catalog.RefreshRecommended {
+			t.Fatal("concurrent aged cache read did not recommend refresh")
+		}
+	}
+	if got := discoverer.discoverCalls.Load(); got != 2 {
+		t.Fatalf("discovery calls = %d, want initial load plus one background refresh", got)
+	}
+	close(discoverer.blockRelease)
 }
 
 func TestRevalidateModelsRediscoversAnAgedCatalog(t *testing.T) {
