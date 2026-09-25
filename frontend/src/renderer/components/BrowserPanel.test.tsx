@@ -18,6 +18,7 @@ import type {
 	BrowserAnnotationCancelPayload,
 	BrowserAnnotationSubmitPayload,
 } from "../../shared/browser-annotations";
+import type { BrowserDownloadsState } from "../../shared/browser-downloads";
 
 function render(ui: ReactElement) {
 	return rtlRender(<TooltipProvider>{ui}</TooltipProvider>);
@@ -220,6 +221,7 @@ describe("BrowserPanel", () => {
 	let focusLocationListener: ((viewId: string) => void) | undefined;
 	let reopenClosedTabListener: ((viewId: string) => void) | undefined;
 	const pageFocusListeners = new Set<(viewId: string) => void>();
+	const downloadListeners = new Set<(state: BrowserDownloadsState) => void>();
 
 	async function openBrowserControls() {
 		await userEvent.click(screen.getByRole("button", { name: "Browser controls" }));
@@ -263,6 +265,7 @@ describe("BrowserPanel", () => {
 		annotationSubmitListeners.clear();
 		annotationCancelListeners.clear();
 		pageFocusListeners.clear();
+		downloadListeners.clear();
 		window.ao!.browser.onPageFocus = vi.fn((listener: (viewId: string) => void) => {
 			pageFocusListeners.add(listener);
 			return () => pageFocusListeners.delete(listener);
@@ -283,6 +286,10 @@ describe("BrowserPanel", () => {
 		window.ao!.browser.historyFavicon = vi.fn(async () => undefined);
 		window.ao!.browser.captureScreenshot = vi.fn(async () => undefined);
 		window.ao!.browser.downloads.list = vi.fn(async () => ({ downloads: [] }));
+		window.ao!.browser.downloads.onChanged = vi.fn((listener) => {
+			downloadListeners.add(listener);
+			return () => downloadListeners.delete(listener);
+		});
 		window.ao!.browser.selectProfile = vi.fn(async () => undefined);
 		window.ao!.browserProfiles.list = vi.fn(async () => ({ profiles: [] }));
 		window.ao!.browser.notifyPanelUsed = vi.fn();
@@ -719,18 +726,64 @@ describe("BrowserPanel", () => {
 		}));
 		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
 
-		// A newly observed download opens the menu automatically. Close that first,
-		// then exercise the user's explicit open/close flow.
-		expect(await screen.findByText("report.pdf")).toBeInTheDocument();
-		await userEvent.keyboard("{Escape}");
-		await waitFor(() => expect(screen.queryByText("report.pdf")).not.toBeInTheDocument());
-		const trigger = screen.getByRole("button", { name: "Downloads" });
+		// Previously retained downloads hydrate the browser controls without
+		// opening the menu; only genuinely new downloads should interrupt.
+		await waitFor(() => expect(window.ao!.browser.downloads.list).toHaveBeenCalled());
+		const trigger = await screen.findByRole("button", { name: "Downloads" });
+		expect(screen.queryByText("report.pdf")).not.toBeInTheDocument();
 		await userEvent.click(trigger);
 		expect(screen.getByText("report.pdf")).toBeInTheDocument();
 		await userEvent.keyboard("{Escape}");
 		await waitFor(() => expect(screen.queryByText("report.pdf")).not.toBeInTheDocument());
 		expect(trigger).toHaveFocus();
 		expect(document.querySelector('[data-slot="tooltip-content"]')).toHaveTextContent("Downloads");
+	});
+
+	it("opens the downloads menu for a new download while the browser panel is active", async () => {
+		render(<BrowserPanel active onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		await waitFor(() => expect(window.ao!.browser.downloads.list).toHaveBeenCalled());
+
+		act(() => {
+			downloadListeners.forEach((listener) =>
+				listener({
+					downloads: [{
+						id: "download-1",
+						fileName: "report.pdf",
+						receivedBytes: 25,
+						totalBytes: 100,
+						status: "progressing",
+						startedAt: 1,
+						updatedAt: 2,
+					}],
+				}),
+			);
+		});
+
+		expect(await screen.findByText("report.pdf")).toBeInTheDocument();
+	});
+
+	it("does not open the downloads menu for new downloads while the browser panel is hidden", async () => {
+		render(<BrowserPanel active={false} onTogglePopOut={() => undefined} poppedOut={false} session={session} />);
+		await waitFor(() => expect(window.ao!.browser.downloads.list).toHaveBeenCalled());
+
+		act(() => {
+			downloadListeners.forEach((listener) =>
+				listener({
+					downloads: [{
+						id: "download-1",
+						fileName: "report.pdf",
+						receivedBytes: 25,
+						totalBytes: 100,
+						status: "progressing",
+						startedAt: 1,
+						updatedAt: 2,
+					}],
+				}),
+			);
+		});
+
+		await waitFor(() => expect(screen.getByRole("button", { name: "Downloads" })).toBeInTheDocument());
+		expect(screen.queryByText("report.pdf")).not.toBeInTheDocument();
 	});
 
 	it("keeps browser profiles inside the AO controls menu", async () => {
