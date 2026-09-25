@@ -1,9 +1,11 @@
 package lifecycle
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -134,5 +136,92 @@ func TestReconcileSessionOutputType_UnknownSessionIsNoOp(t *testing.T) {
 	m, _, _ := newManager()
 	if err := m.ReconcileSessionOutputType(ctx, "missing"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// staleReadStore simulates a read-then-write race deterministically, without
+// goroutines: GetSession always hands back a fixed pre-termination snapshot
+// (what ReconcileSessionOutputType's read captured), while the underlying
+// fakeStore's session row has already moved on to a post-termination state
+// (what a concurrent MarkTerminated + activity/runtime/preview write
+// committed in between). This lets a single-threaded test assert that
+// ReconcileSessionOutputType's write cannot replay the stale snapshot over
+// that newer commit.
+type staleReadStore struct {
+	*fakeStore
+	staleRead domain.SessionRecord
+}
+
+func (s *staleReadStore) GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error) {
+	return s.staleRead, true, nil
+}
+
+// TestReconcileSessionOutputType_DoesNotResurrectSessionTerminatedDuringRead
+// is the critical-risk regression from review: a read-modify-write
+// UpdateSession(rec) with a stale in-memory rec would replay is_terminated,
+// activity, runtime identity, and preview state backwards over whatever
+// committed after the read — in particular, resurrecting a session that
+// terminated in between. UpdateSessionArtifactOutput must leave all of that
+// untouched; only artifact_dir/OutputType may move.
+func TestReconcileSessionOutputType_DoesNotResurrectSessionTerminatedDuringRead(t *testing.T) {
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "report.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	preTermination := domain.SessionRecord{
+		ID:           "mer-1",
+		IsTerminated: false,
+		Activity:     domain.Activity{State: domain.ActivityActive, LastActivityAt: time.Now()},
+		Metadata: domain.SessionMetadata{
+			RuntimeHandleID: "handle-old",
+			AgentSessionID:  "agent-old",
+			PreviewURL:      "http://old-preview",
+		},
+	}
+
+	// The commit a concurrent termination (plus its activity/runtime/preview
+	// writes) would have left behind by the time reconcile's write runs.
+	terminated := preTermination
+	terminated.IsTerminated = true
+	terminated.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: time.Now()}
+	terminated.Metadata.RuntimeHandleID = ""
+	terminated.Metadata.AgentSessionID = "agent-new"
+	terminated.Metadata.PreviewURL = "http://new-preview"
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = terminated
+	wrapped := &staleReadStore{fakeStore: st, staleRead: preTermination}
+	m := New(wrapped, &fakeMessenger{}, WithDataDir(dataDir))
+
+	if err := m.ReconcileSessionOutputType(ctx, "mer-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	got := st.sessions["mer-1"]
+	if !got.IsTerminated {
+		t.Fatal("IsTerminated reverted to false: reconcile resurrected a session terminated during its read")
+	}
+	if got.Activity.State != domain.ActivityExited {
+		t.Fatalf("Activity.State = %q, want %q (stale pre-termination activity must not be replayed)", got.Activity.State, domain.ActivityExited)
+	}
+	if got.Metadata.RuntimeHandleID != "" {
+		t.Fatalf("RuntimeHandleID = %q, want cleared (stale value must not be replayed)", got.Metadata.RuntimeHandleID)
+	}
+	if got.Metadata.AgentSessionID != "agent-new" {
+		t.Fatalf("AgentSessionID = %q, want %q", got.Metadata.AgentSessionID, "agent-new")
+	}
+	if got.Metadata.PreviewURL != "http://new-preview" {
+		t.Fatalf("PreviewURL = %q, want %q", got.Metadata.PreviewURL, "http://new-preview")
+	}
+	if got.Metadata.ArtifactDir != artifactDir {
+		t.Fatalf("ArtifactDir = %q, want backfilled %q", got.Metadata.ArtifactDir, artifactDir)
+	}
+	if got.OutputType != domain.SessionOutputArtifact {
+		t.Fatalf("OutputType = %q, want %q", got.OutputType, domain.SessionOutputArtifact)
 	}
 }

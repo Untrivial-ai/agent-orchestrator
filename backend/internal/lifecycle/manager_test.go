@@ -115,6 +115,17 @@ func (f *fakeStore) UpdateSession(_ context.Context, rec domain.SessionRecord) e
 	return nil
 }
 
+func (f *fakeStore) UpdateSessionArtifactOutput(_ context.Context, id domain.SessionID, artifactDir string, outputType domain.SessionOutputType) (bool, error) {
+	rec, ok := f.sessions[id]
+	if !ok {
+		return false, nil
+	}
+	rec.Metadata.ArtifactDir = artifactDir
+	rec.OutputType = outputType
+	f.sessions[id] = rec
+	return true, nil
+}
+
 func (f *fakeStore) UpdateSessionFromActivitySignal(_ context.Context, rec domain.SessionRecord, expected int64) (bool, error) {
 	if f.sessions[rec.ID].Revision != expected {
 		return false, nil

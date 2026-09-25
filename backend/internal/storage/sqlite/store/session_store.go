@@ -196,6 +196,27 @@ func (s *Store) UpdateSessionModel(ctx context.Context, id domain.SessionID, mod
 	return rows > 0, nil
 }
 
+// UpdateSessionArtifactOutput changes only artifact_dir and
+// session_output_type, leaving concurrent lifecycle/controller/activity
+// writes intact. lifecycle.Manager.ReconcileSessionOutputType uses this
+// instead of a read-modify-write UpdateSession so a stale in-memory
+// SessionRecord read before a concurrent termination (or other update) can
+// never replay is_terminated, activity, runtime identity, or preview state
+// backwards over that newer write.
+func (s *Store) UpdateSessionArtifactOutput(ctx context.Context, id domain.SessionID, artifactDir string, outputType domain.SessionOutputType) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.UpdateSessionArtifactOutput(ctx, gen.UpdateSessionArtifactOutputParams{
+		ID:                id,
+		ArtifactDir:       artifactDir,
+		SessionOutputType: string(outputType),
+	})
+	if err != nil {
+		return false, fmt.Errorf("update session artifact output for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // UpdateBrowserCapabilityVerifier rotates only the verifier when the caller's
 // controller-owner snapshot is still current. It deliberately leaves every
 // other mutable session field, including user-visible recency, untouched.

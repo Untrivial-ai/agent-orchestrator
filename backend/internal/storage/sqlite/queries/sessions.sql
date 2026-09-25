@@ -50,6 +50,18 @@ UPDATE sessions
 SET model = sqlc.arg(model)
 WHERE id = sqlc.arg(id);
 
+-- name: UpdateSessionArtifactOutput :execrows
+-- Narrow write for lifecycle.Manager.ReconcileSessionOutputType: touches only
+-- the two output-derivation columns. A full read-then-UpdateSession write here
+-- would replay a stale SessionRecord over is_terminated, activity, runtime
+-- identity, and preview state committed by another writer between the read
+-- and this write (e.g. a session that terminated mid-reconcile could be
+-- resurrected). This statement cannot clobber those fields because it never
+-- names them.
+UPDATE sessions
+SET artifact_dir = sqlc.arg(artifact_dir), session_output_type = sqlc.arg(session_output_type)
+WHERE id = sqlc.arg(id);
+
 -- name: UpdateBrowserCapabilityVerifier :execrows
 -- Rotate only the browser credential for the exact controller owner observed by
 -- the launcher. This must not replay a stale SessionRecord over newer lifecycle,

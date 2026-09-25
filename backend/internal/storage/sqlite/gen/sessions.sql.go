@@ -1452,6 +1452,33 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 	return err
 }
 
+const updateSessionArtifactOutput = `-- name: UpdateSessionArtifactOutput :execrows
+UPDATE sessions
+SET artifact_dir = ?1, session_output_type = ?2
+WHERE id = ?3
+`
+
+type UpdateSessionArtifactOutputParams struct {
+	ArtifactDir       string
+	SessionOutputType string
+	ID                domain.SessionID
+}
+
+// Narrow write for lifecycle.Manager.ReconcileSessionOutputType: touches only
+// the two output-derivation columns. A full read-then-UpdateSession write here
+// would replay a stale SessionRecord over is_terminated, activity, runtime
+// identity, and preview state committed by another writer between the read
+// and this write (e.g. a session that terminated mid-reconcile could be
+// resurrected). This statement cannot clobber those fields because it never
+// names them.
+func (q *Queries) UpdateSessionArtifactOutput(ctx context.Context, arg UpdateSessionArtifactOutputParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateSessionArtifactOutput, arg.ArtifactDir, arg.SessionOutputType, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateSessionModel = `-- name: UpdateSessionModel :execrows
 UPDATE sessions
 SET model = ?1
