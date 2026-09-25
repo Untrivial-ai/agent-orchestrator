@@ -1,8 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { CalendarClock, ChevronDown, ChevronRight, Loader2, Pencil, Plus, Trash2, TriangleAlert, X } from "lucide-react";
+import { CalendarClock, ChevronDown, ChevronRight, Pencil, Plus, Trash2, TriangleAlert, X } from "lucide-react";
 import { Button } from "./ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import {
@@ -17,14 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Switch } from "./ui/switch";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
-import { AgentModelCombobox } from "./settings/AgentModelCombobox";
 import { useAgentReadinessQuery, type AgentReadinessSnapshot } from "../hooks/useAgentReadinessQuery";
-import {
-	agentModelsQueryKey,
-	agentModelsQueryOptions,
-	refreshAgentModels,
-	type AgentModelCatalog,
-} from "../hooks/useAgentModelsQuery";
 import { useProjectDefaultWorker } from "../hooks/useProjectDefaultWorker";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import {
@@ -50,10 +42,6 @@ import {
 	onboardingFormLabelClass,
 } from "../lib/onboarding-ui";
 import { cn } from "../lib/utils";
-
-/** Same quiet filled trigger Schedule/Project use — keeps Agent/Model in that family. */
-const formControlTriggerClass =
-	"flex h-control-form w-full items-center justify-between gap-2 rounded-md border border-transparent bg-input/50 px-3 text-sm text-foreground hover:bg-input/50 data-[state=open]:bg-input/50 [&_svg]:text-muted-foreground";
 
 function displayTime(value?: string, locale?: string) {
 	if (!value) return "—";
@@ -228,7 +216,6 @@ function AutomationFormDialog({
 	onSubmit,
 }: AutomationFormDialogProps) {
 	const { t } = useTranslation();
-	const queryClient = useQueryClient();
 	const editing = Boolean(automation);
 	const timezone = automation?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 	const [projectId, setProjectId] = useState("");
@@ -236,8 +223,6 @@ function AutomationFormDialog({
 	const [name, setName] = useState("");
 	const [prompt, setPrompt] = useState("");
 	const [harness, setHarness] = useState("");
-	const [model, setModel] = useState("");
-	const [modelTouched, setModelTouched] = useState(false);
 	const [preset, setPreset] = useState("daily");
 	const [time, setTime] = useState(nowLocalHHMM);
 	const [raw, setRaw] = useState("FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0");
@@ -250,8 +235,6 @@ function AutomationFormDialog({
 		setName(automation?.displayName ?? "");
 		setPrompt(automation?.prompt ?? "");
 		setHarness(automation?.harness ?? "");
-		setModel("");
-		setModelTouched(false);
 		const defaultTime = nowLocalHHMM();
 		const [defaultHour, defaultMinute] = defaultTime.split(":");
 		const schedule = automation
@@ -282,22 +265,6 @@ function AutomationFormDialog({
 			fallbackAgents: [],
 		}).find(isReadyAgent)?.id ?? "";
 	const selectedHarness = harness || projectDefaultWorker || fallbackHarness;
-	const selectedAgentLabel = harnesses.find((item) => item.id === selectedHarness)?.label || selectedHarness;
-	const modelsProjectId = automation?.projectId || projectId;
-	const modelCatalogQuery = useQuery(agentModelsQueryOptions(selectedHarness, modelsProjectId));
-	const catalogModels = modelCatalogQuery.data?.models ?? [];
-	const catalogDefault = catalogModels.find((item) => item.isDefault)?.id || catalogModels[0]?.id || "";
-	const selectedModel = model || catalogDefault;
-
-	useEffect(() => {
-		if (!modelTouched) setModel(catalogDefault);
-	}, [catalogDefault, modelTouched]);
-
-	async function refreshSelectedModels() {
-		if (!selectedHarness) return;
-		const refreshed = await refreshAgentModels(selectedHarness, modelsProjectId);
-		queryClient.setQueryData(agentModelsQueryKey(selectedHarness, modelsProjectId), refreshed);
-	}
 
 	function clearValidationError(field: AutomationField) {
 		setValidationErrors((current) => {
@@ -400,7 +367,7 @@ function AutomationFormDialog({
 								className="min-h-24 w-full rounded-md border border-transparent bg-input/50 px-3 py-2 text-[13px] outline-none focus-visible:outline-none aria-invalid:border-destructive"
 							/>
 						</Field>
-						{/* Agent/Model/Schedule/Time share one labeled 2×2 grid and Select/Input chrome. */}
+						{/* Agent/Schedule/Time share one labeled grid and Select/Input chrome. */}
 						<div className="grid grid-cols-2 gap-3">
 							<RequiredAgentField
 								id="automation-agent"
@@ -412,26 +379,8 @@ function AutomationFormDialog({
 								disabled={busy}
 								onChange={(value) => {
 									setHarness(value);
-									setModel("");
-									setModelTouched(false);
 								}}
 							/>
-							<Field label={t("automations.model")}>
-								<AutomationModelPicker
-									agentId={selectedHarness}
-									agentLabel={selectedAgentLabel}
-									value={selectedModel}
-									catalog={modelCatalogQuery.data}
-									loading={selectedHarness !== "" && modelCatalogQuery.isFetching && modelCatalogQuery.data === undefined}
-									fetching={modelCatalogQuery.isFetching}
-									disabled={busy}
-									onChange={(value) => {
-										setModel(value);
-										setModelTouched(true);
-									}}
-									onRefresh={refreshSelectedModels}
-								/>
-							</Field>
 							<Field label={t("automations.field.schedule")}>
 								<AutomationSelect
 									label={t("automations.field.schedule")}
@@ -500,95 +449,6 @@ function AutomationFormDialog({
 				</form>
 			</DialogContent>
 		</Dialog>
-	);
-}
-
-function AutomationModelPicker({
-	agentId,
-	agentLabel,
-	value,
-	catalog,
-	loading,
-	fetching,
-	disabled,
-	onChange,
-	onRefresh,
-}: {
-	agentId: string;
-	agentLabel: string;
-	value: string;
-	catalog: AgentModelCatalog | undefined;
-	loading: boolean;
-	fetching: boolean;
-	disabled: boolean;
-	onChange: (value: string) => void;
-	onRefresh: () => Promise<void>;
-}) {
-	const { t } = useTranslation();
-	const models = catalog?.models ?? [];
-	const noOverrideLabel = agentLabel
-		? t("newTask.letAgentChoose", { agent: agentLabel })
-		: t("settings.models.agentDefault");
-
-	if (agentId === "") {
-		return (
-			<span
-				className={cn(formControlTriggerClass, "inline-flex cursor-not-allowed items-center opacity-50")}
-				aria-disabled="true"
-				aria-label={t("automations.model")}
-			>
-				<span className="truncate text-muted-foreground">{t("newTask.selectAgent")}</span>
-			</span>
-		);
-	}
-
-	if (loading) {
-		return (
-			<span
-				className={cn(formControlTriggerClass, "inline-flex cursor-not-allowed items-center opacity-50")}
-				aria-label={t("automations.model")}
-			>
-				<span className="inline-flex min-w-0 items-center gap-1.5" role="status" aria-label={t("settings.models.loading")} aria-busy="true">
-					<Loader2 className="size-icon-sm shrink-0 animate-spin text-muted-foreground" aria-hidden="true" />
-					<span className="truncate text-muted-foreground">{t("settings.models.loading")}</span>
-				</span>
-			</span>
-		);
-	}
-
-	const displayModels =
-		catalog?.selectionMode === "mode"
-			? models
-			: models.map((item) => (item.id === "auto" ? { ...item, label: t("settings.models.autoRouteLabel") } : item));
-
-	return (
-		<AgentModelCombobox
-			key={agentId}
-			aria-label={t("automations.model")}
-			value={value}
-			models={displayModels}
-			allowCustom={catalog?.selectionMode === "mode" ? false : catalog?.allowCustom}
-			customModelEntry={catalog?.selectionMode === "mode" ? "none" : catalog?.customModelEntry}
-			agentLabel={agentLabel}
-			onRefresh={onRefresh}
-			disabled={disabled || (catalog?.selectionMode === "mode" && models.length === 0)}
-			emptyLabel={fetching ? t("settings.models.loading") : noOverrideLabel}
-			requireSelection
-			onChange={onChange}
-			onCustom={onChange}
-			compact
-			recentScope={agentId}
-			triggerClassName={formControlTriggerClass}
-			menuAlign="start"
-			renderTrigger={(label) => {
-				const visibleLabel = value ? label : (displayModels[0]?.label ?? noOverrideLabel);
-				return (
-					<span className="min-w-0 truncate text-control text-foreground" title={visibleLabel}>
-						{visibleLabel}
-					</span>
-				);
-			}}
-		/>
 	);
 }
 

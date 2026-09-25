@@ -62,7 +62,7 @@ describe("AutomationsView", () => {
 
 		const dialog = screen.getByRole("dialog", { name: "Create automation" });
 		expect(within(dialog).getByRole("combobox", { name: "Agent" })).toHaveTextContent("Codex");
-		expect(within(dialog).getByRole("button", { name: "Model" })).toBeInTheDocument();
+		expect(within(dialog).queryByRole("button", { name: "Model" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("option", { name: "Project default" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("combobox", { name: "Session kind" })).not.toBeInTheDocument();
 	});
@@ -131,7 +131,7 @@ describe("AutomationsView", () => {
 		expect(within(dialog).getByRole("combobox", { name: "Project" })).toBeInTheDocument();
 		expect(within(dialog).getByRole("combobox", { name: "Schedule" })).toBeInTheDocument();
 		expect(within(dialog).getByRole("combobox", { name: "Agent" })).toBeInTheDocument();
-		expect(within(dialog).getByRole("button", { name: "Model" })).toBeInTheDocument();
+		expect(within(dialog).queryByRole("button", { name: "Model" })).not.toBeInTheDocument();
 		expect(view.container.querySelector('[data-slot="select-content"]')).toBeNull();
 	});
 

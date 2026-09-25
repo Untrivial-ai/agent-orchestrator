@@ -74,9 +74,16 @@ func CanonicalizeSchedule(input ScheduleInput, now time.Time) (Schedule, error) 
 	if next.IsZero() {
 		return Schedule{}, fmt.Errorf("schedule has no future occurrence")
 	}
-	following := rule.After(next, false)
-	if !following.IsZero() && following.Sub(next) < time.Minute {
-		return Schedule{}, fmt.Errorf("schedule frequency cannot be faster than one minute")
+	previous := next
+	for i := 0; i < 16; i++ {
+		following := rule.After(previous, false)
+		if following.IsZero() {
+			break
+		}
+		if following.Sub(previous) < time.Minute {
+			return Schedule{}, fmt.Errorf("schedule frequency cannot be faster than one minute")
+		}
+		previous = following
 	}
 	return Schedule{RRuleText: option.String(), Timezone: zone, NextRunAt: next.UTC()}, nil
 }
