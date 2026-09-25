@@ -469,21 +469,18 @@ function useElapsedDuration(startedAt: string | undefined, active: boolean): num
 	return Number.isNaN(start) ? undefined : Math.max(0, now - start);
 }
 
-const PULSE_LOADER_FRAMES = [
-	[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-	[0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
-	[0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0],
-	[1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1],
-	[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-] as const;
+const WIPE_LOADER_FRAMES = Array.from({ length: 12 }, (_, frame) => {
+	const progress = frame <= 5 ? frame : 11 - frame;
+	return Array.from({ length: 36 }, (_, index) => (index % 6 <= progress ? 1 : 0));
+});
 
-export function PulseLoader() {
+export function WipeLoader() {
 	const [frame, setFrame] = useState(0);
 
 	useEffect(() => {
 		const interval = window.setInterval(
-			() => setFrame((current) => (current + 1) % PULSE_LOADER_FRAMES.length),
-			100,
+			() => setFrame((current) => (current + 1) % WIPE_LOADER_FRAMES.length),
+			85,
 		);
 		return () => window.clearInterval(interval);
 	}, []);
@@ -492,7 +489,7 @@ export function PulseLoader() {
 		<span
 			role="status"
 			aria-label="Generating response"
-			data-testid="pulse-loader"
+			data-testid="wipe-loader"
 			className="flex size-7 items-center justify-center rounded-md text-muted-foreground"
 		>
 			<span className="grid size-4 grid-cols-6 grid-rows-6 gap-px" aria-hidden="true">
@@ -831,7 +828,7 @@ export function AssistantMessage({
 					{showCopy ? (
 						<div className="-ml-1.5 size-7 shrink-0">
 							{showLiveActions ? (
-								<PulseLoader />
+								<WipeLoader />
 							) : (
 								/* The stored markdown, not a re-serialization of what was rendered:
 								   pasting it into an editor has to give back what the agent wrote. */
