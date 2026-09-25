@@ -325,6 +325,19 @@ export function WorkspaceReviewPane({
 			return next;
 		});
 	}, [annotation]);
+	const collapsePath = useCallback((path: string) => {
+		if (annotation.target?.surface === "review" && annotation.target.path === path) annotation.cancel();
+		setCollapsedPaths((current) => {
+			if (current.has(path)) return current;
+			const next = new Set(current);
+			next.add(path);
+			return next;
+		});
+	}, [annotation]);
+	const markViewed = useCallback((file: WorkspaceFileSummary, checked: boolean) => {
+		toggleViewed(file);
+		if (checked) collapsePath(file.path);
+	}, [collapsePath, toggleViewed]);
 	const collapseAll = useCallback(() => {
 		if (annotation.target?.surface === "review") annotation.cancel();
 		setCollapsedPaths(new Set(files.map((file) => file.path)));
@@ -502,7 +515,7 @@ export function WorkspaceReviewPane({
 													aria-label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}
 													checked={isViewed}
 													className="size-4 border border-muted-foreground/70 bg-transparent"
-													onCheckedChange={() => toggleViewed(file)}
+													onCheckedChange={(checked) => markViewed(file, checked === true)}
 													style={isViewed ? { backgroundColor: "#fff", borderColor: "#fff", color: "#000" } : undefined}
 												/>
 											</HeaderActionTooltip>

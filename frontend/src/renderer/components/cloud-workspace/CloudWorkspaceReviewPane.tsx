@@ -123,9 +123,22 @@ export function CloudWorkspaceReviewPane({
 	});
 	const selectScope = (next: CloudCpWorkspaceReviewScope) => { annotation.cancel(); setScope(next); setCommitSha(undefined); setCommitBrowserOpen(false); };
 	const selectCommit = (commit: CloudCpWorkspaceReviewCommit) => { annotation.cancel(); setScope("committed"); setCommitSha(commit.sha); setCommitBrowserOpen(false); };
+	const collapseFile = useCallback((path: string) => {
+		if (annotation.target?.surface === "review" && annotation.target.path === path) annotation.cancel();
+		setCollapsed((current) => {
+			if (current.has(path)) return current;
+			const next = new Set(current);
+			next.add(path);
+			return next;
+		});
+	}, [annotation]);
 	const toggleCollapsed = useCallback((path: string) => setCollapsed((current) => {
 		const next = new Set(current); if (next.has(path)) next.delete(path); else next.add(path); return next;
 	}), []);
+	const markViewed = useCallback((file: CloudCpWorkspaceReviewFileSummary, checked: boolean) => {
+		toggleViewed(file);
+		if (checked) collapseFile(file.path);
+	}, [collapseFile, toggleViewed]);
 	const allCollapsed = files.length > 0 && files.every((file) => collapsed.has(file.path));
 	const viewedCount = allFiles.filter(isViewed).length;
 	const visibleScopes = scopeOrder.filter((entry) => data.sections[entry].length > 0);
@@ -159,7 +172,7 @@ export function CloudWorkspaceReviewPane({
 						<span className="text-caption text-success">+{file.additions}</span><span className="text-caption text-error">−{file.deletions}</span>
 						<Button aria-label={t("files.addFeedback")} onClick={() => annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint })} size="icon-sm" variant="ghost"><MessageSquarePlus /></Button>
 						<Button aria-label={t("files.openFullFileGeneric")} onClick={() => onOpenFile?.(file.path, { commitSha: selectedCommit?.sha, mode: "file", scope })} size="icon-sm" variant="ghost"><FileCode2 /></Button>
-						<Checkbox aria-label={isViewed(file) ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })} checked={isViewed(file)} onCheckedChange={() => toggleViewed(file)} />
+						<Checkbox aria-label={isViewed(file) ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })} checked={isViewed(file)} onCheckedChange={(checked) => markViewed(file, checked === true)} />
 					</header>
 					{!closed && patch ? <CloudDiffFile annotation={annotation} baseUrl={baseUrl} client={client} commitSha={selectedCommit?.sha} file={file} onActiveSelectionChange={() => undefined} orgId={orgId} patch={patch} scope={scope} sessionId={sessionId} split={split} workspaceVersion={data.workspaceVersion} /> : null}
 					{!closed && !patch ? <div className="flex items-center gap-2 p-3 text-xs text-muted-foreground"><span className="min-w-0 flex-1">{file.binary ? t("files.binaryUnavailable") : deferred ? t("files.deferredDiff") : reason ? t("files.diffUnavailableReason", { reason }) : t("files.loadingDiff")}</span>{deferred ? <Button onClick={() => setLoadedDeferred((current) => new Set(current).add(file.path))} size="sm" variant="outline">{t("files.loadDiff")}</Button> : null}<Button onClick={() => onOpenFile?.(file.path, { commitSha: selectedCommit?.sha, mode: "file", scope })} size="sm" variant="outline">{t("files.fileView")}</Button></div> : null}
