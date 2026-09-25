@@ -253,6 +253,23 @@ type MessageEditDraft = ChatDraftInlineEdit;
 function useQueuedMessages(snapshot: ConversationSnapshot): QueuedMessage[] {
 	const previous = useRef<QueuedMessage[]>([]);
 	return useMemo(() => {
+		const queuedTurnIds = new Set(
+			snapshot.turns.filter((turn) => turn.state === "queued").map((turn) => turn.id),
+		);
+		// The first prompt belongs in the user timeline immediately. Do not briefly
+		// move an otherwise empty welcome-state conversation into the queue dock while
+		// the daemon is acknowledging that first request.
+		const hasEarlierHumanMessage = snapshot.items.some(
+			(item) =>
+				item.kind === "message" &&
+				item.role === "user" &&
+				item.origin === "human" &&
+				(!item.turnId || !queuedTurnIds.has(item.turnId)),
+		);
+		if (!hasEarlierHumanMessage) {
+			previous.current = [];
+			return previous.current;
+		}
 		const messagesByTurn = new Map(
 			snapshot.items
 				.filter(

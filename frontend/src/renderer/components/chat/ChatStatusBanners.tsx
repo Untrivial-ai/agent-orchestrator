@@ -166,13 +166,17 @@ export const McpServerBanner = memo(function McpServerBanner({
 		.join("|");
 	const [dismissedFingerprint, setDismissedFingerprint] = useState<string | null>(null);
 	const [dismissingFingerprint, setDismissingFingerprint] = useState<string | null>(null);
+	// MCP status can change as the welcome composer becomes a timeline composer.
+	// Do not treat that UI transition as a second server-spawn event.
+	const [shownFingerprint, setShownFingerprint] = useState<string | null>(null);
 	const reducedMotion = useReducedMotion();
 
 	useEffect(() => {
 		if (!fingerprint) return;
+		if (shownFingerprint == null) setShownFingerprint(fingerprint);
 		const timeout = window.setTimeout(() => setDismissingFingerprint(fingerprint), 3_000);
 		return () => window.clearTimeout(timeout);
-	}, [fingerprint]);
+	}, [fingerprint, shownFingerprint]);
 
 	useEffect(() => {
 		if (dismissingFingerprint !== fingerprint) return;
@@ -180,7 +184,10 @@ export const McpServerBanner = memo(function McpServerBanner({
 		return () => window.clearTimeout(timeout);
 	}, [dismissingFingerprint, fingerprint, reducedMotion]);
 
-	const visible = servers.length > 0 && dismissedFingerprint !== fingerprint;
+	const visible =
+		servers.length > 0 &&
+		shownFingerprint === fingerprint &&
+		dismissedFingerprint !== fingerprint;
 	const dismissing = dismissingFingerprint === fingerprint;
 	const serverNames = servers
 		.map((server) => `${server.name.slice(0, 1).toUpperCase()}${server.name.slice(1)}`)
