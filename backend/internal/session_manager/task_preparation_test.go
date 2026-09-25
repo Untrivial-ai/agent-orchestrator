@@ -174,8 +174,17 @@ func TestCancelledClaimedPreparationAccountsForPartialWorkspace(t *testing.T) {
 			m.asyncChatSpawnsMu.Unlock()
 			run.cancel()
 			<-signalStore.failed
+			var deferredRetry []func()
+			m.runBackground = func(work func()) { deferredRetry = append(deferredRetry, work) }
+			_, retryErr := m.ResumeAgentWithMode(context.Background(), rec.ID)
+			m.asyncChatSpawnsMu.Lock()
+			stillOwnsSpawn := m.asyncChatSpawns[rec.ID] == run
+			m.asyncChatSpawnsMu.Unlock()
 			close(workspace.release)
 			<-run.done
+			if !errors.Is(retryErr, ErrResumeInProgress) || !stillOwnsSpawn || len(deferredRetry) != 0 {
+				t.Fatalf("retry during claimed cleanup = %v, original owner=%v, new workers=%d", retryErr, stillOwnsSpawn, len(deferredRetry))
+			}
 			stored := st.sessions[rec.ID]
 			if stored.Metadata.WorkspacePath != tc.wantPath {
 				t.Fatalf("cancelled partial worktree path = %q, want %q", stored.Metadata.WorkspacePath, tc.wantPath)

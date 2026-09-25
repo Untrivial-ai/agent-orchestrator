@@ -2585,6 +2585,12 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 	if !ok {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrNotFound)
 	}
+	m.asyncChatSpawnsMu.Lock()
+	_, starting := m.asyncChatSpawns[id]
+	m.asyncChatSpawnsMu.Unlock()
+	if starting {
+		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrResumeInProgress)
+	}
 	releaseHarness, err := m.beginHarnessUse(rec.Harness)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, err)
