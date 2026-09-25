@@ -171,6 +171,13 @@ function latestPendingInteraction(
 
 const CHAT_FONT_SIZE_DEFAULT = 14;
 
+const EMPTY_CHAT_PLACEHOLDERS = [
+	"Fix a failing test in this project",
+	"Explain how this project is structured",
+	"Plan the next step for this feature",
+	"Find and fix a bug in the chat UI",
+] as const;
+
 // Reviewer panes share the terminal font-size preference with CenterPane, so a
 // reviewer opened inside the Chat surface matches a reviewer opened in TUI mode.
 const terminalFontSizeStorageKey = "ao.terminal.fontSize";
@@ -1246,6 +1253,9 @@ function ChatWorkspaceContent({
 	// Empty chats center the prompt; once a turn or item exists the composer docks
 	// at the bottom and stays there for the rest of the session.
 	const conversationEmpty = snapshot.items.length === 0 && !turn && (localEchos?.length ?? 0) === 0;
+	const [emptyChatPlaceholder] = useState(
+		() => EMPTY_CHAT_PLACEHOLDERS[Math.min(EMPTY_CHAT_PLACEHOLDERS.length - 1, Math.floor(Math.random() * EMPTY_CHAT_PLACEHOLDERS.length))],
+	);
 	const composerDockRef = useRef<HTMLDivElement>(null);
 	const composerCenteredTopRef = useRef<number | null>(null);
 	const composerFlipDyRef = useRef<number | null>(null);
@@ -1467,6 +1477,11 @@ function ChatWorkspaceContent({
 								className="mx-auto flex w-full max-w-3xl flex-col gap-2 transition-[max-width] duration-500 ease-out data-[empty]:max-w-2xl"
 							>
 								{discarded > 0 ? <RolledBackNotice count={discarded} /> : null}
+								{conversationEmpty ? (
+									<h1 className="mb-5 text-center text-2xl font-medium tracking-tight text-foreground sm:text-3xl">
+										What do you want to work on?
+									</h1>
+								) : null}
 								<ChatComposer
 									key={`${draftScopeKey}:${queueEdit ? `${queueEdit.turnId}:${queueEdit.ownerId ?? queueEdit.expectedRevision ?? "legacy"}` : "composer"}`}
 									queuedDock={composerQueuedDock}
@@ -1495,6 +1510,7 @@ function ChatWorkspaceContent({
 									disabledPlaceholder={
 										controllerTransitioning || newWorkDisabled ? "" : undefined
 									}
+									emptyPlaceholder={conversationEmpty ? emptyChatPlaceholder : undefined}
 									skills={skills}
 									filePaths={filePaths}
 									filePathsTruncated={filePathsTruncated}
