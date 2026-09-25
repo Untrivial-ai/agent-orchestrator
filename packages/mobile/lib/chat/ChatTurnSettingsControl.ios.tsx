@@ -1,6 +1,6 @@
 import { Host } from "@expo/ui";
-import { Button, HStack, Image, Menu, Section, Text } from "@expo/ui/swift-ui";
-import { buttonStyle, disabled as disabledModifier, font, frame, padding, tint } from "@expo/ui/swift-ui/modifiers";
+import { Button, HStack, Image, Menu, Section, Spacer, Text } from "@expo/ui/swift-ui";
+import { buttonStyle, disabled as disabledModifier, font, frame, lineLimit, padding, tint, truncationMode } from "@expo/ui/swift-ui/modifiers";
 import { StyleSheet } from "react-native";
 import { haptics } from "../haptics";
 import { useTheme, useThemeState } from "../ThemeProvider";
@@ -24,10 +24,10 @@ export function ChatTurnSettingsControl({ snapshot, models, options, disabled, o
 	};
 
 	return (
-		<Host matchContents={{ horizontal: true, vertical: true }} ignoreSafeArea="all" style={styles.host} colorScheme={scheme} seedColor={t.accent}>
+		<Host matchContents={{ horizontal: false, vertical: true }} ignoreSafeArea="all" style={styles.host} colorScheme={scheme} seedColor={t.accent}>
 			<Menu
-				label={<HStack spacing={7}><Text modifiers={[font({ size: 13, weight: "semibold" })]}>{label}</Text><Image systemName="chevron.right" size={iconSize.xs} /></HStack>}
-				modifiers={[buttonStyle("plain"), tint(t.textSecondary), padding({ horizontal: 10, vertical: 10 }), frame({ minHeight: 44, alignment: "leading" }), disabledModifier(Boolean(disabled))]}
+				label={<HStack spacing={7} modifiers={[frame({ maxWidth: 1000, alignment: "leading" })]}><Text modifiers={[font({ size: 13, weight: "semibold" }), lineLimit(1), truncationMode("tail")]}>{label}</Text><Spacer /><Image systemName="chevron.right" size={iconSize.xs} /></HStack>}
+				modifiers={[buttonStyle("plain"), tint(t.textSecondary), padding({ horizontal: 10, vertical: 10 }), frame({ maxWidth: 1000, minHeight: 44, alignment: "leading" }), disabledModifier(Boolean(disabled))]}
 			>
 				<Section title="Turn settings">
 					{rows.map((row) => (
@@ -73,5 +73,5 @@ function settingSymbol(row: TurnSettingRow): string | undefined {
 }
 
 const styles = StyleSheet.create({
-	host: { alignSelf: "flex-start", height: 44 },
+	host: { width: "100%", height: 44 },
 });

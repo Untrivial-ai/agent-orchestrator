@@ -11,6 +11,7 @@ import {
 	font,
 	frame,
 	labelStyle,
+	layoutPriority,
 	lineLimit,
 	opacity,
 	padding,
@@ -31,6 +32,9 @@ import { MicKey } from "./voice/MicKey";
 
 // The paperclip's frame, so the rail's two icon buttons match.
 const MIC_KEY_SIZE = 38;
+// Reserve the harness slot so a different agent name cannot move the model
+// selector sideways; the model uses the remaining width of the rail.
+const HARNESS_MENU_WIDTH = 96;
 
 export function SpawnComposerControls({
 	projects,
@@ -61,13 +65,14 @@ export function SpawnComposerControls({
 				<VStack alignment="leading" spacing={10} modifiers={[frame({ height: 104, maxWidth: 1000 })]}>
 				<Menu
 					label={
-						<HStack spacing={7}>
+						<HStack spacing={7} modifiers={[frame({ maxWidth: 1000, alignment: "leading" })]}>
 							<Image systemName="folder" size={iconSize.sm} />
-							<Text modifiers={[font({ size: 14, weight: "medium" })]}>{projectLabel}</Text>
+							<Text modifiers={[font({ size: 14, weight: "medium" }), lineLimit(1), truncationMode("tail")]}>{projectLabel}</Text>
+							<Spacer />
 							<Image systemName="chevron.up.chevron.down" size={iconSize.xs} />
 						</HStack>
 					}
-					modifiers={[buttonStyle("plain"), tint(t.textSecondary), padding({ horizontal: 4 }), accessibilityIdentifier("spawn-project")]}
+					modifiers={[buttonStyle("plain"), tint(t.textSecondary), padding({ horizontal: 4 }), frame({ maxWidth: 1000, alignment: "leading" }), accessibilityIdentifier("spawn-project")]}
 				>
 					{projects.map((project) => (
 						<Button
@@ -109,7 +114,7 @@ export function SpawnComposerControls({
 								<Image systemName="chevron.down" size={iconSize.xs} />
 							</HStack>
 						}
-						modifiers={[buttonStyle("plain"), tint(t.textPrimary), accessibilityIdentifier("spawn-harness")]}
+						modifiers={[buttonStyle("plain"), frame({ width: HARNESS_MENU_WIDTH }), tint(t.textPrimary), accessibilityIdentifier("spawn-harness")]}
 					>
 						{agents.map((agent) => (
 							<Button key={agent.id} onPress={() => { haptics.select(); onSelectHarness(agent.id); }}>
@@ -134,6 +139,7 @@ export function SpawnComposerControls({
 						modifiers={[
 							buttonStyle("plain"),
 							frame({ maxWidth: 1000, alignment: "leading" }),
+							layoutPriority(1),
 							tint(t.textSecondary),
 							opacity(models.length || modelSelection === "__auto__" ? 1 : 0.45),
 							accessibilityIdentifier("spawn-model"),

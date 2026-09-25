@@ -1,6 +1,6 @@
 import { Feather } from "./icons";
 import { useRouter } from "expo-router";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import type { Theme } from "./theme";
 import { haptics } from "./haptics";
 import { activeProjectLabel } from "./projectFilter";
@@ -76,12 +76,13 @@ const makeStyles = (t: Theme) =>
 		flexDirection: "row",
 		alignItems: "center",
 		gap: space.xs,
-		maxWidth: "70%",
+		// Keep the right-hand picker in one place as project names change.
+		...(Platform.OS === "ios" ? { width: "60%" as const, justifyContent: "flex-end" as const } : { maxWidth: "70%" as const }),
 		paddingVertical: space.xxs,
 		paddingHorizontal: space.sm,
 		marginRight: -8,
 		borderRadius: 8, borderCurve: "continuous",
 	},
 	triggerPressed: { backgroundColor: t.bgElevated },
-	value: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.footnote.fontSize, fontWeight: "600", flexShrink: 1 },
+	value: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.footnote.fontSize, fontWeight: "600", flexShrink: 1, ...(Platform.OS === "ios" ? { textAlign: "right" as const } : {}) },
 });
