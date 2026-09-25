@@ -174,10 +174,8 @@ describe("FileContentPane", () => {
 
 		const breadcrumb = await screen.findByRole("navigation", { name: "File path" });
 		expect(breadcrumb).toHaveTextContent("src/App.tsx");
-		// The change counts live beside the name, replacing the diff's own header row.
-		expect(breadcrumb).toHaveTextContent("+1−1");
-		// The tree already shows the status, so the compact toolbar does not repeat it.
-		expect(screen.queryByText("M")).not.toBeInTheDocument();
+		// Status and change counts live beside the name, replacing the diff's own header row.
+		expect(breadcrumb).toHaveTextContent("M+1−1");
 		expect(screen.getByRole("tab", { name: "Diff" })).toHaveAttribute("aria-selected", "true");
 		await userEvent.click(screen.getByRole("tab", { name: "File" }));
 		expect(await screen.findByText((_, element) => element?.tagName === "CODE" && element.textContent === "export const next = 2;\n")).toBeInTheDocument();

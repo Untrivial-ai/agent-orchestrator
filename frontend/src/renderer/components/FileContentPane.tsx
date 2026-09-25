@@ -61,7 +61,6 @@ export function FileContentPane({
 	split,
 	scope = "combined",
 	source = DEFAULT_FILES_SOURCE,
-	toolbar = "tabs",
 }: {
 	annotation: FileAnnotationModel;
 	initialEditing?: boolean;
@@ -76,9 +75,8 @@ export function FileContentPane({
 	scope?: WorkspaceDiffScope;
 	source?: FilesSource;
 	/**
-	 * "tabs" (default, center file tabs): status letter + text mode tabs.
-	 * "compact" (Files panel split view only): file breadcrumb on the left, icon
-	 * mode switches on the right, no status letter (the tree already shows it).
+	 * @deprecated Ignored: centre file tabs and the Files panel now share the
+	 * compact toolbar (breadcrumb + status/counts, icon mode switches).
 	 */
 	toolbar?: "tabs" | "compact";
 }) {
@@ -260,6 +258,7 @@ export function FileContentPane({
 				{unsavedIndicator}
 				{detail.status !== "unmodified" ? (
 					<span className="ml-1.5 flex shrink-0 items-center gap-1.5 font-mono text-xs tabular-nums">
+						{statusLabel[detail.status] ? <span className={cn("font-semibold", statusTone[detail.status])}>{statusLabel[detail.status]}</span> : null}
 						<span className="text-success">+{detail.additions}</span>
 						<span className="text-error">−{detail.deletions}</span>
 					</span>

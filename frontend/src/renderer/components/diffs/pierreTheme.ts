@@ -13,6 +13,18 @@ export const AO_PIERRE_SURFACE_CSS = `
 // painting a grey block. Not part of the shared surface CSS, so the center diff
 // tab, file view, and cloud diffs are unchanged.
 export const AO_PIERRE_FILES_REVIEW_CSS = `
+/* Inset the line-number column so numbers sit in from the panel edge instead
+   of lining up under the file header's chevron: a wider right-aligned column
+   plus a little more leading space. */
+:host {
+	--diffs-min-number-column-width: 4ch;
+}
+
+[data-column-number][data-column-number],
+[data-gutter-buffer][data-gutter-buffer] {
+	padding-left: 3ch;
+}
+
 [data-gutter-buffer="buffer"][data-gutter-buffer] {
 	--diffs-line-bg: var(--diffs-bg);
 }
