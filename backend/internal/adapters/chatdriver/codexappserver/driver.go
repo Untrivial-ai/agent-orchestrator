@@ -469,7 +469,7 @@ func (d *Driver) connectSession(
 		DataDir:   dataDir,
 		Workdir:   workdir,
 		Env:       envSlice(env),
-		Argv:      []string{bin, "app-server"},
+		Argv:      codexAppServerArgv(bin, env),
 	}
 	if prepareEnv != nil {
 		hostConfig.Prepare = func(prepareCtx context.Context) (persistenthost.PreparedProvider, error) {
@@ -478,7 +478,7 @@ func (d *Driver) connectSession(
 				return persistenthost.PreparedProvider{}, prepareErr
 			}
 			return persistenthost.PreparedProvider{
-				Env: envSlice(preparedEnv), Argv: []string{bin, "app-server"},
+				Env: envSlice(preparedEnv), Argv: codexAppServerArgv(bin, preparedEnv),
 			}, nil
 		}
 	}
@@ -514,6 +514,34 @@ func (d *Driver) connectSession(
 		return nil, false, err
 	}
 	return conv, false, nil
+}
+
+// codexAppServerArgv mirrors the provider configuration used by terminal
+// Codex. The app-server reads the scoped bearer from env_key, so no credential
+// appears in argv while account switches continue to apply to live sessions.
+func codexAppServerArgv(bin string, env map[string]string) []string {
+	argv := []string{bin, "app-server"}
+	baseURL := strings.TrimRight(strings.TrimSpace(env[ports.CodexProxyBaseURLEnv]), "/")
+	if baseURL == "" {
+		return argv
+	}
+	endpoint := baseURL
+	if !strings.HasSuffix(endpoint, "/v1") {
+		endpoint += "/v1"
+	}
+	provider := ports.CodexProxyProviderName
+	return append(argv,
+		"-c", "model_provider="+provider,
+		"-c", "model_providers."+provider+".name=AO Accounts Manager",
+		"-c", "model_providers."+provider+".base_url="+tomlString(endpoint),
+		"-c", "model_providers."+provider+".env_key="+ports.CodexProxyTokenEnv,
+		"-c", "model_providers."+provider+".wire_api=responses",
+		"-c", "model_providers."+provider+".requires_openai_auth=false",
+	)
+}
+
+func tomlString(value string) string {
+	return `"` + strings.ReplaceAll(strings.ReplaceAll(value, `\`, `\\`), `"`, `\"`) + `"`
 }
 
 func (d *Driver) initialize(ctx context.Context, conv *conversation) error {

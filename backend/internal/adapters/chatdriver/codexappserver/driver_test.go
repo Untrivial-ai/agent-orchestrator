@@ -1502,3 +1502,21 @@ func TestEnvSliceWithNoOverlayStillInheritsTheEnvironment(t *testing.T) {
 		t.Error("an empty overlay produced an environment with no HOME")
 	}
 }
+
+func TestCodexAppServerArgvUsesScopedProxyProvider(t *testing.T) {
+	argv := codexAppServerArgv("codex", map[string]string{
+		ports.CodexProxyBaseURLEnv: "http://127.0.0.1:4321/",
+	})
+	want := []string{
+		"codex", "app-server",
+		"-c", "model_provider=" + ports.CodexProxyProviderName,
+		"-c", "model_providers." + ports.CodexProxyProviderName + ".name=AO Accounts Manager",
+		"-c", "model_providers." + ports.CodexProxyProviderName + ".base_url=\"http://127.0.0.1:4321/v1\"",
+		"-c", "model_providers." + ports.CodexProxyProviderName + ".env_key=" + ports.CodexProxyTokenEnv,
+		"-c", "model_providers." + ports.CodexProxyProviderName + ".wire_api=responses",
+		"-c", "model_providers." + ports.CodexProxyProviderName + ".requires_openai_auth=false",
+	}
+	if !reflect.DeepEqual(argv, want) {
+		t.Fatalf("argv = %#v, want %#v", argv, want)
+	}
+}

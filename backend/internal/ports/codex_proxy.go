@@ -14,6 +14,9 @@ const (
 	// route capability to a Codex child process. The token never appears in
 	// argv, logs, or durable session metadata.
 	CodexProxyTokenEnv = "AO_CODEX_PROXY_TOKEN" // #nosec G101 -- public environment variable name, not a credential.
+	// CodexProxyBaseURLEnv carries the loopback endpoint to Codex's app-server
+	// launcher. The endpoint is not secret; the bearer remains in TokenEnv.
+	CodexProxyBaseURLEnv = "AO_CODEX_PROXY_BASE_URL"
 )
 
 var (

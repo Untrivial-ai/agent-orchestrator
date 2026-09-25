@@ -4888,6 +4888,18 @@ func (m *Manager) prepareChatControllerEnv(
 	if err != nil {
 		return rec, nil, fmt.Errorf("persist browser capability verifier: %w", err)
 	}
+	// Chat-mode Codex uses the same daemon-owned route as terminal Codex. Keep
+	// only the endpoint as an additional launch hint; prepareCodexRoute places
+	// the bearer in its dedicated secret environment variable.
+	if rec.Harness == domain.HarnessCodex && m.codexRouteProvider != nil {
+		route, routeErr := m.prepareCodexRoute(ctx, rec.Harness, string(rec.ID), env)
+		if routeErr != nil {
+			return rec, nil, fmt.Errorf("prepare Codex chat route: %w", routeErr)
+		}
+		if route.BaseURL != "" {
+			env[ports.CodexProxyBaseURLEnv] = route.BaseURL
+		}
+	}
 	return rec, env, nil
 }
 
