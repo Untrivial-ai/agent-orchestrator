@@ -114,6 +114,11 @@ const DEFINITIVE_SEND_REJECTIONS = new Set([
 	"CHAT_INTERFACE_TRANSITION",
 ]);
 
+// Native image blocks are persisted with the chat turn and sent to the provider.
+// Larger attachments still reach the agent through their staged workspace paths.
+const MAX_NATIVE_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_NATIVE_IMAGES_BYTES = 25 * 1024 * 1024;
+
 /**
  * Tell the agent to open the attached files. Mirrors the wording spawn uses for a task
  * brief, so the same instruction reaches the agent whether a file was attached at
@@ -145,6 +150,7 @@ export const ChatComposer = memo(function ChatComposer({
 	disabledPlaceholder,
 	settings,
 	approval,
+	elicitation,
 	skills = [],
 	filePaths = [],
 	filePathsTruncated,
@@ -187,6 +193,8 @@ export const ChatComposer = memo(function ChatComposer({
 	settings?: ReactNode;
 	/** A provider decision that temporarily replaces ordinary message entry. */
 	approval?: ReactNode;
+	/** A provider question, docked above the composer until it is answered. */
+	elicitation?: ReactNode;
 	/** A send is in flight. */
 	busy?: boolean;
 	/** The agent is mid-turn, so this message is held until the turn ends. */
@@ -1007,7 +1015,7 @@ export const ChatComposer = memo(function ChatComposer({
 			return;
 		}
 
-		const attachmentPayloads = await fileAttachments.toSettledPayload();
+		await fileAttachments.toSettledPayload();
 		// A replacement hook can still have staging work owned by the old surface.
 		if (fileAttachments.hasPendingReads()) return;
 		const settledAttachments = fileAttachments.getAttachments();
@@ -1040,15 +1048,24 @@ export const ChatComposer = memo(function ChatComposer({
 		// Ordinary delivery reserves its exact draft before these staged reads await.
 		// Queue editors use their existing owner/revision CAS before mutation.
 		const attachmentScope = queuedDraftScope ?? draftScope;
-		let nativePayloads = sendNativeImages
-			? attachmentPayloads.filter((attachment) => isSupportedImageAttachment(attachment.mimeType))
-			: [];
+		const retainedNativeImageCount = visibleRetainedAttachments.filter((item) => item.contentType === "image").length;
+		let nativeImageBytes = 0;
+		const nativeImageAttachments = settledAttachments.filter((attachment) => {
+			// Retained image sizes are server-owned and unknown here. Keep new images
+			// as workspace files so an edit cannot exceed the native 25 MiB budget.
+			if (!sendNativeImages || retainedNativeImageCount > 0 || !isSupportedImageAttachment(attachment.mimeType) ||
+				attachment.bytes > MAX_NATIVE_IMAGE_BYTES ||
+				nativeImageBytes + attachment.bytes > MAX_NATIVE_IMAGES_BYTES) return false;
+			nativeImageBytes += attachment.bytes;
+			return true;
+		});
+		let nativePayloads = nativeImageAttachments.flatMap(({ mimeType, data }) =>
+			data ? [{ mimeType, data }] : []);
 		const restoreNativePayloads = async (): Promise<boolean> => {
 			if (!attachmentScope || !sendNativeImages || recoveringDelivery?.kind === "steer" || recoveringDelivery?.state === "accepted") return true;
 			const restored: FileAttachmentPayload[] = [];
 			try {
-				for (const attachment of settledAttachments) {
-					if (!isSupportedImageAttachment(attachment.mimeType)) continue;
+				for (const attachment of nativeImageAttachments) {
 					if (attachment.data) {
 						restored.push({ mimeType: attachment.mimeType, data: attachment.data });
 						continue;
@@ -1074,7 +1091,7 @@ export const ChatComposer = memo(function ChatComposer({
 		};
 		if ((!draftScope || savingQueuedEdit) && !await restoreNativePayloads()) return;
 
-		if (savingQueuedEdit && nativePayloads.length + visibleRetainedAttachments.filter((item) => item.contentType === "image").length > MAX_ATTACHMENTS) {
+		if (savingQueuedEdit && nativePayloads.length + retainedNativeImageCount > MAX_ATTACHMENTS) {
 			setSendError(`You can attach up to ${MAX_ATTACHMENTS} images.`);
 			return;
 		}
@@ -1369,6 +1386,14 @@ export const ChatComposer = memo(function ChatComposer({
 					{queuedDockWithSteer}
 				</div>
 				) : null}
+				{elicitation ? (
+					<div
+						className="queue-dock-enter relative z-10 mx-auto mb-2 w-[calc(100%-2rem)]"
+						data-testid="elicitation-composer-dock"
+					>
+						{elicitation}
+					</div>
+				) : null}
 				{form}
 			</div>
 		);
@@ -1377,7 +1402,7 @@ export const ChatComposer = memo(function ChatComposer({
 		return withQueueStack(
 			<form
 				onSubmit={(event) => event.preventDefault()}
-				data-attached-top={attachedTop && !queuedDock ? true : undefined}
+				data-attached-top={attachedTop && !queuedDock && !elicitation ? true : undefined}
 				className="cursor-chat-composer relative flex flex-col gap-1.5 border px-3 py-3"
 			>
 				{approval}
@@ -1405,7 +1430,7 @@ export const ChatComposer = memo(function ChatComposer({
 				// on one surface, so they are declared together in CSS rather than half
 				// here and half there.
 				data-dragging={dragging || undefined}
-				data-attached-top={attachedTop && !queuedDock ? true : undefined}
+				data-attached-top={attachedTop && !queuedDock && !elicitation ? true : undefined}
 				onClick={(e) => {
 					if (controlsDisabled) return;
 					if (

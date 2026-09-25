@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -74,6 +75,17 @@ var (
 	// but cannot replay that context as typed history. ACP session/resume has this
 	// property; session/load is required when a caller needs a transcript replay.
 	ErrChatHistoryUnavailable = errors.New("chat conversation history replay is unavailable")
+	// ErrChatCapabilityUnavailable means an explicit tuning value was requested
+	// but the provider did not advertise the matching live capability.
+	ErrChatCapabilityUnavailable = errors.New("chat model capability unavailable")
+	// ErrChatHistoryLoadFailed means one provider transcript load did not
+	// produce a replay: the ACP session/load answered with a provider-side
+	// failure (JSON-RPC -32603 "Internal error"), or a single load attempt ran
+	// past AO's per-attempt bound while the overall settle budget still had
+	// time left. Neither is an unsettled AO checkpoint, so callers must stop
+	// re-sending the same load and report the failure instead of spending the
+	// rest of the budget on it.
+	ErrChatHistoryLoadFailed = errors.New("chat conversation history load failed")
 )
 
 // ChatHistoryMismatchDimension identifies the exact durable checkpoint fact a
@@ -281,14 +293,25 @@ type ChatStartConfig struct {
 	PrepareEnv func(context.Context) (map[string]string, error)
 	// Model is optional; empty defers to the provider's configured default.
 	Model string
+	// Effort is an optional provider-advertised model tuning value; empty
+	// defers to the provider's configured default.
+	Effort string
 	// Permissions is AO's existing per-session approval policy. Drivers map it
 	// onto their provider's native approval and sandbox settings.
 	Permissions PermissionMode
+	// ReadOnly requires a provider-enforced sandbox that cannot modify the
+	// workspace. It is used for review-owned conversations.
+	ReadOnly bool
 	// SystemPrompt carries AO's standing instructions for the session.
 	SystemPrompt string
 	// ProviderScopeID identifies the AO ownership boundary for opaque provider
 	// identifiers. Fresh approximate branches receive a new value.
 	ProviderScopeID string
+	// ProviderIDsScoped matches the branch's persisted ID format. False preserves
+	// legacy projections written before scoped IDs were supported.
+	ProviderIDsScoped bool
+	// Ephemeral asks supporting providers not to persist this conversation.
+	Ephemeral bool
 	// AdditionalDirectories are extra absolute workspace roots the provider may
 	// access alongside WorkspacePath. Workspace projects use this for child repo
 	// worktrees; it is not a replacement for AO's worktree ownership.
@@ -300,6 +323,8 @@ type ChatStartConfig struct {
 
 // ChatResumeConfig reattaches to a provider conversation after a restart.
 type ChatResumeConfig struct {
+	// See ChatStartConfig.ProviderIDsScoped.
+	ProviderIDsScoped      bool
 	SessionID              domain.SessionID
 	ProviderConversationID string
 	DataDir                string
@@ -312,6 +337,7 @@ type ChatResumeConfig struct {
 	// Effort is optional; empty keeps the provider conversation's current effort.
 	Effort      string
 	Permissions PermissionMode
+	ReadOnly    bool
 	// SystemPrompt is recomputed by the session manager on restore and reapplied
 	// to the provider process. It is not persisted in the conversation transcript.
 	SystemPrompt string
@@ -563,6 +589,10 @@ type ChatAccount struct {
 	// expected to supply. AO does not hold provider credentials, so this is
 	// reported to the user rather than answered.
 	ReauthRequired bool
+	// ReauthRecovered explicitly clears an earlier credential demand after a
+	// later provider turn succeeds. It is separate from false/zero because most
+	// account updates say nothing about authentication state.
+	ReauthRecovered bool
 	// ReauthReason is the provider's stated reason, e.g. "unauthorized".
 	ReauthReason string
 }
@@ -631,6 +661,12 @@ type (
 	// non-nil provider turn id copies through that turn, inclusive.
 	ChatForker interface {
 		Fork(ctx context.Context, lastProviderTurnID *string) (providerConversationID string, err error)
+	}
+	// ChatInheritedHistory proves native ancestry and expresses the supplied
+	// replay in an ancestor's ID namespace. Nil means ancestry is unverified.
+	// Event order and content must be preserved; callers still verify each copy.
+	ChatInheritedHistory interface {
+		InheritedHistory(ctx context.Context, ancestor domain.ConversationBranch, events []ChatEvent) ([]ChatEvent, error)
 	}
 	// ChatRenamer sets or reads a human title the provider derived for the thread.
 	ChatRenamer interface {
@@ -860,6 +896,35 @@ const (
 	ChatControllerStopped    ChatControllerState = "stopped"
 )
 
+type chatProviderFailure struct {
+	message string
+	cause   error
+}
+
+// NewChatProviderFailure preserves provider prose as opaque display text. An
+// adapter may attach an existing sentinel (e.g. ErrChatAuthRequired) when native
+// metadata proves it; callers never infer recovery from the message.
+func NewChatProviderFailure(title, detail string, cause error) error {
+	title = strings.TrimSpace(title)
+	detail = strings.TrimSpace(detail)
+	if title == "" {
+		title, detail = detail, ""
+	}
+	if title == "" {
+		title = "Provider error"
+	}
+	if detail == title {
+		detail = ""
+	}
+	if detail != "" {
+		title += "\n\n" + detail
+	}
+	return &chatProviderFailure{message: title, cause: cause}
+}
+
+func (f *chatProviderFailure) Error() string { return f.message }
+func (f *chatProviderFailure) Unwrap() error { return f.cause }
+
 // ChatEvent is one normalized observation from the provider.
 //
 // Deltas are the high-frequency case, so they carry only what changed. A
@@ -870,6 +935,9 @@ type ChatEvent struct {
 	// NativeUserMessageID is an adapter-proven native user record identity.
 	// Unlike ProviderItemID, it is never synthesized or namespaced by AO.
 	NativeUserMessageID string
+	// NativeTurnID is the provider's turn identity before AO storage scoping.
+	// Hooks use this identity to prove the replay includes their completed turn.
+	NativeTurnID string
 	// ProviderEventID is an identity for this exact native event, when the
 	// provider supplies one. It is deliberately distinct from ProviderItemID:
 	// start, delta and completion events commonly share one item id.
@@ -946,8 +1014,8 @@ type ChatEvent struct {
 	// rather than replacing its whole list.
 	MCPServers []ChatMCPServer
 
-	// Err carries a structured failure. Its presence does not imply the
-	// conversation is over; check ControllerState for that.
+	// Err carries display text and optional typed causes. Its presence does not
+	// imply the conversation is over; check Kind and ControllerState.
 	Err error
 }
 

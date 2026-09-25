@@ -37,6 +37,18 @@ func openConversation(t *testing.T) (*conversation, *scriptedServer) {
 	return conv.(*conversation), srv
 }
 
+func TestReadHistoryIgnoresEmptyCompletedTurnError(t *testing.T) {
+	conv, srv := openProviderFailureConversation(t)
+	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[{"id":"turn-a","status":"completed","error":{}}]}}`)
+	events, err := conv.ReadHistory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[1].Kind != ports.ChatEventTurnCompleted || events[1].Err != nil || events[1].TurnState != "completed" {
+		t.Fatalf("empty error changed history: %#v", events)
+	}
+}
+
 func TestReadHistoryReconstructsNativeTurnsForTheChatTimeline(t *testing.T) {
 	conv, srv := openConversation(t)
 	srv.reply("thread/read", threadWithRenderedHistory)
@@ -79,6 +91,24 @@ func TestReadHistoryReconstructsNativeTurnsForTheChatTimeline(t *testing.T) {
 	}
 	if events[4].TurnState != "completed" {
 		t.Errorf("recovered turn state = %q", events[4].TurnState)
+	}
+}
+
+func TestReadHistoryPreservesStructuredProviderFailure(t *testing.T) {
+	conv, srv := openConversation(t)
+	srv.reply("thread/read", `{"thread":{"id":"thread-1","turns":[`+
+		`{"id":"turn-a","status":"failed","items":[],"error":{"message":"Usage limit reached","additionalDetails":"Resets tomorrow."}}`+
+		`]}}`)
+
+	events, err := conv.ReadHistory(context.Background())
+	if err != nil {
+		t.Fatalf("ReadHistory: %v", err)
+	}
+	if len(events) != 2 || events[1].Kind != ports.ChatEventTurnCompleted {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[1].Err == nil || events[1].Err.Error() != "Usage limit reached\n\nResets tomorrow." {
+		t.Fatalf("completion error = %#v", events[1].Err)
 	}
 }
 

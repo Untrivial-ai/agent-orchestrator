@@ -5,7 +5,7 @@ vi.mock("expo-secure-store", () => ({ getItemAsync: vi.fn(), setItemAsync: vi.fn
 vi.mock("expo/fetch", () => ({ fetch: vi.fn() }));
 
 import { fetch as expoFetch } from "expo/fetch";
-import { ApiError, apiRequest, delegateTask, getAgentModels, getPreview, getSessions, getSettings, launchOrchestrator, mobileReachablePreviewURL, restoreSession, resumeSessionAgent, spawnSession } from "./api";
+import { ApiError, apiRequest, delegateTask, getAgentModels, getPreview, getSessions, getSettings, launchOrchestrator, mobileReachablePreviewURL, pinSession, renameSession, restoreSession, resumeSessionAgent, spawnSession, unpinSession } from "./api";
 import * as chatApi from "./chat/api";
 import type { ServerConfig } from "./config";
 
@@ -28,6 +28,7 @@ describe("mobile Chat API boundaries", () => {
 		expect(JSON.parse(String(init?.body))).toMatchObject({ projectId: "p-1", harness: "codex", kind: "worker", mode: "chat" });
 		expect(session.mode).toBe("chat");
 		expect(init?.headers).toMatchObject({ Authorization: "Bearer secret12" });
+		expect(init?.headers).not.toHaveProperty("X-AO-Attachment-Upload");
 	});
 
 	it("loads a project-scoped model catalog for the selected agent", async () => {
@@ -48,6 +49,23 @@ describe("mobile Chat API boundaries", () => {
 			.mockResolvedValueOnce(response({ projects: [] }));
 		const result = await getSessions(cfg);
 		expect(result.sessions[0]).toMatchObject({ isPinned: true, pinnedAt: "2026-08-09T10:00:00Z", lastActivityAt: "2026-08-08T10:00:00Z" });
+	});
+
+	it("uses the session actions API to rename and pin workers", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response({ ok: true, displayName: "Polish the app" }))
+			.mockResolvedValueOnce(response({ ok: true }))
+			.mockResolvedValueOnce(response({ ok: true }));
+
+		await renameSession(cfg, "worker/7", "Polish the app");
+		await pinSession(cfg, "worker/7");
+		await unpinSession(cfg, "worker/7");
+
+		expect(vi.mocked(fetch).mock.calls.map(([url, init]) => [url, init?.method, init?.body])).toEqual([
+			["http://ao.test:3011/api/v1/sessions/worker%2F7", "PATCH", JSON.stringify({ displayName: "Polish the app" })],
+			["http://ao.test:3011/api/v1/sessions/worker%2F7/pin", "POST", undefined],
+			["http://ao.test:3011/api/v1/sessions/worker%2F7/pin", "DELETE", undefined],
+		]);
 	});
 
 	it("preserves the daemon terminal handle used to attach native macOS PTYs", async () => {
@@ -71,6 +89,19 @@ describe("mobile Chat API boundaries", () => {
 		});
 	});
 
+	it("maps a standalone session (no projectId on the wire) to an empty project id", async () => {
+		// The daemon omits projectId for standalone agent sessions. Leaving it
+		// undefined crashed SessionCard's shortLabel() in render on the store build.
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response({ sessions: [{ id: "s-1", mode: "chat" }] }))
+			.mockResolvedValueOnce(response({ sessions: [] }))
+			.mockResolvedValueOnce(response({ projects: [] }));
+
+		const result = await getSessions(cfg);
+
+		expect(result.sessions[0].projectId).toBe("");
+	});
+
 	it("delegates an optional empty task with explicit interface and model", async () => {
 		vi.mocked(fetch)
 			.mockResolvedValueOnce(response({ ok: true, workerId: "w-2" }, 202))
@@ -80,6 +111,54 @@ describe("mobile Chat API boundaries", () => {
 		expect(url).toBe("http://ao.test:3011/api/v1/orchestrators/delegate");
 		expect(JSON.parse(String(init?.body))).toEqual({ projectId: "p-1", brief: "", agent: "codex", model: "gpt-5", mode: "chat" });
 		expect(session).toMatchObject({ id: "w-2", projectId: "p-1", mode: "chat" });
+	});
+
+	it("forwards picked files as delegated worker attachments", async () => {
+		vi.mocked(fetch)
+			.mockResolvedValueOnce(response({ ok: true, workerId: "w-3" }, 202))
+			.mockResolvedValueOnce(response({ session: { id: "w-3", projectId: "p-1", harness: "codex", mode: "chat" } }));
+
+		await delegateTask(cfg, {
+			projectId: "p-1",
+			brief: "Review this file",
+			agent: "codex",
+			mode: "chat",
+			attachments: [{ mimeType: "text/plain", data: "aGVsbG8=" }],
+		});
+
+		const [, init] = vi.mocked(fetch).mock.calls[0];
+		expect(JSON.parse(String(init?.body))).toEqual({
+			projectId: "p-1",
+			brief: "Review this file",
+			agent: "codex",
+			mode: "chat",
+			attachments: [{ mimeType: "text/plain", data: "aGVsbG8=" }],
+		});
+	});
+
+	it.each([
+		["spawn", () => spawnSession(cfg, { projectId: "p-1", attachments: [{ mimeType: "text/plain", data: "aGVsbG8=" }] }), { session: { id: "w-1", projectId: "p-1" } }],
+		["delegate", () => delegateTask(cfg, { projectId: "p-1", brief: "Review", mode: "chat", attachments: [{ mimeType: "text/plain", data: "aGVsbG8=" }] }), { workerId: "w-1" }],
+		["chat message", () => chatApi.sendConversationMessage(cfg, "w-1", { text: "Review", clientMessageId: "m-1", attachments: [{ mimeType: "image/png", data: "aGVsbG8=" }] }), { turnId: "t-1" }],
+		["chat staging", () => chatApi.stageConversationAttachments(cfg, "w-1", [{ mimeType: "image/png", data: "aGVsbG8=" }]), { paths: ["image.png"] }],
+	])("keeps %s attachment uploads alive past the ordinary timeout", async (_name, request, body) => {
+		vi.useFakeTimers();
+		try {
+			let reply!: (res: Response) => void;
+			vi.mocked(fetch).mockResolvedValue(response({ session: { id: "w-1", projectId: "p-1" } }));
+			vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>((resolve) => { reply = resolve; }));
+			const pending = request();
+			const [, init] = vi.mocked(fetch).mock.calls[0];
+			if (_name !== "chat staging") {
+				expect(init?.headers).toMatchObject({ "X-AO-Attachment-Upload": "1" });
+			}
+			await vi.advanceTimersByTimeAsync(12_001);
+			expect(init?.signal?.aborted).toBe(false);
+			reply(response(body));
+			await pending;
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("keeps an explicit TUI orchestrator request explicit", async () => {

@@ -67,11 +67,13 @@ var (
 	removeAll = os.RemoveAll
 )
 
-// removeAllWithRetry is os.RemoveAll plus a bounded, backing-off retry for the
-// transient Windows sharing violation described above. A path that is already
-// gone is success (os.RemoveAll's own semantics). Permanent failures are
-// returned immediately; an in-use failure that survives the complete retry
-// budget carries errRemoveRetryExhausted while preserving the underlying error.
+// removeAllWithRetry is os.RemoveAll plus a one-shot permission repair for
+// owner-read-only directories (see repairRemovePermissions) and a bounded,
+// backing-off retry for the transient Windows sharing violation described
+// above. A path that is already gone is success (os.RemoveAll's own
+// semantics). Permanent failures are returned immediately; an in-use failure
+// that survives the complete retry budget carries errRemoveRetryExhausted
+// while preserving the underlying error.
 //
 // Retries stop early when ctx is done: time.Sleep is uninterruptible, so
 // without this a caller that has already given up (client disconnected,
@@ -85,6 +87,14 @@ func removeAllWithRetry(ctx context.Context, path string) error {
 	err := removeAll(path)
 	if err == nil || errors.Is(err, os.ErrNotExist) {
 		return nil
+	}
+	// A permission failure on Unix is not transient — no amount of waiting
+	// unlocks a 0500 directory — but it is repairable when AO owns the tree.
+	// Repair once and retry once; a second failure is the real answer.
+	if isPermissionRemoveError(err) && repairRemovePermissions(path) {
+		if err = removeAll(path); err == nil || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 	}
 	if !removeAllRetryable(err) {
 		return err

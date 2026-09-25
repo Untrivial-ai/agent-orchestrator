@@ -22,7 +22,7 @@ var agentDocumentationURLs = map[Target]string{
 	TargetDroid:      "https://docs.factory.ai/droid-cli/cli-reference",
 	TargetCrush:      "https://github.com/charmbracelet/crush",
 	TargetCline:      "https://github.com/cline/cline",
-	TargetGoose:      "https://block.github.io/goose/index.html",
+	TargetGoose:      "https://goose-docs.ai/docs/getting-started/installation/",
 	TargetQwen:       "https://qwenlm.github.io/qwen-code-docs/en/users/quickstart/",
 	TargetContinue:   "https://docs.continue.dev/cli/quickstart",
 	TargetDevin:      "https://docs.devin.ai/get-started/devin-intro",
@@ -35,6 +35,7 @@ var agentDocumentationURLs = map[Target]string{
 	TargetKimchi:     "https://docs.kimchi.dev/docs/coding-getting-started",
 	TargetPrimeAgent: "https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/quickstart.md",
 	TargetOMP:        "https://github.com/can1357/oh-my-pi",
+	TargetUnreal:     "https://github.com/unreallabsai/unreal-agent",
 }
 
 func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation) []Plan {
@@ -114,7 +115,16 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 	case TargetGoose:
 		switch s.goos {
 		case "windows":
-			plans = []Plan{manualPlan(target, "Goose does not publish a native Windows CLI installer; use WSL or the desktop download.", agentDocumentationURLs[target])}
+			plan := s.officialByOS(
+				target,
+				"https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh", "bash",
+				"https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1",
+				agentDocumentationURLs[target],
+			)
+			if plan.Script != nil {
+				plan.Script.Env = []string{"CONFIGURE=false"}
+			}
+			plans = []Plan{plan}
 		case "darwin", "linux":
 			plans = []Plan{s.planShellInstaller(target, "https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh", "bash")}
 		default:
@@ -188,6 +198,11 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 		} else {
 			plans = []Plan{s.planBun(target), official}
 		}
+	case TargetUnreal:
+		plans = []Plan{{
+			Target: target, Unsupported: true, Method: "manual",
+			Reason: "Unreal Agent is built into AO; update AO to update the harness.",
+		}}
 	default:
 		plans = []Plan{{Target: target, Unsupported: true, Method: "manual", Reason: "unknown install target"}}
 	}

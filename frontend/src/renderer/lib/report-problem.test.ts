@@ -129,7 +129,7 @@ describe("report problem drafts", () => {
 		expect(github.searchParams.get("body")).toContain("[redacted-local-url]");
 
 		expect(reportProblemDestinationUrl(completeInput, diagnostics, "discord")).toBe(
-			"https://discord.com/invite/UZv7JjxbwG",
+			"https://discord.gg/WjKNa7EbB8",
 		);
 
 		const email = new URL(reportProblemDestinationUrl(completeInput, diagnostics, "email")!);
@@ -139,6 +139,57 @@ describe("report problem drafts", () => {
 		expect(email.searchParams.get("subject")).toBe("AO feedback: Terminal keeps reconnecting after daemon restart");
 		expect(email.searchParams.get("body")).toContain("AO feedback");
 		expect(email.searchParams.get("body")).toContain("AO version: 1.2.3-test");
+	});
+
+	it("builds provider-specific web compose URLs for Windows email choices", () => {
+		const gmail = new URL(reportProblemDestinationUrl(completeInput, diagnostics, "email", "gmail")!);
+		expect(gmail.origin).toBe("https://mail.google.com");
+		expect(gmail.pathname).toBe("/mail/");
+		expect(gmail.searchParams.get("view")).toBe("cm");
+		expect(gmail.searchParams.get("to")).toBe("prasad@untrivial.ai");
+		expect(gmail.searchParams.get("cc")).toBe("prateek@untrivial.ai");
+		expect(gmail.searchParams.get("su")).toContain("Terminal keeps reconnecting");
+		expect(gmail.searchParams.get("body")).toContain("AO version: 1.2.3-test");
+
+		const outlook = new URL(reportProblemDestinationUrl(completeInput, diagnostics, "email", "outlook")!);
+		expect(outlook.origin).toBe("https://outlook.office.com");
+		expect(outlook.pathname).toBe("/mail/deeplink/compose");
+		expect(outlook.searchParams.get("to")).toBe("prasad@untrivial.ai");
+		expect(outlook.searchParams.get("cc")).toBe("prateek@untrivial.ai");
+		expect(outlook.searchParams.get("subject")).toContain("Terminal keeps reconnecting");
+		expect(outlook.searchParams.get("body")).toContain("AO version: 1.2.3-test");
+	});
+
+	it("percent-encodes mailto spaces instead of serializing them as plus signs", () => {
+		const email = reportProblemDestinationUrl(
+			{
+				summary: "Switch Codex accounts bug",
+				details: "Keep literal + signs safe.",
+			},
+			diagnostics,
+			"email",
+		)!;
+
+		expect(email.startsWith("mailto:prasad@untrivial.ai?")).toBe(true);
+		expect(email).toContain("subject=AO%20feedback%3A%20Switch%20Codex%20accounts%20bug");
+		expect(email).toContain("body=AO%20feedback%0A%0ASummary%3A%20Switch%20Codex%20accounts%20bug");
+		expect(email).toContain("Keep%20literal%20%2B%20signs%20safe.");
+		expect(email).not.toContain("+");
+	});
+
+	it("keeps mailto drafts sendable when pasted text contains malformed UTF-16", () => {
+		const email = new URL(
+			reportProblemDestinationUrl(
+				{
+					summary: "Broken \uD800 text",
+					details: "The pasted value should still open email.",
+				},
+				diagnostics,
+				"email",
+			)!,
+		);
+
+		expect(email.searchParams.get("subject")).toBe("AO feedback: Broken � text");
 	});
 
 	it("derives route surface from the hash-history route", async () => {

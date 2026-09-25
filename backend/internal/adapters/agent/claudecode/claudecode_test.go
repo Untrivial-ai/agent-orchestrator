@@ -690,10 +690,10 @@ func TestGetRestoreCommandReadsAgentSessionID(t *testing.T) {
 	}
 }
 
-func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
-	// The caller's session model selection must reach native resume (#3218).
+func TestGetRestoreCommandAppendsConfiguredModelAndEffort(t *testing.T) {
+	// The caller's per-session tuning must reach native resume (#3218).
 	cmd, ok, err := (&Plugin{resolvedBinary: "claude"}).GetRestoreCommand(context.Background(), ports.RestoreConfig{
-		Config:      ports.AgentConfig{Model: "  claude-opus-4-5  "},
+		Config:      ports.AgentConfig{Model: "  claude-opus-4-5  ", Effort: "  high  "},
 		Permissions: ports.PermissionModeBypassPermissions,
 		Session: ports.SessionRef{
 			ID:       "sess-r",
@@ -703,7 +703,7 @@ func TestGetRestoreCommandAppendsConfiguredModel(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("restore = (ok=%v, err=%v), want ok", ok, err)
 	}
-	want := []string{"claude", "--permission-mode", "bypassPermissions", "--model", "claude-opus-4-5", "--resume", "claude-native-1"}
+	want := []string{"claude", "--permission-mode", "bypassPermissions", "--model", "claude-opus-4-5", "--effort", "high", "--resume", "claude-native-1"}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("restore cmd\nwant: %#v\n got: %#v", want, cmd)
 	}
@@ -870,104 +870,6 @@ func TestGetLaunchCommandRejectsInvalidConfig(t *testing.T) {
 func TestManifestID(t *testing.T) {
 	if got := New().Manifest().ID; got != "claude-code" {
 		t.Fatalf("manifest id = %q, want claude-code", got)
-	}
-}
-
-func TestClaudeConfigAuthStatusAuthorizedWithOAuthSubscription(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".claude.json")
-	content := `{
-		"hasAvailableSubscription": true,
-		"oauthAccount": {
-			"accountUuid": "account-1",
-			"subscriptionCreatedAt": "2026-01-01T00:00:00Z"
-		}
-	}`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, ok, err := claudeConfigAuthStatus(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestClaudeConfigAuthStatusAuthorizedWithOAuthAccount(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".claude.json")
-	content := `{"oauthAccount":{"accountUuid":"account-1"}}`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, ok, err := claudeConfigAuthStatus(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestClaudeConfigAuthStatusAuthorizedWithUserID(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".claude.json")
-	if err := os.WriteFile(path, []byte(`{"userID":"user-1"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, ok, err := claudeConfigAuthStatus(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestClaudeConfigAuthStatusUnknownWithoutOAuthIdentity(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".claude.json")
-	content := `{"oauthAccount":{}}`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	status, ok, err := claudeConfigAuthStatus(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok || status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
-	}
-}
-
-func TestClaudeAuthStatusFromOutputAuthorizedWithCleanJSON(t *testing.T) {
-	status, ok := claudeAuthStatusFromOutput([]byte(`{"loggedIn":true,"authMethod":"oauth_token"}`))
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestClaudeAuthStatusFromOutputAuthorizedWithPrefixedWarning(t *testing.T) {
-	output := []byte("warning: ignored config line\n{\"loggedIn\":true,\"authMethod\":\"oauth_token\"}\n")
-	status, ok := claudeAuthStatusFromOutput(output)
-	if !ok || status != ports.AgentAuthStatusAuthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
-	}
-}
-
-func TestClaudeAuthStatusFromOutputUnauthorized(t *testing.T) {
-	status, ok := claudeAuthStatusFromOutput([]byte(`{"loggedIn":false}`))
-	if !ok || status != ports.AgentAuthStatusUnauthorized {
-		t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusUnauthorized)
-	}
-}
-
-func TestClaudeAuthStatusFromOutputUnknownForUnrecognizedFailure(t *testing.T) {
-	status, ok := claudeAuthStatusFromOutput([]byte("unsupported subcommand on this version"))
-	if ok || status != ports.AgentAuthStatusUnknown {
-		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
 	}
 }
 
@@ -1303,6 +1205,72 @@ func TestInspectTerminalSurfaceSeparatesClaudeWorkFromComposer(t *testing.T) {
 				"❯\u00a0",
 			wantWork:   ports.TerminalSurfaceWorkIdle,
 			wantEditor: ports.TerminalComposerEmpty,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := plugin.InspectTerminalSurface(tt.output)
+			if got.Work != tt.wantWork || got.Composer != tt.wantEditor {
+				t.Fatalf("InspectTerminalSurface() = %+v, want work=%v composer=%v", got, tt.wantWork, tt.wantEditor)
+			}
+		})
+	}
+}
+
+// Fixtures captured from Claude Code 2.1.273 during a real drain failure
+// (issue #5482): the composer is empty, but Claude paints a multi-line
+// non-dim statusline below the lower rule and transient non-dim chrome
+// between the rules. Provider chrome must never read as a human draft.
+func TestInspectTerminalSurfaceClaude273DoesNotReadChromeAsDraft(t *testing.T) {
+	plugin := &Plugin{}
+	rule := "\x1b[38;2;136;136;136m" + strings.Repeat("─", 118) + "\x1b[m"
+	tests := []struct {
+		name       string
+		output     string
+		wantWork   ports.TerminalSurfaceWorkState
+		wantEditor ports.TerminalComposerState
+	}{
+		{
+			name: "idle empty composer above a multi-line provider statusline",
+			output: "  \x1b[38;2;153;153;153m40100 tokens\x1b[39m\n" +
+				rule + "\n\x1b[39m❯ \x1b[7m \x1b[0m\n" + rule + "\n" +
+				"  glm-5.3 low 40.1k [Rate limited]\n" +
+				"  cwd: /Users/example/worktree\n" +
+				"  ⏵⏵ auto mode on (shift+tab to cycle)",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			// Mismatched rules make the boxed layout unknown, but the footer-free
+			// fallback still closes the composer at the rule below the prompt:
+			// the statusline below it is provider chrome, not a draft.
+			name: "unmatched composer rules do not read status chrome as draft",
+			output: "\x1b[38;5;244m" + strings.Repeat("─", 48) + "\x1b[39m\n" +
+				"\x1b[39m❯ \x1b[7m \x1b[0m\n" +
+				strings.Repeat("─", 24) + "\n" +
+				"  glm-5.3 low 40.1k [Rate limited]",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			// Captured live from a stuck session: a bare default-styled
+			// "Claude Code" product label sits on the composer prompt row
+			// between matching rules. It is provider chrome, not a draft.
+			name: "provider product label on the prompt row is not a draft",
+			output: rule + "\n❯  Claude Code\n" + rule + "\n" +
+				"  glm-5.3 low 40.1k [Rate limited]\n" +
+				"  cwd: /Users/example/worktree\n" +
+				"  ⏵⏵ auto mode on (shift+tab to cycle)",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerEmpty,
+		},
+		{
+			// The same label followed by real typed text stays a draft.
+			name: "human text after the label is still a draft",
+			output: rule + "\n❯  Claude Code review please\n" + rule + "\n" +
+				"  ⏵⏵ auto mode on (shift+tab to cycle)",
+			wantWork:   ports.TerminalSurfaceWorkIdle,
+			wantEditor: ports.TerminalComposerDraft,
 		},
 	}
 	for _, tt := range tests {

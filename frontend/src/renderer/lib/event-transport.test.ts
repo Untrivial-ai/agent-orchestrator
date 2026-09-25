@@ -319,6 +319,26 @@ describe("createEventTransport", () => {
 		}
 	});
 
+	it("invalidates only the changed model-catalog scope for catalog CDC", () => {
+		vi.useFakeTimers();
+		try {
+			const queryClient = fakeQueryClient();
+			createEventTransport(queryClient).connect();
+			cdcSources()[0].emit("session_updated", JSON.stringify({
+				seq: 44,
+				projectId: "proj-1",
+				type: "session_updated",
+				payload: { kind: "model_catalog", agentId: "codex", projectId: "proj-1" },
+				createdAt: "2026-09-07T08:00:00Z",
+			}));
+			vi.advanceTimersByTime(200);
+			expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agent-models", "codex", "proj-1"] }, { cancelRefetch: false });
+			expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["workspaces"] }, { cancelRefetch: false });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("refetches cached unavailable state after the post-spawn session update", async () => {
 		vi.useFakeTimers();
 		let disconnect: (() => void) | undefined;
@@ -403,6 +423,12 @@ describe("createEventTransport", () => {
 			accountRevision: 2,
 			accounts: [{ id: "account-1", active: true }],
 			capabilities: {},
+			deviceReconciliation: {
+				status: "verified",
+				activeAccountVerified: true,
+				reasonCode: "verified",
+				retryable: false,
+			},
 		}));
 
 		expect(cached).toMatchObject({ activeAccountId: "account-1", accountRevision: 2 });

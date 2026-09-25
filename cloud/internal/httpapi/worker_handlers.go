@@ -16,6 +16,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/roleprompt"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 	"github.com/go-chi/chi/v5"
 )
@@ -128,6 +129,12 @@ func (s *Server) workerBootstrap(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
+	launchContext, err := launchContextFrom(launch)
+	if err != nil {
+		s.logger.Error("build worker launch context", "error", err, "project_id", launch.ProjectID, "request_id", requestID(r))
+		writeError(w, r, http.StatusInternalServerError, "BOOTSTRAP_FAILED", "The project's role instructions are invalid.")
+		return
+	}
 
 	workerID := worker.NextWorkerID(ticket.SessionID, ticket.WorkerEpoch)
 	if err := s.store.RegisterWorkerBootstrap(
@@ -170,7 +177,7 @@ func (s *Server) workerBootstrap(w http.ResponseWriter, r *http.Request) {
 		Epoch:       ticket.WorkerEpoch,
 		ExpiresIn:   int(s.workerTokenTTL().Seconds()),
 		SessionID:   ticket.SessionID,
-		Launch:      launchContextFrom(launch),
+		Launch:      launchContext,
 	})
 }
 
@@ -210,18 +217,54 @@ func (s *Server) workerReconnect(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
+	launchContext, err := launchContextFrom(launch)
+	if err != nil {
+		s.logger.Error("build worker reconnect context", "error", err, "project_id", launch.ProjectID, "request_id", requestID(r))
+		writeError(w, r, http.StatusInternalServerError, "RECONNECT_FAILED", "The project's role instructions are invalid.")
+		return
+	}
 	writeJSON(w, http.StatusOK, worker.BootstrapResponse{
 		WorkerID:  claims.WorkerID,
 		Epoch:     claims.Epoch,
 		ExpiresIn: int(s.workerTokenTTL().Seconds()),
 		SessionID: claims.SessionID,
-		Launch:    launchContextFrom(launch),
+		Launch:    launchContext,
 	})
 }
 
 // launchContextFrom projects a stored launch spec onto the wire type shared by
 // bootstrap and reconnect.
-func launchContextFrom(launch domain.WorkerLaunch) worker.LaunchContext {
+func launchContextFrom(launch domain.WorkerLaunch) (worker.LaunchContext, error) {
+	agentRules, orchestratorRules, err := projectRoleRules(launch.ProjectConfig)
+	if err != nil {
+		return worker.LaunchContext{}, err
+	}
+	// Extra repos are project-level (chosen at project setup, stored on the
+	// project config), so every session of the project clones the same set.
+	// Decoded before the prompt is built so both the project context (which
+	// makes every role aware the project is multi-repo) and the worker's clone
+	// list draw from the same source.
+	var extraRepos []worker.RepoRef
+	var promptExtras []roleprompt.RepoRef
+	if coderCfg, ok := domain.DecodeProjectCoderConfig(launch.ProjectConfig); ok && len(coderCfg.ExtraRepos) > 0 {
+		extraRepos = make([]worker.RepoRef, 0, len(coderCfg.ExtraRepos))
+		promptExtras = make([]roleprompt.RepoRef, 0, len(coderCfg.ExtraRepos))
+		for _, repo := range coderCfg.ExtraRepos {
+			extraRepos = append(extraRepos, worker.RepoRef{URL: repo.URL, Branch: repo.Branch})
+			promptExtras = append(promptExtras, roleprompt.RepoRef{URL: repo.URL, Branch: repo.Branch})
+		}
+	}
+	systemPrompt := roleprompt.Build(roleprompt.Config{
+		Role:              launch.Kind,
+		ProjectID:         launch.ProjectID,
+		ProjectName:       launch.ProjectName,
+		RepositoryURL:     launch.RepositoryURL,
+		DefaultBranch:     launch.DefaultBranch,
+		WorkspacePath:     "/workspace/repository",
+		AgentRules:        agentRules,
+		OrchestratorRules: orchestratorRules,
+		ExtraRepos:        promptExtras,
+	})
 	return worker.LaunchContext{
 		SessionID:       launch.SessionID,
 		ProjectID:       launch.ProjectID,
@@ -236,7 +279,30 @@ func launchContextFrom(launch domain.WorkerLaunch) worker.LaunchContext {
 		DeniedCommands:  launch.DeniedCommands,
 		RepositoryURL:   launch.RepositoryURL,
 		DefaultBranch:   launch.DefaultBranch,
+		ExtraRepos:      extraRepos,
+		SystemPrompt:    systemPrompt,
+	}, nil
+}
+
+func projectRoleRules(config json.RawMessage) (string, string, error) {
+	if len(config) == 0 {
+		return "", "", nil
 	}
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(config, &values); err != nil {
+		return "", "", err
+	}
+	decodeString := func(key string) string {
+		var value string
+		if raw := values[key]; len(raw) > 0 {
+			// Cloud project config predates typed role rules and accepts arbitrary
+			// values. Ignore legacy/non-string collisions rather than making a
+			// one-time worker bootstrap ticket permanently unusable.
+			_ = json.Unmarshal(raw, &value)
+		}
+		return value
+	}
+	return decodeString("agentRules"), decodeString("orchestratorRules"), nil
 }
 
 // indexWorkerBinaries maps each non-empty binary to its sha256 hex so the control

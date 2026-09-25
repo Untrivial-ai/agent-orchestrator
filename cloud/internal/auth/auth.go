@@ -36,7 +36,7 @@ type ProfileResolver func(
 type OrganizationResolver func(
 	ctx context.Context,
 	organizationID string,
-) (displayName string, err error)
+) (displayName string, capabilities []string, err error)
 
 type OIDCVerifier struct {
 	verifier      *oidc.IDTokenVerifier
@@ -120,20 +120,22 @@ func (v *OIDCVerifier) Verify(ctx context.Context, token string) (domain.Princip
 	}
 	orgID := strings.TrimSpace(claims.OrgID)
 	orgName := ""
+	var orgCapabilities []string
 	if orgID != "" && v.organizations != nil {
-		orgName, err = v.organizations(ctx, orgID)
+		orgName, orgCapabilities, err = v.organizations(ctx, orgID)
 		if err != nil {
 			return domain.Principal{}, fmt.Errorf("%w: resolve WorkOS organization: %v", ErrProviderUnavailable, err)
 		}
 	}
 	return domain.Principal{
-		Provider:      "workos",
-		ExternalID:    claims.Subject,
-		Email:         email,
-		DisplayName:   displayName,
-		ExternalOrgID: orgID,
-		OrgName:       strings.TrimSpace(orgName),
-		OrgRole:       normalizeOrganizationRole(claims.Role),
+		Provider:        "workos",
+		ExternalID:      claims.Subject,
+		Email:           email,
+		DisplayName:     displayName,
+		ExternalOrgID:   orgID,
+		OrgName:         strings.TrimSpace(orgName),
+		OrgRole:         normalizeOrganizationRole(claims.Role),
+		OrgCapabilities: orgCapabilities,
 	}, nil
 }
 

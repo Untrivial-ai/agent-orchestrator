@@ -28,7 +28,7 @@ type ProbeResult struct {
 type Info struct {
 	ID         string                `json:"id"`
 	Label      string                `json:"label"`
-	AuthStatus ports.AgentAuthStatus `json:"authStatus,omitempty" enum:"authorized,unauthorized,unknown" description:"Advisory local auth probe result. authorized means a recent local probe passed; spawn remains the authoritative validation point."`
+	AuthStatus ports.AgentAuthStatus `json:"authStatus,omitempty" enum:"authorized,unauthorized,unknown,configured" description:"Auth probe result. authorized means a provider round-trip accepted the credential; configured means a credential exists locally but was never validated, and must not be presented as ready; spawn remains the authoritative validation point."`
 	UsageCount int                   `json:"usageCount,omitempty" description:"Number of retained sessions currently attributed to this agent."`
 	LastUsedAt *time.Time            `json:"lastUsedAt,omitempty" format:"date-time" description:"Creation time of the newest retained session currently attributed to this agent."`
 }
@@ -82,11 +82,18 @@ func (s *Service) EnsureAgentReadiness(ctx context.Context, agentID string, purp
 // InvalidateAgentInstallation marks an agent's installation observation stale.
 func (s *Service) InvalidateAgentInstallation(agentID string) {
 	s.readiness.Invalidate(agentID, readinessInvalidateInstallation)
+	if item, ok := s.agent(agentID); ok {
+		if invalidator, ok := item.Agent.(ports.AgentBinaryResolutionInvalidator); ok {
+			invalidator.InvalidateBinaryResolution()
+		}
+	}
+	s.InvalidateModelCatalogs(agentID)
 }
 
 // InvalidateAgentAuthentication marks an agent's authentication observation stale.
 func (s *Service) InvalidateAgentAuthentication(agentID string) {
 	s.readiness.Invalidate(agentID, readinessInvalidateAuthentication)
+	s.InvalidateModelCatalogs(agentID)
 	if agentID == string(domain.HarnessCodex) && s.codexAccounts != nil {
 		if accountID := s.codexAccounts.activeAccountID(); accountID != "" {
 			s.codexAccounts.invalidate(accountID)
@@ -97,7 +104,9 @@ func (s *Service) InvalidateAgentAuthentication(agentID string) {
 // RecheckAgent schedules a non-blocking display readiness ensure.
 func (s *Service) RecheckAgent(agentID string) {
 	go func() {
-		_, _ = s.readiness.Ensure(s.readiness.ctx, []string{agentID}, domain.AgentReadinessPurposeDisplay)
+		if _, err := s.readiness.Ensure(s.readiness.ctx, []string{agentID}, domain.AgentReadinessPurposeDisplay); err != nil {
+			s.logger.Warn("agent readiness recheck failed", "agent", agentID, "err", err)
+		}
 	}()
 }
 
@@ -255,6 +264,8 @@ func readinessInfo(snapshot domain.AgentReadinessSnapshot) Info {
 		status = ports.AgentAuthStatusAuthorized
 	case domain.AgentAuthenticationUnauthorized:
 		status = ports.AgentAuthStatusUnauthorized
+	case domain.AgentAuthenticationConfigured:
+		status = ports.AgentAuthStatusConfigured
 	}
 	return Info{
 		ID: snapshot.ID, Label: snapshot.Label, AuthStatus: status,

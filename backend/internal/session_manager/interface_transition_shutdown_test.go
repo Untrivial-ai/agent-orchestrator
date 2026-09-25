@@ -85,7 +85,7 @@ func TestStartupReportsUnpersistedShutdownMarker(t *testing.T) {
 	}
 }
 
-func TestStartupDefersInterfaceRecoveryBehindAccountOperation(t *testing.T) {
+func TestStartupDefersInterfaceRecoveryBehindExistingSessionOperation(t *testing.T) {
 	ctx := context.Background()
 	m, st, _, _, _ := newTransitionManager(t, domain.SessionModeChat)
 	_, created, err := st.CreateSessionInterfaceTransition(ctx, domain.SessionInterfaceTransition{
@@ -96,11 +96,11 @@ func TestStartupDefersInterfaceRecoveryBehindAccountOperation(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("seed transition: %v %v", created, err)
 	}
-	if err := m.beginOrReclaimCodexAccountSwitchOperation(ctx, "session-1"); err != nil {
+	if err := m.beginAgentOperation(ctx, "session-1", agentOperationKill); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.recoverInterruptedInterfaceTransitions(ctx); err != nil {
-		t.Fatalf("account recovery collision aborted startup: %v", err)
+		t.Fatalf("session-operation collision aborted startup: %v", err)
 	}
 	if release, ok := m.AcquireSessionInput("session-1"); ok {
 		release()
@@ -117,12 +117,12 @@ func TestStartupDefersInterfaceRecoveryBehindAccountOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.endAgentOperation("session-1", agentOperationCodexAccountSwitch)
-	// Even immediately after releasing the account gate, the durable handoff
+	m.endAgentOperation("session-1", agentOperationKill)
+	// Even immediately after releasing the existing operation, the durable handoff
 	// must either be recovered or still protected from input/reaper/restore.
 	if !m.SessionMutationInProgress("session-1") {
 		if _, active, err := st.GetActiveSessionInterfaceTransition(ctx, "session-1"); err != nil || active {
-			t.Fatalf("account release exposed unrecovered handoff: %v %v", active, err)
+			t.Fatalf("operation release exposed unrecovered handoff: %v %v", active, err)
 		}
 	}
 	m.agentSwitchWorkers.Wait()
@@ -137,11 +137,11 @@ func TestStartupDefersInterfaceRecoveryBehindAccountOperation(t *testing.T) {
 func TestDeferredInterfaceRecoveryRespectsWorkerShutdown(t *testing.T) {
 	m, _, _, _, _ := newTransitionManager(t, domain.SessionModeChat)
 	m.deferredInterfaceRecovery = map[domain.SessionID]string{"session-1": "interrupted"}
-	m.agentOperations["session-1"] = agentOperationCodexAccountSwitch
+	m.agentOperations["session-1"] = agentOperationKill
 	if err := m.WaitAgentSwitchWorkers(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	m.endAgentOperation("session-1", agentOperationCodexAccountSwitch)
+	m.endAgentOperation("session-1", agentOperationKill)
 	if !m.SessionMutationInProgress("session-1") {
 		t.Fatal("shutdown release removed the deferred input fence")
 	}

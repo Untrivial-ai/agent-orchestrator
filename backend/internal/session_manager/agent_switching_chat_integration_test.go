@@ -45,43 +45,7 @@ func (l integrationChatLauncher) PreflightChat(
 }
 
 func (l integrationChatLauncher) StartChat(ctx context.Context, cfg ChatStart) (ChatStarted, error) {
-	result, err := l.service.StartChat(ctx, chatsvc.StartRequest{
-		SessionID:               cfg.SessionID,
-		ProjectID:               cfg.ProjectID,
-		Kind:                    cfg.Kind,
-		Harness:                 cfg.Harness,
-		DataDir:                 cfg.DataDir,
-		WorkspacePath:           cfg.WorkspacePath,
-		Env:                     cfg.Env,
-		Model:                   cfg.Model,
-		Permissions:             cfg.Permissions,
-		SystemPrompt:            cfg.SystemPrompt,
-		AdditionalDirectories:   cfg.AdditionalDirectories,
-		ProviderConversationID:  cfg.ProviderConversationID,
-		ProviderScopeID:         cfg.ProviderScopeID,
-		ControllerGeneration:    cfg.ControllerGeneration,
-		RequireNativeHistory:    cfg.RequireNativeHistory,
-		SkipNativeHistoryImport: cfg.SkipNativeHistoryImport,
-		ControllerReady: func(result chatsvc.StartResult) (chatsvc.ControllerCommit, error) {
-			if cfg.ControllerReady == nil {
-				return chatsvc.ControllerCommit{}, nil
-			}
-			commit, readyErr := cfg.ControllerReady(ChatStarted{
-				ProviderConversationID: result.ProviderConversationID,
-				ControllerGeneration:   result.ControllerGeneration,
-				Conversation:           result.Conversation,
-				ProviderBoundary:       result.ProviderBoundary,
-			})
-			return chatsvc.ControllerCommit{Conversation: commit.Conversation}, readyErr
-		},
-	})
-	if err != nil {
-		return ChatStarted{}, err
-	}
-	return ChatStarted{
-		ProviderConversationID: result.ProviderConversationID,
-		ControllerGeneration:   result.ControllerGeneration,
-	}, nil
+	return l.service.StartChat(ctx, cfg)
 }
 
 func (l integrationChatLauncher) StartChatTurn(ctx context.Context, id domain.SessionID, text string) (string, error) {
@@ -405,9 +369,9 @@ func newChatSwitchIntegrationFixture(t *testing.T, stale bool) *chatSwitchIntegr
 	if _, err := service.Start(ctx, chatsvc.StartConfig{
 		SessionID: session.ID, ProjectID: session.ProjectID, Kind: session.Kind,
 		Harness: domain.HarnessClaudeCode, DataDir: dataDir, WorkspacePath: workspacePath,
-		ProviderConversationID:  chatSwitchIntegrationSourceProvider,
-		ControllerGeneration:    chatSwitchIntegrationSourceGeneration,
-		SkipNativeHistoryImport: true,
+		ProviderConversationID: chatSwitchIntegrationSourceProvider,
+		ControllerGeneration:   chatSwitchIntegrationSourceGeneration,
+		HistoryMode:            ports.ChatHistoryDeferred,
 	}); err != nil {
 		t.Fatalf("start real source Chat controller: %v", err)
 	}

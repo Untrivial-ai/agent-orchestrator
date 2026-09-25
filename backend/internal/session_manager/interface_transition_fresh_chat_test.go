@@ -186,9 +186,9 @@ func TestInterfaceTransitionUnpromptedChatRoundTrip(t *testing.T) {
 				t.Fatalf("return = %s (%s): %s", settled.Phase, settled.ErrorCode, settled.ErrorDetail)
 			}
 			if settled.NativeConversationID != wantNativeID || chat.start.ProviderConversationID != wantNativeID ||
-				chat.start.RequireNativeHistory != tc.terminalTurn {
+				(chat.start.HistoryMode == ports.ChatHistoryRequired) != tc.terminalTurn {
 				t.Fatalf("return identity=%q, target=%q, requireHistory=%v; want identity=%q, requireHistory=%v",
-					settled.NativeConversationID, chat.start.ProviderConversationID, chat.start.RequireNativeHistory, wantNativeID, tc.terminalTurn)
+					settled.NativeConversationID, chat.start.ProviderConversationID, (chat.start.HistoryMode == ports.ChatHistoryRequired), wantNativeID, tc.terminalTurn)
 			}
 			if got := fmt.Sprint(*log); got != "[prepare:chat:interrupt stop:chat start:tui stop:tui:h1 start:chat]" {
 				t.Fatalf("round-trip controller order = %s", got)
@@ -227,7 +227,6 @@ func TestInterfaceTransitionChatRequiresUntouchedConversationProof(t *testing.T)
 	}{
 		{"accepted message or activity", func(s *freshChatTransitionStore) { s.conversation.LatestSequence = 1 }},
 		{"provider turn without text", func(s *freshChatTransitionStore) { s.hasTurns = true }},
-		{"missing conversation", func(s *freshChatTransitionStore) { s.historyErr = domain.ErrNoConversation }},
 		{"history read failed", func(s *freshChatTransitionStore) { s.historyErr = errors.New("database unavailable") }},
 		{"different owner", func(s *freshChatTransitionStore) { s.conversation.SessionID = "session-2" }},
 		{"different branch owner", func(s *freshChatTransitionStore) { s.branch.SessionID = "session-2" }},
@@ -247,6 +246,43 @@ func TestInterfaceTransitionChatRequiresUntouchedConversationProof(t *testing.T)
 				t.Fatalf("refusal mutated source: transitions=%d log=%v", len(store.transitions), *log)
 			}
 		})
+	}
+}
+
+func TestInterfaceTransitionChatWithoutAnyConversationStartsFresh(t *testing.T) {
+	// A session switched into Chat but never messaged has no conversation row
+	// at all: the Chat controller materializes it on the first turn. That is
+	// the freshest possible state and must not fail the Terminal handoff with
+	// NATIVE_SESSION_MISSING (issue #5482 reproduction).
+	manager, store, runtime, chat, log := newTransitionManager(t, domain.SessionModeChat)
+	manager.agents = singleAgent{agent: emptyTransitionAgent{}}
+	rec := store.sessions["session-1"]
+	rec.Metadata.ProviderConversationID = "019fc430-1234-7abc-8def-0123456789ab"
+	store.sessions[rec.ID] = rec
+	withFreshChatHistory(manager, store).historyErr = domain.ErrNoConversation
+
+	status, err := manager.InterfaceTransitionStatus(context.Background(), rec.ID)
+	if err != nil || !status.Supported {
+		t.Fatalf("never-messaged Chat status = %+v, err=%v", status, err)
+	}
+	transition, err := manager.StartInterfaceTransition(context.Background(), rec.ID,
+		domain.SessionModeTUI, domain.SessionInterfaceTransitionInterrupt, domain.SessionInterfaceTransitionHistoryStrict)
+	if err != nil {
+		t.Fatalf("Chat-to-terminal switch without a conversation row was refused: %v", err)
+	}
+	settled := awaitTransition(t, store, transition.ID)
+	if settled.Phase != domain.SessionInterfaceTransitionCompleted {
+		t.Fatalf("switch = %s (%s): %s", settled.Phase, settled.ErrorCode, settled.ErrorDetail)
+	}
+	if settled.NativeConversationID != "" || chat.start.ProviderConversationID != "" {
+		t.Fatalf("reserved id leaked into fresh handoff: %q / %q",
+			settled.NativeConversationID, chat.start.ProviderConversationID)
+	}
+	if runtime.created != 1 || strings.Contains(strings.Join(runtime.lastCfg.Argv, " "), "resume") {
+		t.Fatalf("expected one fresh terminal launch: %+v", runtime.lastCfg)
+	}
+	if got := fmt.Sprint(*log); got != "[prepare:chat:interrupt stop:chat start:tui]" {
+		t.Fatalf("controller order = %s", got)
 	}
 }
 

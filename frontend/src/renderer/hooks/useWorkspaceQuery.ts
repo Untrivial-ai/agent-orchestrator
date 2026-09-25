@@ -11,6 +11,8 @@ import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { toReviewerHarnessId } from "../lib/reviewer-harnesses";
 import { captureRendererEvent } from "../lib/telemetry";
 import { agentSwitchVisibility } from "../lib/agent-switch-visibility";
+import { applyOptimisticSessionKills } from "./optimistic-session-kills";
+import { appI18n } from "../i18n";
 import {
 	type AgentSwitchSummary,
 	type PRState,
@@ -29,7 +31,9 @@ import {
 	STANDALONE_WORKSPACE_ID,
 } from "../types/workspace";
 
-const AD_HOC_AGENTS_WORKSPACE_NAME = "Ad hoc agents";
+function standaloneWorkspaceName(): string {
+	return appI18n.t("standalone.workspaceName");
+}
 
 function placeStandaloneWorkspaceLast(workspaces: WorkspaceSummary[]): WorkspaceSummary[] {
 	const standalone = workspaces.find((workspace) => workspace.id === STANDALONE_WORKSPACE_ID);
@@ -206,7 +210,8 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 			typeof window !== "undefined"
 				? (window as unknown as { __aoFakeAgent?: FakeAgentSeam }).__aoFakeAgent
 				: undefined;
-		return fake ? fake.snapshot() : mockWorkspaces;
+		const snapshot = fake ? fake.snapshot() : mockWorkspaces;
+		return applyOptimisticSessionKills(snapshot) ?? snapshot;
 	}
 	if (!hasTrustedApiBaseUrl()) {
 		throw new Error("AO daemon API is not ready");
@@ -224,6 +229,7 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 	agentSwitchVisibility.setQueryHealthy("history", true, "workspaces");
 
 	const sessions = sessionsData?.sessions ?? [];
+	const standaloneName = standaloneWorkspaceName();
 	const projects = (projectsData?.projects ?? []).map((project) => {
 		const kind = toProjectKind(project.kind);
 		return {
@@ -240,14 +246,17 @@ async function fetchWorkspaces(): Promise<WorkspaceSummary[]> {
 	});
 	const standalone: WorkspaceSummary = {
 		id: STANDALONE_WORKSPACE_ID,
-		name: AD_HOC_AGENTS_WORKSPACE_NAME,
+		name: standaloneName,
 		kind: STANDALONE_PROJECT_KIND,
 		path: "Not attached to a project",
 		sessions: sessions
 			.filter((session) => !session.projectId)
-			.map((session) => toLocalWorkspaceSession(session, STANDALONE_WORKSPACE_ID, AD_HOC_AGENTS_WORKSPACE_NAME)),
+			.map((session) => toLocalWorkspaceSession(session, STANDALONE_WORKSPACE_ID, standaloneName)),
 	};
-	return standalone.sessions.length > 0 ? placeStandaloneWorkspaceLast([...projects, standalone]) : projects;
+	const workspaces =
+		standalone.sessions.length > 0 ? placeStandaloneWorkspaceLast([...projects, standalone]) : projects;
+	// Pending optimistic kills must survive CDC/refetch while the daemon kill is in flight.
+	return applyOptimisticSessionKills(workspaces) ?? workspaces;
 }
 
 // Shared so route loaders can prefetch via queryClient.ensureQueryData (paired
@@ -282,6 +291,14 @@ function toCloudWorkspaceSession(
 		// A cloud session's PTY is addressed by the session id over its ticketed
 		// CP WebSocket, so the session id is its handle.
 		terminalHandleId: session.id,
+		// The worker epoch advances on every fresh worker connection (resume from
+		// idle-pause, restore, re-provision). Folding it into the terminal
+		// generation makes the terminal pane re-mint against the new epoch and
+		// attach to the live agent, instead of clinging to the previous epoch's
+		// exited terminal (the "connected but TERMINAL ENDED / can't type" loop,
+		// which then idle-pauses the session again because nothing attached).
+		// Stable within an epoch, so it does not churn the pane between resumes.
+		terminalGeneration: session.workerEpoch ? String(session.workerEpoch) : undefined,
 		workspaceId: project.id,
 		workspaceName: project.displayName,
 		title: session.displayName || session.id,
@@ -421,7 +438,7 @@ export function useWorkspaceSession(sessionId: string) {
 			const project = session.projectId
 				? localWorkspaces.data?.find((workspace) => workspace.id === session.projectId) ??
 					({ id: session.projectId, name: "" } satisfies Pick<WorkspaceSummary, "id" | "name">)
-				: ({ id: STANDALONE_WORKSPACE_ID, name: AD_HOC_AGENTS_WORKSPACE_NAME } satisfies Pick<WorkspaceSummary, "id" | "name">);
+				: ({ id: STANDALONE_WORKSPACE_ID, name: standaloneWorkspaceName() } satisfies Pick<WorkspaceSummary, "id" | "name">);
 			return toWorkspaceSession(session, project);
 		},
 	});

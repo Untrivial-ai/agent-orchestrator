@@ -64,13 +64,23 @@ surface (`npm run sqlc`, `npm run api`).
   archive/projection, controller-generation fencing, turns, messages,
   activities, approvals, structured input, usage, compaction, and rollback.
 - Chat drivers for the user's installed Codex (native app-server), Claude Code
-  (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, and OMP. OMP Chat uses
-  native `omp acp` and requires OMP 15.0.0 or newer. Pi's independently
-  installed pi-acp adapter does not enforce approval modes, so AO admits Pi Chat
-  only after the user explicitly chooses the per-session bypass-permissions
-  fallback. The binding reuses the existing Pi config environment and auth
+  (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, OMP, Qwen, and
+  the built-in Unreal Agent library. Unreal Agent Chat runs on macOS and Linux
+  behind AO's detached provider host, persists its native session plus an
+  acknowledged AO event journal, and currently requires an explicit
+  bypass-permissions session because the upstream harness has no interactive
+  approval channel.
+  Qwen Chat uses native `qwen --acp` and requires Qwen Code 0.16.0 or newer.
+  Qwen Code's ACP mode enforces approval modes over `session/request_permission`
+  (verified live: a non-read-only shell under auto-edit asks), so AO maps its
+  permission modes onto Qwen's (default to Ask Permissions) and admits Qwen Chat
+  in every mode. OMP Chat uses native `omp acp` and requires OMP
+  15.0.0 or newer. Pi's independently installed pi-acp adapter does not enforce
+  approval modes, so AO admits Pi Chat only after the user explicitly chooses the
+  per-session bypass-permissions fallback. The binding reuses the existing Pi config environment and auth
   probe and is never downloaded by AO. AO reuses each harness's existing
-  binary/auth/environment resolution and does not bundle provider CLIs. Cursor
+  binary/auth/environment resolution and does not bundle provider CLIs; Unreal
+  Agent is the library-backed exception. Cursor
   is Chat-only until its ACP and TUI conversation ids are proven to share identity.
 - Project CRUD plus per-project config (`PUT /projects/{id}/config`).
 - PR action engine wired into the API: `POST /prs/{id}/merge` and
@@ -119,10 +129,12 @@ surface (`npm run sqlc`, `npm run api`).
   device-global Codex identity, adds file-backed accounts through an inline
   native login terminal, and shows structured authentication, capacity, usage,
   and confirmed reset-credit facts without parsing credentials. A manual global
-  switch fences input, stops and resumes only the affected AO-owned Codex
-  controllers with the same native thread IDs, and leaves native history in the
-  normal Codex home. Users can sign accounts out and delete inactive signed-out
-  accounts; external Codex clients are not controlled.
+  switch atomically changes the device credential while briefly fencing new
+  Codex mutations. Running AO Codex controllers and reviewers are never
+  interrupted or restarted by account switching; new controllers use the
+  selected account, and an existing session can be resumed manually when the
+  user wants it relaunched. Native history remains in the normal Codex home.
+  Users can sign accounts out and delete inactive signed-out accounts.
 - OpenAPI spec generated from Go DTOs; frontend TS types generated from it and
   drift-checked in CI.
 

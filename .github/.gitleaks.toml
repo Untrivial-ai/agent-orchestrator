@@ -71,6 +71,9 @@ title = "gitleaks config"
     description = "Asymmetric Private Key"
     regex = '''-----BEGIN ((EC|PGP|DSA|RSA|OPENSSH) )?PRIVATE KEY( BLOCK)?-----'''
     tags = ["key", "AsymmetricPrivateKey"]
+    [rules.allowlist]
+        description = "Synthetic empty private key fixture"
+        regexes = ['''^\s*"private_key": "-----BEGIN PRIVATE KEY-----\\n-----END PRIVATE KEY-----\\n",$''']
 
 [[rules]]
     description = "Google API key"
@@ -81,6 +84,12 @@ title = "gitleaks config"
     description = "Google (GCP) Service Account"
     regex = '''"type": "service_account"'''
     tags = ["key", "Google"]
+    [rules.allowlist]
+        description = "Synthetic service-account fixture lines"
+        regexes = [
+            '''^\s*"type": "service_account", "client_email": "probe@example\.iam\.gserviceaccount\.com",$''',
+            '''^\s*"type": "service_account", "client_email": email,$''',
+        ]
 
 [[rules]]
     description = "Heroku API key"

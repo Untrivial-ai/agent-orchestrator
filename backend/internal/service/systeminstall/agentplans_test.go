@@ -3,6 +3,7 @@ package systeminstall
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -100,8 +101,8 @@ func TestAgentPlansCoverEveryHarnessOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plans) != 27 {
-		t.Fatalf("got %d plans, want 27", len(plans))
+	if len(plans) != 28 {
+		t.Fatalf("got %d plans, want 28", len(plans))
 	}
 	seen := make(map[string]bool, len(plans))
 	for _, plan := range plans {
@@ -155,7 +156,9 @@ func TestOfficialInstallerPlansAreAutomaticAndServerOwned(t *testing.T) {
 		{"linux", TargetAider, []string{"sh"}, "https://aider.chat/install.sh", "sh"},
 		{"linux", TargetGrok, []string{"bash"}, "https://x.ai/cli/install.sh", "bash"},
 		{"linux", TargetKimi, []string{"bash"}, "https://code.kimi.com/kimi-code/install.sh", "bash"},
+		{"darwin", TargetGoose, []string{"bash"}, "https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh", "bash"},
 		{"linux", TargetGoose, []string{"bash"}, "https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh", "bash"},
+		{"windows", TargetGoose, []string{"pwsh.exe"}, "https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1", "pwsh.exe"},
 		{"linux", TargetDevin, []string{"bash"}, "https://cli.devin.ai/install.sh", "bash"},
 		{"windows", TargetKiro, []string{"powershell.exe"}, "https://cli.kiro.dev/install.ps1", "powershell.exe"},
 		{"linux", TargetMuse, []string{"bash"}, "https://dev.meta.ai/install.sh", "bash"},
@@ -209,6 +212,23 @@ func TestOfficialInstallersRejectUnsupportedOperatingSystems(t *testing.T) {
 		if !plan.Unsupported || plan.Script != nil {
 			t.Fatalf("%s plan = %+v, want manual unsupported plan", target, plan)
 		}
+	}
+}
+
+func TestGooseWindowsUsesPowerShellInstallerCommand(t *testing.T) {
+	plan := newTestService("windows", "pwsh.exe").planAgent(TargetGoose)
+	if plan.Unsupported || plan.Method != "official-installer" || plan.Script == nil {
+		t.Fatalf("Goose Windows plan = %+v, want available official installer", plan)
+	}
+	if plan.Script.URL != "https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1" {
+		t.Fatalf("Goose Windows installer URL = %q", plan.Script.URL)
+	}
+	wantInterpreter := "/usr/bin/pwsh.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File"
+	if got := strings.Join(plan.Script.Interpreter, " "); got != wantInterpreter {
+		t.Fatalf("Goose Windows installer interpreter = %q, want %q", got, wantInterpreter)
+	}
+	if !slices.Equal(plan.Script.Env, []string{"CONFIGURE=false"}) {
+		t.Fatalf("Goose Windows installer env = %v, want CONFIGURE=false", plan.Script.Env)
 	}
 }
 

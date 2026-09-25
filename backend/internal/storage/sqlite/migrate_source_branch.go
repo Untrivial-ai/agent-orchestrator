@@ -4,9 +4,9 @@ import "database/sql"
 
 // prepareSessionSourceBranchMigration preserves preview databases that applied
 // source_branch as version 126, 129, 140, or 141 and import identity indexes as
-// version 142. Main now owns those versions. Record source_branch at 146, release
+// version 142. Main now owns those versions. Record source_branch at 156, release
 // the reused import-index ledger entry so main's checkpoint migrations replay,
-// and let the idempotent index migration run at 147.
+// and let the idempotent index migration run at 157.
 // A preview also briefly used version 140 for this column before main shipped
 // standalone sessions at 140. Release that ledger entry when project_id is
 // still NOT NULL so the real standalone migration can run.
@@ -57,7 +57,7 @@ func prepareSessionSourceBranchMigration(db *sql.DB) error {
 		}
 	}
 	var applied int
-	if err := tx.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id=146 ORDER BY id DESC LIMIT 1),0)`).Scan(&applied); err != nil {
+	if err := tx.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id=156 ORDER BY id DESC LIMIT 1),0)`).Scan(&applied); err != nil {
 		return err
 	}
 	if applied != 0 {
@@ -87,7 +87,7 @@ func prepareSessionSourceBranchMigration(db *sql.DB) error {
 			return err
 		}
 	}
-	if _, err := tx.Exec(`INSERT INTO goose_db_version(version_id,is_applied) VALUES(146,1)`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO goose_db_version(version_id,is_applied) VALUES(156,1)`); err != nil {
 		return err
 	}
 	return tx.Commit()

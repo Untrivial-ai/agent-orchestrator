@@ -100,7 +100,20 @@ func TestReviewCommandLaunchesReadOnlyOffBypass(t *testing.T) {
 	if !contains(agent.got.AllowedTools, "Read") || !contains(agent.got.AllowedTools, "Bash(ao review submit:*)") {
 		t.Fatalf("allowlist missing read-only review tools: %#v", agent.got.AllowedTools)
 	}
-	for _, denied := range []string{"Edit", "Write", "Bash(git push:*)", "Bash(git commit:*)"} {
+	// A blanket Bash(gh:*) rule would admit merges and arbitrary API
+	// mutations without a prompt; only the read subcommands are allowed and the
+	// review POST goes through the PermissionRequest hook (#4810).
+	for _, allowed := range []string{"Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr checks:*)"} {
+		if !contains(agent.got.AllowedTools, allowed) {
+			t.Fatalf("allowlist missing %q: %#v", allowed, agent.got.AllowedTools)
+		}
+	}
+	for _, tool := range agent.got.AllowedTools {
+		if tool == "Bash(gh:*)" || tool == "Bash(gh api:*)" {
+			t.Fatalf("allowlist grants blanket gh access: %#v", agent.got.AllowedTools)
+		}
+	}
+	for _, denied := range []string{"Edit", "Write", "Bash(git push:*)", "Bash(git commit:*)", "Bash(gh pr merge:*)"} {
 		if !contains(agent.got.DisallowedTools, denied) {
 			t.Fatalf("disallow list missing %q: %#v", denied, agent.got.DisallowedTools)
 		}
@@ -175,18 +188,24 @@ func TestAllowlistCoversPromptRequiredPipedCommands(t *testing.T) {
 		t.Fatalf("allowlist missing printf for piped review commands: %#v", agent.got.AllowedTools)
 	}
 
-	for _, cmd := range []string{
-		"printf '%s' '{ \"event\": \"COMMENT\", \"body\": \"x\" }' | gh api --method POST repos/o/r/pulls/1/reviews --input - --jq '.id'",
-		"printf '%s' '{ \"reviews\": [] }' | ao review submit --session sess-1 --reviews -",
-	} {
-		if !compoundCommandCovered(agent.got.AllowedTools, cmd) {
-			t.Fatalf("allowlist does not cover prompt-required command %q with tools %#v", cmd, agent.got.AllowedTools)
-		}
+	submit := "printf '%s' '{ \"reviews\": [] }' | ao review submit --session sess-1 --reviews -"
+	if !compoundCommandCovered(agent.got.AllowedTools, submit) {
+		t.Fatalf("allowlist does not cover prompt-required command %q with tools %#v", submit, agent.got.AllowedTools)
 	}
 
-	disallowed := "printf x | rm -rf /"
-	if compoundCommandCovered(agent.got.AllowedTools, disallowed) {
-		t.Fatalf("allowlist unexpectedly covers disallowed command %q with tools %#v", disallowed, agent.got.AllowedTools)
+	// The review POST is deliberately not allowlisted: `gh api` can mutate
+	// anything, so the exact POST shape is admitted only by the PermissionRequest
+	// hook (cli.reviewerPermissionDecision, #4810).
+	for _, cmd := range []string{
+		"printf '%s' '{ \"event\": \"COMMENT\", \"body\": \"x\" }' | gh api --method POST repos/o/r/pulls/1/reviews --input - --jq '.id'",
+		"gh api --method PUT repos/o/r/pulls/1/merge",
+		"gh api -XDELETE repos/o/r",
+		"gh pr review --approve 1",
+		"printf x | rm -rf /",
+	} {
+		if compoundCommandCovered(agent.got.AllowedTools, cmd) {
+			t.Fatalf("allowlist unexpectedly covers %q with tools %#v", cmd, agent.got.AllowedTools)
+		}
 	}
 }
 
@@ -238,7 +257,7 @@ func TestReviewRestoreCommandUsesNativeSessionIDAndReadOnlyPolicy(t *testing.T) 
 	if agent.gotRestore.Prompt != "read the new review task" || agent.gotRestore.SystemPromptFile != "/ao/prompts/reviewer/system.md" {
 		t.Fatalf("restore prompt configuration = %+v", agent.gotRestore)
 	}
-	if !contains(agent.gotRestore.AllowedTools, "Read") || !contains(agent.gotRestore.DisallowedTools, "Write") {
+	if !contains(agent.gotRestore.AllowedTools, "Read") || !contains(agent.gotRestore.DisallowedTools, "Write") || !contains(agent.gotRestore.DisallowedTools, "Bash(gh pr merge:*)") {
 		t.Fatalf("restore tool policy allowed=%#v disallowed=%#v", agent.gotRestore.AllowedTools, agent.gotRestore.DisallowedTools)
 	}
 }

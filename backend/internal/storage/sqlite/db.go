@@ -194,6 +194,101 @@ func OpenReadOnly(ctx context.Context, dataDir string) (*Store, error) {
 // touch goose.
 var gooseMu sync.Mutex
 
+// cachedMigrationVersion holds the one-time computed expected migration version.
+// The first call to expectedMigrationVersion populates it; subsequent calls
+// return the cached value without re-scanning embedded files or touching goose
+// globals.
+var cachedMigrationVersion struct {
+	sync.Once
+	version int64
+	err     error
+}
+
+// expectedMigrationVersion returns the highest version number among the
+// embedded migration files. This is the version a fully-migrated database must
+// have recorded as applied in goose_db_version.
+//
+// The result is computed once and cached for the lifetime of the process.
+func expectedMigrationVersion() (int64, error) {
+	cachedMigrationVersion.Do(func() {
+		cachedMigrationVersion.err = computeExpectedMigrationVersion()
+	})
+	return cachedMigrationVersion.version, cachedMigrationVersion.err
+}
+
+func computeExpectedMigrationVersion() error {
+	gooseMu.Lock()
+	defer gooseMu.Unlock()
+	goose.SetBaseFS(migrationsFS)
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("set goose dialect: %w", err)
+	}
+	migrations, err := goose.CollectMigrations("migrations", 0, goose.MaxVersion)
+	if err != nil {
+		return fmt.Errorf("collect migrations: %w", err)
+	}
+	if len(migrations) == 0 {
+		return fmt.Errorf("no embedded migrations found")
+	}
+	cachedMigrationVersion.version = migrations[len(migrations)-1].Version
+	return nil
+}
+
+// OpenPreMigrated opens an already-fully-migrated SQLite database under
+// dataDir, skipping all migration and repair logic. It is intended for test
+// helpers that clone a known-good template database and need to open the copy
+// without paying the ~55 ms migration overhead on every clone.
+//
+// It verifies that the database's goose_db_version records the expected
+// current migration version; if the database is stale or has never been
+// migrated, it returns an error so the caller can fall back to the production
+// Open path rather than silently using an incompatible schema.
+//
+// Migration tests and any code that needs the production startup path must
+// continue to call Open, not this function.
+func OpenPreMigrated(dataDir string) (*Store, error) {
+	want, err := expectedMigrationVersion()
+	if err != nil {
+		return nil, fmt.Errorf("determine expected migration version: %w", err)
+	}
+
+	dsn := databaseURI(dataDir) + pragmas
+
+	writeDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite writer: %w", err)
+	}
+	writeDB.SetMaxOpenConns(1)
+	writeDB.SetMaxIdleConns(1)
+
+	var got int64
+	if err := writeDB.QueryRow(
+		`SELECT COALESCE(MAX(version_id), 0) FROM goose_db_version WHERE is_applied = 1`,
+	).Scan(&got); err != nil {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("read applied migration version: %w", err)
+	}
+	if got != want {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf(
+			"database schema version mismatch: database has version %d but binary expects %d; "+
+				"the template is stale — rebuild it with a full sqlite.Open call",
+			got, want,
+		)
+	}
+
+	readDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		_ = writeDB.Close()
+		return nil, fmt.Errorf("open sqlite reader: %w", err)
+	}
+	readDB.SetMaxOpenConns(maxReaders)
+	readDB.SetMaxIdleConns(maxReaders)
+
+	return sqlitestore.NewStore(writeDB, readDB), nil
+}
+
 func migrate(db *sql.DB) error {
 	gooseMu.Lock()
 	defer gooseMu.Unlock()
@@ -1572,6 +1667,10 @@ BEGIN
 	// matches the migration: unknown historical certainty stays partial.
 	{version: 130, table: "pr", column: "review_partial",
 		addDDL: `ALTER TABLE pr ADD COLUMN review_partial BOOLEAN NOT NULL DEFAULT TRUE`},
+	// 0132_conversation_opencode_mode.sql. Generated conversation reads select
+	// this column, so repair field databases that recorded 0132 without adding it.
+	{version: 132, table: "conversations", column: "opencode_mode",
+		addDDL: `ALTER TABLE conversations ADD COLUMN opencode_mode TEXT NOT NULL DEFAULT ''`},
 }
 
 // reconcileSchema verifies that the columns in schemaRepairs physically exist
@@ -1636,6 +1735,11 @@ const (
 	sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'qm', 'fake'))`
 )
 
+const (
+	sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnreal   = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'fake'))`
+	sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnreal = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'qm', 'fake'))`
+)
+
 func reconcileHarnessConstraint(db *sql.DB) error {
 	var schema string
 	if err := db.QueryRow(
@@ -1647,7 +1751,8 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 	needsKimchi := !strings.Contains(schema, "'kimchi'")
 	needsPrimeAgent := !strings.Contains(schema, "'prime-agent'")
 	needsOMP := !strings.Contains(schema, "'omp'")
-	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP {
+	needsUnreal := !strings.Contains(schema, "'unreal-agent'")
+	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP && !needsUnreal {
 		return nil
 	}
 	if _, err := db.Exec(`PRAGMA writable_schema = ON`); err != nil {
@@ -1688,6 +1793,12 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 			replacement{sessionsHarnessCheckWithMuseQMKimchiPrimeAgent, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP},
 		)
 	}
+	if needsUnreal {
+		repairs = append(repairs,
+			replacement{sessionsHarnessCheckWithMuseKimchiPrimeAgentOMP, sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnreal},
+			replacement{sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnreal},
+		)
+	}
 	for _, r := range repairs {
 		if _, err := db.Exec(
 			`UPDATE sqlite_master
@@ -1718,6 +1829,9 @@ WHERE type = 'table' AND name = 'sessions'`,
 	}
 	if !strings.Contains(schema, "'omp'") {
 		return fmt.Errorf("schema repair: sessions harness constraint is missing OMP and did not match known pre-OMP schema")
+	}
+	if !strings.Contains(schema, "'unreal-agent'") {
+		return fmt.Errorf("schema repair: sessions harness constraint is missing Unreal Agent and did not match known pre-Unreal-Agent schema")
 	}
 	return nil
 }

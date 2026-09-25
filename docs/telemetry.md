@@ -25,6 +25,10 @@ AO sends structured events in a few broad categories:
   user's own GitHub username, so this particular value is not anonymous. We use
   it to understand which organizations and developers get the most value from
   AO, so we can prioritize improvements and reach out for feedback
+- The GitHub username of the account signed in to AO's GitHub integration, sent
+  on session-start events so we can see which developers are most active and reach
+  out for feedback. It is part of product telemetry with no separate control. See
+  "Sharing your GitHub handle" below for exactly what is sent and when
 - Reliability data, such as an error type and context, a crash message and
   stack trace after path redaction, an HTTP status, or an agent waiting for
   input
@@ -34,11 +38,19 @@ AO sends structured events in a few broad categories:
   identifiers when an event needs them
 - Coarse mobile-app usage, such as pairing, reconnecting, completing onboarding,
   opening a notification, or using a core action
+- Coarse geographic location (country, and where available region and city),
+  derived by PostHog from the connection's IP address at the time each event is
+  received. AO does not resolve or send precise coordinates, and does not store
+  your IP address itself. This is on for all installs and is used only in
+  aggregate, to understand which areas AO is used in. It is not tied to your
+  GitHub handle and there is no separate opt-out for it; turning telemetry off
+  (see below) stops it along with everything else
 
 AO uses [PostHog](https://posthog.com/privacy) to process remote product
 telemetry. PostHog receives standard connection and device metadata, including
-the connection's IP address, device type, and operating system, and may use it
-to derive approximate geographic information.
+the connection's IP address, device type, and operating system, and AO leaves
+PostHog's IP-based location derivation enabled so this coarse geography is
+available for aggregate analysis.
 
 The installation identifier lets PostHog group activity from one AO
 installation over time. Hashed project and session identifiers can likewise
@@ -54,11 +66,13 @@ Product telemetry is designed not to include:
 - Shell command arguments, command history, or environment variables
 - Repository names, project names, branch names, or plain-text file paths
 - API keys, access tokens, passwords, or other credentials
-- Names, email addresses, or account identities
+- Names or email addresses
 
-The GitHub owner segment described under "What AO sends" is the one
-GitHub-derived value AO does send. It is limited to the owning
-organization or account and never includes the repository, path, or URL.
+The two exceptions are the GitHub owner segment and your authenticated GitHub
+username. Both are described under "What AO sends". The owner segment is limited
+to the owning organization or account and never includes the repository, path, or
+URL. Aside from these, product telemetry is designed not to carry account
+identities.
 
 The optional website waitlist is separate from product telemetry. If you submit
 an email address, company role, and social profile there, they are used to manage
@@ -77,8 +91,13 @@ that waitlist as described in the [privacy policy](https://orchestrator.inc/priv
   properties; unexpected fields are discarded.
 - Event rates are limited to reduce repeated background activity and error
   loops.
-- Person profiles and session recording are disabled in the desktop and mobile
-  apps. AO does not automatically record screens, clicks, or touches.
+- Session recording is disabled in the desktop and mobile apps. AO does not
+  automatically record screens, clicks, or touches.
+- Person profiles are off for every event except the session-start event that
+  carries your GitHub handle. That one event sets a person property so activity
+  can be grouped by GitHub username, and clears build details (version,
+  platform, surface, build mode) that older AO versions stored on the profile;
+  every other event stays anonymous.
 
 Separately from remote telemetry, the daemon can keep a local copy of
 operational events in AO's SQLite database. While local telemetry is active, AO
@@ -150,6 +169,21 @@ this agent-switch Sentry sender in production. Windows fails closed: event
 consent is treated as disabled and an enable acknowledgement is rejected until
 a tested native write-through replacement satisfies the policy-file durability
 contract.
+
+## Sharing your GitHub handle
+
+AO resolves the GitHub account signed in to its GitHub integration and includes
+that username on session-start events. It is sent both as the event property
+`github_actor` and as a PostHog person property on AO's shared installation
+person, which lets us group product activity by GitHub username and reach out to
+active users for feedback.
+
+AO only sends the handle when the signed-in account is a personal (human)
+account; it never sends an organization or a bot token, and if no GitHub token is
+available it sends nothing. The handle is part of product telemetry and has no
+separate switch: turning telemetry off (see below) stops it, because the
+session-start event that carries it is then never sent. Anything already stored
+in PostHog from earlier events is not deleted retroactively.
 
 ## Turn desktop and daemon telemetry off
 

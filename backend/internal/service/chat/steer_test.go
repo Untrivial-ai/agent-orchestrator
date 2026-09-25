@@ -286,6 +286,92 @@ func TestSteerReachesTheRunningTurnAndLandsOnTheTimeline(t *testing.T) {
 	}
 }
 
+func TestSteerOrSendSteersAndRecoversOneAtomicOutcome(t *testing.T) {
+	h, provider := steerHarness(t)
+	msg := ports.ChatUserMessage{
+		Text: "correct the active work", ClientMessageID: "atomic-steer-1",
+		Origin: domain.MessageOriginHuman,
+	}
+
+	first, err := h.svc.SteerOrSend(context.Background(), testSession, msg, false)
+	if err != nil {
+		t.Fatalf("SteerOrSend: %v", err)
+	}
+	if !first.Steered || first.Steer.ProviderTurnID != "provider-turn-1" {
+		t.Fatalf("result = %+v, want steered active turn", first)
+	}
+	recovered, err := h.svc.SteerOrSend(context.Background(), testSession,
+		ports.ChatUserMessage{ClientMessageID: msg.ClientMessageID}, true)
+	if err != nil {
+		t.Fatalf("recover SteerOrSend: %v", err)
+	}
+	if !recovered.Steered || !recovered.Duplicate || recovered.Steer != first.Steer {
+		t.Fatalf("recovered = %+v, want %+v", recovered, first)
+	}
+	if calls := provider.steers(); len(calls) != 1 {
+		t.Fatalf("provider received %d steers, want one", len(calls))
+	}
+}
+
+func TestSteerOrSendSendsWhenIdleAndRecoversWithoutRedispatch(t *testing.T) {
+	provider := newSteerRecorder()
+	h := newHarnessWithConversation(t, provider)
+	msg := ports.ChatUserMessage{
+		Text: "start the next work", ClientMessageID: "atomic-send-1",
+		Origin: domain.MessageOriginHuman,
+	}
+
+	first, err := h.svc.SteerOrSend(context.Background(), testSession, msg, false)
+	if err != nil {
+		t.Fatalf("SteerOrSend: %v", err)
+	}
+	if first.Steered || first.Turn.ID == "" || first.Turn.State != domain.TurnStateRunning {
+		t.Fatalf("result = %+v, want running normal turn", first)
+	}
+	recovered, err := h.svc.SteerOrSend(context.Background(), testSession,
+		ports.ChatUserMessage{ClientMessageID: msg.ClientMessageID}, true)
+	if err != nil {
+		t.Fatalf("recover SteerOrSend: %v", err)
+	}
+	if recovered.Steered || !recovered.Duplicate || recovered.Turn.ID != first.Turn.ID {
+		t.Fatalf("recovered = %+v, want sent turn %s", recovered, first.Turn.ID)
+	}
+	if calls := provider.sendCallCount(); calls != 1 {
+		t.Fatalf("provider received %d sends, want one", calls)
+	}
+	if calls := provider.steers(); len(calls) != 0 {
+		t.Fatalf("provider received %d steers, want none", len(calls))
+	}
+}
+
+func TestSteerOrSendFallsBackWithoutLeavingAQueuedTurn(t *testing.T) {
+	h, provider := steerHarness(t)
+	provider.failWith(ports.ErrChatNoSteerableTurn)
+	msg := ports.ChatUserMessage{
+		Text: "continue as the next turn", ClientMessageID: "atomic-race-1",
+		Origin: domain.MessageOriginHuman,
+	}
+
+	result, err := h.svc.SteerOrSend(context.Background(), testSession, msg, false)
+	if err != nil {
+		t.Fatalf("SteerOrSend: %v", err)
+	}
+	if result.Steered || result.Turn.ID == "" || result.Turn.State != domain.TurnStateRunning {
+		t.Fatalf("result = %+v, want definitive running fallback", result)
+	}
+	recovered, err := h.svc.SteerOrSend(context.Background(), testSession,
+		ports.ChatUserMessage{ClientMessageID: msg.ClientMessageID}, true)
+	if err != nil {
+		t.Fatalf("recover SteerOrSend: %v", err)
+	}
+	if recovered.Steered || recovered.Turn.ID != result.Turn.ID || !recovered.Duplicate {
+		t.Fatalf("recovered = %+v, want sent turn %s", recovered, result.Turn.ID)
+	}
+	if calls := provider.sendCallCount(); calls != 2 {
+		t.Fatalf("provider send calls = %d, want initial turn plus one fallback", calls)
+	}
+}
+
 // A retry with the same handle is the same guidance, not a second piece of it.
 func TestSteerIsIdempotentOnTheClientHandle(t *testing.T) {
 	h, provider := steerHarness(t)
@@ -786,6 +872,7 @@ func TestPromoteQueuedTurnAmbiguousProviderFailureSettlesUncertainWithoutRedeliv
 	}
 	if source == nil {
 		t.Fatalf("uncertain source turn %s is not visible", queued.ID)
+		return
 	}
 	if source.State != domain.TurnStateFailed || source.ErrorMessage != chatsvc.ErrPromotionUncertain.Error() {
 		t.Fatalf("uncertain source = %+v, want failed with promotion-uncertain error", *source)
