@@ -7,6 +7,7 @@ state, terminal streaming, and CDC/event infrastructure.
 
 Start with [architecture.md](architecture.md) for the current backend model and
 [cli/README.md](cli/README.md) for the CLI surface.
+For local setup and testing, see [development.md](development.md).
 
 ## Reference docs
 
