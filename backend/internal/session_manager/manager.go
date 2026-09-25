@@ -1683,16 +1683,21 @@ func spawnGitSingleLine(ctx context.Context, root string, args ...string) (strin
 }
 
 func (m *Manager) destroySpawnWorkspace(ctx context.Context, ws ports.WorkspaceInfo, workspaceProject *ports.WorkspaceProjectInfo) bool {
+	var err error
 	if workspaceProject != nil {
 		if adapter, ok := m.workspace.(ports.WorkspaceProject); ok {
-			err := adapter.DestroyWorkspaceProject(ctx, *workspaceProject)
-			_ = m.store.DeleteSessionWorktrees(ctx, ws.SessionID)
-			return err == nil
+			err = adapter.DestroyWorkspaceProject(ctx, *workspaceProject)
+		} else {
+			err = m.workspace.Destroy(ctx, ws)
 		}
+	} else {
+		err = m.workspace.Destroy(ctx, ws)
 	}
-	err := m.workspace.Destroy(ctx, ws)
+	if err != nil {
+		return false
+	}
 	_ = m.store.DeleteSessionWorktrees(ctx, ws.SessionID)
-	return err == nil
+	return true
 }
 
 var spawnRollbackBudget = 30 * time.Second

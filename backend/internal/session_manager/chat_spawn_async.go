@@ -149,6 +149,7 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 	}
 	if err := ctx.Err(); err != nil {
 		m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+		m.failAsyncChatSpawn(ctx, id, err)
 		return
 	}
 	m.logAsyncChatSpawnStage(id, "workspace_create", stageStarted)
@@ -162,6 +163,7 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 	}
 	if err := ctx.Err(); err != nil {
 		m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+		m.failAsyncChatSpawn(ctx, id, err)
 		return
 	}
 	m.logAsyncChatSpawnStage(id, "workspace_provision", stageStarted)
@@ -181,6 +183,9 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 	}
 	if !updated || ctx.Err() != nil {
 		m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+		if err := ctx.Err(); err != nil {
+			m.failAsyncChatSpawn(ctx, id, err)
+		}
 		return
 	}
 	m.logAsyncChatSpawnStage(id, "workspace_publish", stageStarted)
@@ -202,6 +207,7 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 	}
 	if err := ctx.Err(); err != nil {
 		m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+		m.failAsyncChatSpawn(ctx, id, err)
 		return
 	}
 	stageStarted = time.Now()
@@ -230,7 +236,8 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 	m.logAsyncChatSpawnStage(id, "queue_drain", stageStarted)
 	stageStarted = time.Now()
 	if _, err := m.setProvisionState(ctx, id, domain.SessionProvisionReady, ""); err != nil {
-		m.logger.Error("spawn: publish provisioned session", "sessionID", id, "error", err)
+		m.failAsyncChatSpawn(ctx, id, err)
+		return
 	}
 	m.logAsyncChatSpawnStage(id, "mark_ready", stageStarted)
 	m.logAsyncChatSpawnStage(id, "total", totalStarted)
@@ -335,6 +342,8 @@ func (m *Manager) cleanupAsyncChatWorkspace(ctx context.Context, id domain.Sessi
 	defer cancel()
 	if m.destroySpawnWorkspace(cleanupCtx, ws, workspaceProject) {
 		m.clearProvisionedWorkspace(cleanupCtx, id, ws.Path)
+	} else {
+		m.preserveFailedSpawnWorkspace(cleanupCtx, id, ws, true)
 	}
 }
 

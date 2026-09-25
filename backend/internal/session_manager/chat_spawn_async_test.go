@@ -39,6 +39,19 @@ type blockingWorkspacePublishStore struct {
 	release chan struct{}
 }
 
+type failReadyProvisionStore struct {
+	*fakeStore
+	failed bool
+}
+
+func (s *failReadyProvisionStore) SetSessionProvisionState(ctx context.Context, id domain.SessionID, state domain.SessionProvisionState, message string, now time.Time) (bool, error) {
+	if state == domain.SessionProvisionReady && !s.failed {
+		s.failed = true
+		return false, errors.New("ready write failed")
+	}
+	return s.fakeStore.SetSessionProvisionState(ctx, id, state, message, now)
+}
+
 type countingHarnessUseGate struct{ active int }
 
 func (g *countingHarnessUseGate) TryBeginHarnessUse(domain.AgentHarness) (func(), bool) {
@@ -500,14 +513,15 @@ func TestSpawnAsyncChat_PublishesTheWorktreeBeforeTheController(t *testing.T) {
 
 func TestSpawnAsyncChat_DaemonShutdownCancelsAndWaitsForWorker(t *testing.T) {
 	launcher := &recordingLauncher{}
-	m, _, _ := newChatManager(launcher)
+	m, st, _ := newChatManager(launcher)
 	m.browserCapabilities = browsersvc.NewAuthority()
 	daemonCtx, cancelDaemon := context.WithCancel(context.Background())
 	m.backgroundContext = daemonCtx
 	deferred := deferredBackground(m)
 	ws := m.workspace.(*fakeWorkspace)
 
-	if _, _, _, err := m.Spawn(context.Background(), asyncChatSpawnConfig("do the thing")); err != nil {
+	rec, _, _, err := m.Spawn(context.Background(), asyncChatSpawnConfig("do the thing"))
+	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
 	cancelDaemon()
@@ -522,6 +536,67 @@ func TestSpawnAsyncChat_DaemonShutdownCancelsAndWaitsForWorker(t *testing.T) {
 	}
 	if ws.destroyed != 1 {
 		t.Fatalf("destroyed workspaces = %d, want 1", ws.destroyed)
+	}
+	if got := st.sessions[rec.ID].ProvisionState; got != domain.SessionProvisionFailed {
+		t.Fatalf("provision state = %q after cancellation, want failed", got)
+	}
+}
+
+func TestSpawnAsyncChat_ReadyWriteFailureMarksSessionFailed(t *testing.T) {
+	launcher := &recordingLauncher{}
+	m, st, _ := newChatManager(launcher)
+	m.store = &failReadyProvisionStore{fakeStore: st}
+	m.browserCapabilities = browsersvc.NewAuthority()
+	deferred := deferredBackground(m)
+	rec, _, _, err := m.Spawn(context.Background(), asyncChatSpawnConfig("do the thing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	(*deferred)[0]()
+	stored := st.sessions[rec.ID]
+	if stored.ProvisionState != domain.SessionProvisionFailed || !strings.Contains(stored.ProvisionError, "ready write failed") {
+		t.Fatalf("ready write failure left session %+v", stored)
+	}
+}
+
+func TestSpawnAsyncChat_FailedCleanupRetainsWorkspacePath(t *testing.T) {
+	m, st, _ := newChatManager(&recordingLauncher{})
+	m.browserCapabilities = browsersvc.NewAuthority()
+	deferred := deferredBackground(m)
+	ws := m.workspace.(*fakeWorkspace)
+	ws.path = t.TempDir()
+	ws.destroyErr = errors.New("dirty worktree")
+	project := st.projects[string(chatTestProject)]
+	project.Config.PostCreate = []string{"exit 3"}
+	st.projects[string(chatTestProject)] = project
+	rec, _, _, err := m.Spawn(context.Background(), asyncChatSpawnConfig("do the thing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	(*deferred)[0]()
+	stored := st.sessions[rec.ID]
+	if stored.ProvisionState != domain.SessionProvisionFailed || stored.Metadata.WorkspacePath != ws.path {
+		t.Fatalf("failed cleanup lost workspace: %+v", stored)
+	}
+}
+
+func TestDestroySpawnWorkspace_FailedProjectCleanupRetainsWorktreeRows(t *testing.T) {
+	m, st, _ := newChatManager(&recordingLauncher{})
+	ws := m.workspace.(*fakeWorkspace)
+	ws.destroyErr = errors.New("dirty worktree")
+	info := ports.WorkspaceInfo{SessionID: "mer-1", Path: t.TempDir()}
+	if err := st.UpsertSessionWorktree(context.Background(), domain.SessionWorktreeRecord{
+		SessionID: info.SessionID, RepoName: "root", WorktreePath: info.Path,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	project := &ports.WorkspaceProjectInfo{Root: info}
+	if m.destroySpawnWorkspace(context.Background(), info, project) {
+		t.Fatal("failed workspace cleanup reported success")
+	}
+	rows, err := st.ListSessionWorktrees(context.Background(), info.SessionID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("preserved workspace rows = %v, %v; want one", rows, err)
 	}
 }
 
