@@ -25,17 +25,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/pricing"
 )
 
-// sessionIDPattern bounds the AO_SESSION_ID we will place in a request path to
-// the id alphabet the daemon issues. Validating the externally-set env value
-// before it reaches the loopback URL keeps it from steering the request.
-//
-// Kept in sync with projectIDPattern (service/project/service.go), since AO
-// session ids are derived as "{ProjectID}-{num}": a project id may contain
-// dots, so this pattern must accept them too, or every session for such a
-// project fails validation here regardless of num. A leading dot is still
-// rejected, so ".." / "../" segments remain impossible and the id stays safe
-// to embed in both a URL path segment and a filename.
-var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+var launchIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 const (
 	// hooksLogName is the file under AO_DATA_DIR where hook delivery failures
@@ -420,7 +410,7 @@ const reviewerSubmitJSONLiteral = `'[^']*(?:'\\''[^']*)*'`
 
 var reviewerSubmitCommandPattern = regexp.MustCompile(`^printf '%s' ` + reviewerSubmitJSONLiteral + ` \| (?:` +
 	`gh api --method POST repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pulls/[0-9]+/reviews --input - --jq '\.id'` +
-	`|ao review submit --session (?P<session>[A-Za-z0-9_-]+) --reviews -)$`)
+	`|ao review submit --session (?P<session>` + domain.SessionIDPatternSource + `) --reviews -)$`)
 
 const reviewerPermissionDenyMessage = "AO headless reviewer: no human can answer permission prompts. " +
 	"Use only the allowlisted read commands (git diff/log/show/status, gh pr view/diff/checks, Read, Grep, Glob) " +
@@ -487,13 +477,13 @@ func (c *commandContext) runHook(ctx context.Context, agent, event string) error
 	}
 	reviewSessionID := strings.TrimSpace(os.Getenv("AO_REVIEW_SESSION_ID"))
 	if reviewSessionID != "" {
-		if !sessionIDPattern.MatchString(reviewSessionID) {
+		if !domain.ValidSessionID(reviewSessionID) {
 			return nil
 		}
 		return c.runReviewHook(ctx, agent, event, reviewSessionID)
 	}
 	sessionID := strings.TrimSpace(os.Getenv("AO_SESSION_ID"))
-	if !sessionIDPattern.MatchString(sessionID) {
+	if !domain.ValidSessionID(sessionID) {
 		// Not an AO-managed session (unset/empty), or an id we won't put in a
 		// request path. Return before reading stdin so a manual invocation
 		// without a piped payload can't block on EOF.
@@ -738,7 +728,7 @@ func hookReadsStdin(agent, event string) bool {
 
 func validLaunchID(value string) string {
 	value = strings.TrimSpace(value)
-	if !sessionIDPattern.MatchString(value) {
+	if !launchIDPattern.MatchString(value) {
 		return ""
 	}
 	return value

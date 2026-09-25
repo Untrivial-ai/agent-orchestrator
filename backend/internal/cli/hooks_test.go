@@ -21,17 +21,17 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/runfile"
 )
 
-func TestSessionIDPattern(t *testing.T) {
+func TestValidSessionID(t *testing.T) {
 	accept := []string{"ao-7", "my-project-16", "my.project-16", "a.b.c-1"}
 	for _, id := range accept {
-		if !sessionIDPattern.MatchString(id) {
-			t.Errorf("sessionIDPattern should accept project-derived id %q (dotted project ids must stay usable)", id)
+		if !domain.ValidSessionID(id) {
+			t.Errorf("ValidSessionID should accept project-derived id %q (dotted project ids must stay usable)", id)
 		}
 	}
 	reject := []string{"", ".hidden", "../evil", "a/b", "..%2f"}
 	for _, id := range reject {
-		if sessionIDPattern.MatchString(id) {
-			t.Errorf("sessionIDPattern should reject %q", id)
+		if domain.ValidSessionID(id) {
+			t.Errorf("ValidSessionID should reject %q", id)
 		}
 	}
 }
@@ -1948,5 +1948,33 @@ func TestHooks_ReviewerPermissionRequestAnswersInsteadOfBlocking(t *testing.T) {
 				t.Fatalf("deny carried no message: %s", out)
 			}
 		})
+	}
+}
+
+func TestHooks_ReviewerPermissionRequestAllowsDottedWorkerSessionID(t *testing.T) {
+	t.Setenv("AO_REVIEW_SESSION_ID", "review-7")
+	t.Setenv("AO_REVIEW_WORKER_SESSION_ID", "my.project-16")
+	t.Setenv("AO_REVIEW_HARNESS", "claude-code")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	payload := `{"tool_name":"Bash","tool_input":{"command":"printf '%s' '{}' | ao review submit --session my.project-16 --reviews -"}}`
+	out, errOut, err := executeCLI(t, Deps{
+		In:           strings.NewReader(payload),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "claude-code", "permission-request")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.hits != 0 {
+		t.Fatalf("reviewer permission-request reported activity; body=%s", capture.body)
+	}
+	var res claudePermissionHookOutput
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("decode hook output: %v\nout=%s", err, out)
+	}
+	if got := res.HookSpecificOutput.Decision.Behavior; got != "allow" {
+		t.Fatalf("behavior = %q, want %q\nout=%s", got, "allow", out)
 	}
 }

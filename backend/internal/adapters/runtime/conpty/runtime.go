@@ -7,11 +7,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"sync"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/runtime/conpty/ptyregistry"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -45,14 +45,6 @@ func conptyCreateFailure(err error) error {
 func conptyPartialCreateFailure(err error, handle ports.RuntimeHandle, cleanup ports.RuntimeCleanupOutcome) error {
 	return runtimeEffectFailure{err: err, handle: handle, effect: ports.RuntimeEffectPossible, cleanup: cleanup}
 }
-
-// validSessionID matches the CLI's sessionIDPattern (internal/cli/hooks.go):
-// the daemon issues session ids derived from project names, so dots are legal
-// and must not be rejected here. The leading [a-zA-Z0-9] anchor keeps a bare
-// "." / ".." impossible. The id is used only as a map key, the host process's
-// argv[0], and the registry identity — never as a path or pipe component — so
-// the widened alphabet is safe.
-var validSessionID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 // hostSession is the in-memory state for a live pty-host connection.
 type hostSession struct {
@@ -127,7 +119,7 @@ func New(opts Options) *Runtime {
 // Returns an error if sessionID is invalid, already exists, or spawn fails.
 func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
 	id := string(cfg.SessionID)
-	if !validSessionID.MatchString(id) {
+	if !domain.ValidSessionID(id) {
 		return ports.RuntimeHandle{}, conptyCreateFailure(fmt.Errorf("conpty: invalid session id %q: must match ^[a-zA-Z0-9][a-zA-Z0-9._-]*$", id))
 	}
 	if cfg.WorkspacePath == "" {
