@@ -2588,10 +2588,19 @@ function Timeline({
 	const [newHumanMessageIds, setNewHumanMessageIds] = useState<ReadonlySet<string>>(new Set());
 	const previousLocalEchoCount = useRef(localEchos.length);
 	const smoothScrollRequested = useRef(false);
+	const smoothScrollActive = useRef(false);
+	const smoothScrollTimer = useRef<number | null>(null);
+	const optimisticMessageKeys = useRef(new Set<string>());
 	useEffect(() => {
 		if (localEchos.length > previousLocalEchoCount.current) smoothScrollRequested.current = true;
 		previousLocalEchoCount.current = localEchos.length;
 	}, [localEchos.length]);
+	useEffect(() => {
+		for (const echo of localEchos) {
+			optimisticMessageKeys.current.add(`text:${echo.text}`);
+			if (echo.turnId) optimisticMessageKeys.current.add(`turn:${echo.turnId}`);
+		}
+	}, [localEchos]);
 	const editedMessageVisible = Boolean(
 		messageEdit &&
 		items.some(
@@ -2618,11 +2627,8 @@ function Timeline({
 							item.sequence > (lastSeenLatestSequence.current ?? -Infinity) &&
 							// The durable row replaces an optimistic local echo. It already
 							// animated on send, so do not animate reconciliation a second time.
-							!localEchos.some(
-								(echo) =>
-									(echo.turnId && echo.turnId === item.turnId) ||
-									(echo.text === item.text && echo.createdAt <= item.createdAt),
-							),
+							!optimisticMessageKeys.current.has(`text:${item.text}`) &&
+							!optimisticMessageKeys.current.has(`turn:${item.turnId}`),
 					)
 				.map((item) => item.id),
 		);
@@ -2773,8 +2779,16 @@ function Timeline({
 		syncPromptSpacer();
 		const node = scroller.current;
 		if (node && pinnedRef.current) {
-			const behavior = smoothScrollRequested.current ? "smooth" : "auto";
+			const behavior = smoothScrollRequested.current || smoothScrollActive.current ? "smooth" : "auto";
 			smoothScrollRequested.current = false;
+			if (behavior === "smooth") {
+				smoothScrollActive.current = true;
+				if (smoothScrollTimer.current != null) window.clearTimeout(smoothScrollTimer.current);
+				smoothScrollTimer.current = window.setTimeout(() => {
+					smoothScrollActive.current = false;
+					smoothScrollTimer.current = null;
+				}, 500);
+			}
 			node.scrollTo({ top: node.scrollHeight, behavior });
 		}
 		updateScrollbar();
@@ -2823,7 +2837,7 @@ function Timeline({
 		const node = scroller.current;
 		if (!node) return;
 		const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-		setPinned(distance < 64);
+		if (!smoothScrollActive.current) setPinned(distance < 64);
 		updateScrollbar();
 	}
 
