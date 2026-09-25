@@ -901,6 +901,22 @@ func bootstrapCommandForArchive(
 		"else\n" +
 		"  printf '%s\\n' " + shellQuote(strings.TrimSpace(bootstrap.DurableIdentity)) + " | sudo -n tee \"$identity_file\" >/dev/null\nfi\n" +
 		"sudo -n chown -R " + shellQuote(workerUser+":"+workerUser) + " " + shellQuote(layout.Repository) + " " + shellQuote(path.Dir(layout.WorkerData)) + "\n" +
+		// The dev-kit clones each extra repository as a sibling of the primary
+		// checkout (…/repository -> …/<name>), so the worker user must be able to
+		// create new entries directly in the durable root. Coder owns the root as
+		// the coder user and leaves it group-unwritable, which is why extra-repo
+		// clones failed with "could not create work tree dir: Permission denied".
+		// Grant the worker's group only write+traverse (g+wx, deliberately not
+		// read): a clone must create and enter <root>/<name>, never list the root.
+		// Applied to the root entry itself, non-recursively so Coder's own home
+		// entries keep their existing modes, and without transferring ownership so
+		// Coder (the owner) keeps full access. This widens the root from
+		// traversal-only to group-writable for the worker; see
+		// cloud/docs/coder-sandbox-provider.md. Note directory write inherently
+		// permits unlink/rename of the root's top-level entries (no sticky bit);
+		// isolating the worker to a dedicated sub-root would need a larger change.
+		"sudo -n chgrp " + shellQuote(workerUser) + " \"$durable_root\"\n" +
+		"sudo -n chmod g+wx \"$durable_root\"\n" +
 		binaryPreparation +
 		"sudo -n install -o " + shellQuote(workerUser) + " -g " + shellQuote(workerUser) + " -m 0600 \"$stage/worker.env\" " + shellQuote(workerEnvironment) + "\n" +
 		"sudo -n install -o " + shellQuote(workerUser) + " -g " + shellQuote(workerUser) + " -m 0700 \"$stage/launch.sh\" " + shellQuote(workerLauncher) + "\n" +

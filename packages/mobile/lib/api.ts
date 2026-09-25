@@ -296,6 +296,8 @@ function mapOrchestrator(s: WireSession, projectName: string): OrchestratorLink 
 // ---- Low-level fetch with friendly errors ----------------------------------
 
 const REQUEST_TIMEOUT_MS = 12000;
+// The daemon gives attachment uploads 10 minutes; allow time for its response.
+export const ATTACHMENT_REQUEST_TIMEOUT_MS = 11 * 60_000;
 
 // The server answered, but with an error status. Distinct from the errors fetch
 // itself throws (DNS/refused/timeout), which mean the server was never reached —
@@ -342,7 +344,7 @@ async function req(cfg: ServerConfig, path: string, init?: RequestInit, timeoutM
 		if ((e as { name?: string })?.name === "AbortError") {
 			// Timed out reaching the host (commonly a sleeping Tailscale peer).
 			captureMobileApiError(path, "timeout");
-			throw new Error("Request timed out - is the server reachable?", { cause: e });
+			throw new Error("Request timed out. Is the desktop reachable?", { cause: e });
 		}
 		// fetch threw without reaching the server: DNS/refused/offline.
 		captureMobileApiError(path, "offline");
@@ -503,7 +505,7 @@ export function mobileReachablePreviewURL(raw: string | undefined, aoHost: strin
 export type AgentInfo = {
 	id: string;
 	label: string;
-	authStatus?: "authorized" | "unauthorized" | "unknown";
+	authStatus?: "authorized" | "unauthorized" | "unknown" | "configured";
 };
 
 export type AgentCatalog = {
@@ -769,6 +771,7 @@ export async function spawnSession(
 ): Promise<DashboardSession> {
 	const res = await req(cfg, `${API}/sessions`, {
 		method: "POST",
+		headers: opts.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 		body: JSON.stringify({
 			projectId: opts.projectId,
 			prompt: opts.prompt,
@@ -783,7 +786,7 @@ export async function spawnSession(
 			kind: "worker",
 			attachments: opts.attachments?.length ? opts.attachments : undefined,
 		}),
-	});
+	}, opts.attachments?.length ? ATTACHMENT_REQUEST_TIMEOUT_MS : undefined);
 	const data = await res.json();
 	return mapSession(data?.session ?? data);
 }
@@ -805,6 +808,7 @@ export async function delegateTask(
 ): Promise<DashboardSession> {
 	const res = await req(cfg, `${API}/orchestrators/delegate`, {
 		method: "POST",
+		headers: opts.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 		body: JSON.stringify({
 			projectId: opts.projectId,
 			brief: opts.brief,
@@ -813,7 +817,7 @@ export async function delegateTask(
 			mode: opts.mode,
 			attachments: opts.attachments?.length ? opts.attachments : undefined,
 		}),
-	});
+	}, opts.attachments?.length ? ATTACHMENT_REQUEST_TIMEOUT_MS : undefined);
 	const data = await res.json();
 	if (!data?.workerId) throw new Error("The daemon did not return the new worker session");
 	return getSession(cfg, data.workerId);

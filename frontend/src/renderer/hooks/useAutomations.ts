@@ -9,13 +9,24 @@ export type UpdateAutomationInput = components["schemas"]["UpdateAutomationReque
 
 export const automationsQueryKey = ["automations"] as const;
 
+async function fetchAutomationPage(cursor?: string) {
+	const { data, error } = await apiClient.GET("/api/v1/automations", { params: { query: { limit: 100, cursor } } });
+	if (error) throw new Error(apiErrorMessage(error));
+	return data;
+}
+
 export function useAutomations() {
 	return useQuery({
 		queryKey: automationsQueryKey,
 		queryFn: async () => {
-			const { data, error } = await apiClient.GET("/api/v1/automations", { params: { query: { limit: 100 } } });
-			if (error) throw new Error(apiErrorMessage(error));
-			return data?.automations ?? [];
+			const automations: Automation[] = [];
+			let cursor: string | undefined;
+			do {
+				const page = await fetchAutomationPage(cursor);
+				automations.push(...(page?.automations ?? []));
+				cursor = page?.nextCursor;
+			} while (cursor);
+			return automations;
 		},
 		refetchInterval: 15_000,
 	});

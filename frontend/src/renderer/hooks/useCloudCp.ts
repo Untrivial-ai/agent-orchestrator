@@ -14,8 +14,13 @@
 import { useMemo } from "react";
 import { createCloudCpClient, type CloudCpClient } from "../lib/cloud-cp";
 import { useCloudSession } from "../lib/cloud-session";
+import { queryClient } from "../lib/query-client";
 import { useCloudGate } from "./useCloudGate";
 import { useSettings } from "./useSettings";
+
+// The cloud "current org" query key prefix (see hooks/useCloudOrg). Kept as a
+// literal to avoid a hook import cycle (useCloudOrg imports useCloudCp).
+const CLOUD_ORG_QUERY_KEY = "cloud-org";
 
 type CloudCpBridgeRequest = (init: {
 	baseUrl: string;
@@ -84,6 +89,12 @@ export function createRendererCloudCpClient(baseUrl: string): CloudCpClient {
 		baseUrl,
 		getToken: async () => MAIN_PROCESS_TOKEN,
 		fetchImpl: cloudCpFetch,
+		// A 403 means the selected org is stale (membership changed). Re-resolve
+		// the current org so the app stops stranding org-scoped calls on a dead
+		// org and self-heals without a manual restart.
+		onForbidden: () => {
+			void queryClient.invalidateQueries({ queryKey: [CLOUD_ORG_QUERY_KEY] });
+		},
 	});
 }
 

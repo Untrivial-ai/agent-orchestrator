@@ -58,6 +58,23 @@ func TestAutomationDeleteRequiresMatchingConfirmation(t *testing.T) {
 	}
 }
 
+func TestAutomationDeleteSendsDeleteAfterMatchingConfirmation(t *testing.T) {
+	cfg := setConfigEnv(t)
+	server, capture := automationServer(t, http.StatusOK, `{}`)
+	writeRunFileFor(t, cfg, server)
+
+	out, stderr, err := executeCLI(t, Deps{In: strings.NewReader("automation-1\n"), ProcessAlive: func(int) bool { return true }}, "automation", "delete", "automation-1")
+	if err != nil {
+		t.Fatalf("delete: %v stderr=%s", err, stderr)
+	}
+	if capture.method != http.MethodDelete || capture.path != "/api/v1/automations/automation-1" {
+		t.Fatalf("request=%s %s", capture.method, capture.path)
+	}
+	if !strings.Contains(out, "deleted automation automation-1") {
+		t.Fatalf("out=%s", out)
+	}
+}
+
 func TestAutomationGetRequiresIDAsUsageError(t *testing.T) {
 	setConfigEnv(t)
 	_, _, err := executeCLI(t, Deps{}, "automation", "get")

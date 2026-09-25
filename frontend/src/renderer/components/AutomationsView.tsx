@@ -124,6 +124,7 @@ type AutomationFormSubmit = {
 	timezone?: string;
 	rrule: string;
 };
+type ScheduleFields = { preset: string; time: string; raw: string };
 type AutomationFormDialogProps = {
 	open: boolean;
 	automation?: Automation;
@@ -137,18 +138,24 @@ type AutomationFormDialogProps = {
 
 // Maps a persisted rule back onto the form presets; anything the presets
 // cannot reproduce stays on the custom RRULE field.
-function scheduleFieldsFromRRule(rruleText: string) {
-	const rruleLine = rruleText.split("\n").find((line) => line.startsWith("RRULE:"))?.slice("RRULE:".length) ?? rruleText;
-	const freq = rruleLine.match(/FREQ=([^;]+)/)?.[1];
-	const hour = rruleLine.match(/BYHOUR=(\d{1,2})/)?.[1];
-	const minute = rruleLine.match(/BYMINUTE=(\d{1,2})/)?.[1];
-	const byDay = rruleLine.match(/BYDAY=([^;]+)/)?.[1];
-	if (hour !== undefined && minute !== undefined) {
+function scheduleFieldsFromRRule(rruleText: string): ScheduleFields {
+	const trimmed = rruleText.trim();
+	const lines = trimmed.split("\n").map((line) => line.trim()).filter(Boolean);
+	const rawRule = lines.length === 1 && lines[0].startsWith("RRULE:") ? lines[0].slice("RRULE:".length) : trimmed;
+	if (lines.length > 1) return { preset: "raw", time: nowLocalHHMM(), raw: trimmed };
+	const parts = Object.fromEntries(rawRule.split(";").map((part) => {
+		const [key, ...value] = part.split("=");
+		return [key, value.join("=")];
+	}));
+	const keys = Object.keys(parts).sort().join(",");
+	const hour = parts.BYHOUR;
+	const minute = parts.BYMINUTE;
+	if (hour !== undefined && minute !== undefined && parts.BYSECOND === "0") {
 		const time = `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
-		if (freq === "DAILY" && !byDay) return { preset: "daily", time, raw: rruleLine };
-		if (freq === "WEEKLY" && byDay === "MO") return { preset: "weekly", time, raw: rruleLine };
+		if (parts.FREQ === "DAILY" && keys === "BYHOUR,BYMINUTE,BYSECOND,FREQ") return { preset: "daily", time, raw: rawRule };
+		if (parts.FREQ === "WEEKLY" && parts.BYDAY === "MO" && keys === "BYDAY,BYHOUR,BYMINUTE,BYSECOND,FREQ") return { preset: "weekly", time, raw: rawRule };
 	}
-	return { preset: "raw", time: nowLocalHHMM(), raw: rruleLine };
+	return { preset: "raw", time: nowLocalHHMM(), raw: trimmed || rawRule };
 }
 
 function nowLocalHHMM() {
@@ -234,6 +241,7 @@ function AutomationFormDialog({
 	const [preset, setPreset] = useState("daily");
 	const [time, setTime] = useState(nowLocalHHMM);
 	const [raw, setRaw] = useState("FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0");
+	const [initialSchedule, setInitialSchedule] = useState<ScheduleFields | null>(null);
 	const [validationErrors, setValidationErrors] = useState<AutomationValidationErrors>({});
 
 	useEffect(() => {
@@ -253,6 +261,7 @@ function AutomationFormDialog({
 					time: defaultTime,
 					raw: `FREQ=DAILY;BYHOUR=${Number(defaultHour)};BYMINUTE=${Number(defaultMinute)};BYSECOND=0`,
 				};
+		setInitialSchedule(schedule);
 		setPreset(schedule.preset);
 		setTime(schedule.time);
 		setRaw(schedule.raw);
@@ -314,12 +323,15 @@ function AutomationFormDialog({
 			document.getElementById(AUTOMATION_FIELD_IDS[firstInvalid])?.focus();
 			return;
 		}
-		const rrule =
+		let rrule =
 			preset === "daily"
 				? `FREQ=DAILY;BYHOUR=${parsedTime!.hour};BYMINUTE=${parsedTime!.minute};BYSECOND=0`
 				: preset === "weekly"
 					? `FREQ=WEEKLY;BYDAY=MO;BYHOUR=${parsedTime!.hour};BYMINUTE=${parsedTime!.minute};BYSECOND=0`
 					: raw;
+		if (editing && automation && initialSchedule && preset === initialSchedule.preset && time === initialSchedule.time && raw === initialSchedule.raw) {
+			rrule = automation.rrule;
+		}
 		await onSubmit({
 			// Kind is not a form choice: automations are workers, and editing
 			// leaves the stored kind untouched.

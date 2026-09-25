@@ -58,7 +58,7 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	log = loggerOrDefault(log)
 	deps = normalizeAPIDeps(deps, log)
 	r := chi.NewRouter()
-	api := NewAPI(cfg, deps)
+	api := newAPIWithLogger(cfg, deps, log)
 
 	r.Use(middleware.RequestID)
 	r.Use(requestLogger(log, deps.Telemetry))
@@ -189,7 +189,10 @@ func mountControl(r chi.Router, deps ControlDeps) {
 			"service": daemonmeta.ServiceName,
 			"pid":     os.Getpid(),
 		})
-		deps.RequestShutdown()
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		go deps.RequestShutdown()
 	})
 }
 

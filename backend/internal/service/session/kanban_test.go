@@ -58,6 +58,17 @@ func TestSessionListDerivesKanbanColumn(t *testing.T) {
 			want: domain.KanbanValidating,
 		},
 		{
+			name:   "a failed auto review keeps a mergeable pr validating",
+			record: domain.SessionRecord{ID: "mer-1", ProjectID: "mer", AutoReviewEnabled: true},
+			pr: &domain.PRFacts{
+				URL: "pr1", HeadSHA: "head1", Mergeability: domain.MergeMergeable,
+			},
+			runs: []domain.CurrentHeadReviewRun{
+				{PRURL: "pr1", Status: domain.ReviewRunFailed},
+			},
+			want: domain.KanbanValidating,
+		},
+		{
 			name:   "a human approval on a blocked pr is ready",
 			record: domain.SessionRecord{ID: "mer-1", ProjectID: "mer"},
 			pr: &domain.PRFacts{

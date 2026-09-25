@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -261,9 +262,6 @@ func (l *fakeLCM) MarkSpawned(_ context.Context, id domain.SessionID, metadata d
 	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now()}
 	rec.FirstSignalAt = time.Now()
 	rec.Metadata = preserveCheckpointOnFakeMarkSpawned(rec.Metadata, metadata)
-	if rec.AutomationRunID != nil {
-		rec.AutomationLaunchCompleted = true
-	}
 	l.store.sessions[id] = rec
 	return nil
 }
@@ -737,6 +735,19 @@ type recordingAgent struct {
 	lastRestore  ports.RestoreConfig
 	launchCalls  int
 	restoreCalls int
+}
+
+type launchAuthAgent struct {
+	*recordingAgent
+	status     ports.AgentAuthStatus
+	workingDir string
+	env        map[string]string
+}
+
+func (a *launchAuthAgent) ValidateLaunchAuth(_ context.Context, workingDir string, env map[string]string) (ports.AgentAuthStatus, error) {
+	a.workingDir = workingDir
+	a.env = maps.Clone(env)
+	return a.status, nil
 }
 
 func (a *recordingAgent) GetLaunchCommand(_ context.Context, cfg ports.LaunchConfig) ([]string, error) {
@@ -2273,6 +2284,61 @@ func TestSpawnAutomationRejectsIncompletePriorLaunch(t *testing.T) {
 	}
 }
 
+func TestSpawnAutomationProvisionFailureDeletesPrelaunchRow(t *testing.T) {
+	m, st, _, ws := newManager()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: domain.ProjectConfig{
+		Symlinks: []string{"../outside"},
+		Worker:   domain.RoleOverride{Harness: domain.HarnessClaudeCode},
+	}}
+	ws.path = t.TempDir()
+	runID := domain.AutomationRunID("run-1")
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode, Prompt: "do it", AutomationRunID: &runID})
+	if err == nil || !strings.Contains(err.Error(), "provision") {
+		t.Fatalf("Spawn error = %v, want provisioning failure", err)
+	}
+	for id, rec := range st.sessions {
+		if rec.AutomationRunID != nil && *rec.AutomationRunID == runID {
+			t.Fatalf("automation prelaunch row %s survived failed provisioning: %#v", id, rec)
+		}
+	}
+}
+
+func TestSpawnAutomationAfterStartPromptFailureDoesNotCompleteLaunch(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	msg := &fakeMessenger{err: errors.New("delivery failed")}
+	agent := &recordingAgent{}
+	m := New(Deps{
+		Runtime:   &fakeRuntime{},
+		Agents:    singleAgent{agent: afterStartAgent{recordingAgent: agent}},
+		Workspace: &fakeWorkspace{},
+		Store:     st,
+		Messenger: msg,
+		Lifecycle: &fakeLCM{store: st},
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+	runID := domain.AutomationRunID("run-1")
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode, Prompt: "do it", AutomationRunID: &runID})
+	if err == nil || !strings.Contains(err.Error(), "deliver prompt") {
+		t.Fatalf("Spawn error = %v, want prompt delivery failure", err)
+	}
+	var found bool
+	for _, rec := range st.sessions {
+		if rec.AutomationRunID == nil || *rec.AutomationRunID != runID {
+			continue
+		}
+		found = true
+		if rec.AutomationLaunchCompleted {
+			t.Fatalf("automation launch was marked completed after failed prompt delivery: %#v", rec)
+		}
+	}
+	if !found {
+		t.Fatal("automation session row missing; want incomplete row for scheduler rollback")
+	}
+}
+
 func TestSpawn_ReturnsFinalPromptByteMetrics(t *testing.T) {
 	m, _, _, _ := newManager()
 	cfg := ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode}
@@ -3688,6 +3754,27 @@ func TestRestore_ReopensTerminal(t *testing.T) {
 	}
 	if rt.created != 1 {
 		t.Fatal("restore should relaunch")
+	}
+}
+
+func TestRestoreRejectsUnauthorizedLaunchContext(t *testing.T) {
+	m, st, rt, _ := newManager()
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "b", AgentSessionID: "agent-x"})
+	project := st.projects["mer"]
+	project.Config.Env = map[string]string{"ANTHROPIC_BASE_URL": "https://gateway.example"}
+	st.projects["mer"] = project
+	agent := &launchAuthAgent{recordingAgent: &recordingAgent{}, status: ports.AgentAuthStatusUnauthorized}
+	m.agents = singleAgent{agent: agent}
+
+	_, err := m.RestoreWithMode(ctx, "mer-1")
+	if !errors.Is(err, ports.ErrAgentAuthRequired) {
+		t.Fatalf("restore error = %v, want ErrAgentAuthRequired", err)
+	}
+	if agent.workingDir != "/ws/mer-1" || agent.env["ANTHROPIC_BASE_URL"] != "https://gateway.example" {
+		t.Fatalf("launch auth context = cwd %q env %#v", agent.workingDir, agent.env)
+	}
+	if rt.created != 0 {
+		t.Fatalf("runtime created %d times after rejected auth", rt.created)
 	}
 }
 
@@ -6393,6 +6480,65 @@ func TestSpawn_RejectsUnknownHarness(t *testing.T) {
 	}
 	if rt.created != 0 {
 		t.Fatal("runtime must not be created for an unknown harness")
+	}
+}
+
+func TestSpawn_RejectsUnsupportedClaudeTUIEffortBeforeSessionRow(t *testing.T) {
+	m, st, rt, ws := newManager()
+	m.SetModelCatalog(tuningCatalog{catalog: ports.AgentModelCatalog{Models: []ports.AgentModelInfo{
+		{ID: "sonnet", IsDefault: true, Efforts: []string{"low", "high"}},
+	}}})
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID:     "mer",
+		Kind:          domain.KindWorker,
+		Harness:       domain.HarnessClaudeCode,
+		RequestedMode: domain.SessionModeTUI,
+		AgentConfig: ports.AgentConfig{
+			Model: "sonnet", Effort: "max",
+		},
+		EffortOverride: true,
+	})
+	if !errors.Is(err, ports.ErrUnsupportedEffort) {
+		t.Fatalf("err = %v, want ErrUnsupportedEffort", err)
+	}
+	if len(st.sessions) != 0 {
+		t.Fatalf("no session row should be created, got %d", len(st.sessions))
+	}
+	if ws.lastCfg.SessionID != "" || ws.destroyed != 0 {
+		t.Fatal("workspace must not be created for an unsupported Claude effort")
+	}
+	if rt.created != 0 {
+		t.Fatal("runtime must not be created for an unsupported Claude effort")
+	}
+}
+
+func TestSpawn_RejectsFreshClaudeAuthInWorkspaceLaunchContext(t *testing.T) {
+	m, st, rt, ws := newManager()
+	project := st.projects["mer"]
+	project.Config.Env = map[string]string{"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_PROFILE": "project-profile"}
+	st.projects["mer"] = project
+	agent := &launchAuthAgent{recordingAgent: &recordingAgent{}, status: ports.AgentAuthStatusUnauthorized}
+	m.agents = singleAgent{agent: agent}
+
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		RequestedMode: domain.SessionModeTUI,
+	})
+	if !errors.Is(err, ports.ErrAgentAuthRequired) {
+		t.Fatalf("err = %v, want ErrAgentAuthRequired", err)
+	}
+	if agent.workingDir != "/ws/mer-1" {
+		t.Fatalf("auth cwd = %q, want session workspace", agent.workingDir)
+	}
+	if agent.env["CLAUDE_CODE_USE_BEDROCK"] != "1" || agent.env["AWS_PROFILE"] != "project-profile" {
+		t.Fatalf("auth env = %#v, want merged project launch environment", agent.env)
+	}
+	if rt.created != 0 {
+		t.Fatal("runtime was created after a rejected fresh credential")
+	}
+	if len(st.sessions) != 0 || ws.destroyed != 1 {
+		t.Fatalf("rejected launch cleanup: sessions=%d destroyed=%d, want 0/1", len(st.sessions), ws.destroyed)
 	}
 }
 
@@ -9283,6 +9429,10 @@ type signalingAgent struct{ fakeAgent }
 func (signalingAgent) EmitsSubmitActivity() bool  { return true }
 func (signalingAgent) EmitsBlockedActivity() bool { return true }
 
+type semanticSignalingAgent struct{ signalingAgent }
+
+func (semanticSignalingAgent) EmitsSemanticMessageAcceptance() bool { return true }
+
 type startupReadySignalingAgent struct{ fakeAgent }
 
 func (startupReadySignalingAgent) FirstSignalProvesInputReady() bool { return true }
@@ -9348,6 +9498,83 @@ func TestSend_SkipsConfirmForHooklessHarness(t *testing.T) {
 	// Hookless path returns within milliseconds (no 2s+ confirmation wait).
 	if dt := time.Since(start); dt > 250*time.Millisecond {
 		t.Fatalf("Send took %s for a hookless harness; confirmActive should have been skipped", dt)
+	}
+}
+
+func TestSendSemanticTUIRequiresCorrelatedPromptAcceptance(t *testing.T) {
+	const deliveryID = "report-batch:abc123"
+	st := newFakeStore()
+	st.sessions["s1"] = pastStartupGate(domain.SessionRecord{
+		ID: "s1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityIdle},
+		Metadata: domain.SessionMetadata{RuntimeLaunchID: "launch-1"},
+	})
+	msg := &fakeMessenger{onSend: func(id domain.SessionID, message string) {
+		if message == "" {
+			return
+		}
+		if got, ok := domain.ReportDeliveryID(message); !ok || got != deliveryID {
+			t.Fatalf("delivery envelope = %q, %v", got, ok)
+		}
+		rec := st.sessions[id]
+		rec.Activity.State = domain.ActivityActive
+		rec.Metadata.ConversationCheckpointState = domain.ConversationCheckpointCoordination
+		rec.Metadata.ConversationCheckpointGeneration = "launch-1"
+		rec.Metadata.ConversationCheckpointTurnID = deliveryID
+		st.sessions[id] = rec
+	}}
+	m := newSendTestManager(t, semanticSignalingAgent{}, msg, st)
+
+	if err := m.SendSemantic(context.Background(), "s1", "Reports since your previous turn:", deliveryID); err != nil {
+		t.Fatalf("SendSemantic: %v", err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("pane writes = %d, want 1", len(msg.msgs))
+	}
+	if err := m.SendSemantic(context.Background(), "s1", "retry", deliveryID); err != nil {
+		t.Fatalf("idempotent SendSemantic: %v", err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("retry pane writes = %d, want 1", len(msg.msgs))
+	}
+}
+
+func TestSendSemanticTUIDoesNotAcceptPaneWrite(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["s1"] = pastStartupGate(domain.SessionRecord{
+		ID: "s1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityActive},
+		Metadata: domain.SessionMetadata{RuntimeLaunchID: "launch-1"},
+	})
+	msg := &fakeMessenger{}
+	m := newSendTestManager(t, semanticSignalingAgent{}, msg, st)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+
+	err := m.SendSemantic(ctx, "s1", "report", "report-batch:unaccepted")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SendSemantic error = %v, want context deadline", err)
+	}
+	if len(msg.msgs) != 1 {
+		t.Fatalf("pane writes = %d, want 1", len(msg.msgs))
+	}
+}
+
+func TestSendSemanticTUIRejectsAdapterWithoutAcceptanceSignal(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["s1"] = pastStartupGate(domain.SessionRecord{
+		ID: "s1", Harness: domain.HarnessClaudeCode, Mode: domain.SessionModeTUI,
+		Activity: domain.Activity{State: domain.ActivityIdle},
+	})
+	msg := &fakeMessenger{}
+	m := newSendTestManager(t, signalingAgent{}, msg, st)
+
+	err := m.SendSemantic(context.Background(), "s1", "report", "report-batch:unsupported")
+	if !errors.Is(err, ErrSemanticAcceptanceUnsupported) {
+		t.Fatalf("SendSemantic error = %v", err)
+	}
+	if len(msg.msgs) != 0 {
+		t.Fatalf("pane writes = %d, want 0", len(msg.msgs))
 	}
 }
 

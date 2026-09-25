@@ -85,6 +85,13 @@ FROM usage_sources
 WHERE binding_id = ?
 ORDER BY generation, id;
 
+-- name: ExistsUsageSourceByArtifactPath :one
+SELECT CAST(EXISTS (
+    SELECT 1
+    FROM usage_sources
+    WHERE artifact_path = sqlc.arg(artifact_path)
+) AS INTEGER);
+
 -- name: ListWatchableUsageSources :many
 SELECT us.*
 FROM usage_sources us

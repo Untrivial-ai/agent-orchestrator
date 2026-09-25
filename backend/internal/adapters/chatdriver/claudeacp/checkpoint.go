@@ -60,6 +60,8 @@ type checkpointRecord struct {
 	Type                  string `json:"type"`
 	Subtype               string `json:"subtype"`
 	Sidechain             bool   `json:"isSidechain"`
+	Meta                  bool   `json:"isMeta"`
+	TurnCompanion         bool   `json:"turnCompanion"`
 	PreventedContinuation bool   `json:"preventedContinuation"`
 	Attachment            struct {
 		Type      string          `json:"type"`
@@ -140,6 +142,9 @@ func verifyCheckpointTranscript(ctx context.Context, input io.Reader, request po
 	submissions := make(map[string]int)
 	for _, record := range chain {
 		if record.Type == "user" {
+			if record.Meta && record.TurnCompanion {
+				continue
+			}
 			if checkpointToolResults(record.Message.Content) {
 				continue
 			}
