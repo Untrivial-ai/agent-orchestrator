@@ -581,6 +581,32 @@ func TestSpawnAsyncChat_FailedCleanupRetainsWorkspacePath(t *testing.T) {
 	}
 }
 
+func TestSpawnAsyncChat_WorktreeRecordFailurePreservesDirtyWorkspace(t *testing.T) {
+	m, st, _ := newChatManager(&recordingLauncher{})
+	m.browserCapabilities = browsersvc.NewAuthority()
+	deferred := deferredBackground(m)
+	project := st.projects[string(chatTestProject)]
+	project.Kind = domain.ProjectKindWorkspace
+	st.projects[string(chatTestProject)] = project
+	ws := m.workspace.(*fakeWorkspace)
+	ws.path = t.TempDir()
+	ws.projectCreateInfo = ports.WorkspaceProjectInfo{
+		Root:      ports.WorkspaceInfo{Path: ws.path, Branch: "ao/task", SessionID: "mer-1", ProjectID: chatTestProject},
+		Worktrees: []ports.WorkspaceRepoInfo{{RepoName: domain.RootWorkspaceRepoName, Path: ws.path, Branch: "ao/task", SessionID: "mer-1", ProjectID: chatTestProject, RepoPath: project.Path}},
+	}
+	st.upsertWTErr = errors.New("record worktree failed")
+	ws.destroyErr = ports.ErrWorkspaceDirty
+	rec, _, _, err := m.Spawn(context.Background(), asyncChatSpawnConfig("do the thing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	(*deferred)[0]()
+	stored := st.sessions[rec.ID]
+	if stored.ProvisionState != domain.SessionProvisionFailed || stored.Metadata.WorkspacePath != ws.path {
+		t.Fatalf("failed start lost dirty worktree: %+v", stored)
+	}
+}
+
 func TestDestroySpawnWorkspace_FailedProjectCleanupRetainsWorktreeRows(t *testing.T) {
 	m, st, _ := newChatManager(&recordingLauncher{})
 	ws := m.workspace.(*fakeWorkspace)

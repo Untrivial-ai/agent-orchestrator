@@ -2292,6 +2292,29 @@ func TestSpawn_AssignsIDAndGoesIdle(t *testing.T) {
 	}
 }
 
+func TestSpawnWorkspaceRecordFailurePreservesDirtyWorkspace(t *testing.T) {
+	m, st, _, ws := newManager()
+	project := st.projects["mer"]
+	project.Kind = domain.ProjectKindWorkspace
+	project.Path = t.TempDir()
+	st.projects["mer"] = project
+	path := t.TempDir()
+	ws.projectCreateInfo = ports.WorkspaceProjectInfo{
+		Root:      ports.WorkspaceInfo{Path: path, Branch: "ao/task", SessionID: "mer-1", ProjectID: "mer"},
+		Worktrees: []ports.WorkspaceRepoInfo{{RepoName: domain.RootWorkspaceRepoName, Path: path, Branch: "ao/task", SessionID: "mer-1", ProjectID: "mer", RepoPath: project.Path}},
+	}
+	st.upsertWTErr = errors.New("record worktree failed")
+	ws.destroyErr = ports.ErrWorkspaceDirty
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode})
+	if !errors.Is(err, ErrWorkspaceCreate) {
+		t.Fatalf("spawn = %v, want workspace creation error", err)
+	}
+	rec, ok := st.sessions["mer-1"]
+	if !ok || rec.Metadata.WorkspacePath != path || !rec.IsTerminated {
+		t.Fatalf("dirty worktree lost its session record: found=%v session=%+v", ok, rec)
+	}
+}
+
 func TestSpawn_ReturnsFinalPromptByteMetrics(t *testing.T) {
 	m, _, _, _ := newManager()
 	cfg := ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode}

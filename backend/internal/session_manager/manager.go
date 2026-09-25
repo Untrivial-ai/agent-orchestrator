@@ -1128,10 +1128,12 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		ws, workspaceProject, err = m.createSessionWorkspace(ctx, project, cfg, id, branch, baseRefs)
 	}
 	if err != nil {
-		// Nothing observable exists yet — no worktree, no runtime — so the seed
-		// row is deleted outright instead of accumulating as a terminated orphan
-		// in session lists (e.g. when gitworktree refuses the branch).
-		m.rollbackSpawnSeedRowAfterFailure(ctx, id)
+		if ws.Path != "" {
+			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, prep != nil, false)
+		} else {
+			// No worktree exists, so the seed row can be discarded.
+			m.rollbackSpawnSeedRowAfterFailure(ctx, id)
+		}
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrWorkspaceCreate, err)
 	}
 
@@ -1639,7 +1641,12 @@ func (m *Manager) createSessionWorkspace(ctx context.Context, project domain.Pro
 			if cfg.TaskPreparation != "" {
 				return info.Root, &info, errors.Join(err, fmt.Errorf("record prepared workspace worktree %q: %w", wt.RepoName, storeErr))
 			}
-			_ = workspaceProject.DestroyWorkspaceProject(ctx, info)
+			cleanupCtx, cancel := spawnRollbackContext(ctx)
+			cleanupErr := workspaceProject.DestroyWorkspaceProject(cleanupCtx, info)
+			cancel()
+			if cleanupErr != nil {
+				return info.Root, &info, errors.Join(fmt.Errorf("record workspace worktree %q: %w", wt.RepoName, storeErr), cleanupErr)
+			}
 			return ports.WorkspaceInfo{}, nil, fmt.Errorf("record workspace worktree %q: %w", wt.RepoName, storeErr)
 		}
 	}

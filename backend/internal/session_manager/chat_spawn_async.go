@@ -144,6 +144,9 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 		stageStarted = time.Now()
 	}
 	if err != nil {
+		if ws.Path != "" {
+			m.cleanupAsyncChatWorkspace(ctx, id, ws, workspaceProject)
+		}
 		m.failAsyncChatSpawn(ctx, id, wrapSpawnStage(id, ErrWorkspaceCreate, err))
 		return
 	}
