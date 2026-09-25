@@ -469,9 +469,9 @@ function useElapsedDuration(startedAt: string | undefined, active: boolean): num
 	return Number.isNaN(start) ? undefined : Math.max(0, now - start);
 }
 
-const WIPE_LOADER_FRAMES = Array.from({ length: 8 }, (_, frame) => {
-	const column = frame < 4 ? frame : 7 - frame;
-	return Array.from({ length: 16 }, (_, index) => (index % 4 === column ? 1 : 0));
+const WIPE_LOADER_FRAMES = Array.from({ length: 10 }, (_, frame) => {
+	const column = frame < 5 ? frame : 9 - frame;
+	return Array.from({ length: 25 }, (_, index) => (index % 5 === column ? 1 : 0));
 });
 
 export function WipeLoader() {
@@ -492,7 +492,7 @@ export function WipeLoader() {
 			data-testid="wipe-loader"
 			className="flex size-7 items-center justify-center rounded-md text-muted-foreground"
 		>
-				<span className="grid size-4 grid-cols-4 grid-rows-4 gap-px" aria-hidden="true">
+				<span className="grid size-4 grid-cols-5 grid-rows-5 gap-px" aria-hidden="true">
 				{WIPE_LOADER_FRAMES[frame].map((active, index) => (
 					<span
 						key={index}

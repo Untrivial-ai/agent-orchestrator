@@ -262,7 +262,7 @@ describe("AssistantMessage streaming", () => {
 
 		const loader = screen.getByTestId("wipe-loader");
 		expect(loader).toBeInTheDocument();
-		expect(loader.firstElementChild?.children).toHaveLength(16);
+		expect(loader.firstElementChild?.children).toHaveLength(25);
 		expect(screen.queryByRole("button", { name: "Copy message as markdown" })).not.toBeInTheDocument();
 	});
 
