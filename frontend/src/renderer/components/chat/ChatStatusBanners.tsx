@@ -17,6 +17,10 @@ import { motion, useReducedMotion } from "motion/react";
 import type { ConversationAccount, ConversationThreadState, McpServer } from "../../types/conversation";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
+// Survives session-pane unmounts so switching away and back does not replay the
+// same spawn notice. The set intentionally lives for the renderer lifetime.
+const mcpNoticeShownSessions = new Set<string>();
+
 /**
  * The provider will not do any more work until someone signs in.
  *
@@ -156,10 +160,12 @@ export const ThreadStateBanner = memo(function ThreadStateBanner({
 export const McpServerBanner = memo(function McpServerBanner({
 	servers,
 	placement = "above",
+	sessionId,
 }: {
 	/** Only the broken ones. The caller filters, so an empty list means nothing to say. */
 	servers: McpServer[];
 	placement?: "above" | "below";
+	sessionId?: string;
 }) {
 	const fingerprint = servers
 		.map((server) => `${server.name}:${server.status}:${server.failureReason ?? ""}:${server.error ?? ""}`)
@@ -173,10 +179,12 @@ export const McpServerBanner = memo(function McpServerBanner({
 
 	useEffect(() => {
 		if (!fingerprint) return;
-		if (shownFingerprint == null) setShownFingerprint(fingerprint);
+		if (sessionId && mcpNoticeShownSessions.has(sessionId)) return;
+		if (sessionId) mcpNoticeShownSessions.add(sessionId);
+		setShownFingerprint((current) => current ?? fingerprint);
 		const timeout = window.setTimeout(() => setDismissingFingerprint(fingerprint), 3_000);
 		return () => window.clearTimeout(timeout);
-	}, [fingerprint, shownFingerprint]);
+	}, [fingerprint, sessionId]);
 
 	useEffect(() => {
 		if (dismissingFingerprint !== fingerprint) return;
