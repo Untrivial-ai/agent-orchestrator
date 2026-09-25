@@ -11,17 +11,13 @@ import (
 )
 
 var (
-	ErrNotFound               = errors.New("not found")
-	ErrForbidden              = errors.New("forbidden")
-	ErrConflict               = errors.New("conflict")
-	ErrInvalid                = errors.New("invalid")
-	ErrIdempotencyMismatch    = errors.New("idempotency key belongs to a different operation")
-	ErrSandboxQuotaExceeded   = errors.New("sandbox quota exceeded")
-	ErrPreparationExpired     = errors.New("session preparation expired")
-	ErrPreparationCommitted   = errors.New("session preparation already committed")
-	ErrPreparationStale       = errors.New("session preparation generation is stale")
-	ErrPreparationUnavailable = errors.New("session preparation unavailable")
-	ErrWorkerUnavailable      = errors.New("worker unavailable")
+	ErrNotFound             = errors.New("not found")
+	ErrForbidden            = errors.New("forbidden")
+	ErrConflict             = errors.New("conflict")
+	ErrInvalid              = errors.New("invalid")
+	ErrIdempotencyMismatch  = errors.New("idempotency key belongs to a different operation")
+	ErrSandboxQuotaExceeded = errors.New("sandbox quota exceeded")
+	ErrWorkerUnavailable    = errors.New("worker unavailable")
 	// ErrTerminalSessionExited means an agent terminal finished and there is no
 	// live worker terminal to attach to. It is deliberately distinct from
 	// ErrWorkerUnavailable: the latter is expected while a sandbox is booting
@@ -74,13 +70,6 @@ func (s *Store) ValidateRuntimeRole(ctx context.Context) error {
 }
 
 type tenantFn func(pgx.Tx) error
-
-func notifySandboxReconcile(ctx context.Context, tx pgx.Tx) error {
-	if _, err := tx.Exec(ctx, `SELECT pg_notify('ao_sandbox_reconcile', '')`); err != nil {
-		return fmt.Errorf("notify sandbox reconciler: %w", err)
-	}
-	return nil
-}
 
 // withService runs fn in a transaction that carries the control-plane service
 // context. Only ao_sandboxes grants this context, and only so the reconciler

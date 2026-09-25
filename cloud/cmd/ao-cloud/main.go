@@ -445,7 +445,6 @@ func run(logger *slog.Logger) error {
 	// enqueue; register the terminal channels only when that feature is on.
 	if reconciler != nil {
 		notifyListener := postgres.NewListener(cfg.DatabaseURL, logger)
-		notifyListener.Handle("ao_sandbox_reconcile", func(string) { reconciler.Wake() })
 		notifyListener.Handle("ao_worker_work", api.HandleWorkerWorkNotify)
 		if cfg.TerminalStreamEnabled {
 			notifyListener.Handle("ao_terminal_output", api.HandleTerminalOutputNotify)

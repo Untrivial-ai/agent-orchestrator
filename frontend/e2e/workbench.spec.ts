@@ -5,24 +5,26 @@ import { expect, test } from "@playwright/test";
 // lib/mock-data.ts instead of hitting a daemon. The tests run in Chromium
 // (no window.ao), so the terminal shows its browser-preview surface.
 
-test("renders the project-first workbench shell", async ({ page }) => {
+test("renders the orchestrator-first workbench shell", async ({ page }) => {
 	await page.goto("/");
+	// The single pinned Orchestrator anchor + the Projects group + a name-only worker row.
+	await expect(page.getByRole("button", { name: "Orchestrator", exact: true })).toBeVisible();
 	await expect(page.getByText("Projects", { exact: true })).toBeVisible();
-	await expect(page.getByRole("button", { name: "Open ao-demo orchestrator" })).toBeVisible();
-	await expect(page.getByRole("heading", { name: "Recent projects" })).toBeVisible();
+	await expect(page.getByRole("button", { name: "fix-webgl-fallback", exact: true })).toBeVisible();
+	// Orchestrator side rail = the quiet Workers list.
+	await expect(page.getByText("Workers", { exact: true })).toBeVisible();
 });
 
 test("deep-links into a worker session", async ({ page }) => {
-	await page.goto("/#/projects/ao-demo/sessions/demo-needs-input");
-	await expect(page.getByRole("tabpanel", { name: /Resolve reviewer feedback on terminal polish terminal/ })).toBeVisible();
-	await expect(page.getByRole("complementary", { name: "Session inspector" })).toBeVisible();
-	await expect(page.getByRole("tab", { name: /Files/ })).toBeVisible();
+	await page.goto("/#/workspaces/api-gateway/sessions/refactor-mux");
+	// Worker view = three-pane with the Git review rail.
+	await expect(page.getByText("Changed")).toBeVisible();
+	await expect(page.getByRole("button", { name: /Commit & Push/ })).toBeVisible();
 });
 
-test("drilling into a worker opens its session inspector", async ({ page }) => {
+test("drilling into a worker opens its Git review rail", async ({ page }) => {
 	await page.goto("/");
-	await page.getByRole("button", { name: "Toggle ao-demo sessions" }).click();
-	await page.getByRole("button", { name: "Open Resolve reviewer feedback on terminal polish" }).click();
-	await expect(page).toHaveURL(/sessions\/demo-needs-input/);
-	await expect(page.getByRole("complementary", { name: "Session inspector" })).toBeVisible();
+	await page.getByRole("button", { name: "refactor-mux", exact: true }).click();
+	await expect(page.getByRole("button", { name: /Commit & Push/ })).toBeVisible();
+	await expect(page.getByText("internal/mux/terminal_mux.go")).toBeVisible();
 });

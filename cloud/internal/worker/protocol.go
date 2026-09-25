@@ -183,23 +183,6 @@ type ReadyEvent struct {
 	Capabilities []string `json:"capabilities"`
 }
 
-// StartupEvent fences one worker startup milestone to its authenticated epoch.
-// Restored is present only on restore.completed.
-type StartupEvent struct {
-	WorkerID string `json:"workerId"`
-	Epoch    int64  `json:"epoch"`
-	Restored *bool  `json:"restored,omitempty"`
-}
-
-// StartupFailureEvent reports a bounded, user-safe failure at its owning phase.
-type StartupFailureEvent struct {
-	WorkerID string `json:"workerId"`
-	Epoch    int64  `json:"epoch"`
-	Phase    string `json:"phase"`
-	Code     string `json:"code"`
-	Message  string `json:"message"`
-}
-
 type OutputEvent struct {
 	TurnID  string `json:"turnId"`
 	Attempt int    `json:"attempt"`

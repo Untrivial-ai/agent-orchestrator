@@ -13,21 +13,11 @@ import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import { setChatDraftBoundary } from "../lib/chat-draft-boundary";
 import { chatDraftScopeKey } from "../lib/chat-drafts";
 import { useFileAttachments, type FileAttachment } from "../hooks/useFileAttachments";
-import {
-	createCloudPendingSession,
-	registerCloudPendingSession,
-	resetCloudPendingSessionsForTests,
-} from "../lib/cloud-pending-session";
 
 const navigateMock = vi.hoisted(() => vi.fn());
 const openShellTerminalMock = vi.hoisted(() => vi.fn());
 const closeShellTerminalMock = vi.hoisted(() => vi.fn());
 const cloudResumeMock = vi.hoisted(() => vi.fn(async () => ({ session: {} })));
-const cloudSendMessageMock = vi.hoisted(() => vi.fn<(
-	orgId: string,
-	sessionId: string,
-	input: { clientSequence: number; text: string },
-) => Promise<{ event: object }>>(async () => ({ event: {} })));
 const nativeFullScreenMock = vi.hoisted(() => vi.fn(() => false));
 const interfaceTransitionMock = vi.hoisted(() => ({
 	start: vi.fn(),
@@ -90,12 +80,9 @@ vi.mock("../hooks/useWindowFullScreen", () => ({
 vi.mock("../hooks/useCloudCp", () => ({
 	useCloudCp: () => ({
 		baseUrl: "https://cloud.example.test",
-		client: { resumeSession: cloudResumeMock, sendSessionMessage: cloudSendMessageMock },
+		client: { resumeSession: cloudResumeMock },
 		ready: true,
 	}),
-}));
-vi.mock("../lib/cloud-startup-progress", () => ({
-	useCloudStartupProgress: () => ({ phase: "preparing_repository" }),
 }));
 vi.mock("../hooks/useSessionInterfaceTransition", async (importOriginal) => ({
 	...await importOriginal<typeof import("../hooks/useSessionInterfaceTransition")>(),
@@ -506,7 +493,6 @@ vi.mock("./SessionFileWorkspace", () => ({
 			begin: (target: { path: string; scope: string; side: string; surface: string }) => void;
 			draft: string;
 			setDraft: (draft: string) => void;
-			submit: () => Promise<void>;
 			target: { path: string } | null;
 		};
 		initialEditing?: boolean;
@@ -518,37 +504,12 @@ vi.mock("./SessionFileWorkspace", () => ({
 		<div data-editing={String(Boolean(initialEditing))} data-mode={initialMode} data-split={String(split)} data-testid="session-file-workspace">
 			{path}
 			<button onClick={() => annotation.begin({ path, scope: scope ?? "combined", side: "file", surface: "focused" })} type="button">header feedback</button>
-			{annotation.target ? (
-				<>
-					<input aria-label="feedback draft" onChange={(event) => annotation.setDraft(event.target.value)} value={annotation.draft} />
-					<button onClick={() => void annotation.submit()} type="button">send file feedback</button>
-				</>
-			) : null}
+			{annotation.target ? <input aria-label="feedback draft" onChange={(event) => annotation.setDraft(event.target.value)} value={annotation.draft} /> : null}
 		</div>
 	),
 }));
 vi.mock("./CloudWorkspaceDiff", () => ({
-	CloudFileContentPane: ({ annotation, path }: {
-		annotation: {
-			begin: (target: { path: string; scope: string; side: string; surface: string }) => void;
-			draft: string;
-			setDraft: (draft: string) => void;
-			submit: () => Promise<void>;
-			target: { path: string } | null;
-		};
-		path: string;
-	}) => (
-		<div data-testid="cloud-file-workspace">
-			{path}
-			<button onClick={() => annotation.begin({ path, scope: "combined", side: "file", surface: "focused" })} type="button">cloud file feedback</button>
-			{annotation.target ? (
-				<>
-					<input aria-label="cloud feedback draft" onChange={(event) => annotation.setDraft(event.target.value)} value={annotation.draft} />
-					<button onClick={() => void annotation.submit()} type="button">send cloud file feedback</button>
-				</>
-			) : null}
-		</div>
-	),
+	CloudFileContentPane: ({ path }: { path: string }) => <div data-testid="cloud-file-workspace">{path}</div>,
 	CloudWorkspaceDiff: ({ onOpenFile }: { onOpenFile?: (path: string) => void }) => (
 		<button onClick={() => onOpenFile?.("src/cloud.ts")} type="button">open cloud file</button>
 	),
@@ -787,7 +748,6 @@ describe("SessionView", () => {
 	}
 
 	beforeEach(() => {
-		resetCloudPendingSessionsForTests();
 		for (const sessionId of ["sess-1", "sess-2", "sess-orch", "sess-cross-project"]) {
 			setChatDraftBoundary(sessionId, "composer", undefined);
 			setChatDraftBoundary(sessionId, "inline-edit", undefined);
@@ -837,8 +797,6 @@ describe("SessionView", () => {
 		closeShellTerminalMock.mockReset();
 		cloudResumeMock.mockReset();
 		cloudResumeMock.mockResolvedValue({ session: {} });
-		cloudSendMessageMock.mockReset();
-		cloudSendMessageMock.mockResolvedValue({ event: {} });
 		interfaceTransitionMock.start.mockReset();
 		interfaceTransitionMock.refreshStatus.mockReset();
 		interfaceTransitionMock.refreshStatus.mockImplementation(
@@ -872,31 +830,6 @@ describe("SessionView", () => {
 			}
 			return { data: { reviewerHandleId: "", reviews: [], runs: [] }, error: undefined };
 		});
-	});
-
-	it("keeps the focused pending composer mounted while the route id binds", async () => {
-		const user = userEvent.setup();
-		const pending = registerCloudPendingSession({
-			attempt: { attemptId: "attempt-view", startedAtMs: performance.now() },
-			create: async () => "cloud-session-view",
-			initialPrompt: "Prepare the workspace",
-			orgId: "org-1",
-			projectId: "proj-1",
-			send: async () => undefined,
-		});
-		const view = render(<SessionView sessionId={pending.routeSessionId} />);
-		const composer = screen.getByRole("textbox", { name: "Add another instruction" });
-		await user.type(composer, "Keep this draft");
-
-		await act(async () => {
-			await createCloudPendingSession(pending.attemptId);
-		});
-		view.rerender(<SessionView sessionId="cloud-session-view" />);
-
-		expect(screen.getByRole("textbox", { name: "Add another instruction" })).toBe(composer);
-		expect(composer).toHaveValue("Keep this draft");
-		expect(composer).toHaveFocus();
-		expect(screen.queryByText("Session not found")).not.toBeInTheDocument();
 	});
 
 	// Regression: shell terminals are an app-wide list, so without a per-session
@@ -3532,29 +3465,6 @@ describe("SessionView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "header feedback" }));
 
 		expect(screen.queryByRole("textbox", { name: "feedback draft" })).not.toBeInTheDocument();
-	});
-
-	it("sends cloud file feedback with a positive client sequence", async () => {
-		workerSession("sess-1").cloud = { orgId: "cloud-org", sandboxProvider: "docker" };
-		act(() => useUiStore.getState().setInspectorOpen("sess-1", true));
-		render(<SessionView sessionId="sess-1" />);
-
-		fireEvent.click(screen.getByRole("button", { name: "open files" }));
-		fireEvent.click(screen.getByRole("button", { name: "open cloud file" }));
-		fireEvent.click(screen.getByRole("button", { name: "cloud file feedback" }));
-		await userEvent.type(screen.getByRole("textbox", { name: "cloud feedback draft" }), "Check this path");
-		fireEvent.click(screen.getByRole("button", { name: "send cloud file feedback" }));
-
-		await waitFor(() => expect(cloudSendMessageMock).toHaveBeenCalledOnce());
-		expect(cloudSendMessageMock).toHaveBeenCalledWith(
-			"cloud-org",
-			"sess-1",
-			expect.objectContaining({
-				clientSequence: expect.any(Number),
-				text: expect.stringContaining("Check this path"),
-			}),
-		);
-		expect(cloudSendMessageMock.mock.calls[0]?.[2].clientSequence).toBeGreaterThan(0);
 	});
 
 	it("applies the Files split preference to a diff opened in the center", () => {

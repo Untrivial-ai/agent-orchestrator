@@ -357,7 +357,7 @@ func (s *Server) validateSavedRepository(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if !reachable {
-		writeError(w, r, http.StatusUnprocessableEntity, "repository_unreachable", "The saved GitHub token cannot access this repository. Check the URL or update the token's repository access.")
+		writeError(w, r, http.StatusUnprocessableEntity, "repository_unreachable", "Can't reach this repository - it may be private, or the URL may be wrong.")
 		return
 	}
 

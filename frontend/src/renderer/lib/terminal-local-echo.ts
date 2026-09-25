@@ -482,9 +482,6 @@ export function withLineBufferedLocalInput(
 		close: (id) => inner.close(id),
 		onExit: (id, listener) => inner.onExit(id, listener),
 		onOpened: (id, listener) => inner.onOpened(id, listener),
-		onReplayComplete: inner.onReplayComplete
-			? (id, listener) => inner.onReplayComplete!(id, listener)
-			: undefined,
 		onError: (id, listener) => inner.onError(id, listener),
 		onConnectionChange: (listener) => inner.onConnectionChange(listener),
 		sendInput: (id, input) => {

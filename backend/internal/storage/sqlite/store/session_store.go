@@ -21,25 +21,21 @@ func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (do
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	return createSession(ctx, s.qw, rec)
-}
-
-func createSession(ctx context.Context, q *gen.Queries, rec domain.SessionRecord) (domain.SessionRecord, error) {
 	var num int64
 	var err error
 	prefix := string(rec.ProjectID)
 	if rec.ProjectID == "" {
-		num, err = q.NextStandaloneSessionNum(ctx)
+		num, err = s.qw.NextStandaloneSessionNum(ctx)
 		prefix = "standalone"
 	} else {
-		num, err = q.NextSessionNum(ctx, optionalProjectID(rec.ProjectID))
+		num, err = s.qw.NextSessionNum(ctx, optionalProjectID(rec.ProjectID))
 	}
 	if err != nil {
 		return domain.SessionRecord{}, fmt.Errorf("next session num for %s: %w", rec.ProjectID, err)
 	}
 	for {
 		rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", prefix, num))
-		exists, err := q.SessionIDExists(ctx, rec.ID)
+		exists, err := s.qw.SessionIDExists(ctx, rec.ID)
 		if err != nil {
 			return domain.SessionRecord{}, fmt.Errorf("check session id %s: %w", rec.ID, err)
 		}
@@ -48,7 +44,7 @@ func createSession(ctx context.Context, q *gen.Queries, rec domain.SessionRecord
 		}
 		num++
 	}
-	if err := q.InsertSession(ctx, recordToInsert(rec, num)); err != nil {
+	if err := s.qw.InsertSession(ctx, recordToInsert(rec, num)); err != nil {
 		return domain.SessionRecord{}, fmt.Errorf("insert session %s: %w", rec.ID, err)
 	}
 	return rec, nil

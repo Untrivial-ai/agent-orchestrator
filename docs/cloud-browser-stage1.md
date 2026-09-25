@@ -1,3 +1,7 @@
+> Historical command-only milestone. The current branch also has a shared
+> viewer and VM DevTools. Use [Shared browser sessions](cloud-shared-browser.md)
+> for current coverage and test instructions.
+
 # Cloud session browser (Stage 1): manual runbook
 
 How to run and manually verify the in-VM session browser (`ao browser` inside

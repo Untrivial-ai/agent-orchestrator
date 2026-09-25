@@ -7,18 +7,15 @@ import { defineConfig } from "@playwright/test";
 const port = Number(process.env.AO_E2E_PORT ?? 5173);
 
 export default defineConfig({
-  testDir: "e2e",
-  // Six parallel renderer boots can exceed Playwright's five-second assertion
-  // default on loaded CI hosts while the startup surface is still visible.
-	expect: { timeout: 25_000 },
-  use: {
-    baseURL: `http://127.0.0.1:${port}`,
-  },
-  webServer: {
-    // dev:web serves the renderer alone (VITE_NO_ELECTRON=1) — no Electron child to
-    // launch, which is all the browser-based e2e suite needs.
-    command: `npm run dev:web -- --port ${port} --host 127.0.0.1`,
-    port,
-    reuseExistingServer: !process.env.CI,
-  },
+	testDir: "e2e",
+	use: {
+		baseURL: `http://127.0.0.1:${port}`,
+	},
+	webServer: {
+		// dev:web serves the renderer alone (VITE_NO_ELECTRON=1) — no Electron child to
+		// launch, which is all the browser-based e2e suite needs.
+		command: `npm run dev:web -- --port ${port} --host 127.0.0.1`,
+		port,
+		reuseExistingServer: !process.env.CI,
+	},
 });

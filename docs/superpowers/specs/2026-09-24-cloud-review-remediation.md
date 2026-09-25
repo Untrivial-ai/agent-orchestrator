@@ -1,3 +1,7 @@
+> Historical combined-branch record. Preparation changes are now reviewed
+> separately. For the current browser scope and test instructions, see
+> [Shared browser sessions](../../cloud-shared-browser.md).
+
 # Cloud session review remediation
 
 Date: 2026-09-24

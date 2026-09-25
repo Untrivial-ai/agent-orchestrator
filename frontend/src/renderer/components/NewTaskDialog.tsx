@@ -7,11 +7,10 @@ type NewTaskDialogProps = {
 	open: boolean;
 	projectId?: string;
 	onCreated: (sessionId: string) => void;
-	onPending?: (routeSessionId: string) => void;
 	onOpenChange: (open: boolean) => void;
 };
 
-export function NewTaskDialog({ open, projectId, onCreated, onPending, onOpenChange }: NewTaskDialogProps) {
+export function NewTaskDialog({ open, projectId, onCreated, onOpenChange }: NewTaskDialogProps) {
 	const { t } = useTranslation();
 	return (
 		<Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -27,10 +26,6 @@ export function NewTaskDialog({ open, projectId, onCreated, onPending, onOpenCha
 					<TaskComposer
 						projectId={projectId}
 						autoFocusTitle
-						onPending={(routeSessionId) => {
-							onPending?.(routeSessionId);
-							onOpenChange(false);
-						}}
 						onCreated={(sessionId) => {
 							onCreated(sessionId);
 							onOpenChange(false);

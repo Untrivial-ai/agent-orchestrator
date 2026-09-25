@@ -493,7 +493,7 @@ func (s *Store) ListSharedProjectSessions(
 	}
 	rows, err := tx.Query(
 		ctx,
-		sessionSelect+` WHERE session.org_id = $1 AND session.project_id = $2 AND session.is_preparation = false ORDER BY session.updated_at DESC`,
+		sessionSelect+` WHERE session.org_id = $1 AND session.project_id = $2 ORDER BY session.updated_at DESC`,
 		orgID, projectID,
 	)
 	if err != nil {

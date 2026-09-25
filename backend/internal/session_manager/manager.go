@@ -985,18 +985,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	promptBytes := len(prompt)
 	systemPromptBytes := len(systemPrompt)
 
-	seed := seedRecord(cfg, project.Config, m.clock())
-	var rec domain.SessionRecord
-	if cfg.TaskDelegationKey != "" {
-		var claimed bool
-		rec, claimed, err = m.createDelegationSeed(ctx, cfg, seed)
-		if err == nil && !claimed {
-			current, err := m.getRecord(ctx, rec.ID)
-			return current, 0, 0, err
-		}
-	} else {
-		rec, err = m.store.CreateSession(ctx, seed)
-	}
+	rec, err := m.store.CreateSession(ctx, seedRecord(cfg, project.Config, m.clock()))
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, wrapSpawnStageEarly(ErrSpawnCreate, err)
 	}
@@ -1065,7 +1054,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		if err != nil {
 			return domain.SessionRecord{}, 0, 0, err
 		}
-		return rec, promptBytes, systemPromptBytes, m.completeDelegationStartup(ctx, cfg, rec)
+		return rec, promptBytes, systemPromptBytes, nil
 	}
 
 	agent, ok := m.agents.Agent(cfg.Harness)
@@ -1196,7 +1185,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if err != nil {
 		return domain.SessionRecord{}, 0, 0, err
 	}
-	return rec, promptBytes, systemPromptBytes, m.completeDelegationStartup(ctx, cfg, rec)
+	return rec, promptBytes, systemPromptBytes, nil
 }
 
 func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig, project domain.ProjectConfig) (ports.AgentConfig, error) {
@@ -2874,26 +2863,6 @@ func (m *Manager) saveAndTeardownOne(ctx context.Context, rec domain.SessionReco
 // conversation identity. A restart-time dependency failure is not user intent
 // to terminate the session; the controller can be retried through Resume Agent.
 func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) error {
-	if store, ok := m.store.(interface {
-		TaskDelegationStartupForWorker(context.Context, domain.SessionID) (domain.TaskDelegationStartupState, error)
-	}); ok {
-		state, err := store.TaskDelegationStartupForWorker(ctx, rec.ID)
-		if err != nil {
-			return err
-		}
-		if state == domain.TaskDelegationStartupSeeded || state == domain.TaskDelegationStartupStarting {
-			// A missing handle does not prove that external startup never happened.
-			return fmt.Errorf("reconcile %s: %w", rec.ID, domain.ErrTaskDelegationRecoveryRequired)
-		}
-		if state != "" {
-			current, ok, err := m.store.GetSession(ctx, rec.ID)
-			if err != nil || !ok || current.IsTerminated {
-				return err
-			}
-			// Startup may have completed since the boot snapshot was taken.
-			rec = current
-		}
-	}
 	project, err := m.loadProject(ctx, rec.ProjectID)
 	if err != nil {
 		return err

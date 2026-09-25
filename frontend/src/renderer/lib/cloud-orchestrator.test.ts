@@ -4,38 +4,23 @@ import { settingsQueryKey, type Settings } from "../hooks/useSettings";
 import type { CloudCpProviderConnection } from "./cloud-cp";
 import { selectCloudOrchestratorHarness, spawnCloudOrchestrator } from "./cloud-orchestrator";
 
-const h = vi.hoisted(() => ({
+const cloudMocks = vi.hoisted(() => ({
 	me: vi.fn(),
 	listProviderConnections: vi.fn(),
 	listUserProviderConnections: vi.fn(),
 	listProjects: vi.fn(),
 	createSession: vi.fn(),
-	beginCloudStartupAttempt: vi.fn(() => ({ attemptId: "attempt-orchestrator", startedAtMs: 10 })),
-	bindCloudStartupAttempt: vi.fn(),
-	captureRendererEvent: vi.fn(),
 }));
 
 vi.mock("../hooks/useCloudCp", () => ({
 	createRendererCloudCpClient: () => ({
-		me: h.me,
-		listProviderConnections: h.listProviderConnections,
-		listUserProviderConnections: h.listUserProviderConnections,
-		listProjects: h.listProjects,
-		createSession: h.createSession,
+		me: cloudMocks.me,
+		listProviderConnections: cloudMocks.listProviderConnections,
+		listUserProviderConnections: cloudMocks.listUserProviderConnections,
+		listProjects: cloudMocks.listProjects,
+		createSession: cloudMocks.createSession,
 	}),
 }));
-
-vi.mock("../stores/sandbox-provider-store", () => ({ readSelectedSandboxProvider: () => null }));
-vi.mock("./telemetry", () => ({ captureRendererEvent: h.captureRendererEvent }));
-vi.mock("./cloud-startup-timing", () => ({
-	beginCloudStartupAttempt: h.beginCloudStartupAttempt,
-	bindCloudStartupAttempt: h.bindCloudStartupAttempt,
-}));
-
-beforeEach(() => {
-	for (const mock of Object.values(h)) mock.mockReset();
-	h.beginCloudStartupAttempt.mockReturnValue({ attemptId: "attempt-orchestrator", startedAtMs: 10 });
-});
 
 function connection(provider: string, validationState = "valid"): CloudCpProviderConnection {
 	return {
@@ -66,39 +51,34 @@ describe("selectCloudOrchestratorHarness", () => {
 });
 
 describe("spawnCloudOrchestrator", () => {
+	beforeEach(() => {
+		cloudMocks.me.mockReset();
+		cloudMocks.listProviderConnections.mockReset();
+		cloudMocks.listUserProviderConnections.mockReset();
+		cloudMocks.listProjects.mockReset();
+		cloudMocks.createSession.mockReset();
+	});
+
 	function primeClient(project?: { id: string; config?: Record<string, unknown> }) {
 		const queryClient = new QueryClient();
 		queryClient.setQueryData<Settings>(settingsQueryKey, {
 			cloudControlPlaneUrl: "https://cloud.example.com",
 		} as Settings);
-		h.me.mockResolvedValue({ organizations: [{ id: "org-1" }] });
-		h.listUserProviderConnections.mockResolvedValue({ providerConnections: [] });
-		h.listProjects.mockResolvedValue({ items: project ? [project] : [] });
-		h.createSession.mockResolvedValue({ session: { id: "session-1" } });
+		cloudMocks.me.mockResolvedValue({ organizations: [{ id: "org-1" }] });
+		cloudMocks.listUserProviderConnections.mockResolvedValue({ providerConnections: [] });
+		cloudMocks.listProjects.mockResolvedValue({ items: project ? [project] : [] });
+		cloudMocks.createSession.mockResolvedValue({ session: { id: "session-1" } });
 		return queryClient;
 	}
 
-	it("binds the startup attempt to the created session", async () => {
-		const queryClient = primeClient({ id: "project-1" });
-		h.listProviderConnections.mockResolvedValue({ providerConnections: [connection("codex")] });
-		h.createSession.mockResolvedValue({ session: { id: "orchestrator-1" } });
-
-		await expect(spawnCloudOrchestrator(queryClient, "project-1")).resolves.toBe("orchestrator-1");
-		expect(h.beginCloudStartupAttempt).toHaveBeenCalledOnce();
-		expect(h.bindCloudStartupAttempt).toHaveBeenCalledWith("orchestrator-1", {
-			attemptId: "attempt-orchestrator",
-			startedAtMs: 10,
-		});
-	});
-
 	it("starts without a user kickoff prompt so the role comes only from the system prompt", async () => {
 		const queryClient = primeClient({ id: "project-1" });
-		h.listProviderConnections.mockResolvedValue({
+		cloudMocks.listProviderConnections.mockResolvedValue({
 			providerConnections: [connection("claude-code")],
 		});
 
 		await expect(spawnCloudOrchestrator(queryClient, "project-1")).resolves.toBe("session-1");
-		expect(h.createSession).toHaveBeenCalledWith("org-1", {
+		expect(cloudMocks.createSession).toHaveBeenCalledWith("org-1", {
 			projectId: "project-1",
 			kind: "orchestrator",
 			harness: "claude-code",
@@ -114,12 +94,12 @@ describe("spawnCloudOrchestrator", () => {
 			id: "project-1",
 			config: { orchestrator: { agent: "claude-code" } },
 		});
-		h.listProviderConnections.mockResolvedValue({
+		cloudMocks.listProviderConnections.mockResolvedValue({
 			providerConnections: [connection("codex"), connection("claude-code")],
 		});
 
 		await expect(spawnCloudOrchestrator(queryClient, "project-1")).resolves.toBe("session-1");
-		expect(h.createSession).toHaveBeenCalledWith(
+		expect(cloudMocks.createSession).toHaveBeenCalledWith(
 			"org-1",
 			expect.objectContaining({ harness: "claude-code", kind: "orchestrator" }),
 		);
@@ -132,12 +112,12 @@ describe("spawnCloudOrchestrator", () => {
 			id: "project-1",
 			config: { orchestrator: { agent: "cursor" } },
 		});
-		h.listProviderConnections.mockResolvedValue({
+		cloudMocks.listProviderConnections.mockResolvedValue({
 			providerConnections: [connection("codex")],
 		});
 
 		await expect(spawnCloudOrchestrator(queryClient, "project-1")).resolves.toBe("session-1");
-		expect(h.createSession).toHaveBeenCalledWith(
+		expect(cloudMocks.createSession).toHaveBeenCalledWith(
 			"org-1",
 			expect.objectContaining({ harness: "codex" }),
 		);

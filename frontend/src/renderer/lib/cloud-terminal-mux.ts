@@ -54,7 +54,6 @@ export interface CloudTerminalMuxOptions {
 type DataListener = (bytes: Uint8Array) => void;
 type ExitListener = () => void;
 type OpenedListener = () => void;
-type ReplayCompleteListener = (hadOutput: boolean) => void;
 type ErrorListener = (message: string) => void;
 type ConnectionListener = (state: MuxConnectionState) => void;
 
@@ -63,10 +62,8 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 	const dataListeners = new Set<DataListener>();
 	const exitListeners = new Set<ExitListener>();
 	const openedListeners = new Set<OpenedListener>();
-	const replayCompleteListeners = new Set<ReplayCompleteListener>();
 	const errorListeners = new Set<ErrorListener>();
 	const connectionListeners = new Set<ConnectionListener>();
-	const pendingData: Uint8Array[] = [];
 
 	let socket: WebSocket | null = null;
 	// Resume from the shared cursor so a rebuilt mux does not replay the whole
@@ -80,33 +77,8 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 	let disposed = false;
 	let exited = false;
 	let connectionState: MuxConnectionState | undefined;
-	let readyReceived = false;
-	let replayCompleteReceived = false;
-	let replayCompleteHadOutput = false;
-	let replayHadOutput = false;
-	let pendingDataFlushScheduled = false;
 	let pendingResize: { cols: number; rows: number } | null = null;
 	const pendingInput: string[] = [];
-
-	const emitData = (bytes: Uint8Array) => {
-		if (dataListeners.size === 0) {
-			pendingData.push(bytes);
-			return;
-		}
-		dataListeners.forEach((listener) => listener(bytes));
-	};
-
-	const schedulePendingDataFlush = () => {
-		if (pendingDataFlushScheduled || pendingData.length === 0) return;
-		pendingDataFlushScheduled = true;
-		queueMicrotask(() => {
-			pendingDataFlushScheduled = false;
-			if (disposed || dataListeners.size === 0) return;
-			for (const bytes of pendingData.splice(0)) {
-				dataListeners.forEach((listener) => listener(bytes));
-			}
-		});
-	};
 
 	const setConnectionState = (next: MuxConnectionState) => {
 		if (disposed || connectionState === next) return;
@@ -144,15 +116,13 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 		switch (message.type) {
 			case "ready":
 				if (typeof message.sequence === "number") advanceCursor(message.sequence);
-				readyReceived = true;
 				openedListeners.forEach((listener) => listener());
 				break;
 			case "output":
 				if (typeof message.sequence === "number") advanceCursor(message.sequence);
 				if (message.data) {
-					if (!replayCompleteReceived) replayHadOutput = true;
 					const bytes = base64ToBytes(message.data);
-					emitData(bytes);
+					dataListeners.forEach((listener) => listener(bytes));
 				}
 				break;
 			case "reset":
@@ -162,20 +132,13 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 				// screen + scrollback, home the cursor) so the fresh replay does not
 				// stack on top of the old buffer.
 				advanceCursor(0);
-				replayCompleteReceived = false;
-				replayCompleteHadOutput = false;
-				replayHadOutput = false;
 				{
 					const clear = new TextEncoder().encode("\x1b[3J\x1b[H\x1b[2J");
-					emitData(clear);
+					dataListeners.forEach((listener) => listener(clear));
 				}
 				break;
-			case "replay_complete":
-				replayCompleteReceived = true;
-				replayCompleteHadOutput = replayHadOutput;
-				replayCompleteListeners.forEach((listener) => listener(replayCompleteHadOutput));
-				break;
-			// starting / input_ack carry no terminal output the pane must render.
+			// starting / replay_complete / input_ack carry no terminal output the
+			// pane must render.
 			default:
 				break;
 		}
@@ -282,7 +245,6 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 		},
 		onData: (_id, listener) => {
 			dataListeners.add(listener);
-			schedulePendingDataFlush();
 			return () => dataListeners.delete(listener);
 		},
 		onExit: (_id, listener) => {
@@ -291,21 +253,7 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 		},
 		onOpened: (_id, listener) => {
 			openedListeners.add(listener);
-			if (readyReceived) {
-				queueMicrotask(() => {
-					if (!disposed && openedListeners.has(listener)) listener();
-				});
-			}
 			return () => openedListeners.delete(listener);
-		},
-		onReplayComplete: (_id, listener) => {
-			replayCompleteListeners.add(listener);
-			if (replayCompleteReceived) {
-				queueMicrotask(() => {
-					if (!disposed && replayCompleteListeners.has(listener)) listener(replayCompleteHadOutput);
-				});
-			}
-			return () => replayCompleteListeners.delete(listener);
 		},
 		onError: (_id, listener) => {
 			errorListeners.add(listener);
@@ -321,10 +269,8 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 			dataListeners.clear();
 			exitListeners.clear();
 			openedListeners.clear();
-			replayCompleteListeners.clear();
 			errorListeners.clear();
 			connectionListeners.clear();
-			pendingData.length = 0;
 			if (socket) {
 				try {
 					socket.close();

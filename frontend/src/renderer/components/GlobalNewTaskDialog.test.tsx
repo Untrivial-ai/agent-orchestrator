@@ -19,13 +19,11 @@ vi.mock("./NewTaskDialog", () => ({
 		open,
 		projectId,
 		onCreated,
-		onPending,
 		onOpenChange,
 	}: {
 		open: boolean;
 		projectId?: string;
 		onCreated: (id: string) => void;
-		onPending?: (id: string) => void;
 		onOpenChange: (open: boolean) => void;
 	}) => {
 		const [draft, setDraft] = useState("");
@@ -37,9 +35,6 @@ vi.mock("./NewTaskDialog", () => ({
 				</label>
 				<button type="button" onClick={() => onCreated("sess-9")}>
 					create
-				</button>
-				<button type="button" onClick={() => onPending?.("pending-cloud-attempt-9")}>
-					pending
 				</button>
 				<button type="button" onClick={() => onOpenChange(false)}>
 					close
@@ -91,22 +86,6 @@ describe("GlobalNewTaskDialog", () => {
 		expect(navigateMock).toHaveBeenCalledWith({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: "proj-7", sessionId: "sess-9" },
-		});
-	});
-
-	it("navigates to the pending session route before creation finishes", async () => {
-		const user = userEvent.setup();
-		renderDialog();
-
-		act(() => {
-			useUiStore.getState().requestNewTask("proj-7");
-		});
-		await screen.findByTestId("new-task-dialog");
-		await user.click(screen.getByRole("button", { name: "pending" }));
-
-		expect(navigateMock).toHaveBeenCalledWith({
-			to: "/projects/$projectId/sessions/$sessionId",
-			params: { projectId: "proj-7", sessionId: "pending-cloud-attempt-9" },
 		});
 	});
 

@@ -199,43 +199,6 @@ export interface CloudCpCreateSessionRequest {
 	provider?: string;
 }
 
-export interface CloudCpPrepareSessionRequest {
-	projectId: string;
-	harness: string;
-	clientInstanceId: string;
-	sandboxProviderConnectionId?: string;
-	provider?: string;
-}
-
-export interface CloudCpSessionPreparationLease {
-	attachmentExpiresAt: string;
-	expiresAt: string;
-	leaseSeconds: number;
-	generation: number;
-}
-
-export interface CloudCpPrepareSessionResponse extends CloudCpSessionResponse {
-	claimId: string;
-	disposition: "created" | "reused";
-	preparation: CloudCpSessionPreparationLease;
-}
-
-export interface CloudCpRenewSessionPreparationResponse {
-	preparation: CloudCpSessionPreparationLease;
-}
-
-export interface CloudCpCommitSessionPreparationRequest {
-	displayName: string;
-	prompt: string;
-	clientInstanceId: string;
-	generation: number;
-}
-
-export interface CloudCpRenewSessionPreparationRequest {
-	clientInstanceId: string;
-	generation: number;
-}
-
 export interface CloudCpSessionRepo {
 	url: string;
 	branch?: string;
@@ -551,8 +514,6 @@ export interface CloudCpRestoreSessionResponse {
 export interface CloudCpSendMessageRequest {
 	/** 1-65536 bytes. */
 	text: string;
-	/** Monotonic order within one renderer startup attempt. */
-	clientSequence: number;
 }
 
 export interface CloudCpClientEvent {

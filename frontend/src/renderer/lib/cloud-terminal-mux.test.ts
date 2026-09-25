@@ -106,49 +106,6 @@ describe("createCloudTerminalMux direct open", () => {
 });
 
 describe("createCloudTerminalMux cursor resume", () => {
-	it("delivers ready and replay frames that arrive before listeners subscribe", async () => {
-		FakeWebSocket.instances = [];
-		const mux = makeMux();
-		await settle();
-		const ws = FakeWebSocket.instances[0];
-		ws.deliver({ type: "ready", sequence: 0 });
-		ws.deliver({ type: "reset" });
-		ws.deliver({ type: "output", sequence: 1, data: b64("ready now") });
-		ws.deliver({ type: "replay_complete", sequence: 1 });
-
-		let opened = 0;
-		const replayComplete: boolean[] = [];
-		const chunks: string[] = [];
-		mux.onOpened("agent", () => {
-			opened += 1;
-		});
-		mux.onData("agent", (bytes) => chunks.push(new TextDecoder().decode(bytes)));
-		mux.onReplayComplete?.("agent", (hadOutput) => {
-			replayComplete.push(hadOutput);
-		});
-		await settle();
-
-		expect(opened).toBe(1);
-		expect(chunks.join("")).toContain("ready now");
-		expect(replayComplete).toEqual([true]);
-		mux.dispose();
-	});
-
-	it("does not mark a reset-only replay as usable terminal output", async () => {
-		FakeWebSocket.instances = [];
-		const mux = makeMux();
-		await settle();
-		const ws = FakeWebSocket.instances[0];
-		const replayComplete: boolean[] = [];
-		mux.onReplayComplete?.("agent", (hadOutput) => {
-			replayComplete.push(hadOutput);
-		});
-		ws.deliver({ type: "reset" });
-		ws.deliver({ type: "replay_complete", sequence: 0 });
-		expect(replayComplete).toEqual([false]);
-		mux.dispose();
-	});
-
 	it("advances a shared cursor on output and resumes a rebuilt mux from it", async () => {
 		FakeWebSocket.instances = [];
 		const cursor = { value: 0 };

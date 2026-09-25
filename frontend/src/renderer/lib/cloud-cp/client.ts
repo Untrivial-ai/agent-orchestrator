@@ -21,11 +21,6 @@ import type {
 	CloudCpCreateOrganizationResponse,
 	CloudCpCreateProjectRequest,
 	CloudCpCreateSessionRequest,
-	CloudCpPrepareSessionRequest,
-	CloudCpCommitSessionPreparationRequest,
-	CloudCpPrepareSessionResponse,
-	CloudCpRenewSessionPreparationRequest,
-	CloudCpRenewSessionPreparationResponse,
 	CloudCpErrorEnvelope,
 	CloudCpInvitationsResponse,
 	CloudCpListQuery,
@@ -155,30 +150,6 @@ export interface CloudCpClient {
 	createSession(
 		orgId: string,
 		body: CloudCpCreateSessionRequest,
-		options?: CloudCpMutationOptions,
-	): Promise<CloudCpSessionResponse>;
-	prepareSession(
-		orgId: string,
-		body: CloudCpPrepareSessionRequest,
-		options?: CloudCpMutationOptions,
-	): Promise<CloudCpPrepareSessionResponse>;
-	renewSessionPreparation(
-		orgId: string,
-		sessionId: string,
-		body: CloudCpRenewSessionPreparationRequest,
-		options?: CloudCpRequestOptions,
-	): Promise<CloudCpRenewSessionPreparationResponse>;
-	detachSessionPreparation(
-		orgId: string,
-		sessionId: string,
-		clientInstanceId: string,
-		generation: number,
-		options?: CloudCpRequestOptions,
-	): Promise<CloudCpRenewSessionPreparationResponse>;
-	commitSessionPreparation(
-		orgId: string,
-		sessionId: string,
-		body: CloudCpCommitSessionPreparationRequest,
 		options?: CloudCpMutationOptions,
 	): Promise<CloudCpSessionResponse>;
 	getSession(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
@@ -500,29 +471,6 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			}),
 		createSession: (orgId, body, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions`, {
-				body,
-				signal: o?.signal,
-				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
-			}),
-		prepareSession: (orgId, body, o) =>
-			requestJson("POST", `/orgs/${seg(orgId)}/session-preparations`, {
-				body,
-				signal: o?.signal,
-				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
-			}),
-		renewSessionPreparation: (orgId, sessionId, body, o) =>
-			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/renew-preparation`, {
-				body,
-				signal: o?.signal,
-			}),
-		detachSessionPreparation: (orgId, sessionId, clientInstanceId, generation, o) =>
-			requestJson(
-				"DELETE",
-				`/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/preparation-attachments/${seg(clientInstanceId)}`,
-				{ query: { generation }, signal: o?.signal },
-			),
-		commitSessionPreparation: (orgId, sessionId, body, o) =>
-			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/commit-preparation`, {
 				body,
 				signal: o?.signal,
 				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),

@@ -172,7 +172,6 @@ describe("NewTaskDialog", () => {
 				// call names it instead of relying on a server-side fallback.
 				agent: "claude-code",
 				model: "placeholder-model",
-				idempotencyKey: expect.any(String),
 			},
 		});
 		expect(requestBody()).not.toHaveProperty("issueId");

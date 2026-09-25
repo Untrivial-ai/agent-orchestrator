@@ -1,3 +1,7 @@
+> Historical combined-branch record. Preparation changes are now reviewed
+> separately. For the current browser scope and test instructions, see
+> [Shared browser sessions](../../cloud-shared-browser.md).
+
 # Cloud browser review fixes
 
 Baseline: `e18b13b07`. Scope: five review findings and the process-wait race

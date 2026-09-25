@@ -28,18 +28,6 @@ type projectOrchestratorStore interface {
 	ProjectActiveOrchestrator(ctx context.Context, orgID, projectID string) (orchestratorID, provider string, found bool, err error)
 }
 
-type sessionCredentialPreflight struct {
-	available bool
-	err       error
-}
-
-type sessionOrchestratorPreflight struct {
-	id       string
-	provider string
-	found    bool
-	err      error
-}
-
 type createProjectRequest struct {
 	DisplayName   string         `json:"displayName"`
 	RepositoryURL string         `json:"repositoryUrl"`
@@ -96,38 +84,8 @@ type createSessionRequest struct {
 	// Provider selects which configured sandbox provider runs this session. It
 	// is optional: an empty value uses the control plane default. When set it
 	// must be one of the providers the deployment offers (see /me).
-	Provider                    string `json:"provider,omitempty"`
-	PreparationClientInstanceID string `json:"-"`
+	Provider string `json:"provider,omitempty"`
 }
-
-type prepareSessionRequest struct {
-	ProjectID                   string `json:"projectId"`
-	Harness                     string `json:"harness"`
-	SandboxProviderConnectionID string `json:"sandboxProviderConnectionId,omitempty"`
-	Provider                    string `json:"provider,omitempty"`
-	ClientInstanceID            string `json:"clientInstanceId"`
-}
-
-type commitSessionPreparationRequest struct {
-	DisplayName      string `json:"displayName"`
-	Prompt           string `json:"prompt"`
-	ClientInstanceID string `json:"clientInstanceId"`
-	Generation       int64  `json:"generation"`
-}
-
-type renewSessionPreparationRequest struct {
-	ClientInstanceID string `json:"clientInstanceId"`
-	Generation       int64  `json:"generation"`
-}
-
-type sessionPreparationLeaseResponse struct {
-	ExpiresAt           time.Time `json:"expiresAt"`
-	AttachmentExpiresAt time.Time `json:"attachmentExpiresAt"`
-	LeaseSeconds        int64     `json:"leaseSeconds"`
-	Generation          int64     `json:"generation"`
-}
-
-const sessionPreparationTTL = 2 * time.Minute
 
 type createSessionRepo struct {
 	URL    string `json:"url"`
@@ -305,7 +263,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !reachable {
-		writeError(w, r, http.StatusUnprocessableEntity, "repository_unreachable", "The saved GitHub token cannot access this repository. Check the URL or update the token's repository access.")
+		writeError(w, r, http.StatusUnprocessableEntity, "repository_unreachable", "Can't reach this repository — it may be private, or the URL may be wrong.")
 		return
 	}
 	owner, repo, _ := parseGitHubRepo(request.RepositoryURL)
@@ -446,49 +404,6 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "The request body is invalid.")
 		return
 	}
-	s.createSessionFromRequest(w, r, orgID, key, request, 0)
-}
-
-func (s *Server) prepareSession(w http.ResponseWriter, r *http.Request) {
-	orgID := chi.URLParam(r, "orgId")
-	if requireUUID(orgID, "orgId") != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId must be a UUID.")
-		return
-	}
-	key, err := idempotencyKey(r)
-	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	var input prepareSessionRequest
-	if err := decodeJSON(w, r, &input); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "The request body is invalid.")
-		return
-	}
-	input.ClientInstanceID = strings.TrimSpace(input.ClientInstanceID)
-	if requireUUID(input.ClientInstanceID, "clientInstanceId") != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "clientInstanceId must be a UUID.")
-		return
-	}
-	s.createSessionFromRequest(w, r, orgID, key, createSessionRequest{
-		ProjectID:                   input.ProjectID,
-		Kind:                        "worker",
-		Harness:                     input.Harness,
-		DisplayName:                 "New task",
-		Mode:                        "trusted",
-		SandboxProviderConnectionID: input.SandboxProviderConnectionID,
-		Provider:                    input.Provider,
-		PreparationClientInstanceID: input.ClientInstanceID,
-	}, sessionPreparationTTL)
-}
-
-func (s *Server) createSessionFromRequest(
-	w http.ResponseWriter,
-	r *http.Request,
-	orgID, key string,
-	request createSessionRequest,
-	preparationExpiresAfter time.Duration,
-) {
 	request.ProjectID = strings.TrimSpace(request.ProjectID)
 	request.Harness = strings.TrimSpace(request.Harness)
 	request.DisplayName = strings.TrimSpace(request.DisplayName)
@@ -509,43 +424,34 @@ func (s *Server) createSessionFromRequest(
 		)
 		return
 	}
-	credentialResult := make(chan sessionCredentialPreflight, 1)
-	go func() {
-		available, err := s.sessionCredentialAvailable(
-			r.Context(), principalFrom(r), orgID, request.Harness,
+	if store, ok := s.store.(providerConnectionStore); ok {
+		connections, err := store.ListProviderConnections(
+			r.Context(), principalFrom(r), orgID,
 		)
-		credentialResult <- sessionCredentialPreflight{available: available, err: err}
-	}()
-	orchestratorResult := make(chan sessionOrchestratorPreflight, 1)
-	go func() {
-		result := sessionOrchestratorPreflight{}
-		if request.Kind == "worker" {
-			if store, ok := s.store.(projectOrchestratorStore); ok {
-				result.id, result.provider, result.found, result.err = store.ProjectActiveOrchestrator(
-					r.Context(), orgID, request.ProjectID,
+		if err != nil {
+			s.writeStoreError(w, r, err)
+			return
+		}
+		available := agentConnectionAvailable(connections, request.Harness)
+		if !available {
+			if userStore, ok := s.store.(userProviderCredentialStore); ok {
+				available, err = userStore.UserAgentCredentialAvailable(
+					r.Context(), principalFrom(r).UserID, request.Harness,
 				)
+				if err != nil {
+					s.writeStoreError(w, r, err)
+					return
+				}
 			}
 		}
-		orchestratorResult <- result
-	}()
-
-	credential := <-credentialResult
-	if credential.err != nil {
-		s.writeStoreError(w, r, credential.err)
-		return
-	}
-	if !credential.available {
-		writeError(
-			w, r, http.StatusUnprocessableEntity,
-			"agent_provider_required",
-			"Connect and validate the selected coding-agent provider before creating a session.",
-		)
-		return
-	}
-	orchestrator := <-orchestratorResult
-	if orchestrator.err != nil {
-		s.writeStoreError(w, r, orchestrator.err)
-		return
+		if !available {
+			writeError(
+				w, r, http.StatusUnprocessableEntity,
+				"agent_provider_required",
+				"Connect and validate the selected coding-agent provider before creating a session.",
+			)
+			return
+		}
 	}
 	// A top-level worker created for a project that already has an active
 	// orchestrator is auto-linked to it: the orchestrator then sees, drives, and
@@ -556,9 +462,20 @@ func (s *Server) createSessionFromRequest(
 	// provider, matching ao spawn'ed children. An orchestrator, or a worker
 	// created before any orchestrator exists, stays unlinked.
 	parentSessionID := ""
-	if orchestrator.found {
-		parentSessionID = orchestrator.id
-		request.Provider = orchestrator.provider
+	if request.Kind == "worker" {
+		if orchStore, ok := s.store.(projectOrchestratorStore); ok {
+			orchestratorID, orchestratorProvider, found, lookupErr := orchStore.ProjectActiveOrchestrator(
+				r.Context(), orgID, request.ProjectID,
+			)
+			if lookupErr != nil {
+				s.writeStoreError(w, r, lookupErr)
+				return
+			}
+			if found {
+				parentSessionID = orchestratorID
+				request.Provider = orchestratorProvider
+			}
+		}
 	}
 	// Validate the sandbox provider AFTER the auto-link override above: an
 	// auto-linked worker inherits its orchestrator's provider, so the
@@ -626,175 +543,26 @@ func (s *Server) createSessionFromRequest(
 		key,
 		s.maxSandboxes,
 		domain.CreateSession{
-			ProjectID:                   request.ProjectID,
-			Kind:                        request.Kind,
-			Harness:                     request.Harness,
-			DisplayName:                 request.DisplayName,
-			Prompt:                      request.Prompt,
-			Mode:                        request.Mode,
-			DeniedCommands:              request.DeniedCommands,
-			Provider:                    plan.Provider,
-			SandboxConnectionID:         request.SandboxProviderConnectionID,
-			ResourceProfile:             plan.ResourceProfile,
-			BootstrapContext:            plan.BootstrapContext,
-			Release:                     s.release,
-			ParentSessionID:             parentSessionID,
-			PreparationExpiresAfter:     preparationExpiresAfter,
-			PreparationClientInstanceID: request.PreparationClientInstanceID,
+			ProjectID:           request.ProjectID,
+			Kind:                request.Kind,
+			Harness:             request.Harness,
+			DisplayName:         request.DisplayName,
+			Prompt:              request.Prompt,
+			Mode:                request.Mode,
+			DeniedCommands:      request.DeniedCommands,
+			Provider:            plan.Provider,
+			SandboxConnectionID: request.SandboxProviderConnectionID,
+			ResourceProfile:     plan.ResourceProfile,
+			BootstrapContext:    plan.BootstrapContext,
+			Release:             s.release,
+			ParentSessionID:     parentSessionID,
 		},
 	)
 	if err != nil {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	response := map[string]any{"session": toSessionResponse(session, nil)}
-	if preparationExpiresAfter > 0 {
-		if session.PreparationExpiresAt == nil {
-			s.logger.Error("create session preparation without expiry", "session_id", session.ID, "request_id", requestID(r))
-			writeError(w, r, http.StatusInternalServerError, "internal_error", "The request could not be completed.")
-			return
-		}
-		response["preparation"] = sessionPreparationLeaseResponse{
-			ExpiresAt:           *session.PreparationExpiresAt,
-			AttachmentExpiresAt: *session.PreparationExpiresAt,
-			LeaseSeconds:        int64(preparationExpiresAfter / time.Second),
-			Generation:          session.PreparationGeneration,
-		}
-		response["claimId"] = session.ID
-		response["disposition"] = session.PreparationDisposition
-	}
-	writeJSON(w, http.StatusCreated, response)
-}
-
-func (s *Server) sessionCredentialAvailable(
-	ctx context.Context,
-	principal domain.Principal,
-	orgID, harness string,
-) (bool, error) {
-	store, ok := s.store.(providerConnectionStore)
-	if !ok {
-		return true, nil
-	}
-	connections, err := store.ListProviderConnections(ctx, principal, orgID)
-	if err != nil {
-		return false, err
-	}
-	if agentConnectionAvailable(connections, harness) {
-		return true, nil
-	}
-	userStore, ok := s.store.(userProviderCredentialStore)
-	if !ok {
-		return false, nil
-	}
-	return userStore.UserAgentCredentialAvailable(ctx, principal.UserID, harness)
-}
-
-func (s *Server) commitSessionPreparation(w http.ResponseWriter, r *http.Request) {
-	orgID := chi.URLParam(r, "orgId")
-	sessionID := chi.URLParam(r, "sessionId")
-	if requireUUID(orgID, "orgId") != nil || requireUUID(sessionID, "sessionId") != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
-		return
-	}
-	key, err := idempotencyKey(r)
-	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	var request commitSessionPreparationRequest
-	if err := decodeJSON(w, r, &request); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "The request body is invalid.")
-		return
-	}
-	request.DisplayName = strings.TrimSpace(request.DisplayName)
-	request.ClientInstanceID = strings.TrimSpace(request.ClientInstanceID)
-	if request.DisplayName == "" || len(request.DisplayName) > 80 ||
-		strings.TrimSpace(request.Prompt) == "" || len(request.Prompt) > 65536 ||
-		requireUUID(request.ClientInstanceID, "clientInstanceId") != nil || request.Generation < 1 {
-		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Session name or prompt is invalid.")
-		return
-	}
-	session, err := s.store.CommitSessionPreparation(
-		r.Context(), principalFrom(r), orgID, sessionID, key,
-		domain.CommitSessionPreparation{
-			DisplayName:      request.DisplayName,
-			Prompt:           request.Prompt,
-			ClientInstanceID: request.ClientInstanceID,
-			Generation:       request.Generation,
-		},
-	)
-	if err != nil {
-		s.writeStoreError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"session": toSessionResponse(session, nil)})
-}
-
-func (s *Server) renewSessionPreparation(w http.ResponseWriter, r *http.Request) {
-	orgID := chi.URLParam(r, "orgId")
-	sessionID := chi.URLParam(r, "sessionId")
-	if requireUUID(orgID, "orgId") != nil || requireUUID(sessionID, "sessionId") != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
-		return
-	}
-	var request renewSessionPreparationRequest
-	if err := decodeJSON(w, r, &request); err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "The request body is invalid.")
-		return
-	}
-	request.ClientInstanceID = strings.TrimSpace(request.ClientInstanceID)
-	if requireUUID(request.ClientInstanceID, "clientInstanceId") != nil || request.Generation < 1 {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "A valid clientInstanceId and generation are required.")
-		return
-	}
-	lease, err := s.store.RenewSessionPreparation(
-		r.Context(), principalFrom(r), orgID, sessionID,
-		request.ClientInstanceID, request.Generation, sessionPreparationTTL,
-	)
-	if err != nil {
-		s.writeStoreError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"preparation": sessionPreparationLeaseResponse{
-			ExpiresAt:           lease.ExpiresAt,
-			AttachmentExpiresAt: lease.ExpiresAt,
-			LeaseSeconds:        int64(sessionPreparationTTL / time.Second),
-			Generation:          lease.Generation,
-		},
-	})
-}
-
-func (s *Server) detachSessionPreparation(w http.ResponseWriter, r *http.Request) {
-	orgID := chi.URLParam(r, "orgId")
-	sessionID := chi.URLParam(r, "sessionId")
-	clientInstanceID := chi.URLParam(r, "clientInstanceId")
-	if requireUUID(orgID, "orgId") != nil || requireUUID(sessionID, "sessionId") != nil ||
-		requireUUID(clientInstanceID, "clientInstanceId") != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId, sessionId, and clientInstanceId must be UUIDs.")
-		return
-	}
-	generation, err := strconv.ParseInt(r.URL.Query().Get("generation"), 10, 64)
-	if err != nil || generation < 1 {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "generation must be a positive integer.")
-		return
-	}
-	lease, err := s.store.DetachSessionPreparation(
-		r.Context(), principalFrom(r), orgID, sessionID,
-		clientInstanceID, generation, sessionPreparationTTL,
-	)
-	if err != nil {
-		s.writeStoreError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"preparation": sessionPreparationLeaseResponse{
-			ExpiresAt:           lease.ExpiresAt,
-			AttachmentExpiresAt: lease.ExpiresAt,
-			LeaseSeconds:        int64(sessionPreparationTTL / time.Second),
-			Generation:          lease.Generation,
-		},
-	})
+	writeJSON(w, http.StatusCreated, map[string]any{"session": toSessionResponse(session, nil)})
 }
 
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
@@ -1118,62 +886,38 @@ func (s *Server) probeRepositoryAccess(ctx context.Context, repositoryURL string
 	defer cancel()
 
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)
-	probe := func(token string) (status int, push bool, err error) {
-		req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, apiURL, http.NoBody)
-		if err != nil {
-			return 0, false, err
-		}
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-		req.Header.Set("Accept", "application/vnd.github.v3+json")
-		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-
-		resp, err := s.repositoryProbeClient.Do(req)
-		if err != nil {
-			return 0, false, err
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != http.StatusOK {
-			return resp.StatusCode, false, nil
-		}
-
-		var data struct {
-			Permissions struct {
-				Push bool `json:"push"`
-			} `json:"permissions"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-			return 0, false, err
-		}
-		return resp.StatusCode, data.Permissions.Push, nil
-	}
-
-	status, push, err := probe(token)
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, apiURL, http.NoBody)
 	if err != nil {
 		return false, false, err
 	}
-	if status == http.StatusOK {
-		return true, push, nil
-	}
-	if status != http.StatusUnauthorized && status != http.StatusNotFound {
-		return false, false, fmt.Errorf("github api returned status %d", status)
-	}
 
-	// A valid fine-grained token can return 404 for a public repository that is
-	// outside its selected repository scope. Retry without credentials so public
-	// repositories remain usable, but report them as read-only for this token.
-	status, _, err = probe("")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := s.repositoryProbeClient.Do(req)
 	if err != nil {
 		return false, false, err
 	}
-	if status == http.StatusOK {
-		return true, false, nil
-	}
-	if status == http.StatusUnauthorized || status == http.StatusNotFound {
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusNotFound {
 		return false, false, nil
 	}
-	return false, false, fmt.Errorf("github api returned status %d", status)
+	if resp.StatusCode != http.StatusOK {
+		return false, false, fmt.Errorf("github api returned status %d", resp.StatusCode)
+	}
+
+	var data struct {
+		Permissions struct {
+			Push bool `json:"push"`
+		} `json:"permissions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return false, false, err
+	}
+
+	return true, data.Permissions.Push, nil
 }
 
 func validProjectInput(request createProjectRequest) bool {

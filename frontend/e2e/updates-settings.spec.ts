@@ -17,26 +17,26 @@ test("downloaded update keeps the full version readable and actions aligned", as
 	await page.goto("/#/settings");
 	await page.getByRole("button", { name: "Updates" }).click();
 
-	await expect(page.getByTestId("update-status-line")).toContainText("Downloaded. Restart to finish updating.");
+	await expect(page.getByTestId("update-status-line")).toContainText("Ready to install.");
 
 	// The heading carries the base version; the full nightly stamp sits on its
 	// own monospace line. As one heading it wrapped mid-token and swallowed the
 	// row, and the primary action grew across it.
 	const version = page.getByTestId("app-version");
 	await expect(version).toHaveText("v0.12.7");
-	await expect(version).toHaveAttribute("aria-label", "Current version - v0.12.7-nightly.202608240525");
+	await expect(version).toHaveAttribute("aria-label", "Current version: v0.12.7-nightly.202608240525");
 	await expect(page.getByText("0.12.7-nightly.202608240525", { exact: true })).toBeVisible();
 
-	await expect(page.getByRole("button", { name: "Restart & install" })).toBeVisible();
+	await expect(page.getByRole("button", { name: "Install Update" })).toBeVisible();
 	await expect(page.getByRole("button", { name: "Check for updates" })).toBeVisible();
 	await expect(page.getByRole("switch", { name: "Automatic updates" })).toBeChecked();
-	await expect(page.getByRole("button", { name: "Updates channel" })).toContainText("Nightly");
+	await expect(page.getByRole("button", { name: "Channel", exact: true })).toContainText("Nightly");
 	await expect(page.locator(".nightly-warning")).toBeVisible();
 
 	const lineCount = await version.evaluate((element) => element.getClientRects().length);
 	expect(lineCount).toBe(1);
 
-	const restartBox = await page.getByRole("button", { name: "Restart & install" }).boundingBox();
+	const restartBox = await page.getByRole("button", { name: "Install Update" }).boundingBox();
 	const checkBox = await page.getByRole("button", { name: "Check for updates" }).boundingBox();
 	expect(restartBox).not.toBeNull();
 	expect(checkBox).not.toBeNull();

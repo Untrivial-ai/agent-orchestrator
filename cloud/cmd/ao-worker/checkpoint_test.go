@@ -28,19 +28,9 @@ func TestCheckpointBridgeRunsOnPoke(t *testing.T) {
 	defer cancel()
 
 	ran := make(chan struct{}, 8)
-	bridgeDone := make(chan struct{})
 	go func() {
-		defer close(bridgeDone)
 		_ = runCheckpointBridge(ctx, socket, func(context.Context) { ran <- struct{}{} }, discardLogger())
 	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-bridgeDone:
-		case <-time.After(2 * time.Second):
-			t.Fatal("checkpoint bridge did not stop after cancel")
-		}
-	})
 
 	httpClient := &http.Client{Transport: &http.Transport{
 		DialContext: func(c context.Context, _, _ string) (net.Conn, error) {
@@ -89,19 +79,9 @@ func TestCheckpointBridgeSafetyNetFires(t *testing.T) {
 	defer cancel()
 
 	ran := make(chan struct{}, 8)
-	bridgeDone := make(chan struct{})
 	go func() {
-		defer close(bridgeDone)
 		_ = runCheckpointBridgeWithInterval(ctx, socket, func(context.Context) { ran <- struct{}{} }, discardLogger(), 20*time.Millisecond)
 	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-bridgeDone:
-		case <-time.After(2 * time.Second):
-			t.Fatal("checkpoint bridge did not stop after cancel")
-		}
-	})
 
 	// No HTTP poke: the checkpoint must run from the periodic safety net alone.
 	select {

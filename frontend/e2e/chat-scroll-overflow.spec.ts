@@ -98,10 +98,12 @@ test("chat minimap does not make the session pane scroll horizontally", async ({
 	await expect.poll(() => activeMarker.evaluate((node) => node.getBoundingClientRect().width))
 		.toBeGreaterThan(27.5);
 
-	const paneOverflow = await page.locator("#terminal > div").evaluate((node) =>
-		node.scrollWidth - node.clientWidth,
-	);
-	// The marker may grow on hover, but it must remain within the clipped pane
-	// instead of creating a native horizontal scrollbar.
-	expect(paneOverflow).toBe(0);
+	const pane = await page.locator("#terminal > div").evaluate((node) => ({
+		overflow: node.scrollWidth - node.clientWidth,
+		overflowX: getComputedStyle(node).overflowX,
+	}));
+	// Keep the assertion red-capable: the marker still crosses the pane edge, but
+	// the pane must clip that visual flourish instead of offering a native scrollbar.
+	expect(pane.overflow).toBeGreaterThan(0);
+	expect(pane.overflowX).toBe("hidden");
 });

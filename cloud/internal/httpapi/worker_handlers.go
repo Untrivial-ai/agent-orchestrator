@@ -79,20 +79,8 @@ func (s *Server) patWriteGrant(ctx context.Context, claims worker.Claims) (worke
 var workerEventTypes = map[string]struct{}{
 	"agent.activity":       {},
 	"agent.ready":          {},
-	"agent.launch_started": {},
-	"checkout.completed":   {},
-	"checkout.started":     {},
 	"worker.ready":         {},
-	"restore.completed":    {},
-	"restore.started":      {},
-	"startup.failed":       {},
-	"workspace.ready":      {},
 	"chat.assistant_delta": {},
-}
-
-var startupFailurePhases = map[string]struct{}{
-	"preparing_repository": {},
-	"starting_agent":       {},
 }
 
 const (
@@ -818,37 +806,6 @@ func (s *Server) workerEvent(w http.ResponseWriter, r *http.Request) {
 			s.writeWorkerStoreError(w, r, err)
 			return
 		}
-	case "checkout.started", "checkout.completed", "restore.started", "restore.completed", "workspace.ready", "agent.launch_started":
-		var milestone worker.StartupEvent
-		if err := json.Unmarshal(input.Payload, &milestone); err != nil ||
-			milestone.WorkerID != claims.WorkerID ||
-			milestone.Epoch != claims.Epoch ||
-			(input.Type == "restore.completed" && milestone.Restored == nil) ||
-			(input.Type != "restore.completed" && milestone.Restored != nil) {
-			writeError(w, r, http.StatusBadRequest, "INVALID_EVENT_PAYLOAD", "The startup milestone payload is invalid.")
-			return
-		}
-		if _, err := s.store.AppendSessionEvent(
-			r.Context(), claims.OrgID, claims.SessionID, input.Type, input.Payload,
-		); err != nil {
-			s.writeWorkerStoreError(w, r, err)
-			return
-		}
-	case "startup.failed":
-		var failure worker.StartupFailureEvent
-		if err := json.Unmarshal(input.Payload, &failure); err != nil ||
-			failure.WorkerID != claims.WorkerID ||
-			failure.Epoch != claims.Epoch ||
-			!validStartupFailure(failure) {
-			writeError(w, r, http.StatusBadRequest, "INVALID_EVENT_PAYLOAD", "The startup failure payload is invalid.")
-			return
-		}
-		if _, err := s.store.AppendSessionEvent(
-			r.Context(), claims.OrgID, claims.SessionID, input.Type, input.Payload,
-		); err != nil {
-			s.writeWorkerStoreError(w, r, err)
-			return
-		}
 	case "chat.assistant_delta":
 		var output worker.OutputEvent
 		if err := json.Unmarshal(input.Payload, &output); err != nil ||
@@ -884,22 +841,6 @@ func allowedWorkerEventType(eventType string) bool {
 	}
 	_, allowed := workerEventTypes[eventType]
 	return allowed
-}
-
-func validStartupFailure(failure worker.StartupFailureEvent) bool {
-	if _, ok := startupFailurePhases[failure.Phase]; !ok {
-		return false
-	}
-	if failure.Code == "" || len(failure.Code) > 80 ||
-		strings.TrimSpace(failure.Message) == "" || len(failure.Message) > 240 {
-		return false
-	}
-	for _, char := range failure.Code {
-		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' {
-			return false
-		}
-	}
-	return true
 }
 
 func (s *Server) workerClaimTurn(w http.ResponseWriter, r *http.Request) {

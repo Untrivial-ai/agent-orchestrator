@@ -269,24 +269,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/cloud/v1/orgs/{orgId}/session-preparations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                orgId: components["parameters"]["OrgId"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["prepareSession"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}": {
         parameters: {
             query?: never;
@@ -301,66 +283,6 @@ export interface paths {
         put?: never;
         post?: never;
         delete: operations["deleteSession"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/commit-preparation": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                orgId: components["parameters"]["OrgId"];
-                sessionId: components["parameters"]["SessionId"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["commitSessionPreparation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/renew-preparation": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                orgId: components["parameters"]["OrgId"];
-                sessionId: components["parameters"]["SessionId"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["renewSessionPreparation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/preparation-attachments/{clientInstanceId}": {
-        parameters: {
-            query: {
-                generation: number;
-            };
-            header?: never;
-            path: {
-                orgId: components["parameters"]["OrgId"];
-                sessionId: components["parameters"]["SessionId"];
-                clientInstanceId: string;
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["detachSessionPreparation"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1462,10 +1384,6 @@ export interface components {
         SendMessageInput: {
             text: string;
         };
-        UserSendMessageInput: {
-            text: string;
-            clientSequence?: number;
-        };
         WorkerWorkspaceListPayload: {
             path: string;
             cursor?: string;
@@ -1702,52 +1620,6 @@ export interface components {
             deniedCommands: string[];
             /** Format: uuid */
             sandboxProviderConnectionId?: string;
-            provider?: string;
-        };
-        PrepareSessionInput: {
-            /** Format: uuid */
-            projectId: string;
-            harness: string;
-            /** Format: uuid */
-            clientInstanceId: string;
-            /** Format: uuid */
-            sandboxProviderConnectionId?: string;
-            provider?: string;
-        };
-        SessionPreparationLease: {
-            /** Format: date-time */
-            expiresAt: string;
-            /** Format: date-time */
-            attachmentExpiresAt: string;
-            /** Format: int64 */
-            leaseSeconds: number;
-            /** Format: int64 */
-            generation: number;
-        };
-        PrepareSessionResponse: {
-            /** Format: uuid */
-            claimId: string;
-            /** @enum {string} */
-            disposition: "created" | "reused";
-            session: components["schemas"]["Session"];
-            preparation: components["schemas"]["SessionPreparationLease"];
-        };
-        RenewSessionPreparationResponse: {
-            preparation: components["schemas"]["SessionPreparationLease"];
-        };
-        RenewSessionPreparationInput: {
-            /** Format: uuid */
-            clientInstanceId: string;
-            /** Format: int64 */
-            generation: number;
-        };
-        CommitSessionPreparationInput: {
-            displayName: string;
-            prompt: string;
-            /** Format: uuid */
-            clientInstanceId: string;
-            /** Format: int64 */
-            generation: number;
         };
         SessionPage: {
             items: components["schemas"]["Session"][];
@@ -2734,38 +2606,6 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    prepareSession: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Reusing a key with the same command returns the original result.
-                 *     Reusing it with a different command returns an IDEMPOTENCY_CONFLICT.
-                 *      */
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                orgId: components["parameters"]["OrgId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PrepareSessionInput"];
-            };
-        };
-        responses: {
-            /** @description Compatible hidden session preparation created or reused. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PrepareSessionResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
     getSession: {
         parameters: {
             query?: never;
@@ -2811,96 +2651,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeleteSessionResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    commitSessionPreparation: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Reusing a key with the same command returns the original result.
-                 *     Reusing it with a different command returns an IDEMPOTENCY_CONFLICT.
-                 *      */
-                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
-            };
-            path: {
-                orgId: components["parameters"]["OrgId"];
-                sessionId: components["parameters"]["SessionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CommitSessionPreparationInput"];
-            };
-        };
-        responses: {
-            /** @description Prepared session committed and first task queued. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        session: components["schemas"]["Session"];
-                    };
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    renewSessionPreparation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                orgId: components["parameters"]["OrgId"];
-                sessionId: components["parameters"]["SessionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RenewSessionPreparationInput"];
-            };
-        };
-        responses: {
-            /** @description Preparation lease renewed. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RenewSessionPreparationResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    detachSessionPreparation: {
-        parameters: {
-            query: {
-                generation: number;
-            };
-            header?: never;
-            path: {
-                orgId: components["parameters"]["OrgId"];
-                sessionId: components["parameters"]["SessionId"];
-                clientInstanceId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Composer attachment detached and preparation grace renewed. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RenewSessionPreparationResponse"];
                 };
             };
             default: components["responses"]["Error"];
@@ -2998,7 +2748,9 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserSendMessageInput"];
+                "application/json": {
+                    text: string;
+                };
             };
         };
         responses: {

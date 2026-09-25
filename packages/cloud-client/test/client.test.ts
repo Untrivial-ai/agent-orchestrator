@@ -37,49 +37,7 @@ describe("CloudClient", () => {
 		expect(stream.searchParams.get("ticket")).toBe("one-use");
 	});
 
-  it("prepares, renews, and commits a session through dedicated lifecycle routes", async () => {
-    const clientInstanceId = "00000000-0000-0000-0000-0000000000c1";
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        jsonResponse({ session: { id: "session one" } }),
-    );
-    const client = createCloudClient({
-      baseUrl: "https://cloud.example.com",
-      getAccessToken: () => "access-token",
-      fetch: fetchMock as typeof fetch,
-    });
-
-    await client.prepareSession(
-      "tenant one",
-      { projectId: "project one", harness: "codex", provider: "nodeops", clientInstanceId },
-      { idempotencyKey: "prepare-key" },
-    );
-    await client.renewSessionPreparation(
-      "tenant one", "session one", { clientInstanceId, generation: 1 },
-    );
-    await client.detachSessionPreparation("tenant one", "session one", clientInstanceId, 1);
-    await client.commitSessionPreparation(
-      "tenant one",
-      "session one",
-      { displayName: "Fix startup", prompt: "Run the checks", clientInstanceId, generation: 1 },
-      { idempotencyKey: "commit-key" },
-    );
-
-    expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/session-preparations",
-    );
-    expect(fetchMock.mock.calls[1]?.[0]).toBe(
-      "https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/sessions/session%20one/renew-preparation",
-    );
-    expect(fetchMock.mock.calls[2]?.[0]).toBe(
-      "https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/sessions/session%20one/preparation-attachments/00000000-0000-0000-0000-0000000000c1?generation=1",
-    );
-    expect(fetchMock.mock.calls[3]?.[0]).toBe(
-      "https://cloud.example.com/api/cloud/v1/orgs/tenant%20one/sessions/session%20one/commit-preparation",
-    );
-  });
-
-	it("loads the authenticated account and organization memberships", async () => {
+  it("loads the authenticated account and organization memberships", async () => {
     const account = {
       user: {
         id: "aa4c5117-d075-4a4e-a384-149e75f7dc45",

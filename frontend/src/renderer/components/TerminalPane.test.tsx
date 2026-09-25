@@ -30,9 +30,6 @@ const {
 	terminalSessionOptions,
 	cloudMuxOptions,
 	cloudTicketMock,
-	captureRendererEventMock,
-	completeCloudStartupAttemptMock,
-	markCloudPendingSessionReadyMock,
 	xtermMounts,
 	xtermUnmounts,
 	xtermFocusRequests,
@@ -58,24 +55,12 @@ const {
 			mintTicket: (kind: "agent" | "workspace") => Promise<string>;
 		}>,
 		cloudTicketMock: vi.fn(async () => ({ ticket: "ticket" })),
-		captureRendererEventMock: vi.fn(),
-		completeCloudStartupAttemptMock: vi.fn(),
-		markCloudPendingSessionReadyMock: vi.fn(),
 		xtermMounts: { value: 0 },
 		xtermUnmounts: { value: 0 },
 		xtermFocusRequests: { value: 0 },
 	}),
 );
 let terminalLinkHandler: ((uri: string) => void) | undefined;
-
-vi.mock("../lib/telemetry", () => ({ captureRendererEvent: captureRendererEventMock }));
-
-vi.mock("../lib/cloud-startup-timing", () => ({
-	completeCloudStartupAttempt: completeCloudStartupAttemptMock,
-}));
-vi.mock("../lib/cloud-pending-session", () => ({
-	markCloudPendingSessionReady: markCloudPendingSessionReadyMock,
-}));
 
 vi.mock("../hooks/useCloudCp", () => ({
 	useCloudCp: () => ({
@@ -190,9 +175,6 @@ beforeEach(() => {
 	terminalSessionOptions.length = 0;
 	cloudMuxOptions.length = 0;
 	cloudTicketMock.mockClear();
-	captureRendererEventMock.mockReset();
-	completeCloudStartupAttemptMock.mockReset();
-	markCloudPendingSessionReadyMock.mockReset();
 	attachMock.mockClear();
 	prepareForActivationMock.mockReset();
 	prepareForActivationMock.mockResolvedValue(undefined);
@@ -589,108 +571,6 @@ describe("TerminalPane replay cover", () => {
 
 			await act(async () => finishPaint?.());
 			expect(screen.queryByTestId("terminal-replay-cover")).not.toBeInTheDocument();
-		} finally {
-			view.restore();
-		}
-	});
-
-	it("records the first visible Cloud agent frame after the paint boundary exactly once", async () => {
-		let finishPaint: (() => void) | undefined;
-		prepareForActivationMock.mockImplementation(
-			() => new Promise<void>((resolve) => {
-				finishPaint = resolve;
-			}),
-		);
-		completeCloudStartupAttemptMock.mockReturnValue({ attemptId: "attempt-1", elapsedMs: 1_769 });
-		terminalState.value = "attached";
-		replaySettled.value = false;
-		const cloudWorker = {
-			...worker,
-			terminalHandleId: "term-1",
-			terminalGeneration: "2",
-			cloud: { orgId: "org-1", sandboxProvider: "docker" },
-		} satisfies WorkspaceSession;
-		const view = renderPane(cloudWorker);
-		try {
-			expect(completeCloudStartupAttemptMock).not.toHaveBeenCalled();
-			replaySettled.value = true;
-			view.rerender(
-				<QueryClientProvider client={view.queryClient}>
-					<TooltipProvider>
-						<TerminalPane daemonReady fontSize={12} session={cloudWorker} theme="dark" />
-					</TooltipProvider>
-				</QueryClientProvider>,
-			);
-			expect(completeCloudStartupAttemptMock).not.toHaveBeenCalled();
-
-			await act(async () => finishPaint?.());
-			await waitFor(() => expect(completeCloudStartupAttemptMock).toHaveBeenCalledOnce());
-			expect(markCloudPendingSessionReadyMock).toHaveBeenCalledWith("sess-1");
-			expect(completeCloudStartupAttemptMock).toHaveBeenCalledWith("sess-1");
-			expect(captureRendererEventMock).toHaveBeenCalledWith("ao.renderer.cloud_terminal_first_frame", {
-				startup_attempt_id: "attempt-1",
-				elapsed_ms: 1_769,
-				sandbox_provider: "docker",
-				session_kind: "worker",
-				worker_epoch: 2,
-			});
-
-			view.rerender(
-				<QueryClientProvider client={view.queryClient}>
-					<TooltipProvider>
-						<TerminalPane daemonReady fontSize={12} session={{ ...cloudWorker }} theme="dark" />
-					</TooltipProvider>
-				</QueryClientProvider>,
-			);
-			expect(completeCloudStartupAttemptMock).toHaveBeenCalledOnce();
-		} finally {
-			view.restore();
-		}
-	});
-
-	it("does not record a first-frame milestone for a local terminal", async () => {
-		terminalState.value = "attached";
-		replaySettled.value = true;
-		const view = renderPane({ ...worker, terminalHandleId: "term-1" });
-		try {
-			await waitFor(() => expect(prepareForActivationMock).toHaveBeenCalled());
-			expect(completeCloudStartupAttemptMock).not.toHaveBeenCalled();
-			expect(captureRendererEventMock).not.toHaveBeenCalled();
-		} finally {
-			view.restore();
-		}
-	});
-
-	it("waits to record a painted Cloud frame until the retained pane is visible", async () => {
-		const paintResolvers: Array<() => void> = [];
-		prepareForActivationMock.mockImplementation(
-			() => new Promise<void>((resolve) => paintResolvers.push(resolve)),
-		);
-		completeCloudStartupAttemptMock.mockReturnValue({ attemptId: "attempt-parked", elapsedMs: 2_000 });
-		terminalState.value = "attached";
-		replaySettled.value = false;
-		const cloudWorker = {
-			...worker,
-			terminalHandleId: "term-parked",
-			terminalGeneration: "3",
-			cloud: { orgId: "org-1", sandboxProvider: "docker" },
-		} satisfies WorkspaceSession;
-		const view = renderCachedPane({ session: cloudWorker, sessions: [cloudWorker] });
-		try {
-			replaySettled.value = true;
-			view.show(cloudWorker);
-			await waitFor(() => expect(paintResolvers.length).toBeGreaterThan(0));
-			view.show(undefined);
-
-			await act(async () => {
-				for (const resolve of paintResolvers.splice(0)) resolve();
-			});
-			expect(completeCloudStartupAttemptMock).not.toHaveBeenCalled();
-
-			prepareForActivationMock.mockResolvedValue(undefined);
-			view.show(cloudWorker);
-			await waitFor(() => expect(completeCloudStartupAttemptMock).toHaveBeenCalledWith("sess-1"));
-			expect(captureRendererEventMock).toHaveBeenCalledOnce();
 		} finally {
 			view.restore();
 		}

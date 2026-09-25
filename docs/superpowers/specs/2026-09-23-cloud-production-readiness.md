@@ -1,3 +1,7 @@
+> Historical combined-branch record. Preparation changes are now reviewed
+> separately. For the current browser scope and test instructions, see
+> [Shared browser sessions](../../cloud-shared-browser.md).
+
 # Spec: Cloud production readiness and interaction quality
 
 Status: reviewed, implementation in progress, 2026-09-23

@@ -522,43 +522,6 @@ describe("telemetry sanitizers", () => {
 		).toEqual({});
 	});
 
-	it("keeps bounded Cloud first-frame timing fields and hashes the attempt id", async () => {
-		const safe = await sanitizeRendererProperties("ao.renderer.cloud_terminal_first_frame", {
-			startup_attempt_id: "attempt-123",
-			elapsed_ms: 12_345,
-			sandbox_provider: "docker",
-			session_kind: "worker",
-			worker_epoch: 2,
-			terminal_output: "secret output",
-		});
-
-		expect(safe.startup_attempt_id_hash).toMatch(/^[a-f0-9]{64}$/);
-		expect(safe).toMatchObject({
-			elapsed_ms: 12_345,
-			sandbox_provider: "docker",
-			session_kind: "worker",
-			worker_epoch: 2,
-		});
-		expect(Object.keys(safe).sort()).toEqual([
-			"elapsed_ms",
-			"sandbox_provider",
-			"session_kind",
-			"startup_attempt_id_hash",
-			"worker_epoch",
-		]);
-	});
-
-	it("drops invalid Cloud first-frame timing fields", async () => {
-		expect(
-			await sanitizeRendererProperties("ao.renderer.cloud_terminal_first_frame", {
-				elapsed_ms: 30 * 60_000 + 1,
-				sandbox_provider: "private-provider-name",
-				session_kind: "shell",
-				worker_epoch: -1,
-			}),
-		).toEqual({});
-	});
-
 	it("keeps bounded Cloud browser timing fields without page content or identifiers", async () => {
 		const safe = await sanitizeRendererProperties("ao.renderer.cloud_browser_first_frame", {
 			elapsed_ms: 1_240,

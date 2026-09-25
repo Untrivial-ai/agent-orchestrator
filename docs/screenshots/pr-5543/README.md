@@ -1,18 +1,32 @@
-# PR #5543 visual evidence
+# PR #5543 browser evidence
 
-Captured 2026-09-23 from the committed branch in the real Electron desktop app.
-The app used a fresh browser profile, daemon directory, local Docker control
-plane, and disposable project.
+See [the current browser runbook](../../cloud-shared-browser.md). Older captures
+below predate the feature split; they are historical evidence only.
 
-The recording shows the Cloud task composer closing and reopening within the
-grace window. The reopened task field was editable. A database assertion after
-reopen found one active preparation, one sandbox, the same session and sandbox
-ID, and equal preparation expiries. Credential-specific selector labels are
-redacted from the media.
+## Independent browser branch, 2026-09-26
 
-![Reopened Cloud task composer in the native desktop app.](reconnect-grace.png)
+Fresh native Electron checkout of the browser-only branch, with its own locked
+dependencies, scratch desktop data and disposable Docker control plane. The
+database migrated through version 41, without preparation migrations. The
+worker and control-plane binaries were rebuilt from this branch.
 
-[Close and reopen recording](reconnect-grace.mp4)
+The page is served on port 3000 inside the worker. The pop-out displays the
+worker's bundled Elements inspector. Closing the inspector returns to the page;
+reopening it retains the inspected page. The recording uses real desktop
+captures at two frames per second, not a reconstructed screen.
+
+![Browser-only branch in the native desktop.](split-browser-native.png)
+
+![Worker DevTools in the desktop browser pop-out.](split-devtools-native.png)
+
+[Native page and inspector switching](split-devtools-native.mp4)
+
+The menu trigger was activated with the keyboard; menu-item and close-button
+handlers were activated through DOM automation. Host pointer automation was
+not reliable, so these captures do not prove physical pointer interaction.
+Real Chromium regression tests separately exercise remote input and inspector
+panels. Local development auth and a placeholder harness credential were used;
+this does not establish hosted provider authentication or task execution.
 
 ## Shared browser viewer
 

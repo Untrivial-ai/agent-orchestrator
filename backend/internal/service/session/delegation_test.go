@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
-	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -226,132 +224,6 @@ func TestDelegateTaskSkipsTitleWhenCapacityIsFull(t *testing.T) {
 	}
 }
 
-func TestDelegateTaskIdempotencyCoalescesAndReplaysWorker(t *testing.T) {
-	st := newTaskDelegationFakeStore()
-	st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
-	spawnStarted := make(chan struct{})
-	releaseSpawn := make(chan struct{})
-	var startedOnce sync.Once
-	cmd := &fakeCommander{spawnFunc: func(cfg ports.SpawnConfig) domain.SessionRecord {
-		startedOnce.Do(func() { close(spawnStarted) })
-		<-releaseSpawn
-		return domain.SessionRecord{ID: "ao-1", ProjectID: cfg.ProjectID, Kind: cfg.Kind, Harness: cfg.Harness}
-	}}
-	svc := &Service{store: st, manager: cmd, runBackground: func(func()) {}}
-	input := DelegateTaskInput{ProjectID: "ao", Brief: "Fix the race", IdempotencyKey: "request-1"}
-
-	type result struct {
-		out DelegateTaskOutcome
-		err error
-	}
-	results := make(chan result, 2)
-	go func() {
-		out, err := svc.DelegateTask(context.Background(), input)
-		results <- result{out: out, err: err}
-	}()
-	select {
-	case <-spawnStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("first delegation did not reach spawn")
-	}
-	go func() {
-		out, err := svc.DelegateTask(context.Background(), input)
-		results <- result{out: out, err: err}
-	}()
-	close(releaseSpawn)
-
-	for range 2 {
-		got := <-results
-		if got.err != nil || got.out.WorkerID != "ao-1" {
-			t.Fatalf("delegation = %#v, err=%v", got.out, got.err)
-		}
-	}
-	if cmd.spawnCalls != 1 {
-		t.Fatalf("spawn calls = %d, want 1", cmd.spawnCalls)
-	}
-
-	replayed, err := svc.DelegateTask(context.Background(), input)
-	if err != nil || replayed.WorkerID != "ao-1" || cmd.spawnCalls != 1 {
-		t.Fatalf("replay = %#v, err=%v, spawn calls=%d", replayed, err, cmd.spawnCalls)
-	}
-}
-
-func TestDelegateTaskRecoversReservationAfterRestart(t *testing.T) {
-	store := newTaskDelegationFakeStore()
-	store.projects["ao"] = domain.ProjectRecord{ID: "ao"}
-	input := DelegateTaskInput{ProjectID: "ao", Brief: "Recover reserved task", IdempotencyKey: "reserved-request"}
-	fingerprint := delegatedTaskRequestFingerprint(input)
-	now := time.Now()
-	if _, _, err := store.ReserveTaskDelegation(context.Background(), domain.TaskDelegation{
-		IdempotencyKey: input.IdempotencyKey, RequestFingerprint: fingerprint,
-		State: domain.TaskDelegationPending, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	manager := &fakeCommander{spawnFunc: func(cfg ports.SpawnConfig) domain.SessionRecord {
-		if cfg.TaskDelegationKey != input.IdempotencyKey || cfg.TaskDelegationFingerprint != fingerprint {
-			t.Fatalf("spawn lost durable reservation: key=%s", cfg.TaskDelegationKey)
-		}
-		return domain.SessionRecord{ID: "ao-1", ProjectID: cfg.ProjectID, Kind: cfg.Kind, Harness: cfg.Harness}
-	}}
-	restarted := &Service{store: store, manager: manager, runBackground: func(func()) {}}
-	result, err := restarted.DelegateTask(context.Background(), input)
-	if err != nil || result.WorkerID != "ao-1" || manager.spawnCalls != 1 {
-		t.Fatalf("recovery=%+v err=%v spawns=%d", result, err, manager.spawnCalls)
-	}
-}
-
-type completionFailureDelegationStore struct{ *taskDelegationFakeStore }
-
-func (s completionFailureDelegationStore) CompleteTaskDelegation(context.Context, string, domain.TaskDelegationRequestFingerprint, domain.SessionID, time.Time) (domain.TaskDelegation, error) {
-	return domain.TaskDelegation{}, errors.New("finalization unavailable")
-}
-
-func TestDelegateTaskRecoversAfterFinalizationFailure(t *testing.T) {
-	store := completionFailureDelegationStore{newTaskDelegationFakeStore()}
-	store.projects["ao"] = domain.ProjectRecord{ID: "ao"}
-	input := DelegateTaskInput{ProjectID: "ao", Brief: "Recover completed spawn", IdempotencyKey: "completed-request"}
-	manager := &fakeCommander{spawnFunc: func(cfg ports.SpawnConfig) domain.SessionRecord {
-		worker := domain.SessionRecord{ID: "ao-1", ProjectID: cfg.ProjectID, Kind: cfg.Kind, Harness: cfg.Harness}
-		if _, err := store.taskDelegationFakeStore.CompleteTaskDelegation(context.Background(), cfg.TaskDelegationKey, cfg.TaskDelegationFingerprint, worker.ID, time.Now()); err != nil {
-			t.Fatal(err)
-		}
-		return worker
-	}}
-	service := &Service{store: store, manager: manager, runBackground: func(func()) {}}
-	if _, err := service.DelegateTask(context.Background(), input); err == nil {
-		t.Fatal("expected finalization failure")
-	}
-	restarted := &Service{store: store, manager: manager, runBackground: func(func()) {}}
-	result, err := restarted.DelegateTask(context.Background(), input)
-	if err != nil || result.WorkerID != "ao-1" || manager.spawnCalls != 1 {
-		t.Fatalf("recovery=%+v err=%v spawns=%d", result, err, manager.spawnCalls)
-	}
-}
-
-func TestDelegateTaskIdempotencyRejectsDifferentPayload(t *testing.T) {
-	st := newTaskDelegationFakeStore()
-	st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
-	cmd := &fakeCommander{}
-	svc := &Service{store: st, manager: cmd, runBackground: func(func()) {}}
-	if _, err := svc.DelegateTask(context.Background(), DelegateTaskInput{
-		ProjectID: "ao", Brief: "First task", IdempotencyKey: "request-1",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := svc.DelegateTask(context.Background(), DelegateTaskInput{
-		ProjectID: "ao", Brief: "Different task", IdempotencyKey: "request-1",
-	})
-	var apiError *apierr.Error
-	if !errors.As(err, &apiError) || apiError.Kind != apierr.KindConflict || apiError.Code != "TASK_DELEGATION_IDEMPOTENCY_CONFLICT" {
-		t.Fatalf("conflict error = %v", err)
-	}
-	if cmd.spawnCalls != 1 {
-		t.Fatalf("spawn calls = %d, want 1", cmd.spawnCalls)
-	}
-}
-
 func TestKillCancelsBackgroundTitle(t *testing.T) {
 	st := newFakeStore()
 	st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
@@ -384,69 +256,3 @@ func TestKillCancelsBackgroundTitle(t *testing.T) {
 }
 
 func runInline(work func()) { work() }
-
-type taskDelegationFakeStore struct {
-	*fakeStore
-	mu      sync.Mutex
-	records map[string]domain.TaskDelegation
-}
-
-func newTaskDelegationFakeStore() *taskDelegationFakeStore {
-	return &taskDelegationFakeStore{
-		fakeStore: newFakeStore(),
-		records:   map[string]domain.TaskDelegation{},
-	}
-}
-
-func (f *taskDelegationFakeStore) ReserveTaskDelegation(_ context.Context, rec domain.TaskDelegation) (domain.TaskDelegation, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	existing, ok := f.records[rec.IdempotencyKey]
-	if !ok {
-		rec.StartupState = domain.TaskDelegationStartupSeeded
-		f.records[rec.IdempotencyKey] = rec
-		return rec, true, nil
-	}
-	if existing.RequestFingerprint != rec.RequestFingerprint {
-		return existing, false, domain.ErrTaskDelegationIdempotencyConflict
-	}
-	return existing, false, nil
-}
-
-func (f *taskDelegationFakeStore) CompleteTaskDelegation(
-	_ context.Context,
-	idempotencyKey string,
-	fingerprint domain.TaskDelegationRequestFingerprint,
-	workerID domain.SessionID,
-	updatedAt time.Time,
-) (domain.TaskDelegation, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	rec := f.records[idempotencyKey]
-	if rec.RequestFingerprint != fingerprint {
-		return rec, domain.ErrTaskDelegationIdempotencyConflict
-	}
-	rec.State = domain.TaskDelegationCompleted
-	rec.StartupState = domain.TaskDelegationStartupReady
-	rec.WorkerID = workerID
-	rec.UpdatedAt = updatedAt
-	f.records[idempotencyKey] = rec
-	return rec, nil
-}
-
-func TestDelegateTaskDoesNotReplayIncompleteStartup(t *testing.T) {
-	store := newTaskDelegationFakeStore()
-	store.projects["ao"] = domain.ProjectRecord{ID: "ao"}
-	input := DelegateTaskInput{ProjectID: "ao", IdempotencyKey: "incomplete"}
-	store.records[input.IdempotencyKey] = domain.TaskDelegation{
-		IdempotencyKey: input.IdempotencyKey, RequestFingerprint: delegatedTaskRequestFingerprint(input),
-		State: domain.TaskDelegationCompleted, WorkerID: "ao-1", StartupState: domain.TaskDelegationStartupStarting,
-	}
-	manager := &fakeCommander{}
-	service := &Service{store: store, manager: manager}
-	out, err := service.DelegateTask(context.Background(), input)
-	var apiError *apierr.Error
-	if !errors.As(err, &apiError) || apiError.Code != "TASK_DELEGATION_RECOVERY_REQUIRED" || out.WorkerID != "" || manager.spawnCalls != 0 {
-		t.Fatalf("out=%+v err=%v spawns=%d", out, err, manager.spawnCalls)
-	}
-}
