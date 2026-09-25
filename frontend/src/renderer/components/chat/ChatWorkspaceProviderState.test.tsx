@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
 import {
 	chatFixture,
+	chatFixtureEmpty,
 	chatFixtureMcpFailed,
 	chatFixtureReauth,
 	chatFixtureRerouted,
@@ -225,8 +226,13 @@ describe("provider state chrome", () => {
 	it("places a brief tool-server notice beneath the composer", () => {
 		render(<ChatWorkspace snapshot={{ ...chatFixtureMcpFailed, controller: { state: "ready" } }} />);
 		const notice = screen.getByRole("status");
-		expect(notice).toHaveTextContent("2 tool servers unavailable");
+		expect(notice).toHaveTextContent("playwright, postgres unavailable");
 		expect(document.querySelector(".cursor-chat-composer-dock")).toContainElement(notice);
+	});
+
+	it("keeps an empty chat centered without a tool-server notice", () => {
+		render(<ChatWorkspace snapshot={{ ...chatFixtureEmpty, mcpServers: chatFixtureMcpFailed.mcpServers }} />);
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
 	});
 
 	it("says nothing about tool servers when they all started", () => {

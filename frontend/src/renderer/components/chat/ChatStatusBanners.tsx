@@ -171,8 +171,7 @@ export const McpServerBanner = memo(function McpServerBanner({
 	if (servers.length === 0) return null;
 	if (dismissedFingerprint === fingerprint) return null;
 
-	const message =
-		servers.length === 1 ? "1 tool server unavailable" : `${servers.length} tool servers unavailable`;
+	const message = `${servers.map((server) => server.name).join(", ")} unavailable`;
 
 	return (
 		<div

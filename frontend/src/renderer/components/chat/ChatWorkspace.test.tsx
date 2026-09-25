@@ -1212,7 +1212,7 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getByRole("alert")).toHaveTextContent("thread hit an internal error");
 
 		rerender(<ChatWorkspace snapshot={chatFixtureMcpFailed} />);
-		expect(screen.getByRole("status")).toHaveTextContent("2 tool servers unavailable");
+		expect(screen.getByRole("status")).toHaveTextContent("playwright, postgres unavailable");
 	});
 
 	it("reuses anchor measurements while scrolling and refreshes after content mutations", () => {

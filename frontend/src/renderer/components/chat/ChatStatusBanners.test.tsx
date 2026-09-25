@@ -102,13 +102,18 @@ describe("McpServerBanner", () => {
 		vi.useFakeTimers();
 		render(<McpServerBanner servers={broken} />);
 
-		expect(screen.getByRole("status")).toHaveTextContent("1 tool server unavailable");
-		expect(screen.queryByText("playwright")).not.toBeInTheDocument();
+		expect(screen.getByRole("status")).toHaveTextContent("playwright unavailable");
+		expect(screen.getByRole("status")).not.toHaveTextContent("1 tool server unavailable");
 		expect(screen.queryByText(/startup_timeout/)).not.toBeInTheDocument();
 		expect(screen.queryByRole("button")).not.toBeInTheDocument();
 
 		act(() => vi.advanceTimersByTime(3_000));
 		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+
+	it("lists affected server names with commas", () => {
+		render(<McpServerBanner servers={[...broken, { name: "notion", status: "failed" }]} />);
+		expect(screen.getByRole("status")).toHaveTextContent("playwright, notion unavailable");
 	});
 
 	// A healthy server is not news. The caller filters, and an empty list must not
