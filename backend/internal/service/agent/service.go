@@ -728,7 +728,7 @@ func (s *Service) keepCatalogUntilSignIn(ctx context.Context, agentName string, 
 	catalog.RefreshError = ""
 	catalog.RetryAt = nil
 	catalog.RefreshRecommended = false
-	if err := s.saveCatalog(ctx, catalog, generation, 0); err != nil {
+	if err := s.saveCatalog(ctx, cached.ProjectID, catalog, generation, 0); err != nil {
 		catalog.Warning = appendCacheWarning(catalog.Warning)
 	}
 	return catalog
