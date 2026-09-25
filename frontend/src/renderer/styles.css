@@ -5514,6 +5514,23 @@ html[data-native-browser-composition="true"] .browser-popout-frame {
 	}
 }
 
+@keyframes chat-working-shimmer {
+	from {
+		background-position: 200% 0;
+	}
+	to {
+		background-position: -200% 0;
+	}
+}
+
+.chat-working-shimmer {
+	background: linear-gradient(90deg, var(--color-muted-foreground) 20%, var(--color-foreground) 50%, var(--color-muted-foreground) 80%);
+	background-size: 200% 100%;
+	background-clip: text;
+	color: transparent;
+	animation: chat-working-shimmer 1400ms linear infinite;
+}
+
 .ao-qr-decoy {
 	opacity: 0;
 	animation: ao-qr-decoy-cycle 4800ms linear infinite;
@@ -5543,5 +5560,11 @@ html[data-native-browser-composition="true"] .browser-popout-frame {
 
 	.ao-qr-resolved {
 		animation: none;
+	}
+
+	.chat-working-shimmer {
+		animation: none;
+		background: none;
+		color: var(--color-muted-foreground);
 	}
 }

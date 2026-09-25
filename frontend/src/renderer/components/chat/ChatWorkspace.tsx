@@ -3303,7 +3303,18 @@ const TurnGroup = memo(function TurnGroup({
 			{!copyableMessageId &&
 			(group.live || canRollback || (group.outcome?.durationMs !== undefined && group.outcome.durationMs > 0)) ? (
 				<div className="mt-1 flex h-7 items-center gap-0.5">
-					{group.live ? <SnakeLoader /> : null}
+					{group.live ? (
+						<>
+							<SnakeLoader />
+							<span
+								role="status"
+								data-testid="live-working-label"
+								className="chat-working-shimmer text-xs font-medium"
+							>
+								Working
+							</span>
+						</>
+					) : null}
 					{canRollback ? (
 						<button
 							type="button"
