@@ -81,6 +81,15 @@ type Config struct {
 	// ValidateTurnSettings rejects provider settings that cannot be applied to a
 	// live process. The initial permission mode is the launch-time value.
 	ValidateTurnSettings TurnSettingsValidator
+	// PromptResponseFailure lets a provider binding interpret its own structured
+	// terminal metadata after a nominally successful ACP prompt response.
+	PromptResponseFailure func(acpsdk.PromptResponse) error
+	// OnAuthRejected is called when the provider rejects the credential during
+	// a live turn. It is how a cached "this credential works" verdict is
+	// corrected the moment the provider says otherwise, and it is the only
+	// correction that covers every credential source — including the Bedrock
+	// and Vertex chains AO cannot inspect at all. Optional.
+	OnAuthRejected func()
 }
 
 // TurnSettingsValidator validates live turn settings against launch-time state.
@@ -424,6 +433,8 @@ func (d *Driver) initialize(
 	conv := newConversation(
 		proc, d.log, cfg.ProviderScopeID, d.cfg.ClientExtension, d.cfg.ClientExtensionAliases,
 	)
+	conv.onAuthRejected = d.cfg.OnAuthRejected
+	conv.promptResponseFailure = d.cfg.PromptResponseFailure
 	if proc.reconnected {
 		state := proc.acpState
 		if state == nil || len(state.InitializeResult) == 0 || len(state.SessionResult) == 0 || state.SessionID == "" {
@@ -604,9 +615,15 @@ func extensionSupported(meta map[string]any, name string) bool {
 
 func pointer[T any](value T) *T { return &value }
 
+// isACPAuthRequired reports whether err is the agent telling us the credential
+// was refused, so the caller can raise a reauth prompt instead of a generic
+// turn failure.
 func isACPAuthRequired(err error) bool {
 	var requestErr *acpsdk.RequestError
-	return errors.As(err, &requestErr) && requestErr.Code == -32000
+	if !errors.As(err, &requestErr) {
+		return false
+	}
+	return requestErr.Code == -32000
 }
 
 // isACPMethodNotFound reports whether err is a JSON-RPC -32601 "Method not

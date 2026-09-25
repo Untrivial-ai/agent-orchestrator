@@ -33,9 +33,6 @@ func TestCheckpointBridgeRunsOnPoke(t *testing.T) {
 		defer close(bridgeDone)
 		_ = runCheckpointBridge(ctx, socket, func(context.Context) { ran <- struct{}{} }, discardLogger())
 	}()
-	// Join the bridge before the test returns: its goroutines read the
-	// package-level safety-net interval, and a still-running bridge would race
-	// with the next test's write to that variable.
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -80,10 +77,6 @@ func TestCheckpointBridgeRunsOnPoke(t *testing.T) {
 // The coarse periodic safety net captures in-progress work even when no Stop
 // hook has fired (a long turn, or a delete/restore mid-first-turn).
 func TestCheckpointBridgeSafetyNetFires(t *testing.T) {
-	prev := checkpointSafetyNetInterval
-	checkpointSafetyNetInterval = 20 * time.Millisecond
-	t.Cleanup(func() { checkpointSafetyNetInterval = prev })
-
 	// A short temp dir: this test's long name makes t.TempDir() overflow the
 	// ~104-char unix-socket path limit, so the bind would fail spuriously.
 	dir, err := os.MkdirTemp("", "ao")
@@ -99,10 +92,8 @@ func TestCheckpointBridgeSafetyNetFires(t *testing.T) {
 	bridgeDone := make(chan struct{})
 	go func() {
 		defer close(bridgeDone)
-		_ = runCheckpointBridge(ctx, socket, func(context.Context) { ran <- struct{}{} }, discardLogger())
+		_ = runCheckpointBridgeWithInterval(ctx, socket, func(context.Context) { ran <- struct{}{} }, discardLogger(), 20*time.Millisecond)
 	}()
-	// Join the bridge before the test returns (same race as the poke test:
-	// this test also rewrites the package-level interval in Cleanup).
 	t.Cleanup(func() {
 		cancel()
 		select {

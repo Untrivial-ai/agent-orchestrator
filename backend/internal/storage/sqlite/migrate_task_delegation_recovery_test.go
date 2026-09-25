@@ -6,7 +6,7 @@ import (
 )
 
 func TestMigrateKeepsLegacyDelegationOutcomeUnknown(t *testing.T) {
-	db := openMigratedDatabaseCopy(t, 155)
+	db := openMigratedDatabaseCopy(t, 156)
 	if _, err := db.Exec(`INSERT INTO task_delegations
 		(idempotency_key, request_fingerprint, state, created_at, updated_at)
 		VALUES ('legacy', ?, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`, "v1:"+strings.Repeat("a", 64)); err != nil {
@@ -26,7 +26,7 @@ func TestMigrateKeepsLegacyDelegationOutcomeUnknown(t *testing.T) {
 }
 
 func TestMigrateTaskDelegationStartupCheckpoints(t *testing.T) {
-	db := openMigratedDatabaseCopy(t, 156)
+	db := openMigratedDatabaseCopy(t, 157)
 	if _, err := db.Exec(`INSERT INTO projects(id, path, display_name, registered_at)
 		VALUES ('startup', '/tmp/startup', 'startup', CURRENT_TIMESTAMP);
 		INSERT INTO sessions(id, project_id, num, harness, activity_last_at, created_at, updated_at)

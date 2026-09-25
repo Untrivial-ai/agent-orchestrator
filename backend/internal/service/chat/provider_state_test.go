@@ -388,6 +388,23 @@ func TestAccountReportsMergeRatherThanReplace(t *testing.T) {
 	}
 }
 
+func TestAccountRecoveryClearsPersistentReauthenticationState(t *testing.T) {
+	h := newHarness(t)
+	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventAccountChanged, Account: &ports.ChatAccount{
+		ReauthRequired: true, ReauthReason: "expired",
+	}})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return s.Conversation.Account != nil && s.Conversation.Account.ReauthRequiredAt != nil
+	})
+	h.conv.emit(ports.ChatEvent{Kind: ports.ChatEventAccountChanged, Account: &ports.ChatAccount{ReauthRecovered: true}})
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return s.Conversation.Account != nil && s.Conversation.Account.ReauthRequiredAt == nil
+	})
+	if snapshot.Conversation.Account.ReauthReason != "" {
+		t.Fatalf("reauth reason = %q, want cleared", snapshot.Conversation.Account.ReauthReason)
+	}
+}
+
 /* ---- thread state ----------------------------------------------------- */
 
 // Each report updates only what it spoke about. An ordinary idle report must not

@@ -126,7 +126,7 @@ AO works with the coding agents and source-control workflow you already use. Age
 
 ## Supported agents
 
-**27 coding agents supported** through one supervised workflow.
+**28 coding agents supported** through one supervised workflow.
 
 <table>
   <tr valign="middle">
@@ -173,6 +173,11 @@ AO works with the coding agents and source-control workflow you already use. Age
     <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/kimchi.svg" alt="Kimchi" width="24" height="24" align="middle" /> &nbsp; <b>Kimchi</b></td>
     <td valign="middle" nowrap><img src="docs/assets/readme/agents/prime-agent.svg" alt="Prime Agent" width="24" height="24" align="middle" /> &nbsp; <b>Prime Agent</b></td>
     <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/omp.png" alt="OMP" width="24" height="24" align="middle" /> &nbsp; <b>OMP</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><b>Unreal Agent</b></td>
+    <td></td>
+    <td></td>
   </tr>
 </table>
 
