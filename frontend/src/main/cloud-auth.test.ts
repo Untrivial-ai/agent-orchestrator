@@ -13,6 +13,7 @@ const EXPIRED_ACCESS_TOKEN = `header.${Buffer.from(
 const mocks = vi.hoisted(() => ({
   authenticateWithCode: vi.fn(),
   authenticateWithRefreshToken: vi.fn(),
+  authenticateProvider: vi.fn(),
   decryptString: vi.fn((value: Buffer) => value.toString("utf8")),
   encryptString: vi.fn((value: string) => Buffer.from(value, "utf8")),
   encryptionAvailable: true,
@@ -50,6 +51,13 @@ vi.mock("electron", () => ({
     isEncryptionAvailable: () => mocks.encryptionAvailable,
   },
   shell: { openExternal: mocks.openExternal },
+}));
+
+// The provider flows spawn CLIs or open a browser. These tests only need the
+// credential that comes back, so the round-trip is stubbed and the control-plane
+// save below is what gets exercised.
+vi.mock("./provider-auth-flow", () => ({
+  providerAuthFlow: () => ({ authenticate: mocks.authenticateProvider }),
 }));
 
 import {
@@ -91,6 +99,7 @@ describe("native WorkOS authentication", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     await rm(dataDir, { recursive: true, force: true });
   });
 
@@ -139,6 +148,86 @@ describe("native WorkOS authentication", () => {
         provider: "codex",
       }),
     ).rejects.toThrow("Sign in to AO Cloud before connecting a provider.");
+  });
+
+  const connectProviderAuth = ():
+    | ((event: unknown, input: unknown) => Promise<unknown>)
+    | undefined =>
+    mocks.ipcHandle.mock.calls.find(
+      ([channel]) => channel === "cloud:connectProviderAuth",
+    )?.[1] as
+      | ((event: unknown, input: unknown) => Promise<unknown>)
+      | undefined;
+
+  async function signInForProviderSave(): Promise<void> {
+    await beginCloudSignIn(dataDir);
+    await handleCloudDeepLink(
+      "ao-app://callback?code=code_123&state=state_123",
+      dataDir,
+    );
+    mocks.authenticateProvider.mockResolvedValue({
+      provider: "cursor",
+      credentialType: "api_key",
+      secret: "cursor-secret",
+    });
+  }
+
+  it("surfaces the control plane's status, code, and request id when the save fails", async () => {
+    await signInForProviderSave();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          error: "coding-agent credential is invalid or expired",
+          code: "invalid_credential",
+          message: "coding-agent credential is invalid or expired",
+          requestId: "req-42",
+        }),
+      }),
+    );
+
+    const handler = connectProviderAuth();
+    expect(handler).toBeTypeOf("function");
+    const failure = await handler?.({}, {
+      baseUrl: "https://cloud.example",
+      orgId: "org-123",
+      provider: "cursor",
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain("HTTP 422");
+    expect(message).toContain("code invalid_credential");
+    expect(message).toContain("coding-agent credential is invalid or expired");
+    expect(message).toContain("request req-42");
+  });
+
+  it("falls back to the HTTP status when the save failure carries no JSON body", async () => {
+    await signInForProviderSave();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 502,
+        json: async () => {
+          throw new Error("not json");
+        },
+      }),
+    );
+
+    const handler = connectProviderAuth();
+    expect(handler).toBeTypeOf("function");
+    const failure = await handler?.({}, {
+      baseUrl: "https://cloud.example",
+      orgId: "org-123",
+      provider: "cursor",
+    }).catch((error: unknown) => error);
+
+    expect((failure as Error).message).toBe(
+      "AO Cloud could not save the provider credential (HTTP 502).",
+    );
   });
 
   it("rejects callbacks whose OAuth state does not match", async () => {

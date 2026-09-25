@@ -574,6 +574,33 @@ export async function showCloudSignInFailure(error: unknown): Promise<void> {
   });
 }
 
+// One handler saves every provider's credential, and the control plane rejects
+// for several unrelated reasons (expired session, bad org, a credential the
+// vendor's re-probe refuses). A fixed string hides which one fired, so carry the
+// status, error code, message, and request id through to the dialog.
+async function providerCredentialSaveFailure(response: Response): Promise<Error> {
+  let detail = "";
+  let context = "";
+  try {
+    const body = (await response.json()) as
+      | { error?: unknown; code?: unknown; message?: unknown; requestId?: unknown }
+      | null;
+    const message = [body?.message, body?.error].find(
+      (value): value is string => typeof value === "string" && value !== "",
+    );
+    if (message) detail = message;
+    const parts = [
+      typeof body?.code === "string" && body.code !== "" ? `code ${body.code}` : null,
+      typeof body?.requestId === "string" && body.requestId !== "" ? `request ${body.requestId}` : null,
+    ].filter((part): part is string => part !== null);
+    if (parts.length > 0) context = `, ${parts.join(", ")}`;
+  } catch {
+    // Non-JSON or empty body: the status alone still identifies the rejection.
+  }
+  const header = `AO Cloud could not save the provider credential (HTTP ${response.status}${context})`;
+  return new Error(detail ? `${header}: ${detail}` : `${header}.`);
+}
+
 export function registerCloudProtocol(): void {
   if (process.defaultApp && process.argv.length >= 2) {
     app.setAsDefaultProtocolClient("ao-app", process.execPath, [
@@ -671,7 +698,7 @@ export function installCloudIPC(
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ credentialType: credential.credentialType, secret: credential.secret }),
     });
-    if (!response.ok) throw new Error("AO Cloud could not save the provider credential.");
+    if (!response.ok) throw await providerCredentialSaveFailure(response);
     return undefined;
   });
 }
