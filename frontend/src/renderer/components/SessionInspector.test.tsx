@@ -960,6 +960,35 @@ describe("SessionInspector Artifacts section", () => {
     );
   });
 
+  it("opens an html artifact through the Browser preview flow even after the session terminates", async () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session([], {
+          outputType: "artifact",
+          isTerminated: true,
+          status: "terminated",
+          artifactFiles: [
+            artifact({
+              path: "report.html",
+              name: "report.html",
+              kind: "html",
+              previewUrl: "http://sess-1.localhost:3001/report.html",
+            }),
+          ],
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("report.html"));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/preview", {
+        params: { path: { sessionId: "sess-1" } },
+        body: { url: "http://sess-1.localhost:3001/report.html" },
+      }),
+    );
+  });
+
   it("opens a markdown/file artifact through the artifact viewer flow", () => {
     const onOpenArtifact = vi.fn();
     renderWithQuery(

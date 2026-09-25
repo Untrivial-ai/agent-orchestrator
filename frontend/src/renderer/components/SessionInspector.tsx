@@ -1320,11 +1320,46 @@ function PRSummaryCard({
 }
 
 /**
+ * Opens an already-resolved artifact preview URL in the AO Browser panel.
+ * Unlike useSessionBrowserLink, this does not gate on session liveness:
+ * artifact files are static content the daemon serves from the session's
+ * artifact directory the same way whether the session is running or
+ * terminated, so a completed session's HTML output must stay openable.
+ */
+function useOpenArtifactPreview(sessionId: string | undefined) {
+	const queryClient = useQueryClient();
+	const setInspectorView = useUiStore((state) => state.setInspectorView);
+	const setInspectorOpen = useUiStore((state) => state.setInspectorOpen);
+	return useCallback(
+		(url: string) => {
+			if (!sessionId) return;
+			setInspectorView(sessionId, "browser");
+			setInspectorOpen(sessionId, true);
+			void (async () => {
+				try {
+					const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/preview", {
+						params: { path: { sessionId } },
+						body: { url },
+					});
+					if (error) {
+						console.warn("Unable to open artifact preview in Browser tab", error);
+						return;
+					}
+					await queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+				} catch (error) {
+					console.warn("Unable to open artifact preview in Browser tab", error);
+				}
+			})();
+		},
+		[queryClient, sessionId, setInspectorOpen, setInspectorView],
+	);
+}
+
+/**
  * One row in the Summary panel's Artifacts list. HTML artifacts open in the
- * existing Browser preview flow (same mechanism as any other AO Browser
- * link); markdown/file artifacts open in a dedicated read-only viewer in the
- * Files inspector, since artifact files live outside the git workspace and
- * the workspace-diff Files flow can't resolve them.
+ * Browser panel; markdown/file artifacts open in a dedicated read-only
+ * viewer in the Files inspector, since artifact files live outside the git
+ * workspace and the workspace-diff Files flow can't resolve them.
  */
 function ArtifactSummaryCard({
 	artifact,
@@ -1335,10 +1370,10 @@ function ArtifactSummaryCard({
 	onOpenArtifact?: (target: { feedback?: boolean; path: string }) => void;
 	session: WorkspaceSession;
 }) {
-	const openInAOBrowser = useSessionBrowserLink(session);
+	const openArtifactPreview = useOpenArtifactPreview(session.id);
 	const handleOpen = () => {
 		if (artifact.kind === "html" && artifact.previewUrl) {
-			openInAOBrowser(artifact.previewUrl);
+			openArtifactPreview(artifact.previewUrl);
 			return;
 		}
 		onOpenArtifact?.({ path: artifact.path });
