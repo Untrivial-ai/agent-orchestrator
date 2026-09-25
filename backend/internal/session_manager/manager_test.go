@@ -106,7 +106,9 @@ func (f *fakeStore) UpdateSessionModel(_ context.Context, id domain.SessionID, m
 
 func (f *fakeStore) SetSessionProvisionedWorkspace(_ context.Context, id domain.SessionID, branch, workspacePath, workspaceRepoPath string, now time.Time) (bool, error) {
 	rec, ok := f.sessions[id]
-	if !ok || rec.IsTerminated || rec.ProvisionState != domain.SessionProvisionProvisioning {
+	canPublish := rec.ProvisionState == domain.SessionProvisionProvisioning && !rec.IsTerminated ||
+		rec.ProvisionState == domain.SessionProvisionFailed && (rec.Metadata.WorkspacePath == "" || rec.Metadata.WorkspacePath == workspacePath)
+	if !ok || !canPublish {
 		return false, nil
 	}
 	rec.Metadata.Branch = branch

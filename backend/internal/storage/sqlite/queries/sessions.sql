@@ -280,15 +280,17 @@ UPDATE sessions SET auto_review_enabled = ?, updated_at = ? WHERE id = ?;
 -- row claims no workspace, so every workspace-scoped read answers
 -- SESSION_WORKSPACE_NOT_FOUND for the whole start, long enough for the
 -- desktop's bounded readiness poll to give up on a session that is fine.
--- Restricted to a provisioning row so a late call cannot overwrite a live one.
+-- A failed start may still receive a late partial worktree from a claimed
+-- preparation. Retain that path for safe cleanup, but never overwrite a live
+-- workspace or publish onto a terminated session still provisioning.
 UPDATE sessions SET
     branch = sqlc.arg(branch),
     workspace_path = sqlc.arg(workspace_path),
     workspace_repo_path = sqlc.arg(workspace_repo_path),
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id)
-  AND provision_state = 'provisioning'
-  AND is_terminated = 0;
+  AND ((provision_state = 'provisioning' AND is_terminated = 0)
+    OR (provision_state = 'failed' AND (workspace_path = '' OR workspace_path = sqlc.arg(workspace_path))));
 
 -- name: SetTaskPreparationBase :execrows
 -- Only the still-hidden reservation may receive its immutable branch base.

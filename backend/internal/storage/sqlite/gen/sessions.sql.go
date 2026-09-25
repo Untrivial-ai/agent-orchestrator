@@ -1151,8 +1151,8 @@ UPDATE sessions SET
     workspace_repo_path = ?3,
     updated_at = ?4
 WHERE id = ?5
-  AND provision_state = 'provisioning'
-  AND is_terminated = 0
+  AND ((provision_state = 'provisioning' AND is_terminated = 0)
+    OR (provision_state = 'failed' AND (workspace_path = '' OR workspace_path = ?2)))
 `
 
 type SetSessionProvisionedWorkspaceParams struct {
@@ -1168,7 +1168,9 @@ type SetSessionProvisionedWorkspaceParams struct {
 // row claims no workspace, so every workspace-scoped read answers
 // SESSION_WORKSPACE_NOT_FOUND for the whole start, long enough for the
 // desktop's bounded readiness poll to give up on a session that is fine.
-// Restricted to a provisioning row so a late call cannot overwrite a live one.
+// A failed start may still receive a late partial worktree from a claimed
+// preparation. Retain that path for safe cleanup, but never overwrite a live
+// workspace or publish onto a terminated session still provisioning.
 func (q *Queries) SetSessionProvisionedWorkspace(ctx context.Context, arg SetSessionProvisionedWorkspaceParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setSessionProvisionedWorkspace,
 		arg.Branch,

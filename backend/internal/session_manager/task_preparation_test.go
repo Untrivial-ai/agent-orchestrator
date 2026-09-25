@@ -13,6 +13,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/workspace/gitworktree"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
 )
 
 func TestTaskPreparationIsClaimedWithoutCreatingAnotherWorktree(t *testing.T) {
@@ -106,6 +107,82 @@ func TestTaskPreparationCapsOutstandingPerProject(t *testing.T) {
 }
 
 type partialPreparedWorkspace struct{ *fakeWorkspace }
+
+type cancelledClaimedWorkspace struct {
+	*fakeWorkspace
+	entered    chan struct{}
+	release    chan struct{}
+	destroyErr error
+}
+
+func (w *cancelledClaimedWorkspace) Create(ctx context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+	close(w.entered)
+	<-ctx.Done()
+	<-w.release
+	return ports.WorkspaceInfo{Path: "/ws/partial", Branch: cfg.Branch,
+		SessionID: cfg.SessionID, ProjectID: cfg.ProjectID}, ctx.Err()
+}
+
+func (w *cancelledClaimedWorkspace) Destroy(context.Context, ports.WorkspaceInfo) error {
+	return w.destroyErr
+}
+
+type failedStartSignalStore struct {
+	*fakeStore
+	failed chan struct{}
+	once   sync.Once
+}
+
+func (s *failedStartSignalStore) GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
+	rec, ok, err := s.fakeStore.GetSession(ctx, id)
+	if ok && rec.ProvisionState == domain.SessionProvisionFailed {
+		s.once.Do(func() { close(s.failed) })
+	}
+	return rec, ok, err
+}
+
+func TestCancelledClaimedPreparationAccountsForPartialWorkspace(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		destroyErr error
+		wantPath   string
+	}{
+		{name: "dirty worktree is retained", destroyErr: ports.ErrWorkspaceDirty, wantPath: "/ws/partial"},
+		{name: "clean worktree is removed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, _ := newChatManager(&recordingLauncher{})
+			workspace := &cancelledClaimedWorkspace{fakeWorkspace: m.workspace.(*fakeWorkspace),
+				entered: make(chan struct{}), release: make(chan struct{}), destroyErr: tc.destroyErr}
+			m.workspace = workspace
+			signalStore := &failedStartSignalStore{fakeStore: st, failed: make(chan struct{})}
+			m.store = signalStore
+			m.browserCapabilities = browsersvc.NewAuthority()
+			token, err := m.PrepareTaskWorkspace(context.Background(), st.projects[string(chatTestProject)])
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-workspace.entered
+			cfg := asyncChatSpawnConfig("do the thing")
+			cfg.TaskPreparation = token
+			rec, _, _, err := m.Spawn(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.asyncChatSpawnsMu.Lock()
+			run := m.asyncChatSpawns[rec.ID]
+			m.asyncChatSpawnsMu.Unlock()
+			run.cancel()
+			<-signalStore.failed
+			close(workspace.release)
+			<-run.done
+			stored := st.sessions[rec.ID]
+			if stored.Metadata.WorkspacePath != tc.wantPath {
+				t.Fatalf("cancelled partial worktree path = %q, want %q", stored.Metadata.WorkspacePath, tc.wantPath)
+			}
+		})
+	}
+}
 
 func (w *partialPreparedWorkspace) Create(_ context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
 	return ports.WorkspaceInfo{

@@ -156,6 +156,32 @@ func TestProvisionedWorkspaceRejectsTerminatedSession(t *testing.T) {
 	}
 }
 
+func TestProvisionedWorkspaceRetainsLateFailedWorktree(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	rec := sampleRecord("mer")
+	rec.ProvisionState = domain.SessionProvisionFailed
+	rec.IsTerminated = true
+	rec.Metadata.WorkspacePath = ""
+	created, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.SetSessionProvisionedWorkspace(ctx, created.ID, "ao/mer-1/root", "/dirty-partial", "/repo", created.UpdatedAt)
+	if err != nil || !updated {
+		t.Fatalf("retain late failed worktree = (%v, %v)", updated, err)
+	}
+	stored, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok || stored.Metadata.WorkspacePath != "/dirty-partial" || !stored.IsTerminated {
+		t.Fatalf("failed session lost dirty worktree: %+v, exists=%v, err=%v", stored, ok, err)
+	}
+	updated, err = s.SetSessionProvisionedWorkspace(ctx, created.ID, "ao/other", "/other", "/repo", created.UpdatedAt)
+	if err != nil || updated {
+		t.Fatalf("late worktree replaced retained path = (%v, %v)", updated, err)
+	}
+}
+
 func TestUpdateSessionPreservesConcurrentProvisionState(t *testing.T) {
 	for _, tc := range []struct {
 		state domain.SessionProvisionState

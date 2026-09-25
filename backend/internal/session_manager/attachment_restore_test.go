@@ -5,12 +5,75 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/attachmentstore"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+type blockedRestoreExclude struct {
+	*fakeWorkspace
+	entered chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+}
+
+func (w *blockedRestoreExclude) AddExclude(ctx context.Context, info ports.WorkspaceInfo, patterns ...string) error {
+	select {
+	case w.entered <- struct{}{}:
+		<-w.release
+	default:
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.fakeWorkspace.AddExclude(ctx, info, patterns...)
+}
+
+func TestStageAttachmentsWaitsForRestoreOfSameSession(t *testing.T) {
+	m, st, _, base := newManager()
+	m.attachments = attachmentstore.New(t.TempDir())
+	m.attachmentSuffix = func() (string, error) { return "new", nil }
+	workspacePath := t.TempDir()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: workspacePath}}
+	if err := m.attachments.PutCanonical(context.Background(), "mer-1", "attachment-old.png", []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	ws := &blockedRestoreExclude{fakeWorkspace: base, entered: make(chan struct{}), release: make(chan struct{})}
+	m.workspace = ws
+	restored := make(chan error, 1)
+	go func() {
+		restored <- m.restoreAttachments(context.Background(), "mer-1", ports.WorkspaceInfo{SessionID: "mer-1", Path: workspacePath})
+	}()
+	<-ws.entered
+	staged := make(chan error, 1)
+	go func() {
+		_, err := m.StageAttachments(context.Background(), "mer-1", []ports.SpawnAttachment{{Ext: ".png", Data: []byte("new")}})
+		staged <- err
+	}()
+	select {
+	case err := <-staged:
+		close(ws.release)
+		<-restored
+		t.Fatalf("staging completed while restore was still replaying: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(ws.release)
+	if err := <-restored; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-staged; err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"attachment-old.png", "attachment-new.png"} {
+		if _, err := os.Stat(filepath.Join(workspacePath, filepath.FromSlash(attachmentsDir), name)); err != nil {
+			t.Fatalf("%s missing after restore and staging: %v", name, err)
+		}
+	}
+}
 
 func TestRestoreAttachmentsFailsWhenGitExcludeCannotBeWritten(t *testing.T) {
 	m, _, _, workspace := newManager()

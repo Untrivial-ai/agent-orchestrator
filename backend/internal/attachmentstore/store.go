@@ -10,12 +10,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -39,6 +41,14 @@ var (
 // Store persists canonical attachment bytes beneath an AO data directory.
 type Store struct {
 	dataDir string
+	// ponytail: fixed stripes bound memory; use keyed locks if unrelated uploads contend.
+	projectionLocks [64]sync.Mutex
+}
+
+func (s *Store) projectionLock(id domain.SessionID) *sync.Mutex {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(id))
+	return &s.projectionLocks[h.Sum64()%uint64(len(s.projectionLocks))]
 }
 
 // New returns a store rooted at dataDir.
@@ -53,6 +63,9 @@ func New(dataDir string) *Store {
 // Returning success therefore means both the history copy and the agent-visible
 // copy exist.
 func (s *Store) Put(ctx context.Context, id domain.SessionID, workspacePath, name string, data []byte) error {
+	lock := s.projectionLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 	if strings.TrimSpace(workspacePath) == "" {
 		return errors.New("attachment workspace path is empty")
 	}
@@ -198,6 +211,9 @@ func (s *Store) ImportWorkspace(ctx context.Context, id domain.SessionID, worksp
 // worktree before its controller is relaunched. beforeWrite runs once, only
 // when a file exists, and must succeed before any file becomes visible there.
 func (s *Store) MaterializeWorkspace(ctx context.Context, id domain.SessionID, workspacePath string, beforeWrite func() error) (bool, error) {
+	lock := s.projectionLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}

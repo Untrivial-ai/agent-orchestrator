@@ -127,6 +127,12 @@ func (m *Manager) completeAsyncChatSpawn(ctx context.Context, in asyncChatSpawn)
 		if err != nil && ctx.Err() != nil {
 			in.preparation.cancel()
 			m.failAsyncChatSpawn(ctx, id, wrapSpawnStage(id, ErrWorkspaceCreate, err))
+			// The claimed preparation has no timer or cache entry. Keep owning its
+			// cleanup after the visible session fails, even if Create returns late.
+			<-in.preparation.done
+			if in.preparation.workspace.Path != "" {
+				m.cleanupAsyncChatWorkspace(ctx, id, in.preparation.workspace, in.preparation.workspaceProject)
+			}
 			return
 		}
 	}

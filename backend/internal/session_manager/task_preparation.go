@@ -122,6 +122,9 @@ func (m *Manager) createTaskPreparation(ctx context.Context, prep *taskPreparati
 		}
 		cancel()
 		if cleanupErr == nil {
+			if ws.Path != "" {
+				m.clearProvisionedWorkspace(recordCtx, prep.record.ID, ws.Path)
+			}
 			ws = ports.WorkspaceInfo{}
 			workspaceProject = nil
 		} else {
