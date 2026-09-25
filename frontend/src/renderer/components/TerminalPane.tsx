@@ -1359,11 +1359,11 @@ function TerminalEndedStrip({ canRestore, error, isRestoring, onRestore, session
 	return (
 		<div className="shrink-0 border-b border-border bg-surface/80 px-4 py-2">
 			<div className="flex min-h-control-board items-center gap-3">
-				<div className="min-w-0 flex-1">
-					<div className="font-mono text-caption font-medium uppercase tracking-wide-md text-muted-foreground">
+				<div className="flex min-w-0 flex-1 flex-col justify-center gap-1">
+					<div className="font-mono text-caption font-medium uppercase leading-4 tracking-wide-md text-muted-foreground">
 						{t("terminal.ended")}
 					</div>
-					<div className="mt-0.5 truncate text-xs text-muted-foreground">{message}</div>
+					<div className="truncate text-xs leading-4 text-muted-foreground">{message}</div>
 				</div>
 				{error && <div className="max-w-content-max truncate text-xs text-destructive">{error}</div>}
 				{variant === "session" && session ? <ResumeAgentControl session={session} /> : null}
