@@ -278,11 +278,11 @@ func writeJSONResponse(w http.ResponseWriter, status int, body any) {
 }
 
 // cloudUnsupported lists allowlisted actions the Stage 1 cloud engine does
-// not implement (network capture is spec Stage 3; devtools is a spec
-// non-goal; unhighlight is an Electron overlay feature).
+// not implement (network capture is spec Stage 3; unhighlight is an
+// Electron overlay feature).
 var cloudUnsupported = map[string]struct{}{
 	"network-start": {}, "network-status": {}, "network-list": {}, "network-stop": {},
-	"network-clear": {}, "devtools-open": {}, "devtools-close": {}, "unhighlight": {},
+	"network-clear": {}, "unhighlight": {},
 }
 
 var actVerbs = map[string]struct{}{
@@ -298,6 +298,11 @@ func (s *Service) dispatch(ctx context.Context, action string, args map[string]a
 		}
 	}
 	switch action {
+	case "devtools-open", "devtools-close":
+		if s.opts.Viewer == nil {
+			return nil, &CommandError{Code: "BROWSER_VIEWER_REQUIRED", Message: "Open the session browser viewer before opening DevTools."}
+		}
+		return s.opts.Viewer.DevTools(action == "devtools-open")
 	case "open":
 		raw, err := requireString(args, "url", "URL_REQUIRED", "url is required", false)
 		if err != nil {

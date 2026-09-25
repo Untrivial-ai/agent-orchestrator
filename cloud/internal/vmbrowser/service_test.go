@@ -198,7 +198,7 @@ func TestServiceRejectsUnsupportedAction(t *testing.T) {
 
 func TestServiceCloudUnsupportedVerbs(t *testing.T) {
 	for _, action := range []string{"network-start", "network-status", "network-list", "network-stop",
-		"network-clear", "devtools-open", "devtools-close", "unhighlight"} {
+		"network-clear", "unhighlight"} {
 		t.Run(action, func(t *testing.T) {
 			service, capability := newTestService(t, &fakeEngine{})
 			status, body := doBrowserRequest(t, service.Handler(), http.MethodPost, "/api/v1/browser/commands",

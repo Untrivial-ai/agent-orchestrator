@@ -621,10 +621,11 @@ export function BrowserPanelView({
 		[reorderTabs, tabs],
 	);
 
-	// Docked DevTools belongs to the native page view, which is intentionally
-	// hidden while the active target is blank. Keep close available for any
-	// in-flight state update, but do not offer an open action with no page.
-	const canUseDevTools = hasNativeBrowser && Boolean(viewId) && Boolean(navState.url || devtoolsState.open);
+	// Keep close available during navigation, but gate remote changes on ownership.
+	const canUseDevTools = cloudSurface
+		? cloudSurface.snapshot.devtoolsSupported && cloudSurface.snapshot.canOperate && cloudSurface.snapshot.owner !== "agent" &&
+			(devtoolsState.open || (cloudSurface.snapshot.status === "ready" && !cloudSurface.snapshot.viewportPending))
+		: hasNativeBrowser && Boolean(viewId) && Boolean(navState.url || devtoolsState.open);
 	const canTakeScreenshot = hasNativeBrowser && Boolean(viewId) && Boolean(navState.url);
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const browserDownloads = useBrowserDownloads();
@@ -1491,6 +1492,15 @@ export function BrowserPanelView({
 									{devicePreset !== null ? <span className="size-1.5 rounded-full bg-accent" /> : null}
 									<ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-passive" />
 								</DropdownMenuItem>
+								<DropdownMenuItem
+									className="gap-2"
+									disabled={!canUseDevTools}
+									onSelect={() => void (devtoolsState.open ? closeDevTools() : openDevTools())}
+								>
+									<Bug aria-hidden="true" className="size-icon-base shrink-0" />
+									<span className="flex-1">{t(devtoolsState.open ? "browser.closeDevTools" : "browser.openDevTools")}</span>
+									{devtoolsState.open ? <Check aria-hidden="true" className="text-accent" /> : null}
+								</DropdownMenuItem>
 								{!cloudSurface ? (
 									<>
 										<DropdownMenuItem
@@ -1506,15 +1516,6 @@ export function BrowserPanelView({
 												{profileState.profileName ?? t("browser.profile.temporary")}
 											</span>
 											<ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-passive" />
-										</DropdownMenuItem>
-										<DropdownMenuItem
-											className="gap-2"
-											disabled={!canUseDevTools}
-											onSelect={() => void (devtoolsState.open ? closeDevTools() : openDevTools())}
-										>
-											<Bug aria-hidden="true" className="size-icon-base shrink-0" />
-											<span className="flex-1">{t(devtoolsState.open ? "browser.closeDevTools" : "browser.openDevTools")}</span>
-											{devtoolsState.open ? <Check aria-hidden="true" className="text-accent" /> : null}
 										</DropdownMenuItem>
 										<DropdownMenuItem className="gap-2" disabled={!canTakeScreenshot} onSelect={() => void takeScreenshot()}>
 											<Camera aria-hidden="true" className="size-icon-base shrink-0" />
@@ -1587,7 +1588,19 @@ export function BrowserPanelView({
 							data-testid="browser-device-frame"
 							ref={slotRef}
 						>
-							{cloudSurface ? <CloudBrowserSurface model={cloudSurface} /> : null}
+							{cloudSurface ? (
+								<div className="flex h-full flex-col">
+									{devtoolsState.open ? (
+										<div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1 text-xs">
+											<span className="truncate" title={navState.url}>{navState.title || navState.url}</span>
+											<button type="button" disabled={!canUseDevTools} onClick={() => void closeDevTools()} className="text-accent disabled:opacity-50">
+												{t("browser.closeDevTools")}
+											</button>
+										</div>
+									) : null}
+									<div className="relative min-h-0 flex-1"><CloudBrowserSurface model={cloudSurface} /></div>
+								</div>
+							) : null}
 						</div>
 					</div>
 					{showStaticPreview ? <StaticPreview url={navState.url} /> : null}

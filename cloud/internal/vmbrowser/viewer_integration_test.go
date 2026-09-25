@@ -22,7 +22,7 @@ func TestRealViewerResizeAndEditing(t *testing.T) {
 	if os.Getenv("AO_TEST_REAL_BROWSER") != "1" {
 		t.Skip("requires the worker image's Chromium and browser command binary")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	root := t.TempDir()
 	chromium := NewChromium(ChromiumOptions{BinaryPath: "/usr/bin/chromium", UserDataDir: filepath.Join(root, "profile")})
@@ -32,7 +32,11 @@ func TestRealViewerResizeAndEditing(t *testing.T) {
 		defer stop()
 		_ = engine.Close(cleanup)
 	}()
-	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/devtools-network" {
+			_, _ = fmt.Fprint(w, "network fixture")
+			return
+		}
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = fmt.Fprint(w, `<title>Editing fixture</title><input aria-label="Shared value" style="position:absolute;left:20px;top:80px;width:240px;height:40px" oninput="document.querySelector('output').textContent=this.value"><output style="position:absolute;top:150px"></output>`)
 	}))
@@ -100,6 +104,14 @@ func TestRealViewerResizeAndEditing(t *testing.T) {
 		t.Helper()
 		sequence++
 		control.Version, control.StreamEpoch, control.InputSeq = browserstream.Version, epoch, sequence
+		if control.Type == "input" {
+			viewer.mu.Lock()
+			state := viewer.session
+			viewer.mu.Unlock()
+			state.opMu.Lock()
+			control.TargetID = state.displayTargetLocked()
+			state.opMu.Unlock()
+		}
 		payload, _ := json.Marshal(control)
 		if err := conn.Write(ctx, websocket.MessageText, payload); err != nil {
 			t.Fatal(err)
@@ -145,4 +157,189 @@ func TestRealViewerResizeAndEditing(t *testing.T) {
 		send(browserstream.Control{Type: "input", Kind: "keyUp", Key: shortcut.key, CodeValue: shortcut.code, Modifiers: 2})
 		expectValue(shortcut.want, shortcut.absent)
 	}
+	t.Run("DevTools", func(t *testing.T) {
+		viewer.mu.Lock()
+		state := viewer.session
+		viewer.mu.Unlock()
+		state.opMu.Lock()
+		pageID, pageSession := state.targetID, state.sessionID
+		state.opMu.Unlock()
+		send(browserstream.Control{Type: "devtools", Operation: "open"})
+		state.opMu.Lock()
+		if state.devtools == nil {
+			state.opMu.Unlock()
+			t.Fatal("inspector not opened")
+		}
+		inspectorID, inspectorSession := state.devtools.targetID, state.devtools.sessionID
+		state.opMu.Unlock()
+		evaluate := func(session, expression string, result any) {
+			t.Helper()
+			var response struct {
+				Result struct {
+					Value json.RawMessage `json:"value"`
+				} `json:"result"`
+				ExceptionDetails json.RawMessage `json:"exceptionDetails"`
+			}
+			if err := state.cdp.Call(ctx, session, "Runtime.evaluate", map[string]any{"expression": expression, "returnByValue": true, "awaitPromise": true}, &response); err != nil {
+				t.Fatal(err)
+			}
+			if len(response.ExceptionDetails) > 0 {
+				t.Fatalf("inspector evaluation: %s", response.ExceptionDetails)
+			}
+			if err := json.Unmarshal(response.Result.Value, result); err != nil {
+				t.Fatalf("decode evaluation: %v (%s)", err, response.Result.Value)
+			}
+		}
+		type axNode struct {
+			Role struct {
+				Value string `json:"value"`
+			} `json:"role"`
+			Name struct {
+				Value string `json:"value"`
+			} `json:"name"`
+			BackendID int `json:"backendDOMNodeId"`
+		}
+		inspectorNodes := func() []axNode {
+			t.Helper()
+			var result struct {
+				Nodes []axNode `json:"nodes"`
+			}
+			if err := state.cdp.Call(ctx, inspectorSession, "Accessibility.getFullAXTree", nil, &result); err != nil {
+				t.Fatal(err)
+			}
+			return result.Nodes
+		}
+		clickRole := func(role, name string) {
+			t.Helper()
+			var nodeID int
+			deadline := time.Now().Add(8 * time.Second)
+			for nodeID == 0 && time.Now().Before(deadline) {
+				for _, node := range inspectorNodes() {
+					if node.Role.Value == role && node.Name.Value == name {
+						nodeID = node.BackendID
+						break
+					}
+				}
+				if nodeID == 0 {
+					time.Sleep(50 * time.Millisecond)
+				}
+			}
+			if nodeID == 0 {
+				t.Fatalf("%s %s missing", role, name)
+			}
+			var box struct {
+				Model struct {
+					Content []float64 `json:"content"`
+				} `json:"model"`
+			}
+			if err := state.cdp.Call(ctx, inspectorSession, "DOM.getBoxModel", map[string]any{"backendNodeId": nodeID}, &box); err != nil {
+				t.Fatal(err)
+			}
+			if len(box.Model.Content) != 8 {
+				t.Fatal("panel has no bounds")
+			}
+			x, y := (box.Model.Content[0]+box.Model.Content[4])/2, (box.Model.Content[1]+box.Model.Content[5])/2
+			send(browserstream.Control{Type: "input", Kind: "pointerDown", X: x, Y: y, Button: "left", Buttons: 1, ClickCount: 1})
+			send(browserstream.Control{Type: "input", Kind: "pointerUp", X: x, Y: y, Button: "left", ClickCount: 1})
+		}
+		clickPanel := func(name string) { clickRole("tab", name) }
+		inspectorContains := func(want string) {
+			t.Helper()
+			deadline := time.Now().Add(8 * time.Second)
+			for time.Now().Before(deadline) {
+				for _, node := range inspectorNodes() {
+					if strings.Contains(node.Name.Value, want) {
+						return
+					}
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			t.Fatalf("inspector missing %q", want)
+		}
+		clickPanel("Console")
+		clickRole("textbox", "Console prompt")
+		send(browserstream.Control{Type: "input", Kind: "text", Text: `document.querySelector('input').value='devtools-console'; document.querySelector('input').dispatchEvent(new Event('input')); inspect(document.querySelector('input'));`})
+		send(browserstream.Control{Type: "input", Kind: "keyDown", Key: "Enter", CodeValue: "Enter"})
+		send(browserstream.Control{Type: "input", Kind: "keyUp", Key: "Enter", CodeValue: "Enter"})
+		var value string
+		deadline := time.Now().Add(8 * time.Second)
+		for time.Now().Before(deadline) {
+			evaluate(pageSession, `document.querySelector('input').value`, &value)
+			if value == "devtools-console" {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if value != "devtools-console" {
+			for _, node := range inspectorNodes() {
+				if node.Name.Value != "" {
+					t.Logf("%s: %s", node.Role.Value, node.Name.Value)
+				}
+			}
+			t.Fatalf("Console keystrokes did not reach inspected page: %q", value)
+		}
+		expectValue("devtools-console", "replacement")
+		clickPanel("Elements")
+		inspectorContains("Shared value")
+		clickPanel("Network")
+		var networkBody string
+		evaluate(pageSession, `fetch('/devtools-network').then(r => r.text())`, &networkBody)
+		if networkBody != "network fixture" {
+			t.Fatal("network fixture did not respond")
+		}
+		inspectorContains("devtools-network")
+		ack := send(browserstream.Control{Type: "viewport", Width: 1000, Height: 800})
+		if lastFrame.TargetID != inspectorID || lastFrame.Sequence < ack.MinFrameSeq {
+			wait(nil, 1000, 800, ack.MinFrameSeq)
+		}
+		if lastFrame.TargetID != inspectorID {
+			t.Fatal("viewer did not stream inspector frame")
+		}
+		tabs, err := viewer.listTargets(state)
+		if err != nil || len(tabs) != 1 || tabs[0].ID != pageID {
+			t.Fatalf("inspector changed tabs: %v, %v", tabs, err)
+		}
+		send(browserstream.Control{Type: "devtools", Operation: "close"})
+		send(browserstream.Control{Type: "devtools", Operation: "open"})
+		_ = conn.CloseNow()
+		deadline = time.Now().Add(5 * time.Second)
+		for viewer.Attached() && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if viewer.Attached() {
+			t.Fatal("viewer did not detach")
+		}
+		endpoint, err := chromium.EnsureRunning(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cdp, err := dialWebsocketCDP(ctx, endpoint.WebSocketURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cdp.Close()
+		var targets struct {
+			TargetInfos []struct {
+				URL string `json:"url"`
+			} `json:"targetInfos"`
+		}
+		// Chromium acknowledges close before publishing target destruction.
+		deadline = time.Now().Add(5 * time.Second)
+		for {
+			if err := cdp.Call(ctx, "", "Target.getTargets", nil, &targets); err != nil {
+				t.Fatal(err)
+			}
+			inspectorRemaining := false
+			for _, target := range targets.TargetInfos {
+				inspectorRemaining = inspectorRemaining || strings.HasPrefix(target.URL, "devtools:")
+			}
+			if !inspectorRemaining {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("disconnect leaked native inspector")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
 }

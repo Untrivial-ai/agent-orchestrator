@@ -318,7 +318,7 @@ func validateBrowserdMessage(message browserWireMessage) error {
 
 func viewerControlAllowedForWorker(messageType string) bool {
 	switch messageType {
-	case "ping", "viewport", "input", "navigate", "tab", "dialog":
+	case "ping", "viewport", "input", "navigate", "tab", "dialog", "devtools":
 		return true
 	default:
 		return false

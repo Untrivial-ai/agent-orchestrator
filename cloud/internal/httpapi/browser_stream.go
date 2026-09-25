@@ -559,7 +559,7 @@ func writeBrowserFrames(ctx context.Context, connection *websocket.Conn, frames 
 
 func viewerControlAllowed(messageType string) bool {
 	switch messageType {
-	case "ping", "detach", "viewport", "input", "navigate", "tab", "dialog":
+	case "ping", "detach", "viewport", "input", "navigate", "tab", "dialog", "devtools":
 		return true
 	default:
 		return false
@@ -568,7 +568,7 @@ func viewerControlAllowed(messageType string) bool {
 
 func viewerControlOperates(messageType string) bool {
 	switch messageType {
-	case "input", "navigate", "tab", "dialog":
+	case "input", "navigate", "tab", "dialog", "devtools":
 		return true
 	default:
 		return false
@@ -580,7 +580,7 @@ func browserControlIsInteraction(control browserstream.Control) bool {
 		return false
 	}
 	switch control.Type {
-	case "navigate", "tab", "dialog":
+	case "navigate", "tab", "dialog", "devtools":
 		return true
 	case "input":
 		switch control.Kind {

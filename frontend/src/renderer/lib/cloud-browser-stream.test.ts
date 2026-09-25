@@ -24,8 +24,8 @@ class FakeSocket {
 	}
 }
 
-function frame(epoch: bigint, sequence: bigint, width = 800, height = 600): ArrayBuffer {
-	const target = new TextEncoder().encode("tab-1");
+function frame(epoch: bigint, sequence: bigint, width = 800, height = 600, targetId = "tab-1"): ArrayBuffer {
+	const target = new TextEncoder().encode(targetId);
 	const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]);
 	const bytes = new Uint8Array(35 + target.length + jpeg.length);
 	bytes.set(new TextEncoder().encode("AOBR"), 0);
@@ -56,6 +56,60 @@ afterEach(() => {
 });
 
 describe("CloudBrowserStream", () => {
+	it("acknowledges DevTools, fences old frames and inputs, and resets on reconnect", async () => {
+		vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:frame");
+		vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+		const socket = new FakeSocket();
+		const stream = new CloudBrowserStream({ baseUrl: "https://cloud.example", orgId: "org", sessionId: "session",
+			client: { createBrowserViewerTicket: vi.fn().mockResolvedValue({ ticket: "ticket", canOperate: true }) }, createSocket: () => socket });
+		stream.retain();
+		await Promise.resolve(); await Promise.resolve();
+		socket.open();
+		const state = (extra = {}) => socket.message(JSON.stringify({ type: "state", version: 1, streamEpoch: 1,
+			targetId: "tab-1", activeTabId: "tab-1", devtoolsSupported: true, ...extra }));
+		state();
+		acknowledgeViewport(stream, socket);
+		socket.message(frame(1n, 1n));
+		stream.reportPaint(1, 0, 0, "blob:frame");
+		const opening = stream.request({ type: "devtools", operation: "open" });
+		const control = JSON.parse(String(socket.sent.at(-1)));
+		expect(control).toMatchObject({ type: "devtools", operation: "open" });
+		state({ targetId: "inspector", devtoolsOpen: true });
+		socket.message(JSON.stringify({ type: "input_ack", version: 1, streamEpoch: 1, inputSeq: control.inputSeq }));
+		await expect(opening).resolves.toBeUndefined();
+		expect(stream.getSnapshot()).toMatchObject({ activeTabId: "tab-1", targetId: "inspector", devtoolsOpen: true, viewportPending: true });
+		expect(stream.send({ type: "input", kind: "text", text: "too soon" })).toBe(false);
+		socket.message(frame(1n, 2n));
+		expect(stream.getSnapshot().frameSequence).toBe(1);
+		acknowledgeViewport(stream, socket, 800, 600, 3);
+		socket.message(frame(1n, 3n, 800, 600, "inspector"));
+		stream.reportPaint(3, 0, 0, "blob:frame");
+		expect(stream.send({ type: "input", kind: "text", text: "1+1" })).toBe(true);
+		expect(JSON.parse(String(socket.sent.at(-1)))).toMatchObject({ targetId: "inspector" });
+		const closing = stream.request({ type: "devtools", operation: "close" });
+		const rejected = expect(closing).rejects.toThrow("unavailable");
+		socket.message(JSON.stringify({ type: "input_rejected", version: 1, streamEpoch: 1,
+			inputSeq: JSON.parse(String(socket.sent.at(-1))).inputSeq, message: "DevTools unavailable" }));
+		await rejected;
+		socket.message(JSON.stringify({ type: "hello", version: 1, streamEpoch: 2 }));
+		expect(stream.getSnapshot()).toMatchObject({ devtoolsOpen: false, devtoolsSupported: false, targetId: "", viewportPending: true });
+		expect(stream.send({ type: "devtools", operation: "open" })).toBe(false);
+		stream.dispose();
+	});
+
+	it("does not send DevTools commands from a read-only viewer", async () => {
+		const socket = new FakeSocket();
+		const stream = new CloudBrowserStream({ baseUrl: "https://cloud.example", orgId: "org", sessionId: "session",
+			client: { createBrowserViewerTicket: vi.fn().mockResolvedValue({ ticket: "ticket", canOperate: false }) }, createSocket: () => socket });
+		stream.retain();
+		await Promise.resolve(); await Promise.resolve();
+		socket.open();
+		socket.message(JSON.stringify({ type: "state", version: 1, streamEpoch: 1, devtoolsSupported: true, devtoolsOpen: true }));
+		expect(stream.send({ type: "devtools", operation: "close" })).toBe(false);
+		expect(socket.sent).toHaveLength(0);
+		stream.dispose();
+	});
+
 	it("does not reclaim a viewer replaced by another window until explicitly retried", async () => {
 		vi.useFakeTimers();
 		const socket = new FakeSocket();

@@ -58,6 +58,9 @@ type viewerSession struct {
 	frames            *browserstream.Latest
 	writeMu           sync.Mutex
 	opMu              sync.Mutex
+	targetMu          sync.Mutex
+	devtools          *viewerDevTools
+	cdpURL            string
 	sessionID         string
 	targetID          string
 	width             int
@@ -163,8 +166,10 @@ func (v *ViewerController) Serve(ctx context.Context, conn *websocket.Conn) erro
 		height: defaultViewerHeight, epoch: epoch, started: time.Now(),
 		quality: 70, fps: 15, captureWidth: maxViewerWidth, captureHeight: maxViewerHeight,
 		attachStarted: attachStarted, chromiumReady: time.Since(attachStarted),
+		cdpURL: endpoint.WebSocketURL,
 	}
 	defer state.frames.Close()
+	defer v.cleanupDevTools(state)
 	defer func() {
 		v.opts.Logger.Info("browser viewer session closed",
 			"duration_ms", time.Since(state.attachStarted).Milliseconds(),
@@ -244,10 +249,16 @@ func (v *ViewerController) attachInitialTarget(state *viewerSession) error {
 }
 
 func (v *ViewerController) switchTarget(state *viewerSession, targetID string) error {
+	state.targetMu.Lock()
+	defer state.targetMu.Unlock()
 	state.opMu.Lock()
 	if targetID == "" {
 		state.opMu.Unlock()
 		return errors.New("browser viewer target is required")
+	}
+	if err := v.closeDevToolsLocked(state.ctx, state); err != nil {
+		state.opMu.Unlock()
+		return err
 	}
 	if state.sessionID != "" {
 		_ = state.cdp.Call(state.ctx, state.sessionID, "Page.stopScreencast", nil, nil)
@@ -268,7 +279,7 @@ func (v *ViewerController) switchTarget(state *viewerSession, targetID string) e
 	}
 	state.targetID = targetID
 	state.sessionID = attached.SessionID
-	state.lastFrame = time.Time{}
+	state.resetDisplayLocked()
 	state.saturatedSince = time.Time{}
 	state.stableSince = time.Time{}
 	state.dialogOpen = false
@@ -302,7 +313,7 @@ func (v *ViewerController) switchTarget(state *viewerSession, targetID string) e
 }
 
 func (v *ViewerController) startScreencastLocked(state *viewerSession) error {
-	return state.cdp.Call(state.ctx, state.sessionID, "Page.startScreencast", map[string]any{
+	return state.cdp.Call(state.ctx, state.displaySessionLocked(), "Page.startScreencast", map[string]any{
 		"format": "jpeg", "quality": state.quality,
 		"maxWidth":  min(state.width, state.captureWidth),
 		"maxHeight": min(state.height, state.captureHeight), "everyNthFrame": 1,
@@ -310,7 +321,7 @@ func (v *ViewerController) startScreencastLocked(state *viewerSession) error {
 }
 
 func (v *ViewerController) applyViewportLocked(state *viewerSession) error {
-	return state.cdp.Call(state.ctx, state.sessionID, "Emulation.setDeviceMetricsOverride", map[string]any{
+	return state.cdp.Call(state.ctx, state.displaySessionLocked(), "Emulation.setDeviceMetricsOverride", map[string]any{
 		"width": state.width, "height": state.height, "deviceScaleFactor": 1,
 		"mobile": false,
 	}, nil)
@@ -321,6 +332,12 @@ func (v *ViewerController) readCDPEvents(state *viewerSession) {
 	for event := range state.cdp.Events() {
 		if state.ctx.Err() != nil {
 			return
+		}
+		state.opMu.Lock()
+		pageEvent := event.SessionID == "" || event.SessionID == state.sessionID
+		state.opMu.Unlock()
+		if !pageEvent && event.Method != "Page.screencastFrame" && strings.HasPrefix(event.Method, "Page.") {
+			continue
 		}
 		switch event.Method {
 		case "Page.screencastFrame":
@@ -416,7 +433,14 @@ func (v *ViewerController) handleTargetDestroyed(state *viewerSession, event cdp
 	}
 	state.opMu.Lock()
 	wasActive := destroyed.TargetID != "" && destroyed.TargetID == state.targetID
+	wasInspector := state.devtools != nil && destroyed.TargetID == state.devtools.targetID
 	state.opMu.Unlock()
+	if wasInspector {
+		if err := v.devtoolsOperation(state, "close"); err != nil {
+			v.opts.Logger.Debug("recover viewer after inspector close", "error", err)
+		}
+		return
+	}
 	if !wasActive {
 		v.publishState(state)
 		return
@@ -441,7 +465,7 @@ func (v *ViewerController) handleTargetDestroyed(state *viewerSession, event cdp
 
 func (v *ViewerController) acceptScreencastFrame(state *viewerSession, event cdpEvent) {
 	state.opMu.Lock()
-	activeSession := state.sessionID
+	activeSession := state.displaySessionLocked()
 	state.opMu.Unlock()
 	if event.SessionID != "" && event.SessionID != activeSession {
 		return
@@ -475,7 +499,7 @@ func (v *ViewerController) acceptScreencastFrame(state *viewerSession, event cdp
 	}
 	now := time.Now()
 	state.opMu.Lock()
-	if state.sessionID != activeSession || (!state.viewportChangedAt.IsZero() &&
+	if state.displaySessionLocked() != activeSession || (!state.viewportChangedAt.IsZero() &&
 		(params.Metadata.Width != float64(state.width) || params.Metadata.Height != float64(state.height) ||
 			params.Metadata.Timestamp < float64(state.viewportChangedAt.UnixMicro())/1e6)) {
 		state.opMu.Unlock()
@@ -483,7 +507,7 @@ func (v *ViewerController) acceptScreencastFrame(state *viewerSession, event cdp
 	}
 	pending := &deferredViewerFrame{
 		jpeg: append([]byte(nil), jpeg...), capturedAt: now,
-		targetID: state.targetID, width: state.width, height: state.height,
+		targetID: state.displayTargetLocked(), width: state.width, height: state.height,
 	}
 	if state.deferredFlush {
 		state.deferredFrame = pending
@@ -505,7 +529,7 @@ func (v *ViewerController) acceptScreencastFrame(state *viewerSession, event cdp
 	frame := browserstream.Frame{
 		StreamEpoch: state.epoch, Sequence: state.sequence,
 		Width: uint16(state.width), Height: uint16(state.height),
-		CapturedMS: uint64(time.Since(state.started).Milliseconds()), TargetID: state.targetID, JPEG: jpeg,
+		CapturedMS: uint64(time.Since(state.started).Milliseconds()), TargetID: state.displayTargetLocked(), JPEG: jpeg,
 	}
 	quality, fps := state.quality, state.fps
 	state.opMu.Unlock()
@@ -518,7 +542,7 @@ func (v *ViewerController) flushDeferredFrame(state *viewerSession) {
 	pending := state.deferredFrame
 	state.deferredFrame = nil
 	state.deferredFlush = false
-	if pending == nil || state.ctx.Err() != nil || pending.targetID != state.targetID {
+	if pending == nil || state.ctx.Err() != nil || pending.targetID != state.displayTargetLocked() {
 		state.opMu.Unlock()
 		return
 	}
@@ -613,7 +637,7 @@ func (v *ViewerController) adaptViewer(state *viewerSession, saturated bool, now
 		state.opMu.Unlock()
 		return
 	}
-	_ = state.cdp.Call(state.ctx, state.sessionID, "Page.stopScreencast", nil, nil)
+	_ = state.cdp.Call(state.ctx, state.displaySessionLocked(), "Page.stopScreencast", nil, nil)
 	_ = v.startScreencastLocked(state)
 	v.opts.Logger.Info("browser viewer adapted",
 		"quality", state.quality, "fps", state.fps,
@@ -730,14 +754,21 @@ func (v *ViewerController) handleControl(state *viewerSession, control browserst
 		err = v.tabOperation(state, control)
 	case "dialog":
 		err = v.dialogOperation(state, control)
+	case "devtools":
+		err = v.devtoolsOperation(state, control.Operation)
 	default:
 		err = errors.New("unsupported browser viewer control type")
 	}
 	if err != nil {
 		state.inputRejected.Add(1)
+		code, message := "BROWSER_INPUT_REJECTED", "Browser input could not be applied."
+		var commandErr *CommandError
+		if errors.As(err, &commandErr) {
+			code, message = commandErr.Code, commandErr.Message
+		}
 		respond(browserstream.Control{
 			Type: "input_rejected", Version: browserstream.Version, StreamEpoch: state.epoch,
-			InputSeq: control.InputSeq, Code: "BROWSER_INPUT_REJECTED", Message: "Browser input could not be applied.",
+			InputSeq: control.InputSeq, Code: code, Message: message,
 		})
 		v.opts.Logger.Debug("browser viewer input rejected", "error", err, "type", control.Type, "kind", control.Kind)
 		return
@@ -778,7 +809,7 @@ func (v *ViewerController) resize(state *viewerSession, width, height int) error
 	if err := v.applyViewportLocked(state); err != nil {
 		return err
 	}
-	if err := state.cdp.Call(state.ctx, state.sessionID, "Page.stopScreencast", nil, nil); err != nil {
+	if err := state.cdp.Call(state.ctx, state.displaySessionLocked(), "Page.stopScreencast", nil, nil); err != nil {
 		return err
 	}
 	return v.startScreencastLocked(state)
@@ -787,6 +818,9 @@ func (v *ViewerController) resize(state *viewerSession, width, height int) error
 func (v *ViewerController) dispatchInput(state *viewerSession, input browserstream.Control) error {
 	state.opMu.Lock()
 	defer state.opMu.Unlock()
+	if (input.TargetID != "" && input.TargetID != state.displayTargetLocked()) || (state.devtools != nil && input.TargetID == "") {
+		return errors.New("browser input targets a stale surface")
+	}
 	params := map[string]any{"modifiers": input.Modifiers}
 	method := ""
 	switch input.Kind {
@@ -842,13 +876,13 @@ func (v *ViewerController) dispatchInput(state *viewerSession, input browserstre
 		return errors.New("unsupported browser input kind")
 	}
 	if input.Kind != "doubleClick" {
-		return state.cdp.Call(state.ctx, state.sessionID, method, params, nil)
+		return state.cdp.Call(state.ctx, state.displaySessionLocked(), method, params, nil)
 	}
-	if err := state.cdp.Call(state.ctx, state.sessionID, method, params, nil); err != nil {
+	if err := state.cdp.Call(state.ctx, state.displaySessionLocked(), method, params, nil); err != nil {
 		return err
 	}
 	params["type"] = "mouseReleased"
-	return state.cdp.Call(state.ctx, state.sessionID, method, params, nil)
+	return state.cdp.Call(state.ctx, state.displaySessionLocked(), method, params, nil)
 }
 
 func virtualKeyCode(key string) int {
@@ -1286,6 +1320,8 @@ func (v *ViewerController) publishState(state *viewerSession) {
 	}
 	state.opMu.Lock()
 	active := state.targetID
+	displayTarget := state.displayTargetLocked()
+	devtoolsOpen := state.devtools != nil
 	sessionID := state.sessionID
 	width, height := state.width, state.height
 	loading := state.loading
@@ -1309,9 +1345,15 @@ func (v *ViewerController) publishState(state *viewerSession) {
 		canGoBack = history.CurrentIndex > 0
 		canGoForward = history.CurrentIndex >= 0 && history.CurrentIndex+1 < len(history.Entries)
 	}
+	state.opMu.Lock()
+	defer state.opMu.Unlock()
+	if state.targetID != active || state.sessionID != sessionID || state.displayTargetLocked() != displayTarget {
+		return
+	}
 	v.enqueue(state, browserstream.Control{
 		Type: "state", Version: browserstream.Version, StreamEpoch: state.epoch,
-		TargetID: active, ActiveTabID: active, URL: currentURL, Title: currentTitle,
+		TargetID: displayTarget, ActiveTabID: active, URL: currentURL, Title: currentTitle,
+		DevToolsOpen: devtoolsOpen, DevToolsSupported: true,
 		Width: width, Height: height, Tabs: tabs, Owner: string(v.opts.Arbiter.Owner()),
 		CanGoBack: canGoBack, CanGoForward: canGoForward, IsLoading: loading,
 		DialogOpen: dialogOpen, DialogType: dialogType, DialogText: dialogText, DialogPrompt: dialogPrompt,

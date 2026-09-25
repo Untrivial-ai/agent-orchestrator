@@ -131,10 +131,10 @@ export function useCloudBrowserView(options: {
 		reorderTabs: () => undefined,
 		closedTabs: [],
 		reopenClosedTab: async () => undefined,
-		devtoolsState: { viewId, open: false, activeTabId: snapshot.activeTabId, placement: "undocked" },
+		devtoolsState: { viewId, open: snapshot.devtoolsOpen, activeTabId: snapshot.activeTabId, placement: "undocked" },
 		profileState: { viewId, profileId: null, temporary: true },
-		openDevTools: async () => undefined,
-		closeDevTools: async () => undefined,
+		openDevTools: async () => request({ type: "devtools", operation: "open" }, "Couldn't open DevTools"),
+		closeDevTools: async () => request({ type: "devtools", operation: "close" }, "Couldn't close DevTools"),
 		setDevToolsPlacement: async () => undefined,
 		agentBrowserActive: snapshot.owner === "agent",
 		agentBrowserActivity: snapshot.owner === "agent" ? {

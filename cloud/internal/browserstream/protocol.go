@@ -65,6 +65,9 @@ type Control struct {
 	FPS          int     `json:"fps,omitempty"`
 	ActiveTabID  string  `json:"activeTabId,omitempty"`
 	Tabs         []Tab   `json:"tabs,omitempty"`
+
+	DevToolsOpen      bool `json:"devtoolsOpen,omitempty"`
+	DevToolsSupported bool `json:"devtoolsSupported,omitempty"`
 }
 
 type Tab struct {

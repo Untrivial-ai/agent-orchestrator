@@ -11,6 +11,23 @@ afterEach(() => {
 });
 
 describe("mapCloudBrowserPoint", () => {
+	it("routes inspector shortcuts through the authorized viewer instead of the local window", () => {
+		const send = vi.fn(() => true);
+		const snapshot = { ...EMPTY_CLOUD_BROWSER_SNAPSHOT, status: "ready" as const, canOperate: true, viewportPending: false, devtoolsSupported: true };
+		const model = { snapshot, send, setViewport: vi.fn(), reportPaint: vi.fn(), retry: vi.fn() };
+		const { rerender } = render(createElement(CloudBrowserSurface, { model }));
+		const input = screen.getByRole("textbox", { name: "Browser text input" });
+		fireEvent.keyDown(input, { key: "F12", code: "F12" });
+		fireEvent.keyUp(input, { key: "F12", code: "F12" });
+		expect(send).toHaveBeenCalledExactlyOnceWith({ type: "devtools", operation: "open" });
+		snapshot.devtoolsOpen = true;
+		rerender(createElement(CloudBrowserSurface, { model }));
+		fireEvent.keyDown(input, { key: "I", code: "KeyI", ctrlKey: true, shiftKey: true });
+		expect(send).toHaveBeenLastCalledWith({ type: "devtools", operation: "close" });
+		fireEvent.keyDown(input, { key: "I", code: "KeyI", ctrlKey: true, shiftKey: true, repeat: true });
+		expect(send).toHaveBeenCalledTimes(2);
+	});
+
 	it("maps the displayed canvas back to accepted frame coordinates", () => {
 		expect(mapCloudBrowserPoint(300, 200, { left: 100, top: 50, width: 400, height: 300 }, 800, 600))
 			.toEqual({ x: 400, y: 300 });
@@ -25,6 +42,7 @@ describe("mapCloudBrowserPoint", () => {
 		const send = vi.fn(() => true);
 		render(createElement(CloudBrowserSurface, { model: {
 			snapshot: {
+				...EMPTY_CLOUD_BROWSER_SNAPSHOT,
 				status: "ready", frameUrl: "", frameWidth: 800, frameHeight: 600,
 				frameSequence: 1, streamEpoch: 1, url: "https://example.test", title: "Example",
 				tabs: [], activeTabId: "tab-1", owner: "idle", canOperate: true,
@@ -50,6 +68,7 @@ describe("mapCloudBrowserPoint", () => {
 		const send = vi.fn(() => true);
 		render(createElement(CloudBrowserSurface, { model: {
 			snapshot: {
+				...EMPTY_CLOUD_BROWSER_SNAPSHOT,
 				status: "ready", frameUrl: "", frameWidth: 800, frameHeight: 600,
 				frameSequence: 1, streamEpoch: 1, url: "", title: "",
 				tabs: [], activeTabId: "tab-1", owner: "idle", canOperate: true,
@@ -129,6 +148,7 @@ describe("mapCloudBrowserPoint", () => {
 		const retry = vi.fn();
 		render(createElement(CloudBrowserSurface, { model: {
 			snapshot: {
+				...EMPTY_CLOUD_BROWSER_SNAPSHOT,
 				status: "fatal", frameUrl: "", frameWidth: 0, frameHeight: 0,
 				frameSequence: 0, streamEpoch: 0, url: "", title: "",
 				tabs: [], activeTabId: "", owner: "idle", canOperate: false,
@@ -150,6 +170,7 @@ describe("mapCloudBrowserPoint", () => {
 
 	it("shows the usable empty browser instead of an indefinite startup message", () => {
 		const snapshot = {
+			...EMPTY_CLOUD_BROWSER_SNAPSHOT,
 			status: "waiting" as const, frameUrl: "", frameWidth: 0, frameHeight: 0,
 			frameSequence: 0, streamEpoch: 1, url: "about:blank", title: "",
 			tabs: [{ id: "tab-1", url: "about:blank", title: "", active: true }],
@@ -172,6 +193,7 @@ describe("mapCloudBrowserPoint", () => {
 	it("keeps startup feedback when a nonblank remote page has not produced a frame", () => {
 		render(createElement(CloudBrowserSurface, { model: {
 			snapshot: {
+				...EMPTY_CLOUD_BROWSER_SNAPSHOT,
 				status: "waiting", frameUrl: "", frameWidth: 0, frameHeight: 0,
 				frameSequence: 0, streamEpoch: 1, url: "https://example.test", title: "Example",
 				tabs: [{ id: "tab-1", url: "https://example.test", title: "Example", active: true }],
@@ -222,6 +244,7 @@ describe("mapCloudBrowserPoint", () => {
 		vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage } as unknown as CanvasRenderingContext2D);
 		const reportPaint = vi.fn();
 		const snapshot = {
+			...EMPTY_CLOUD_BROWSER_SNAPSHOT,
 			status: "ready" as const, frameUrl: "blob:frame-1", frameWidth: 800, frameHeight: 600,
 			frameSequence: 1, streamEpoch: 1, url: "", title: "",
 			tabs: [], activeTabId: "tab-1", owner: "idle" as const, canOperate: true,

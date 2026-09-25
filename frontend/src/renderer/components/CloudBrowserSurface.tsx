@@ -175,7 +175,11 @@ export function CloudBrowserSurface({ model }: { model: CloudBrowserSurfaceModel
 	useEffect(() => () => {
 		window.clearTimeout(moveTimerRef.current);
 		window.clearTimeout(wheelTimerRef.current);
-	}, []);
+		moveTimerRef.current = undefined;
+		wheelTimerRef.current = undefined;
+		pendingMoveRef.current = undefined;
+		pendingWheelRef.current = undefined;
+	}, [snapshot.targetId]);
 
 	useEffect(() => {
 		if (snapshot.dialogOpen) setDialogPrompt(snapshot.dialogPrompt);
@@ -185,7 +189,7 @@ export function CloudBrowserSurface({ model }: { model: CloudBrowserSurfaceModel
 		if ((snapshot.status === "waiting" || snapshot.status === "ready") && hostSize.width > 0 && hostSize.height > 0) {
 			setViewport(hostSize.width, hostSize.height);
 		}
-	}, [hostSize.height, hostSize.width, setViewport, snapshot.status, snapshot.streamEpoch, snapshot.owner]);
+	}, [hostSize.height, hostSize.width, setViewport, snapshot.status, snapshot.streamEpoch, snapshot.owner, snapshot.targetId]);
 
 	const frameAspect = snapshot.frameWidth > 0 && snapshot.frameHeight > 0
 		? snapshot.frameWidth / snapshot.frameHeight
@@ -244,6 +248,15 @@ export function CloudBrowserSurface({ model }: { model: CloudBrowserSurfaceModel
 
 	const key = useCallback((kind: "keyDown" | "keyUp", event: KeyboardEvent<HTMLElement>) => {
 		if (!inputEnabled || event.nativeEvent.isComposing) return;
+		if (event.key === "F12" || (event.key.toLowerCase() === "i" &&
+			((event.ctrlKey && event.shiftKey) || (event.metaKey && event.altKey)))) {
+			event.preventDefault();
+			event.stopPropagation();
+			if (kind === "keyDown" && !event.repeat && snapshot.devtoolsSupported) {
+				send({ type: "devtools", operation: snapshot.devtoolsOpen ? "close" : "open" });
+			}
+			return;
+		}
 		const shortcut = event.metaKey || event.ctrlKey;
 		if (shortcut && !["a", "z", "y", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Backspace", "Delete", "Home", "End"].includes(event.key.length === 1 ? event.key.toLowerCase() : event.key)) return;
 		event.preventDefault();
@@ -253,7 +266,7 @@ export function CloudBrowserSurface({ model }: { model: CloudBrowserSurfaceModel
 			text: kind === "keyDown" && !shortcut && event.key.length === 1 ? event.key : undefined,
 			modifiers: shortcut ? (modifiers(event) & ~4) | 2 : modifiers(event),
 		});
-	}, [inputEnabled, send]);
+	}, [inputEnabled, send, snapshot.devtoolsOpen, snapshot.devtoolsSupported]);
 
 	const paste = useCallback((event: ClipboardEvent<HTMLElement>) => {
 		event.preventDefault();

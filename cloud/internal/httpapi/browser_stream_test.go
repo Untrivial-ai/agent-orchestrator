@@ -337,6 +337,7 @@ func TestBrowserInteractionLeaseIsAuthorizedAndThrottled(t *testing.T) {
 				{Type: "ping"}, {Type: "viewport"}, {Type: "input", Kind: "pointerMove"},
 				{Type: "input", Kind: "keyDown", StreamEpoch: 2},
 				{Type: "input", Kind: "text", Text: "first"}, {Type: "input", Kind: "text", Text: "second"},
+				{Type: "devtools", Operation: "open"}, {Type: "devtools", Operation: "close"},
 			}
 			for index, control := range controls {
 				control.Version, control.InputSeq = browserstream.Version, uint64(index+1)
@@ -373,7 +374,7 @@ func TestBrowserInteractionLeaseIsAuthorizedAndThrottled(t *testing.T) {
 			if test.operate && !test.replaced {
 				want = 1
 				if test.storeErr != nil {
-					want = 2
+					want = 4
 				}
 			}
 			if got := store.refreshes.Load(); got != want {

@@ -24,6 +24,9 @@ export type CloudBrowserSnapshot = {
 	title: string;
 	tabs: BrowserTabState[];
 	activeTabId: string;
+	targetId: string;
+	devtoolsOpen: boolean;
+	devtoolsSupported: boolean;
 	owner: "idle" | "agent" | "user";
 	canOperate: boolean;
 	canGoBack: boolean;
@@ -69,6 +72,8 @@ export type CloudBrowserControl = {
 	accepted?: boolean;
 	running?: boolean;
 	activeTabId?: string;
+	devtoolsOpen?: boolean;
+	devtoolsSupported?: boolean;
 	canGoBack?: boolean;
 	canGoForward?: boolean;
 	isLoading?: boolean;
@@ -97,7 +102,7 @@ export type CloudBrowserStreamOptions = {
 
 type PendingInput = {
 	capturedAt: number;
-	kind: "input" | "navigate" | "tab" | "dialog";
+	kind: "input" | "navigate" | "tab" | "dialog" | "devtools";
 	minFrameSeq?: number;
 };
 
@@ -127,6 +132,9 @@ export const EMPTY_CLOUD_BROWSER_SNAPSHOT: CloudBrowserSnapshot = {
 	title: "",
 	tabs: [],
 	activeTabId: "",
+	targetId: "",
+	devtoolsOpen: false,
+	devtoolsSupported: false,
 	owner: "idle",
 	canOperate: false,
 	canGoBack: false,
@@ -247,7 +255,7 @@ export class CloudBrowserStream {
 	}
 
 	request(control: Omit<CloudBrowserControl, "version" | "streamEpoch">): Promise<void> {
-		if (control.type !== "navigate" && control.type !== "tab" && control.type !== "dialog") {
+		if (control.type !== "navigate" && control.type !== "tab" && control.type !== "dialog" && control.type !== "devtools") {
 			return Promise.reject(new Error("This browser control cannot be acknowledged."));
 		}
 		const inputSeq = this.sendControl(control);
@@ -266,6 +274,8 @@ export class CloudBrowserStream {
 	private sendControl(control: Omit<CloudBrowserControl, "version" | "streamEpoch">): number | false {
 		const socket = this.socket;
 		if (socket === null || socket.readyState !== WebSocket.OPEN) return false;
+		if (control.type === "devtools" && (!this.snapshot.canOperate || !this.snapshot.devtoolsSupported ||
+			(control.operation !== "close" && this.snapshot.viewportPending))) return false;
 		if (control.type === "input" || control.type === "navigate" || control.type === "tab" || control.type === "dialog") {
 			if (!this.snapshot.canOperate || this.snapshot.viewportPending) return false;
 		}
@@ -285,6 +295,7 @@ export class CloudBrowserStream {
 		try {
 			socket.send(JSON.stringify({
 				...control,
+				...(control.type === "input" && this.snapshot.targetId ? { targetId: this.snapshot.targetId } : {}),
 				version: PROTOCOL_VERSION,
 				streamEpoch: this.snapshot.streamEpoch,
 				...(inputSeq === undefined ? {} : { inputSeq }),
@@ -481,11 +492,20 @@ export class CloudBrowserStream {
 				this.missedPongs = 0;
 				break;
 			case "state":
+				if (control.targetId && control.targetId !== this.snapshot.targetId) {
+					this.viewport = null;
+					this.paintedFrame = null;
+					this.pendingFrames.clear();
+					this.update({ viewportPending: true });
+				}
 				this.update({
 					url: control.url ?? "",
 					title: control.title ?? "",
 					tabs: control.tabs ?? [],
 					activeTabId: control.activeTabId ?? control.targetId ?? "",
+					targetId: control.targetId ?? "",
+					devtoolsOpen: control.devtoolsOpen ?? false,
+					devtoolsSupported: control.devtoolsSupported ?? false,
 					owner: normalizeOwner(control.owner),
 					canGoBack: control.canGoBack ?? false,
 					canGoForward: control.canGoForward ?? false,
@@ -575,13 +595,15 @@ export class CloudBrowserStream {
 			!Number.isSafeInteger(epoch) || !Number.isSafeInteger(sequence) || epoch <= 0 || sequence <= 0 || width <= 0 || height <= 0 || targetBytes <= 0 ||
 			targetBytes > 128 || jpegBytes <= 0 || jpegBytes > 1024 * 1024
 		) return;
+		let targetId: string;
 		try {
-			new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(FRAME_HEADER_BYTES, jpegOffset));
+			targetId = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(FRAME_HEADER_BYTES, jpegOffset));
 		} catch {
 			return;
 		}
 		if (this.retiredEpochs.has(epoch)) return;
 		if (epoch !== this.snapshot.streamEpoch) this.changeEpoch(epoch);
+		if (this.snapshot.targetId && targetId !== this.snapshot.targetId) return;
 		if (epoch === this.snapshot.streamEpoch && sequence <= this.snapshot.frameSequence) return;
 		this.stopFirstFrameTimer();
 		const frameUrl = URL.createObjectURL(new Blob([buffer.slice(jpegOffset)], { type: "image/jpeg" }));
@@ -631,7 +653,7 @@ export class CloudBrowserStream {
 		this.pendingFrames.clear();
 		this.paintedFrame = null;
 		this.viewport = null;
-		this.update({ streamEpoch: epoch, frameSequence: 0, viewportPending: true });
+		this.update({ streamEpoch: epoch, frameSequence: 0, viewportPending: true, targetId: "", devtoolsOpen: false, devtoolsSupported: false });
 	}
 
 	private now(): number {
