@@ -4,6 +4,7 @@ import type { CloudCpAgentProvider, CloudCpProviderConnection } from "./cloud-cp
 import { settingsQueryKey, type Settings } from "../hooks/useSettings";
 import { readSelectedSandboxProvider } from "../stores/sandbox-provider-store";
 import { captureRendererEvent } from "./telemetry";
+import { beginCloudStartupAttempt, bindCloudStartupAttempt } from "./cloud-startup-timing";
 
 // A cloud project has no locally-configured orchestrator agent (that config
 // lives in the local daemon's project settings), so the launchers must not
@@ -59,6 +60,7 @@ export function resolveConfiguredOrchestratorHarness(
 
 /** Spawns a cloud orchestrator session for the project and returns its id. */
 export async function spawnCloudOrchestrator(queryClient: QueryClient, projectId: string): Promise<string> {
+	const startupAttempt = beginCloudStartupAttempt();
 	const settings = queryClient.getQueryData<Settings>(settingsQueryKey);
 	const baseUrl = settings?.cloudControlPlaneUrl ?? "";
 	if (baseUrl === "") throw new Error("The cloud control plane is not configured.");
@@ -102,6 +104,7 @@ export async function spawnCloudOrchestrator(queryClient: QueryClient, projectId
 			prompt: "",
 			...(provider ? { provider } : {}),
 		});
+		bindCloudStartupAttempt(session.id, startupAttempt);
 		void captureRendererEvent("ao.renderer.cloud_orchestrator_spawn_succeeded", { project_id: projectId });
 		return session.id;
 	} catch (error) {

@@ -24,6 +24,7 @@ export interface UseCloudOrgResult {
 	error: unknown;
 	/** Mirrors useCloudCp().ready so callers can gate on one hook. */
 	ready: boolean;
+	userId: string | undefined;
 }
 
 export function useCloudOrg(): UseCloudOrgResult {
@@ -41,20 +42,21 @@ export function useCloudOrg(): UseCloudOrgResult {
 		refetchOnWindowFocus: true,
 		refetchOnReconnect: true,
 		retry: 1,
-		queryFn: async (): Promise<CloudCpOrganization> => {
+		queryFn: async (): Promise<{ org: CloudCpOrganization; userId: string }> => {
 			const me = await client.me();
 			const first = me.organizations[0];
-			if (first !== undefined) return first;
+			if (first !== undefined) return { org: first, userId: me.user.id };
 			const created = await client.createOrganization({
 				displayName: orgDisplayNameForAccount(me.user),
 			});
-			return created.organization;
+			return { org: created.organization, userId: me.user.id };
 		},
 	});
 	return {
-		org: query.data,
+		org: query.data?.org,
 		isLoading: query.isLoading,
 		error: query.error ?? undefined,
 		ready,
+		userId: query.data?.userId,
 	};
 }

@@ -11,6 +11,7 @@ import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { toReviewerHarnessId } from "../lib/reviewer-harnesses";
 import { captureRendererEvent } from "../lib/telemetry";
 import { agentSwitchVisibility } from "../lib/agent-switch-visibility";
+import { isCloudPendingSessionRoute } from "../lib/cloud-pending-session";
 import { applyOptimisticSessionKills } from "./optimistic-session-kills";
 import { appI18n } from "../i18n";
 import {
@@ -424,7 +425,7 @@ export function useWorkspaceSession(sessionId: string) {
 	const localWorkspaces = useQuery({ ...workspaceQueryOptions, subscribed: false, enabled: Boolean(sessionId) });
 	const direct = useQuery({
 		queryKey: ["session", sessionId],
-		enabled: Boolean(sessionId) && local.data === undefined,
+		enabled: Boolean(sessionId) && !isCloudPendingSessionRoute(sessionId) && local.data === undefined,
 		retry: (attempt, error) => apiErrorCode(error) === "SESSION_NOT_FOUND" && attempt < 4,
 		retryDelay: 250,
 		queryFn: async () => {

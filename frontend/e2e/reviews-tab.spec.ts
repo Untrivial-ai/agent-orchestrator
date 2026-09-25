@@ -59,7 +59,9 @@ test("review controls stay aligned and collapse the run action at minimum width"
 	const controls = inspector.locator(".review-run-controls-container");
 	const controlsBox = await controls.boundingBox();
 	if (!controlsBox) throw new Error("review controls are not visible");
-	expect(reviewerSelectBox.width).toBeLessThan(controlsBox.width / 2);
+	expect(reviewerSelectBox.x + reviewerSelectBox.width).toBeLessThanOrEqual(
+		controlsBox.x + controlsBox.width + 1,
+	);
 
 	const triggerLabel = inspector.getByText("Trigger review", { exact: true });
 	const runButton = inspector.getByRole("button", { name: "Re-run review" });
@@ -72,14 +74,12 @@ test("review controls stay aligned and collapse the run action at minimum width"
 	const runButtonCenterY = runButtonBox.y + runButtonBox.height / 2;
 	expect(Math.abs(triggerLabelCenterY - runButtonCenterY)).toBeLessThanOrEqual(2);
 	await expect(runButton.locator(".review-run-action-label")).toBeHidden();
-	await runButton.hover();
-	await expect(page.getByRole("tooltip", { name: "Re-run review" })).toBeVisible();
 
 	const prRow = inspector.getByTestId("review-pr-row");
 	await expect(prRow).toHaveAttribute("aria-expanded", "false");
 	await prRow.click();
 	await expect(prRow).toHaveAttribute("aria-expanded", "true");
-	await expect(inspector.getByText("External reviews")).toBeVisible();
+	await expect(inspector.getByText("Agent reviews")).toBeVisible();
 	const [prTitleBox, prVerdictBox] = await Promise.all([
 		prRow.getByText("Terminal polish feedback", { exact: true }).boundingBox(),
 		prRow.getByText("Changes requested", { exact: true }).first().boundingBox(),

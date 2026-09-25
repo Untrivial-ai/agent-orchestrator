@@ -7,8 +7,10 @@ test("titlebar back/forward arrows traverse history", async ({ page }) => {
 	await expect(page.getByText("Projects", { exact: true })).toBeVisible();
 
 	// Navigate: home → session view (in-app push).
-	await page.getByRole("button", { name: "Open refactor-mux" }).click();
-	await expect(page).toHaveURL(/sessions\/refactor-mux/);
+	await page.getByRole("button", { name: "ao-demo /demo/ao-demo 3 hours ago" }).click();
+	await expect(page).toHaveURL(/projects\/ao-demo/);
+	await page.locator('[data-session-id="demo-working"]').click();
+	await expect(page).toHaveURL(/sessions\/demo-working/);
 
 	const back = page.getByRole("button", { name: "Go back" });
 	const forward = page.getByRole("button", { name: "Go forward" });
@@ -17,9 +19,9 @@ test("titlebar back/forward arrows traverse history", async ({ page }) => {
 	await expect(back).toBeEnabled();
 
 	await back.click();
-	await expect(page).not.toHaveURL(/sessions\/refactor-mux/);
+	await expect(page).not.toHaveURL(/sessions\/demo-working/);
 
 	await expect(forward).toBeEnabled();
 	await forward.click();
-	await expect(page).toHaveURL(/sessions\/refactor-mux/);
+	await expect(page).toHaveURL(/sessions\/demo-working/);
 });

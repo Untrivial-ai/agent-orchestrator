@@ -99,6 +99,11 @@ sql:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
               type: "ProjectID"
               pointer: true
+          - column: "task_delegations.worker_id"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "SessionID"
+              pointer: true
           - column: "sessions.issue_id"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

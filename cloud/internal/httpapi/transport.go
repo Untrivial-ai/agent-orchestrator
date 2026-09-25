@@ -79,6 +79,14 @@ func (s *Server) writeStoreError(w http.ResponseWriter, r *http.Request, err err
 			w, r, http.StatusConflict, "SANDBOX_QUOTA_EXCEEDED",
 			"This organization has reached its limit of concurrent sessions. Delete a session and try again.",
 		)
+	case errors.Is(err, postgres.ErrPreparationExpired):
+		writeError(w, r, http.StatusGone, "PREPARATION_EXPIRED", "The session preparation expired.")
+	case errors.Is(err, postgres.ErrPreparationCommitted):
+		writeError(w, r, http.StatusConflict, "PREPARATION_COMMITTED", "The session preparation was already committed.")
+	case errors.Is(err, postgres.ErrPreparationStale):
+		writeError(w, r, http.StatusConflict, "PREPARATION_STALE", "The session preparation generation is stale.")
+	case errors.Is(err, postgres.ErrPreparationUnavailable):
+		writeError(w, r, http.StatusConflict, "PREPARATION_UNAVAILABLE", "The session preparation is unavailable.")
 	default:
 		s.logger.Error("handle API request", "error", err, "request_id", requestID(r))
 		writeError(w, r, http.StatusInternalServerError, "internal_error", "The request could not be completed.")

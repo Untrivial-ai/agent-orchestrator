@@ -3,6 +3,7 @@ package workertransport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -82,6 +83,9 @@ func TestRunTerminalStreamWritesPushedInputToPTY(t *testing.T) {
 	supervisor := &Supervisor{
 		Streams: &wsDialer{url: server.URL},
 		Logger:  slog.Default(),
+		terminals: map[string]*terminalProcess{
+			"terminal-1": terminal,
+		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -103,6 +107,68 @@ func TestRunTerminalStreamWritesPushedInputToPTY(t *testing.T) {
 	}
 	if string(buffer[:count]) != "ls\r" {
 		t.Fatalf("pty got %q, want %q", buffer[:count], "ls\r")
+	}
+}
+
+func TestStreamInputUsesAgentReadinessGate(t *testing.T) {
+	accepted := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		accepted <- conn
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+
+	terminal := &terminalProcess{pty: writer, cancel: func() {}, cleanup: func() {}}
+	supervisor := &Supervisor{
+		Streams:         &wsDialer{url: server.URL},
+		Logger:          slog.Default(),
+		AgentTerminalID: "agent-1",
+		holdAgentInput:  true,
+		agentStarted:    true,
+		workspaceReady:  false,
+		terminals:       map[string]*terminalProcess{"agent-1": terminal},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go supervisor.runTerminalStream(ctx, "agent-1", terminal)
+
+	var conn *websocket.Conn
+	select {
+	case conn = <-accepted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker never dialed the stream")
+	}
+	streamFrame(t, conn, worker.TerminalStreamFrame{Type: "input", Data: []byte("queued\r")})
+
+	buffer := make([]byte, len("queued\r"))
+	if err := reader.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatalf("set blocked read deadline: %v", err)
+	}
+	if _, err := reader.Read(buffer); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("stream input reached the PTY before readiness: %v", err)
+	}
+
+	supervisor.MarkWorkspaceReady()
+	if err := reader.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set flush read deadline: %v", err)
+	}
+	count, err := reader.Read(buffer)
+	if err != nil {
+		t.Fatalf("read flushed stream input: %v", err)
+	}
+	if got := string(buffer[:count]); got != "queued\r" {
+		t.Fatalf("flushed input = %q, want %q", got, "queued\r")
 	}
 }
 

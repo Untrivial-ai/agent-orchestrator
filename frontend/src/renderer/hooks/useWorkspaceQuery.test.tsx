@@ -335,6 +335,22 @@ describe("useWorkspaceQuery", () => {
 		});
 	});
 
+	it("does not send a local direct read for a pending Cloud route", async () => {
+		respondWith({
+			projects: { data: { projects: [] }, error: undefined },
+			sessions: { data: { sessions: [] }, error: undefined },
+		});
+
+		const { result } = renderHook(
+			() => useWorkspaceSession("pending-cloud-attempt-1"),
+			{ wrapper },
+		);
+
+		await waitFor(() => expect(result.current.isLoading).toBe(false));
+		expect(result.current.data).toBeUndefined();
+		expect(getMock.mock.calls.some(([path]) => path === "/api/v1/sessions/{sessionId}")).toBe(false);
+	});
+
 	it("groups projectless sessions in Scratchpad after projects", async () => {
 		respondWith({
 			projects: { data: { projects: [{ id: "proj-1", name: "my-app", path: "/p" }] }, error: undefined },

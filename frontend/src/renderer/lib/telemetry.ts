@@ -531,6 +531,43 @@ export async function sanitizeRendererProperties(
 				safe.reason = properties.reason;
 			}
 			break;
+		case "ao.renderer.cloud_terminal_first_frame": {
+			const attemptIDHash = await hashedTelemetryID(properties?.startup_attempt_id);
+			if (attemptIDHash) safe.startup_attempt_id_hash = attemptIDHash;
+			const elapsedMs = properties?.elapsed_ms;
+			if (
+				typeof elapsedMs === "number" &&
+				Number.isFinite(elapsedMs) &&
+				Number.isInteger(elapsedMs) &&
+				elapsedMs >= 0 &&
+				elapsedMs <= 30 * 60_000
+			) {
+				safe.elapsed_ms = elapsedMs;
+			}
+			const sandboxProvider = properties?.sandbox_provider;
+			if (
+				sandboxProvider === "docker" ||
+				sandboxProvider === "daytona" ||
+				sandboxProvider === "ecs" ||
+				sandboxProvider === "nodeops" ||
+				sandboxProvider === "coder" ||
+				sandboxProvider === "unknown"
+			) {
+				safe.sandbox_provider = sandboxProvider;
+			}
+			if (properties?.session_kind === "worker" || properties?.session_kind === "orchestrator") {
+				safe.session_kind = properties.session_kind;
+			}
+			const workerEpoch = properties?.worker_epoch;
+			if (
+				typeof workerEpoch === "number" &&
+				Number.isSafeInteger(workerEpoch) &&
+				workerEpoch >= 0
+			) {
+				safe.worker_epoch = workerEpoch;
+			}
+			break;
+		}
 		case "ao.renderer.agents_available": {
 			// Counts and a fixed-vocabulary id list only. Agent ids come from AO's own
 			// registry, never from user input, so they carry no user data.

@@ -20,6 +20,7 @@ import type { components } from "../../api/schema";
 import { defaultShortcutBindings, shortcutBindingLabel } from "../../shared/shortcuts";
 import { BrowserPanelView, useBrowserAnnotationQueue } from "./BrowserPanel";
 import { CenterPane } from "./CenterPane";
+import { CloudPendingSession } from "./CloudPendingSession";
 import type { FileOpenOptions, FileViewMode } from "./FileContentPane";
 import {
 	SessionChatSurface,
@@ -67,6 +68,7 @@ import {
 import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
 import { useWorkspaceSession, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { cloudLifecycleStage } from "../lib/cloud-lifecycle";
+import { useCloudPendingSession } from "../lib/cloud-pending-session";
 import { useTerminalResetStore } from "../stores/terminal-reset-store";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
@@ -485,6 +487,8 @@ function CloudPausedStatus() {
 
 export function SessionView({ sessionId }: SessionViewProps) {
 	const { t } = useTranslation();
+	const pendingCloudSession = useCloudPendingSession(sessionId);
+	const cloudMessageSequenceRef = useRef(0);
 	const [confirmedDraftDiscard, setConfirmedDraftDiscard] = useState<{
 		sessionId: string;
 		transitionId: string;
@@ -1531,7 +1535,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const sendCloudFileAnnotation = useCallback(async (message: string) => {
 		const orgId = session?.cloud?.orgId;
 		if (!orgId) throw new Error(t("files.feedbackError"));
-		await cloudCpClient.sendSessionMessage(orgId, sessionId, { text: message });
+		const clientSequence = Math.max(cloudMessageSequenceRef.current + 1, Date.now());
+		cloudMessageSequenceRef.current = clientSequence;
+		await cloudCpClient.sendSessionMessage(orgId, sessionId, {
+			text: message,
+			clientSequence,
+		});
 	}, [cloudCpClient, session?.cloud?.orgId, sessionId, t]);
 	const fileAnnotation = useFileAnnotation(sessionId, { sendMessage: session?.cloud ? sendCloudFileAnnotation : undefined });
 	const centerFileTabs = useMemo(
@@ -1976,7 +1985,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			inspectorMotionReadyRef.current = false;
 		};
 	}, [hasInspector]);
-	if (!session && !workspaceQuery.isLoading) {
+	if (!session && !workspaceQuery.isLoading && !pendingCloudSession) {
 		return (
 			<div className="grid h-full place-items-center p-6 text-center font-mono text-xs text-passive">
 				{t("session.notFound")}
@@ -2273,9 +2282,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					<NotificationCenter style={noDragStyle} />
 				</div>
 			) : null}
-			{showLifecycleLoader
-				? <CloudSessionLifecycleLoader />
-				: null}
+			{pendingCloudSession ? (
+				<CloudPendingSession attempt={pendingCloudSession} session={session} />
+			) : showLifecycleLoader ? (
+				<CloudSessionLifecycleLoader />
+			) : null}
 			<SessionInterfaceSwitchDialog
 				open={interfaceSwitchDialogOpen}
 				target={interfaceSwitchDialogScope?.targetMode ?? interfaceTarget}

@@ -114,16 +114,39 @@ func (s *Store) TerminateSession(
 			ctx,
 			`UPDATE ao_sandboxes
 			SET desired_state = 'deleted',
+				preparation_generation = preparation_generation + CASE
+					WHEN preparation_expires_at IS NULL THEN 0 ELSE 1
+				END,
 				deletion_requested_at = COALESCE(deletion_requested_at, now()),
 				startup_started_at = NULL,
 				reconcile_after = now(),
+				reconcile_lease_owner = '',
+				reconcile_lease_until = NULL,
 				updated_at = now()
 			WHERE session_id = $1 AND org_id = $2`,
 			sessionID, orgID,
 		); err != nil {
 			return fmt.Errorf("request sandbox deletion: %w", err)
 		}
-		return nil
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE ao_access_tickets
+			SET consumed_at = COALESCE(consumed_at, now())
+			WHERE org_id = $1 AND session_id = $2 AND consumed_at IS NULL`,
+			orgID, sessionID,
+		); err != nil {
+			return fmt.Errorf("invalidate deleted session tickets: %w", err)
+		}
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE ao_worker_connections
+			SET disconnected_at = COALESCE(disconnected_at, now())
+			WHERE org_id = $1 AND session_id = $2 AND disconnected_at IS NULL`,
+			orgID, sessionID,
+		); err != nil {
+			return fmt.Errorf("disconnect deleted session workers: %w", err)
+		}
+		return notifySandboxReconcile(ctx, tx)
 	})
 }
 
@@ -201,7 +224,7 @@ func (s *Store) RestoreSession(
 		); err != nil {
 			return fmt.Errorf("restore session sandbox: %w", err)
 		}
-		return nil
+		return notifySandboxReconcile(ctx, tx)
 	})
 }
 

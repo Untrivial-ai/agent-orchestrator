@@ -162,6 +162,7 @@ vi.mock("./TaskComposer", () => ({
 	TaskComposer: (props: {
 		projectId?: string;
 		onCreated: (id: string) => void;
+		onPending?: (id: string) => void;
 		onDirtyChange?: (dirty: boolean) => void;
 		onSubmittingChange?: (submitting: boolean) => void;
 	}) => (
@@ -176,6 +177,9 @@ vi.mock("./TaskComposer", () => ({
 			</button>
 			<button type="button" onClick={() => props.onCreated("new-session")}>
 				stub-create
+			</button>
+			<button type="button" onClick={() => props.onPending?.("pending-cloud-attempt-1")}>
+				stub-pending
 			</button>
 		</div>
 	),
@@ -993,6 +997,16 @@ describe("CommandPalette inline task composer", () => {
 				params: { projectId: "proj-1", sessionId: "new-session" },
 			}),
 		);
+		await waitFor(() => expect(paletteInput()).toBeNull());
+	});
+
+	it("navigates to the pending route and closes before creation settles", async () => {
+		await openComposer();
+		fireEvent.click(screen.getByText("stub-pending"));
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId: "proj-1", sessionId: "pending-cloud-attempt-1" },
+		});
 		await waitFor(() => expect(paletteInput()).toBeNull());
 	});
 

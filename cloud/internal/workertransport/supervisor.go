@@ -52,8 +52,9 @@ const workWaitFallback = 2 * time.Second
 // authoritative resize immediately expands the live UI to the full pane width.
 // A client-provided size, when present, always wins over these.
 const (
-	fallbackTerminalColumns = 80
-	fallbackTerminalRows    = 24
+	fallbackTerminalColumns   = 80
+	fallbackTerminalRows      = 24
+	maxPendingAgentInputBytes = 64 << 10
 )
 
 type Supervisor struct {
@@ -78,7 +79,9 @@ type Supervisor struct {
 	agentStarting            bool
 	agentStarted             bool
 	pendingAgentTerminalData [][]byte
+	pendingAgentInputBytes   int
 	pendingAgentTerminalSize *worker.TerminalCommand
+	workWake                 chan struct{}
 }
 
 // HoldAgentInputUntilWorkspaceReady preserves user input and durable turns
@@ -98,6 +101,24 @@ func (s *Supervisor) MarkWorkspaceReady() {
 	s.workspaceReady = true
 	s.mu.Unlock()
 	s.flushReadyAgentTerminal()
+	s.signalWorkWake()
+}
+
+func (s *Supervisor) workWakeChannel() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.workWake == nil {
+		s.workWake = make(chan struct{}, 1)
+	}
+	return s.workWake
+}
+
+func (s *Supervisor) signalWorkWake() {
+	wake := s.workWakeChannel()
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
 }
 
 type terminalProcess struct {
@@ -105,6 +126,7 @@ type terminalProcess struct {
 	pty     *os.File
 	cleanup func()
 	stream  atomic.Pointer[terminalStream]
+	inputMu sync.Mutex
 	// outputID belongs to the terminal rather than a WebSocket connection. A
 	// stream redial must continue its sequence so direct relay frames and the
 	// durable replay log use the same cursor.
@@ -182,7 +204,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		// turn/transport enqueue (NOTIFY), or a short server-side timeout,
 		// instead of busy-polling the claim routes. The claims above remain the
 		// source of truth; WaitForWork is only an accelerant.
-		if err := s.Control.WaitForWork(ctx); err != nil {
+		if err := s.waitForWork(ctx); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -195,6 +217,26 @@ func (s *Supervisor) Run(ctx context.Context) error {
 			case <-time.After(workWaitFallback):
 			}
 		}
+	}
+}
+
+func (s *Supervisor) waitForWork(ctx context.Context) error {
+	wake := s.workWakeChannel()
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	result := make(chan error, 1)
+	go func() {
+		result <- s.Control.WaitForWork(waitCtx)
+	}()
+
+	select {
+	case err := <-result:
+		return err
+	case <-wake:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -230,6 +272,7 @@ func (s *Supervisor) DiscardConfiguredAgent(terminalID string) {
 	s.AgentTerminalID = ""
 	s.agentStarting = false
 	s.pendingAgentTerminalData = nil
+	s.pendingAgentInputBytes = 0
 	s.pendingAgentTerminalSize = nil
 	s.mu.Unlock()
 	if cleanup != nil {
@@ -242,6 +285,9 @@ func (s *Supervisor) DiscardConfiguredAgent(terminalID string) {
 // otherwise this method keeps the original one-step setup behavior.
 func (s *Supervisor) StartAgent(ctx context.Context, command workerexec.Command, terminalID string) error {
 	if terminalID == "" {
+		if command.Cleanup != nil {
+			command.Cleanup()
+		}
 		return errors.New("agent terminal id is required")
 	}
 	s.mu.Lock()
@@ -251,7 +297,12 @@ func (s *Supervisor) StartAgent(ctx context.Context, command workerexec.Command,
 		s.agentStarting = true
 	} else if s.AgentTerminalID != terminalID || !s.agentStarting || s.agentStarted {
 		s.mu.Unlock()
+		if command.Cleanup != nil {
+			command.Cleanup()
+		}
 		return errors.New("interactive agent terminal is already configured")
+	} else {
+		s.AgentCommand = command
 	}
 	s.mu.Unlock()
 	if err := s.openTerminal(ctx, worker.TerminalCommand{TerminalID: terminalID, Kind: "agent"}); err != nil {
@@ -260,6 +311,7 @@ func (s *Supervisor) StartAgent(ctx context.Context, command workerexec.Command,
 		s.AgentTerminalID = ""
 		s.agentStarting = false
 		s.pendingAgentTerminalData = nil
+		s.pendingAgentInputBytes = 0
 		s.pendingAgentTerminalSize = nil
 		s.mu.Unlock()
 		return err
@@ -269,6 +321,7 @@ func (s *Supervisor) StartAgent(ctx context.Context, command workerexec.Command,
 	s.agentStarted = true
 	s.mu.Unlock()
 	s.flushReadyAgentTerminal()
+	s.signalWorkWake()
 	return nil
 }
 
@@ -620,8 +673,14 @@ func (s *Supervisor) writeTerminal(input worker.TerminalCommand) error {
 		return errors.New("invalid terminal input request")
 	}
 	s.mu.Lock()
-	if s.agentStarting && input.TerminalID == s.AgentTerminalID {
+	if input.TerminalID == s.AgentTerminalID &&
+		(s.agentStarting || (s.holdAgentInput && !s.workspaceReady)) {
+		if s.pendingAgentInputBytes+len(input.Data) > maxPendingAgentInputBytes {
+			s.mu.Unlock()
+			return errors.New("pending agent terminal input limit exceeded")
+		}
 		s.pendingAgentTerminalData = append(s.pendingAgentTerminalData, append([]byte(nil), input.Data...))
+		s.pendingAgentInputBytes += len(input.Data)
 		s.mu.Unlock()
 		return nil
 	}
@@ -630,6 +689,8 @@ func (s *Supervisor) writeTerminal(input worker.TerminalCommand) error {
 	if terminal == nil {
 		return errors.New("terminal is not open")
 	}
+	terminal.inputMu.Lock()
+	defer terminal.inputMu.Unlock()
 	_, err := terminal.pty.Write(input.Data)
 	return err
 }
@@ -662,7 +723,7 @@ func (s *Supervisor) resizeTerminal(input worker.TerminalCommand) error {
 // would needlessly redraw the TUI before its first prompt.
 func (s *Supervisor) flushReadyAgentTerminal() {
 	s.mu.Lock()
-	if !s.workspaceReady || !s.agentStarted {
+	if (s.holdAgentInput && !s.workspaceReady) || !s.agentStarted {
 		s.mu.Unlock()
 		return
 	}
@@ -671,11 +732,14 @@ func (s *Supervisor) flushReadyAgentTerminal() {
 		s.mu.Unlock()
 		return
 	}
+	terminal.inputMu.Lock()
 	pendingSize := s.pendingAgentTerminalSize
 	pendingData := s.pendingAgentTerminalData
 	s.pendingAgentTerminalSize = nil
 	s.pendingAgentTerminalData = nil
+	s.pendingAgentInputBytes = 0
 	s.mu.Unlock()
+	defer terminal.inputMu.Unlock()
 	if pendingSize != nil {
 		if err := pty.Setsize(terminal.pty, &pty.Winsize{
 			Cols: pendingSize.Columns,

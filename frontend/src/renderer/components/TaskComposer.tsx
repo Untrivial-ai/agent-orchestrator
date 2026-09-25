@@ -14,6 +14,17 @@ import { RequiredAgentField } from "./CreateProjectAgentSheet";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
 import { captureRendererEvent } from "../lib/telemetry";
+import { beginCloudStartupAttempt } from "../lib/cloud-startup-timing";
+import {
+	createCloudPendingSession,
+	registerCloudPendingSession,
+} from "../lib/cloud-pending-session";
+import {
+	isCloudSessionPreparationExpired,
+	isCloudSessionPreparationUnsupported,
+	startCloudSessionPreparation,
+	type CloudSessionPreparation,
+} from "../lib/cloud-session-preparation";
 import {
 	cacheAgentReadiness,
 	ensureAgentReadiness,
@@ -28,6 +39,7 @@ import { useProviderConnections } from "../hooks/useProviderConnections";
 import { cloudAgentInfos } from "../lib/cloud-agents";
 import {
 	buildRankedAgentOptions,
+	DEFAULT_AGENT_PRIORITY,
 	DEFAULT_AGENT_PRIORITY_RANK,
 	isReadyAgent,
 } from "../lib/agent-select-options";
@@ -72,6 +84,10 @@ const CHAT_PREFLIGHT_CODES = new Set([
 ]);
 
 const READINESS_RECONCILE_CODES = new Set(["AGENT_BINARY_NOT_FOUND", "AGENT_AUTH_REQUIRED", "CHAT_AUTH_REQUIRED"]);
+const LOCAL_IDEMPOTENCY_RETAIN_CODES = new Set([
+	"TASK_DELEGATION_IN_PROGRESS",
+	"TASK_DELEGATION_COMMIT_FAILED",
+]);
 
 class TaskCreateError extends Error {
 	constructor(
@@ -94,6 +110,7 @@ function hasErrorDetail(details: components["schemas"]["APIError"]["details"] | 
 export type TaskComposerProps = {
 	projectId?: string;
 	onCreated: (sessionId: string) => void;
+	onPending?: (routeSessionId: string) => void;
 	onDirtyChange?: (dirty: boolean) => void;
 	onSubmittingChange?: (submitting: boolean) => void;
 	autoFocusTitle?: boolean;
@@ -102,6 +119,7 @@ export type TaskComposerProps = {
 export function TaskComposer({
 	projectId,
 	onCreated,
+	onPending,
 	onDirtyChange,
 	onSubmittingChange,
 	autoFocusTitle,
@@ -123,6 +141,10 @@ export function TaskComposer({
 	const [modelTouched, setModelTouched] = useState(false);
 	const [effortTouched, setEffortTouched] = useState(false);
 	const [isSubmitting, setIsSubmitting] = useState(false);
+	const submittingRef = useRef(false);
+	const localSubmissionRef = useRef<{ signature: string; idempotencyKey: string } | undefined>(undefined);
+	const cloudPreparationRef = useRef<CloudSessionPreparation | undefined>(undefined);
+	const cloudPreparationUnavailableRef = useRef<unknown>(undefined);
 	const [error, setError] = useState<string | undefined>();
 	const [fallbackAction, setFallbackAction] = useState<FallbackAction>();
 	const {
@@ -137,7 +159,7 @@ export function TaskComposer({
 	// creation to the control plane (which provisions a sandbox), while a local
 	// project keeps the existing daemon flow untouched.
 	const { client: cloudClient } = useCloudCp();
-	const { org: cloudOrg } = useCloudOrg();
+	const { org: cloudOrg, userId: cloudUserId } = useCloudOrg();
 	// The user's client-side sandbox-provider preference (when the control plane
 	// offers more than one); omitted lets the control plane use its default.
 	const selectedProvider = useSandboxProviderStore((s) => s.selectedProvider);
@@ -159,7 +181,7 @@ export function TaskComposer({
 	const modelsProjectId = isCloudProject || isStandalone ? "" : (projectId ?? "");
 
 	const createCloudTask = useCallback(
-		async (input: CreateTaskInput): Promise<string> => {
+		async (input: CreateTaskInput, idempotencyKey?: string): Promise<string> => {
 			if (input.attachments?.length) throw new Error(t("newTask.cloudAttachmentsUnsupported", { defaultValue: "File attachments are not supported for cloud tasks yet." }));
 			void captureRendererEvent("ao.renderer.task_create_requested", { project_id: input.projectId });
 			if (!cloudOrg?.id) throw new Error(t("newTask.unableToStart"));
@@ -168,10 +190,10 @@ export function TaskComposer({
 					projectId: input.projectId,
 					kind: "worker",
 					harness: input.agent ?? "claude-code",
-					displayName: input.brief.trim().slice(0, 100) || (input.agent ?? "claude-code"),
+					displayName: input.brief.trim().slice(0, 80) || (input.agent ?? "claude-code"),
 					prompt: input.brief,
 					...(selectedProvider ? { provider: selectedProvider } : {}),
-				});
+				}, { idempotencyKey });
 				// The control plane provisions the sandbox asynchronously; surface the
 				// new session on the board immediately.
 				void queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
@@ -186,22 +208,23 @@ export function TaskComposer({
 	);
 
 	const createLocalTask = useCallback(
-		async (input: CreateTaskInput): Promise<string> => {
+		async (input: CreateTaskInput, idempotencyKey: string): Promise<string> => {
 			void captureRendererEvent("ao.renderer.task_create_requested", { project_id: input.projectId });
 			try {
 				const { data, error } = await apiClient.POST("/api/v1/orchestrators/delegate", {
-					headers: input.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
-					body: {
-						projectId: input.projectId,
-						brief: input.brief,
-						agent: input.agent,
-						...(input.model ? { model: input.model } : {}),
-						...(input.effort !== undefined ? { effort: input.effort } : {}),
-						...(input.mode ? { mode: input.mode } : {}),
-						...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
-						...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
-					},
-				});
+				headers: input.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
+				body: {
+					projectId: input.projectId,
+					brief: input.brief,
+					idempotencyKey,
+					agent: input.agent,
+					...(input.model ? { model: input.model } : {}),
+					...(input.effort !== undefined ? { effort: input.effort } : {}),
+					...(input.mode ? { mode: input.mode } : {}),
+					...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
+					...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+				},
+			});
 				if (error) {
 					throw new TaskCreateError(
 						apiErrorMessage(error, t("newTask.unableToStart")),
@@ -262,8 +285,12 @@ export function TaskComposer({
 	);
 
 	const createTask = useCallback(
-		(input: CreateTaskInput): Promise<string> =>
-			isStandalone ? createStandaloneTask(input) : isCloudProject ? createCloudTask(input) : createLocalTask(input),
+		(input: CreateTaskInput, idempotencyKey?: string): Promise<string> =>
+			isStandalone
+				? createStandaloneTask(input)
+				: isCloudProject
+					? createCloudTask(input)
+					: createLocalTask(input, idempotencyKey ?? globalThis.crypto.randomUUID()),
 		[isStandalone, isCloudProject, createStandaloneTask, createCloudTask, createLocalTask],
 	);
 
@@ -470,11 +497,103 @@ export function TaskComposer({
 		if (!effortTouched) setEffort(defaultEffortForSelectedAgent);
 	}, [defaultEffortForSelectedAgent, effortTouched]);
 
+	useEffect(() => {
+		if (!isCloudProject || !projectId || !cloudOrg?.id) return;
+		const attempt = beginCloudStartupAttempt();
+		const harness = selectedAgent || DEFAULT_AGENT_PRIORITY[0];
+		const preparation = startCloudSessionPreparation({
+			attempt,
+			compatibilityKey: JSON.stringify([
+				cloudUserId ?? "",
+				cloudOrg.id,
+				projectId,
+				harness,
+				selectedProvider ?? "",
+			]),
+			create: async (idempotencyKey, clientInstanceId) => {
+				if (cloudPreparationUnavailableRef.current !== undefined) {
+					throw cloudPreparationUnavailableRef.current;
+				}
+				void captureRendererEvent("ao.renderer.cloud_preparation_requested", { project_id: projectId });
+				try {
+					const { preparation: lease, session } = await cloudClient.prepareSession(
+						cloudOrg.id,
+						{
+							projectId,
+							harness,
+							clientInstanceId,
+							...(selectedProvider ? { provider: selectedProvider } : {}),
+						},
+						{ idempotencyKey },
+					);
+					void captureRendererEvent("ao.renderer.cloud_preparation_succeeded", { project_id: projectId });
+					return { lease, sessionId: session.id };
+				} catch (error) {
+					if (isCloudSessionPreparationUnsupported(error)) {
+						cloudPreparationUnavailableRef.current = error;
+					}
+					void captureRendererEvent("ao.renderer.cloud_preparation_failed", { project_id: projectId });
+					throw error;
+				}
+			},
+			commit: async (sessionId, input, idempotencyKey, clientInstanceId, generation) => {
+				await cloudClient.commitSessionPreparation(
+					cloudOrg.id,
+					sessionId,
+					{ ...input, clientInstanceId, generation },
+					{ idempotencyKey },
+				);
+				void queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
+			},
+			detach: async (sessionId, clientInstanceId, generation) => {
+				await cloudClient.detachSessionPreparation(
+					cloudOrg.id, sessionId, clientInstanceId, generation,
+				);
+			},
+			onEvent: (event, properties) => {
+				void captureRendererEvent(`ao.renderer.cloud_preparation_${event}`, {
+					project_id: projectId,
+					...properties,
+				});
+			},
+			renew: async (sessionId, clientInstanceId, generation) => {
+				const { preparation: lease } = await cloudClient.renewSessionPreparation(
+					cloudOrg.id, sessionId, { clientInstanceId, generation },
+				);
+				return lease;
+			},
+			scopeKey: `${cloudUserId ?? ""}:${cloudOrg.id}:${projectId}`,
+		});
+		cloudPreparationRef.current = preparation;
+		return () => {
+			if (cloudPreparationRef.current === preparation) cloudPreparationRef.current = undefined;
+			preparation.release();
+		};
+	}, [
+		cloudClient.commitSessionPreparation,
+		cloudClient.detachSessionPreparation,
+		cloudClient.prepareSession,
+		cloudClient.renewSessionPreparation,
+		cloudOrg?.id,
+		cloudUserId,
+		isCloudProject,
+		projectId,
+		queryClient,
+		selectedAgent,
+		selectedProvider,
+	]);
+
 	const isDirty = isPromptDirty || modelTouched || effortTouched || attachments.length > 0;
 	const handlePromptChange = useCallback((value: string) => {
 		const nextDirty = value.trim() !== "";
 		setIsPromptDirty((wasDirty) => (wasDirty === nextDirty ? wasDirty : nextDirty));
+		cloudPreparationRef.current?.recordActivity();
 	}, []);
+	useEffect(() => {
+		if (modelTouched || effortTouched || attachments.length > 0) {
+			cloudPreparationRef.current?.recordActivity();
+		}
+	}, [attachments.length, effort, effortTouched, mode, model, modelTouched]);
 	useEffect(() => {
 		onDirtyChange?.(isDirty);
 	}, [isDirty, onDirtyChange]);
@@ -508,19 +627,15 @@ export function TaskComposer({
 		interfaceMode?: "chat" | "tui",
 		approvalMode?: "bypass-permissions",
 	) => {
-		if (!projectId || !canSubmit || isSubmitting) return;
-
-		const cleanModel = selectedModel.trim();
-		const cleanMode = selectedMode.trim();
-		// Same rule as agent: the visible selection is authoritative, whether
-		// it came from project setup or the catalog default.
-		const requestedModel = cleanModel || cleanMode || undefined;
-		const requestedEffort = effortTouched || rememberedEffortIsExplicit ? effort : undefined;
-
+		if (!projectId || !canSubmit || isSubmitting || submittingRef.current) return;
+		submittingRef.current = true;
 		setIsSubmitting(true);
 		setError(undefined);
 		setFallbackAction(undefined);
 		try {
+			if (isCloudProject && attachments.length > 0) {
+				throw new Error(t("newTask.cloudAttachmentsUnsupported", { defaultValue: "File attachments are not supported for cloud tasks yet." }));
+			}
 			if (!isCloudProject && selectedAgent) {
 				try {
 					const completed = await ensureAgentReadiness([selectedAgent], "launch");
@@ -530,8 +645,19 @@ export function TaskComposer({
 					// is advisory. The project-aware launch path remains authoritative.
 				}
 			}
-			const attachmentPayloads = await toSettledPayload();
-			const sessionId = await createTask({
+			const activePreparation = isCloudProject && cloudPreparationUnavailableRef.current === undefined
+				? cloudPreparationRef.current
+				: undefined;
+			const cloudStartupAttempt = isCloudProject
+				? (activePreparation?.attempt ?? beginCloudStartupAttempt())
+				: undefined;
+			const cleanModel = selectedModel.trim();
+			const cleanMode = selectedMode.trim();
+			// Same rule as agent: the visible selection is authoritative, whether
+			// it came from project setup or the catalog default.
+			const requestedModel = cleanModel || cleanMode || undefined;
+			const requestedEffort = effortTouched || rememberedEffortIsExplicit ? effort : undefined;
+			const baseInput: CreateTaskInput = {
 				projectId,
 				brief,
 				// The visible selection is authoritative: it is either the user's pick
@@ -542,8 +668,67 @@ export function TaskComposer({
 				effort: requestedEffort,
 				mode: interfaceMode,
 				approvalMode,
+			};
+			if (isCloudProject && cloudStartupAttempt && cloudOrg?.id) {
+				activePreparation?.retainForCommit();
+				const pending = registerCloudPendingSession({
+					attempt: cloudStartupAttempt,
+					orgId: cloudOrg.id,
+					projectId,
+					initialPrompt: brief,
+					create: async (idempotencyKey) => {
+						if (!activePreparation) return createCloudTask(baseInput, idempotencyKey);
+						try {
+							return await activePreparation.commit({
+								displayName: brief.trim().slice(0, 80) || selectedAgent || DEFAULT_AGENT_PRIORITY[0],
+								prompt: brief,
+							});
+						} catch (error) {
+							const expired = isCloudSessionPreparationExpired(error);
+							if (!expired && !isCloudSessionPreparationUnsupported(error)) throw error;
+							void captureRendererEvent("ao.renderer.cloud_preparation_commit_recovered", {
+								project_id: projectId,
+								reason: expired ? "expired" : "unsupported",
+							});
+							return createCloudTask(baseInput, idempotencyKey);
+						}
+					},
+					send: async (sessionId, message, idempotencyKey) => {
+						await cloudClient.sendSessionMessage(
+							cloudOrg.id,
+							sessionId,
+							message,
+							{ idempotencyKey },
+						);
+					},
+					onAccepted: async (sessionId) => {
+						onCreated(sessionId);
+						await queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
+					},
+				});
+				if (onPending) {
+					onPending(pending.routeSessionId);
+					void createCloudPendingSession(pending.attemptId);
+				} else {
+					await createCloudPendingSession(pending.attemptId);
+				}
+				return;
+			}
+			const attachmentPayloads = await toSettledPayload();
+			const taskInput: CreateTaskInput = {
+				...baseInput,
 				attachments: attachmentPayloads.length > 0 ? attachmentPayloads : undefined,
-			});
+			};
+			let localIdempotencyKey: string | undefined;
+			if (!isCloudProject && !isStandalone) {
+				const signature = JSON.stringify(taskInput);
+				const existing = localSubmissionRef.current;
+				localIdempotencyKey = existing?.signature === signature
+					? existing.idempotencyKey
+					: globalThis.crypto.randomUUID();
+				localSubmissionRef.current = { signature, idempotencyKey: localIdempotencyKey };
+			}
+			const sessionId = await createTask(taskInput, localIdempotencyKey);
 			if (selectedAgent) {
 				const preference: TaskComposerAgentPreference = {
 					model: cleanModel,
@@ -554,7 +739,18 @@ export function TaskComposer({
 				rememberTaskComposerPreference(preferenceContext, selectedAgent, preference);
 			}
 			onCreated(sessionId);
+			if (localIdempotencyKey && localSubmissionRef.current?.idempotencyKey === localIdempotencyKey) {
+				localSubmissionRef.current = undefined;
+			}
 		} catch (err) {
+			if (
+				!isCloudProject &&
+				!isStandalone &&
+				err instanceof TaskCreateError &&
+				!LOCAL_IDEMPOTENCY_RETAIN_CODES.has(err.code ?? "")
+			) {
+				localSubmissionRef.current = undefined;
+			}
 			const canBypassApprovals =
 				err instanceof TaskCreateError &&
 				err.code === "SESSION_MODE_UNSUPPORTED" &&
@@ -571,6 +767,7 @@ export function TaskComposer({
 			);
 			setError(err instanceof Error ? err.message : t("newTask.unableToStart"));
 		} finally {
+			submittingRef.current = false;
 			setIsSubmitting(false);
 		}
 	};

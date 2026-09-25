@@ -220,8 +220,7 @@ func (cp *checkpointer) commitPreserveTree(ctx context.Context, treeSHA, headSHA
 
 // rehydrateSession restores a destroyed sandbox's state on boot: it fetches and
 // applies the preserved uncommitted work onto the fresh checkout, then writes
-// the harness transcript where --resume will find it. Best-effort: any failure
-// is logged and falls through to a normal fresh launch. It must run after the
+// the harness transcript where --resume will find it. It must run after the
 // repository checkout and before the agent is built.
 func rehydrateSession(
 	ctx context.Context,
@@ -229,31 +228,28 @@ func rehydrateSession(
 	c *client,
 	bootstrap worker.BootstrapResponse,
 	workspace, dataDir string,
-) {
+) (bool, error) {
 	captured, ok, err := c.getTranscript(ctx)
 	if err != nil {
-		logger.Warn("rehydrate: fetch captured checkpoint", "error", err)
-		return
+		return false, fmt.Errorf("fetch captured checkpoint: %w", err)
 	}
 	if !ok {
-		// Nothing captured — the normal case for a session that was never deleted.
-		return
+		return false, nil
 	}
 
 	if ref := strings.TrimSpace(captured.PreservedGitRef); ref != "" {
 		if err := applyPreservedRef(ctx, worker.ExecGitRunner{}, workspace, ref); err != nil {
-			logger.Warn("rehydrate: apply preserved work", "ref", ref, "error", err)
-		} else {
-			logger.Info("rehydrate: restored uncommitted work", "ref", ref)
+			return false, fmt.Errorf("apply preserved work %s: %w", ref, err)
 		}
+		logger.Info("rehydrate: restored uncommitted work", "ref", ref)
 	}
 
 	if err := writeCapturedTranscript(captured, workspace, dataDir); err != nil {
-		logger.Warn("rehydrate: write transcript", "error", err)
-		return
+		return false, fmt.Errorf("write captured transcript: %w", err)
 	}
 	logger.Info("rehydrate: restored transcript",
 		"agent_session_id", captured.AgentSessionID, "harness", captured.Harness)
+	return true, nil
 }
 
 // applyPreservedRef fetches the preserved commit from origin and replays its

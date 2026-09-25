@@ -3,9 +3,12 @@ package postgres
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
@@ -326,9 +329,358 @@ func (s *Store) CreateSession(
 		session, err = createSessionTx(
 			ctx, tx, orgID, idempotencyKey, maxActiveSandboxes, input, input.ParentSessionID, principal.UserID,
 		)
-		return err
+		if err != nil || input.PreparationExpiresAfter <= 0 {
+			return err
+		}
+		return tx.QueryRow(
+			ctx,
+			`SELECT sandbox.preparation_generation,
+				COALESCE(command.result->>'disposition', 'created')
+			FROM ao_sandboxes sandbox
+			JOIN ao_commands command
+			  ON command.org_id = sandbox.org_id
+			 AND command.idempotency_key = $3
+			WHERE sandbox.org_id = $1 AND sandbox.session_id = $2`,
+			orgID, session.ID, idempotencyKey,
+		).Scan(&session.PreparationGeneration, &session.PreparationDisposition)
 	})
 	return session, err
+}
+
+func (s *Store) CommitSessionPreparation(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID, idempotencyKey string,
+	input domain.CommitSessionPreparation,
+) (domain.Session, error) {
+	var session domain.Session
+	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
+		payload, err := json.Marshal(struct {
+			SessionID string                          `json:"sessionId"`
+			Input     domain.CommitSessionPreparation `json:"input"`
+		}{SessionID: sessionID, Input: input})
+		if err != nil {
+			return err
+		}
+		const commandKind = "session.preparation.commit"
+		var commandID string
+		err = tx.QueryRow(
+			ctx,
+			`INSERT INTO ao_commands (
+				org_id, idempotency_key, kind, payload
+			) VALUES ($1, $2, $3, $4)
+			ON CONFLICT (org_id, idempotency_key) DO NOTHING
+			RETURNING id`,
+			orgID, idempotencyKey, commandKind, payload,
+		).Scan(&commandID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return loadIdempotentSession(
+				ctx, tx, orgID, idempotencyKey, payload, commandKind, &session,
+			)
+		}
+		if err != nil {
+			return err
+		}
+
+		var preparation, terminated, expired, attached bool
+		var desiredState string
+		var generation int64
+		err = tx.QueryRow(
+			ctx,
+			`SELECT session.is_preparation, session.is_terminated,
+				COALESCE(
+					session.preparation_expires_at <= clock_timestamp()
+					OR sandbox.preparation_expires_at <= clock_timestamp(),
+					true
+				),
+				sandbox.desired_state,
+				sandbox.preparation_generation,
+				EXISTS (
+					SELECT 1 FROM ao_preparation_attachments attachment
+					WHERE attachment.org_id = session.org_id
+					  AND attachment.session_id = session.id
+					  AND attachment.client_instance_id = $4
+					  AND attachment.generation = $5
+					  AND attachment.detached_at IS NULL
+					  AND attachment.lease_expires_at > clock_timestamp()
+				)
+			FROM ao_sessions session
+			JOIN ao_sandboxes sandbox
+			  ON sandbox.org_id = session.org_id AND sandbox.session_id = session.id
+			WHERE session.org_id = $1 AND session.id = $2
+			  AND session.created_by_user_id = $3
+			FOR UPDATE OF session, sandbox`,
+			orgID, sessionID, principal.UserID, input.ClientInstanceID, input.Generation,
+		).Scan(&preparation, &terminated, &expired, &desiredState, &generation, &attached)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if !preparation {
+			return ErrPreparationCommitted
+		}
+		if expired {
+			return ErrPreparationExpired
+		}
+		if generation != input.Generation || !attached {
+			return ErrPreparationStale
+		}
+		if terminated || desiredState != "running" {
+			return ErrPreparationUnavailable
+		}
+
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE ao_sessions
+			SET display_name = $3,
+				is_preparation = false,
+				preparation_expires_at = NULL,
+				updated_at = now()
+			WHERE org_id = $1 AND id = $2`,
+			orgID, sessionID, input.DisplayName,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			ctx,
+			`DELETE FROM ao_preparation_attachments
+			WHERE org_id = $1 AND session_id = $2`,
+			orgID, sessionID,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE ao_sandboxes
+			SET preparation_expires_at = NULL,
+				updated_at = now()
+			WHERE org_id = $1 AND session_id = $2`,
+			orgID, sessionID,
+		); err != nil {
+			return err
+		}
+		if _, err := appendUserMessage(ctx, tx, orgID, sessionID, input.Prompt, 0, "", nil); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE ao_commands
+			SET session_id = $1, status = 'succeeded',
+				result = jsonb_build_object('sessionId', $2::text),
+				updated_at = now()
+			WHERE id = $3`,
+			sessionID, sessionID, commandID,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			ctx,
+			`INSERT INTO ao_audit_events (
+				org_id, actor_user_id, action, resource_type, resource_id
+			) VALUES ($1, $2, 'session.preparation.committed', 'session', $3)`,
+			orgID, principal.UserID, sessionID,
+		); err != nil {
+			return err
+		}
+		return getSession(ctx, tx, orgID, sessionID, &session)
+	})
+	return session, err
+}
+
+func (s *Store) RenewSessionPreparation(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID, clientInstanceID string,
+	generation int64,
+	lease time.Duration,
+) (domain.SessionPreparationLease, error) {
+	var result domain.SessionPreparationLease
+	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
+		var preparation, terminated, expired, attached bool
+		var desiredState string
+		var currentGeneration int64
+		err := tx.QueryRow(
+			ctx,
+			`SELECT session.is_preparation, session.is_terminated,
+				COALESCE(
+					session.preparation_expires_at <= clock_timestamp()
+					OR sandbox.preparation_expires_at <= clock_timestamp(),
+					true
+				),
+				sandbox.desired_state,
+				sandbox.preparation_generation,
+				EXISTS (
+					SELECT 1 FROM ao_preparation_attachments attachment
+					WHERE attachment.org_id = session.org_id
+					  AND attachment.session_id = session.id
+					  AND attachment.client_instance_id = $4
+					  AND attachment.generation = $5
+					  AND attachment.detached_at IS NULL
+					  AND attachment.lease_expires_at > clock_timestamp()
+				)
+			FROM ao_sessions session
+			JOIN ao_sandboxes sandbox
+			  ON sandbox.org_id = session.org_id AND sandbox.session_id = session.id
+			WHERE session.org_id = $1 AND session.id = $2
+			  AND session.created_by_user_id = $3
+			FOR UPDATE OF session, sandbox`,
+			orgID, sessionID, principal.UserID, clientInstanceID, generation,
+		).Scan(&preparation, &terminated, &expired, &desiredState, &currentGeneration, &attached)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if !preparation {
+			return ErrPreparationCommitted
+		}
+		if expired {
+			return ErrPreparationExpired
+		}
+		if currentGeneration != generation || !attached {
+			return ErrPreparationStale
+		}
+		if terminated || desiredState != "running" {
+			return ErrPreparationUnavailable
+		}
+		if err := tx.QueryRow(
+			ctx,
+			`SELECT clock_timestamp() + $1::interval`,
+			intervalString(lease),
+		).Scan(&result.ExpiresAt); err != nil {
+			return err
+		}
+		result.Generation = currentGeneration
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE ao_sessions
+			SET preparation_expires_at = $3, updated_at = now()
+			WHERE org_id = $1 AND id = $2`,
+			orgID, sessionID, result.ExpiresAt,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE ao_sandboxes
+			SET preparation_expires_at = $3, updated_at = now()
+			WHERE org_id = $1 AND session_id = $2`,
+			orgID, sessionID, result.ExpiresAt,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE ao_preparation_attachments
+			SET last_activity_at = now(),
+				lease_expires_at = $5
+			WHERE org_id = $1 AND session_id = $2
+			  AND client_instance_id = $3 AND generation = $4`,
+			orgID, sessionID, clientInstanceID, generation, result.ExpiresAt,
+		); err != nil {
+			return err
+		}
+		return nil
+	})
+	return result, err
+}
+
+func (s *Store) DetachSessionPreparation(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID, clientInstanceID string,
+	generation int64,
+	grace time.Duration,
+) (domain.SessionPreparationLease, error) {
+	var result domain.SessionPreparationLease
+	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
+		var preparation, terminated, expired, attached bool
+		var desiredState string
+		var currentGeneration int64
+		err := tx.QueryRow(
+			ctx,
+			`SELECT session.is_preparation, session.is_terminated,
+				COALESCE(
+					session.preparation_expires_at <= clock_timestamp()
+					OR sandbox.preparation_expires_at <= clock_timestamp(),
+					true
+				),
+				sandbox.desired_state,
+				sandbox.preparation_generation,
+				EXISTS (
+					SELECT 1 FROM ao_preparation_attachments attachment
+					WHERE attachment.org_id = session.org_id
+					  AND attachment.session_id = session.id
+					  AND attachment.client_instance_id = $4
+					  AND attachment.generation = $5
+				)
+			FROM ao_sessions session
+			JOIN ao_sandboxes sandbox
+			  ON sandbox.org_id = session.org_id AND sandbox.session_id = session.id
+			WHERE session.org_id = $1 AND session.id = $2
+			  AND session.created_by_user_id = $3
+			FOR UPDATE OF session, sandbox`,
+			orgID, sessionID, principal.UserID, clientInstanceID, generation,
+		).Scan(&preparation, &terminated, &expired, &desiredState, &currentGeneration, &attached)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if !preparation {
+			return ErrPreparationCommitted
+		}
+		if expired {
+			return ErrPreparationExpired
+		}
+		if currentGeneration != generation || !attached {
+			return ErrPreparationStale
+		}
+		if terminated || desiredState != domain.SandboxDesiredRunning {
+			return ErrPreparationUnavailable
+		}
+		if err := tx.QueryRow(
+			ctx,
+			`SELECT clock_timestamp() + $1::interval`,
+			intervalString(grace),
+		).Scan(&result.ExpiresAt); err != nil {
+			return err
+		}
+		result.Generation = currentGeneration
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE ao_sessions
+			SET preparation_expires_at = $3, updated_at = now()
+			WHERE org_id = $1 AND id = $2`,
+			orgID, sessionID, result.ExpiresAt,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			ctx,
+			`UPDATE ao_sandboxes
+			SET preparation_expires_at = $3, updated_at = now()
+			WHERE org_id = $1 AND session_id = $2`,
+			orgID, sessionID, result.ExpiresAt,
+		); err != nil {
+			return err
+		}
+		_, err = tx.Exec(
+			ctx,
+			`UPDATE ao_preparation_attachments
+			SET detached_at = COALESCE(detached_at, now()),
+				lease_expires_at = $5
+			WHERE org_id = $1 AND session_id = $2
+			  AND client_instance_id = $3 AND generation = $4`,
+			orgID, sessionID, clientInstanceID, generation, result.ExpiresAt,
+		)
+		return err
+	})
+	return result, err
 }
 
 // ProjectActiveOrchestrator returns the id and sandbox provider of a project's
@@ -352,6 +704,7 @@ func (s *Store) ProjectActiveOrchestrator(
 			JOIN ao_sandboxes sb ON sb.session_id = se.id AND sb.org_id = se.org_id
 			WHERE se.org_id = $1 AND se.project_id = $2
 			  AND se.kind = 'orchestrator' AND se.is_terminated = false
+			  AND se.is_preparation = false
 			LIMIT 1`,
 			orgID, projectID,
 		).Scan(&orchestratorID, &provider)
@@ -596,6 +949,162 @@ func (s *Store) CreateGitHubScratchProject(
 	return project, session, err
 }
 
+const sessionPreparationCompatibilityVersion = 1
+
+func sessionPreparationCompatibilityHash(
+	ctx context.Context,
+	tx pgx.Tx,
+	orgID string,
+	input domain.CreateSession,
+	parentSessionID string,
+) ([]byte, error) {
+	var defaultBranch string
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT default_branch
+		FROM ao_projects
+		WHERE org_id = $1 AND id = $2 AND archived_at IS NULL`,
+		orgID, input.ProjectID,
+	).Scan(&defaultBranch); errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+
+	normalizeJSON := func(value json.RawMessage) (json.RawMessage, error) {
+		if len(value) == 0 {
+			return json.RawMessage(`{}`), nil
+		}
+		var decoded any
+		if err := json.Unmarshal(value, &decoded); err != nil {
+			return nil, err
+		}
+		return json.Marshal(decoded)
+	}
+	resourceProfile, err := normalizeJSON(input.ResourceProfile)
+	if err != nil {
+		return nil, fmt.Errorf("normalize preparation resource profile: %w", err)
+	}
+	bootstrapContext, err := normalizeJSON(input.BootstrapContext)
+	if err != nil {
+		return nil, fmt.Errorf("normalize preparation bootstrap context: %w", err)
+	}
+	provider := strings.ToLower(strings.TrimSpace(input.Provider))
+	if provider == "" {
+		provider = sandbox.DefaultProvider
+	}
+	document := struct {
+		Version            int             `json:"version"`
+		ProjectID          string          `json:"projectId"`
+		DefaultBranch      string          `json:"defaultBranch"`
+		Kind               string          `json:"kind"`
+		Harness            string          `json:"harness"`
+		Mode               string          `json:"mode"`
+		DeniedCommands     []string        `json:"deniedCommands"`
+		Provider           string          `json:"provider"`
+		ProviderConnection string          `json:"providerConnectionId"`
+		ResourceProfile    json.RawMessage `json:"resourceProfile"`
+		BootstrapContext   json.RawMessage `json:"bootstrapContext"`
+		Release            string          `json:"release"`
+		ParentSessionID    string          `json:"parentSessionId"`
+	}{
+		Version:            sessionPreparationCompatibilityVersion,
+		ProjectID:          input.ProjectID,
+		DefaultBranch:      defaultBranch,
+		Kind:               input.Kind,
+		Harness:            input.Harness,
+		Mode:               input.Mode,
+		DeniedCommands:     input.DeniedCommands,
+		Provider:           provider,
+		ProviderConnection: input.SandboxConnectionID,
+		ResourceProfile:    resourceProfile,
+		BootstrapContext:   bootstrapContext,
+		Release:            input.Release,
+		ParentSessionID:    parentSessionID,
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return nil, err
+	}
+	hash := sha256.Sum256(encoded)
+	return hash[:], nil
+}
+
+func attachSessionPreparation(
+	ctx context.Context,
+	tx pgx.Tx,
+	orgID, sessionID, clientInstanceID string,
+	generation int64,
+	expiresAt time.Time,
+) error {
+	_, err := tx.Exec(
+		ctx,
+		`INSERT INTO ao_preparation_attachments (
+			org_id, session_id, client_instance_id, generation, lease_expires_at
+		) VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (session_id, client_instance_id) DO UPDATE
+		SET generation = EXCLUDED.generation,
+			attached_at = now(),
+			last_activity_at = now(),
+			lease_expires_at = EXCLUDED.lease_expires_at,
+			detached_at = NULL`,
+		orgID, sessionID, clientInstanceID, generation, expiresAt,
+	)
+	return err
+}
+
+func expireSessionPreparation(
+	ctx context.Context,
+	tx pgx.Tx,
+	orgID, sessionID string,
+) error {
+	if _, err := tx.Exec(
+		ctx,
+		`UPDATE ao_sandboxes
+		SET desired_state = 'deleted',
+			preparation_generation = preparation_generation + 1,
+			reconcile_after = now(),
+			reconcile_lease_owner = '',
+			reconcile_lease_until = NULL,
+			updated_at = now()
+		WHERE org_id = $1 AND session_id = $2
+		  AND desired_state <> 'deleted'`,
+		orgID, sessionID,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		ctx,
+		`UPDATE ao_sessions
+		SET is_terminated = true,
+			activity_state = 'exited',
+			updated_at = now()
+		WHERE org_id = $1 AND id = $2`,
+		orgID, sessionID,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		ctx,
+		`UPDATE ao_access_tickets
+		SET consumed_at = COALESCE(consumed_at, now())
+		WHERE org_id = $1 AND session_id = $2 AND consumed_at IS NULL`,
+		orgID, sessionID,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		ctx,
+		`UPDATE ao_worker_connections
+		SET disconnected_at = COALESCE(disconnected_at, now())
+		WHERE org_id = $1 AND session_id = $2 AND disconnected_at IS NULL`,
+		orgID, sessionID,
+	); err != nil {
+		return err
+	}
+	return notifySandboxReconcile(ctx, tx)
+}
+
 func createSessionTx(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -609,6 +1118,10 @@ func createSessionTx(
 	}
 	if input.DeniedCommands == nil {
 		input.DeniedCommands = []string{}
+	}
+	isPreparation := input.PreparationExpiresAfter > 0
+	if isPreparation && strings.TrimSpace(input.PreparationClientInstanceID) == "" {
+		return domain.Session{}, ErrInvalid
 	}
 	var session domain.Session
 
@@ -665,11 +1178,110 @@ func createSessionTx(
 		return domain.Session{}, err
 	}
 
+	var compatibilityHash []byte
+	if isPreparation {
+		compatibilityHash, err = sessionPreparationCompatibilityHash(
+			ctx, tx, orgID, input, parentSessionID,
+		)
+		if err != nil {
+			return domain.Session{}, err
+		}
+
+		var existingSessionID, desiredState string
+		var expired bool
+		var generation int64
+		err = tx.QueryRow(
+			ctx,
+			`SELECT session.id::text,
+				COALESCE(
+					session.preparation_expires_at <= clock_timestamp()
+					OR sandbox.preparation_expires_at <= clock_timestamp(),
+					true
+				),
+				sandbox.desired_state,
+				sandbox.preparation_generation
+			FROM ao_sessions session
+			JOIN ao_sandboxes sandbox
+			  ON sandbox.org_id = session.org_id AND sandbox.session_id = session.id
+			WHERE session.org_id = $1
+			  AND session.created_by_user_id = $2
+			  AND session.preparation_compatibility_hash = $3
+			  AND session.is_preparation = true
+			  AND session.is_terminated = false
+			FOR UPDATE OF session, sandbox`,
+			orgID, actorUserID, compatibilityHash,
+		).Scan(&existingSessionID, &expired, &desiredState, &generation)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return domain.Session{}, err
+		}
+		if err == nil && (expired || desiredState != domain.SandboxDesiredRunning) {
+			if err := expireSessionPreparation(ctx, tx, orgID, existingSessionID); err != nil {
+				return domain.Session{}, err
+			}
+			existingSessionID = ""
+		}
+		if existingSessionID != "" {
+			var expiresAt time.Time
+			if err := tx.QueryRow(
+				ctx,
+				`SELECT clock_timestamp() + $1::interval`,
+				intervalString(input.PreparationExpiresAfter),
+			).Scan(&expiresAt); err != nil {
+				return domain.Session{}, err
+			}
+			if _, err := tx.Exec(
+				ctx,
+				`UPDATE ao_sessions
+				SET preparation_expires_at = $3, updated_at = now()
+				WHERE org_id = $1 AND id = $2`,
+				orgID, existingSessionID, expiresAt,
+			); err != nil {
+				return domain.Session{}, err
+			}
+			if _, err := tx.Exec(
+				ctx,
+				`UPDATE ao_sandboxes
+				SET preparation_expires_at = $3, updated_at = now()
+				WHERE org_id = $1 AND session_id = $2`,
+				orgID, existingSessionID, expiresAt,
+			); err != nil {
+				return domain.Session{}, err
+			}
+			if err := attachSessionPreparation(
+				ctx, tx, orgID, existingSessionID,
+				input.PreparationClientInstanceID, generation,
+				expiresAt,
+			); err != nil {
+				return domain.Session{}, err
+			}
+			if _, err := tx.Exec(
+				ctx,
+				`UPDATE ao_commands
+				SET session_id = $1, status = 'succeeded',
+					result = jsonb_build_object(
+						'sessionId', $2::text,
+						'disposition', 'reused',
+						'generation', $3::bigint
+					),
+					updated_at = now()
+				WHERE id = $4`,
+				existingSessionID, existingSessionID, generation, commandID,
+			); err != nil {
+				return domain.Session{}, err
+			}
+			if err := getSession(ctx, tx, orgID, existingSessionID, &session); err != nil {
+				return domain.Session{}, err
+			}
+			return session, nil
+		}
+	}
+
 	var activeSandboxes int
 	if err := tx.QueryRow(
 		ctx,
 		`SELECT count(*) FROM ao_sandboxes
 		WHERE org_id = $1
+			AND desired_state <> 'deleted'
 			AND observed_state NOT IN ('deleted', 'deleting', 'terminated', 'failed')`,
 		orgID,
 	).Scan(&activeSandboxes); err != nil {
@@ -684,14 +1296,19 @@ func createSessionTx(
 		`WITH generated AS (SELECT gen_random_uuid() AS id)
 		INSERT INTO ao_sessions (
 			id, org_id, project_id, kind, harness, display_name, branch,
-			prompt, mode, denied_commands, parent_session_id, created_by_user_id
+			prompt, mode, denied_commands, parent_session_id, created_by_user_id,
+			is_preparation, preparation_expires_at,
+			preparation_compatibility_version, preparation_compatibility_hash
 		)
 		SELECT id, $1, $2, $3, $4, $5, 'ao/' || left(id::text, 8),
-			$6, $7, $8, NULLIF($9, '')::uuid, NULLIF($10, '')::uuid
+			$6, $7, $8, NULLIF($9, '')::uuid, NULLIF($10, '')::uuid,
+			$11, CASE WHEN $11 THEN now() + $12::interval ELSE NULL END,
+			CASE WHEN $11 THEN $13::smallint ELSE NULL END,
+			CASE WHEN $11 THEN $14::bytea ELSE NULL END
 		FROM generated
 		RETURNING id, org_id, project_id, kind, harness, display_name, branch,
 			mode, denied_commands, activity_state, is_terminated,
-			false, '', '', '', '', '', 0, created_at, updated_at`,
+			false, '', '', '', '', '', 0, preparation_expires_at, created_at, updated_at`,
 		orgID,
 		input.ProjectID,
 		input.Kind,
@@ -702,6 +1319,10 @@ func createSessionTx(
 		input.DeniedCommands,
 		parentSessionID,
 		actorUserID,
+		isPreparation,
+		intervalString(input.PreparationExpiresAfter),
+		sessionPreparationCompatibilityVersion,
+		compatibilityHash,
 	), &session)
 	if err != nil {
 		return domain.Session{}, normalizeConstraintError(err)
@@ -746,26 +1367,49 @@ func createSessionTx(
 		ctx,
 		`INSERT INTO ao_sandboxes (
 			session_id, org_id, provider, provider_connection_id,
-			resource_profile, bootstrap_context
-		) VALUES ($1, $2, $3, NULLIF($4, '')::uuid, $5, $6)`,
+			resource_profile, bootstrap_context, preparation_expires_at,
+			preparation_generation
+		) VALUES (
+			$1, $2, $3, NULLIF($4, '')::uuid, $5, $6,
+			CASE WHEN $7 THEN now() + $8::interval ELSE NULL END,
+			CASE WHEN $7 THEN 1 ELSE 0 END
+		)`,
 		session.ID, orgID, provider, input.SandboxConnectionID,
-		resourceProfile, bootstrapContext,
+		resourceProfile, bootstrapContext, isPreparation,
+		intervalString(input.PreparationExpiresAfter),
 	); err != nil {
 		return domain.Session{}, normalizeConstraintError(err)
 	}
+	if isPreparation {
+		if err := attachSessionPreparation(
+			ctx, tx, orgID, session.ID,
+			input.PreparationClientInstanceID, 1,
+			*session.PreparationExpiresAt,
+		); err != nil {
+			return domain.Session{}, err
+		}
+	}
 	if input.Prompt != "" {
 		if _, err := appendUserMessageEvent(
-			ctx, tx, orgID, session.ID, input.Prompt,
+			ctx, tx, orgID, session.ID, input.Prompt, 0,
 		); err != nil {
 			return domain.Session{}, err
 		}
 	}
 
+	commandResult := `jsonb_build_object('sessionId', $2::text)`
+	if isPreparation {
+		commandResult = `jsonb_build_object(
+			'sessionId', $2::text,
+			'disposition', 'created',
+			'generation', 1
+		)`
+	}
 	if _, err := tx.Exec(
 		ctx,
 		`UPDATE ao_commands
 		SET session_id = $1, status = 'succeeded',
-			result = jsonb_build_object('sessionId', $2::text),
+			result = `+commandResult+`,
 			updated_at = now()
 		WHERE id = $3`,
 		session.ID, session.ID, commandID,
@@ -789,6 +1433,9 @@ func createSessionTx(
 		return domain.Session{}, err
 	}
 	if err := getSession(ctx, tx, orgID, session.ID, &session); err != nil {
+		return domain.Session{}, err
+	}
+	if err := notifySandboxReconcile(ctx, tx); err != nil {
 		return domain.Session{}, err
 	}
 	return session, nil
@@ -838,6 +1485,7 @@ func (s *Store) ListSessions(
 			ctx,
 			sessionSelect+`
 			WHERE session.org_id = $1
+			  AND session.is_preparation = false
 			  AND EXISTS (
 				SELECT 1 FROM ao_projects project
 				WHERE project.org_id = session.org_id
@@ -898,6 +1546,7 @@ func (s *Store) ListSessionChildren(
 			sessionSelect+`
 			WHERE session.org_id = $1
 			  AND session.parent_session_id = $2::uuid
+			  AND session.is_preparation = false
 			  AND ($3::timestamptz IS NULL OR (session.updated_at, session.id) < ($3, $4::uuid))
 			ORDER BY session.updated_at DESC, session.id DESC
 			LIMIT $5`,
@@ -972,6 +1621,7 @@ const sessionSelect = `
 				AND terminal.session_id = session.id
 				AND terminal.kind = 'agent'
 		), 0),
+		session.preparation_expires_at,
 		session.created_at, session.updated_at
 	FROM ao_sessions session
 	LEFT JOIN ao_sandboxes sandbox
@@ -1036,6 +1686,7 @@ func scanSession(row scanner, session *domain.Session) error {
 		&session.RuntimeState,
 		&session.RuntimeError,
 		&session.WorkerEpoch,
+		&session.PreparationExpiresAt,
 		&session.CreatedAt,
 		&session.UpdatedAt,
 	)

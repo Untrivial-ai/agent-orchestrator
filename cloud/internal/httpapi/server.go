@@ -55,9 +55,12 @@ type Store interface {
 	UpdateProject(context.Context, domain.Principal, string, string, domain.UpdateProject) (domain.Project, error)
 	ArchiveProject(context.Context, domain.Principal, string, string) error
 	CreateSession(context.Context, domain.Principal, string, string, int, domain.CreateSession) (domain.Session, error)
+	CommitSessionPreparation(context.Context, domain.Principal, string, string, string, domain.CommitSessionPreparation) (domain.Session, error)
+	RenewSessionPreparation(context.Context, domain.Principal, string, string, string, int64, time.Duration) (domain.SessionPreparationLease, error)
+	DetachSessionPreparation(context.Context, domain.Principal, string, string, string, int64, time.Duration) (domain.SessionPreparationLease, error)
 	ListSessions(context.Context, domain.Principal, string, string, *domain.Cursor, int) ([]domain.Session, bool, error)
 	GetSession(context.Context, domain.Principal, string, string) (domain.Session, error)
-	SendMessage(context.Context, domain.Principal, string, string, string, string) (domain.ClientEvent, error)
+	SendMessage(context.Context, domain.Principal, string, string, string, string, int64) (domain.ClientEvent, error)
 	ListClientEvents(context.Context, domain.Principal, string, string, int64, int) ([]domain.ClientEvent, bool, error)
 	SetSandboxDesiredState(ctx context.Context, principal domain.Principal, orgID, sessionID, desiredState string) error
 	TerminateSession(ctx context.Context, principal domain.Principal, orgID, sessionID string) error
@@ -436,8 +439,12 @@ func New(options Options) *Server {
 			router.Post("/provider-connections/agents/{agent}/promote", server.promoteAgentConnection)
 			router.Get("/sessions", server.listSessions)
 			router.Post("/sessions", server.createSession)
+			router.Post("/session-preparations", server.prepareSession)
 			router.Get("/sandbox/coder/templates", server.listCoderTemplates)
 			router.Get("/sessions/{sessionId}", server.getSession)
+			router.Post("/sessions/{sessionId}/commit-preparation", server.commitSessionPreparation)
+			router.Post("/sessions/{sessionId}/renew-preparation", server.renewSessionPreparation)
+			router.Delete("/sessions/{sessionId}/preparation-attachments/{clientInstanceId}", server.detachSessionPreparation)
 			router.Post("/sessions/wake", server.wakePausedSessions)
 			router.Post("/sessions/{sessionId}/resume", server.resumeSession)
 			router.Post("/sessions/{sessionId}/restore", server.restoreSession)
