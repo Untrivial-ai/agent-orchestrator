@@ -7,16 +7,19 @@
  * later turn failing for a reason that looks generic. A thread the provider has put
  * into `system_error` looks, from AO's side, like an agent that has gone quiet.
  *
- * They live above the scroller rather than in it because they are current state:
- * scrolling away from them must not scroll away from the reason the session is
- * stuck.
+ * Persistent recovery states live above the scroller; the transient MCP note docks
+ * below the composer so it does not displace the conversation.
  */
 
-import { memo } from "react";
-import { KeyRound, Plug, RefreshCw, TriangleAlert } from "lucide-react";
-import { cn } from "../../lib/utils";
-import { Button } from "../ui/button";
+import { memo, useEffect, useState } from "react";
+import { KeyRound, Plug, TriangleAlert } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
 import type { ConversationAccount, ConversationThreadState, McpServer } from "../../types/conversation";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
+
+// Survives session-pane unmounts so switching away and back does not replay the
+// same spawn notice. The set intentionally lives for the renderer lifetime.
+const mcpNoticeShownSessions = new Set<string>();
 
 /**
  * The provider will not do any more work until someone signs in.
@@ -149,91 +152,80 @@ export const ThreadStateBanner = memo(function ThreadStateBanner({
 });
 
 /**
- * Tool servers that did not start.
+ * A short-lived acknowledgement that some tool servers are unavailable.
  *
- * Only failures are shown. A healthy server is not news, and listing every one would
- * put a permanent status bar above a conversation to say that nothing is wrong. A
- * failed one is worth interrupting for because its absence is invisible: the agent
- * will not mention the tools it does not have, so the user sees a worse answer with
- * no cause.
+ * The server setup lives with the agent harness, not AO. Show the fact without a
+ * noisy diagnostic panel or a misleading recovery control, then get out of the way.
  */
 export const McpServerBanner = memo(function McpServerBanner({
 	servers,
-	onReload,
-	reloading,
-	turnInFlight,
-	error,
+	placement = "above",
+	sessionId,
 }: {
 	/** Only the broken ones. The caller filters, so an empty list means nothing to say. */
 	servers: McpServer[];
-	/** Absent when the harness cannot reload, in which case no control is drawn. */
-	onReload?: () => void;
-	reloading?: boolean;
-	/** The daemon refuses a reload mid-turn, so the control explains itself instead. */
-	turnInFlight?: boolean;
-	error?: string;
+	placement?: "above" | "below";
+	sessionId?: string;
 }) {
-	if (servers.length === 0) return null;
+	const fingerprint = servers
+		.map((server) => `${server.name}:${server.status}:${server.failureReason ?? ""}:${server.error ?? ""}`)
+		.join("|");
+	const [dismissedFingerprint, setDismissedFingerprint] = useState<string | null>(null);
+	const [dismissingFingerprint, setDismissingFingerprint] = useState<string | null>(null);
+	// MCP status can change as the welcome composer becomes a timeline composer.
+	// Do not treat that UI transition as a second server-spawn event.
+	const [shownFingerprint, setShownFingerprint] = useState<string | null>(null);
+	const reducedMotion = useReducedMotion();
+
+	useEffect(() => {
+		if (!fingerprint) return;
+		if (sessionId && mcpNoticeShownSessions.has(sessionId)) return;
+		if (sessionId) mcpNoticeShownSessions.add(sessionId);
+		setShownFingerprint((current) => current ?? fingerprint);
+		const timeout = window.setTimeout(() => setDismissingFingerprint(fingerprint), 3_000);
+		return () => window.clearTimeout(timeout);
+	}, [fingerprint, sessionId]);
+
+	useEffect(() => {
+		if (dismissingFingerprint !== fingerprint) return;
+		const timeout = window.setTimeout(() => setDismissedFingerprint(fingerprint), reducedMotion ? 0 : 200);
+		return () => window.clearTimeout(timeout);
+	}, [dismissingFingerprint, fingerprint, reducedMotion]);
+
+	const visible =
+		servers.length > 0 &&
+		shownFingerprint === fingerprint &&
+		dismissedFingerprint !== fingerprint;
+	const dismissing = dismissingFingerprint === fingerprint;
+	const serverNames = servers
+		.map((server) => `${server.name.slice(0, 1).toUpperCase()}${server.name.slice(1)}`)
+		.join(", ");
+	const message = `${serverNames} ${servers.length === 1 ? "MCP" : "MCPs"} unavailable`;
+
+	if (!visible) return null;
 
 	return (
-		<div
-			role="status"
-			aria-atomic="true"
-			className="flex shrink-0 items-start gap-2.5 border-b border-border bg-surface px-4 py-2.5"
-		>
-			<Plug aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-warning" />
-			<div className="flex min-w-0 flex-1 flex-col gap-1">
-				<strong className="text-xs font-medium text-warning">
-					{servers.length === 1
-						? "A tool server did not start"
-						: `${servers.length} tool servers did not start`}
-				</strong>
-				<span className="text-[11px] leading-snug text-muted-foreground">
-					The agent has none of their tools and will not say so — it works around them
-					silently.
-				</span>
-				<ul className="flex flex-col gap-0.5">
-					{servers.map((server) => (
-						<li key={server.name} className="text-[11px] leading-snug">
-							<span className="font-mono text-foreground">{server.name}</span>
-							<span className="text-muted-foreground">
-								{" · "}
-								{server.status}
-								{/* The classification first, then the raw text: one is actionable,
-								    the other is the provider's own words and often long. */}
-								{server.failureReason ? ` · ${server.failureReason}` : ""}
-							</span>
-							{server.error ? (
-								<span className="block truncate text-[10.5px] text-muted-foreground/70" title={server.error}>
-									{server.error}
-								</span>
-							) : null}
-						</li>
-					))}
-				</ul>
-				{error ? <span className="text-[11px] text-destructive">{error}</span> : null}
-			</div>
-			{onReload ? (
-				<Button
-					type="button"
-					size="sm"
-					variant="outline"
-					onClick={onReload}
-					disabled={reloading || turnInFlight}
-					title={
-						turnInFlight
-							? "Finish or stop the current turn before reloading tool servers"
-							: "Start the tool servers again"
-					}
-					className="shrink-0 gap-1.5"
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<motion.div
+					initial={{ scale: 0.96, opacity: 0 }}
+					animate={dismissing ? { scale: 0.96, opacity: 0 } : { scale: 1, opacity: 1 }}
+					transition={{ duration: reducedMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
+					className={`absolute left-1/2 w-fit -translate-x-1/2 origin-center ${placement === "below" ? "top-full pt-2" : "bottom-full pb-2"}`}
 				>
-					<RefreshCw
-						aria-hidden="true"
-						className={cn("size-3", reloading && "animate-spin")}
-					/>
-					{reloading ? "Reloading…" : "Reload"}
-				</Button>
-			) : null}
-		</div>
+					<div
+						role={dismissing ? undefined : "status"}
+						aria-atomic="true"
+						className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground"
+					>
+						<Plug aria-hidden="true" className="size-3 shrink-0 text-warning" />
+						<span>{message}</span>
+					</div>
+				</motion.div>
+			</TooltipTrigger>
+			<TooltipContent side={placement === "below" ? "bottom" : "top"}>
+				{serverNames} MCPs were unavailable. The agent is continuing without those tools.
+			</TooltipContent>
+		</Tooltip>
 	);
 });

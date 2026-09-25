@@ -152,7 +152,7 @@ describe("AssistantMessage streaming", () => {
 		expect(frames.size).toBe(0);
 	});
 
-	it("shows a large received burst within 250ms", () => {
+	it("drains a large received burst without replacing the live target", () => {
 		const view = render(<AssistantMessage message={message()} />);
 		const text = "a".padEnd(10_000, "x");
 		view.rerender(<AssistantMessage message={message({ text })} />);
@@ -160,11 +160,11 @@ describe("AssistantMessage streaming", () => {
 		runFrame(0);
 		for (let now = 16; now <= 240 && frames.size; now += 16) runFrame(now);
 
-		expect(document.querySelector("p")?.textContent).toBe(text);
-		expect(frames.size).toBe(0);
+		expect(document.querySelector("p")?.textContent).not.toBe(text);
+		expect(frames.size).toBeGreaterThan(0);
 	});
 
-	it("does not postpone the drain deadline when new snapshots keep arriving", () => {
+	it("keeps draining while new snapshots keep arriving", () => {
 		const view = render(<AssistantMessage message={message()} />);
 		let text = "a".padEnd(2000, "x");
 		view.rerender(<AssistantMessage message={message({ text })} />);
@@ -175,8 +175,8 @@ describe("AssistantMessage streaming", () => {
 			runFrame(now);
 		}
 
-		expect(document.querySelector("p")?.textContent).toBe(text);
-		expect(frames.size).toBe(0);
+		expect(document.querySelector("p")?.textContent).not.toBe(text);
+		expect(frames.size).toBeGreaterThan(0);
 	});
 
 	it("segments each snapshot once and reuses it across animation frames", () => {
@@ -256,10 +256,13 @@ describe("AssistantMessage streaming", () => {
 		expect(screen.getByRole("button", { name: "Copy message as markdown" })).toBeInTheDocument();
 	});
 
-	it("hides message actions while text is still buffered", () => {
+	it("shows the response spinner while text is still streaming", () => {
 		const view = render(<AssistantMessage message={message()} showCopy />);
 		view.rerender(<AssistantMessage message={message({ text: "a buffered answer" })} showCopy />);
 
+		const loader = screen.getByTestId("response-spinner");
+		expect(loader).toBeInTheDocument();
+		expect(loader.querySelector("svg")).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Copy message as markdown" })).not.toBeInTheDocument();
 	});
 

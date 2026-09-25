@@ -593,7 +593,7 @@ describe("ChatWorkspace timeline", () => {
 		expect(composer?.parentElement).toHaveClass("mx-auto", "w-full", "max-w-3xl");
 	});
 
-	it("shows live working state inline with the current turn while the composer owns the stop action", async () => {
+	it("keeps the live action row in the response while the composer owns the stop action", async () => {
 		const user = userEvent.setup();
 		const onInterrupt = vi.fn();
 		const snapshot = structuredClone(chatFixture);
@@ -608,12 +608,9 @@ describe("ChatWorkspace timeline", () => {
 
 		render(<ChatWorkspace snapshot={snapshot} onInterrupt={onInterrupt} />);
 
-		const status = screen.getByTestId("live-turn-status");
-		expect(screen.getByRole("log", { name: "Conversation" })).toContainElement(status);
-		expect(status).toHaveClass("min-h-6", "px-1");
-		expect(status).not.toHaveClass("border", "bg-surface", "rounded-md");
-		expect(status).toHaveTextContent(/^Working for /);
-		expect(within(status).queryByRole("button")).not.toBeInTheDocument();
+		expect(screen.queryByTestId("live-turn-status")).not.toBeInTheDocument();
+		expect(screen.queryByText(/^Working for /)).not.toBeInTheDocument();
+		expect(screen.getByTestId("response-spinner")).toBeInTheDocument();
 
 		const stop = screen.getByRole("button", { name: "Stop turn" });
 		expect(screen.getByLabelText("Message the agent").closest("form")).toContainElement(stop);
@@ -1162,6 +1159,24 @@ describe("ChatWorkspace timeline", () => {
 		expect(openShell).toHaveBeenCalledOnce();
 	});
 
+	it("explains a missing workspace instead of offering an impossible resume", () => {
+		render(
+			<ChatWorkspace
+				snapshot={{
+					...chatFixtureSettled,
+					controller: { state: "stopped" },
+				}}
+				onResumeAgent={vi.fn()}
+				onOpenShell={vi.fn()}
+				resumeWorkspaceUnavailable
+			/>,
+		);
+
+		expect(screen.getByRole("alert")).toHaveTextContent("worktree is no longer available");
+		expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Open shell" })).not.toBeInTheDocument();
+	});
+
 	it("shows connecting during the controller gap, then restores the composer when ready", () => {
 		const { rerender } = render(
 			<ChatWorkspace
@@ -1194,7 +1209,7 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getByRole("alert")).toHaveTextContent("thread hit an internal error");
 
 		rerender(<ChatWorkspace snapshot={chatFixtureMcpFailed} />);
-		expect(screen.getByRole("status")).toHaveTextContent(/tool servers? did not start/);
+		expect(screen.getByRole("status")).toHaveTextContent("Playwright, Postgres MCPs unavailable");
 	});
 
 	it("reuses anchor measurements while scrolling and refreshes after content mutations", () => {
@@ -1489,16 +1504,21 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getByRole("tooltip")).not.toHaveTextContent("Automatic compaction completed");
 	});
 
-	it("centers the composer on an empty conversation instead of a starter blurb", () => {
+	it("centers an empty-chat welcome heading above a realistic starter prompt", () => {
+		const random = vi.spyOn(Math, "random").mockReturnValue(0);
 		render(<ChatWorkspace snapshot={chatFixtureEmpty} />);
-		expect(screen.queryByText("Start the conversation")).not.toBeInTheDocument();
 		expect(screen.queryByRole("log")).not.toBeInTheDocument();
-		expect(screen.getByLabelText("Message the agent")).toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "What do you want to work on?" })).toHaveClass("font-normal");
+		expect(screen.getByLabelText("Message the agent")).toHaveAttribute(
+			"aria-placeholder",
+			"Fix a failing test in this project",
+		);
 		expect(
 			screen
 				.getByTestId("chat-conversation-panel")
 				.querySelector("[data-composer-placement='center']"),
 		).not.toBeNull();
+		random.mockRestore();
 	});
 
 	it("docks the composer once the conversation has content", () => {
@@ -3012,8 +3032,8 @@ describe("ChatWorkspace message actions", () => {
 		const snapshot = structuredClone(chatFixture);
 		snapshot.items = snapshot.items.filter((item) => item.sequence <= 12);
 		render(<ChatWorkspace snapshot={snapshot} />);
-		// The latest assistant message is mid-stream; half a message is not what the
-		// reader means by "copy this", and streaming has no extra visual indicator.
+		// The latest assistant message is mid-stream; its copy action remains mounted
+		// in the bottom row while the response continues.
 		expect(screen.queryByLabelText("still writing")).not.toBeInTheDocument();
 		expect(screen.queryByText("Writing…")).not.toBeInTheDocument();
 	});

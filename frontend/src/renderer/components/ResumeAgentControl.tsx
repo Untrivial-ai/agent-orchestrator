@@ -5,6 +5,7 @@ import { aoBridge } from "../lib/bridge";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { useCanResumeAgent } from "../hooks/useCanResumeAgent";
+import { useEditorHandoffState } from "../hooks/useEditorHandoff";
 import { usesPreviewWorkspaceData as usePreviewData } from "../lib/preview-mode";
 import { cn } from "../lib/utils";
 import type { WorkspaceSession } from "../types/workspace";
@@ -28,6 +29,10 @@ export function ResumeAgentControl({
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const canResume = useCanResumeAgent(session);
+	const workspaceHandoff = useEditorHandoffState(session.id, {
+		sessionCreatedAt: session.createdAt,
+		sessionTerminated: session.isTerminated,
+	});
 	const resume = useMutation({
 		mutationFn: async () => {
 			if (usePreviewData) return;
@@ -56,7 +61,7 @@ export function ResumeAgentControl({
 	// Cloud sessions re-provision through the control plane (useRestoreSession),
 	// not this local-daemon route — the local daemon has never heard of them and
 	// would answer "Unknown session".
-	if (!canResume) return null;
+	if (!canResume || workspaceHandoff.data?.workspaceAvailable !== true) return null;
 
 	const error = resume.error instanceof Error ? resume.error.message : null;
 	const control = (

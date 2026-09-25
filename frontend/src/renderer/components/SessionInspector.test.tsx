@@ -1324,7 +1324,7 @@ describe("SessionInspector Activity section", () => {
     );
 
     await userEvent.click(
-      activitySection().getByRole("button", { name: "Resume agent" }),
+      await activitySection().findByRole("button", { name: "Resume agent" }),
     );
 
     await waitFor(() =>
@@ -1367,6 +1367,28 @@ describe("SessionInspector Activity section", () => {
     expect(
       screen.queryByRole("button", { name: "Resume agent" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not offer agent resume when the session worktree is unavailable", async () => {
+    vi.spyOn(window.ao.editorHandoff, "getState").mockResolvedValueOnce({
+      targets: [],
+      preferredEditorId: "cursor",
+      workspaceAvailable: false,
+      unavailableReason: "Session workspace is not available.",
+    });
+
+    renderWithQuery(
+      <SessionInspector
+        session={session([], {
+          status: "exited",
+          activity: { state: "exited", lastActivityAt: "2026-06-15T10:00:00Z" },
+        })}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument(),
+    );
   });
 
   it("does not offer agent resume while an agent switch owns the exited source", () => {
@@ -1431,7 +1453,7 @@ describe("SessionInspector Activity section", () => {
     );
 
     await userEvent.click(
-      activitySection().getByRole("button", { name: "Resume agent" }),
+      await activitySection().findByRole("button", { name: "Resume agent" }),
     );
 
     expect(

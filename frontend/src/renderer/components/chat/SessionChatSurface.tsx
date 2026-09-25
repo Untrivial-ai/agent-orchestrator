@@ -31,6 +31,7 @@ import {
 import { useAgentSwitchProviderCatalogs } from "../../hooks/useAgentSwitchProviderCatalogs";
 import { useRememberProjectPermissions } from "../../hooks/useRememberProjectPermissions";
 import { useSessionBrowserLink } from "../../hooks/useSessionBrowserLink";
+import { useEditorHandoffState } from "../../hooks/useEditorHandoff";
 import { isWebLink, isWorkspaceHtmlLink } from "../../lib/external-link-policy";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
 import {
@@ -170,6 +171,14 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	/** Reports accepted Chat work that must inform an interface-switch policy choice. */
 	onConversationWorkChange?: (state: ConversationWorkState) => void;
 }) {
+	// ShellTopbar already resolves this state for the editor action. Read the
+	// same cached query here so the stopped-controller banner never offers a
+	// resume or shell action when this session's worktree is gone.
+	const workspaceHandoff = useEditorHandoffState(session.id, {
+		sessionCreatedAt: session.createdAt,
+		sessionTerminated: session.isTerminated,
+	});
+	const workspaceUnavailable = workspaceHandoff.data?.workspaceAvailable === false;
 	const {
 		snapshot: queriedSnapshot,
 		isLoading,
@@ -526,6 +535,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				}}
 				resumingAgent={commands.resumingAgent}
 				resumeError={commands.resumeError}
+				resumeWorkspaceUnavailable={commands.resumeWorkspaceUnavailable || workspaceUnavailable}
 				onOpenShell={onOpenShell}
 				openingShell={openingShell}
 				shellError={shellError}
@@ -539,6 +549,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				configOptions={configOptions.options}
 				onChooseConfigOption={configOptions.setOption}
 				configOptionPending={configOptions.pending || commands.choosingSettings}
+				configOptionPendingOptionId={configOptions.pendingOptionId}
 				configOptionError={configOptions.error}
 				onCompact={commands.compact}
 				compacting={commands.compacting}
@@ -580,17 +591,6 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				promoteQueuedTurnPendingTurnId={commands.promoteQueuedTurnPendingTurnId}
 				cancelQueuedTurnPendingTurnId={commands.cancelQueuedTurnPendingTurnId}
 				editQueuedTurnPendingTurnId={commands.editQueuedTurnPendingTurnId}
-				onReloadMcpServers={
-					!can(renderSnapshot, "mcp_reload") || commands.mcpReloadUnsupported
-						? undefined
-						: () => {
-								// The rejection is already held by the mutation and rendered from
-								// `mcpReloadError`; rethrowing it would only add a console error.
-								void commands.reloadMcpServers().catch(() => {});
-							}
-				}
-				reloadingMcpServers={commands.reloadingMcpServers}
-				mcpReloadError={commands.mcpReloadError}
 			/>
 			{shownSwitchPresentation ? (
 				<ChatAgentSwitchStatus

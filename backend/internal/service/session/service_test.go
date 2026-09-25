@@ -3515,6 +3515,7 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"chat mode unsupported", fmt.Errorf("spawn: %w", ports.ErrChatUnsupported), apierr.KindConflict, "SESSION_MODE_UNSUPPORTED"},
 		{"chat driver unavailable", fmt.Errorf("spawn: %w", ports.ErrChatDriverUnavailable), apierr.KindConflict, "CHAT_DRIVER_UNAVAILABLE"},
 		{"chat driver incompatible", fmt.Errorf("spawn: %w", ports.ErrChatDriverIncompatible), apierr.KindConflict, "CHAT_DRIVER_INCOMPATIBLE"},
+		{"chat recovery inconclusive", fmt.Errorf("resume: %w", ports.ErrChatRecoveryInconclusive), apierr.KindConflict, "CHAT_RECOVERY_INCONCLUSIVE"},
 		{"chat auth required", fmt.Errorf("spawn: %w", ports.ErrChatAuthRequired), apierr.KindConflict, "CHAT_AUTH_REQUIRED"},
 		{"agent auth required", fmt.Errorf("spawn: %w", ports.ErrAgentAuthRequired), apierr.KindConflict, "AGENT_AUTH_REQUIRED"},
 		{"interface notice not acknowledgeable", fmt.Errorf("acknowledge interface notice: %w", sessionmanager.ErrInterfaceTransitionNoticeNotAcknowledgeable), apierr.KindConflict, "INTERFACE_TRANSITION_NOTICE_NOT_ACKNOWLEDGEABLE"},
@@ -3789,13 +3790,16 @@ func TestRestoreMapsManagerModeToServiceView(t *testing.T) {
 
 func TestResumeAgentMapsManagerModeToServiceView(t *testing.T) {
 	st := newFakeStore()
+	workspace := t.TempDir()
 	rec := domain.SessionRecord{
 		ID:        "mer-1",
 		ProjectID: "mer",
 		Kind:      domain.KindWorker,
 		Harness:   domain.HarnessCodex,
 		Activity:  domain.Activity{State: domain.ActivityIdle},
+		Metadata:  domain.SessionMetadata{WorkspacePath: workspace},
 	}
+	st.sessions[rec.ID] = rec
 	fc := &fakeCommander{
 		restoreResult: sessionmanager.RestoreResult{
 			Session: rec,
@@ -3810,6 +3814,26 @@ func TestResumeAgentMapsManagerModeToServiceView(t *testing.T) {
 	}
 	if got.Session.ID != "mer-1" || got.Mode != RestoreModeViewNative {
 		t.Fatalf("resume outcome = %+v", got)
+	}
+}
+
+func TestResumeAgentRejectsMissingWorkspaceBeforeCallingManager(t *testing.T) {
+	st := newFakeStore()
+	rec := domain.SessionRecord{
+		ID:        "mer-1",
+		ProjectID: "mer",
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessCodex,
+		Activity:  domain.Activity{State: domain.ActivityExited},
+		Metadata:  domain.SessionMetadata{WorkspacePath: t.TempDir() + "/missing"},
+	}
+	st.sessions[rec.ID] = rec
+	fc := &fakeCommander{}
+
+	_, err := (&Service{manager: fc, store: st}).ResumeAgent(context.Background(), rec.ID)
+	assertAPIErrorCode(t, err, "SESSION_WORKSPACE_NOT_FOUND")
+	if len(fc.resumed) != 0 {
+		t.Fatalf("manager resume calls = %v, want none", fc.resumed)
 	}
 }
 

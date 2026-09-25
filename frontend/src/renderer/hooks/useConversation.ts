@@ -581,8 +581,15 @@ export function useConversationCommands(sessionId: string | undefined) {
 					params: { path: { sessionId: sessionId as string } },
 				},
 			);
-			if (error)
-				throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
+			if (error) {
+				// Preserve the daemon's typed recovery code. The controller banner uses
+				// it to stop offering resume when the worktree no longer exists.
+				const resumeError = Object.assign(
+					new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`)),
+					{ code: apiErrorCode(error) },
+				);
+				throw resumeError;
+			}
 			return data;
 		},
 		onSuccess: () => {
@@ -946,6 +953,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 		resumeAgent: () => resume.mutateAsync(),
 		resumingAgent: resume.isPending,
 		resumeError: resume.error ? apiErrorMessage(resume.error) : undefined,
+		resumeWorkspaceUnavailable: apiErrorCode(resume.error) === "SESSION_WORKSPACE_NOT_FOUND",
 		compact: () => compact.mutateAsync(),
 		choosingSettings: chooseSettings.isPending && chooseSettings.variables?.targetSessionId === sessionId,
 		chooseSettings: (settings: TurnSettings) => chooseSettings.mutate({ targetSessionId: sessionId as string, settings }),
@@ -1207,7 +1215,8 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
 	// only closes half the race — without also holding the poll, the interval can
 	// start a fresh read mid-write whose pre-change catalog lands after the
 	// mutation's own result and reverts the picker the user just used.
-	const [writing, setWriting] = useState(false);
+	const [writingOptionId, setWritingOptionId] = useState<string>();
+	const writing = writingOptionId !== undefined;
 	const query = useQuery({
 		queryKey,
 		enabled: Boolean(sessionId) && enabled,
@@ -1231,8 +1240,8 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
 		// Held across the whole write, paired with the cancel below: `onMutate`
 		// runs before the request and `onSettled` after the result is committed,
 		// so no poll can start or land inside that window.
-		onMutate: () => setWriting(true),
-		onSettled: () => setWriting(false),
+		onMutate: ({ optionId }) => setWritingOptionId(optionId),
+		onSettled: () => setWritingOptionId(undefined),
 		mutationFn: async ({
 			optionId,
 			value,
@@ -1277,6 +1286,10 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
 		setOption: async (optionId: string, value: ChatConfigOptionValue) =>
 			(await mutation.mutateAsync({ optionId, value })).options,
 		pending: mutation.isPending,
+		// React Query publishes the mutation variables in the same render that it
+		// marks the write pending. Keep the local state as a fallback for the poll
+		// guard, but prefer those variables so there is no one-render global lock.
+		pendingOptionId: mutation.isPending ? mutation.variables?.optionId ?? writingOptionId : undefined,
 		error: mutation.error || query.error ? apiErrorMessage(mutation.error ?? query.error) : undefined,
 	};
 }

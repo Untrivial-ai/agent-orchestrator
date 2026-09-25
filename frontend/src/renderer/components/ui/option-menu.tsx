@@ -7,7 +7,7 @@ const SURFACE =
 	"settings-menu-surface min-w-[14rem] rounded-(--radius-settings-panel) border-settings-menu bg-settings-menu p-1 gap-0!";
 
 const ROW =
-	"relative isolate flex min-w-0 cursor-default items-center rounded-none px-3 py-2 outline-none whitespace-nowrap transition-none! before:pointer-events-none before:absolute before:inset-x-0 before:inset-y-px before:-z-10 before:rounded-[10px] first:before:top-0 last:before:bottom-0 focus:before:bg-settings-menu-selected focus:text-settings-title focus:text-foreground data-highlighted:before:bg-settings-menu-selected data-highlighted:text-settings-title data-highlighted:text-foreground data-[active=true]:before:bg-settings-menu-selected data-[active=true]:text-foreground";
+	"relative isolate flex min-w-0 cursor-default items-center rounded-none px-3 py-2 outline-none whitespace-nowrap transition-none! before:pointer-events-none before:absolute before:inset-x-0 before:inset-y-px before:-z-10 before:rounded-[10px] first:before:top-0 last:before:bottom-0 focus:before:bg-settings-menu-selected focus:text-settings-title focus:text-foreground data-highlighted:before:bg-settings-menu-selected data-highlighted:text-settings-title data-highlighted:text-foreground data-[search-active=true]:before:bg-settings-menu-selected data-[search-active=true]:text-settings-title data-[search-active=true]:text-foreground data-[active=true]:before:bg-settings-menu-selected data-[active=true]:text-foreground";
 
 const LABEL =
 	"px-3 py-2 text-[length:var(--font-size-base)] font-normal tracking-normal text-settings-muted";
@@ -35,16 +35,18 @@ export const OptionMenu = DropdownMenuPrimitive.Root;
 
 export const OptionMenuTrigger = forwardRef<
 	HTMLButtonElement,
-	ButtonHTMLAttributes<HTMLButtonElement>
->(function OptionMenuTrigger({ className, children, ...props }, ref) {
+	ButtonHTMLAttributes<HTMLButtonElement> & { showCaret?: boolean }
+>(function OptionMenuTrigger({ className, children, showCaret = true, ...props }, ref) {
 	return (
 		<DropdownMenuPrimitive.Trigger asChild>
 			<button ref={ref} type="button" className={cn(TRIGGER, className)} {...props}>
 				{children}
-				<ChevronDown
-					className="size-icon-sm shrink-0 group-data-[state=open]/option-menu-trigger:rotate-180"
-					aria-hidden="true"
-				/>
+				{showCaret ? (
+					<ChevronDown
+						className="size-icon-sm shrink-0 group-data-[state=open]/option-menu-trigger:rotate-180"
+						aria-hidden="true"
+					/>
+				) : null}
 			</button>
 		</DropdownMenuPrimitive.Trigger>
 	);
@@ -103,15 +105,22 @@ export function OptionMenuLabel({
 export function OptionMenuItem({
 	className,
 	active,
+	searchActive,
 	radio,
 	...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Item> & { active?: boolean; radio?: boolean }) {
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Item> & {
+	active?: boolean;
+	/** Visual active descendant used while a menu-owned search field retains focus. */
+	searchActive?: boolean;
+	radio?: boolean;
+}) {
 	return (
 		<DropdownMenuPrimitive.Item
 			{...(radio === undefined
 				? {}
-				: { role: "menuitemradio" as const, "aria-checked": active })}
+			: { role: "menuitemradio" as const, "aria-checked": active })}
 			data-active={active || undefined}
+			data-search-active={searchActive || undefined}
 			className={cn(ROW, className)}
 			{...props}
 		/>

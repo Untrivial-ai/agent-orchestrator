@@ -120,7 +120,6 @@ const STREAM_BASE_CHARACTERS_PER_SECOND = 58;
 const STREAM_TARGET_BACKLOG_CHARACTERS = 72;
 const STREAM_MAX_CHARACTERS_PER_SECOND = 720;
 const STREAM_MAX_FRAME_DELTA_MS = 100;
-const STREAM_MAX_DISPLAY_LAG_MS = 200;
 const STREAM_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 function streamGraphemes(text: string): string[] {
@@ -140,11 +139,15 @@ function reconciledStreamPrefix(visibleText: string, targetGraphemes: string[]) 
 }
 
 function useSmoothStreamingText(message: ConversationMessage): string {
+	// STRICT STREAMING INVARIANT: while a message is streaming, provider text is
+	// an append-only target. Never replace the visible prefix with a partial
+	// snapshot or flush the whole target mid-stream; doing either drops the
+	// smooth queue and makes the response jump. Only a completed stream (or a
+	// genuinely late background-tab frame) may flush the target.
 	// A snapshot can first reach the renderer after the provider has already emitted
 	// text. Keep that first durable burst visible; only later deltas need smoothing.
 	const [visibleText, setVisibleText] = useState(() => message.text);
 	const visibleRef = useRef(visibleText);
-	const targetRef = useRef(message.text);
 	const targetGraphemes = useMemo(() => streamGraphemes(message.text), [message.text]);
 	const visibleGraphemeCountRef = useRef(targetGraphemes.length);
 	const targetGraphemesRef = useRef(targetGraphemes);
@@ -174,7 +177,6 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 
 	const scheduleDrain = useCallback(() => {
 		if (frameRef.current !== undefined) return;
-		const drainStartedAt = performance.now();
 
 		const tick = (now: number) => {
 			frameRef.current = undefined;
@@ -185,13 +187,14 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 				fractionalCharactersRef.current = 0;
 				return;
 			}
-
-			// New snapshots share this drain's deadline. Use real elapsed time so a
-			// background tab catches up even if it has not received its first frame.
-			if (now - drainStartedAt >= STREAM_MAX_DISPLAY_LAG_MS) {
-				visibleRef.current = targetRef.current;
+			// A throttled/hidden tab can deliver one very late frame. In that case,
+			// render the current target once instead of replaying stale animation time.
+			const elapsedSincePrevious = now - previousFrameAt;
+			if (elapsedSincePrevious > STREAM_MAX_FRAME_DELTA_MS) {
+				const latest = targetGraphemesRef.current.join("");
+				visibleRef.current = latest;
 				visibleGraphemeCountRef.current = targetGraphemesRef.current.length;
-				setVisibleText(targetRef.current);
+				setVisibleText(latest);
 				cancelDrain();
 				return;
 			}
@@ -223,7 +226,7 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 			}
 		};
 
-		lastFrameAtRef.current = undefined;
+		lastFrameAtRef.current = performance.now();
 		fractionalCharactersRef.current = 0;
 		frameRef.current = window.requestAnimationFrame(tick);
 	}, [cancelDrain]);
@@ -232,7 +235,6 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 		if (message.id !== messageIdRef.current) {
 			cancelDrain();
 			messageIdRef.current = message.id;
-			targetRef.current = message.text;
 			targetGraphemesRef.current = targetGraphemes;
 			const initial = message.text;
 			visibleRef.current = initial;
@@ -241,7 +243,6 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 			return;
 		}
 
-		targetRef.current = message.text;
 		targetGraphemesRef.current = targetGraphemes;
 		if (!message.streaming || reducedMotion) {
 			cancelDrain();
@@ -453,6 +454,45 @@ function formatDuration(ms: number): string {
 	return `${Math.round(ms / 60_000)}m`;
 }
 
+export function ResponseSpinner() {
+	return (
+		<span
+			role="status"
+			aria-label="Generating response"
+			data-testid="response-spinner"
+			className="flex size-7 items-center justify-center rounded-md text-muted-foreground"
+		>
+			<svg viewBox="0 0 2400 2400" className="size-4" aria-hidden="true">
+				<g stroke="currentColor" strokeWidth="200" strokeLinecap="round" fill="none">
+					<line x1="1200" y1="600" x2="1200" y2="100" />
+					<line opacity="0.5" x1="1200" y1="2300" x2="1200" y2="1800" />
+					<line opacity="0.917" x1="900" y1="680.4" x2="650" y2="247.4" />
+					<line opacity="0.417" x1="1750" y1="2152.6" x2="1500" y2="1719.6" />
+					<line opacity="0.833" x1="680.4" y1="900" x2="247.4" y2="650" />
+					<line opacity="0.333" x1="2152.6" y1="1750" x2="1719.6" y2="1500" />
+					<line opacity="0.75" x1="600" y1="1200" x2="100" y2="1200" />
+					<line opacity="0.25" x1="2300" y1="1200" x2="1800" y2="1200" />
+					<line opacity="0.667" x1="680.4" y1="1500" x2="247.4" y2="1750" />
+					<line opacity="0.167" x1="2152.6" y1="650" x2="1719.6" y2="900" />
+					<line opacity="0.583" x1="900" y1="1719.6" x2="650" y2="2152.6" />
+					<line opacity="0.083" x1="1750" y1="247.4" x2="1500" y2="680.4" />
+					<animateTransform
+						attributeName="transform"
+						attributeType="XML"
+						type="rotate"
+						keyTimes="0;0.08333;0.16667;0.25;0.33333;0.41667;0.5;0.58333;0.66667;0.75;0.83333;0.91667"
+						values="0 1199 1199;30 1199 1199;60 1199 1199;90 1199 1199;120 1199 1199;150 1199 1199;180 1199 1199;210 1199 1199;240 1199 1199;270 1199 1199;300 1199 1199;330 1199 1199"
+						dur="0.83333s"
+						begin="0s"
+						repeatCount="indefinite"
+						calcMode="discrete"
+					/>
+				</g>
+			</svg>
+		</span>
+	);
+}
+
 function formatTime(iso: string): string {
 	const parsed = new Date(iso);
 	return Number.isNaN(parsed.getTime()) ? "" : timeFormatter.format(parsed);
@@ -630,7 +670,7 @@ export function HumanMessage({
 					<span>Queued · sends when the agent finishes</span>
 				</div>
 			) : null}
-			{message.delivery && message.delivery !== "accepted" ? (
+			{message.delivery && message.delivery !== "accepted" && message.delivery !== "sending" ? (
 				<DeliveryNote state={message.delivery} />
 			) : null}
 		</div>
@@ -736,41 +776,51 @@ function BrowserAnnotationOrigin({
 export function AssistantMessage({
 	message,
 	showCopy = false,
+	live = false,
 	onRollback,
+	rollbackDisabled = false,
 	durationMs,
 }: {
 	message: ConversationMessage;
-	/** Only the final answer of a finished turn owns the turn's copy action. */
+	/** The final answer owns the copy action; it stays available while that answer streams. */
 	showCopy?: boolean;
+	/** The enclosing turn is still active, even if its last text chunk has landed. */
+	live?: boolean;
 	/**
 	 * Discard this turn and everything after it. Lives next to copy so the finished
 	 * answer owns both "keep this" and "undo from here".
 	 */
 	onRollback?: () => void;
-	/** How long the finished turn took; sits next to rollback on the action row. */
+	/** Keep the rollback action mounted while another response is streaming. */
+	rollbackDisabled?: boolean;
+	/** How long the turn took; sits next to rollback on the action row. */
 	durationMs?: number;
 }) {
 	const visibleText = useSmoothStreamingText(message);
 	const renderingStreaming = message.streaming || visibleText.length < message.text.length;
 	const hasDuration = durationMs !== undefined && durationMs > 0;
-	const showActions = !renderingStreaming && (showCopy || Boolean(onRollback) || hasDuration);
+	const showLiveStatus = live || (renderingStreaming && (showCopy || Boolean(onRollback)));
+	const showActions = !live && !renderingStreaming && (showCopy || Boolean(onRollback) || hasDuration);
 	return (
 		<div className="group/message relative">
 			<ChatMarkdown text={visibleText} streaming={renderingStreaming} />
+			{showLiveStatus ? <LiveResponseStatus /> : null}
 			{showActions ? (
 				// One action row for the completed answer, not one after every prose
 				// fragment the provider emitted while working. Copy, rollback, and
 				// duration stay visible; only the wall-clock time reveals on hover.
 				<div className="mt-1 flex h-7 items-center gap-0.5">
 					{showCopy ? (
-						/* The stored markdown, not a re-serialization of what was rendered:
-						   pasting it into an editor has to give back what the agent wrote. */
-						<CopyButton
-							text={message.text}
-							label="Copy message as markdown"
-							compact
-							className="-ml-1.5 size-7 justify-center rounded-md px-0 py-0 transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
-						/>
+						<div className="-ml-1.5 size-7 shrink-0">
+							{/* The stored markdown, not a re-serialization of what was rendered:
+							   pasting it into an editor has to give back what the agent wrote. */}
+							<CopyButton
+								text={message.text}
+								label="Copy message as markdown"
+								compact
+								className="size-7 justify-center rounded-md px-0 py-0 transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
+							/>
+						</div>
 					) : null}
 					{onRollback ? (
 						<Tooltip>
@@ -778,8 +828,9 @@ export function AssistantMessage({
 								<button
 									type="button"
 									onClick={onRollback}
+									disabled={rollbackDisabled}
 									aria-label="Roll back to here"
-									className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
+									className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 motion-reduce:transition-none motion-reduce:active:scale-100"
 								>
 									<Undo2 aria-hidden="true" className="size-3" />
 								</button>
@@ -796,6 +847,19 @@ export function AssistantMessage({
 					</span>
 				</div>
 			) : null}
+		</div>
+	);
+}
+
+export function LiveResponseStatus() {
+	return (
+		<div className="mt-1 flex h-7 items-center gap-0.5">
+			<div className="-ml-1.5 size-7 shrink-0">
+				<ResponseSpinner />
+			</div>
+			<span role="status" data-testid="live-working-label" className="chat-working-shimmer text-sm font-medium">
+				Working
+			</span>
 		</div>
 	);
 }
@@ -2749,7 +2813,10 @@ function fileBasename(path: string): string {
 export function TurnDuration({ durationMs }: { durationMs: number }) {
 	if (durationMs <= 0) return null;
 	return (
-		<span className="shrink-0 px-1 font-sans text-[12px] leading-none tabular-nums text-muted-foreground">
+		<span
+			className="shrink-0 px-1 font-sans text-[12px] leading-none tabular-nums text-muted-foreground"
+			aria-label={`Time spent: ${formatDuration(durationMs)}`}
+		>
 			{formatDuration(durationMs)}
 		</span>
 	);

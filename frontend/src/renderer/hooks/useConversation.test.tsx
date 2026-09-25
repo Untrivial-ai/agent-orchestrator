@@ -1168,6 +1168,23 @@ describe("controller recovery", () => {
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: workspaceQueryKey });
 		invalidateSpy.mockRestore();
 	});
+
+	it("preserves a missing-workspace resume code for the stopped-controller banner", async () => {
+		apiErrorCodeMock.mockReturnValue("SESSION_WORKSPACE_NOT_FOUND");
+		apiErrorMessageMock.mockReturnValue("Session workspace is not available");
+		postMock.mockResolvedValue({
+			data: undefined,
+			error: { code: "SESSION_WORKSPACE_NOT_FOUND" },
+			response: { status: 404 },
+		});
+		const { result } = renderHook(() => useConversationCommands("ao-1"), { wrapper });
+
+		await expect(result.current.resumeAgent()).rejects.toMatchObject({
+			message: "Session workspace is not available",
+			code: "SESSION_WORKSPACE_NOT_FOUND",
+		});
+		await waitFor(() => expect(result.current.resumeWorkspaceUnavailable).toBe(true));
+	});
 });
 
 describe("useConversationSkills polling", () => {
