@@ -217,7 +217,7 @@ export function SessionFileExplorer({
 							{reviewMenu ? <span className={cn("shrink-0 text-caption text-passive", reviewMenu.commits.some((commit) => commit.selected) && "font-mono")}>{reviewMenu.label}</span> : null}
 						</SettingsMenuTrigger>
 					</DropdownMenuTrigger>
-					<DropdownMenuContent align="start" className="w-56">
+					<DropdownMenuContent align="start" className="w-max max-w-72">
 						{reviewMenu?.scopes.map((scope) => (
 							<DropdownMenuItem className="gap-1.5" key={scope.key} onSelect={scope.select}>
 								<span className="flex min-w-0 items-baseline gap-1.5">
@@ -235,7 +235,7 @@ export function SessionFileExplorer({
 								<DropdownMenuSubTrigger className={cn(reviewMenu.commits.some((commit) => commit.selected) && "text-foreground")}>
 									{t("files.commits")}
 								</DropdownMenuSubTrigger>
-								<DropdownMenuSubContent className="w-[28rem] max-w-[calc(100vw-2rem)]">
+								<DropdownMenuSubContent className="w-max max-w-[min(28rem,calc(100vw_-_2rem))]">
 									<div className="board-scrollbar flex max-h-72 flex-col gap-px overflow-y-auto pr-0.5">
 										{reviewMenu.commits.map((commit) => (
 											<DropdownMenuItem className="gap-2" key={commit.sha} onSelect={commit.select}>
@@ -252,7 +252,7 @@ export function SessionFileExplorer({
 						) : null}
 						<DropdownMenuSub>
 							<DropdownMenuSubTrigger>{t("files.branch")}</DropdownMenuSubTrigger>
-							<DropdownMenuSubContent className="w-[28rem] max-w-[calc(100vw-2rem)]">
+							<DropdownMenuSubContent className="w-max max-w-[min(28rem,calc(100vw_-_2rem))]">
 								{sourceOptions.map((option) => (
 									<DropdownMenuItem className="gap-2" key={option.value} onSelect={() => selectSource(option.value)}>
 										<span className="min-w-0 flex-1 truncate">{option.label}</span>

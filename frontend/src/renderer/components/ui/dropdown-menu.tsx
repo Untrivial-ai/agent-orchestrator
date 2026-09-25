@@ -109,12 +109,17 @@ export function DropdownMenuSubTrigger({
 /** The side panel a DropdownMenuSubTrigger opens; same surface as DropdownMenuContent. */
 export function DropdownMenuSubContent({
 	className,
-	sideOffset = 4,
+	// Offsets are measured from the sub-trigger row, which sits inside the parent
+	// menu's 1px border + 4px padding: 9 leaves a visible 4px gap instead of the
+	// panels touching, and -5 lines the submenu's first row up with the trigger.
+	sideOffset = 9,
+	alignOffset = -5,
 	...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
 	return (
 		<DropdownMenuPrimitive.Portal>
 			<DropdownMenuPrimitive.SubContent
+				alignOffset={alignOffset}
 				sideOffset={sideOffset}
 				className={cn(
 					actionMenuContentClass,
