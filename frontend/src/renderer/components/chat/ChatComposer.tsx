@@ -508,8 +508,10 @@ export const ChatComposer = memo(function ChatComposer({
 			? "chat.draft.clearMessage"
 			: "chat.draft.retryMessage"
 		: queuedEditRecovery ? "chat.draft.retryEdit" : "Send message");
+	// Not gated on willQueue: the caller offers onInterrupt for queued work too, and
+	// a queue held behind a failed turn is exactly the state Stop has to clear.
 	const canStopTurn = Boolean(
-		willQueue && onInterrupt && !controlsDisabled && !hasDraft && !savingQueuedEdit,
+		onInterrupt && !controlsDisabled && !hasDraft && !savingQueuedEdit,
 	);
 	// Cmd/Ctrl+Enter remains an intentionally quiet power-user path for steering
 	// the current draft into the running turn. The visible hint stays queue-only.
