@@ -158,20 +158,17 @@ async function reconcileAndPersist(
 // checkForUpdates.
 //
 // When settings.feature is set, the feed tracks the pr<N> prerelease channel
-// (e.g. "pr2270") with allowPrerelease enabled. Downgrades require a channel
-// transition, including one saved on an earlier launch. Otherwise falls back to the home
-// channel logic (latest vs nightly).
+// (e.g. "pr2270") with allowPrerelease enabled. Otherwise it uses the home
+// channel (latest vs nightly). An older binary cannot safely read a database
+// already migrated by this one, so a channel switch must wait for a newer build.
 export function configureFeed(
   settings: Pick<UpdateSettings, "channel" | "feature">,
 ): void {
-  // A saved channel choice remains intent until the running build reaches it.
-  // Assign after channel: electron-updater's channel setter enables downgrades.
-  const allowDowngrade = isChannelTransition(settings);
   if (settings.feature !== null && settings.feature !== undefined) {
     // Feature build: pin to the pr<N> semver prerelease identifier channel.
     autoUpdater.channel = `pr${settings.feature.pr}`;
     autoUpdater.allowPrerelease = true;
-    autoUpdater.allowDowngrade = allowDowngrade;
+    autoUpdater.allowDowngrade = false;
     return;
   }
 
@@ -182,7 +179,7 @@ export function configureFeed(
   // release and looks for nightly-mac.yml there, which 404s. Enable prerelease
   // scanning on the nightly channel only; stable must never pull prereleases.
   autoUpdater.allowPrerelease = channel === "nightly";
-  autoUpdater.allowDowngrade = allowDowngrade;
+  autoUpdater.allowDowngrade = false;
 }
 
 let lastStatus: UpdateStatus = { state: "idle" };
@@ -652,7 +649,7 @@ function broadcastUpdaterStatus(status: UpdateStatus): void {
 }
 
 function broadcastCompletedCheck(status: UpdateStatus): void {
-  if (status.state !== "error" && status.state !== "unsupported") {
+  if (status.state !== "error") {
     lastCheckedAtMs = Date.now();
     lastCheckError = undefined;
   }
@@ -936,9 +933,8 @@ function forgetPersistedStagedBuild(stateDir: string | undefined): void {
 /**
  * Reload provenance for a build staged by an earlier run.
  *
- * Discards it when the running build already matches, or supersedes a staged
- * build from the same channel. In both cases nothing remains pending. An older
- * build from another channel can still be an intentional channel transition.
+ * Discards it when the running build already matches or supersedes the staged
+ * build. An older binary cannot safely read a database migrated by this one.
  * Unreadable provenance is also discarded because inventing it is worse than
  * having none.
  */
@@ -952,17 +948,19 @@ function restoreStagedBuild(stateDir: string): void {
   } catch {
     return;
   }
+  const olderStaged = typeof raw.version === "string" &&
+    semver.valid(raw.version) !== null &&
+    semver.valid(app.getVersion()) !== null &&
+    semver.lt(raw.version, app.getVersion());
   if (
     typeof raw.version !== "string" ||
     typeof raw.stagedAt !== "number" ||
     !Number.isFinite(raw.stagedAt) ||
     raw.version === app.getVersion() ||
-    (raw.channel === installedUpdateChannel() &&
-      semver.valid(raw.version) !== null &&
-      semver.valid(app.getVersion()) !== null &&
-      semver.lt(raw.version, app.getVersion()))
+    olderStaged
   ) {
-    forgetPersistedStagedBuild(stateDir);
+    if (olderStaged) discardStagedBuild();
+    else forgetPersistedStagedBuild(stateDir);
     return;
   }
   stagedVersion = raw.version;
@@ -986,6 +984,18 @@ function installedUpdateChannel(): string {
 
 function isChannelTransition(settings: Pick<UpdateSettings, "channel" | "feature">): boolean {
   return effectiveChannel(settings) !== installedUpdateChannel();
+}
+
+function unavailableChannelStatus(version?: string): UpdateStatus {
+  if (version && isChannelTransition(lastAppliedUpdateSettings) &&
+      semver.valid(version) && semver.valid(app.getVersion()) &&
+      semver.lt(version, app.getVersion())) {
+    return {
+      state: "unsupported",
+      message: "This channel's latest release is older than the installed build. AO will switch when a newer release is available.",
+    };
+  }
+  return { state: "not-available" };
 }
 
 /**
@@ -1166,7 +1176,7 @@ function settleCheckStatus(result: UpdateCheckOutcome): void {
     return;
   }
   broadcastCompletedCheck(
-    hasStagedBuild() ? stagedDownloadedStatus() : { state: "not-available" },
+    hasStagedBuild() ? stagedDownloadedStatus() : unavailableChannelStatus(version),
   );
 }
 
@@ -1784,12 +1794,12 @@ function wireUpdaterEvents(): void {
   autoUpdater.on("update-cancelled", () => {
     clearDownloadStallWatchdog();
   });
-  autoUpdater.on("update-not-available", () => {
+  autoUpdater.on("update-not-available", (info) => {
     // A successful check proves the network stack is healthy.
     consecutiveAutomaticNetFailures = 0;
     consecutiveAutomaticCheckFailures = 0;
     failingChecksPublished = false;
-    broadcastCompletedCheck({ state: "not-available" });
+    broadcastCompletedCheck(unavailableChannelStatus(info?.version));
     // The staged build outlives a "nothing newer" answer (e.g. after a channel
     // switch); follow up so the restart row returns.
     if (stagedAtMs !== undefined)

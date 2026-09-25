@@ -755,6 +755,31 @@ func TestListWorkspaceFilesRepoUnavailableWrapsSentinel(t *testing.T) {
 	}
 }
 
+func TestListWorkspaceFilesClassifiesGitReadFailure(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, ".git", "index"), []byte("not a git index"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{
+		ID:       "ao-1",
+		Metadata: domain.SessionMetadata{WorkspacePath: repo},
+		Activity: domain.Activity{State: domain.ActivityActive},
+	}
+
+	_, err := (&Service{store: st}).ListWorkspaceFiles(context.Background(), "ao-1")
+	if err == nil {
+		t.Fatal("ListWorkspaceFiles succeeded with a corrupt Git index")
+	}
+	var apiErr *apierr.Error
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %v, want typed API error", err)
+	}
+	if apiErr.Code != "WORKSPACE_GIT_READ_FAILED" {
+		t.Fatalf("error code = %q, want WORKSPACE_GIT_READ_FAILED", apiErr.Code)
+	}
+}
+
 func TestListWorkspaceFilesTreatsStandaloneWorkerAsNonGitWorkspace(t *testing.T) {
 	workspace := t.TempDir()
 	writeWorkspaceFile(t, workspace, "notes.txt", "standalone note\n")

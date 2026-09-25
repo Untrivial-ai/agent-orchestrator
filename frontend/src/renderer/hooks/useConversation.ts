@@ -443,6 +443,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 				"/api/v1/sessions/{sessionId}/conversation/messages",
 				{
 					params: { path: { sessionId: targetSessionId } },
+					headers: input.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 					// A stable id per attempt makes a retry idempotent: the daemon
 					// answers `duplicate` instead of opening a second provider turn.
 					body: { ...input, clientMessageId },
@@ -672,6 +673,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 				"/api/v1/sessions/{sessionId}/conversation/steer",
 				{
 					params: { path: { sessionId: sessionId as string } },
+					headers: input.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 					body: { ...input, clientMessageId: input.clientMessageId ?? crypto.randomUUID() },
 				},
 			);
@@ -720,6 +722,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 					params: {
 						path: { sessionId: sessionId as string, turnId },
 					},
+					headers: options.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 					body: { text, ...options },
 				},
 			);

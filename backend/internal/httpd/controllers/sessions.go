@@ -51,8 +51,8 @@ const (
 	// are pasted/dropped into the task brief and inlined as base64 in the JSON
 	// body, so the caps are deliberately conservative.
 	maxAttachments      = 8
-	maxAttachmentBytes  = attachmentstore.MaxFileBytes // 10 MiB per file, decoded
-	maxAttachmentsBytes = 25 << 20                     // 25 MiB total, decoded
+	maxAttachmentBytes  = attachmentstore.MaxFileBytes // 50 MiB per file, decoded
+	maxAttachmentsBytes = 100 << 20                    // 100 MiB total, decoded
 	// maxSpawnBodyBytes bounds the raw request body before it is decoded. The
 	// per-attachment and total caps above only apply after the whole body is
 	// materialized, so without this an oversized body (base64 inflates the
@@ -267,6 +267,10 @@ func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.Mode = mode
+	if !in.ApprovalMode.Valid() {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_APPROVAL_MODE", "approvalMode is invalid", nil)
+		return
+	}
 	if len(in.Prompt) > maxPromptLen {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "PROMPT_TOO_LONG", "Prompt must be 16 KiB or fewer", nil)
 		return
@@ -288,7 +292,7 @@ func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", attachErr.code, attachErr.message, nil)
 		return
 	}
-	sess, promptBytes, systemPromptBytes, err := c.Svc.Spawn(r.Context(), ports.SpawnConfig{ProjectID: in.ProjectID, IssueID: in.IssueID, ParentSessionID: in.ParentSessionID, TrackerProvider: in.TrackerProvider, Kind: in.Kind, Harness: in.Harness, Branch: in.Branch, RequestedMode: in.Mode, Prompt: in.Prompt, DisplayName: displayName, Attachments: attachments, AgentConfig: ports.AgentConfig{Model: in.Model, Effort: in.Effort}})
+	sess, promptBytes, systemPromptBytes, err := c.Svc.Spawn(r.Context(), ports.SpawnConfig{ProjectID: in.ProjectID, IssueID: in.IssueID, ParentSessionID: in.ParentSessionID, TrackerProvider: in.TrackerProvider, Kind: in.Kind, Harness: in.Harness, Branch: in.Branch, RequestedMode: in.Mode, Prompt: in.Prompt, DisplayName: displayName, Attachments: attachments, AgentConfig: ports.AgentConfig{Model: in.Model, Effort: in.Effort, Permissions: in.ApprovalMode}})
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -311,9 +315,10 @@ func extensionForMimeType(mimeType string) string {
 
 	// Preferred extensions for MIME types with multiple options
 	preferredExts := map[string]string{
-		"image/jpeg": ".jpg",
-		"image/jpg":  ".jpg",
-		"text/plain": ".txt",
+		"image/jpeg":      ".jpg",
+		"image/jpg":       ".jpg",
+		"text/plain":      ".txt",
+		"video/quicktime": ".mov",
 	}
 
 	// Check if we have a preferred extension for this MIME type
@@ -351,10 +356,10 @@ func extensionForMimeType(mimeType string) string {
 }
 
 // decodeAttachment validates and base64-decodes a single inline file
-// attachment shared by spawn, delegate, stage, and send requests, enforcing
-// the blocked-MIME-type rule and per-file size cap. Callers handling multiple
+// attachment shared by spawn, delegate, stage, send, and chat requests, enforcing
+// the blocked-MIME-type rule and the caller's per-file cap. Callers handling multiple
 // attachments are responsible for the count and total-size caps.
-func decodeAttachment(a AttachmentInput) (ports.SpawnAttachment, *attachmentError) {
+func decodeAttachment(a AttachmentInput, maxBytes int) (ports.SpawnAttachment, *attachmentError) {
 	mimeType := strings.ToLower(strings.TrimSpace(a.MimeType))
 	if blockedAttachmentMimes[mimeType] {
 		return ports.SpawnAttachment{}, &attachmentError{"UNSUPPORTED_ATTACHMENT_TYPE", "unsupported attachment type"}
@@ -367,17 +372,19 @@ func decodeAttachment(a AttachmentInput) (ports.SpawnAttachment, *attachmentErro
 	if len(data) == 0 {
 		return ports.SpawnAttachment{}, &attachmentError{"INVALID_ATTACHMENT_DATA", "attachment is empty"}
 	}
-	if len(data) > maxAttachmentBytes {
+	if len(data) > maxBytes {
 		return ports.SpawnAttachment{}, &attachmentError{"ATTACHMENT_TOO_LARGE", "attachment is too large"}
 	}
 	return ports.SpawnAttachment{Ext: ext, Data: data}, nil
 }
 
-// decodeSpawnAttachments validates and base64-decodes the inline file
-// attachments from a spawn request, enforcing count, per-file, and total size
-// caps. It accepts any MIME type except explicitly blocked ones (e.g., SVG
-// for security reasons). Returns a nil slice when there are no attachments.
 func decodeSpawnAttachments(in []AttachmentInput) ([]ports.SpawnAttachment, *attachmentError) {
+	return decodeAttachments(in, maxAttachmentBytes, maxAttachmentsBytes)
+}
+
+// decodeAttachments enforces the caller's count and size caps, accepting any
+// MIME type except explicitly blocked ones (e.g., SVG).
+func decodeAttachments(in []AttachmentInput, maxFileBytes, maxTotalBytes int) ([]ports.SpawnAttachment, *attachmentError) {
 	if len(in) == 0 {
 		return nil, nil
 	}
@@ -387,12 +394,12 @@ func decodeSpawnAttachments(in []AttachmentInput) ([]ports.SpawnAttachment, *att
 	out := make([]ports.SpawnAttachment, 0, len(in))
 	total := 0
 	for _, a := range in {
-		attachment, err := decodeAttachment(a)
+		attachment, err := decodeAttachment(a, maxFileBytes)
 		if err != nil {
 			return nil, err
 		}
 		total += len(attachment.Data)
-		if total > maxAttachmentsBytes {
+		if total > maxTotalBytes {
 			return nil, &attachmentError{"ATTACHMENTS_TOO_LARGE", "attachments are too large"}
 		}
 		out = append(out, attachment)
@@ -1573,7 +1580,7 @@ func (c *SessionsController) send(w http.ResponseWriter, r *http.Request) {
 	}
 	var attachment *ports.SpawnAttachment
 	if in.Attachment != nil {
-		decoded, attachErr := decodeAttachment(*in.Attachment)
+		decoded, attachErr := decodeAttachment(*in.Attachment, maxAttachmentBytes)
 		if attachErr != nil {
 			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", attachErr.code, attachErr.message, nil)
 			return
@@ -2169,6 +2176,8 @@ func workspaceFilesResponse(files sessionsvc.WorkspaceFiles) ListWorkspaceFilesR
 		Sections:         workspaceFileSectionsResponse(files.Sections),
 		Commits:          workspaceCommitsResponse(files.Commits),
 		Summary:          WorkspaceSummary(files.Summary),
+		Degraded:         files.Degraded,
+		DegradedCode:     files.DegradedCode,
 		Ahead:            files.Ahead,
 		Behind:           files.Behind,
 	}

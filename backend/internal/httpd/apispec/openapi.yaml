@@ -10130,6 +10130,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - unreal-agent
           - fake
           type: string
         approvalMode:
@@ -10753,6 +10754,7 @@ components:
           - kimchi
           - prime-agent
           - omp
+          - unreal-agent
           - cloudflared
           type: string
         updatedAt:
@@ -11022,6 +11024,10 @@ components:
           - base
           - head_fallback
           type: string
+        degraded:
+          type: boolean
+        degradedCode:
+          type: string
         files:
           items:
             $ref: '#/components/schemas/WorkspaceFileSummary'
@@ -11044,6 +11050,7 @@ components:
       - sections
       - commits
       - summary
+      - degraded
       type: object
     ListWorkspaceTreeResponse:
       properties:
@@ -12846,6 +12853,13 @@ components:
       type: object
     SpawnSessionRequest:
       properties:
+        approvalMode:
+          enum:
+          - default
+          - accept-edits
+          - auto
+          - bypass-permissions
+          type: string
         attachments:
           items:
             $ref: '#/components/schemas/AttachmentInput'
@@ -12887,6 +12901,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - unreal-agent
           type: string
         issueId:
           type: string

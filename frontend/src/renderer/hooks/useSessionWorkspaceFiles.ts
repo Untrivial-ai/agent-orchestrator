@@ -19,7 +19,7 @@ export type WorkspaceFileSummary = Omit<components["schemas"]["WorkspaceFileSumm
 export type WorkspaceFileSections = components["schemas"]["WorkspaceFileSections"];
 export type WorkspaceCommitSummary = components["schemas"]["WorkspaceCommitSummary"];
 export type WorkspaceSummary = components["schemas"]["WorkspaceSummary"];
-export type WorkspaceFilesResponse = Omit<components["schemas"]["ListWorkspaceFilesResponse"], "files" | "sections" | "workspaceVersion"> & {
+export type WorkspaceFilesResponse = Omit<components["schemas"]["ListWorkspaceFilesResponse"], "files" | "sections" | "workspaceVersion" | "degraded" | "degradedCode"> & {
 	compareMode?: WorkspaceCompareMode;
 	files: WorkspaceFileSummary[];
 	sections: {
@@ -29,6 +29,8 @@ export type WorkspaceFilesResponse = Omit<components["schemas"]["ListWorkspaceFi
 		untracked: WorkspaceFileSummary[];
 	};
 	workspaceVersion?: string;
+	degraded?: boolean;
+	degradedCode?: string;
 };
 export type WorkspaceFileDetail = Omit<components["schemas"]["WorkspaceFileResponse"], "editable" | "fileFingerprint" | "workspaceVersion"> & {
 	editable?: boolean;
@@ -284,8 +286,8 @@ export function sessionSourceFilesQueryOptions(sessionId: string, source: FilesS
 		: { queryKey: ["session-source-files", sessionId, "pull_request", source.url, source.snapshot ?? ""], queryFn: () => fetchSessionPRFiles(sessionId, source.number, source.url, errorMessage) };
 }
 
-export function workspaceFilesRefetchInterval(state: WorkspaceFileConnectionState): false | number {
-	return state === "degraded" ? WORKSPACE_FILES_DEGRADED_REFETCH_MS : false;
+export function workspaceFilesRefetchInterval(state: WorkspaceFileConnectionState, degraded = false): false | number {
+	return state === "degraded" || degraded ? WORKSPACE_FILES_DEGRADED_REFETCH_MS : false;
 }
 
 export function useWorkspaceFileConnectionState(sessionId: string): WorkspaceFileConnectionState {

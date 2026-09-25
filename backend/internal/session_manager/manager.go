@@ -901,6 +901,18 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if _, ok := m.agents.Agent(cfg.Harness); !ok {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: %q", ErrUnknownHarness, cfg.Harness)
 	}
+	// Unreal Agent has no terminal interface or interactive approval channel.
+	// Selecting the harness therefore supplies its only valid launch defaults;
+	// an explicit caller-supplied mode or permission remains authoritative and
+	// is rejected normally when the harness cannot honor it.
+	if cfg.Harness == domain.HarnessUnreal {
+		if !cfg.RequestedMode.Valid() {
+			cfg.RequestedMode = domain.SessionModeChat
+		}
+		if cfg.AgentConfig.Permissions == "" {
+			cfg.AgentConfig.Permissions = ports.PermissionModeBypassPermissions
+		}
+	}
 
 	// Resolve the effective agent config (project base + role override + spawn
 	// override) and validate the model before any durable state is created. A
