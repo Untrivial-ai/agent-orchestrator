@@ -178,6 +178,10 @@ export function SessionFileExplorer({
 	// The Changes view only exists for the workspace; for a PR the switch would
 	// do nothing, so it is not shown.
 	const hasViewTabs = hasChanges && source.kind === "workspace";
+	// Docked with nothing to pick or review, the header would hold only the
+	// maximize button (the filter lives in the top bar), so it floats over the
+	// tree's top-right corner instead of reserving an empty row above it.
+	const floatingHeader = !showSourcePicker && Boolean(filesTopbarHost) && !showChanges && !splitView && !hasViewTabs;
 	// In the preview + tree split the (already active) All-files tab doubles as
 	// the tree toggle, so the header doesn't carry two file-tree buttons.
 	const allFilesTabLabel = !showChanges && splitView ? (treeOpen ? t("files.hideFileTree") : t("files.showFileTree")) : t("files.allFiles");
@@ -196,12 +200,12 @@ export function SessionFileExplorer({
 	);
 
 	return (
-		<section className="flex h-full min-h-0 flex-col bg-background text-foreground" aria-label={t("files.sessionFiles")}>
+		<section className="relative flex h-full min-h-0 flex-col bg-background text-foreground" aria-label={t("files.sessionFiles")}>
 			{/* In the tree + preview split the header gets a hairline divider with
 			    only a sliver of space above it, so content never touches the line.
 			    The trailing actions sit 4px from the right edge with 4px gaps, the same
 			    as the pinned top-bar buttons above them and the review rows below. */}
-			<header className={cn("flex min-h-10 shrink-0 items-center gap-1 pl-3 pr-1 pt-1", splitView ? "border-b border-border pb-1" : showChanges ? "pb-3" : "pb-1")}>
+			<header className={cn(floatingHeader ? "absolute right-0 top-0 z-10 flex items-center gap-1 pr-1 pt-1" : "flex min-h-10 shrink-0 items-center gap-1 pl-3 pr-1 pt-1", !floatingHeader && (splitView ? "border-b border-border pb-1" : showChanges ? "pb-3" : "pb-1"))}>
 				{/* One dropdown for "what am I reviewing", laid out like a VCS review
 				    picker: working scopes at the top, then Commits › and Branch ›
 				    flyouts (Branch = Workspace or a PR). */}
