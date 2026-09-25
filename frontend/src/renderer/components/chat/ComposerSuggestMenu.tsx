@@ -116,7 +116,7 @@ export function ComposerSuggestMenu({
 								aria-selected={index === highlighted}
 								onClick={() => onPick(item.value)}
 								className={cn(
-									"flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-control text-muted-foreground outline-none transition-none",
+									"flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-control text-muted-foreground outline-none !transition-none",
 									index === highlighted
 										? "bg-interactive-active text-foreground"
 										: "bg-transparent hover:bg-interactive-hover hover:text-foreground",

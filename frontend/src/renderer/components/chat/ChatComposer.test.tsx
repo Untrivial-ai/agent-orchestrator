@@ -1099,6 +1099,7 @@ describe("slash commands", () => {
 		expect(screen.queryByText("Skills", { exact: true })).toBeNull();
 		expect(screen.queryByText("Tab", { exact: true })).toBeNull();
 		expect(screen.getByRole("listbox")).toHaveClass("scrollbar-none", "overflow-y-auto");
+		expect(screen.getAllByRole("option")[0]).toHaveClass("!transition-none");
 	});
 
 	it("hides the generic agent source and keeps the AO source label", async () => {
