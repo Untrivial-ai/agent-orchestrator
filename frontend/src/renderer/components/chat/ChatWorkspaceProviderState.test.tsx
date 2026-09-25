@@ -232,21 +232,9 @@ describe("provider state chrome", () => {
 		expect(composer?.querySelector(".cursor-chat-composer")).not.toBeNull();
 	});
 
-	it("keeps an empty chat centered without a tool-server notice", () => {
+	it("shows the tool-server notice in an empty chat", () => {
 		render(<ChatWorkspace snapshot={{ ...chatFixtureEmpty, mcpServers: chatFixtureMcpFailed.mcpServers }} />);
-		expect(screen.queryByRole("status")).not.toBeInTheDocument();
-	});
-
-	it("does not reveal an existing tool-server failure after the first message", () => {
-		const { rerender } = render(
-			<ChatWorkspace snapshot={{ ...chatFixtureEmpty, mcpServers: chatFixtureMcpFailed.mcpServers }} />,
-		);
-
-		rerender(
-			<ChatWorkspace snapshot={{ ...chatFixtureMcpFailed, sessionId: chatFixtureEmpty.sessionId }} />,
-		);
-
-		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		expect(screen.getByRole("status")).toHaveTextContent("Playwright, Postgres MCPs unavailable");
 	});
 
 	it("says nothing about tool servers when they all started", () => {

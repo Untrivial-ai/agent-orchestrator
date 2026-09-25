@@ -167,7 +167,7 @@ export const McpServerBanner = memo(function McpServerBanner({
 
 	useEffect(() => {
 		if (!fingerprint) return;
-		const timeout = window.setTimeout(() => setDismissingFingerprint(fingerprint), 3_000);
+		const timeout = window.setTimeout(() => setDismissingFingerprint(fingerprint), 8_000);
 		return () => window.clearTimeout(timeout);
 	}, [fingerprint]);
 

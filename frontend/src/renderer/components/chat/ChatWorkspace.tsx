@@ -1246,12 +1246,6 @@ function ChatWorkspaceContent({
 	// Empty chats center the prompt; once a turn or item exists the composer docks
 	// at the bottom and stays there for the rest of the session.
 	const conversationEmpty = snapshot.items.length === 0 && !turn && (localEchos?.length ?? 0) === 0;
-	const mcpNoticeSessionRef = useRef(snapshot.sessionId);
-	const mcpNoticeStartedEmptyRef = useRef(conversationEmpty);
-	if (mcpNoticeSessionRef.current !== snapshot.sessionId) {
-		mcpNoticeSessionRef.current = snapshot.sessionId;
-		mcpNoticeStartedEmptyRef.current = conversationEmpty;
-	}
 	const [emptyChatPlaceholder] = useState(
 		() => EMPTY_CHAT_PLACEHOLDERS[Math.min(EMPTY_CHAT_PLACEHOLDERS.length - 1, Math.floor(Math.random() * EMPTY_CHAT_PLACEHOLDERS.length))],
 	);
@@ -1475,9 +1469,7 @@ function ChatWorkspaceContent({
 									</h1>
 								) : null}
 								<div className="relative">
-									{!conversationEmpty && !mcpNoticeStartedEmptyRef.current ? (
-										<McpServerBanner servers={brokenServers} />
-									) : null}
+									<McpServerBanner servers={brokenServers} />
 									<ChatComposer
 									key={`${draftScopeKey}:${queueEdit ? `${queueEdit.turnId}:${queueEdit.ownerId ?? queueEdit.expectedRevision ?? "legacy"}` : "composer"}`}
 									queuedDock={composerQueuedDock}
