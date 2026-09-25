@@ -120,8 +120,8 @@ func TestReviewLoopGuardDecisionRealWorkResetsStreaks(t *testing.T) {
 			t.Fatalf("probe %d denied before the limit", n)
 		}
 	}
-	real := []byte(`{"tool_name":"Bash","tool_input":{"command":"git diff --stat"}}`)
-	if _, denied := reviewLoopGuardDecision(real, dir, session); denied {
+	realWork := []byte(`{"tool_name":"Bash","tool_input":{"command":"git diff --stat"}}`)
+	if _, denied := reviewLoopGuardDecision(realWork, dir, session); denied {
 		t.Fatalf("real work denied")
 	}
 	for n := 1; n <= 3; n++ {
