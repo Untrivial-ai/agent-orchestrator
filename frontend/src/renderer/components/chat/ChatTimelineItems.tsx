@@ -469,15 +469,32 @@ function useElapsedDuration(startedAt: string | undefined, active: boolean): num
 	return Number.isNaN(start) ? undefined : Math.max(0, now - start);
 }
 
-const BRAILLE_LOADER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+const SNAKE_LOADER_FRAMES = [
+	"⣁⡀",
+	"⣉⠀",
+	"⡉⠁",
+	"⠉⠉",
+	"⠈⠙",
+	"⠀⠛",
+	"⠐⠚",
+	"⠒⠒",
+	"⠖⠂",
+	"⠶⠀",
+	"⠦⠄",
+	"⠤⠤",
+	"⠠⢤",
+	"⠀⣤",
+	"⢀⣠",
+	"⣀⣀",
+] as const;
 
-export function BrailleLoader() {
+export function SnakeLoader() {
 	const [frame, setFrame] = useState(0);
 
 	useEffect(() => {
 		const interval = window.setInterval(
-			() => setFrame((current) => (current + 1) % BRAILLE_LOADER_FRAMES.length),
-			100,
+			() => setFrame((current) => (current + 1) % SNAKE_LOADER_FRAMES.length),
+			80,
 		);
 		return () => window.clearInterval(interval);
 	}, []);
@@ -486,10 +503,10 @@ export function BrailleLoader() {
 		<span
 			role="status"
 			aria-label="Generating response"
-			data-testid="braille-loader"
+			data-testid="snake-loader"
 			className="-ml-1.5 flex size-7 items-center justify-center rounded-md font-mono text-[13px] leading-none text-muted-foreground"
 		>
-			{BRAILLE_LOADER_FRAMES[frame]}
+			{SNAKE_LOADER_FRAMES[frame]}
 		</span>
 	);
 }
@@ -813,7 +830,7 @@ export function AssistantMessage({
 				<div className="mt-1 flex h-7 items-center gap-0.5">
 					{showCopy ? (
 						showLiveActions ? (
-							<BrailleLoader />
+							<SnakeLoader />
 						) : (
 							/* The stored markdown, not a re-serialization of what was rendered:
 							   pasting it into an editor has to give back what the agent wrote. */

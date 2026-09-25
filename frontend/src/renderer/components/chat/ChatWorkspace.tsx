@@ -95,7 +95,7 @@ import {
 	ActivityRow,
 	ApprovalCard,
 	AssistantMessage,
-	BrailleLoader,
+	SnakeLoader,
 	CompactionMarker,
 	HumanMessage,
 	OriginMessage,
@@ -3303,7 +3303,7 @@ const TurnGroup = memo(function TurnGroup({
 			{!copyableMessageId &&
 			(group.live || canRollback || (group.outcome?.durationMs !== undefined && group.outcome.durationMs > 0)) ? (
 				<div className="mt-1 flex h-7 items-center gap-0.5">
-					{group.live ? <BrailleLoader /> : null}
+					{group.live ? <SnakeLoader /> : null}
 					{canRollback ? (
 						<button
 							type="button"
