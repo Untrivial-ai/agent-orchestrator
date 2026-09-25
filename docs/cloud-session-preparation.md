@@ -6,8 +6,9 @@ viewer are reviewed separately in PR #5543.
 
 ## User flow
 
-1. Open **New task** in a cloud project. The composer stays editable while a
-   hidden, promptless session requests fresh compute.
+1. Open **New task** in a cloud project. Once a valid harness and execution
+   configuration are selected, the editable composer starts a hidden,
+   promptless session that requests fresh compute.
 2. Enter the task. Closing and reopening a compatible composer within its
    two-minute grace period reuses the preparation. Duplicate composer windows
    attach to the same server-side preparation rather than requesting workers
@@ -83,8 +84,9 @@ only the infrastructure and terminal path.
 
 1. Open New task without submitting. Confirm exactly one new worker begins
    provisioning. Type immediately and verify focus stays in the composer.
-2. Close and reopen within two minutes. Confirm the same preparation/session
-   and worker identity. Open a second composer and confirm no duplicate worker.
+2. Close and reopen within two minutes, keeping or reselecting the same
+   harness/model configuration. Confirm the same preparation/session and worker
+   identity. Open a second composer and confirm no duplicate worker.
 3. Submit once, then rapidly repeat the submit action. Confirm one durable
    session and one initial prompt. Enter a follow-up during checkout and verify
    it executes only after the workspace is ready, in submission order.
@@ -104,4 +106,6 @@ hosted Coder or NodeOps latency or authentication.
 The cold-start and reconnect-grace specs under `docs/superpowers/specs/` record
 the original design work. Their combined-branch test results are historical,
 not evidence that this split branch has passed. Current split verification is
-recorded in the PR description and split validation report.
+recorded in the [split validation report](superpowers/reports/2026-09-26-cloud-preparation-validation.md).
+See the [native desktop evidence](screenshots/cloud-preparation/README.md) for
+the fresh close/reopen verification and its limits.
