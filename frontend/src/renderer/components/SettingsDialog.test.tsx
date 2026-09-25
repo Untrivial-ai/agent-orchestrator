@@ -111,6 +111,16 @@ describe("SettingsDialog", () => {
 		));
 	});
 
+	it("keeps the settings surface above its blurred backdrop", async () => {
+		useUiStore.getState().openGlobalSettings("mobile");
+		renderSettingsDialog();
+
+		const overlay = screen.getByTestId("settings-dialog-overlay");
+		const dialog = await screen.findByRole("dialog");
+		expect(overlay).toHaveClass("dialog-overlay");
+		expect(dialog).toHaveClass("z-[calc(var(--z-overlay)+1)]");
+	});
+
 	it("opens Harness and forwards its agent focus target without redirecting to Codex Accounts", async () => {
 		useUiStore.getState().openGlobalSettings("harness", { focusAgentId: "claude-code" });
 		renderSettingsDialog();

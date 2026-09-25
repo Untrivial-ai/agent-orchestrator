@@ -146,7 +146,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 					aria-modal="true"
 					className={cn(
 						settingsDialogContentClass,
-						"fixed left-1/2 top-1/2 h-(--size-settings-dialog-height) w-(--size-settings-dialog-wide) max-h-none -translate-x-1/2 -translate-y-1/2 origin-center overflow-hidden p-0 animate-modal-in motion-reduce:animate-none sm:rounded-lg",
+						"fixed left-1/2 top-1/2 z-[calc(var(--z-overlay)+1)] h-(--size-settings-dialog-height) w-(--size-settings-dialog-wide) max-h-none -translate-x-1/2 -translate-y-1/2 origin-center overflow-hidden p-0 animate-modal-in motion-reduce:animate-none sm:rounded-lg",
 					)}
 					onOpenAutoFocus={(event) => event.preventDefault()}
 					onEscapeKeyDown={(event) => {
