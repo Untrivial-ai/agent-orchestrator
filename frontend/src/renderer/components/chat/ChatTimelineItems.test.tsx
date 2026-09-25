@@ -256,11 +256,11 @@ describe("AssistantMessage streaming", () => {
 		expect(screen.getByRole("button", { name: "Copy message as markdown" })).toBeInTheDocument();
 	});
 
-	it("shows the helix loader while text is still streaming", () => {
+	it("shows the pulse loader while text is still streaming", () => {
 		const view = render(<AssistantMessage message={message()} showCopy />);
 		view.rerender(<AssistantMessage message={message({ text: "a buffered answer" })} showCopy />);
 
-		expect(screen.getByTestId("helix-loader")).toBeInTheDocument();
+		expect(screen.getByTestId("pulse-loader")).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Copy message as markdown" })).not.toBeInTheDocument();
 	});
 
