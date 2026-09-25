@@ -93,6 +93,7 @@ type Store interface {
 	OpenTerminal(context.Context, string, string, time.Duration) (domain.TerminalSession, error)
 	IssueBrowserViewerTicket(context.Context, domain.Principal, string, string, time.Duration) (string, []string, error)
 	OpenBrowserViewerTicket(context.Context, string) (domain.AccessTicket, error)
+	CheckBrowserViewerAccess(context.Context, domain.Principal, string, string, bool) error
 	RefreshBrowserInteraction(context.Context, domain.Principal, string, string, int64) error
 	RefreshTerminalInteraction(context.Context, domain.TerminalSession, time.Duration) error
 	QueueTerminalInput(context.Context, domain.TerminalSession, string, []byte) error
@@ -181,6 +182,7 @@ type Server struct {
 	browserViewerEnabled    bool
 	browserViewerOrigins    []string
 	browserStreams          *browserStreams
+	browserAccessInterval   time.Duration
 	workWaiters             *workWaiters
 	// workerBinariesBySHA serves the content-addressed worker/helper binaries
 	// so a worker with a stale baked copy can heal itself to this exact build.

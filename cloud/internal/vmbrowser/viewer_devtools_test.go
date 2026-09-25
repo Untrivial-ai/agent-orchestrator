@@ -25,6 +25,8 @@ type inspectorCDP struct {
 	fail          string
 	inspector     bool
 	lateOpen      bool
+	closing       bool
+	closePolls    int
 	beforeHistory func()
 }
 
@@ -53,11 +55,20 @@ func (c *inspectorCDP) Call(ctx context.Context, session, method string, params 
 		}
 	case "Target.closeTarget":
 		if args["targetId"] == "inspector" {
-			c.inspector = false
+			c.closing = true
+			if c.closePolls == 0 {
+				c.inspector = false
+			}
 		}
 	case "Target.attachToTarget":
 		response = map[string]any{"sessionId": "session-" + args["targetId"].(string)}
 	case "Target.getTargets":
+		if c.closing && c.closePolls > 0 {
+			c.closePolls--
+			if c.closePolls == 0 {
+				c.inspector = false
+			}
+		}
 		targets := []map[string]any{{"targetId": "page", "type": "page", "url": "https://example.test/"}}
 		if c.inspector {
 			targets = append(targets, map[string]any{"targetId": "inspector", "type": "other", "url": bundledDevToolsURL})
@@ -140,6 +151,33 @@ func TestViewerDevToolsLifecycle(t *testing.T) {
 	if opens != 1 {
 		t.Fatalf("duplicate open created %d inspectors", opens)
 	}
+}
+
+func TestViewerInspectorCloseWaitsForDestruction(t *testing.T) {
+	viewer, state, cdp := newInspectorTest(t)
+	if _, err := viewer.DevTools(true); err != nil {
+		t.Fatal(err)
+	}
+	cdp.closePolls = 3
+	if _, err := viewer.DevTools(false); err != nil {
+		t.Fatal(err)
+	}
+	if cdp.inspector || cdp.closePolls != 0 || state.devtools != nil {
+		t.Fatal("close returned before inspector destruction")
+	}
+	if _, err := viewer.DevTools(true); err != nil {
+		t.Fatal(err)
+	}
+	cdp.closePolls = 100
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := viewer.closeDevToolsLocked(ctx, state); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled close=%v", err)
+	}
+	if state.devtools == nil {
+		t.Fatal("uncertain close discarded cleanup state")
+	}
+	cdp.closePolls = 0
 }
 
 func TestViewerDevToolsFailures(t *testing.T) {

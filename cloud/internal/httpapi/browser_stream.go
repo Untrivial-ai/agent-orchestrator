@@ -24,6 +24,7 @@ const (
 	browserControlBuffer              = 64
 	browserWireLimit                  = browserstream.MaxFrameBytes + 512
 	browserInteractionRefreshInterval = 30 * time.Second
+	browserAccessRefreshInterval      = 15 * time.Second
 )
 
 type browserStreams struct {
@@ -324,21 +325,51 @@ func (s *Server) connectBrowserViewer(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	result := make(chan error, 4)
+	result := make(chan error, 5)
 	var writeMu sync.Mutex
 	go func() { result <- writeBrowserControls(ctx, connection, peer.controls, peer.done, &writeMu) }()
 	go func() { result <- writeBrowserFrames(ctx, connection, peer.frames, &writeMu) }()
 	go func() { result <- s.readBrowserViewer(ctx, connection, key, peer) }()
 	go func() { result <- keepBrowserConnectionAlive(ctx, connection) }()
+	go func() { result <- s.watchBrowserViewerAccess(ctx, orgID, sessionID, peer) }()
 	select {
 	case <-peer.done:
 	case <-ctx.Done():
-	case <-result:
+	case err := <-result:
+		if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
+			_ = connection.Close(websocket.StatusPolicyViolation, "browser access revoked")
+		} else if err != nil && ctx.Err() == nil {
+			_ = connection.Close(websocket.StatusTryAgainLater, "browser connection interrupted")
+		}
 	case <-s.drain:
 		_ = connection.Close(websocket.StatusTryAgainLater, "control plane draining")
 	}
 	if peer.replaced.Load() {
 		_ = connection.Close(browserstream.ViewerReplacedCloseCode, "browser viewer opened in another window")
+	}
+}
+
+func (s *Server) watchBrowserViewerAccess(ctx context.Context, orgID, sessionID string, peer *browserViewerPeer) error {
+	interval := s.browserAccessInterval
+	if interval <= 0 {
+		interval = browserAccessRefreshInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-peer.done:
+			return nil
+		case <-ticker.C:
+			checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			err := s.store.CheckBrowserViewerAccess(checkCtx, domain.Principal{UserID: peer.subject}, orgID, sessionID, peer.operate)
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
 	}
 }
 
@@ -391,6 +422,9 @@ func (s *Server) readBrowserViewer(ctx context.Context, connection *websocket.Co
 					Type: "input_rejected", Version: browserstream.Version, StreamEpoch: control.StreamEpoch,
 					InputSeq: control.InputSeq, Code: code,
 				})
+				if errors.Is(err, postgres.ErrForbidden) {
+					return err
+				}
 				continue
 			}
 			peer.lastInteraction = time.Now()

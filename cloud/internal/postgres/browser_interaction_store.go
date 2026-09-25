@@ -9,6 +9,22 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// CheckBrowserViewerAccess does not renew the activity lease for passive viewers.
+func (s *Store) CheckBrowserViewerAccess(ctx context.Context, principal domain.Principal, orgID, sessionID string, operate bool) error {
+	return s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, access sessionAccess) error {
+		var mode string
+		var terminated bool
+		if err := tx.QueryRow(ctx, `SELECT mode, is_terminated FROM ao_sessions
+			WHERE org_id = $1 AND id = $2`, orgID, sessionID).Scan(&mode, &terminated); err != nil {
+			return err
+		}
+		if terminated || (operate && (access.Role == "viewer" || effectiveMode(mode, access.ModeCap) == "read-only")) {
+			return ErrForbidden
+		}
+		return nil
+	})
+}
+
 // RefreshBrowserInteraction keeps authorized interactive browsing out of idle pause.
 func (s *Store) RefreshBrowserInteraction(ctx context.Context, principal domain.Principal, orgID, sessionID string, epoch int64) error {
 	err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, access sessionAccess) error {

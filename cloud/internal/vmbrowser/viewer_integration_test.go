@@ -342,4 +342,64 @@ func TestRealViewerResizeAndEditing(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 	})
+	t.Run("ReconnectSelectedTab", func(t *testing.T) {
+		connect := func() browserstream.Control {
+			t.Helper()
+			var err error
+			conn, _, err = websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+ViewerStreamRoute, &websocket.DialOptions{HTTPHeader: header})
+			if err != nil {
+				t.Fatal(err)
+			}
+			conn.SetReadLimit(browserstream.MaxFrameBytes + 512)
+			connection := conn
+			t.Cleanup(func() { _ = connection.CloseNow() })
+			wait(func(c browserstream.Control) bool { return c.Type == "attached" }, 0, 0, 0)
+			return wait(func(c browserstream.Control) bool { return c.Type == "state" }, 0, 0, 0)
+		}
+		disconnect := func() {
+			t.Helper()
+			_ = conn.CloseNow()
+			deadline := time.Now().Add(5 * time.Second)
+			for viewer.Attached() && time.Now().Before(deadline) {
+				time.Sleep(20 * time.Millisecond)
+			}
+			if viewer.Attached() {
+				t.Fatal("viewer did not detach")
+			}
+		}
+		if _, err := engine.Execute(ctx, "tab-new", map[string]any{"url": fixture.URL + "/second"}); err != nil {
+			t.Fatal(err)
+		}
+		tabs, err := viewer.engineTabs(ctx)
+		if err != nil || len(tabs) != 2 {
+			t.Fatalf("tabs=%v err=%v", tabs, err)
+		}
+		for _, tab := range tabs {
+			if _, err := engine.Execute(ctx, "tab-select", map[string]any{"tabId": tab.id}); err != nil {
+				t.Fatal(err)
+			}
+			state := connect()
+			if state.URL != tab.url {
+				t.Fatalf("reconnected to %q, want selected tab %q", state.URL, tab.url)
+			}
+			selected, err := viewer.engineActiveTabID(ctx)
+			if err != nil || selected != tab.id {
+				t.Fatalf("viewer changed engine tab: %s err=%v", selected, err)
+			}
+			disconnect()
+		}
+		connect()
+		send(browserstream.Control{Type: "tab", Operation: "new", URL: fixture.URL + "/second"})
+		viewer.mu.Lock()
+		current := viewer.session
+		viewer.mu.Unlock()
+		current.opMu.Lock()
+		wantTarget := current.targetID
+		current.opMu.Unlock()
+		disconnect()
+		if state := connect(); state.ActiveTabID != wantTarget {
+			t.Fatalf("identical-page reconnect target=%q want=%q", state.ActiveTabID, wantTarget)
+		}
+		disconnect()
+	})
 }

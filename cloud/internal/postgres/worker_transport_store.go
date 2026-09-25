@@ -679,7 +679,7 @@ func (s *Store) IssueBrowserViewerTicket(
 }
 
 // OpenBrowserViewerTicket atomically consumes a viewer ticket, then verifies
-// that its worker epoch still owns the session.
+// that its worker epoch and principal still have access to the session.
 func (s *Store) OpenBrowserViewerTicket(ctx context.Context, token string) (domain.AccessTicket, error) {
 	hash := sha256.Sum256([]byte(token))
 	var ticket domain.AccessTicket
@@ -702,6 +702,20 @@ func (s *Store) OpenBrowserViewerTicket(ctx context.Context, token string) (doma
 		return err
 	})
 	if err != nil {
+		return domain.AccessTicket{}, err
+	}
+	var subject string
+	var operate bool
+	for _, scope := range ticket.Scopes {
+		if value, ok := strings.CutPrefix(scope, "subject:"); ok {
+			subject = value
+		}
+		operate = operate || scope == "browser:operate"
+	}
+	if subject == "" {
+		return domain.AccessTicket{}, ErrInvalidTicket
+	}
+	if err := s.CheckBrowserViewerAccess(ctx, domain.Principal{UserID: subject}, ticket.OrgID, ticket.SessionID, operate); err != nil {
 		return domain.AccessTicket{}, err
 	}
 	err = s.withOrg(ctx, ticket.OrgID, func(tx pgx.Tx) error {

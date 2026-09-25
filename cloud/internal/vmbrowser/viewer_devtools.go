@@ -198,20 +198,36 @@ func (v *ViewerController) closeDevToolsLocked(ctx context.Context, state *viewe
 		return nil
 	}
 	targetID := state.devtools.targetID
-	if err := state.cdp.Call(ctx, "", "Target.closeTarget", map[string]any{"targetId": targetID}, nil); err != nil {
-		// Closing the inspected page can destroy its inspector before this call.
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	closeErr := state.cdp.Call(ctx, "", "Target.closeTarget", map[string]any{"targetId": targetID}, nil)
+	// Close is acknowledged before destruction; reopening too soon can return
+	// the dying inspector target instead of creating a new one.
+	for {
 		var targets struct {
 			TargetInfos []struct {
 				TargetID string `json:"targetId"`
 			} `json:"targetInfos"`
 		}
-		if checkErr := state.cdp.Call(ctx, "", "Target.getTargets", nil, &targets); checkErr != nil {
-			return err
+		if err := state.cdp.Call(ctx, "", "Target.getTargets", nil, &targets); err != nil {
+			return errors.Join(closeErr, err)
 		}
+		present := false
 		for _, target := range targets.TargetInfos {
-			if target.TargetID == targetID {
-				return err
-			}
+			present = present || target.TargetID == targetID
+		}
+		if !present {
+			break
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
 		}
 	}
 	state.devtools = nil

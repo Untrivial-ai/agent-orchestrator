@@ -24,6 +24,10 @@ const (
 
 type browserRelayStore struct{ Store }
 
+func (browserRelayStore) CheckBrowserViewerAccess(context.Context, domain.Principal, string, string, bool) error {
+	return nil
+}
+
 func (browserRelayStore) RefreshBrowserInteraction(context.Context, domain.Principal, string, string, int64) error {
 	return nil
 }
@@ -47,6 +51,10 @@ type browserTicketStore struct {
 	openErr     error
 	oneUse      bool
 	openCount   int
+}
+
+func (*browserTicketStore) CheckBrowserViewerAccess(context.Context, domain.Principal, string, string, bool) error {
+	return nil
 }
 
 func (s *browserTicketStore) IssueBrowserViewerTicket(
@@ -369,11 +377,17 @@ func TestBrowserInteractionLeaseIsAuthorizedAndThrottled(t *testing.T) {
 				if index < 4 && store.refreshes.Load() != 0 {
 					t.Fatal("passive or stale input renewed lease")
 				}
+				if index == 4 && test.storeErr == postgres.ErrForbidden {
+					if _, _, err := conn.Read(ctx); err == nil {
+						t.Fatal("revoked viewer remained connected")
+					}
+					break
+				}
 			}
 			want := int32(0)
 			if test.operate && !test.replaced {
 				want = 1
-				if test.storeErr != nil {
+				if test.storeErr != nil && test.storeErr != postgres.ErrForbidden {
 					want = 4
 				}
 			}

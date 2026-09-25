@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"strings"
 	"sync"
@@ -43,11 +44,12 @@ type ViewerControllerOptions struct {
 // ViewerController owns the second, restricted CDP session used for the Cloud
 // viewer. It permits one loopback viewer connection and never exposes raw CDP.
 type ViewerController struct {
-	opts    ViewerControllerOptions
-	mu      sync.Mutex
-	active  bool
-	session *viewerSession
-	epoch   atomic.Uint64
+	opts         ViewerControllerOptions
+	mu           sync.Mutex
+	active       bool
+	session      *viewerSession
+	epoch        atomic.Uint64
+	engineTabIDs map[string]string
 }
 
 type viewerSession struct {
@@ -137,10 +139,18 @@ func (v *ViewerController) Serve(ctx context.Context, conn *websocket.Conn) erro
 		return errors.New("a browser viewer is already attached")
 	}
 	v.active = true
+	engineTabIDs := maps.Clone(v.engineTabIDs)
 	v.mu.Unlock()
+	var state *viewerSession
 	defer func() {
 		v.opts.Arbiter.ReleaseUser()
+		if state != nil {
+			state.opMu.Lock()
+			engineTabIDs = maps.Clone(state.engineTabIDs)
+			state.opMu.Unlock()
+		}
 		v.mu.Lock()
+		v.engineTabIDs = engineTabIDs
 		v.active = false
 		v.session = nil
 		v.mu.Unlock()
@@ -159,14 +169,15 @@ func (v *ViewerController) Serve(ctx context.Context, conn *websocket.Conn) erro
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	epoch := v.epoch.Add(1)
-	state := &viewerSession{
+	state = &viewerSession{
 		ctx: sessionCtx, cancel: cancel, cdp: cdp,
 		control: make(chan browserstream.Control, viewerControlBuffer),
 		frames:  browserstream.NewLatest(), width: defaultViewerWidth,
 		height: defaultViewerHeight, epoch: epoch, started: time.Now(),
 		quality: 70, fps: 15, captureWidth: maxViewerWidth, captureHeight: maxViewerHeight,
 		attachStarted: attachStarted, chromiumReady: time.Since(attachStarted),
-		cdpURL: endpoint.WebSocketURL,
+		cdpURL:       endpoint.WebSocketURL,
+		engineTabIDs: engineTabIDs,
 	}
 	defer state.frames.Close()
 	defer v.cleanupDevTools(state)
@@ -219,6 +230,13 @@ func (v *ViewerController) Serve(ctx context.Context, conn *websocket.Conn) erro
 }
 
 func (v *ViewerController) attachInitialTarget(state *viewerSession) error {
+	if v.opts.Engine != nil {
+		release, err := v.opts.Arbiter.AcquireAgent(state.ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	if err := state.cdp.Call(state.ctx, "", "Target.setDiscoverTargets", map[string]any{"discover": true}, nil); err != nil {
 		return err
 	}
@@ -227,8 +245,20 @@ func (v *ViewerController) attachInitialTarget(state *viewerSession) error {
 		return err
 	}
 	targetID := ""
+	if v.opts.Engine != nil {
+		activeID, err := v.engineActiveTabID(state.ctx)
+		if err != nil {
+			return err
+		}
+		if activeID != "" {
+			targetID, err = v.targetIDForEngineTab(state, activeID)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	for _, tab := range tabs {
-		if tab.Active {
+		if targetID == "" && tab.Active {
 			targetID = tab.ID
 			break
 		}
@@ -1178,6 +1208,15 @@ func (v *ViewerController) reconcileEngineTabIDs(state *viewerSession, engineTab
 		if state.engineTabIDs[target.ID] != "" {
 			continue
 		}
+		matchingTargets := 0
+		for _, candidate := range targets {
+			if state.engineTabIDs[candidate.ID] == "" && candidate.URL == target.URL && candidate.Title == target.Title {
+				matchingTargets++
+			}
+		}
+		if matchingTargets != 1 {
+			continue
+		}
 		matches := make([]string, 0, 1)
 		for _, tab := range engineTabs {
 			if usedEngineTabs[tab.id] || tab.url != target.URL || tab.title != target.Title {
@@ -1188,6 +1227,26 @@ func (v *ViewerController) reconcileEngineTabIDs(state *viewerSession, engineTab
 		if len(matches) == 1 {
 			bind(target.ID, matches[0])
 			usedEngineTabs[matches[0]] = true
+		}
+	}
+	// Titles can lag navigation; a URL is sufficient only when unique on both sides.
+	engineTabsByURL := map[string][]string{}
+	targetsByURL := map[string][]string{}
+	for _, tab := range engineTabs {
+		if !usedEngineTabs[tab.id] {
+			engineTabsByURL[tab.url] = append(engineTabsByURL[tab.url], tab.id)
+		}
+	}
+	for _, target := range targets {
+		if state.engineTabIDs[target.ID] == "" {
+			targetsByURL[target.URL] = append(targetsByURL[target.URL], target.ID)
+		}
+	}
+	for url, targetIDs := range targetsByURL {
+		engineIDs := engineTabsByURL[url]
+		if len(targetIDs) == 1 && len(engineIDs) == 1 {
+			bind(targetIDs[0], engineIDs[0])
+			usedEngineTabs[engineIDs[0]] = true
 		}
 	}
 	unmappedTargets := make([]string, 0, len(targets))
@@ -1202,10 +1261,9 @@ func (v *ViewerController) reconcileEngineTabIDs(state *viewerSession, engineTab
 			unmappedEngineTabs = append(unmappedEngineTabs, tab.id)
 		}
 	}
-	if len(unmappedTargets) == len(unmappedEngineTabs) {
-		for index := range unmappedTargets {
-			bind(unmappedTargets[index], unmappedEngineTabs[index])
-		}
+	// Multiple identical pages cannot be paired using unrelated list orders.
+	if len(unmappedTargets) == 1 && len(unmappedEngineTabs) == 1 {
+		bind(unmappedTargets[0], unmappedEngineTabs[0])
 	}
 }
 
