@@ -19,15 +19,26 @@ import (
 // what is stored. Backfilling that path here — the moment any reconcile call
 // touches the row — means every session, not just ones that happen to
 // restore, gets a correct, persisted ArtifactDir on its next poll tick.
+//
+// The write goes through UpdateSessionArtifactOutput, not UpdateSession: this
+// method reads the session once, and callers now include the Get/List API
+// read path, so an ordinary UI read can run concurrently with termination or
+// another lifecycle write. A read-modify-write UpdateSession here would
+// persist the stale is_terminated/activity/runtime-identity/preview-state
+// captured at read time, potentially resurrecting a session that terminated
+// in between. UpdateSessionArtifactOutput only ever names artifact_dir and
+// session_output_type, so it cannot touch those other columns regardless of
+// how stale the read was.
 func (m *Manager) ReconcileSessionOutputType(ctx context.Context, id domain.SessionID) error {
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil || !ok {
 		return err
 	}
+	artifactDir := rec.Metadata.ArtifactDir
 	backfilled := false
-	if rec.Metadata.ArtifactDir == "" {
+	if artifactDir == "" {
 		if dir := sessionartifacts.Dir(m.dataDir, id); dir != "" {
-			rec.Metadata.ArtifactDir = dir
+			artifactDir = dir
 			backfilled = true
 		}
 	}
@@ -35,7 +46,7 @@ func (m *Manager) ReconcileSessionOutputType(ctx context.Context, id domain.Sess
 	if err != nil {
 		return err
 	}
-	artifacts, err := sessionartifacts.List(rec.Metadata.ArtifactDir)
+	artifacts, err := sessionartifacts.List(artifactDir)
 	if err != nil {
 		return err
 	}
@@ -43,6 +54,6 @@ func (m *Manager) ReconcileSessionOutputType(ctx context.Context, id domain.Sess
 	if next == rec.OutputType && !backfilled {
 		return nil
 	}
-	rec.OutputType = next
-	return m.store.UpdateSession(ctx, rec)
+	_, err = m.store.UpdateSessionArtifactOutput(ctx, id, artifactDir, next)
+	return err
 }
