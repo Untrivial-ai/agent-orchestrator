@@ -15,6 +15,7 @@ import { memo, useEffect, useState } from "react";
 import { KeyRound, Plug, TriangleAlert } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import type { ConversationAccount, ConversationThreadState, McpServer } from "../../types/conversation";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
 /**
  * The provider will not do any more work until someone signs in.
@@ -169,7 +170,7 @@ export const McpServerBanner = memo(function McpServerBanner({
 
 	useEffect(() => {
 		if (!fingerprint) return;
-		const timeout = window.setTimeout(() => setDismissingFingerprint(fingerprint), 3_500);
+		const timeout = window.setTimeout(() => setDismissingFingerprint(fingerprint), 3_000);
 		return () => window.clearTimeout(timeout);
 	}, [fingerprint]);
 
@@ -189,20 +190,27 @@ export const McpServerBanner = memo(function McpServerBanner({
 	if (!visible) return null;
 
 	return (
-		<motion.div
-			initial={{ scale: 0.96, opacity: 0 }}
-			animate={dismissing ? { scale: 0.96, opacity: 0 } : { scale: 1, opacity: 1 }}
-			transition={{ duration: reducedMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
-			className={`absolute left-1/2 w-fit -translate-x-1/2 origin-center ${placement === "below" ? "top-full pt-2" : "bottom-full pb-2"}`}
-		>
-			<div
-				role={dismissing ? undefined : "status"}
-				aria-atomic="true"
-				className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground"
-			>
-				<Plug aria-hidden="true" className="size-3 shrink-0 text-warning" />
-				<span>{message}</span>
-			</div>
-		</motion.div>
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<motion.div
+					initial={{ scale: 0.96, opacity: 0 }}
+					animate={dismissing ? { scale: 0.96, opacity: 0 } : { scale: 1, opacity: 1 }}
+					transition={{ duration: reducedMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
+					className={`absolute left-1/2 w-fit -translate-x-1/2 origin-center ${placement === "below" ? "top-full pt-2" : "bottom-full pb-2"}`}
+				>
+					<div
+						role={dismissing ? undefined : "status"}
+						aria-atomic="true"
+						className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground"
+					>
+						<Plug aria-hidden="true" className="size-3 shrink-0 text-warning" />
+						<span>{message}</span>
+					</div>
+				</motion.div>
+			</TooltipTrigger>
+			<TooltipContent side={placement === "below" ? "bottom" : "top"}>
+				{serverNames} MCPs were unavailable. The agent is continuing without those tools.
+			</TooltipContent>
+		</Tooltip>
 	);
 });
