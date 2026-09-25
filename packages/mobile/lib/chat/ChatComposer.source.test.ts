@@ -43,7 +43,7 @@ describe("chat composer pill", () => {
 		// The field grows from the native content size while glass fills the pill,
 		// avoiding a separately measured glass height that could lag behind it.
 		expect(composer).toContain("onContentSizeChange={(event) => {");
-		expect(composer).toContain("style={[styles.input, { height: fieldHeight }]}");
+		expect(composer).toContain("style={[styles.input, { height: text ? fieldHeight : COMPOSER_FIELD_HEIGHT }]}");
 		expect(styleRule("composer")).toContain("minHeight: COMPOSER_HEIGHT");
 		expect(styleRule("composer")).toContain("maxHeight: COMPOSER_MAX_HEIGHT");
 		expect(styleRule("composer")).toContain('alignItems: "flex-end"');
@@ -57,6 +57,14 @@ describe("chat composer pill", () => {
 		// content — typing would stop working.
 		expect(source("./composer-glass.ios.tsx")).toContain("glassPanel(radius, undefined, false)");
 		expect(source("./composer-glass.ios.tsx")).toContain("frame({ maxWidth: 2000, maxHeight: 2000 })");
+	});
+
+	it("returns an emptied multiline draft to the one-line height", () => {
+		// A controlled TextInput can retain its last native content size after its
+		// value is cleared; the empty placeholder must not inherit that height.
+		expect(composer).toContain('setText("");\n\t\t\tsetFieldHeight(COMPOSER_FIELD_HEIGHT);');
+		expect(composer).toContain('if (!text) {\n\t\t\t\t\t\t\tsetFieldHeight(COMPOSER_FIELD_HEIGHT);');
+		expect(composer).toContain("height: text ? fieldHeight : COMPOSER_FIELD_HEIGHT");
 	});
 
 	// Two discs side by side have no hierarchy; the send button is the only shape
