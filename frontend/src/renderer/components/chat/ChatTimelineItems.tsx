@@ -794,6 +794,7 @@ export function AssistantMessage({
 	rollbackDisabled = false,
 	durationMs,
 	startedAt,
+	showWorking,
 }: {
 	message: ConversationMessage;
 	/** The final answer owns the copy action; it stays available while that answer streams. */
