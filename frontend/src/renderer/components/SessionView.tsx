@@ -1574,6 +1574,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const cloudSession = Boolean(session?.cloud);
 	const localBrowserView = useBrowserView({
 		sessionId,
+		disabled: !session || cloudSession,
 		active: browserSlotVisible && !cloudSession,
 		poppedOut: browserPoppedOut,
 		terminated,

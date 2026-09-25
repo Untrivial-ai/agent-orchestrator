@@ -2993,7 +2993,7 @@ describe("SessionView", () => {
 		render(<SessionView sessionId="sess-1" />);
 		fireEvent.click(screen.getByRole("tab", { name: "Browser" }));
 
-		expect(browserViewOptions.current).toMatchObject({ sessionId: "sess-1", active: false });
+		expect(browserViewOptions.current).toMatchObject({ sessionId: "sess-1", active: false, disabled: true });
 		expect(cloudBrowserViewOptions.current).toEqual({
 			active: true,
 			orgId: "org-1",
