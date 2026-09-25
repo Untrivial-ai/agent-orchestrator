@@ -2664,6 +2664,13 @@ function Timeline({
 			}));
 	}, [items, localEchos, snapshot.latestSequence]);
 	const timelineItems = useStableList([...items, ...localItems], itemKey, sameContent);
+	const hasEarlierHumanMessage = timelineItems.some(
+		(item) =>
+			item.kind === "message" &&
+			item.role === "user" &&
+			item.origin === "human" &&
+			(!item.turnId || !queued.has(item.turnId)),
+	);
 	const grouped = useMemo(() => {
 		const hiddenTurns = hiddenTimelineTurnIds(snapshot);
 		return groupByTurn({ ...snapshot, items: timelineItems }).filter(
@@ -3038,7 +3045,7 @@ function Timeline({
 									canRollback={Boolean(onRollback && group.turnId && (group.rollbackable || group.live))}
 									rollbackDisabled={rollbackDisabled}
 									busy={busy}
-									queued={Boolean(group.turnId && queued.has(group.turnId))}
+							queued={Boolean(group.turnId && queued.has(group.turnId) && hasEarlierHumanMessage)}
 								/>
 							</div>
 						);
