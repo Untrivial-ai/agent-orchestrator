@@ -591,17 +591,6 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				promoteQueuedTurnPendingTurnId={commands.promoteQueuedTurnPendingTurnId}
 				cancelQueuedTurnPendingTurnId={commands.cancelQueuedTurnPendingTurnId}
 				editQueuedTurnPendingTurnId={commands.editQueuedTurnPendingTurnId}
-				onReloadMcpServers={
-					!can(renderSnapshot, "mcp_reload") || commands.mcpReloadUnsupported
-						? undefined
-						: () => {
-								// The rejection is already held by the mutation and rendered from
-								// `mcpReloadError`; rethrowing it would only add a console error.
-								void commands.reloadMcpServers().catch(() => {});
-							}
-				}
-				reloadingMcpServers={commands.reloadingMcpServers}
-				mcpReloadError={commands.mcpReloadError}
 			/>
 			{shownSwitchPresentation ? (
 				<ChatAgentSwitchStatus

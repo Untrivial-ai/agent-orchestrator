@@ -222,9 +222,11 @@ describe("provider state chrome", () => {
 		expect(screen.queryByText(/agent controller stopped/i)).not.toBeInTheDocument();
 	});
 
-	it("surfaces a tool server that will never answer", () => {
-		render(<ChatWorkspace snapshot={chatFixtureMcpFailed} />);
-		expect(screen.getByText("2 tool servers did not start")).toBeInTheDocument();
+	it("places a brief tool-server notice beneath the composer", () => {
+		render(<ChatWorkspace snapshot={{ ...chatFixtureMcpFailed, controller: { state: "ready" } }} />);
+		const notice = screen.getByRole("status");
+		expect(notice).toHaveTextContent("2 tool servers unavailable");
+		expect(document.querySelector(".cursor-chat-composer-dock")).toContainElement(notice);
 	});
 
 	it("says nothing about tool servers when they all started", () => {
@@ -232,10 +234,6 @@ describe("provider state chrome", () => {
 		expect(screen.queryByText(/did not start/)).not.toBeInTheDocument();
 	});
 
-	it("disables the tool-server reload while a turn is running", () => {
-		render(<ChatWorkspace snapshot={chatFixtureMcpFailed} onReloadMcpServers={vi.fn()} />);
-		expect(screen.getByRole("button", { name: /Reload/ })).toBeDisabled();
-	});
 });
 
 describe("model reroute", () => {
