@@ -57,6 +57,7 @@ type Store interface {
 	CreateSession(context.Context, domain.Principal, string, string, int, domain.CreateSession) (domain.Session, error)
 	ListSessions(context.Context, domain.Principal, string, string, *domain.Cursor, int) ([]domain.Session, bool, error)
 	GetSession(context.Context, domain.Principal, string, string) (domain.Session, error)
+	CheckSessionWriteAccess(context.Context, domain.Principal, string, string) error
 	SendMessage(context.Context, domain.Principal, string, string, string, string) (domain.ClientEvent, error)
 	ListClientEvents(context.Context, domain.Principal, string, string, int64, int) ([]domain.ClientEvent, bool, error)
 	SetSandboxDesiredState(ctx context.Context, principal domain.Principal, orgID, sessionID, desiredState string) error
@@ -89,8 +90,8 @@ type Store interface {
 	ClaimWorkerRequest(context.Context, string, string, string, int64, time.Duration) (domain.WorkerRequest, bool, error)
 	CompleteWorkerRequest(context.Context, string, string, string, string, int64, int, json.RawMessage) error
 	FailWorkerRequest(context.Context, string, string, string, string, int64, int, string, string) error
-	IssueTerminalTicket(context.Context, domain.Principal, string, string, string, time.Duration) (string, []string, error)
-	OpenTerminal(context.Context, string, string, time.Duration) (domain.TerminalSession, error)
+	IssueTerminalTicket(context.Context, domain.Principal, string, string, string, string, time.Duration) (string, []string, error)
+	OpenTerminal(context.Context, string, string, string, time.Duration) (domain.TerminalSession, error)
 	RefreshTerminalInteraction(context.Context, domain.TerminalSession, time.Duration) error
 	QueueTerminalInput(context.Context, domain.TerminalSession, string, []byte) error
 	QueueTerminalResize(context.Context, domain.TerminalSession, uint16, uint16) error
@@ -164,6 +165,7 @@ type Server struct {
 	drain                   chan struct{}
 	logger                  *slog.Logger
 	github                  *githubapp.Service
+	reviewService           *githubapp.Service
 	checkoutBroker          CheckoutBroker
 	patWrites               *githubapp.PATWriteService
 	brokerAuthToken         string
@@ -205,6 +207,7 @@ type Options struct {
 	Release                 string
 	Logger                  *slog.Logger
 	GitHub                  *githubapp.Service
+	ReviewService           *githubapp.Service
 	CheckoutBroker          CheckoutBroker
 	PATWrites               *githubapp.PATWriteService
 	BrokerAuthToken         string
@@ -285,6 +288,7 @@ func New(options Options) *Server {
 		drain:                     make(chan struct{}),
 		logger:                    logger,
 		github:                    options.GitHub,
+		reviewService:             options.ReviewService,
 		checkoutBroker:            options.CheckoutBroker,
 		patWrites:                 options.PATWrites,
 		brokerAuthToken:           options.BrokerAuthToken,
@@ -307,6 +311,9 @@ func New(options Options) *Server {
 	}
 	if server.checkoutBroker == nil && options.GitHub != nil {
 		server.checkoutBroker = options.GitHub
+	}
+	if server.reviewService == nil && options.GitHub != nil {
+		server.reviewService = options.GitHub
 	}
 	server.provisioning.Provider = sandboxProvider
 	if server.provisioning.Release == "" {
@@ -438,6 +445,7 @@ func New(options Options) *Server {
 			router.Post("/sessions", server.createSession)
 			router.Get("/sandbox/coder/templates", server.listCoderTemplates)
 			router.Get("/sessions/{sessionId}", server.getSession)
+			router.Patch("/sessions/{sessionId}/preferences", server.updateSessionPreferences)
 			router.Post("/sessions/wake", server.wakePausedSessions)
 			router.Post("/sessions/{sessionId}/resume", server.resumeSession)
 			router.Post("/sessions/{sessionId}/restore", server.restoreSession)
@@ -466,6 +474,11 @@ func New(options Options) *Server {
 			router.Put("/sessions/{sessionId}/workspace/review/file", server.putWorkspaceReviewFile)
 			router.Get("/sessions/{sessionId}/pull-requests", server.listSessionPullRequests)
 			router.Get("/sessions/{sessionId}/reviews", server.getSessionReviewState)
+			router.Post("/sessions/{sessionId}/reviews/trigger", server.triggerSessionReviews)
+			router.Post("/sessions/{sessionId}/reviews/cancel", server.cancelSessionReviews)
+			router.Post("/sessions/{sessionId}/reviews/{reviewRunId}/send", server.sendReviewToWorker)
+			router.Get("/sessions/{sessionId}/reviewer-harnesses", server.inspectSessionReviewerHarnesses)
+			router.Post("/sessions/{sessionId}/reviewer-harnesses/{harness}/install", server.installSessionReviewerHarness)
 			router.Get("/members", server.listOrgMembers)
 			router.Patch("/members/{userId}", server.updateOrgMemberRole)
 			router.Get("/invitations", server.listOrgInvitations)

@@ -341,10 +341,40 @@ func (s *Store) WorkerAgentCredential(
 	orgID, sessionID, workerID string,
 	epoch int64,
 ) (domain.WorkerCredential, error) {
+	return s.workerAgentCredential(ctx, orgID, sessionID, workerID, epoch, "")
+}
+
+// WorkerAgentCredentialForProvider redeems another connected provider for a
+// dedicated reviewer terminal. The same worker/session fence and resolution
+// rules apply as the interactive agent credential.
+func (s *Store) WorkerAgentCredentialForProvider(
+	ctx context.Context,
+	orgID, sessionID, workerID string,
+	epoch int64,
+	provider string,
+) (domain.WorkerCredential, error) {
+	return s.workerAgentCredential(ctx, orgID, sessionID, workerID, epoch, provider)
+}
+
+func (s *Store) workerAgentCredential(
+	ctx context.Context,
+	orgID, sessionID, workerID string,
+	epoch int64,
+	requestedProvider string,
+) (domain.WorkerCredential, error) {
 	var credential domain.WorkerCredential
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		if err := requireCurrentWorker(ctx, tx, orgID, sessionID, workerID, epoch); err != nil {
 			return err
+		}
+		provider := requestedProvider
+		if provider == "" {
+			if err := tx.QueryRow(ctx, `SELECT harness FROM ao_sessions WHERE org_id = $1 AND id = $2 AND is_terminated = false`, orgID, sessionID).Scan(&provider); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return ErrNotFound
+				}
+				return err
+			}
 		}
 		err := tx.QueryRow(
 			ctx,
@@ -355,7 +385,7 @@ func (s *Store) WorkerAgentCredential(
 			FROM ao_sessions session
 			JOIN ao_provider_connections connection
 				ON connection.org_id = session.org_id
-				AND connection.provider = session.harness
+				AND connection.provider = $4
 				AND connection.label = $3
 				AND connection.validation_state = 'valid'
 			WHERE session.org_id = $1
@@ -364,6 +394,7 @@ func (s *Store) WorkerAgentCredential(
 			orgID,
 			sessionID,
 			defaultWorkerCredentialLabel,
+			provider,
 		).Scan(
 			&credential.Provider,
 			&credential.CredentialType,
@@ -382,15 +413,14 @@ func (s *Store) WorkerAgentCredential(
 		// across every org a person belongs to, not just the one they
 		// connected it in; it never overrides an org-level connection that
 		// exists, only fills in when there isn't one.
-		var harness string
 		var createdByUserID *string
 		if err := tx.QueryRow(
 			ctx,
-			`SELECT harness, created_by_user_id::text
+			`SELECT created_by_user_id::text
 			FROM ao_sessions
 			WHERE org_id = $1 AND id = $2 AND is_terminated = false`,
 			orgID, sessionID,
-		).Scan(&harness, &createdByUserID); err != nil {
+		).Scan(&createdByUserID); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -416,7 +446,7 @@ func (s *Store) WorkerAgentCredential(
 			  AND connection.label = $3
 			  AND connection.validation_state = 'valid'`,
 			*createdByUserID,
-			harness,
+			provider,
 			defaultWorkerCredentialLabel,
 		).Scan(
 			&credential.Provider,

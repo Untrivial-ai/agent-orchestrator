@@ -1487,6 +1487,8 @@
 	"terminal.renameHintDoubleClick": "{{workingDir}}（双击可重命名）",
 	"terminal.renameHintRightClick": "{{workingDir}}（右键单击可重命名）",
 	"terminal.reviewer": "评审者",
+	"terminal.reviewCompleted": "评审已完成",
+	"terminal.reviewerCompleted": "评审已完成并已发布到拉取请求。",
 	"terminal.scrollTabsLeft": "向左滚动标签页",
 	"terminal.scrollTabsRight": "向右滚动标签页",
 	"terminal.search": "搜索终端",

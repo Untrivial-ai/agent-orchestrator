@@ -200,6 +200,16 @@ func (s *Server) runWorkspaceRequest(
 	orgID, sessionID, kind string,
 	payload json.RawMessage,
 ) (json.RawMessage, bool) {
+	return s.runWorkerRequest(w, r, orgID, sessionID, kind, payload, s.workerRequestTimeout)
+}
+
+func (s *Server) runWorkerRequest(
+	w http.ResponseWriter,
+	r *http.Request,
+	orgID, sessionID, kind string,
+	payload json.RawMessage,
+	timeoutDuration time.Duration,
+) (json.RawMessage, bool) {
 	principal := principalFrom(r)
 	if strings.HasPrefix(kind, "workspace.") {
 		if _, err := s.store.ResumeSession(r.Context(), principal, orgID, sessionID); err != nil {
@@ -208,7 +218,7 @@ func (s *Server) runWorkspaceRequest(
 		}
 	}
 	request, err := s.store.CreateWorkspaceRequest(
-		r.Context(), principal, orgID, sessionID, kind, payload, s.workerRequestTimeout,
+		r.Context(), principal, orgID, sessionID, kind, payload, timeoutDuration,
 	)
 	if err != nil {
 		s.writeWorkspaceStoreError(w, r, err)
@@ -217,7 +227,7 @@ func (s *Server) runWorkspaceRequest(
 
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
-	timeout := time.NewTimer(s.workerRequestTimeout)
+	timeout := time.NewTimer(timeoutDuration)
 	defer timeout.Stop()
 	for {
 		select {

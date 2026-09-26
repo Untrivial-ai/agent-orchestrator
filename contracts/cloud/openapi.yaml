@@ -483,6 +483,131 @@ paths:
                 $ref: "#/components/schemas/SessionReviewState"
         default:
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/reviews/trigger:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: triggerSessionReviews
+      tags: [Reviews]
+      responses:
+        "200":
+          description: The current commit was already reviewed or is ineligible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionReviewState"
+        "201":
+          description: A reviewer terminal was started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionReviewState"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/reviews/cancel:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: cancelSessionReviews
+      tags: [Reviews]
+      responses:
+        "200":
+          description: Review state after cancellation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionReviewState"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/reviews/{reviewRunId}/send:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+      - name: reviewRunId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: sendSessionReviewToWorker
+      tags: [Reviews]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: The stored review was accepted and durably queued for the worker agent.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [event]
+                properties:
+                  event:
+                    $ref: "#/components/schemas/UserMessageEvent"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/preferences:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    patch:
+      operationId: updateSessionPreferences
+      tags: [Sessions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSessionPreferencesInput"
+      responses:
+        "200":
+          description: The updated cloud session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/reviewer-harnesses:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: inspectSessionReviewerHarnesses
+      tags: [Reviews]
+      responses:
+        "200":
+          description: Supported reviewer CLI availability inside the live sandbox.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HarnessInspectResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/reviewer-harnesses/{harness}/install:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+      - name: harness
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/CloudReviewerHarness"
+    post:
+      operationId: installSessionReviewerHarness
+      tags: [Reviews]
+      responses:
+        "200":
+          description: The installed and verified reviewer CLI.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HarnessStatus"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/messages:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -2862,6 +2987,13 @@ components:
             desiredState:
               type: string
               const: deleted
+    SessionResponse:
+      type: object
+      additionalProperties: false
+      required: [session]
+      properties:
+        session:
+          $ref: "#/components/schemas/Session"
     Session:
       type: object
       additionalProperties: false
@@ -2871,6 +3003,10 @@ components:
         - projectId
         - kind
         - harness
+        - autoReviewEnabled
+        - autoInjectCI
+        - autoInjectReview
+        - terminateOnPrMerge
         - displayName
         - branch
         - mode
@@ -2895,6 +3031,16 @@ components:
           $ref: "#/components/schemas/SessionKind"
         harness:
           type: string
+        reviewerHarness:
+          type: string
+        autoReviewEnabled:
+          type: boolean
+        autoInjectCI:
+          type: boolean
+        autoInjectReview:
+          type: boolean
+        terminateOnPrMerge:
+          type: boolean
         displayName:
           type: string
         branch:
@@ -2961,6 +3107,50 @@ components:
         sandboxProviderConnectionId:
           type: string
           format: uuid
+    UpdateSessionPreferencesInput:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        reviewerHarness:
+          oneOf:
+            - $ref: "#/components/schemas/CloudReviewerHarness"
+            - type: string
+              maxLength: 0
+        autoReviewEnabled:
+          type: boolean
+        autoInjectCI:
+          type: boolean
+        autoInjectReview:
+          type: boolean
+        terminateOnPrMerge:
+          type: boolean
+    CloudReviewerHarness:
+      type: string
+      enum: [claude-code, codex, cursor]
+    HarnessStatus:
+      type: object
+      additionalProperties: false
+      required: [harness, status]
+      properties:
+        harness:
+          $ref: "#/components/schemas/CloudReviewerHarness"
+        status:
+          type: string
+          enum: [missing, ready, failed]
+        version:
+          type: string
+        error:
+          type: string
+    HarnessInspectResponse:
+      type: object
+      additionalProperties: false
+      required: [harnesses]
+      properties:
+        harnesses:
+          type: array
+          items:
+            $ref: "#/components/schemas/HarnessStatus"
     SessionPage:
       type: object
       additionalProperties: false
@@ -3265,6 +3455,7 @@ components:
         - sessionId
         - batchId
         - harness
+        - triggerSource
         - pullRequestUrl
         - targetSha
         - status
@@ -3284,6 +3475,9 @@ components:
           type: string
         harness:
           type: string
+        triggerSource:
+          type: string
+          enum: [manual, auto]
         pullRequestUrl:
           type: string
         targetSha:
@@ -3330,7 +3524,7 @@ components:
     SessionReviewState:
       type: object
       additionalProperties: false
-      required: [sessionId, reviews, runs]
+      required: [sessionId, availableReviewerHarnesses, reviews, runs]
       properties:
         sessionId:
           type: string
@@ -3338,6 +3532,10 @@ components:
           type: string
         reviewerHarness:
           type: string
+        availableReviewerHarnesses:
+          type: array
+          items:
+            $ref: "#/components/schemas/CloudReviewerHarness"
         reviews:
           type: array
           items:

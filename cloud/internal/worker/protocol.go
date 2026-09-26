@@ -2,6 +2,11 @@ package worker
 
 import "time"
 
+// ReviewTerminalEnv marks a dedicated reviewer process. Reviewer harnesses
+// share the parent session's worker credential, but their lifecycle hooks must
+// not overwrite the interactive agent's activity state.
+const ReviewTerminalEnv = "AO_CLOUD_REVIEW_TERMINAL"
+
 // BootstrapRequest is what a worker sends to redeem its one-time ticket.
 type BootstrapRequest struct {
 	BootstrapToken string   `json:"bootstrapToken"`
@@ -236,6 +241,25 @@ type WorkspaceWriteRequest struct {
 	Content string `json:"content"`
 }
 
+type HarnessInspectRequest struct {
+	Harnesses []string `json:"harnesses"`
+}
+
+type HarnessInstallRequest struct {
+	Harness string `json:"harness"`
+}
+
+type HarnessStatus struct {
+	Harness string `json:"harness"`
+	Status  string `json:"status"`
+	Version string `json:"version,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+type HarnessInspectResponse struct {
+	Harnesses []HarnessStatus `json:"harnesses"`
+}
+
 // BrowserFetchRequest asks the session worker to fetch a browser resource from
 // inside its own VM. The Cloud UI never connects to the VM directly, so a URL
 // such as http://localhost:3000 resolves against the VM rather than the
@@ -300,9 +324,16 @@ type WorkspaceDiffFile struct {
 type TerminalCommand struct {
 	TerminalID string `json:"terminalId"`
 	Kind       string `json:"kind,omitempty"`
-	Data       []byte `json:"data,omitempty"`
-	Columns    uint16 `json:"columns,omitempty"`
-	Rows       uint16 `json:"rows,omitempty"`
+	// Harness selects the provider for a dedicated reviewer terminal. It is
+	// ignored for regular workspace and interactive agent terminals.
+	Harness string `json:"harness,omitempty"`
+	// Review starts an isolated coding-agent conversation for an automated PR
+	// review. It shares the session workspace, but never resumes the session's
+	// interactive agent thread.
+	Review  bool   `json:"review,omitempty"`
+	Data    []byte `json:"data,omitempty"`
+	Columns uint16 `json:"columns,omitempty"`
+	Rows    uint16 `json:"rows,omitempty"`
 }
 
 // TerminalStreamFrame is one message on the persistent duplex terminal

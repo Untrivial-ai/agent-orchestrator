@@ -71,15 +71,21 @@ type PullRequestObservation struct {
 
 // ReviewRun is one automated review of a pull request commit.
 type ReviewRun struct {
-	ID               string
-	OrgID            string
-	PullRequestID    string
-	ReviewSessionID  string
-	TargetSHA        string
+	ID              string
+	OrgID           string
+	PullRequestID   string
+	ReviewSessionID string
+	TargetSHA       string
+	// Harness is the coding-agent provider that executed this particular pass.
+	Harness          string
+	TriggerSource    string
 	Status           contract.AOReviewRunStatus
 	Verdict          contract.AOReviewVerdict
 	Body             string
 	ProviderReviewID string
+	// ReviewTerminalID identifies the short-lived agent terminal running this
+	// pass. It is empty for runs created before dedicated reviewer terminals.
+	ReviewTerminalID string
 	LastError        string
 	CreatedAt        time.Time
 	CompletedAt      *time.Time

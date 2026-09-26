@@ -81,6 +81,7 @@ func runCheckpointBridgeWithInterval(
 	}()
 
 	// Coarse periodic safety net (see checkpointSafetyNetInterval).
+	// The caller provides the interval for this bridge.
 	go func() {
 		ticker := time.NewTicker(safetyNetInterval)
 		defer ticker.Stop()

@@ -393,6 +393,25 @@ export class CloudClient {
     );
   }
 
+  sendSessionReviewToWorker(
+    orgId: string,
+    sessionId: string,
+    reviewRunId: string,
+    options: IdempotentRequestOptions,
+  ): Promise<{ event: UserMessageEvent }> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/sessions/${encodeURIComponent(sessionId)}/reviews/${encodeURIComponent(reviewRunId)}/send`,
+      ),
+      {
+        method: "POST",
+        idempotencyKey: options.idempotencyKey,
+        signal: options.signal,
+      },
+    );
+  }
+
   cancelTurn(
     orgId: string,
     sessionId: string,

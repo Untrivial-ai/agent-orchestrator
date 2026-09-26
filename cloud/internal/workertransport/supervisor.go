@@ -57,15 +57,20 @@ const (
 )
 
 type Supervisor struct {
-	Control         Control
-	Workspace       string
-	CompareBase     string
-	Shell           string
-	AgentCommand    workerexec.Command
-	AgentTerminalID string
-	Started         chan<- error
-	PollInterval    time.Duration
-	Logger          *slog.Logger
+	Control       Control
+	Workspace     string
+	CompareBase   string
+	Shell         string
+	AgentCommand  workerexec.Command
+	ReviewCommand workerexec.Command
+	// ReviewCommandFactory resolves a fresh, provider-specific command on each
+	// review launch. It lets the Cloud reviewer selector change independently
+	// from the session's already-running interactive harness.
+	ReviewCommandFactory func(context.Context, string) (workerexec.Command, error)
+	AgentTerminalID      string
+	Started              chan<- error
+	PollInterval         time.Duration
+	Logger               *slog.Logger
 	// Streams, when non-nil, holds a persistent duplex terminal stream per
 	// open terminal for low-latency input/output. The polled transport stays
 	// authoritative whenever a stream is absent or unhealthy.
@@ -272,6 +277,22 @@ func (s *Supervisor) StartAgent(ctx context.Context, command workerexec.Command,
 	return nil
 }
 
+// SetReviewCommand configures the fresh coding-agent command used by automated
+// PR review terminals. Review processes share the checkout but must not resume
+// the interactive session's native conversation.
+func (s *Supervisor) SetReviewCommand(command workerexec.Command) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ReviewCommand = command
+}
+
+// SetReviewCommandFactory configures provider-specific fresh reviewer commands.
+func (s *Supervisor) SetReviewCommandFactory(factory func(context.Context, string) (workerexec.Command, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ReviewCommandFactory = factory
+}
+
 func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	// Do not claim a queued user turn until the agent PTY is actually live. The
 	// workspace transport starts first, so claiming here would otherwise mark
@@ -293,7 +314,7 @@ func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	}
 	if err := s.writeTerminal(worker.TerminalCommand{
 		TerminalID: agentTerminalID,
-		Data:       []byte(turn.Prompt + "\r"),
+		Data:       worker.EncodeTerminalInput(turn.Prompt),
 	}); err != nil {
 		if failErr := s.Control.FailTurn(
 			ctx, turn.ID, turn.Attempt, err.Error(),
@@ -368,6 +389,18 @@ func (s *Supervisor) handle(
 		}
 	case "workspace.diff":
 		response, err = workspace.Diff(ctx)
+	case "harness.inspect":
+		var input worker.HarnessInspectRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = inspectHarnesses(ctx, input)
+		}
+	case "harness.install":
+		var input worker.HarnessInstallRequest
+		err = decodePayload(request.Payload, &input)
+		if err == nil {
+			response, err = installHarness(ctx, input)
+		}
 	case "workspace.review.summary":
 		response, err = workspace.ReviewSummary(ctx)
 	case "workspace.review.tree":
@@ -425,6 +458,8 @@ func (s *Supervisor) handle(
 		if err == nil {
 			if input.TerminalID == s.AgentTerminalID {
 				err = s.writeAgentPrompt(input.TerminalID, input.Data)
+			} else if input.Review {
+				err = s.writeAgentPrompt(input.TerminalID, input.Data)
 			} else {
 				err = s.writeTerminal(input)
 			}
@@ -474,7 +509,7 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 		return nil
 	}
 	processCtx, cancel := context.WithCancel(ctx)
-	command, cleanup, err := s.terminalCommand(processCtx, input.Kind)
+	command, cleanup, err := s.terminalCommand(processCtx, input)
 	if err != nil {
 		cancel()
 		s.mu.Unlock()
@@ -535,16 +570,35 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 
 func (s *Supervisor) terminalCommand(
 	ctx context.Context,
-	kind string,
+	input worker.TerminalCommand,
 ) (*exec.Cmd, func(), error) {
-	if kind == "agent" {
-		if s.AgentCommand.Path == "" {
+	if input.Kind == "agent" {
+		commandConfig := s.AgentCommand
+		if input.Review {
+			if s.ReviewCommandFactory != nil {
+				var err error
+				commandConfig, err = s.ReviewCommandFactory(ctx, input.Harness)
+				if err != nil {
+					return nil, func() {}, err
+				}
+			} else {
+				commandConfig = s.ReviewCommand
+			}
+		}
+		if commandConfig.Path == "" {
 			return nil, func() {}, errors.New("interactive agent command is unavailable")
 		}
-		command := exec.CommandContext(ctx, s.AgentCommand.Path, s.AgentCommand.Args...)
-		command.Dir = s.AgentCommand.Dir
-		command.Env = terminalEnvironment(s.AgentCommand.Env)
-		cleanup := s.AgentCommand.Cleanup
+		args := append([]string(nil), commandConfig.Args...)
+		if input.Review && len(input.Data) > 0 {
+			// Codex accepts an initial positional prompt. Supplying it at process
+			// startup avoids racing its interactive TUI initialization, which can
+			// drop a prompt typed immediately after the PTY opens.
+			args = append(args, string(input.Data))
+		}
+		command := exec.CommandContext(ctx, commandConfig.Path, args...)
+		command.Dir = commandConfig.Dir
+		command.Env = terminalEnvironment(commandConfig.Env)
+		cleanup := commandConfig.Cleanup
 		if cleanup == nil {
 			cleanup = func() {}
 		}

@@ -321,6 +321,10 @@ func run(logger *slog.Logger) error {
 			return err
 		}
 	}
+	reviewService := githubService
+	if reviewService == nil {
+		reviewService = githubapp.NewReviewService(store, logger)
+	}
 	// PAT write fallback: a REST-only GitHub client plus the record store lets a
 	// worker's configured personal access token open and claim pull requests
 	// even where the checkout broker is read-only (staging reaches GitHub through
@@ -413,6 +417,7 @@ func run(logger *slog.Logger) error {
 		Release:                   cfg.Release,
 		Logger:                    logger,
 		GitHub:                    githubService,
+		ReviewService:             reviewService,
 		CheckoutBroker:            checkoutBroker,
 		PATWrites:                 patWrites,
 		BrokerAuthToken:           cfg.RepositoryBrokerToken,

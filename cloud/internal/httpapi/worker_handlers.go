@@ -560,7 +560,7 @@ func (s *Server) workerRaisePullRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
 		return
 	}
-	if s.checkoutBroker == nil {
+	if s.checkoutBroker == nil && s.patWrites == nil {
 		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Raising a pull request is not available.")
 		return
 	}
@@ -597,8 +597,11 @@ func (s *Server) workerRaisePullRequest(w http.ResponseWriter, r *http.Request) 
 		pr, err = s.patWrites.RaisePullRequest(
 			r.Context(), claims.OrgID, claims.SessionID, grant.CloneURL, grant.Token, raiseInput,
 		)
-	} else {
+	} else if s.checkoutBroker != nil {
 		pr, err = s.checkoutBroker.RaisePullRequest(r.Context(), claims.OrgID, claims.SessionID, raiseInput)
+	} else {
+		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Raising a pull request is not available.")
+		return
 	}
 	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
 		writeError(w, r, http.StatusForbidden, "PULL_REQUEST_NOT_AUTHORIZED", "This session does not have an active repository grant.")
@@ -634,7 +637,7 @@ func (s *Server) workerClaimPullRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
 		return
 	}
-	if s.checkoutBroker == nil {
+	if s.checkoutBroker == nil && s.patWrites == nil {
 		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Pull request tracking is not available.")
 		return
 	}
@@ -658,8 +661,11 @@ func (s *Server) workerClaimPullRequest(w http.ResponseWriter, r *http.Request) 
 		pr, err = s.patWrites.ClaimPullRequest(
 			r.Context(), claims.OrgID, claims.SessionID, grant.CloneURL, grant.Token, input.Reference,
 		)
-	} else {
+	} else if s.checkoutBroker != nil {
 		pr, err = s.checkoutBroker.ClaimPullRequest(r.Context(), claims.OrgID, claims.SessionID, input.Reference)
+	} else {
+		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Pull request tracking is not available.")
+		return
 	}
 	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
 		writeError(w, r, http.StatusForbidden, "PULL_REQUEST_NOT_AUTHORIZED", "This session does not have an active repository grant.")
@@ -687,7 +693,7 @@ func (s *Server) workerSubmitReview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
 		return
 	}
-	if s.checkoutBroker == nil {
+	if s.checkoutBroker == nil && s.patWrites == nil {
 		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Submitting a review is not available.")
 		return
 	}
@@ -701,10 +707,19 @@ func (s *Server) workerSubmitReview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	run, err := s.checkoutBroker.SubmitReview(r.Context(), claims.OrgID, claims.SessionID, reviewRunID, domain.SubmitReviewResult{
-		Verdict: contract.AOReviewVerdict(strings.TrimSpace(input.Verdict)),
-		Body:    input.Body,
-	})
+	result := domain.SubmitReviewResult{Verdict: contract.AOReviewVerdict(strings.TrimSpace(input.Verdict)), Body: input.Body}
+	var (
+		run domain.ReviewRun
+		err error
+	)
+	if grant, ok := s.patWriteGrant(r.Context(), claims); ok {
+		run, err = s.patWrites.SubmitReview(r.Context(), claims.OrgID, claims.SessionID, reviewRunID, grant.Token, result)
+	} else if s.checkoutBroker != nil {
+		run, err = s.checkoutBroker.SubmitReview(r.Context(), claims.OrgID, claims.SessionID, reviewRunID, result)
+	} else {
+		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Submitting a review is not available.")
+		return
+	}
 	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
 		writeError(w, r, http.StatusForbidden, "REVIEW_NOT_AUTHORIZED", "This session may not submit a verdict for this review.")
 		return
@@ -1004,9 +1019,12 @@ func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusServiceUnavailable, "CREDENTIALS_UNAVAILABLE", "Coding-agent credentials are unavailable.")
 		return
 	}
-	credential, err := s.store.WorkerAgentCredential(
-		r.Context(), claims.OrgID, claims.SessionID, claims.WorkerID, claims.Epoch,
-	)
+	provider := r.URL.Query().Get("provider")
+	if provider != "" && !validAgentProvider(provider) {
+		writeError(w, r, http.StatusUnprocessableEntity, "INVALID_CREDENTIAL", "The selected coding-agent credential is invalid.")
+		return
+	}
+	credential, err := s.workerCredentialForProvider(r.Context(), claims, provider)
 	if err != nil {
 		s.writeWorkerStoreError(w, r, err)
 		return
@@ -1036,6 +1054,19 @@ func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
 		CredentialType: credential.CredentialType,
 		Secret:         string(plaintext),
 	})
+}
+
+type workerCredentialProviderStore interface {
+	WorkerAgentCredentialForProvider(context.Context, string, string, string, int64, string) (domain.WorkerCredential, error)
+}
+
+func (s *Server) workerCredentialForProvider(ctx context.Context, claims worker.Claims, provider string) (domain.WorkerCredential, error) {
+	if provider != "" {
+		if store, ok := s.store.(workerCredentialProviderStore); ok {
+			return store.WorkerAgentCredentialForProvider(ctx, claims.OrgID, claims.SessionID, claims.WorkerID, claims.Epoch, provider)
+		}
+	}
+	return s.store.WorkerAgentCredential(ctx, claims.OrgID, claims.SessionID, claims.WorkerID, claims.Epoch)
 }
 
 func (s *Server) writeWorkerStoreError(w http.ResponseWriter, r *http.Request, err error) {

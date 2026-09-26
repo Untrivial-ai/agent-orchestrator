@@ -76,6 +76,7 @@ import { ReviewerSelect } from "./ReviewerSelect";
 import { agentLabel } from "../lib/agent-options";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
 import { Switch } from "./ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { appI18n } from "../i18n";
 import type { MessageKey } from "../i18n";
@@ -90,6 +91,7 @@ import {
 	type PRReviewState,
 	type ReviewRunFacts,
 } from "../lib/session-reviews";
+import type { CloudCpAOReviewRun, CloudCpSessionReviewState, CloudCpPullRequestSummary } from "../lib/cloud-cp";
 
 type ProjectConfig = components["schemas"]["ProjectConfig"];
 type OpenReviewerTerminal = (target: { handleId: string; harness: string }) => void;
@@ -227,10 +229,16 @@ export const SessionInspector = memo(function SessionInspector({
 	// A persisted/controlled Reviews selection can outlive the last reviewable PR.
 	// Keep the shell on a real, visible tab instead of rendering an empty, unlabelled body.
 	const reviewsAvailable = reviewsTabVisible(session);
-	const availableViewDefs = browserOnly ? VIEW_DEFS.filter((entry) => entry.id === "browser") : reviewsAvailable
-		? VIEW_DEFS
-		: VIEW_DEFS.filter((entry) => entry.id !== "reviews");
-	const view: InspectorView = browserOnly ? "browser" : availableViewDefs.some((entry) => entry.id === requestedView) ? requestedView : "summary";
+	const availableViewDefs = browserOnly
+		? VIEW_DEFS.filter((entry) => entry.id === "browser")
+		: reviewsAvailable
+			? VIEW_DEFS
+			: VIEW_DEFS.filter((entry) => entry.id !== "reviews");
+	const view: InspectorView = browserOnly
+		? "browser"
+		: availableViewDefs.some((entry) => entry.id === requestedView)
+			? requestedView
+			: "summary";
 	useEffect(() => {
 		if (view === requestedView) return;
 		setInternalView(view);
@@ -274,16 +282,16 @@ export const SessionInspector = memo(function SessionInspector({
 					) : undefined
 				}
 				filesView={session ? <FilesView filesView={filesView} onOpenFiles={onOpenFiles} /> : undefined}
-						headerActions={
-							view === "browser" && !browserPoppedOut ? (
-								<>
-									<div className="browser-panel__topbar-host min-w-0 flex-1" ref={setBrowserTopbarHost} />
-									<span aria-hidden="true" className="session-inspector-actions-spacer" />
-								</>
-							) : (
-								<span aria-hidden="true" className="session-inspector-actions-spacer" />
-							)
-						}
+				headerActions={
+					view === "browser" && !browserPoppedOut ? (
+						<>
+							<div className="browser-panel__topbar-host min-w-0 flex-1" ref={setBrowserTopbarHost} />
+							<span aria-hidden="true" className="session-inspector-actions-spacer" />
+						</>
+					) : (
+						<span aria-hidden="true" className="session-inspector-actions-spacer" />
+					)
+				}
 				isVisible={isInspectorVisible}
 				loadingText={session ? undefined : t("inspector.loadingSession")}
 				onViewChange={setView}
@@ -291,7 +299,9 @@ export const SessionInspector = memo(function SessionInspector({
 					session ? <ReviewsView onOpenReviewFile={onOpenReviewFile} onOpenReviewerTerminal={onOpenReviewerTerminal} onOpenReviewerChat={onOpenReviewerChat} onWorkerMessageSent={onWorkerMessageSent} session={session} /> : undefined
 				}
 				summaryView={
-					session ? <SummaryView canOpenReviews={reviewsAvailable} onOpenReviews={openReviews} session={session} /> : undefined
+					session ? (
+						<SummaryView canOpenReviews={reviewsAvailable} onOpenReviews={openReviews} session={session} />
+					) : undefined
 				}
 				tabs={tabs}
 			/>
@@ -301,6 +311,9 @@ export const SessionInspector = memo(function SessionInspector({
 
 function reviewsTabVisible(session: WorkspaceSession | undefined): boolean {
 	if (!session) return true;
+	// Cloud PR facts are queried directly by CloudReviewsSection instead of
+	// piggybacking on the local daemon workspace projection.
+	if (session.cloud) return true;
 	return sortedPRs(session).some((pr) => pr.state === "open" || pr.state === "draft");
 }
 
@@ -328,18 +341,15 @@ const SummaryView = memo(function SummaryView({
 	const developerMode = useUiStore((state) => state.developerMode);
 	const usageQuery = useSessionUsage(session.id, developerMode);
 	const showUsage =
-		developerMode &&
-		!usageQuery.isLoading &&
-		!usageQuery.isError &&
-		hasMeaningfulSessionUsage(usageQuery.data);
+		developerMode && !usageQuery.isLoading && !usageQuery.isError && hasMeaningfulSessionUsage(usageQuery.data);
 	const showUsageError = developerMode && usageQuery.isError;
 	const prSummaries = sessionPRDisplaySummaries(session, query.data);
-	const prSectionTitle = prSummaries.length > 1 ? t("inspector.pullRequests", { count: prSummaries.length }) : t("inspector.pullRequest");
+	const prSectionTitle =
+		prSummaries.length > 1 ? t("inspector.pullRequests", { count: prSummaries.length }) : t("inspector.pullRequest");
 	const hasPRs = prSummaries.length > 0;
 	// Cloud orchestrators list the workers they spawned; local orchestrators
 	// have no parent/child model and every other session has no children.
-	const showWorkers =
-		session.kind === "orchestrator" && (session.cloud !== undefined || usePreviewData);
+	const showWorkers = session.kind === "orchestrator" && (session.cloud !== undefined || usePreviewData);
 	return (
 		<SessionInspectorSummaryView
 			activity={
@@ -450,13 +460,7 @@ function InspectorPolicyRow({
 					</Tooltip>
 				) : null}
 			</div>
-			<Switch
-				aria-label={ariaLabel}
-				checked={checked}
-				disabled={disabled}
-				id={id}
-				onCheckedChange={onCheckedChange}
-			/>
+			<Switch aria-label={ariaLabel} checked={checked} disabled={disabled} id={id} onCheckedChange={onCheckedChange} />
 		</div>
 	);
 }
@@ -477,10 +481,18 @@ function UsageCostTelemetry({ usage }: { usage: SessionUsage }) {
 						aria-label={
 							processedTokens === null
 								? t("inspector.usage.processedTokensUnavailable")
-								: t("inspector.usage.processedTokensAria", { count: exactProcessed })
+								: t("inspector.usage.processedTokensAria", {
+										count: exactProcessed,
+									})
 						}
 						className="mt-0.5 truncate font-mono text-md-sm font-medium text-settings-label"
-						title={processedTokens === null ? undefined : t("inspector.usage.processedTokensAria", { count: exactProcessed })}
+						title={
+							processedTokens === null
+								? undefined
+								: t("inspector.usage.processedTokensAria", {
+										count: exactProcessed,
+									})
+						}
 					>
 						{processedTokens === null ? t("inspector.usage.noUsageYet") : formatTelemetryTokenValue(processedTokens)}
 					</p>
@@ -517,11 +529,7 @@ function UsageCostTelemetry({ usage }: { usage: SessionUsage }) {
 						{showsAgentCost ? <span className="text-right">{t("inspector.usage.cost")}</span> : null}
 					</div>
 					{usage.harnesses.map((harness, index) => (
-						<UsageProviderRow
-							harness={harness}
-							key={`${harness.harness}:${index}`}
-							showCost={showsAgentCost}
-						/>
+						<UsageProviderRow harness={harness} key={`${harness.harness}:${index}`} showCost={showsAgentCost} />
 					))}
 				</div>
 			) : null}
@@ -566,7 +574,9 @@ function UsageAgentAttribution({ harness }: { harness: SessionUsage["harnesses"]
 					<button
 						aria-controls={detailID}
 						aria-expanded={open}
-						aria-label={t("inspector.usage.providerDetails", { name: harnessName })}
+						aria-label={t("inspector.usage.providerDetails", {
+							name: harnessName,
+						})}
 						className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left outline-none transition-colors hover:bg-interactive-hover focus-visible:bg-interactive-hover focus-visible:ring-1 focus-visible:ring-ring"
 						onClick={() => setOpen((current) => !current)}
 						type="button"
@@ -580,7 +590,9 @@ function UsageAgentAttribution({ harness }: { harness: SessionUsage["harnesses"]
 					</button>
 					{open ? (
 						<div
-							aria-label={t("inspector.usage.providerPeek", { name: harnessName })}
+							aria-label={t("inspector.usage.providerPeek", {
+								name: harnessName,
+							})}
 							className="mx-1 my-0.5 border-l border-(--color-border-settings-input) py-0.5 pl-2"
 							id={detailID}
 							role="region"
@@ -599,6 +611,7 @@ function UsageAgentAttribution({ harness }: { harness: SessionUsage["harnesses"]
 function AutoInjectCIPolicyControl({ session }: { session: WorkspaceSession }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const { client: cloudClient } = useCloudCp();
 	const [enabled, setEnabled] = useState(session.autoInjectCI ?? true);
 	useEffect(() => {
 		setEnabled(session.autoInjectCI ?? true);
@@ -606,11 +619,16 @@ function AutoInjectCIPolicyControl({ session }: { session: WorkspaceSession }) {
 	const save = useMutation({
 		mutationFn: async (autoInjectCI: boolean) => {
 			if (usePreviewData) return;
+			if (session.cloud) {
+				await cloudClient.updateSessionPreferences(session.cloud.orgId, session.id, { autoInjectCI });
+				return;
+			}
 			const { error, response } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/auto-inject-ci", {
 				params: { path: { sessionId: session.id } },
 				body: { autoInjectCI },
 			});
-			if (error) throw new Error(apiErrorMessage(error, t("inspector.ci.autoInjectError", { status: response.status })));
+			if (error)
+				throw new Error(apiErrorMessage(error, t("inspector.ci.autoInjectError", { status: response.status })));
 		},
 		onMutate: async (autoInjectCI) => {
 			await queryClient.cancelQueries({ queryKey: workspaceQueryKey });
@@ -653,13 +671,7 @@ function AutoInjectCIPolicyControl({ session }: { session: WorkspaceSession }) {
 	);
 }
 
-function UsageProviderRow({
-	harness,
-	showCost,
-}: {
-	harness: SessionUsage["harnesses"][number];
-	showCost: boolean;
-}) {
+function UsageProviderRow({ harness, showCost }: { harness: SessionUsage["harnesses"][number]; showCost: boolean }) {
 	const { t } = useTranslation();
 	const harnessName = formatHarnessName(harness.harness);
 
@@ -686,11 +698,7 @@ function ProviderUsageDetails({ harness }: { harness: SessionUsage["harnesses"][
 		<div>
 			{harness.models.length > 0 ? (
 				harness.models.map((model, index) => (
-					<UsageModelRow
-						key={`${model.modelId}:${index}`}
-						model={model}
-						showCost={showCost}
-					/>
+					<UsageModelRow key={`${model.modelId}:${index}`} model={model} showCost={showCost} />
 				))
 			) : (
 				<p className="px-1 py-1 text-2xs text-settings-muted">{t("inspector.usage.noModelTelemetry")}</p>
@@ -702,12 +710,17 @@ function ProviderUsageDetails({ harness }: { harness: SessionUsage["harnesses"][
 function AutoInjectReviewPolicyControl({ session }: { session: WorkspaceSession }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const { client: cloudClient } = useCloudCp();
 	const [enabled, setEnabled] = useState(session.autoInjectReview ?? true);
 	useEffect(() => {
 		setEnabled(session.autoInjectReview ?? true);
 	}, [session.id, session.autoInjectReview]);
 	const save = useMutation({
 		mutationFn: async (autoInjectReview: boolean) => {
+			if (session.cloud) {
+				await cloudClient.updateSessionPreferences(session.cloud.orgId, session.id, { autoInjectReview });
+				return;
+			}
 			const { error } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/auto-inject-review", {
 				params: { path: { sessionId: session.id } },
 				body: { autoInjectReview },
@@ -835,11 +848,19 @@ function UsageDisclosureRow({
 						<ChevronRight aria-hidden="true" className="size-3 shrink-0 text-settings-muted" />
 					)}
 					{icon}
-					<span className="truncate" title={nameTitle}>{name}</span>
+					<span className="truncate" title={nameTitle}>
+						{name}
+					</span>
 				</span>
 				<span
 					className="text-right font-mono text-2xs text-settings-label"
-					title={processedTokens === null ? undefined : t("inspector.usage.processedTokensAria", { count: exactProcessed })}
+					title={
+						processedTokens === null
+							? undefined
+							: t("inspector.usage.processedTokensAria", {
+									count: exactProcessed,
+								})
+					}
 				>
 					{processedTokens === null ? "—" : formatTelemetryTokenValue(processedTokens)}
 				</span>
@@ -866,7 +887,11 @@ function UsageDisclosureRow({
 function UsageCostValue({ cost }: { cost: EstimatedCost | null }) {
 	const { t } = useTranslation();
 	const value = formatEstimatedCost(cost);
-	const label = value ?? t("inspector.usage.metricUnavailable", { label: t("inspector.usage.cost") });
+	const label =
+		value ??
+		t("inspector.usage.metricUnavailable", {
+			label: t("inspector.usage.cost"),
+		});
 	return (
 		<span aria-label={label} className="text-right font-mono text-2xs text-settings-label" title={label}>
 			{value ?? t("usage.unavailable")}
@@ -884,11 +909,12 @@ function UsageCostValue({ cost }: { cost: EstimatedCost | null }) {
 function EstimatedCostInfo({ cost }: { cost: EstimatedCost | null }) {
 	const { t } = useTranslation();
 	const label = t("usage.estimatedCostInfoLabel");
-	const providerInfoKey = cost?.providerAttribution === "inferred"
-		? "usage.estimatedCostInfoInferred"
-		: cost?.providerAttribution === "mixed"
-			? "usage.estimatedCostInfoMixed"
-			: "usage.estimatedCostInfo";
+	const providerInfoKey =
+		cost?.providerAttribution === "inferred"
+			? "usage.estimatedCostInfoInferred"
+			: cost?.providerAttribution === "mixed"
+				? "usage.estimatedCostInfoMixed"
+				: "usage.estimatedCostInfo";
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
@@ -904,9 +930,7 @@ function EstimatedCostInfo({ cost }: { cost: EstimatedCost | null }) {
 			    so a downward tooltip covers the very number the reader came for. */}
 			<TooltipContent className="max-w-64 text-left" side="top">
 				<p>{t(providerInfoKey)}</p>
-				{cost?.coverage === "partial" ? (
-					<p className="mt-1.5">{t("usage.estimatedCostInfoPartial")}</p>
-				) : null}
+				{cost?.coverage === "partial" ? <p className="mt-1.5">{t("usage.estimatedCostInfoPartial")}</p> : null}
 			</TooltipContent>
 		</Tooltip>
 	);
@@ -916,7 +940,10 @@ function UsageMetrics({ totals }: { totals: SessionUsage["totals"] }) {
 	const { t } = useTranslation();
 	const cacheHitRate = formatCacheHitRate(totals.cachedInputTokens, totals.inputTokens);
 	return (
-		<dl className="grid grid-cols-2 gap-x-4 gap-y-2 @max-[300px]/inspector:grid-cols-1" data-testid="session-usage-metrics">
+		<dl
+			className="grid grid-cols-2 gap-x-4 gap-y-2 @max-[300px]/inspector:grid-cols-1"
+			data-testid="session-usage-metrics"
+		>
 			<UsageMetric label={t("inspector.usage.uncachedInputTokens")} metric={totals.uncachedInputTokens} />
 			<UsageMetric label={t("inspector.usage.cachedInputTokens")} metric={totals.cachedInputTokens} />
 			<UsageMetric label={t("inspector.usage.outputTokens")} metric={totals.outputTokens} />
@@ -1000,17 +1027,14 @@ const usageMetricKeys = [
 function usageScopes(usage: SessionUsage): SessionUsage["totals"][] {
 	return [
 		usage.totals,
-		...usage.harnesses.flatMap((harness) => [
-			harness.totals,
-			...harness.models.map((model) => model.totals),
-		]),
+		...usage.harnesses.flatMap((harness) => [harness.totals, ...harness.models.map((model) => model.totals)]),
 	];
 }
 
 function hasMeaningfulSessionUsage(usage?: SessionUsage): usage is SessionUsage {
 	if (!usage) return false;
-	return usageScopes(usage).some((totals) =>
-		totals.estimatedCost !== null || usageMetricKeys.some((key) => (totals[key] ?? 0) > 0),
+	return usageScopes(usage).some(
+		(totals) => totals.estimatedCost !== null || usageMetricKeys.some((key) => (totals[key] ?? 0) > 0),
 	);
 }
 
@@ -1064,7 +1088,11 @@ function formatModelName(modelID: string): string {
 			continue;
 		}
 		const normalized = part.toLowerCase();
-		formatted.push(normalized === "gpt" || normalized === "glm" ? normalized.toUpperCase() : `${part.charAt(0).toUpperCase()}${part.slice(1)}`);
+		formatted.push(
+			normalized === "gpt" || normalized === "glm"
+				? normalized.toUpperCase()
+				: `${part.charAt(0).toUpperCase()}${part.slice(1)}`,
+		);
 	}
 	return formatted.join(" ") || modelID;
 }
@@ -1075,9 +1103,14 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 	const queryClient = useQueryClient();
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const terminate = useTerminateSession();
+	const { client: cloudClient } = useCloudCp();
 	const policy = useMutation({
 		mutationFn: async (terminateOnPrMerge: boolean) => {
 			if (usePreviewData) return;
+			if (session.cloud) {
+				await cloudClient.updateSessionPreferences(session.cloud.orgId, session.id, { terminateOnPrMerge });
+				return;
+			}
 			const { error, response } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/merge-policy", {
 				params: { path: { sessionId: session.id } },
 				body: { terminateOnPrMerge },
@@ -1107,10 +1140,10 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 		const workspaces = queryClient.getQueryData<WorkspaceSummary[]>(workspaceQueryKey) ?? [];
 		const workspace = workspaces.find((w) => w.id === session.workspaceId);
 		const nextNav = resolveNextNavigationAfterSessionKill(workspace, session.id);
-		
+
 		setConfirmOpen(false);
 		terminate.mutate(session);
-		
+
 		if (nextNav.target === "session") {
 			void navigate({
 				to: "/projects/$projectId/sessions/$sessionId",
@@ -1233,7 +1266,9 @@ function PRSummaryCard({
 		},
 		onSuccess: async () => {
 			await Promise.all([
-				queryClient.invalidateQueries({ queryKey: sessionScmSummaryQueryKey(sessionId) }),
+				queryClient.invalidateQueries({
+					queryKey: sessionScmSummaryQueryKey(sessionId),
+				}),
 				queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
 			]);
 		},
@@ -1244,11 +1279,16 @@ function PRSummaryCard({
 		card: presentation,
 		href: prBrowserUrl(pr),
 		stateLabel: t(prStateLabelKeys[pr.state]),
-		reviewDetailsAction: canOpenReviews && pr.review.decision !== "none" ? (
-			<button className="whitespace-nowrap text-2xs text-settings-muted underline-offset-2 hover:underline" onClick={onOpenReviews} type="button">
-				{t("pr.review.viewDetails")} ↗
-			</button>
-		) : undefined,
+		reviewDetailsAction:
+			canOpenReviews && pr.review.decision !== "none" ? (
+				<button
+					className="whitespace-nowrap text-2xs text-settings-muted underline-offset-2 hover:underline"
+					onClick={onOpenReviews}
+					type="button"
+				>
+					{t("pr.review.viewDetails")} ↗
+				</button>
+			) : undefined,
 	};
 	return (
 		<InspectorPullRequestCardView
@@ -1423,7 +1463,11 @@ function timelineSortTime(timestamp: string | null | undefined): number {
 type ScmTimelineState = "ci_failed" | "changes_requested" | "conflict";
 
 function conflictPill() {
-	return { label: appI18n.t("inspector.conflict"), tone: "var(--color-danger)", breathe: false };
+	return {
+		label: appI18n.t("inspector.conflict"),
+		tone: "var(--color-danger)",
+		breathe: false,
+	};
 }
 
 function InspectorActivityPill({ activity }: { activity?: WorkspaceSession["activity"] }) {
@@ -1476,13 +1520,49 @@ const WORKER_DEFAULT_REVIEWERS: Partial<Record<WorkspaceSession["provider"], Rev
 	kimchi: "kimchi",
 };
 
-function resolveDefaultReviewerHarness(config: ProjectConfig | undefined, workerHarness: WorkspaceSession["provider"]): ReviewerHarness {
+function resolveDefaultReviewerHarness(
+	config: ProjectConfig | undefined,
+	workerHarness: WorkspaceSession["provider"],
+): ReviewerHarness {
 	const configuredHarness = config?.reviewers?.[0]?.harness;
 	if (configuredHarness) return configuredHarness as ReviewerHarness;
 	return WORKER_DEFAULT_REVIEWERS[workerHarness] ?? "claude-code";
 }
 
 function ReviewsSection({
+	session,
+	onOpenReviewFile,
+	onOpenReviewerTerminal,
+	onOpenReviewerChat,
+	onWorkerMessageSent,
+}: {
+	session: WorkspaceSession;
+	onOpenReviewFile?: (target: { line?: number; path: string }) => void;
+	onOpenReviewerTerminal?: OpenReviewerTerminal;
+	onOpenReviewerChat?: (reviewId: string) => void;
+	onWorkerMessageSent?: () => void;
+}) {
+	if (session.cloud) {
+		return (
+			<CloudReviewsSection
+				onOpenReviewFile={onOpenReviewFile}
+				onOpenReviewerTerminal={onOpenReviewerTerminal}
+				session={session}
+			/>
+		);
+	}
+	return (
+		<LocalReviewsSection
+			onOpenReviewFile={onOpenReviewFile}
+			onOpenReviewerTerminal={onOpenReviewerTerminal}
+			onOpenReviewerChat={onOpenReviewerChat}
+			onWorkerMessageSent={onWorkerMessageSent}
+			session={session}
+		/>
+	);
+}
+
+function LocalReviewsSection({
 	session,
 	onOpenReviewFile,
 	onOpenReviewerTerminal,
@@ -1530,9 +1610,7 @@ function ReviewsSection({
 	// or the whole project. Keep local state responsive while the daemon persists
 	// it, and resync when the inspector moves to another session.
 	const currentDefaultReviewerHarness = resolveDefaultReviewerHarness(projectConfigQuery.data, session.provider);
-	const [reviewerOverride, setReviewerOverride] = useState<ReviewerHarness | "">(
-		session.reviewerHarness ?? "",
-	);
+	const [reviewerOverride, setReviewerOverride] = useState<ReviewerHarness | "">(session.reviewerHarness ?? "");
 	const [reviewerModel, setReviewerModel] = useState(session.reviewerConfig?.model ?? "");
 	const [reviewerMode, setReviewerMode] = useState(session.reviewerConfig?.mode ?? "");
 	useEnsureAgentReadiness({
@@ -1565,7 +1643,9 @@ function ReviewsSection({
 			if (data) queryClient.setQueryData(["session-reviews", session.id], data);
 		},
 		onSuccess: () => {
-			void queryClient.invalidateQueries({ queryKey: ["session-reviews", session.id] });
+			void queryClient.invalidateQueries({
+				queryKey: ["session-reviews", session.id],
+			});
 			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
 		},
 	});
@@ -1573,7 +1653,9 @@ function ReviewsSection({
 		mutationFn: async (enabled: boolean) => {
 			// Intent, not effect: emitted before the PUT, so a failed save still
 			// counts as the user reaching for the switch.
-			void captureRendererEvent("ao.renderer.review_auto_review_toggled", { enabled });
+			void captureRendererEvent("ao.renderer.review_auto_review_toggled", {
+				enabled,
+			});
 			const { error } = await apiClient.PUT("/api/v1/sessions/{sessionId}/auto-review", {
 				params: { path: { sessionId: session.id } },
 				body: { enabled },
@@ -1588,12 +1670,23 @@ function ReviewsSection({
 		mutationFn: async () => {
 			// No override sends no body at all, leaving the default path on the wire
 			// exactly as it was.
-			const reviewerConfig = reviewerModel || reviewerMode
-				? { ...(reviewerModel ? { model: reviewerModel } : {}), ...(reviewerMode ? { mode: reviewerMode } : {}) }
-				: undefined;
+			const reviewerConfig =
+				reviewerModel || reviewerMode
+					? {
+							...(reviewerModel ? { model: reviewerModel } : {}),
+							...(reviewerMode ? { mode: reviewerMode } : {}),
+						}
+					: undefined;
 			const { data, error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/reviews/trigger", {
 				params: { path: { sessionId: session.id } },
-				...(reviewerOverride || reviewerConfig ? { body: { ...(reviewerOverride ? { harness: reviewerOverride } : {}), ...(reviewerConfig ? { agentConfig: reviewerConfig } : {}) } } : {}),
+				...(reviewerOverride || reviewerConfig
+					? {
+							body: {
+								...(reviewerOverride ? { harness: reviewerOverride } : {}),
+								...(reviewerConfig ? { agentConfig: reviewerConfig } : {}),
+							},
+						}
+					: {}),
 			});
 			if (error) throw new Error(apiErrorMessage(error, t("inspector.unableStartReview")));
 			return { data, reused: response?.status === 200 };
@@ -1602,7 +1695,9 @@ function ReviewsSection({
 			setReviewNotice(null);
 		},
 		onSuccess: ({ data, reused }) => {
-			void queryClient.invalidateQueries({ queryKey: ["session-reviews", session.id] });
+			void queryClient.invalidateQueries({
+				queryKey: ["session-reviews", session.id],
+			});
 			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
 			const started = data?.reviews?.find((review) => review.status === "running" && review.latestRun);
 			if (reused || !started?.latestRun) {
@@ -1626,7 +1721,9 @@ function ReviewsSection({
 		},
 		onSuccess: () => {
 			setReviewNotice(null);
-			void queryClient.invalidateQueries({ queryKey: ["session-reviews", session.id] });
+			void queryClient.invalidateQueries({
+				queryKey: ["session-reviews", session.id],
+			});
 			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
 		},
 	});
@@ -1692,7 +1789,11 @@ function ReviewsSection({
 					setReviewerOverride(next);
 					setReviewerModel(config.model ?? "");
 					setReviewerMode(config.mode ?? "");
-					saveReviewer.mutate({ harness: next, model: config.model ?? "", mode: config.mode ?? "" });
+					saveReviewer.mutate({
+						harness: next,
+						model: config.model ?? "",
+						mode: config.mode ?? "",
+					});
 				}}
 				onReviewerHarnessPreviewChange={(next) => {
 					setReviewerOverride(next);
@@ -1712,6 +1813,240 @@ function ReviewsSection({
 			/>
 		</div>
 	);
+}
+
+function CloudReviewsSection({
+	session,
+	onOpenReviewFile,
+	onOpenReviewerTerminal,
+}: {
+	session: WorkspaceSession;
+	onOpenReviewFile?: (target: { line?: number; path: string }) => void;
+	onOpenReviewerTerminal?: OpenReviewerTerminal;
+}) {
+	const { t } = useTranslation();
+	const { client, ready, baseUrl } = useCloudCp();
+	const queryClient = useQueryClient();
+	const orgId = session.cloud!.orgId;
+	const [reviewNotice, setReviewNotice] = useState<string | null>(null);
+	const pullRequestsQuery = useQuery({
+		queryKey: ["cloud-session-pull-requests", baseUrl, orgId, session.id],
+		enabled: ready,
+		queryFn: () => client.listSessionPullRequests(orgId, session.id),
+		retry: 1,
+	});
+	const reviewsQuery = useQuery({
+		queryKey: ["cloud-session-reviews", baseUrl, orgId, session.id],
+		enabled: ready,
+		queryFn: () => client.getSessionReviewState(orgId, session.id),
+		retry: 1,
+		refetchInterval: (query) =>
+			query.state.data?.reviews.some((review) => review.status === "running") ? 2500 : false,
+	});
+	const harnessesQuery = useQuery({
+		queryKey: ["cloud-session-reviewer-harnesses", baseUrl, orgId, session.id],
+		enabled: ready && session.runtimeConnected !== false,
+		queryFn: () => client.inspectSessionReviewerHarnesses(orgId, session.id),
+		retry: 1,
+	});
+	const effectiveReviewerHarness = reviewsQuery.data?.reviewerHarness || session.reviewerHarness || session.provider;
+	const [selectedReviewerHarness, setSelectedReviewerHarness] = useState(effectiveReviewerHarness);
+	useEffect(() => setSelectedReviewerHarness(effectiveReviewerHarness), [effectiveReviewerHarness, session.id]);
+	const [autoReviewEnabled, setAutoReviewEnabled] = useState(session.autoReviewEnabled === true);
+	useEffect(
+		() => setAutoReviewEnabled(session.autoReviewEnabled === true),
+		[session.autoReviewEnabled, session.id],
+	);
+	const triggerReview = useMutation({
+		mutationFn: () => client.triggerSessionReviews(orgId, session.id),
+		onMutate: () => setReviewNotice(null),
+		onSuccess: (data) => {
+			queryClient.setQueryData(["cloud-session-reviews", baseUrl, orgId, session.id], data);
+			const running = data.reviews.find((review) => review.status === "running");
+			if (running && data.reviewerHandleId) {
+				onOpenReviewerTerminal?.({
+					handleId: data.reviewerHandleId,
+					harness: data.reviewerHarness || session.provider,
+				});
+			} else if (!running) {
+				setReviewNotice(t("inspector.reviewAlreadyRanForCommit"));
+			}
+		},
+	});
+	const cancelReview = useMutation({
+		mutationFn: () => client.cancelSessionReviews(orgId, session.id),
+		onSuccess: (data) => {
+			setReviewNotice(null);
+			queryClient.setQueryData(["cloud-session-reviews", baseUrl, orgId, session.id], data);
+		},
+	});
+	const updateReviewerHarness = useMutation({
+		mutationFn: (reviewerHarness: string) => client.updateSessionPreferences(orgId, session.id, { reviewerHarness }),
+		onSuccess: (data) => {
+			queryClient.setQueryData(
+				["cloud-session-reviews", baseUrl, orgId, session.id],
+				(current: CloudCpSessionReviewState | undefined) =>
+					current
+						? {
+								...current,
+								reviewerHarness: data.session.reviewerHarness || data.session.harness,
+							}
+						: current,
+			);
+			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+		},
+	});
+	const installReviewerHarness = useMutation({
+		mutationFn: (harness: string) => client.installSessionReviewerHarness(orgId, session.id, harness),
+		onSuccess: async (_status, harness) => {
+			await queryClient.invalidateQueries({
+				queryKey: ["cloud-session-reviewer-harnesses", baseUrl, orgId, session.id],
+			});
+			updateReviewerHarness.mutate(harness);
+		},
+	});
+	const updateAutoReview = useMutation({
+		mutationFn: (autoReviewEnabled: boolean) =>
+			client.updateSessionPreferences(orgId, session.id, { autoReviewEnabled }),
+		onMutate: (enabled) => {
+			const previous = autoReviewEnabled;
+			setAutoReviewEnabled(enabled);
+			return { previous };
+		},
+		onError: (_error, _enabled, context) => {
+			setAutoReviewEnabled(context?.previous ?? session.autoReviewEnabled === true);
+		},
+		onSuccess: (data) => {
+			setAutoReviewEnabled(data.session.autoReviewEnabled === true);
+			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+		},
+	});
+	const selectedHarnessStatus = harnessesQuery.data?.harnesses.find(
+		(entry) => entry.harness === selectedReviewerHarness,
+	);
+	// The currently running worker proves its own harness binary exists. Keep
+	// review available while the optional inspection request is still loading
+	// (and for older control planes that do not expose it yet).
+	const selectedHarnessReady =
+		selectedHarnessStatus?.status === "ready" ||
+		(selectedHarnessStatus === undefined && selectedReviewerHarness === session.provider);
+	const credentialHarnesses = reviewsQuery.data?.availableReviewerHarnesses ?? [];
+	const selectedCredentialReady =
+		credentialHarnesses.includes(selectedReviewerHarness) ||
+		(credentialHarnesses.length === 0 && selectedReviewerHarness === session.provider);
+	const cloudSession = {
+		...session,
+		prs: (pullRequestsQuery.data?.pullRequests ?? []).map(cloudPullRequestFacts),
+	};
+	const reviewState = cloudReviewsToLocal(reviewsQuery.data, session.provider);
+	return (
+		<div className="p-2">
+			<ReviewPanel
+				cloud
+				autoReviewEnabled={autoReviewEnabled}
+				error={
+					pullRequestsQuery.error ??
+					reviewsQuery.error ??
+					harnessesQuery.error ??
+					triggerReview.error ??
+					cancelReview.error ??
+					updateReviewerHarness.error ??
+					installReviewerHarness.error ??
+					updateAutoReview.error
+				}
+				isAutoReviewSaving={updateAutoReview.isPending}
+				isCancelling={cancelReview.isPending}
+				isKilling={false}
+				isLoading={pullRequestsQuery.isLoading || reviewsQuery.isLoading}
+				isSwitchingReviewer={false}
+				isTriggering={triggerReview.isPending}
+				notice={reviewNotice}
+				onAutoReviewChange={(enabled) => updateAutoReview.mutate(enabled)}
+				onCancel={() => cancelReview.mutate()}
+				onKill={() => undefined}
+				onReviewerHarnessPreviewChange={() => undefined}
+				onReviewerOverrideChange={() => undefined}
+				cloudReviewerHarnesses={reviewsQuery.data?.availableReviewerHarnesses ?? []}
+				cloudReviewerHarness={selectedReviewerHarness}
+				cloudHarnessStatuses={harnessesQuery.data?.harnesses ?? []}
+				cloudReviewerReady={selectedHarnessReady && selectedCredentialReady}
+				isInstallingCloudHarness={installReviewerHarness.isPending}
+				onCloudInstallHarness={() => installReviewerHarness.mutate(selectedReviewerHarness)}
+				onCloudReviewerHarnessChange={(harness) => {
+					setSelectedReviewerHarness(harness);
+					const status = harnessesQuery.data?.harnesses.find((entry) => entry.harness === harness);
+					if (status?.status === "ready") updateReviewerHarness.mutate(harness);
+				}}
+				onTrigger={() => triggerReview.mutate()}
+				reviewerHandleId={reviewsQuery.data?.reviewerHandleId ?? ""}
+				reviewerMode=""
+				reviewerModel=""
+				reviewerOverride=""
+				reviewStates={reviewState.reviews}
+				session={cloudSession}
+			/>
+			<MergedReviewsSection
+				githubPRs={[]}
+				isLoading={pullRequestsQuery.isLoading || reviewsQuery.isLoading}
+				onOpenReviewFile={onOpenReviewFile}
+				reviewStates={reviewState.reviews}
+				runs={reviewState.runs}
+				session={cloudSession}
+			/>
+		</div>
+	);
+}
+
+function cloudPullRequestFacts(pr: CloudCpPullRequestSummary): WorkspaceSession["prs"][number] {
+	return {
+		url: pr.url,
+		number: pr.number,
+		state: pr.state,
+		ci: "unknown",
+		review: "none",
+		mergeability: "unknown",
+		reviewComments: false,
+		updatedAt: pr.updatedAt,
+	};
+}
+
+function cloudReviewRun(run: CloudCpAOReviewRun, harness: string): ReviewRunFacts {
+	return {
+		autoInjectReview: false,
+		batchId: run.batchId || `cloud:${run.id}`,
+		body: run.body,
+		createdAt: run.createdAt,
+		githubReviewId: run.providerReviewId,
+		harness: run.harness || harness,
+		id: run.id,
+		prUrl: run.pullRequestUrl,
+		reviewId: run.reviewId,
+		sessionId: run.sessionId,
+		status: run.status,
+		targetSha: run.targetSha,
+		triggerSource: run.triggerSource,
+		verdict: run.verdict,
+	};
+}
+
+function cloudReviewsToLocal(
+	data: CloudCpSessionReviewState | undefined,
+	harness: string,
+): { reviews: PRReviewState[]; runs: ReviewRunFacts[] } {
+	if (!data) return { reviews: [], runs: [] };
+	const convert = (run: CloudCpAOReviewRun | undefined) => (run ? cloudReviewRun(run, harness) : undefined);
+	return {
+		reviews: data.reviews.map((review) => ({
+			prNumber: review.pullRequestNumber,
+			prUrl: review.pullRequestUrl,
+			targetSha: review.targetSha,
+			title: review.title,
+			status: review.status,
+			latestRun: convert(review.latestRun),
+			previousRun: convert(review.previousRun),
+		})),
+		runs: data.runs.map((run) => cloudReviewRun(run, harness)),
+	};
 }
 
 /**
@@ -1740,6 +2075,7 @@ function MergedReviewsSection({
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const { client: cloudClient } = useCloudCp();
 	const openInAOBrowser = useSessionBrowserLink(session);
 	const openReviewStates = openReviewStatesFor(session, reviewStates);
 	const runsByPR = runsByPRFrom(openReviewStates, runs);
@@ -1748,7 +2084,10 @@ function MergedReviewsSection({
 	// Union by PR number, newest PR first. A PR can appear on either side alone.
 	const byNumber = new Map<number, { ao?: PRReviewState; github?: SessionPRSummary }>();
 	for (const state of aoStates) {
-		byNumber.set(state.prNumber, { ...byNumber.get(state.prNumber), ao: state });
+		byNumber.set(state.prNumber, {
+			...byNumber.get(state.prNumber),
+			ao: state,
+		});
 	}
 	for (const pr of githubPRs) {
 		byNumber.set(pr.number, { ...byNumber.get(pr.number), github: pr });
@@ -1758,20 +2097,32 @@ function MergedReviewsSection({
 	const requestRereview = async (review: InspectorGithubReview) => {
 		const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/reviews/rerequest", {
 			params: { path: { sessionId: session.id } },
-			body: { pullRequestUrl: review.pullRequestUrl, reviewerId: review.reviewerId },
+			body: {
+				pullRequestUrl: review.pullRequestUrl,
+				reviewerId: review.reviewerId,
+			},
 		});
 		if (error) throw new Error(apiErrorMessage(error, "Unable to request re-review"));
 	};
 	const resolveInlineComment = async (comment: InspectorInlineComment) => {
 		const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/reviews/comments/resolve", {
 			params: { path: { sessionId: session.id } },
-			body: { pullRequestUrl: comment.pullRequestUrl, commentUrl: comment.url ?? "" },
+			body: {
+				pullRequestUrl: comment.pullRequestUrl,
+				commentUrl: comment.url ?? "",
+			},
 		});
 		if (error) throw new Error(apiErrorMessage(error, "Unable to resolve review comment"));
-		void queryClient.invalidateQueries({ queryKey: sessionScmSummaryQueryKey(session.id) });
+		void queryClient.invalidateQueries({
+			queryKey: sessionScmSummaryQueryKey(session.id),
+		});
 		void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
 	};
 	const sendMessageToWorker = async (message: string, fallbackError: string) => {
+		if (session.cloud) {
+			await cloudClient.sendSessionMessage(session.cloud.orgId, session.id, { text: message });
+			return;
+		}
 		if (session.mode === "chat") {
 			const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/conversation/messages", {
 				params: { path: { sessionId: session.id } },
@@ -1791,218 +2142,240 @@ function MergedReviewsSection({
 		onWorkerMessageSent?.();
 	};
 	const sendReviewSummaryToWorker = async (summary: InspectorReviewSummaryAction) => {
+		if (session.cloud) {
+			const matchingRun = [...runs]
+				.sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+				.find(
+					(run) =>
+						(aoReviewCommentUrl(run) ?? run.prUrl) === (summary.url || summary.pullRequestUrl) &&
+						run.body.trim() === summary.body.trim(),
+				);
+			if (!matchingRun) throw new Error("Unable to find the stored Cloud review to send to the worker agent");
+			await cloudClient.sendSessionReviewToWorker(session.cloud.orgId, session.id, matchingRun.id);
+			onWorkerMessageSent?.();
+			return;
+		}
 		await sendMessageToWorker(formatReviewSummaryMessage(summary), "Unable to send review summary to worker agent");
 		onWorkerMessageSent?.();
 	};
-	const groups: InspectorReviewGroup[] = rows.map(([number, { ao, github }]) => {
-		const aoRuns = ao ? [...(runsByPR.get(ao.prUrl) ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt)) : [];
-		const entries = (github?.review?.reviews ?? []).filter(
-			(entry) => !externalReviewActorMatchesPRAuthor(entry.reviewerId, github?.author),
-		);
-		const allUnresolvedReviewers = github?.review?.unresolvedBy ?? [];
-		const allResolvedReviewers = github?.review?.resolvedBy ?? [];
-		const agentReviewIds = new Set(aoRuns.map((run) => run.githubReviewId).filter(Boolean));
-		const agentComments = new Map<string, { inlineComments: InspectorInlineComment[]; resolvedComments: InspectorInlineComment[] }>();
-		const partitionReviewerComments = (
-			reviewers: typeof allUnresolvedReviewers,
-			resolved: boolean,
-		) => reviewers
-			.map((reviewer) => {
-				const externalLinks = [] as typeof reviewer.links;
-				for (const link of reviewer.links) {
-					const reviewId = link.reviewId?.trim();
-					if (!reviewId || !agentReviewIds.has(reviewId)) {
-						externalLinks.push(link);
-						continue;
-					}
-					const comments = agentComments.get(reviewId) ?? { inlineComments: [], resolvedComments: [] };
-					const comment = {
-						autoInjectReview: link.autoInjectReview,
-						body: link.body,
-						file: link.file,
-						line: link.line,
-						pullRequestUrl: github?.url,
-						resolved,
-						reviewerId: reviewer.reviewerId,
-						url: link.url || reviewer.reviewUrl,
-					};
-					if (resolved) comments.resolvedComments.push(comment);
-					else comments.inlineComments.push(comment);
-					agentComments.set(reviewId, comments);
+	const groups: InspectorReviewGroup[] = rows
+		.map(([number, { ao, github }]) => {
+			const aoRuns = ao
+				? [...(runsByPR.get(ao.prUrl) ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+				: [];
+			const entries = (github?.review?.reviews ?? []).filter(
+				(entry) => !externalReviewActorMatchesPRAuthor(entry.reviewerId, github?.author),
+			);
+			const allUnresolvedReviewers = github?.review?.unresolvedBy ?? [];
+			const allResolvedReviewers = github?.review?.resolvedBy ?? [];
+			const agentReviewIds = new Set(aoRuns.map((run) => run.githubReviewId).filter(Boolean));
+			const agentComments = new Map<
+				string,
+				{
+					inlineComments: InspectorInlineComment[];
+					resolvedComments: InspectorInlineComment[];
 				}
-				return { ...reviewer, count: externalLinks.length, links: externalLinks };
-			})
-			.filter((reviewer) => reviewer.links.length > 0);
-		const unresolvedReviewers = partitionReviewerComments(allUnresolvedReviewers, false).filter(
-			(reviewer) => !externalReviewActorMatchesPRAuthor(reviewer.reviewerId, github?.author),
-		);
-		const resolvedReviewers = partitionReviewerComments(allResolvedReviewers, true).filter(
-			(reviewer) => !externalReviewActorMatchesPRAuthor(reviewer.reviewerId, github?.author),
-		);
-		const unresolved = unresolvedReviewers.reduce((count, reviewer) => count + reviewer.count, 0);
-		const reviewRuns = aoRuns.map((run) => {
-			const reviewUrl = aoReviewCommentUrl(run);
-			return {
-				autoInjectReview: run.autoInjectReview,
-				body: run.body,
-				createdAtLabel: formatTimeCompact(run.createdAt),
-				harness: run.harness || "reviewer",
-				id: run.id,
-				inlineComments: agentComments.get(run.githubReviewId)?.inlineComments ?? [],
-				resolvedComments: agentComments.get(run.githubReviewId)?.resolvedComments ?? [],
-				status: run.status,
-				url: reviewUrl ?? (ao?.prUrl || null),
-				verdict: githubVerdict(run.verdict, t),
-			};
-		});
-		const unresolvedByReviewer = new Map(
-			unresolvedReviewers.map((reviewer) => [reviewer.reviewerId, reviewer]),
-		);
-		const resolvedByReviewer = new Map(
-			resolvedReviewers.map((reviewer) => [reviewer.reviewerId, reviewer]),
-		);
-		const externalEntries = entries.map((entry) => {
-			const reviewer = unresolvedByReviewer.get(entry.reviewerId);
-			const resolvedReviewer = resolvedByReviewer.get(entry.reviewerId);
-			unresolvedByReviewer.delete(entry.reviewerId);
-			resolvedByReviewer.delete(entry.reviewerId);
-			return {
-				body: entry.body,
-				canRequestRereview: canRequestPRRereview(entry.verdict, github?.url),
-				id: entry.reviewUrl || `${entry.reviewerId}:${entry.submittedAt}`,
-				pullRequestUrl: github?.url,
-				inlineComments: (reviewer?.links ?? []).map((link) => ({
-					autoInjectReview: link.autoInjectReview,
-					body: link.body,
-					file: link.file,
-					line: link.line,
-					pullRequestUrl: github?.url,
-					url: link.url || reviewer?.reviewUrl,
-				})),
-				resolvedComments: (resolvedReviewer?.links ?? []).map((link) => ({
-					autoInjectReview: link.autoInjectReview,
-					body: link.body,
-					file: link.file,
-					line: link.line,
-					pullRequestUrl: github?.url,
-					resolved: true,
-					url: link.url || resolvedReviewer?.reviewUrl,
-				})),
-				isBot: entry.isBot,
-				reviewerId: entry.reviewerId,
-				reviewUrl: entry.reviewUrl,
-				submittedAt: entry.submittedAt,
-				submittedAtLabel: formatTimeCompact(entry.submittedAt),
-				verdict: githubVerdict(entry.verdict, t),
-			};
-		});
-		for (const reviewer of unresolvedByReviewer.values()) {
-			const resolvedReviewer = resolvedByReviewer.get(reviewer.reviewerId);
-			resolvedByReviewer.delete(reviewer.reviewerId);
-			externalEntries.push({
-				body: undefined,
-				canRequestRereview: canRequestPRRereview("changes_requested", github?.url),
-				id: `unresolved:${reviewer.reviewerId}:${number}`,
-				pullRequestUrl: github?.url,
-				inlineComments: reviewer.links.map((link) => ({
-					autoInjectReview: link.autoInjectReview,
-					body: link.body,
-					file: link.file,
-					line: link.line,
-					pullRequestUrl: github?.url,
-					url: link.url || reviewer.reviewUrl,
-				})),
-				resolvedComments: (resolvedReviewer?.links ?? []).map((link) => ({
-					autoInjectReview: link.autoInjectReview,
-					body: link.body,
-					file: link.file,
-					line: link.line,
-					pullRequestUrl: github?.url,
-					resolved: true,
-					url: link.url || resolvedReviewer?.reviewUrl,
-				})),
-				isBot: reviewer.isBot,
-				reviewerId: reviewer.reviewerId,
-				reviewUrl: reviewer.reviewUrl,
-				submittedAt: "",
-				submittedAtLabel: "",
-				verdict: githubVerdict("none", t),
-			});
-		}
-		for (const reviewer of resolvedByReviewer.values()) {
-			externalEntries.push({
-				body: undefined,
-				canRequestRereview: false,
-				id: `resolved:${reviewer.reviewerId}:${number}`,
-				pullRequestUrl: github?.url,
-				inlineComments: [],
-				resolvedComments: reviewer.links.map((link) => ({
-					autoInjectReview: link.autoInjectReview,
-					body: link.body,
-					file: link.file,
-					line: link.line,
-					pullRequestUrl: github?.url,
-					resolved: true,
-					url: link.url || reviewer.reviewUrl,
-				})),
-				isBot: reviewer.isBot,
-				reviewerId: reviewer.reviewerId,
-				reviewUrl: reviewer.reviewUrl,
-				submittedAt: "",
-				submittedAtLabel: "",
-				verdict: githubVerdict("none", t),
-			});
-		}
-		return {
-			ao: ao
-				? {
-						dimmed: ao.status === "ineligible",
-						historical:
-							ao.status === "needs_review" &&
-							Boolean(ao.previousRun) &&
-							(!ao.latestRun || ao.latestRun.status === "failed" || ao.latestRun.status === "cancelled"),
-						notInjected: aoRuns.some((run) => run.autoInjectReview === false),
-						runs: reviewRuns,
-					}
-				: undefined,
-			github: github
-				? {
-						entries: externalEntries,
-						notInjected:
-							entries.some((review) => review.autoInjectReview === false) ||
-							unresolvedReviewers.some((reviewer) =>
-								reviewer.links.some((link) => link.autoInjectReview === false),
-							),
-						unresolved,
-						unresolvedBy: unresolvedReviewers.map((reviewer) => ({
-							count: reviewer.count,
-							isBot: reviewer.isBot,
-							links: reviewer.links.map((link) => ({
+			>();
+			const partitionReviewerComments = (reviewers: typeof allUnresolvedReviewers, resolved: boolean) =>
+				reviewers
+					.map((reviewer) => {
+						const externalLinks = [] as typeof reviewer.links;
+						for (const link of reviewer.links) {
+							const reviewId = link.reviewId?.trim();
+							if (!reviewId || !agentReviewIds.has(reviewId)) {
+								externalLinks.push(link);
+								continue;
+							}
+							const comments = agentComments.get(reviewId) ?? {
+								inlineComments: [],
+								resolvedComments: [],
+							};
+							const comment = {
 								autoInjectReview: link.autoInjectReview,
 								body: link.body,
 								file: link.file,
 								line: link.line,
 								pullRequestUrl: github?.url,
-								url: link.url,
+								resolved,
+								reviewerId: reviewer.reviewerId,
+								url: link.url || reviewer.reviewUrl,
+							};
+							if (resolved) comments.resolvedComments.push(comment);
+							else comments.inlineComments.push(comment);
+							agentComments.set(reviewId, comments);
+						}
+						return {
+							...reviewer,
+							count: externalLinks.length,
+							links: externalLinks,
+						};
+					})
+					.filter((reviewer) => reviewer.links.length > 0);
+			const unresolvedReviewers = partitionReviewerComments(allUnresolvedReviewers, false).filter(
+				(reviewer) => !externalReviewActorMatchesPRAuthor(reviewer.reviewerId, github?.author),
+			);
+			const resolvedReviewers = partitionReviewerComments(allResolvedReviewers, true).filter(
+				(reviewer) => !externalReviewActorMatchesPRAuthor(reviewer.reviewerId, github?.author),
+			);
+			const unresolved = unresolvedReviewers.reduce((count, reviewer) => count + reviewer.count, 0);
+			const reviewRuns = aoRuns.map((run) => {
+				const reviewUrl = aoReviewCommentUrl(run);
+				return {
+					autoInjectReview: run.autoInjectReview,
+					body: run.body,
+					createdAtLabel: formatTimeCompact(run.createdAt),
+					harness: run.harness || "reviewer",
+					id: run.id,
+					inlineComments: agentComments.get(run.githubReviewId)?.inlineComments ?? [],
+					resolvedComments: agentComments.get(run.githubReviewId)?.resolvedComments ?? [],
+					status: run.status,
+					url: reviewUrl ?? (ao?.prUrl || null),
+					verdict: githubVerdict(run.verdict, t),
+				};
+			});
+			const unresolvedByReviewer = new Map(unresolvedReviewers.map((reviewer) => [reviewer.reviewerId, reviewer]));
+			const resolvedByReviewer = new Map(resolvedReviewers.map((reviewer) => [reviewer.reviewerId, reviewer]));
+			const externalEntries = entries.map((entry) => {
+				const reviewer = unresolvedByReviewer.get(entry.reviewerId);
+				const resolvedReviewer = resolvedByReviewer.get(entry.reviewerId);
+				unresolvedByReviewer.delete(entry.reviewerId);
+				resolvedByReviewer.delete(entry.reviewerId);
+				return {
+					body: entry.body,
+					canRequestRereview: canRequestPRRereview(entry.verdict, github?.url),
+					id: entry.reviewUrl || `${entry.reviewerId}:${entry.submittedAt}`,
+					pullRequestUrl: github?.url,
+					inlineComments: (reviewer?.links ?? []).map((link) => ({
+						autoInjectReview: link.autoInjectReview,
+						body: link.body,
+						file: link.file,
+						line: link.line,
+						pullRequestUrl: github?.url,
+						url: link.url || reviewer?.reviewUrl,
+					})),
+					resolvedComments: (resolvedReviewer?.links ?? []).map((link) => ({
+						autoInjectReview: link.autoInjectReview,
+						body: link.body,
+						file: link.file,
+						line: link.line,
+						pullRequestUrl: github?.url,
+						resolved: true,
+						url: link.url || resolvedReviewer?.reviewUrl,
+					})),
+					isBot: entry.isBot,
+					reviewerId: entry.reviewerId,
+					reviewUrl: entry.reviewUrl,
+					submittedAt: entry.submittedAt,
+					submittedAtLabel: formatTimeCompact(entry.submittedAt),
+					verdict: githubVerdict(entry.verdict, t),
+				};
+			});
+			for (const reviewer of unresolvedByReviewer.values()) {
+				const resolvedReviewer = resolvedByReviewer.get(reviewer.reviewerId);
+				resolvedByReviewer.delete(reviewer.reviewerId);
+				externalEntries.push({
+					body: undefined,
+					canRequestRereview: canRequestPRRereview("changes_requested", github?.url),
+					id: `unresolved:${reviewer.reviewerId}:${number}`,
+					pullRequestUrl: github?.url,
+					inlineComments: reviewer.links.map((link) => ({
+						autoInjectReview: link.autoInjectReview,
+						body: link.body,
+						file: link.file,
+						line: link.line,
+						pullRequestUrl: github?.url,
+						url: link.url || reviewer.reviewUrl,
+					})),
+					resolvedComments: (resolvedReviewer?.links ?? []).map((link) => ({
+						autoInjectReview: link.autoInjectReview,
+						body: link.body,
+						file: link.file,
+						line: link.line,
+						pullRequestUrl: github?.url,
+						resolved: true,
+						url: link.url || resolvedReviewer?.reviewUrl,
+					})),
+					isBot: reviewer.isBot,
+					reviewerId: reviewer.reviewerId,
+					reviewUrl: reviewer.reviewUrl,
+					submittedAt: "",
+					submittedAtLabel: "",
+					verdict: githubVerdict("none", t),
+				});
+			}
+			for (const reviewer of resolvedByReviewer.values()) {
+				externalEntries.push({
+					body: undefined,
+					canRequestRereview: false,
+					id: `resolved:${reviewer.reviewerId}:${number}`,
+					pullRequestUrl: github?.url,
+					inlineComments: [],
+					resolvedComments: reviewer.links.map((link) => ({
+						autoInjectReview: link.autoInjectReview,
+						body: link.body,
+						file: link.file,
+						line: link.line,
+						pullRequestUrl: github?.url,
+						resolved: true,
+						url: link.url || reviewer.reviewUrl,
+					})),
+					isBot: reviewer.isBot,
+					reviewerId: reviewer.reviewerId,
+					reviewUrl: reviewer.reviewUrl,
+					submittedAt: "",
+					submittedAtLabel: "",
+					verdict: githubVerdict("none", t),
+				});
+			}
+			return {
+				ao: ao
+					? {
+							dimmed: ao.status === "ineligible",
+							historical:
+								ao.status === "needs_review" &&
+								Boolean(ao.previousRun) &&
+								(!ao.latestRun || ao.latestRun.status === "failed" || ao.latestRun.status === "cancelled"),
+							notInjected: aoRuns.some((run) => run.autoInjectReview === false),
+							runs: reviewRuns,
+						}
+					: undefined,
+				github: github
+					? {
+							entries: externalEntries,
+							notInjected:
+								entries.some((review) => review.autoInjectReview === false) ||
+								unresolvedReviewers.some((reviewer) => reviewer.links.some((link) => link.autoInjectReview === false)),
+							unresolved,
+							unresolvedBy: unresolvedReviewers.map((reviewer) => ({
+								count: reviewer.count,
+								isBot: reviewer.isBot,
+								links: reviewer.links.map((link) => ({
+									autoInjectReview: link.autoInjectReview,
+									body: link.body,
+									file: link.file,
+									line: link.line,
+									pullRequestUrl: github?.url,
+									url: link.url,
+								})),
+								reviewerId: reviewer.reviewerId,
+								reviewUrl: reviewer.reviewUrl,
 							})),
-							reviewerId: reviewer.reviewerId,
-							reviewUrl: reviewer.reviewUrl,
-						})),
-					}
-				: undefined,
-			meta: [
-				ao ? aoReviewMeta(ao) : `#${number}`,
-				unresolved > 0 ? t("inspector.unresolvedCount", { count: unresolved }) : null,
-			]
-				.filter(Boolean)
-				.join(" · "),
-			number,
-			title: (ao?.title ?? github?.title)?.trim() || `PR #${number}`,
-			verdict: ao ? reviewVerdict(ao) : undefined,
-		};
-	}).filter((group) =>
-		Boolean(group.ao || (group.github && (group.github.entries.length > 0 || group.github.unresolved > 0))),
-	);
+						}
+					: undefined,
+				meta: [
+					ao ? aoReviewMeta(ao) : `#${number}`,
+					unresolved > 0 ? t("inspector.unresolvedCount", { count: unresolved }) : null,
+				]
+					.filter(Boolean)
+					.join(" · "),
+				number,
+				title: (ao?.title ?? github?.title)?.trim() || `PR #${number}`,
+				verdict: ao ? reviewVerdict(ao) : undefined,
+			};
+		})
+		.filter((group) =>
+			Boolean(group.ao || (group.github && (group.github.entries.length > 0 || group.github.unresolved > 0))),
+		);
 	return (
 		<InspectorReviewsView
 			externalLink={ProductExternalLink}
@@ -2017,9 +2390,7 @@ function MergedReviewsSection({
 			onViewInlineCommentInFile={(comment) => {
 				if (comment.file) onOpenReviewFile?.({ line: comment.line, path: comment.file });
 			}}
-			renderAvatar={(harness) => (
-				<AgentAvatar className="size-5 shrink-0" decorative provider={harness} />
-			)}
+			renderAvatar={(harness) => <AgentAvatar className="size-5 shrink-0" decorative provider={harness} />}
 			renderMarkdown={renderReviewMarkdown}
 		/>
 	);
@@ -2117,7 +2488,10 @@ function formatInlineReviewCommentMessage(comment: InspectorInlineComment & { re
 	if (url) {
 		lines.push("", `Comment URL: ${url}`);
 	}
-	lines.push("", "You should not need to re-fetch review data unless you need additional context beyond what AO has provided here.");
+	lines.push(
+		"",
+		"You should not need to re-fetch review data unless you need additional context beyond what AO has provided here.",
+	);
 	return lines.join("\n");
 }
 
@@ -2154,6 +2528,7 @@ function mockProjectConfig(): ProjectConfig {
 }
 
 function ReviewPanel({
+	cloud = false,
 	autoReviewEnabled,
 	session,
 	config,
@@ -2174,11 +2549,20 @@ function ReviewPanel({
 	reviewerMode,
 	onReviewerOverrideChange,
 	onReviewerHarnessPreviewChange,
+	cloudReviewerHarnesses = [],
+	cloudReviewerHarness = "",
+	cloudHarnessStatuses = [],
+	cloudReviewerReady = true,
+	isInstallingCloudHarness = false,
+	onCloudReviewerHarnessChange,
+	onCloudInstallHarness,
 	onTrigger,
 	onCancel,
 	onAutoReviewChange,
 	onKill,
 }: {
+	/** Cloud sessions choose from only credentials connected for the session owner. */
+	cloud?: boolean;
 	autoReviewEnabled: boolean;
 	session: WorkspaceSession;
 	config?: ProjectConfig;
@@ -2198,6 +2582,17 @@ function ReviewPanel({
 	reviewerMode: string;
 	onReviewerOverrideChange: (next: ReviewerHarness | "", config: { model?: string; mode?: string }) => void;
 	onReviewerHarnessPreviewChange: (next: ReviewerHarness | "") => void;
+	cloudReviewerHarnesses?: string[];
+	cloudReviewerHarness?: string;
+	cloudHarnessStatuses?: Array<{
+		harness: string;
+		status: string;
+		error?: string;
+	}>;
+	cloudReviewerReady?: boolean;
+	isInstallingCloudHarness?: boolean;
+	onCloudReviewerHarnessChange?: (harness: string) => void;
+	onCloudInstallHarness?: () => void;
 	onTrigger: () => void;
 	onCancel: () => void;
 	onAutoReviewChange: (enabled: boolean) => void;
@@ -2207,14 +2602,8 @@ function ReviewPanel({
 	const { t } = useTranslation();
 	const latestAutoFailure = reviewStates
 		.map((review) => review.latestRun)
-		.filter(
-			(run): run is ReviewRunFacts =>
-				Boolean(
-					autoReviewEnabled &&
-						run?.triggerSource === "auto" &&
-						run.status === "failed" &&
-						run.body?.trim(),
-				),
+		.filter((run): run is ReviewRunFacts =>
+			Boolean(autoReviewEnabled && run?.triggerSource === "auto" && run.status === "failed" && run.body?.trim()),
 		)
 		.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 	const [dismissedAutoFailureId, setDismissedAutoFailureId] = useState<string | null>(null);
@@ -2251,7 +2640,11 @@ function ReviewPanel({
 	const reviewLive = reviewHasLiveActivity(openReviewStates, reviewerActivityState, hasReviewerSession);
 	const reviewHasRun = reviewRunning || Boolean(latest);
 	const runAction = reviewSessionRunAction(openReviewStates, isTriggering);
-	const runDisabled = isKilling || isSwitchingReviewer || reviewRunDisabled(openReviewStates, isTriggering);
+	const runDisabled =
+		isKilling ||
+		isSwitchingReviewer ||
+		(cloud && !cloudReviewerReady) ||
+		reviewRunDisabled(openReviewStates, isTriggering);
 	const primaryReviewActionLabel = reviewRunning
 		? isCancelling
 			? t("inspector.review.cancelling")
@@ -2261,14 +2654,17 @@ function ReviewPanel({
 
 	return (
 		<div className="mb-2.5 flex flex-col">
-				<Section surface title={t("inspector.review.controls")}>
-					{error ? (
-						<p className="m-0 rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-sm-md leading-normal text-error">
-							{apiErrorMessage(error, t("inspector.reviewRequestFailed"))}
+			<Section surface title={t("inspector.review.controls")}>
+				{error ? (
+					<p className="m-0 rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-sm-md leading-normal text-error">
+						{apiErrorMessage(error, t("inspector.reviewRequestFailed"))}
 					</p>
 				) : null}
 				{autoReviewFailure ? (
-					<p className="m-0 rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-sm-md leading-normal text-error" role="status">
+					<p
+						className="m-0 rounded-md border border-error/28 bg-error/8 px-2.5 py-2 text-sm-md leading-normal text-error"
+						role="status"
+					>
 						<span className="font-semibold">
 							{t("inspector.autoReview")} {t("inspector.review.failed")}:
 						</span>{" "}
@@ -2304,27 +2700,67 @@ function ReviewPanel({
 					</TooltipProvider>
 				) : null}
 				<div className="review-run-controls-container min-w-0 divide-y divide-border/70 text-xs">
-					<div className="flex min-h-10 min-w-0 items-center justify-between gap-3 py-2">
-						<span className="min-w-0 text-xs font-medium text-foreground">
-							{t("inspector.selectReviewerAgent")}
-						</span>
-						<ReviewerSelect
-							ariaLabel={t("inspector.selectReviewerAgent")}
-							agents={agentCatalog?.agents}
-							contentAlign="end"
-							defaultHarness={resolvedDefaultHarness}
-							defaultOptionLabel={agentLabel(resolvedDefaultHarness)}
-							disabled={reviewRunning || autoReviewEnabled || isKilling || isSwitchingReviewer || isTriggering || isCancelling}
-							onChange={(next) => onReviewerHarnessPreviewChange(next as ReviewerHarness | "")}
-							onConfigChange={(harness, config) => onReviewerOverrideChange(harness as ReviewerHarness | "", config)}
-							model={reviewerModel}
-							mode={reviewerMode}
-							projectId={session.workspaceId}
-							triggerClassName="review-run-agent-select ml-auto h-control-md w-auto min-w-0 max-w-[11rem] shrink-0 justify-end px-2 text-right text-xs"
-							value={reviewerOverride}
-							showDefaultOption
-						/>
-					</div>
+					{cloud ? (
+						<div className="flex min-h-10 min-w-0 items-center justify-between gap-3 py-2">
+							<span className="min-w-0 text-xs font-medium text-foreground">{t("inspector.selectReviewerAgent")}</span>
+							<Select
+								disabled={reviewRunning || isTriggering || isCancelling || isInstallingCloudHarness}
+								onValueChange={(harness) => onCloudReviewerHarnessChange?.(harness)}
+								value={cloudReviewerHarness}
+							>
+								<SelectTrigger
+									aria-label={t("inspector.selectReviewerAgent")}
+									className="h-control-md max-w-[11rem] text-xs"
+									size="sm"
+								>
+									<SelectValue placeholder={t("inspector.selectReviewerAgent")} />
+								</SelectTrigger>
+								<SelectContent align="end">
+									{["claude-code", "codex", "cursor"].map((harness) => (
+										<SelectItem key={harness} value={harness}>
+											{agentLabel(harness)}
+											{cloudReviewerHarnesses.includes(harness) ? "" : " · Connect credential"}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+							{cloudHarnessStatuses.some(
+								(entry) => entry.harness === cloudReviewerHarness && entry.status !== "ready",
+							) ? (
+								<Button
+									disabled={isInstallingCloudHarness || reviewRunning}
+									onClick={onCloudInstallHarness}
+									size="sm"
+									type="button"
+									variant="outline"
+								>
+									{isInstallingCloudHarness ? "Installing…" : "Install"}
+								</Button>
+							) : null}
+						</div>
+					) : (
+						<div className="flex min-h-10 min-w-0 items-center justify-between gap-3 py-2">
+							<span className="min-w-0 text-xs font-medium text-foreground">{t("inspector.selectReviewerAgent")}</span>
+							<ReviewerSelect
+								ariaLabel={t("inspector.selectReviewerAgent")}
+								agents={agentCatalog?.agents}
+								contentAlign="end"
+								defaultHarness={resolvedDefaultHarness}
+								defaultOptionLabel={agentLabel(resolvedDefaultHarness)}
+								disabled={
+									reviewRunning || autoReviewEnabled || isKilling || isSwitchingReviewer || isTriggering || isCancelling
+								}
+								onChange={(next) => onReviewerHarnessPreviewChange(next as ReviewerHarness | "")}
+								onConfigChange={(harness, config) => onReviewerOverrideChange(harness as ReviewerHarness | "", config)}
+								model={reviewerModel}
+								mode={reviewerMode}
+								projectId={session.workspaceId}
+								triggerClassName="review-run-agent-select ml-auto h-control-md w-auto min-w-0 max-w-[11rem] shrink-0 justify-end px-2 text-right text-xs"
+								value={reviewerOverride}
+								showDefaultOption
+							/>
+						</div>
+					)}
 					<InspectorPolicyRow
 						checked={autoReviewEnabled}
 						description={t("inspector.autoReviewDescription")}
@@ -2340,7 +2776,9 @@ function ReviewPanel({
 							<Button
 								aria-label={primaryReviewActionLabel}
 								className="shrink-0 gap-1 px-1.5 text-xs [&_svg]:size-icon-sm"
-								disabled={reviewRunning ? isCancelling || isKilling || isSwitchingReviewer : runDisabled || autoReviewEnabled}
+								disabled={
+									reviewRunning ? isCancelling || isKilling || isSwitchingReviewer : runDisabled || autoReviewEnabled
+								}
 								onClick={reviewRunning ? onCancel : onTrigger}
 								size="sm"
 								type="button"
@@ -2349,12 +2787,14 @@ function ReviewPanel({
 								{reviewRunning ? <X aria-hidden="true" /> : <Play aria-hidden="true" />}
 								<span className="review-run-action-label">{primaryReviewActionLabel}</span>
 							</Button>
-							{hasReviewerSession ? (
+							{hasReviewerSession && !cloud ? (
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<span className="inline-flex">
 											<Button
-												aria-label={isKilling ? t("inspector.review.killingSession") : t("inspector.review.killSession")}
+												aria-label={
+													isKilling ? t("inspector.review.killingSession") : t("inspector.review.killSession")
+												}
 												className="h-control-md w-control-md shrink-0 p-0 text-error [&_svg]:size-icon-sm"
 												disabled={killDisabled}
 												onClick={onKill}
@@ -2389,7 +2829,10 @@ function ReviewPanel({
 	);
 }
 
-function githubVerdict(verdict: string, t: TFunction): { label: string; tone: "neutral" | "running" | "success" | "danger" } {
+function githubVerdict(
+	verdict: string,
+	t: TFunction,
+): { label: string; tone: "neutral" | "running" | "success" | "danger" } {
 	switch (verdict) {
 		case "approved":
 			return { label: t("inspector.review.approved"), tone: "success" };
@@ -2419,9 +2862,7 @@ function runsByPRFrom(openReviewStates: PRReviewState[], runs: ReviewRunFacts[])
 		for (const state of openReviewStates) {
 			const fallback = [state.latestRun, state.previousRun].filter(
 				(run): run is ReviewRunFacts =>
-					Boolean(run) &&
-					(run!.status === "complete" || run!.status === "delivered") &&
-					Boolean(run!.body?.trim()),
+					Boolean(run) && (run!.status === "complete" || run!.status === "delivered") && Boolean(run!.body?.trim()),
 			);
 			if (fallback.length > 0) byPR.set(state.prUrl, fallback);
 		}
@@ -2452,7 +2893,9 @@ function aoReviewMeta(reviewState: PRReviewState): string {
 			reviewState.latestRun.status === "failed" ||
 			reviewState.latestRun.status === "cancelled")
 	) {
-		return appI18n.t("inspector.latestCommitNotReviewedMeta", { number: reviewState.prNumber });
+		return appI18n.t("inspector.latestCommitNotReviewedMeta", {
+			number: reviewState.prNumber,
+		});
 	}
 	const displayRun = reviewState.latestRun ?? reviewState.previousRun;
 	if (displayRun?.createdAt) {
@@ -2486,11 +2929,17 @@ function reviewVerdict(reviewState: PRReviewState): {
 	}
 	switch (reviewState.status) {
 		case "running":
-			return { label: appI18n.t("inspector.review.reviewing"), tone: "running" };
+			return {
+				label: appI18n.t("inspector.review.reviewing"),
+				tone: "running",
+			};
 		case "up_to_date":
 			return { label: appI18n.t("inspector.review.approved"), tone: "success" };
 		case "changes_requested":
-			return { label: appI18n.t("inspector.review.changesRequested"), tone: "danger" };
+			return {
+				label: appI18n.t("inspector.review.changesRequested"),
+				tone: "danger",
+			};
 		case "ineligible":
 			return { label: appI18n.t("inspector.review.notRun"), tone: "neutral" };
 	}

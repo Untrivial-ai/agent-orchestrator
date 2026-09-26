@@ -1509,6 +1509,8 @@
 	"terminal.renameHintDoubleClick": "{{workingDir}} (double-clic pour renommer)",
 	"terminal.renameHintRightClick": "{{workingDir}} (clic droit pour renommer)",
 	"terminal.reviewer": "Relecteur",
+	"terminal.reviewCompleted": "Révision terminée",
+	"terminal.reviewerCompleted": "Révision terminée et publiée dans la demande d’extraction.",
 	"terminal.scrollTabsLeft": "Faire défiler les onglets vers la gauche",
 	"terminal.scrollTabsRight": "Faire défiler les onglets vers la droite",
 	"terminal.search": "Rechercher dans le terminal",

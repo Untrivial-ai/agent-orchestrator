@@ -27,6 +27,13 @@ type PATWriteStore interface {
 		orgID, sessionID string,
 		input domain.PullRequest,
 	) (domain.PullRequest, error)
+	ReviewRunPullRequest(context.Context, string, string) (domain.ReviewRunPullRequest, error)
+	CompleteAndDeliverReviewRun(
+		context.Context, string, string, string,
+		domain.SubmitReviewResult, string,
+	) (domain.ReviewRun, error)
+	FailReviewRun(context.Context, string, string, string, string) (domain.ReviewRun, error)
+	CloseReviewTerminal(context.Context, string, string, string) error
 }
 
 // PATWriteService performs GitHub write operations with a user's personal
@@ -138,6 +145,66 @@ func (p *PATWriteService) ClaimPullRequest(
 		Deletions:    pr.Deletions,
 		ChangedFiles: pr.ChangedFiles,
 	})
+}
+
+// SubmitReview delivers a reviewer verdict with the session owner's PAT. This
+// is the local-Cloud counterpart to Service.SubmitReview, where no GitHub App
+// installation token is configured.
+func (p *PATWriteService) SubmitReview(
+	ctx context.Context,
+	orgID, sessionID, reviewRunID, token string,
+	result domain.SubmitReviewResult,
+) (domain.ReviewRun, error) {
+	if !result.Verdict.Valid() {
+		return domain.ReviewRun{}, fmt.Errorf("%w: verdict must be approved or changes_requested", postgres.ErrInvalid)
+	}
+	body := strings.TrimSpace(result.Body)
+	if body == "" {
+		return domain.ReviewRun{}, fmt.Errorf("%w: a review body is required", postgres.ErrInvalid)
+	}
+	run, err := p.store.ReviewRunPullRequest(ctx, orgID, reviewRunID)
+	if err != nil {
+		return domain.ReviewRun{}, err
+	}
+	if run.ReviewSessionID != sessionID {
+		return domain.ReviewRun{}, postgres.ErrForbidden
+	}
+	if run.Status != contract.AOReviewRunRunning {
+		return domain.ReviewRun{}, fmt.Errorf("%w: this review has already been resolved", postgres.ErrInvalid)
+	}
+	owner, repo, ok := strings.Cut(run.PullRequestRepository, "/")
+	if !ok || owner == "" || repo == "" {
+		return domain.ReviewRun{}, postgres.ErrInvalid
+	}
+	providerReviewID, err := p.client.CreatePullRequestReview(
+		ctx, token, owner, repo, run.PullRequestNumber, body,
+	)
+	if err != nil {
+		return p.failReview(ctx, orgID, sessionID, reviewRunID, err)
+	}
+	delivered, err := p.store.CompleteAndDeliverReviewRun(
+		ctx, orgID, reviewRunID, sessionID,
+		domain.SubmitReviewResult{Verdict: result.Verdict, Body: body},
+		formatProviderReviewID(providerReviewID),
+	)
+	if err != nil {
+		return domain.ReviewRun{}, err
+	}
+	_ = p.store.CloseReviewTerminal(ctx, orgID, sessionID, reviewRunID)
+	return delivered, nil
+}
+
+func (p *PATWriteService) failReview(
+	ctx context.Context,
+	orgID, sessionID, reviewRunID string,
+	cause error,
+) (domain.ReviewRun, error) {
+	failed, failErr := p.store.FailReviewRun(ctx, orgID, reviewRunID, sessionID, cause.Error())
+	_ = p.store.CloseReviewTerminal(ctx, orgID, sessionID, reviewRunID)
+	if failErr != nil {
+		return domain.ReviewRun{}, cause
+	}
+	return failed, cause
 }
 
 // ownerRepoFromCloneURL parses "https://github.com/owner/repo(.git)" into owner

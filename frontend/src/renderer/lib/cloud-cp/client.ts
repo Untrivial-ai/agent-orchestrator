@@ -28,6 +28,8 @@ import type {
 	CloudCpProjectDeletedResponse,
 	CloudCpProjectListResponse,
 	CloudCpProjectResponse,
+	CloudCpSessionPullRequestsResponse,
+	CloudCpSessionReviewState,
 	CloudCpProviderConnectionResponse,
 	CloudCpProviderConnectionsResponse,
 	CloudCpGitHubReposResponse,
@@ -42,6 +44,8 @@ import type {
 	CloudCpSendMessageRequest,
 	CloudCpSendMessageResponse,
 	CloudCpSessionChildrenResponse,
+	CloudCpHarnessInspectResponse,
+	CloudCpHarnessStatus,
 	CloudCpSessionDeletedResponse,
 	CloudCpSessionListResponse,
 	CloudCpResumeSessionResponse,
@@ -64,6 +68,7 @@ import type {
 	CloudCpTerminalTicketRequest,
 	CloudCpTerminalTicketResponse,
 	CloudCpUpdateProjectRequest,
+	CloudCpUpdateSessionPreferencesRequest,
 	CloudCpValidateRepositoryAccessRequest,
 	CloudCpValidateRepositoryAccessResponse,
 } from "./types";
@@ -152,6 +157,23 @@ export interface CloudCpClient {
 		options?: CloudCpMutationOptions,
 	): Promise<CloudCpSessionResponse>;
 	getSession(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
+	updateSessionPreferences(
+		orgId: string,
+		sessionId: string,
+		body: CloudCpUpdateSessionPreferencesRequest,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpSessionResponse>;
+	inspectSessionReviewerHarnesses(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpHarnessInspectResponse>;
+	installSessionReviewerHarness(
+		orgId: string,
+		sessionId: string,
+		harness: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpHarnessStatus>;
 	/** Lists the Coder templates the picker offers (empty when coder is unavailable/unentitled). */
 	listCoderTemplates(orgId: string, options?: CloudCpRequestOptions): Promise<CloudCpCoderTemplatesResponse>;
 	/** Lists the sessions an orchestrator spawned, with each child's pull requests. */
@@ -161,6 +183,26 @@ export interface CloudCpClient {
 		query?: CloudCpListQuery,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpSessionChildrenResponse>;
+	listSessionPullRequests(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpSessionPullRequestsResponse>;
+	getSessionReviewState(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpSessionReviewState>;
+	triggerSessionReviews(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpSessionReviewState>;
+	cancelSessionReviews(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpSessionReviewState>;
 	deleteSession(
 		orgId: string,
 		sessionId: string,
@@ -200,6 +242,12 @@ export interface CloudCpClient {
 		body: CloudCpSendMessageRequest,
 		options?: CloudCpMutationOptions,
 	): Promise<CloudCpSendMessageResponse>;
+	sendSessionReviewToWorker(
+		orgId: string,
+		sessionId: string,
+		reviewRunId: string,
+		options?: CloudCpMutationOptions,
+	): Promise<CloudCpSendMessageResponse>;
 	cancelTurn(
 		orgId: string,
 		sessionId: string,
@@ -226,10 +274,7 @@ export interface CloudCpClient {
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpTerminalTicketResponse>;
 
-	listProviderConnections(
-		orgId: string,
-		options?: CloudCpRequestOptions,
-	): Promise<CloudCpProviderConnectionsResponse>;
+	listProviderConnections(orgId: string, options?: CloudCpRequestOptions): Promise<CloudCpProviderConnectionsResponse>;
 	listUserProviderConnections(options?: CloudCpRequestOptions): Promise<CloudCpProviderConnectionsResponse>;
 	putAgentConnection(
 		orgId: string,
@@ -238,7 +283,10 @@ export interface CloudCpClient {
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpProviderConnectionResponse>;
 	deleteAgentConnection(orgId: string, agent: CloudCpAgentProvider, options?: CloudCpRequestOptions): Promise<void>;
-	putGitHubPAT(body: CloudCpPutGitHubPATRequest, options?: CloudCpRequestOptions): Promise<CloudCpProviderConnectionResponse>;
+	putGitHubPAT(
+		body: CloudCpPutGitHubPATRequest,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpProviderConnectionResponse>;
 	deleteGitHubPAT(options?: CloudCpRequestOptions): Promise<void>;
 	listGitHubRepos(options?: CloudCpRequestOptions): Promise<CloudCpGitHubReposResponse>;
 	validateSavedRepositoryAccess(
@@ -403,7 +451,11 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			return;
 		}
 		if (response.body === null) {
-			fail(new CloudCpError("The event stream response has no body.", { status: response.status }));
+			fail(
+				new CloudCpError("The event stream response has no body.", {
+					status: response.status,
+				}),
+			);
 			return;
 		}
 
@@ -454,13 +506,22 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
 			}),
 		updateProject: (orgId, projectId, body, o) =>
-			requestJson("PATCH", `/orgs/${seg(orgId)}/projects/${seg(projectId)}`, { body, signal: o?.signal }),
+			requestJson("PATCH", `/orgs/${seg(orgId)}/projects/${seg(projectId)}`, {
+				body,
+				signal: o?.signal,
+			}),
 		deleteProject: (orgId, projectId, o) =>
-			requestJson("DELETE", `/orgs/${seg(orgId)}/projects/${seg(projectId)}`, { signal: o?.signal }),
+			requestJson("DELETE", `/orgs/${seg(orgId)}/projects/${seg(projectId)}`, {
+				signal: o?.signal,
+			}),
 
 		listSessions: (orgId, query, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions`, {
-				query: { projectId: query?.projectId, limit: query?.limit, cursor: query?.cursor },
+				query: {
+					projectId: query?.projectId,
+					limit: query?.limit,
+					cursor: query?.cursor,
+				},
 				signal: o?.signal,
 			}),
 		createSession: (orgId, body, o) =>
@@ -470,7 +531,17 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
 			}),
 		getSession: (orgId, sessionId, o) =>
-			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, {
+				signal: o?.signal,
+			}),
+		updateSessionPreferences: (orgId, sessionId, body, o) =>
+			requestJson("PATCH", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/preferences`, { body, signal: o?.signal }),
+		inspectSessionReviewerHarnesses: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/reviewer-harnesses`, { signal: o?.signal }),
+		installSessionReviewerHarness: (orgId, sessionId, harness, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/reviewer-harnesses/${seg(harness)}/install`, {
+				signal: o?.signal,
+			}),
 		listCoderTemplates: (orgId, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sandbox/coder/templates`, { signal: o?.signal }),
 		listSessionChildren: (orgId, sessionId, query, o) =>
@@ -478,8 +549,18 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 				query: { limit: query?.limit, cursor: query?.cursor },
 				signal: o?.signal,
 			}),
+		listSessionPullRequests: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/pull-requests`, { signal: o?.signal }),
+		getSessionReviewState: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/reviews`, { signal: o?.signal }),
+		triggerSessionReviews: (orgId, sessionId, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/reviews/trigger`, { signal: o?.signal }),
+		cancelSessionReviews: (orgId, sessionId, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/reviews/cancel`, { signal: o?.signal }),
 		deleteSession: (orgId, sessionId, o) =>
-			requestJson("DELETE", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
+			requestJson("DELETE", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, {
+				signal: o?.signal,
+			}),
 		resumeSession: (orgId, sessionId, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/resume`, {
 				signal: o?.signal,
@@ -533,6 +614,11 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 				signal: o?.signal,
 				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
 			}),
+		sendSessionReviewToWorker: (orgId, sessionId, reviewRunId, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/reviews/${seg(reviewRunId)}/send`, {
+				signal: o?.signal,
+				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
+			}),
 		cancelTurn: (orgId, sessionId, turnId, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/turns/${seg(turnId)}/cancel`, {
 				signal: o?.signal,
@@ -551,7 +637,9 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			}),
 
 		listProviderConnections: (orgId, o) =>
-			requestJson("GET", `/orgs/${seg(orgId)}/provider-connections`, { signal: o?.signal }),
+			requestJson("GET", `/orgs/${seg(orgId)}/provider-connections`, {
+				signal: o?.signal,
+			}),
 		listUserProviderConnections: (o) => requestJson("GET", "/me/providers", { signal: o?.signal }),
 		putAgentConnection: (orgId, agent, body, o) =>
 			requestJson("PUT", `/orgs/${seg(orgId)}/provider-connections/agents/${seg(agent)}`, {

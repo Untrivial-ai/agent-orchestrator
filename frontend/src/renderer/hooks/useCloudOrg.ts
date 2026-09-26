@@ -22,6 +22,8 @@ export interface UseCloudOrgResult {
 	org: CloudCpOrganization | undefined;
 	isLoading: boolean;
 	error: unknown;
+	/** Retry the get-or-create request (used when a dialog opens before it settles). */
+	refetch: () => Promise<{ data?: CloudCpOrganization; error?: unknown }>;
 	/** Mirrors useCloudCp().ready so callers can gate on one hook. */
 	ready: boolean;
 }
@@ -55,6 +57,7 @@ export function useCloudOrg(): UseCloudOrgResult {
 		org: query.data,
 		isLoading: query.isLoading,
 		error: query.error ?? undefined,
+		refetch: query.refetch,
 		ready,
 	};
 }
