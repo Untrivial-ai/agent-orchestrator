@@ -110,7 +110,7 @@ vi.mock("@xterm/xterm", () => ({
 				baseY: 0,
 				type: "normal",
 				viewportY: 0,
-				length: 0,
+				length: 1,
 				getLine: (row: number) => this.bufferLines[row],
 			},
 		};
