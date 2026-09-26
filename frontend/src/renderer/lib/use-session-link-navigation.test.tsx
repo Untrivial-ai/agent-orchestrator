@@ -10,7 +10,7 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({ useWorkspaceQuery: () => mocks.wo
 describe("useSessionLinkNavigation", () => {
 	beforeEach(() => {
 		mocks.navigate.mockReset();
-		useUiStore.setState({ sessionLinkError: null, sessionLinkNotices: [], sessionLinkNoticeSequence: 0 });
+		useUiStore.setState({ globalToast: null, globalToasts: [], globalToastSequence: 0 });
 		mocks.workspace.mockReturnValue({
 			isSuccess: true,
 			data: [
@@ -24,7 +24,7 @@ describe("useSessionLinkNavigation", () => {
 		const { result } = renderHook(() => useSessionLinkNavigation());
 		act(() => expect(result.current("ao://sessions/other-project/other-session")).toBe(true));
 		expect(mocks.navigate).toHaveBeenCalledWith("other-project", "other-session");
-		expect(useUiStore.getState().sessionLinkError).toBeNull();
+		expect(useUiStore.getState().globalToasts).toEqual([]);
 	});
 
 	it("shows feedback instead of navigating to a terminated session", () => {
@@ -32,8 +32,15 @@ describe("useSessionLinkNavigation", () => {
 		act(() => expect(result.current("ao://sessions/project/terminated")).toBe(false));
 		act(() => expect(result.current("ao://sessions/project/terminated")).toBe(false));
 		expect(mocks.navigate).not.toHaveBeenCalled();
-		expect(useUiStore.getState().sessionLinkNotices).toEqual([
-			{ message: "Session terminated is terminated", nonce: 2 },
+		expect(useUiStore.getState().globalToasts).toEqual([
+			expect.objectContaining({
+				title: "Session terminated is terminated",
+				nonce: 2,
+				placement: "top-center",
+				dismissible: true,
+				durationMs: 5_000,
+				dedupeKey: "session-link:project:terminated",
+			}),
 		]);
 	});
 
@@ -44,13 +51,19 @@ describe("useSessionLinkNavigation", () => {
 		const { result } = renderHook(() => useSessionLinkNavigation());
 		act(() => expect(result.current(url)).toBe(false));
 		expect(mocks.navigate).not.toHaveBeenCalled();
-		expect(useUiStore.getState().sessionLinkError).toContain(message);
+		expect(useUiStore.getState().globalToasts.at(-1)).toEqual(expect.objectContaining({
+			title: expect.stringContaining(message),
+			tone: "error",
+			placement: "top-center",
+			dismissible: true,
+			dedupeKey: "session-link:error",
+		}));
 	});
 
 	it("does not navigate when the workspace cannot be verified", () => {
 		mocks.workspace.mockReturnValue({ isSuccess: false, data: undefined });
 		const { result } = renderHook(() => useSessionLinkNavigation());
 		act(() => expect(result.current("ao://sessions/project/session")).toBe(false));
-		expect(useUiStore.getState().sessionLinkError).toContain("daemon connection");
+		expect(useUiStore.getState().globalToasts.at(-1)?.title).toContain("daemon connection");
 	});
 });

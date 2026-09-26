@@ -68,10 +68,13 @@ export type GlobalToast = {
 	body?: string;
 	tone?: "info" | "error";
 	placement?: "bottom-right" | "top-center";
+	dismissible?: boolean;
+	durationMs?: number;
+	dedupeKey?: string;
 	nonce: number;
 };
 
-export type SessionLinkNotice = { message: string; nonce: number };
+export type GlobalToastOptions = Pick<GlobalToast, "tone" | "placement" | "dismissible" | "durationMs" | "dedupeKey">;
 
 // Selection (which project/session is open) now lives in the URL — the router
 // is the single source of truth, read via route params. This store holds only
@@ -135,9 +138,6 @@ export type UiState = {
 	// session. Surfaces outside the session subtree (the notification runtime)
 	// need that distinction, and SessionView's own target is local state.
 	visibleTerminalKindBySession: Record<string, TerminalTarget["kind"]>;
-	sessionLinkError: string | null;
-	sessionLinkNotices: SessionLinkNotice[];
-	sessionLinkNoticeSequence: number;
 	setWorkbenchTab: (tab: WorkbenchTab) => void;
 	setThemePreference: (theme: ThemePreference) => void;
 	setThemeStyle: (style: ThemeStyle) => void;
@@ -174,7 +174,7 @@ export type UiState = {
 	setProjectProvisioning: (projectId: string, provisioning: boolean) => void;
 	setOrchestratorReplacementError: (projectId: string, failure: OrchestratorReplacementFailure | null) => void;
 	setOrchestratorStartupError: (projectId: string, message: string | null) => void;
-	showGlobalToast: (title: string, body?: string, style?: GlobalToast["tone"] | GlobalToast["placement"]) => void;
+	showGlobalToast: (title: string, body?: string, style?: GlobalToast["tone"] | GlobalToast["placement"] | GlobalToastOptions) => void;
 	dismissGlobalToast: (nonce: number) => void;
 	clearGlobalToast: () => void;
 	requestNewTask: (projectId: string) => void;
@@ -184,9 +184,6 @@ export type UiState = {
 	setActiveShellTerminal: (handleId: string | null) => void;
 	setVisibleTerminalKind: (sessionId: string, kind: TerminalTarget["kind"]) => void;
 	clearVisibleTerminalKind: (sessionId: string) => void;
-	setSessionLinkError: (error: string | null) => void;
-	showSessionLinkNotice: (message: string) => void;
-	dismissSessionLinkNotice: (nonce: number) => void;
 };
 
 export type OrchestratorReplacementFailure = {
@@ -268,9 +265,6 @@ export const useUiStore = create<UiState>((set, get) => ({
 	newShellTerminalNonce: 0,
 	activeShellTerminalHandleId: null,
 	visibleTerminalKindBySession: {},
-	sessionLinkError: null,
-	sessionLinkNotices: [],
-	sessionLinkNoticeSequence: 0,
 	setWorkbenchTab: (workbenchTab) => set({ workbenchTab }),
 	setThemePreference: (themePreference) => {
 		if (get().themePreference === themePreference) return;
@@ -479,10 +473,14 @@ export const useUiStore = create<UiState>((set, get) => ({
 	showGlobalToast: (title, body, style) =>
 		set((state) => {
 			const nonce = state.globalToastSequence + 1;
-			const tone = style === "error" || style === "info" ? style : "info";
-			const placement = style === "top-center" || style === "bottom-right" ? style : "bottom-right";
-			const toast = { title, body, tone, placement, nonce };
-			return { globalToast: toast, globalToasts: [...state.globalToasts, toast], globalToastSequence: nonce };
+			const options = typeof style === "object" ? style : undefined;
+			const tone = options?.tone ?? (style === "error" || style === "info" ? style : "info");
+			const placement = options?.placement ?? (style === "top-center" || style === "bottom-right" ? style : "bottom-right");
+			const toast = { title, body, tone, placement, nonce, ...options };
+			const globalToasts = toast.dedupeKey
+				? state.globalToasts.filter((existing) => existing.dedupeKey !== toast.dedupeKey)
+				: state.globalToasts;
+			return { globalToast: toast, globalToasts: [...globalToasts, toast], globalToastSequence: nonce };
 		}),
 	dismissGlobalToast: (nonce) =>
 		set((state) => ({
@@ -515,20 +513,6 @@ export const useUiStore = create<UiState>((set, get) => ({
 				? state
 				: { visibleTerminalKindBySession: { ...state.visibleTerminalKindBySession, [sessionId]: kind } },
 		),
-	setSessionLinkError: (sessionLinkError) => set({ sessionLinkError }),
-	showSessionLinkNotice: (message) =>
-		set((state) => {
-			const nonce = state.sessionLinkNoticeSequence + 1;
-			return {
-				sessionLinkNotices: [
-					...state.sessionLinkNotices.filter((notice) => notice.message !== message),
-					{ message, nonce },
-				],
-				sessionLinkNoticeSequence: nonce,
-			};
-		}),
-	dismissSessionLinkNotice: (nonce) =>
-		set((state) => ({ sessionLinkNotices: state.sessionLinkNotices.filter((notice) => notice.nonce !== nonce) })),
 	clearVisibleTerminalKind: (sessionId) =>
 		set((state) => {
 			if (!(sessionId in state.visibleTerminalKindBySession)) return state;

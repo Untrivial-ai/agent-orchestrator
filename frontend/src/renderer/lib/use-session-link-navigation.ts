@@ -7,29 +7,47 @@ import { parseSessionLink, resolveSessionLink } from "./session-links";
 export function useSessionLinkNavigation(): (url: string) => boolean {
 	const workspaceQuery = useWorkspaceQuery();
 	const navigateToSession = useNavigateToSession();
-	const setSessionLinkError = useUiStore((state) => state.setSessionLinkError);
-	const showSessionLinkNotice = useUiStore((state) => state.showSessionLinkNotice);
+	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	return useCallback((url: string) => {
 		const target = parseSessionLink(url);
 		if (!target) {
-			setSessionLinkError("This AO session link is malformed or unsupported.");
+			showGlobalToast("This AO session link is malformed or unsupported.", undefined, {
+				tone: "error",
+				placement: "top-center",
+				dismissible: true,
+				dedupeKey: "session-link:error",
+			});
 			return false;
 		}
 		if (!workspaceQuery.isSuccess || !workspaceQuery.data) {
-			setSessionLinkError("AO could not verify that session. Check the daemon connection and try again.");
+			showGlobalToast("AO could not verify that session. Check the daemon connection and try again.", undefined, {
+				tone: "error",
+				placement: "top-center",
+				dismissible: true,
+				dedupeKey: "session-link:error",
+			});
 			return false;
 		}
 		const resolved = resolveSessionLink(url, workspaceQuery.data);
 		if (!resolved) {
-			setSessionLinkError("That session is missing or is not accessible in this AO workspace.");
+			showGlobalToast("That session is missing or is not accessible in this AO workspace.", undefined, {
+				tone: "error",
+				placement: "top-center",
+				dismissible: true,
+				dedupeKey: "session-link:error",
+			});
 			return false;
 		}
-		setSessionLinkError(null);
 		if (resolved.isTerminated) {
-			showSessionLinkNotice(`Session ${resolved.sessionId} is terminated`);
+			showGlobalToast(`Session ${resolved.sessionId} is terminated`, undefined, {
+				placement: "top-center",
+				dismissible: true,
+				durationMs: 5_000,
+				dedupeKey: `session-link:${resolved.projectId}:${resolved.sessionId}`,
+			});
 			return false;
 		}
 		navigateToSession(resolved.projectId, resolved.sessionId);
 		return true;
-	}, [navigateToSession, setSessionLinkError, showSessionLinkNotice, workspaceQuery.data, workspaceQuery.isSuccess]);
+	}, [navigateToSession, showGlobalToast, workspaceQuery.data, workspaceQuery.isSuccess]);
 }
