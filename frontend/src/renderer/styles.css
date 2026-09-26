@@ -4583,6 +4583,23 @@ body:has(#root .platform-windows) > .files-popout-overlay {
 	--browser-popout-top: var(--size-traffic-light-clearance);
 }
 
+/* The files popout has no titlebar row of its own. Its content starts below
+   the native traffic-light band, so without a mask the session topbar from
+   underneath the portal remains visible through that band (half of the row
+   is visible on macOS windowed maximization). Keep the reserved band opaque,
+   matching the browser popout's titlebar surface. */
+.files-popout-overlay--mac-windowed::before {
+	position: absolute;
+	top: calc(-1 * var(--size-traffic-light-clearance));
+	right: 0;
+	left: 0;
+	height: var(--size-traffic-light-clearance);
+	content: "";
+	background: var(--bg);
+	border-bottom: 1px solid var(--border);
+	pointer-events: none;
+}
+
 .browser-popout-overlay--mac-windowed {
 	--browser-popout-inline-inset: var(--size-center-panel-inset-mac);
 }

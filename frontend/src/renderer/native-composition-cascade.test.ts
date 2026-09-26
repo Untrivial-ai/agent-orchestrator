@@ -119,6 +119,13 @@ describe("native-composition transparency cascade", () => {
 		expect(frameRule?.body).toMatch(/right:\s*var\(--browser-popout-inline-inset\)/);
 	});
 
+	it("masks the reserved macOS titlebar band for the files popout", () => {
+		const maskRule = rules().find((rule) => rule.selector.endsWith(".files-popout-overlay--mac-windowed::before"));
+		expect(maskRule?.body).toMatch(/top:\s*calc\(-1 \* var\(--size-traffic-light-clearance\)\)/);
+		expect(maskRule?.body).toMatch(/height:\s*var\(--size-traffic-light-clearance\)/);
+		expect(maskRule?.body).toMatch(/background:\s*var\(--bg\)/);
+	});
+
 	it("shifts the browser address bar clear of the inspector tabs", () => {
 		const topbarRule = rules().find((rule) => rule.selector.endsWith(".session-inspector__topbar--browser"));
 		expect(topbarRule?.body).toMatch(
