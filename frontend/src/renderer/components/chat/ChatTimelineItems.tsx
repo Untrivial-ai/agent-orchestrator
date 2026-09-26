@@ -879,7 +879,7 @@ export function LiveResponseStatus({ startedAt, settling = false }: { startedAt?
 			<span
 				role="status"
 				data-testid="live-working-label"
-				className={settling ? "text-sm font-medium" : "chat-working-shimmer text-sm font-medium"}
+				className="text-sm font-medium"
 			>
 				{settling ? "Worked for" : "Working for"} {formatDuration(elapsedMs)}
 			</span>
