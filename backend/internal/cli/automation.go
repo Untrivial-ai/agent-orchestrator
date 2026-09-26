@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -107,7 +106,7 @@ func newAutomationCreateCommand(ctx *commandContext) *cobra.Command {
 			return err
 		}
 		if jsonOutput {
-			return writeAutomationJSON(cmd, response)
+			return writeJSON(cmd.OutOrStdout(), response)
 		}
 		_, err := fmt.Fprintf(cmd.OutOrStdout(), "created automation %s (%s), next run %s\n", response.Automation.ID, response.Automation.DisplayName, formatAutomationTime(response.Automation.NextRunAt))
 		return err
@@ -145,7 +144,7 @@ func newAutomationListCommand(ctx *commandContext) *cobra.Command {
 			return err
 		}
 		if jsonOutput {
-			return writeAutomationJSON(cmd, response)
+			return writeJSON(cmd.OutOrStdout(), response)
 		}
 		writer := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(writer, "ID\tNAME\tPROJECT\tENABLED\tNEXT\tLATEST")
@@ -172,7 +171,7 @@ func newAutomationGetCommand(ctx *commandContext) *cobra.Command {
 			return err
 		}
 		if jsonOutput {
-			return writeAutomationJSON(cmd, response)
+			return writeJSON(cmd.OutOrStdout(), response)
 		}
 		a := response.Automation
 		_, err := fmt.Fprintf(cmd.OutOrStdout(), "%s\nProject: %s\nSchedule: %s (%s)\nEnabled: %t\nNext run: %s\nPrompt: %s\n", a.DisplayName, a.ProjectID, a.RRule, a.Timezone, a.Enabled, formatAutomationTime(a.NextRunAt), a.Prompt)
@@ -217,7 +216,7 @@ func newAutomationUpdateCommand(ctx *commandContext) *cobra.Command {
 			return err
 		}
 		if jsonOutput {
-			return writeAutomationJSON(cmd, response)
+			return writeJSON(cmd.OutOrStdout(), response)
 		}
 		_, err := fmt.Fprintf(cmd.OutOrStdout(), "updated automation %s (%s)\n", response.Automation.ID, response.Automation.DisplayName)
 		return err
@@ -277,7 +276,7 @@ func newAutomationRunsCommand(ctx *commandContext) *cobra.Command {
 			return err
 		}
 		if jsonOutput {
-			return writeAutomationJSON(cmd, response)
+			return writeJSON(cmd.OutOrStdout(), response)
 		}
 		writer := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(writer, "SCHEDULED\tSTATUS\tSESSION\tERROR")
@@ -295,11 +294,6 @@ func newAutomationRunsCommand(ctx *commandContext) *cobra.Command {
 	return cmd
 }
 
-func writeAutomationJSON(cmd *cobra.Command, value any) error {
-	encoder := json.NewEncoder(cmd.OutOrStdout())
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(value)
-}
 func formatAutomationTime(value time.Time) string {
 	if value.IsZero() {
 		return "-"

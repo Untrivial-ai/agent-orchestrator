@@ -70,14 +70,6 @@ FROM automation_runs
 WHERE status IN ('spawning', 'running')
 ORDER BY scheduled_for, id;
 
--- name: ListExpiredSpawningAutomationRuns :many
-SELECT id, automation_id, scheduled_for, session_id, status, attempt_count,
-    claimed_at, lease_expires_at, started_at, finished_at, error_message,
-    created_at, updated_at
-FROM automation_runs
-WHERE status = 'spawning' AND lease_expires_at <= ?
-ORDER BY scheduled_for, id;
-
 -- name: GetAutomationRunByOccurrence :one
 SELECT id, automation_id, scheduled_for, session_id, status, attempt_count,
     claimed_at, lease_expires_at, started_at, finished_at, error_message,

@@ -290,15 +290,6 @@ func (s *Store) ListActiveAutomationRuns(ctx context.Context) ([]domain.Automati
 	return automationRunsFromGen(rows), nil
 }
 
-// ListExpiredSpawningAutomationRuns returns claims eligible for boot recovery.
-func (s *Store) ListExpiredSpawningAutomationRuns(ctx context.Context, now time.Time) ([]domain.AutomationRun, error) {
-	rows, err := s.qr.ListExpiredSpawningAutomationRuns(ctx, timePtrToNullTime(&now))
-	if err != nil {
-		return nil, fmt.Errorf("list expired automation claims: %w", err)
-	}
-	return automationRunsFromGen(rows), nil
-}
-
 func automationRunsFromGen(rows []gen.AutomationRun) []domain.AutomationRun {
 	items := make([]domain.AutomationRun, 0, len(rows))
 	for _, row := range rows {

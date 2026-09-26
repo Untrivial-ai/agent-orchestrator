@@ -33,7 +33,6 @@ type schedulerStore interface {
 	MaterializeAutomationRuns(context.Context, domain.AutomationID, time.Time, []domain.AutomationRun, time.Time, time.Time, time.Time) (bool, error)
 	ClaimNextAutomationRun(context.Context, time.Time, time.Time) (domain.AutomationRun, bool, error)
 	ListActiveAutomationRuns(context.Context) ([]domain.AutomationRun, error)
-	ListExpiredSpawningAutomationRuns(context.Context, time.Time) ([]domain.AutomationRun, error)
 	GetSessionByAutomationRunID(context.Context, domain.AutomationRunID) (domain.SessionRecord, bool, error)
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	MarkAutomationRunRunning(context.Context, domain.AutomationRunID, domain.SessionID, time.Time) (bool, error)
@@ -189,28 +188,6 @@ func (s *Service) Reconcile(ctx context.Context) error {
 	}
 	now := s.clock().UTC()
 	var problems []error
-	expired, err := store.ListExpiredSpawningAutomationRuns(ctx, now)
-	if err != nil {
-		problems = append(problems, err)
-	} else {
-		for _, run := range expired {
-			session, ok, lookupErr := store.GetSessionByAutomationRunID(ctx, run.ID)
-			if lookupErr != nil {
-				problems = append(problems, lookupErr)
-				continue
-			}
-			if ok && session.AutomationLaunchCompleted {
-				_, lookupErr = store.MarkAutomationRunRunning(ctx, run.ID, session.ID, now)
-			} else if ok {
-				lookupErr = s.rollbackIncompleteLaunch(ctx, store, run, session, now)
-			} else {
-				_, lookupErr = store.ReleaseAutomationRun(ctx, run.ID, "Recovered expired spawn claim", now)
-			}
-			if lookupErr != nil {
-				problems = append(problems, lookupErr)
-			}
-		}
-	}
 	if err := s.completeAndAdoptActive(ctx, store, now); err != nil {
 		problems = append(problems, err)
 	}
@@ -242,6 +219,10 @@ func (s *Service) completeAndAdoptActive(ctx context.Context, store schedulerSto
 				_, lookupErr = store.MarkAutomationRunRunning(ctx, run.ID, session.ID, now)
 				if lookupErr != nil {
 					problems = append(problems, lookupErr)
+				} else if session.IsTerminated {
+					if _, lookupErr = store.CompleteAutomationRun(ctx, run.ID, now); lookupErr != nil {
+						problems = append(problems, lookupErr)
+					}
 				}
 			} else if ok && run.LeaseExpiresAt != nil && !run.LeaseExpiresAt.After(now) {
 				if lookupErr = s.rollbackIncompleteLaunch(ctx, store, run, session, now); lookupErr != nil {

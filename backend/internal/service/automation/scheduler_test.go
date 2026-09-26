@@ -79,16 +79,6 @@ func (f *schedulerMemoryStore) ListActiveAutomationRuns(context.Context) ([]doma
 	return out, nil
 }
 
-func (f *schedulerMemoryStore) ListExpiredSpawningAutomationRuns(_ context.Context, now time.Time) ([]domain.AutomationRun, error) {
-	var out []domain.AutomationRun
-	for _, run := range f.runs {
-		if run.Status == domain.AutomationRunSpawning && run.LeaseExpiresAt != nil && !run.LeaseExpiresAt.After(now) {
-			out = append(out, run)
-		}
-	}
-	return out, nil
-}
-
 func (f *schedulerMemoryStore) GetSessionByAutomationRunID(_ context.Context, id domain.AutomationRunID) (domain.SessionRecord, bool, error) {
 	for _, session := range f.sessions {
 		if session.AutomationRunID != nil && *session.AutomationRunID == id {
@@ -238,6 +228,24 @@ func TestReconcileAdoptsSessionForExpiredClaim(t *testing.T) {
 	}
 	if store.runs[runID].Status != domain.AutomationRunRunning || store.runs[runID].SessionID == nil || *store.runs[runID].SessionID != sessionID || len(spawner.calls) != 0 {
 		t.Fatalf("run=%#v calls=%d", store.runs[runID], len(spawner.calls))
+	}
+}
+
+func TestReconcileCompletesTerminatedSessionForExpiredClaim(t *testing.T) {
+	now := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
+	store := newSchedulerStore()
+	runID, sessionID := domain.AutomationRunID("run-1"), domain.SessionID("session-1")
+	lease := now.Add(-time.Minute)
+	store.runs[runID] = domain.AutomationRun{ID: runID, Status: domain.AutomationRunSpawning, LeaseExpiresAt: &lease}
+	store.sessions[sessionID] = domain.SessionRecord{ID: sessionID, AutomationRunID: &runID, AutomationLaunchCompleted: true, IsTerminated: true}
+	svc := New(Deps{Store: store, Clock: func() time.Time { return now }})
+
+	if err := svc.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	run := store.runs[runID]
+	if run.Status != domain.AutomationRunCompleted || run.FinishedAt == nil || !run.FinishedAt.Equal(now) {
+		t.Fatalf("run = %#v, want completed at %s", run, now)
 	}
 }
 

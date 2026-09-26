@@ -607,52 +607,6 @@ func (q *Queries) ListDueAutomations(ctx context.Context, arg ListDueAutomations
 	return items, nil
 }
 
-const listExpiredSpawningAutomationRuns = `-- name: ListExpiredSpawningAutomationRuns :many
-SELECT id, automation_id, scheduled_for, session_id, status, attempt_count,
-    claimed_at, lease_expires_at, started_at, finished_at, error_message,
-    created_at, updated_at
-FROM automation_runs
-WHERE status = 'spawning' AND lease_expires_at <= ?
-ORDER BY scheduled_for, id
-`
-
-func (q *Queries) ListExpiredSpawningAutomationRuns(ctx context.Context, leaseExpiresAt sql.NullTime) ([]AutomationRun, error) {
-	rows, err := q.db.QueryContext(ctx, listExpiredSpawningAutomationRuns, leaseExpiresAt)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []AutomationRun{}
-	for rows.Next() {
-		var i AutomationRun
-		if err := rows.Scan(
-			&i.ID,
-			&i.AutomationID,
-			&i.ScheduledFor,
-			&i.SessionID,
-			&i.Status,
-			&i.AttemptCount,
-			&i.ClaimedAt,
-			&i.LeaseExpiresAt,
-			&i.StartedAt,
-			&i.FinishedAt,
-			&i.ErrorMessage,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listLatestAutomationRuns = `-- name: ListLatestAutomationRuns :many
 SELECT r.id, r.automation_id, r.scheduled_for, r.session_id, r.status,
     r.attempt_count, r.claimed_at, r.lease_expires_at, r.started_at,

@@ -16,7 +16,7 @@ func TestCreatePersistsWeeklyNextRunOnChosenWeekday(t *testing.T) {
 	svc := New(Deps{Store: newFakeStore(), Clock: func() time.Time { return now }})
 	created, err := svc.Create(context.Background(), CreateInput{
 		ProjectID: "scheduled", DisplayName: "Friday review", Prompt: "Review",
-		Kind: domain.KindWorker,
+		Kind:  domain.KindWorker,
 		RRule: "FREQ=WEEKLY;BYDAY=FR;BYHOUR=9;BYMINUTE=30;BYSECOND=0", Timezone: "UTC",
 	})
 	if err != nil {
