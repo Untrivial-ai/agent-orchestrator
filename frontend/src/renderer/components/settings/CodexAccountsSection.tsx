@@ -1,4 +1,4 @@
-import { ArrowRightLeft, LoaderCircle, Plus, UserRound } from "lucide-react";
+import { ArrowRightLeft, LoaderCircle, Plus, UserRound, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -16,7 +16,6 @@ import { CodexAccountRow } from "./CodexAccountRow";
 import { SettingsSection } from "./SettingsSection";
 
 export type PendingCodexAccountAction =
-	| { kind: "switch"; account: CodexAccount; idempotencyKey: string; submitting: boolean }
 	| { kind: "reset"; account: CodexAccount; idempotencyKey: string; submitting: boolean }
 	| { kind: "logout"; account: CodexAccount; submitting: boolean }
 	| { kind: "delete"; account: CodexAccount; submitting: boolean }
@@ -35,7 +34,8 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 	const [pendingAction, setPendingAction] = useState<PendingCodexAccountAction>(null);
 	const [announcement, setAnnouncement] = useState("");
 	const [showDeviceRefresh, setShowDeviceRefresh] = useState(false);
-	const [switchOutcome, setSwitchOutcome] = useState<{ switchId: string; result: "completed" | "unchanged" | "failed" | "unknown"; label?: string } | null>(null);
+	const [switchOutcome, setSwitchOutcome] = useState<{ switchId: string; result: "unchanged" | "failed" | "unknown"; label?: string } | null>(null);
+	const [switchingAccountId, setSwitchingAccountId] = useState<string | null>(null);
 	const previousSwitch = useRef<CodexAccountSwitch | null>(null);
 	const switchStatusRequest = useRef<string | null>(null);
 	const sectionMounted = useRef(true);
@@ -46,6 +46,28 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 	const deviceBlocked = deviceReconciliation?.status === "blocked" || deviceReconciliation?.status === "temporarily_unavailable";
 	const deviceRetryable = deviceReconciliation?.retryable === true;
 	const activeLogin = data?.activeLogin ?? null;
+	// Optimistic dismiss: closing hides the terminal instantly (unmounting
+	// freezes it) while the daemon cancel runs in the background. The id guard
+	// keeps a late non-cancelled cancel response from popping it back open.
+	const [dismissedLoginId, setDismissedLoginId] = useState<string | null>(null);
+	const shownLogin = activeLogin && activeLogin.operationId !== dismissedLoginId ? activeLogin : null;
+	const shownKey = shownLogin ? `${shownLogin.operationId}:${shownLogin.shellTerminal.handleId}` : null;
+	// The terminal preloads invisibly and the section reveals it only once the
+	// PTY attaches. A fallback timer guarantees the UI can't wedge on a
+	// spinner if attach never reports.
+	const [revealedKey, setRevealedKey] = useState<string | null>(null);
+	const loginRevealed = shownKey !== null && revealedKey === shownKey;
+	const handleLoginAttached = useCallback((operationKey: string) => setRevealedKey(operationKey), []);
+	useEffect(() => {
+		if (activeLogin) return;
+		setDismissedLoginId(null);
+		setRevealedKey(null);
+	}, [activeLogin]);
+	useEffect(() => {
+		if (!shownKey || revealedKey === shownKey) return;
+		const timer = window.setTimeout(() => setRevealedKey(shownKey), 5_000);
+		return () => window.clearTimeout(timer);
+	}, [shownKey, revealedKey]);
 	const activeAccount = data?.accounts.find((account) => account.active);
 	const activeAuthentication = activeAccount ? codexAuthenticationDisplay(activeAccount) : null;
 	const currentSwitch = data?.currentSwitch;
@@ -57,15 +79,16 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 	const accountsError = accountsQuery.error instanceof Error ? accountsQuery.error.message : null;
 	const actionSubmitting = pendingAction?.submitting ?? false;
 	const mutationDisabled = Boolean(activeLogin || switchPresentation?.mutationBlocked || actionSubmitting || actions.loginPending || actions.authenticationRetryAccountId || actions.deviceRefreshPending);
+	const switchBusy = Boolean(switchPresentation?.busy) || switchingAccountId !== null;
 	const switchSourceAvailable = Boolean(activeAccount);
 	const switchTargets = data?.accounts.filter((account) => account.id !== data.activeAccountId) ?? [];
 	const switchUnsupported = data?.capabilities.globalSwitch.state !== "supported";
-	const providerHasContent = Boolean(activeLogin || data?.accounts.length || actions.error || switchOutcome || accountsQuery.isLoading || accountsError);
+	const providerHasContent = Boolean(shownLogin || data?.accounts.length || actions.error || switchOutcome || accountsQuery.isLoading || accountsError);
 
 	useEffect(() => {
-		if (!activeLogin) return;
+		if (!shownLogin) return;
 		setProviderExpanded(true);
-	}, [activeLogin?.accountId, activeLogin?.operationId]);
+	}, [shownLogin?.accountId, shownLogin?.operationId]);
 
 	useEffect(() => {
 		if (!deviceRefreshing) {
@@ -97,7 +120,10 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 			previousSwitch.current = null;
 			if (settled.phase === "completed") {
 				const label = data.accounts.find((account) => account.id === observed.targetAccountId)?.label;
-				setSwitchOutcome({ switchId: observed.id, result: "completed", label });
+				setSwitchingAccountId(null);
+				// Success needs no banner: the "In use" badge and header summary
+				// already move. Announce for screen readers only.
+				setAnnouncement(t("settings.codexAccounts.switch.completed", { label }));
 				// Activation deliberately invalidates the target's cached capacity.
 				void actions.ensureAccount(observed.targetAccountId).catch(() => undefined);
 				return;
@@ -108,13 +134,15 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 				? data.accounts.find((account) => account.id === observed.sourceAccountId)?.label
 				: undefined;
 			setSwitchOutcome({ switchId: observed.id, result: sourceUnchanged ? "unchanged" : "failed", label });
+			setSwitchingAccountId(null);
 		}).catch(() => {
 			if (!sectionMounted.current || previousSwitch.current?.id !== observed.id) return;
 			switchStatusRequest.current = null;
 			previousSwitch.current = null;
+			setSwitchingAccountId(null);
 			setSwitchOutcome({ switchId: observed.id, result: "unknown" });
 		});
-	}, [actions.ensureAccount, actions.getAccountSwitch, currentSwitch, data]);
+	}, [actions.ensureAccount, actions.getAccountSwitch, currentSwitch, data, t]);
 
 	const beginLogin = useCallback(async (accountId?: string) => {
 		if (activeLogin || switchPresentation?.mutationBlocked) return;
@@ -122,6 +150,28 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 		setAnnouncement("");
 		await actions.beginLogin(accountId).catch(() => undefined);
 	}, [actions, activeLogin, switchPresentation?.mutationBlocked]);
+
+	// The header + is the only close affordance: it turns into × while a
+	// sign-in is open. Closing hides the terminal immediately instead of
+	// waiting for the daemon cancel round-trip; a failed cancel rolls the
+	// dismiss back so the terminal reappears instead of stranding + dead.
+	const handleLoginToggle = useCallback(() => {
+		if (activeLogin) {
+			const dismissedId = activeLogin.operationId;
+			setDismissedLoginId(dismissedId);
+			void actions.closeLogin(activeLogin).catch(() => {
+				setDismissedLoginId((current) => (current === dismissedId ? null : current));
+			});
+			return;
+		}
+		void beginLogin();
+	}, [actions, activeLogin, beginLogin]);
+	const loginToggleBusy = actions.loginPending || actions.loginOperationPending || (shownLogin !== null && !loginRevealed);
+	// While a sign-in is open, closing is always available (except mid-request):
+	// capability/switch states must never trap the user in the flow.
+	const loginToggleDisabled = shownLogin
+		? actions.loginOperationPending
+		: (loginToggleBusy || switchPresentation?.mutationBlocked || actionSubmitting || Boolean(actions.authenticationRetryAccountId) || actions.deviceRefreshPending || data?.capabilities.nativeLogin.state !== "supported");
 
 	const verifyLogin = useCallback(async (login: CodexActiveLogin) => {
 		const operation = await actions.verifyLogin(login).catch(() => undefined);
@@ -137,10 +187,24 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 	}, [actions, expandedAccount]);
 
 	const openPending = (kind: Exclude<PendingCodexAccountAction, null>["kind"], account: CodexAccount) => {
-		if (kind === "switch") setPendingAction({ kind, account, idempotencyKey: crypto.randomUUID(), submitting: false });
-		else if (kind === "reset") setPendingAction({ kind, account, idempotencyKey: crypto.randomUUID(), submitting: false });
+		if (kind === "reset") setPendingAction({ kind, account, idempotencyKey: crypto.randomUUID(), submitting: false });
 		else setPendingAction({ kind, account, submitting: false });
 	};
+
+	// Switching is reversible, so it applies immediately with no nested
+	// confirmation. Progress surfaces in the Switch button itself; success is
+	// the moved "In use" badge plus a screen-reader announcement.
+	const handleSwitch = useCallback(async (account: CodexAccount) => {
+		if (mutationDisabled || switchUnsupported || switchingAccountId !== null || !codexAccountCanSwitch(account)) return;
+		setSwitchOutcome(null);
+		setAnnouncement("");
+		setSwitchingAccountId(account.id);
+		try {
+			await actions.switchAccount(account, crypto.randomUUID());
+		} catch {
+			setSwitchingAccountId(null);
+		}
+	}, [actions, mutationDisabled, switchUnsupported, switchingAccountId]);
 
 	const submitPending = useCallback(async () => {
 		const pending = pendingAction;
@@ -148,7 +212,6 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 		setPendingAction({ ...pending, submitting: true });
 		try {
 			switch (pending.kind) {
-				case "switch": await actions.switchAccount(pending.account, pending.idempotencyKey); break;
 				case "reset": await actions.resetAccount(pending.account, pending.idempotencyKey); setAnnouncement(t("settings.codexAccounts.resetSuccess", { label: pending.account.label })); break;
 				case "logout": await actions.logoutAccount(pending.account); setAnnouncement(t("settings.codexAccounts.logoutSuccess", { label: pending.account.label })); break;
 				case "delete": await actions.deleteAccount(pending.account); if (expandedAccount === pending.account.id) setExpandedAccount(null); setAnnouncement(t("settings.codexAccounts.deleteSuccess", { label: pending.account.label })); break;
@@ -162,12 +225,6 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 	const dialog = useMemo(() => {
 		if (!pendingAction) return null;
 		switch (pendingAction.kind) {
-			case "switch": return {
-				title: t("settings.codexAccounts.switchTitle", { label: pendingAction.account.label }),
-				description: t("settings.codexAccounts.switchDescription"),
-				confirmLabel: t("settings.codexAccounts.switchConfirm"),
-				destructive: false,
-			};
 			case "reset": return { title: t("settings.codexAccounts.resetTitle"), description: t("settings.codexAccounts.resetDescription", { label: pendingAction.account.label }), confirmLabel: t("settings.codexAccounts.useReset"), destructive: false };
 			case "logout": return {
 				title: t("settings.codexAccounts.logoutTitle"),
@@ -201,13 +258,13 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 	}, [accountsError, activeAccount, activeAuthentication?.key, data, deviceBlocked, deviceRefreshing, deviceVerified, showDeviceRefresh, switchPresentation?.busy, switchStatus, t]);
 
 	return <SettingsSection title={t("settings.codexAccounts.title")} sectionId="codex-accounts" titleHidden={titleHidden}>
-		<AgentProviderGroup provider="codex" name="Codex" summary={summary} expanded={providerHasContent && (providerExpanded || Boolean(activeLogin))} onExpandedChange={setProviderExpanded} collapsible={providerHasContent} collapseLocked={Boolean(activeLogin)} action={<div className="flex items-center gap-2">{switchPresentation?.busy && switchStatus ? <LoaderCircle className="size-5 animate-spin text-muted-foreground" aria-label={switchStatus} /> : null}{deviceBlocked && deviceRetryable ? <Button type="button" size="sm" variant="outline" disabled={actions.deviceRefreshPending} onClick={() => void actions.retryDeviceRefresh().catch(() => undefined)}>{actions.deviceRefreshPending ? <LoaderCircle className="animate-spin" aria-label={t("settings.codexAccounts.reconciliationChecking")} /> : null}{t("settings.codexAccounts.tryAgain")}</Button> : null}{switchSourceAvailable && switchTargets.length > 0 ? <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="sm" variant="outline" aria-label={t("settings.codexAccounts.switchConfirm")} disabled={mutationDisabled || switchUnsupported} title={switchUnsupported && data ? t(codexAccountReasonKey(data.capabilities.globalSwitch.reasonCode)) : undefined}><ArrowRightLeft aria-hidden="true" />{t("settings.codexAccounts.switchAction")}</Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="min-w-64">{switchTargets.map((account) => { const targetSummary = [formatAuthMethod(account.authMethod), formatPlanName(account.capacity.plan)].filter(Boolean).join(" · "); return <DropdownMenuItem key={account.id} disabled={!codexAccountCanSwitch(account)} onSelect={() => openPending("switch", account)}><UserRound aria-hidden="true" /><div className="min-w-0"><p className="truncate text-foreground">{account.label}</p>{targetSummary ? <p className="truncate text-micro text-muted-foreground">{targetSummary}</p> : null}</div></DropdownMenuItem>; })}</DropdownMenuContent></DropdownMenu> : null}<Tooltip><TooltipTrigger asChild><Button type="button" size="icon-sm" variant="secondary" aria-label={t("settings.codexAccounts.add")} title={accountsError ?? undefined} data-terminal-focus-handoff="true" onClick={() => void beginLogin()} disabled={mutationDisabled || data?.capabilities.nativeLogin.state !== "supported"}><Plus aria-hidden="true" /></Button></TooltipTrigger><TooltipContent>{t("settings.codexAccounts.add")}</TooltipContent></Tooltip></div>}>
+		<AgentProviderGroup provider="codex" name="Codex" summary={summary} expanded={providerHasContent && (providerExpanded || Boolean(shownLogin))} onExpandedChange={setProviderExpanded} collapsible={false} collapseLocked={Boolean(shownLogin)} action={<div className="flex items-center gap-2">{deviceBlocked && deviceRetryable ? <Button type="button" size="sm" variant="outline" disabled={actions.deviceRefreshPending} onClick={() => void actions.retryDeviceRefresh().catch(() => undefined)}>{actions.deviceRefreshPending ? <LoaderCircle className="animate-spin" aria-label={t("settings.codexAccounts.reconciliationChecking")} /> : null}{t("settings.codexAccounts.tryAgain")}</Button> : null}{switchSourceAvailable && switchTargets.length > 0 ? <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="sm" variant="outline" aria-label={switchBusy && switchStatus ? switchStatus : t("settings.codexAccounts.switchConfirm")} disabled={mutationDisabled || switchUnsupported || switchBusy} title={(switchBusy && switchStatus) || (switchUnsupported && data ? t(codexAccountReasonKey(data.capabilities.globalSwitch.reasonCode)) : undefined)}>{switchBusy ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <ArrowRightLeft aria-hidden="true" />}{t("settings.codexAccounts.switchAction")}</Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="min-w-64">{switchTargets.map((account) => { const targetSummary = [formatAuthMethod(account.authMethod), formatPlanName(account.capacity.plan)].filter(Boolean).join(" · "); const switching = switchingAccountId === account.id; return <DropdownMenuItem key={account.id} disabled={!codexAccountCanSwitch(account) || switchBusy || mutationDisabled} onSelect={() => void handleSwitch(account)}><UserRound aria-hidden="true" /><div className="min-w-0"><p className="truncate text-foreground">{account.label}</p>{targetSummary ? <p className="truncate text-micro text-muted-foreground">{targetSummary}</p> : null}</div>{switching ? <LoaderCircle className="ml-auto size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden="true" /> : null}</DropdownMenuItem>; })}</DropdownMenuContent></DropdownMenu> : null}<Tooltip><TooltipTrigger asChild><Button type="button" size="icon-sm" variant="secondary" aria-label={shownLogin ? t("settings.codexAccounts.loginClose") : t("settings.codexAccounts.add")} title={shownLogin ? t("settings.codexAccounts.loginClose") : (accountsError ?? undefined)} data-terminal-focus-handoff={shownLogin ? undefined : "true"} onClick={handleLoginToggle} disabled={loginToggleDisabled}>{loginToggleBusy ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : shownLogin ? <X aria-hidden="true" /> : <Plus aria-hidden="true" />}</Button></TooltipTrigger><TooltipContent>{shownLogin ? t("settings.codexAccounts.loginClose") : t("settings.codexAccounts.add")}</TooltipContent></Tooltip></div>}>
 			{actions.error ? <p role="alert" className="border-b border-border px-4 py-3 text-xs text-error">{actions.error}</p> : null}
 			{announcement ? <p className="sr-only" role="status" aria-live="polite">{announcement}</p> : null}
-			{switchOutcome ? <p key={switchOutcome.switchId} className={`border-b border-border px-4 py-3 text-xs ${switchOutcome.result === "failed" || switchOutcome.result === "unchanged" ? "text-error" : "text-muted-foreground"}`} role="status" aria-live="polite">{t(`settings.codexAccounts.switch.${switchOutcome.result}`, { label: switchOutcome.label })}</p> : null}
-			{activeLogin && !activeLogin.accountId ? <div className="border-b border-border px-4 py-3" data-testid="codex-account-pending-row"><CodexAccountLoginTerminalPanel activeLogin={activeLogin} pending={actions.loginOperationPending} onCheckAgain={() => void verifyLogin(activeLogin)} onClose={() => void actions.closeLogin(activeLogin)} onRetry={() => void actions.retryLogin(activeLogin)} /></div> : null}
+			{switchOutcome ? <p key={switchOutcome.switchId} className="border-b border-border px-4 py-3 text-xs text-error" role="alert">{t(`settings.codexAccounts.switch.${switchOutcome.result}`, { label: switchOutcome.label })}</p> : null}
+			{shownLogin && !shownLogin.accountId ? <div data-testid="codex-account-pending-row" className={loginRevealed ? "border-b border-border px-4 py-3" : "h-0 overflow-hidden"}><CodexAccountLoginTerminalPanel activeLogin={shownLogin} pending={actions.loginOperationPending} revealed={loginRevealed} onAttached={handleLoginAttached} onCheckAgain={() => void verifyLogin(shownLogin)} onRetry={() => void actions.retryLogin(shownLogin)} /></div> : null}
 			{accountsQuery.isLoading ? <p className="px-4 py-3 text-xs text-muted-foreground">{t("settings.codexAccounts.loading")}</p> : null}{accountsError ? <p className="px-4 py-3 text-xs text-error" role="alert">{accountsError}</p> : null}
-			<div className="divide-y divide-border">{data?.accounts.map((account) => <CodexAccountRow key={account.id} account={account} expanded={expandedAccount === account.id} resetCreditSupported={data.capabilities.resetCreditConsume.state === "supported"} mutationDisabled={mutationDisabled} deviceMutationDisabled={mutationDisabled || switchUnsupported} canUse={!activeAccount && !deviceRefreshing && !switchUnsupported && codexAccountCanSwitch(account)} resetBusy={pendingAction?.kind === "reset" && pendingAction.account.id === account.id && pendingAction.submitting} authenticationRetryBusy={actions.authenticationRetryAccountId === account.id} logoutBusy={pendingAction?.kind === "logout" && pendingAction.account.id === account.id && pendingAction.submitting} deleteBusy={pendingAction?.kind === "delete" && pendingAction.account.id === account.id && pendingAction.submitting} activeLogin={activeLogin?.accountId === account.id ? activeLogin : null} loginPending={actions.loginOperationPending} onToggle={() => toggleAccount(account)} onUseAccount={() => openPending("switch", account)} onUseReset={() => openPending("reset", account)} onRetryAuthentication={() => void actions.retryAuthentication(account.id).catch(() => undefined)} onSignIn={() => void beginLogin(account.id)} onLogout={() => openPending("logout", account)} onDelete={() => openPending("delete", account)} onCheckLogin={() => activeLogin && void verifyLogin(activeLogin)} onCloseLogin={() => activeLogin && void actions.closeLogin(activeLogin)} onRetryLogin={() => activeLogin && void actions.retryLogin(activeLogin)} />)}</div>
+			<div className="divide-y divide-border">{data?.accounts.map((account) => <CodexAccountRow key={account.id} account={account} expanded={expandedAccount === account.id} resetCreditSupported={data.capabilities.resetCreditConsume.state === "supported"} mutationDisabled={mutationDisabled} deviceMutationDisabled={mutationDisabled || switchUnsupported || switchBusy} canUse={!activeAccount && !deviceRefreshing && !switchUnsupported && !switchBusy && codexAccountCanSwitch(account)} useBusy={switchingAccountId === account.id} resetBusy={pendingAction?.kind === "reset" && pendingAction.account.id === account.id && pendingAction.submitting} authenticationRetryBusy={actions.authenticationRetryAccountId === account.id} logoutBusy={pendingAction?.kind === "logout" && pendingAction.account.id === account.id && pendingAction.submitting} deleteBusy={pendingAction?.kind === "delete" && pendingAction.account.id === account.id && pendingAction.submitting} activeLogin={shownLogin?.accountId === account.id ? shownLogin : null} loginPending={actions.loginOperationPending} loginRevealed={loginRevealed} onToggle={() => toggleAccount(account)} onUseAccount={() => void handleSwitch(account)} onUseReset={() => openPending("reset", account)} onRetryAuthentication={() => void actions.retryAuthentication(account.id).catch(() => undefined)} onSignIn={() => void beginLogin(account.id)} onLogout={() => openPending("logout", account)} onDelete={() => openPending("delete", account)} onCheckLogin={() => shownLogin && void verifyLogin(shownLogin)} onAttachedLogin={handleLoginAttached} onRetryLogin={() => shownLogin && void actions.retryLogin(shownLogin)} />)}</div>
 		</AgentProviderGroup>
 		{dialog && pendingAction ? <ConfirmDialog open title={dialog.title} description={dialog.description} confirmLabel={dialog.confirmLabel} destructive={dialog.destructive} busy={pendingAction.submitting} error={actions.error} onConfirm={() => void submitPending()} onOpenChange={(open) => { if (!open && !pendingAction.submitting) setPendingAction(null); }} /> : null}
 	</SettingsSection>;

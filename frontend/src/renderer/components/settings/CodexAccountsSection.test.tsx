@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { writeCodexAccounts } from "../../hooks/codex-accounts-state";
@@ -8,12 +8,11 @@ import { useUiStore } from "../../stores/ui-store";
 import { TooltipProvider } from "../ui/tooltip";
 import { CodexAccountsSection } from "./CodexAccountsSection";
 
-const { deleteMock, getMock, postMock, scrollIntoViewMock, terminalFocusRequested, terminalStateCallback, terminalTarget } = vi.hoisted(() => ({
+const { deleteMock, getMock, postMock, scrollIntoViewMock, terminalStateCallback, terminalTarget } = vi.hoisted(() => ({
 	deleteMock: vi.fn(),
 	getMock: vi.fn(),
 	postMock: vi.fn(),
 	scrollIntoViewMock: vi.fn(),
-	terminalFocusRequested: { value: false },
 	terminalStateCallback: { value: undefined as ((state: "attached" | "exited" | "error") => void) | undefined },
 	terminalTarget: { value: undefined as { handleId: string; generation: string; title: string } | undefined },
 }));
@@ -24,8 +23,7 @@ vi.mock("../../lib/api-client", () => ({
 }));
 
 vi.mock("../TerminalPane", () => ({
-	TerminalPane: ({ focusRequested, onTerminalStateChange, terminalTarget: target }: { focusRequested?: boolean; onTerminalStateChange?: (state: "attached" | "exited" | "error") => void; terminalTarget: { handleId: string; generation: string; title: string } }) => {
-		terminalFocusRequested.value = focusRequested === true;
+	TerminalPane: ({ onTerminalStateChange, terminalTarget: target }: { onTerminalStateChange?: (state: "attached" | "exited" | "error") => void; terminalTarget: { handleId: string; generation: string; title: string } }) => {
 		terminalStateCallback.value = onTerminalStateChange;
 		terminalTarget.value = target;
 		return <div data-testid="inline-terminal-body" />;
@@ -59,7 +57,6 @@ function renderSection() {
 beforeEach(() => {
 	Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoViewMock });
 	scrollIntoViewMock.mockReset();
-	terminalFocusRequested.value = false;
 	terminalStateCallback.value = undefined;
 	terminalTarget.value = undefined;
 	useUiStore.setState({ settingsModal: { scope: "global", section: "agents" } });
@@ -72,7 +69,7 @@ beforeEach(() => {
 	});
 });
 
-it("shows active-first account cards with correct remaining capacity", async () => {
+it("shows account cards with correct remaining capacity", async () => {
 	renderSection();
 	expect(await screen.findByText("active@example.com")).toBeInTheDocument();
 	expect(screen.getByText("In use")).toBeInTheDocument();
@@ -325,7 +322,9 @@ it("uses the durable switch result when reconciliation briefly has no active acc
 	expect(outcome).toHaveTextContent("Switched to other@example.com.");
 	expect(outcome).not.toHaveTextContent("Couldn't switch accounts.");
 	expect(outcome).toHaveAttribute("aria-live", "polite");
-	expect(outcome).toBeVisible();
+	// Success is announced to screen readers only; the moved "In use" badge
+	// and header summary are the visual confirmation.
+	expect(outcome).toHaveClass("sr-only");
 	expect(getMock).toHaveBeenCalledWith("/api/v1/agents/codex/account-switches/{switchId}", {
 		params: { path: { switchId: switchingResponse.currentSwitch.id } },
 	});
@@ -333,6 +332,30 @@ it("uses the durable switch result when reconciliation briefly has no active acc
 		"/api/v1/agents/codex/accounts/ensure",
 		{ body: { accountIds: [inactiveAccount.id], includeUsage: true } },
 	));
+});
+
+it("keeps account row order stable when the active account changes", async () => {
+	const settledResponse = {
+		...accountResponse,
+		accountRevision: 4,
+		activeAccountId: inactiveAccount.id,
+		// API may return the newly-active account first; display order must not follow.
+		accounts: [{ ...inactiveAccount, active: true }, { ...activeAccount, active: false }],
+	};
+	const { container, queryClient } = renderSection();
+	await screen.findByText("active@example.com");
+	const before = [...container.querySelectorAll("[data-account-id]")].map((node) => node.getAttribute("data-account-id"));
+	expect(before).toEqual([activeAccount.id, inactiveAccount.id]);
+
+	act(() => writeCodexAccounts(queryClient, settledResponse as unknown as CodexAccountsResponse));
+
+	await waitFor(() => {
+		const inactiveRow = container.querySelector(`[data-account-id="${inactiveAccount.id}"]`) as HTMLElement;
+		expect(within(inactiveRow).getByText("In use")).toBeInTheDocument();
+	});
+	const after = [...container.querySelectorAll("[data-account-id]")].map((node) => node.getAttribute("data-account-id"));
+	expect(after).toEqual([activeAccount.id, inactiveAccount.id]);
+	expect(within(container.querySelector(`[data-account-id="${activeAccount.id}"]`) as HTMLElement).queryByText("In use")).not.toBeInTheDocument();
 });
 
 it("reports when a failed switch leaves the previous account unchanged", async () => {
@@ -365,9 +388,8 @@ it("reports when a failed switch leaves the previous account unchanged", async (
 		currentSwitch: undefined,
 	}));
 
-	const outcome = await screen.findByRole("status");
+	const outcome = await screen.findByRole("alert");
 	expect(outcome).toHaveTextContent("Couldn't switch accounts. You're still using active@example.com.");
-	expect(outcome).toHaveAttribute("aria-live", "polite");
 	expect(outcome).toBeVisible();
 });
 
@@ -595,21 +617,16 @@ it("quietly refreshes invalidated capacity without showing an internal warning",
 	expect(screen.queryByText("internal invalidation detail")).not.toBeInTheDocument();
 });
 
-it("collapses the provider while rotating only its chevron", async () => {
-	renderSection();
+it("renders the provider without a collapse chevron", async () => {
+	const { container } = renderSection();
 	await screen.findByText("active@example.com");
-	const providerToggle = screen.getByRole("button", { name: /Codex/ });
-	const icon = providerToggle.querySelector("img");
-	const chevron = providerToggle.querySelector("svg");
-	expect(icon).not.toBeNull();
-	expect(chevron).not.toBeNull();
-	fireEvent.click(providerToggle);
-	expect(screen.queryByText("active@example.com")).not.toBeInTheDocument();
-	expect(icon?.getAttribute("class")).not.toContain("rotate");
-	expect(chevron?.getAttribute("class")).toContain("rotate");
+	const provider = container.querySelector('[data-agent-provider="codex"]') as HTMLElement;
+	expect(provider.querySelector("header > button")).not.toBeInTheDocument();
+	expect(provider.querySelector("header .lucide-chevron-down")).not.toBeInTheDocument();
+	expect(screen.getByText("active@example.com")).toBeInTheDocument();
 });
 
-it("starts account login immediately with no name prompt and auto-scrolls the inline terminal", async () => {
+it("preloads the terminal hidden and reveals it only once attached", async () => {
 	renderSection();
 	await screen.findByText("active@example.com");
 	const addButton = screen.getByRole("button", { name: "Add account" });
@@ -617,13 +634,126 @@ it("starts account login immediately with no name prompt and auto-scrolls the in
 	fireEvent.click(addButton);
 	await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/agents/codex/accounts/login-terminal"));
 	expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-	expect(await screen.findByTestId("inline-terminal-body")).toBeInTheDocument();
-	expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "nearest" });
+	// Nothing visible yet: the toggle spins but stays closable, and the panel
+	// takes no space — no loader, no empty terminal.
+	const toggle = screen.getByRole("button", { name: "Close sign-in" });
+	expect(toggle).toBeEnabled();
+	expect(toggle.querySelector(".animate-spin")).not.toBeNull();
+	expect(screen.getByTestId("codex-account-login-terminal")).toHaveClass("h-0");
+	expect(screen.queryByTestId("codex-login-terminal-loading")).not.toBeInTheDocument();
+	expect(scrollIntoViewMock).not.toHaveBeenCalled();
 	expect(useUiStore.getState().settingsModal).toEqual({ scope: "global", section: "agents" });
-	expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
-	expect(terminalFocusRequested.value).toBe(false);
 	act(() => terminalStateCallback.value?.("attached"));
-	await waitFor(() => expect(terminalFocusRequested.value).toBe(true));
+	await waitFor(() => expect(screen.getByTestId("codex-account-login-terminal")).not.toHaveClass("h-0"));
+	// Reveal scrolls once and lands focus in the terminal.
+	expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: "smooth", block: "nearest" });
+	expect(screen.getByRole("button", { name: "Close sign-in" })).toBeEnabled();
+	expect(screen.getByTestId("inline-terminal-body")).toBeInTheDocument();
+});
+
+it("reveals the login terminal after five seconds even when attach never arrives", async () => {
+	vi.useFakeTimers({ shouldAdvanceTime: true });
+	try {
+		renderSection();
+		await screen.findByText("active@example.com");
+		fireEvent.click(screen.getByRole("button", { name: "Add account" }));
+		await screen.findByTestId("codex-account-login-terminal");
+		expect(screen.getByTestId("codex-account-login-terminal")).toHaveClass("h-0");
+		await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+		expect(screen.getByTestId("codex-account-login-terminal")).not.toHaveClass("h-0");
+		expect(screen.getByTestId("inline-terminal-body")).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Close sign-in" })).toBeEnabled();
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+it("closes during preload without waiting for attach or cancel", async () => {
+	let finishCancel: ((value: { data: object }) => void) | undefined;
+	postMock.mockImplementation((path: string) => {
+		if (path === "/api/v1/agents/codex/accounts/ensure") return Promise.resolve({ data: accountResponse });
+		if (path === "/api/v1/agents/codex/accounts/login-terminal") return Promise.resolve({ data: pendingLogin });
+		if (String(path).includes("/cancel")) return new Promise((resolve) => { finishCancel = resolve; });
+		return Promise.resolve({ data: {} });
+	});
+	renderSection();
+	await screen.findByText("active@example.com");
+	fireEvent.click(screen.getByRole("button", { name: "Add account" }));
+	await screen.findByTestId("codex-account-login-terminal");
+	fireEvent.click(screen.getByRole("button", { name: "Close sign-in" }));
+	await waitFor(() => expect(screen.queryByTestId("codex-account-login-terminal")).not.toBeInTheDocument());
+	expect(finishCancel).toBeDefined();
+	finishCancel?.({ data: { ...pendingLogin.operation, status: "cancelled", reasonCode: "login_cancelled", reason: "Codex sign-in was cancelled." } });
+	await waitFor(() => expect(screen.getByRole("button", { name: "Add account" })).toBeEnabled());
+});
+
+it("swallows Ctrl+C so the sign-in flow can't be interrupted from the keyboard", async () => {
+	renderSection();
+	await screen.findByText("active@example.com");
+	fireEvent.click(screen.getByRole("button", { name: "Add account" }));
+	const panel = await screen.findByTestId("codex-account-login-terminal");
+	const interrupt = createEvent.keyDown(panel, { key: "c", ctrlKey: true });
+	fireEvent(panel, interrupt);
+	expect(interrupt.defaultPrevented).toBe(true);
+	const shiftedCopy = createEvent.keyDown(panel, { key: "C", ctrlKey: true, shiftKey: true });
+	fireEvent(panel, shiftedCopy);
+	expect(shiftedCopy.defaultPrevented).toBe(false);
+	const typing = createEvent.keyDown(panel, { key: "1" });
+	fireEvent(panel, typing);
+	expect(typing.defaultPrevented).toBe(false);
+});
+
+it("turns + into × and closes optimistically without waiting for cancel", async () => {
+	let finishCancel: ((value: { data: object }) => void) | undefined;
+	postMock.mockImplementation((path: string) => {
+		if (path === "/api/v1/agents/codex/accounts/ensure") return Promise.resolve({ data: accountResponse });
+		if (path === "/api/v1/agents/codex/accounts/login-terminal") return Promise.resolve({ data: pendingLogin });
+		if (String(path).includes("/cancel")) return new Promise((resolve) => { finishCancel = resolve; });
+		return Promise.resolve({ data: {} });
+	});
+	renderSection();
+	await screen.findByText("active@example.com");
+	fireEvent.click(screen.getByRole("button", { name: "Add account" }));
+	await screen.findByTestId("inline-terminal-body");
+	// The panel carries no close button of its own; the header toggle is it.
+	expect(within(screen.getByTestId("codex-account-login-terminal")).queryByRole("button", { name: "Close sign-in" })).not.toBeInTheDocument();
+	act(() => terminalStateCallback.value?.("attached"));
+	await waitFor(() => expect(screen.getByRole("button", { name: "Close sign-in" })).toBeEnabled());
+	fireEvent.click(screen.getByRole("button", { name: "Close sign-in" }));
+	// The terminal unmounts (freezing it) immediately; the daemon cancel is
+	// still in flight.
+	await waitFor(() => expect(screen.queryByTestId("codex-account-login-terminal")).not.toBeInTheDocument());
+	expect(finishCancel).toBeDefined();
+	await waitFor(() => expect(postMock).toHaveBeenCalledWith(
+		"/api/v1/agents/codex/accounts/login-operations/{operationId}/cancel",
+		{ params: { path: { operationId: "login-1" } } },
+	));
+	finishCancel?.({ data: { ...pendingLogin.operation, status: "cancelled", reasonCode: "login_cancelled", reason: "Codex sign-in was cancelled." } });
+	await waitFor(() => expect(screen.getByRole("button", { name: "Add account" })).toBeEnabled());
+	expect(screen.queryByTestId("codex-account-login-terminal")).not.toBeInTheDocument();
+});
+
+it("restores the terminal when cancelling fails instead of stranding +", async () => {
+	postMock.mockImplementation((path: string) => {
+		if (path === "/api/v1/agents/codex/accounts/ensure") return Promise.resolve({ data: accountResponse });
+		if (path === "/api/v1/agents/codex/accounts/login-terminal") return Promise.resolve({ data: pendingLogin });
+		if (String(path).includes("/cancel")) return Promise.reject(new Error("daemon gone"));
+		return Promise.resolve({ data: {} });
+	});
+	renderSection();
+	await screen.findByText("active@example.com");
+	fireEvent.click(screen.getByRole("button", { name: "Add account" }));
+	await screen.findByTestId("inline-terminal-body");
+	act(() => terminalStateCallback.value?.("attached"));
+	await waitFor(() => expect(screen.getByRole("button", { name: "Close sign-in" })).toBeEnabled());
+	fireEvent.click(screen.getByRole("button", { name: "Close sign-in" }));
+	// Optimistic hide first…
+	await waitFor(() => expect(screen.queryByTestId("codex-account-login-terminal")).not.toBeInTheDocument());
+	// …then the failed cancel surfaces and the terminal comes back so close
+	// can be retried instead of leaving + dead.
+	expect(await screen.findByText("daemon gone")).toBeInTheDocument();
+	expect(await screen.findByTestId("codex-account-login-terminal")).toBeInTheDocument();
+	expect(screen.getByRole("button", { name: "Close sign-in" })).toBeEnabled();
 });
 
 it("reattaches a daemon-projected login terminal across remounts without opening or cancelling it", async () => {
@@ -875,7 +1005,7 @@ it("deletes an invalid sign-in with one daemon-owned request", async () => {
 	await waitFor(() => expect(screen.queryByText("active@example.com")).not.toBeInTheDocument());
 });
 
-it("starts a global switch without revision admission", async () => {
+it("starts a global switch immediately with no nested confirmation", async () => {
 	const switchOperation = { id: "switch-1", phase: "requested", failureCode: null };
 	vi.stubGlobal("crypto", { randomUUID: () => "idempotency-1" });
 	postMock.mockImplementation((path: string) => {
@@ -888,14 +1018,11 @@ it("starts a global switch without revision admission", async () => {
 	expect(screen.queryByRole("button", { name: "Switch to this account" })).not.toBeInTheDocument();
 	await userEvent.click(screen.getByRole("button", { name: "Switch account" }));
 	await userEvent.click(await screen.findByRole("menuitem", { name: /other@example.com/ }));
-	const dialog = await screen.findByRole("dialog");
-	expect(dialog).toHaveTextContent("Switch to other@example.com?");
-	expect(dialog).toHaveTextContent("New sessions will use this account.");
-	expect(dialog).not.toHaveTextContent("external terminals, IDEs, and ChatGPT");
-	fireEvent.click(within(dialog).getByRole("button", { name: "Switch account" }));
 	await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/agents/codex/account-switches", {
 		body: { targetAccountId: inactiveAccount.id, idempotencyKey: "idempotency-1" },
 	}));
+	// No dialog-in-dialog: switching applies directly from the menu.
+	expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 	vi.unstubAllGlobals();
 });
 
@@ -922,7 +1049,7 @@ it("keeps a locally valid target switchable during a temporary sign-in check fai
 	expect(await screen.findByRole("menuitem", { name: /other@example.com/ })).toBeEnabled();
 });
 
-it("locks the switch confirmation while the request is submitted", async () => {
+it("disables the Switch button while the request is submitted", async () => {
 	vi.stubGlobal("crypto", { randomUUID: () => "switch-idempotency" });
 	let finishSwitch: ((value: { data: object }) => void) | undefined;
 	postMock.mockImplementation((path: string) => {
@@ -933,22 +1060,16 @@ it("locks the switch confirmation while the request is submitted", async () => {
 	renderSection();
 	await screen.findByText("other@example.com");
 
-	const openSwitchDialog = async () => {
-		await userEvent.click(screen.getByRole("button", { name: "Switch account" }));
-		await userEvent.click(await screen.findByRole("menuitem", { name: /other@example.com/ }));
-		return screen.findByRole("dialog");
-	};
-
-	const dialog = await openSwitchDialog();
-	await userEvent.click(within(dialog).getByRole("button", { name: "Switch account" }));
+	await userEvent.click(screen.getByRole("button", { name: "Switch account" }));
+	await userEvent.click(await screen.findByRole("menuitem", { name: /other@example.com/ }));
 	await waitFor(() => expect(postMock).toHaveBeenCalledWith("/api/v1/agents/codex/account-switches", {
 		body: { targetAccountId: inactiveAccount.id, idempotencyKey: "switch-idempotency" },
 	}));
-	expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
-	expect(within(dialog).getByRole("button", { name: "Switch account" })).toBeDisabled();
+	// Progress surfaces in the Switch button itself, not a nested dialog.
+	expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
 	finishSwitch?.({ data: {} });
-	await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+	await waitFor(() => expect(postMock.mock.calls.filter(([path]) => path === "/api/v1/agents/codex/account-switches")).toHaveLength(1));
 	vi.unstubAllGlobals();
 });
 

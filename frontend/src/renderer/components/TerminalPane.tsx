@@ -66,6 +66,10 @@ type TerminalPaneProps = {
 	onInputRequestResult?: (id: number, accepted: boolean) => void;
 	/** Provider-owned shared transport lease factory. */
 	createMux?: () => TerminalMux;
+	/** Hide the "terminal ended" strip. For focused single-purpose flows (such as
+	 * account sign-in) that communicate completion themselves; the strip would
+	 * otherwise flash during the teardown the flow already expects. */
+	hideEndedStrip?: boolean;
 };
 
 type TerminalCacheDescriptor = {
@@ -131,6 +135,7 @@ function terminalPropsMatch(left: TerminalPaneProps, right: TerminalPaneProps): 
 		left.inputRequest === right.inputRequest &&
 		left.onInputRequestResult === right.onInputRequestResult &&
 		left.createMux === right.createMux &&
+		left.hideEndedStrip === right.hideEndedStrip &&
 		terminalTargetMatches(left.terminalTarget, right.terminalTarget)
 	);
 }
@@ -682,6 +687,7 @@ export function TerminalPane({
 	onTerminalStateChange,
 	inputRequest,
 	onInputRequestResult,
+	hideEndedStrip,
 }: TerminalPaneProps) {
 	const { t } = useTranslation();
 	const terminalTarget =
@@ -803,6 +809,7 @@ export function TerminalPane({
 			onTerminalStateChange={onTerminalStateChange}
 			inputRequest={inputRequest}
 			onInputRequestResult={onInputRequestResult}
+			hideEndedStrip={hideEndedStrip}
 			terminalTarget={terminalTarget}
 		/>
 	);
@@ -966,6 +973,7 @@ function AttachedTerminal({
 	inputRequest,
 	onInputRequestResult,
 	createMux,
+	hideEndedStrip,
 	isVisible = true,
 	onFatal,
 	onTerminalReady,
@@ -1214,7 +1222,9 @@ function AttachedTerminal({
 		!showEmptyState &&
 		!showEndedStatePreview &&
 		!cloudRevealedRef.current;
-	const showEndedState = showEndedStatePreview && !isBoxComingUp;
+	// hideEndedStrip: focused single-purpose flows (Codex sign-in) communicate
+	// completion themselves; the strip would flash during expected teardown.
+	const showEndedState = !hideEndedStrip && showEndedStatePreview && !isBoxComingUp;
 	const emptyStateTitle = session ? t("terminal.startingSession") : "Agent Orchestrator";
 	const emptyStateMessage = session
 		? session.kind === "orchestrator"

@@ -25,7 +25,8 @@ export function mergeCodexAccounts(
 		active: account.id === presentedActiveID,
 	}));
 	normalized.sort((left, right) => {
-		if (left.active !== right.active) return left.active ? -1 : 1;
+		// Keep row positions stable across activation changes so switching only
+		// moves the "In use" badge — never reshuffles the list.
 		return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
 	});
 	return { ...incoming, accounts: normalized };

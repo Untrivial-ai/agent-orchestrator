@@ -18,7 +18,7 @@ function response(accounts: ReturnType<typeof account>[], activeAccountId = "b")
 }
 
 describe("mergeCodexAccounts", () => {
-	it("preserves unrequested accounts for targeted ensures and derives active-first stable order", () => {
+	it("preserves unrequested accounts for targeted ensures and keeps createdAt-stable order", () => {
 		const current = response([
 			account("a", "2026-01-02T00:00:00Z", true),
 			account("b", "2026-01-01T00:00:00Z"),
@@ -29,11 +29,29 @@ describe("mergeCodexAccounts", () => {
 		const merged = mergeCodexAccounts(current, incoming, "preserveMissing");
 
 		expect(merged.accounts.map(({ id, active }) => [id, active])).toEqual([
-			["b", true],
 			["c", false],
 			["a", false],
+			["b", true],
 		]);
 		expect(merged.accountRevision).toBe(7);
+	});
+
+	it("does not reshuffle rows when the active account changes", () => {
+		const current = response([
+			account("a", "2026-01-01T00:00:00Z", true),
+			account("b", "2026-01-02T00:00:00Z"),
+		], "a");
+		const incoming = response([
+			account("a", "2026-01-01T00:00:00Z", false),
+			account("b", "2026-01-02T00:00:00Z", true),
+		], "b");
+
+		const merged = mergeCodexAccounts(current, incoming, "replace");
+
+		expect(merged.accounts.map(({ id, active }) => [id, active])).toEqual([
+			["a", false],
+			["b", true],
+		]);
 	});
 
 	it("removes absent accounts for authoritative GET, mutation, and SSE snapshots", () => {
