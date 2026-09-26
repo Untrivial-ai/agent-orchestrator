@@ -68,6 +68,29 @@ func TestModelDiscoveryErrorSurfacesCommandOutput(t *testing.T) {
 	}
 }
 
+func TestOpenCodeCredentialPresenceUnlocksProvider(t *testing.T) {
+	base := map[string]string{"EXISTING": "1"}
+	got := withOpenCodeCredentialPresence(base, "anthropic_api_key")
+	if got["ANTHROPIC_API_KEY"] != modelDiscoveryPresenceValue {
+		t.Fatalf("ANTHROPIC_API_KEY = %q, want presence placeholder", got["ANTHROPIC_API_KEY"])
+	}
+	if got["EXISTING"] != "1" {
+		t.Fatalf("existing env not preserved: %v", got)
+	}
+	// The caller's map must not be mutated (it may be reused/cached).
+	if _, leaked := base["ANTHROPIC_API_KEY"]; leaked {
+		t.Fatalf("input env was mutated: %v", base)
+	}
+}
+
+func TestOpenCodeCredentialPresenceUnknownTypeIsNoop(t *testing.T) {
+	base := map[string]string{"EXISTING": "1"}
+	got := withOpenCodeCredentialPresence(base, "not_a_provider")
+	if len(got) != 1 || got["EXISTING"] != "1" {
+		t.Fatalf("unknown credential type must be a no-op, got %v", got)
+	}
+}
+
 func TestModelDiscoveryErrorTailBounded(t *testing.T) {
 	err := modelDiscoveryError(context.Background(), "opencode", errors.New("exit status 1"),
 		[]byte(strings.Repeat("x", discoveryErrorDetailMax*3)))

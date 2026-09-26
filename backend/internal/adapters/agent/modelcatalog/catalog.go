@@ -232,7 +232,45 @@ func (d Discoverer) Discover(ctx context.Context, request ports.AgentModelDiscov
 		// Older Cline releases may not expose ACP config options. Fall back to
 		// the configured provider selections already stored by Cline.
 	}
+	if request.AgentID == "opencode" && request.CredentialType != "" {
+		return Discover(ctx, request.AgentID, request.Binary, request.WorkingDir,
+			withOpenCodeCredentialPresence(request.Env, request.CredentialType))
+	}
 	return Discover(ctx, request.AgentID, request.Binary, request.WorkingDir, request.Env)
+}
+
+// opencodeCredentialEnv maps an opencode cloud credential type to the env var
+// whose presence makes `opencode models` include that provider's catalog.
+// opencode lists a provider's models when the variable is SET, without
+// validating it, so a placeholder surfaces exactly what a cloud session holding
+// the real credential can run — without the secret ever leaving the control
+// plane.
+var opencodeCredentialEnv = map[string]string{
+	"opencode_api_key":   "OPENCODE_API_KEY",
+	"anthropic_api_key":  "ANTHROPIC_API_KEY",
+	"openai_api_key":     "OPENAI_API_KEY",
+	"openrouter_api_key": "OPENROUTER_API_KEY",
+}
+
+// modelDiscoveryPresenceValue is a non-secret placeholder written to a provider
+// key solely so opencode includes that provider when listing models. It is never
+// a real credential and never leaves the local, read-only `opencode models` run.
+const modelDiscoveryPresenceValue = "ao-model-discovery-presence"
+
+// withOpenCodeCredentialPresence returns env with the credential type's provider
+// key marked present, copied so the caller's map is left untouched. An unknown
+// credential type is a no-op.
+func withOpenCodeCredentialPresence(env map[string]string, credentialType string) map[string]string {
+	envVar, ok := opencodeCredentialEnv[credentialType]
+	if !ok {
+		return env
+	}
+	next := make(map[string]string, len(env)+1)
+	for key, value := range env {
+		next[key] = value
+	}
+	next[envVar] = modelDiscoveryPresenceValue
+	return next
 }
 
 // claudeCodeModels is the static Claude Code model catalog. It mirrors the

@@ -285,6 +285,12 @@ type AgentModelDiscoveryRequest struct {
 	Binary     string
 	WorkingDir string
 	Env        map[string]string
+	// CredentialType names a cloud credential kind (e.g. "anthropic_api_key")
+	// when discovery must reflect the models a *cloud* session's pushed
+	// credential can run rather than the local machine's own auth. Adapters that
+	// gate their catalog on provider presence (opencode) honor it; others ignore
+	// it. Empty for ordinary local, project-scoped discovery.
+	CredentialType string
 }
 
 // AgentModelDiscoverer isolates CLI execution and discovery-input
