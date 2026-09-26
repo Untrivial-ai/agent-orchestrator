@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
 import type { components } from "../../api/schema";
 import { apiClient } from "../lib/api-client";
 
@@ -24,6 +24,20 @@ export function sessionUsageQueryOptions(projectId?: string) {
 		select: (items: SessionUsageSummary[]) =>
 			new Map(items.map((item) => [item.sessionId, item] as const)),
 	};
+}
+
+// Board route loaders prime the same cache that SessionsBoard observes. Keep
+// failures non-blocking: usage is supplementary, so an unavailable summary
+// endpoint must not prevent the Kanban itself from opening.
+export async function preloadSessionUsageSummaries(
+	queryClient: QueryClient,
+	projectId?: string,
+): Promise<void> {
+	try {
+		await queryClient.ensureQueryData({ ...sessionUsageQueryOptions(projectId), retry: false });
+	} catch {
+		// The mounted query retains its existing retry/error behavior.
+	}
 }
 
 export function useSessionUsageSummaries(projectId?: string) {
