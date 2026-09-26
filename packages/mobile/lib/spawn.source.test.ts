@@ -18,4 +18,10 @@ describe("spawn composer", () => {
 		expect(spawn).toContain('e instanceof ApiError && e.code === "PROMPT_TOO_LONG"');
 		expect(spawn).toContain('Task prompt is too long. Keep it to 16 KiB or fewer');
 	});
+
+	it("keeps iOS live dictation feedback with the keyboard-sticky controls", () => {
+		expect(spawn).toContain('Platform.OS === "android" ? voiceFeedback : null');
+		expect(spawn).toContain('<KeyboardStickyView offset={{ closed: 0, opened: 0 }}>\n\t\t\t\t{Platform.OS === "ios" ? voiceFeedback : null}');
+		expect(spawn.indexOf('Platform.OS === "ios" ? voiceFeedback : null')).toBeLessThan(spawn.indexOf('<SpawnComposerControls'));
+	});
 });

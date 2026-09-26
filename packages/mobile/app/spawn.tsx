@@ -134,7 +134,7 @@ export default function SpawnModal() {
 		|| catalogError
 		|| modelError
 		|| attachmentError
-		|| listening
+		|| (Platform.OS === "android" && listening)
 		|| voice.error
 		|| error
 		|| offerTUI,
@@ -209,6 +209,14 @@ export default function SpawnModal() {
 		setModel(nextModel);
 		setModelTouched(true);
 	};
+	const voiceFeedback = listening ? (
+		<View style={styles.voice}>
+			<Feather name="mic" size={iconSize.xs} color={t.red} />
+			<Text numberOfLines={2} style={styles.voiceText}>
+				{voice.partial || (voice.state === "starting" ? "Keep holding…" : "Listening…")}
+			</Text>
+		</View>
+	) : null;
 	const pickAttachments = async () => {
 		if (pickingAttachments.current) return;
 		pickingAttachments.current = true;
@@ -325,7 +333,7 @@ export default function SpawnModal() {
 					{catalogError ? <Text style={styles.warn}>{catalogError}</Text> : null}
 					{modelError ? <Text style={styles.warn}>{modelError}</Text> : null}
 					{attachmentError ? <Text style={styles.warn}>{attachmentError}</Text> : null}
-					{listening ? <View style={styles.voice}><Feather name="mic" size={iconSize.xs} color={t.red} /><Text numberOfLines={2} style={styles.voiceText}>{voice.partial || (voice.state === "starting" ? "Keep holding…" : "Listening…")}</Text></View> : null}
+					{Platform.OS === "android" ? voiceFeedback : null}
 					{voice.error ? <Text accessibilityRole="alert" style={styles.warn}>{voice.error}</Text> : null}
 					{error ? <Text style={styles.error}>{error}</Text> : null}
 					{offerTUI ? <Button title="Create as Terminal UI instead" variant="ghost" icon="terminal" onPress={() => { selectMode("tui"); setOfferTUI(false); setError(null); }} /> : null}
@@ -347,6 +355,7 @@ export default function SpawnModal() {
 				    the keyboard. A sticky view translates by the live offset, so
 				    the selectors and the button sit directly above it. */}
 				<KeyboardStickyView offset={{ closed: 0, opened: 0 }}>
+				{Platform.OS === "ios" ? voiceFeedback : null}
 				<SpawnComposerControls
 					projects={projects.map((item) => ({ id: item.id, label: item.name }))}
 					projectId={project?.id ?? null}
