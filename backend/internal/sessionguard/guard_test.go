@@ -59,6 +59,79 @@ func (m *blockingMessenger) Send(context.Context, domain.SessionID, string) erro
 	return nil
 }
 
+func TestGuard_DeliverWithComposerCheck(t *testing.T) {
+	cases := []struct {
+		name        string
+		busy        func(context.Context, domain.SessionRecord) bool
+		wantOutcome Outcome
+		wantSent    bool
+	}{
+		{
+			name:        "proven draft refuses without writing",
+			busy:        func(context.Context, domain.SessionRecord) bool { return true },
+			wantOutcome: SuppressedComposerBusy,
+			wantSent:    false,
+		},
+		{
+			name:        "empty composer delivers",
+			busy:        func(context.Context, domain.SessionRecord) bool { return false },
+			wantOutcome: Sent,
+			wantSent:    true,
+		},
+		{
+			name:        "nil check behaves like an unchecked deliver",
+			busy:        nil,
+			wantOutcome: Sent,
+			wantSent:    true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msgr := &fakeMessenger{}
+			g := New(&fakeStore{rec: record(domain.ActivityIdle, false), ok: true}, msgr, nil)
+			got, err := g.DeliverWithComposerCheck(context.Background(), "s1", "hello", tc.busy, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantOutcome {
+				t.Fatalf("outcome = %v, want %v", got, tc.wantOutcome)
+			}
+			if sent := len(msgr.sent) == 1; sent != tc.wantSent {
+				t.Fatalf("message sent = %v, want %v (sent=%v)", sent, tc.wantSent, msgr.sent)
+			}
+		})
+	}
+}
+
+func TestGuard_ComposerCheckRunsUnderInputLeaseBeforeWrite(t *testing.T) {
+	// The composer check must run while the input lease is held and before the
+	// pane write, so a proven draft refuses without ever reaching the messenger.
+	msgr := &fakeMessenger{}
+	g := New(&fakeStore{rec: record(domain.ActivityIdle, false), ok: true}, msgr, nil)
+	g.SetInputLease(fixedInputLease(true))
+
+	leaseHeldAtCheck := false
+	got, err := g.DeliverWithComposerCheck(context.Background(), "s1", "hello",
+		func(context.Context, domain.SessionRecord) bool {
+			// The lease was acquired in sendThenChecked before this runs; the
+			// messenger has not been called yet.
+			leaseHeldAtCheck = len(msgr.sent) == 0
+			return true
+		}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != SuppressedComposerBusy {
+		t.Fatalf("outcome = %v, want SuppressedComposerBusy", got)
+	}
+	if !leaseHeldAtCheck {
+		t.Fatal("composer check ran after the write; it must run before")
+	}
+	if len(msgr.sent) != 0 {
+		t.Fatalf("messenger was called despite a proven draft: %v", msgr.sent)
+	}
+}
+
 func record(state domain.ActivityState, terminated bool) domain.SessionRecord {
 	return domain.SessionRecord{
 		ID:            "s1",

@@ -72,6 +72,12 @@ const (
 	// server approval) leave the row idle with FirstSignalAt unset; writing
 	// there consumes input on the dialog instead of the agent composer.
 	SuppressedStartupPending
+	// SuppressedComposerBusy means a TUI session's composer holds an unsent human
+	// draft. Writing there appends to the operator's half-typed text and the
+	// runtime's trailing Enter submits the concatenation as one prompt (#5711).
+	// User-initiated Deliver refuses so the caller can retry; it is retryable
+	// because the composer clears as soon as the operator submits or discards.
+	SuppressedComposerBusy
 )
 
 // String names the outcome for logs.
@@ -93,6 +99,8 @@ func (o Outcome) String() string {
 		return "suppressed_input_gated"
 	case SuppressedStartupPending:
 		return "suppressed_startup_pending"
+	case SuppressedComposerBusy:
+		return "suppressed_composer_busy"
 	default:
 		return "suppressed_unknown"
 	}
@@ -205,6 +213,24 @@ func (g *Guard) DeliverWithPostWrite(ctx context.Context, id domain.SessionID, m
 	return g.sendThen(ctx, id, msg, g.refuseDeliver, after)
 }
 
+// DeliverWithComposerCheck is DeliverWithPostWrite plus a caller-owned check for
+// an unsent human draft in the composer, run under the held input lease and the
+// just-in-time session read, immediately before the pane write. composerBusy
+// returns true ONLY when a draft is positively proven; every uncertain or
+// unprovable case must return false so delivery is preserved (#5711). A proven
+// draft refuses with SuppressedComposerBusy instead of concatenating the
+// operator's half-typed text with the delivered message. after runs only after a
+// successful write, as in DeliverWithPostWrite.
+func (g *Guard) DeliverWithComposerCheck(
+	ctx context.Context,
+	id domain.SessionID,
+	msg string,
+	composerBusy func(context.Context, domain.SessionRecord) bool,
+	after func(context.Context) error,
+) (Outcome, error) {
+	return g.sendThenChecked(ctx, id, msg, g.refuseDeliver, composerBusy, after)
+}
+
 // DeliverUnderMutation applies the same just-in-time session safety checks as
 // Deliver but intentionally bypasses input admission. It is only for an AO
 // mutation that already owns the session's exclusive operation fence and must
@@ -212,7 +238,7 @@ func (g *Guard) DeliverWithPostWrite(ctx context.Context, id domain.SessionID, m
 func (g *Guard) DeliverUnderMutation(ctx context.Context, id domain.SessionID, msg string) (Outcome, error) {
 	return g.sendAdmitted(ctx, id, msg, func(rec domain.SessionRecord) (Outcome, bool) {
 		return SuppressedAwaitingUser, rec.Activity.State == domain.ActivityBlocked
-	})
+	}, nil)
 }
 
 // CoordinationUnderMutation writes an AO coordination message while the caller
@@ -269,7 +295,7 @@ func (g *Guard) coordinationUnderMutation(
 		default:
 			return SuppressedUnknown, true
 		}
-	}, preWrite)
+	}, preWrite, nil)
 }
 
 // Nudge writes an AO-initiated (unsolicited) message into a live agent. Its
@@ -348,6 +374,10 @@ func (g *Guard) send(ctx context.Context, id domain.SessionID, msg string, refus
 }
 
 func (g *Guard) sendThen(ctx context.Context, id domain.SessionID, msg string, refuse func(domain.SessionRecord) (Outcome, bool), after func(context.Context) error) (Outcome, error) {
+	return g.sendThenChecked(ctx, id, msg, refuse, nil, after)
+}
+
+func (g *Guard) sendThenChecked(ctx context.Context, id domain.SessionID, msg string, refuse func(domain.SessionRecord) (Outcome, bool), composerBusy func(context.Context, domain.SessionRecord) bool, after func(context.Context) error) (Outcome, error) {
 	g.leaseMu.RLock()
 	lease := g.lease
 	g.leaseMu.RUnlock()
@@ -359,7 +389,7 @@ func (g *Guard) sendThen(ctx context.Context, id domain.SessionID, msg string, r
 		}
 		defer release()
 	}
-	outcome, err := g.sendAdmitted(ctx, id, msg, refuse)
+	outcome, err := g.sendAdmitted(ctx, id, msg, refuse, composerBusy)
 	if err == nil && outcome == Sent && after != nil {
 		if afterErr := after(ctx); afterErr != nil {
 			return outcome, afterErr
@@ -370,11 +400,15 @@ func (g *Guard) sendThen(ctx context.Context, id domain.SessionID, msg string, r
 
 // sendAdmitted performs the durable safety read and the actual pane write. A
 // caller reaching it through send holds its input lease for this entire span.
-func (g *Guard) sendAdmitted(ctx context.Context, id domain.SessionID, msg string, refuse func(domain.SessionRecord) (Outcome, bool)) (Outcome, error) {
-	return g.sendAdmittedChecked(ctx, id, msg, refuse, nil)
+func (g *Guard) sendAdmitted(ctx context.Context, id domain.SessionID, msg string, refuse func(domain.SessionRecord) (Outcome, bool), composerBusy func(context.Context, domain.SessionRecord) bool) (Outcome, error) {
+	return g.sendAdmittedChecked(ctx, id, msg, refuse, nil, composerBusy)
 }
 
-func (g *Guard) sendAdmittedChecked(ctx context.Context, id domain.SessionID, msg string, refuse func(domain.SessionRecord) (Outcome, bool), preWrite func(context.Context, domain.SessionRecord) error) (Outcome, error) {
+// sendAdmittedChecked is the core admitted write. preWrite runs a caller-owned
+// proof (agent switching's handle/generation revalidation) and composerBusy a
+// caller-owned unsent-draft check; either may be nil. Both run after the refuse
+// policy and before the pane write, on the just-read record.
+func (g *Guard) sendAdmittedChecked(ctx context.Context, id domain.SessionID, msg string, refuse func(domain.SessionRecord) (Outcome, bool), preWrite func(context.Context, domain.SessionRecord) error, composerBusy func(context.Context, domain.SessionRecord) bool) (Outcome, error) {
 	rec, ok, err := g.store.GetSession(ctx, id)
 	if err != nil {
 		return SuppressedUnknown, fmt.Errorf("guard %s: read session: %w", id, err)
@@ -399,6 +433,13 @@ func (g *Guard) sendAdmittedChecked(ctx context.Context, id domain.SessionID, ms
 		if err := preWrite(ctx, rec); err != nil {
 			return SuppressedUnknown, fmt.Errorf("guard %s: pre-write check: %w", id, err)
 		}
+	}
+	// Composer-occupancy check runs last, under the held input lease and on the
+	// just-read record: an unsent human draft here must not be concatenated with
+	// the delivered message (#5711). It refuses only on a positively proven draft.
+	if composerBusy != nil && composerBusy(ctx, rec) {
+		g.logger.Info("sessionguard: write suppressed", "sessionID", id, "reason", SuppressedComposerBusy.String(), "state", string(rec.Activity.State))
+		return SuppressedComposerBusy, nil
 	}
 	if err := g.messenger.Send(ctx, id, msg); err != nil {
 		return Sent, fmt.Errorf("guard %s: send: %w", id, err)
