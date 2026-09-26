@@ -1251,7 +1251,13 @@ func (m *Manager) resolveAgentConfig(ctx context.Context, cfg ports.SpawnConfig,
 	if resolved.Effort == "" {
 		return resolved, nil
 	}
-	if catalog.Stale || selected == nil {
+	if selected == nil {
+		// Codex accepts direct model IDs outside its account-scoped catalog. AO
+		// cannot validate those models' effort levels, so preserve the request
+		// and let Codex make the authoritative decision when it starts.
+		return resolved, nil
+	}
+	if catalog.Stale {
 		return ports.AgentConfig{}, fmt.Errorf("%w for model %q", ports.ErrModelCapabilitiesUnavailable, modelID)
 	}
 	if resolved.Effort != "" && !containsString(selected.Efforts, resolved.Effort) {

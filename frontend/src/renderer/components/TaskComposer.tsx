@@ -386,12 +386,28 @@ export function TaskComposer({
 				? modelCatalogQuery.error.message
 				: t("settings.models.loadFailed")
 			: undefined);
+	const catalogModels = modelCatalogQuery.data?.models ?? [];
+	const projectModelMissingFromCatalog = Boolean(
+		selectedAgent === "codex" &&
+			projectModelForSelectedAgent &&
+			!catalogModels.some((item) => item.id === projectModelForSelectedAgent),
+	);
+	const pickerModels = projectModelMissingFromCatalog
+		? [
+				{
+					id: projectModelForSelectedAgent,
+					label: projectModelForSelectedAgent,
+					isDefault: true,
+				},
+				...catalogModels,
+			]
+		: catalogModels;
 	const modelCatalog: TaskComposerModelCatalog | undefined = modelCatalogQuery.data
 		? {
 				allowCustom: modelCatalogQuery.data.allowCustom,
 				customModelEntry: modelCatalogQuery.data.customModelEntry,
 				lastSuccessAt: modelCatalogQuery.data.lastSuccessAt,
-				models: modelCatalogQuery.data.models,
+				models: pickerModels,
 				refreshError: modelCatalogQuery.data.refreshError,
 				refreshState: modelCatalogQuery.data.refreshState,
 				retryAt: modelCatalogQuery.data.retryAt,
@@ -401,7 +417,6 @@ export function TaskComposer({
 	// Prefer the project worker setup, then the catalog's marked default, then
 	// the first listed model/mode — never leave the picker on an empty
 	// "let the agent choose" row, which is not a spawnable selection.
-	const catalogModels = modelCatalogQuery.data?.models ?? [];
 	const catalogDefaultOption =
 		catalogModels.find((item) => item.isDefault)?.id ?? catalogModels[0]?.id ?? "";
 	const catalogUsesModes = modelCatalogQuery.data?.selectionMode === "mode";

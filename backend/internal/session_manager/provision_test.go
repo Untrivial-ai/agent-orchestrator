@@ -354,6 +354,26 @@ func TestResolveChatAgentConfigValidatesAndResetsDependentTuning(t *testing.T) {
 		t.Fatalf("custom model with provider defaults = %#v, %v", resolved, err)
 	}
 
+	resolved, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "custom", Effort: "high"}, EffortOverride: true,
+	}, project)
+	if err != nil || resolved.Model != "custom" || resolved.Effort != "high" {
+		t.Fatalf("custom model with requested effort = %#v, %v", resolved, err)
+	}
+
+	m.modelCatalog = tuningCatalog{catalog: ports.AgentModelCatalog{
+		Models: []ports.AgentModelInfo{{ID: "old", Efforts: []string{"high"}}},
+		Stale:  true,
+	}}
+	resolved, err = m.resolveChatAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,
+		AgentConfig: ports.AgentConfig{Model: "custom", Effort: "high"}, EffortOverride: true,
+	}, project)
+	if err != nil || resolved.Model != "custom" || resolved.Effort != "high" {
+		t.Fatalf("off-catalog model with stale catalog = %#v, %v", resolved, err)
+	}
+
 	m.modelCatalog = tuningCatalog{err: errors.New("discovery failed")}
 	resolved, err = m.resolveAgentConfig(context.Background(), ports.SpawnConfig{
 		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCodex,

@@ -1435,17 +1435,14 @@ describe("TaskComposer", () => {
 		expect(await screen.findByRole("menuitem", { name: "GPT-5" })).toBeInTheDocument();
 	});
 
-	it("spawns with the project worker model even when the user never opens the picker", async () => {
+	it("keeps an off-catalog project worker model in the picker and spawns with it", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
 				return {
 					data: {
 						agent: "codex",
 						selectionMode: "catalog",
-						models: [
-							{ id: "gpt-5", label: "GPT-5" },
-							{ id: "gpt-5-codex", label: "GPT-5 Codex", isDefault: true },
-						],
+						models: [{ id: "gpt-5-codex", label: "GPT-5 Codex", isDefault: true }],
 						allowCustom: true,
 						refreshRecommended: false,
 					},
@@ -1469,7 +1466,12 @@ describe("TaskComposer", () => {
 			</Wrap>,
 		);
 
-		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("GPT-5");
+		const picker = await screen.findByRole("button", { name: "Model" });
+		expect(picker).toHaveTextContent("gpt-5");
+		await userEvent.click(picker);
+		expect(await screen.findByRole("menuitem", { name: "gpt-5" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "GPT-5 Codex" })).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("menuitem", { name: "gpt-5" }));
 		fireEvent.change(task(), { target: { value: "Use project default model" } });
 		fireEvent.click(screen.getByText("Start task"));
 
