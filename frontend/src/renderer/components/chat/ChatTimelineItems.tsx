@@ -865,7 +865,7 @@ export function LiveResponseStatus({ startedAt }: { startedAt?: string }) {
 	}, []);
 	const elapsedMs = Math.max(0, now - started);
 	return (
-		<div className="mt-1 flex h-7 items-center gap-0.5">
+		<div className="-mx-1 mt-1 flex h-7 items-center gap-0.5 border-b border-border px-1">
 			<div className="-ml-1.5 size-7 shrink-0">
 				<ResponseSpinner />
 			</div>
