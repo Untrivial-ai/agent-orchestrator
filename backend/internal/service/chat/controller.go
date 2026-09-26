@@ -258,8 +258,14 @@ type Controller struct {
 	usage domain.ConversationUsage
 	// mcpServers is keyed by name; mcpServerOrder preserves first-seen order so the
 	// list a client renders does not reshuffle on every turn.
-	mcpServers     map[string]domain.ConversationMCPServer
-	mcpServerOrder []string
+	mcpServers            map[string]domain.ConversationMCPServer
+	mcpServerOrder        []string
+	mcpServerRevision     uint64
+	mcpServerSeenRevision map[string]uint64
+	// mcpPersistMu orders durable MCP replacements with individual notification
+	// writes. Reload runs outside the event pump, so c.mu alone cannot prevent an
+	// older notification write from landing after an authoritative replacement.
+	mcpPersistMu sync.Mutex
 
 	stopped  chan struct{}
 	once     sync.Once
@@ -334,6 +340,7 @@ func newController(
 		state:                  ports.ChatControllerReady,
 		settings:               conversation.Settings,
 		mcpServers:             map[string]domain.ConversationMCPServer{},
+		mcpServerSeenRevision:  map[string]uint64{},
 		stopped:                make(chan struct{}),
 	}
 	// Seeded from the durable row so a reconnect merges onto what is already known
@@ -3353,6 +3360,9 @@ func (c *Controller) applyThreadState(
 // every turn, so this is a merge by name. First-seen order is preserved so the list
 // a client renders does not reshuffle between polls.
 func (c *Controller) applyMCPServers(ctx context.Context, updates []ports.ChatMCPServer) error {
+	c.mcpPersistMu.Lock()
+	defer c.mcpPersistMu.Unlock()
+
 	c.mu.Lock()
 	for _, update := range updates {
 		if update.Name == "" {
@@ -3367,16 +3377,23 @@ func (c *Controller) applyMCPServers(ctx context.Context, updates []ports.ChatMC
 			Error:         update.Error,
 			FailureReason: update.FailureReason,
 		}
+		c.mcpServerRevision++
+		c.mcpServerSeenRevision[update.Name] = c.mcpServerRevision
 	}
+	servers := c.mcpServersLocked()
+	c.mu.Unlock()
+
+	return c.store.RecordMCPServers(ctx, c.conversation.ID, servers)
+}
+
+func (c *Controller) mcpServersLocked() []domain.ConversationMCPServer {
 	servers := make([]domain.ConversationMCPServer, 0, len(c.mcpServerOrder))
 	for _, name := range c.mcpServerOrder {
 		if server, ok := c.mcpServers[name]; ok {
 			servers = append(servers, server)
 		}
 	}
-	c.mu.Unlock()
-
-	return c.store.RecordMCPServers(ctx, c.conversation.ID, servers)
+	return servers
 }
 
 // ErrMCPReloadUnsupported reports a driver whose provider cannot restart its tool
@@ -3406,38 +3423,67 @@ func (c *Controller) ReloadMCPServers(ctx context.Context) ([]domain.Conversatio
 		return nil, ErrTurnRunning
 	}
 
-	servers, err := reloader.ReloadMCPServers(ctx)
+	c.mu.Lock()
+	reloadRevision := c.mcpServerRevision
+	c.mu.Unlock()
+
+	result, err := reloader.ReloadMCPServers(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if len(servers) == 0 {
-		// The reload succeeded and the provider did not enumerate. Its own startup
-		// notifications are the authoritative report and are already on their way, so
-		// the current list is the honest answer rather than an empty one.
+	if !result.Authoritative {
+		// Reload succeeded, but its inventory read did not. Preserve what is known:
+		// an empty unavailable result cannot distinguish no configured servers from a
+		// provider that could not enumerate them.
 		c.mu.Lock()
-		current := make([]domain.ConversationMCPServer, 0, len(c.mcpServerOrder))
-		for _, name := range c.mcpServerOrder {
-			if server, found := c.mcpServers[name]; found {
-				current = append(current, server)
-			}
-		}
+		current := c.mcpServersLocked()
 		c.mu.Unlock()
 		return current, nil
 	}
 
-	if err := c.applyMCPServers(ctx, servers); err != nil {
-		return nil, err
-	}
-
+	// Startup notifications are individual deltas, while this inventory is a full
+	// replacement. Keep only notifications observed after reload began, then overlay
+	// positively initialized inventory entries as ready. Holding mcpPersistMu through
+	// the write keeps a notification that raced the reload from persisting stale state
+	// after this replacement.
+	c.mcpPersistMu.Lock()
+	defer c.mcpPersistMu.Unlock()
 	c.mu.Lock()
-	merged := make([]domain.ConversationMCPServer, 0, len(c.mcpServerOrder))
+	fresh := make(map[string]domain.ConversationMCPServer)
+	freshOrder := make([]string, 0, len(c.mcpServerOrder))
 	for _, name := range c.mcpServerOrder {
-		if server, found := c.mcpServers[name]; found {
-			merged = append(merged, server)
+		if c.mcpServerSeenRevision[name] > reloadRevision {
+			fresh[name] = c.mcpServers[name]
+			freshOrder = append(freshOrder, name)
 		}
 	}
+	for _, server := range result.Servers {
+		if server.Name == "" {
+			continue
+		}
+		if _, seen := fresh[server.Name]; !seen {
+			freshOrder = append(freshOrder, server.Name)
+		}
+		fresh[server.Name] = domain.ConversationMCPServer{
+			Name:          server.Name,
+			Status:        server.Status,
+			Error:         server.Error,
+			FailureReason: server.FailureReason,
+		}
+	}
+	c.mcpServers = fresh
+	c.mcpServerOrder = freshOrder
+	c.mcpServerSeenRevision = make(map[string]uint64, len(fresh))
+	for name := range fresh {
+		c.mcpServerSeenRevision[name] = c.mcpServerRevision
+	}
+	reconciled := c.mcpServersLocked()
 	c.mu.Unlock()
-	return merged, nil
+
+	if err := c.store.RecordMCPServers(ctx, c.conversation.ID, reconciled); err != nil {
+		return nil, err
+	}
+	return reconciled, nil
 }
 
 func (c *Controller) handoffActive() bool {

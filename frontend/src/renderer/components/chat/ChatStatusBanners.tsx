@@ -12,8 +12,8 @@
  * stuck.
  */
 
-import { memo } from "react";
-import { KeyRound, Plug, RefreshCw, TriangleAlert } from "lucide-react";
+import { memo, useMemo, useState } from "react";
+import { KeyRound, Plug, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import type { ConversationAccount, ConversationThreadState, McpServer } from "../../types/conversation";
@@ -158,12 +158,15 @@ export const ThreadStateBanner = memo(function ThreadStateBanner({
  * no cause.
  */
 export const McpServerBanner = memo(function McpServerBanner({
+	sessionId,
 	servers,
 	onReload,
 	reloading,
 	turnInFlight,
 	error,
 }: {
+	/** Scopes a dismissal to this session, even when the surface is reused. */
+	sessionId: string;
 	/** Only the broken ones. The caller filters, so an empty list means nothing to say. */
 	servers: McpServer[];
 	/** Absent when the harness cannot reload, in which case no control is drawn. */
@@ -173,7 +176,13 @@ export const McpServerBanner = memo(function McpServerBanner({
 	turnInFlight?: boolean;
 	error?: string;
 }) {
+	const warningKey = useMemo(
+		() => `${sessionId}:${servers.map((server) => `${server.name}/${server.status}`).sort().join(",")}`,
+		[servers, sessionId],
+	);
+	const [dismissedKey, setDismissedKey] = useState<string>();
 	if (servers.length === 0) return null;
+	if (dismissedKey === warningKey) return null;
 
 	return (
 		<div
@@ -213,27 +222,38 @@ export const McpServerBanner = memo(function McpServerBanner({
 				</ul>
 				{error ? <span className="text-[11px] text-destructive">{error}</span> : null}
 			</div>
-			{onReload ? (
-				<Button
+			<div className="flex h-control-md shrink-0 items-center gap-2">
+				{onReload ? (
+					<Button
+						type="button"
+						size="sm"
+						variant="outline"
+						onClick={onReload}
+						disabled={reloading || turnInFlight}
+						title={
+							turnInFlight
+								? "Finish or stop the current turn before reloading tool servers"
+								: "Start the tool servers again"
+						}
+						className="shrink-0 gap-1.5"
+					>
+						<RefreshCw
+							aria-hidden="true"
+							className={cn("size-3", reloading && "animate-spin")}
+						/>
+						{reloading ? "Reloading…" : "Reload"}
+					</Button>
+				) : null}
+				<button
 					type="button"
-					size="sm"
-					variant="outline"
-					onClick={onReload}
-					disabled={reloading || turnInFlight}
-					title={
-						turnInFlight
-							? "Finish or stop the current turn before reloading tool servers"
-							: "Start the tool servers again"
-					}
-					className="shrink-0 gap-1.5"
+					aria-label="Close tool server warning"
+					title="Dismiss for this session"
+					onClick={() => setDismissedKey(warningKey)}
+					className="grid size-10 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent/50"
 				>
-					<RefreshCw
-						aria-hidden="true"
-						className={cn("size-3", reloading && "animate-spin")}
-					/>
-					{reloading ? "Reloading…" : "Reload"}
-				</Button>
-			) : null}
+					<X aria-hidden="true" className="size-4" />
+				</button>
+			</div>
 		</div>
 	);
 });
