@@ -142,6 +142,7 @@ type recordingSpawner struct {
 	calls          []ports.SpawnConfig
 	kills          []domain.SessionID
 	killErr        error
+	killFreed      bool
 	spawnErr       error
 	leaveSeedOnErr bool
 }
@@ -170,7 +171,7 @@ func (s *recordingSpawner) Kill(_ context.Context, id domain.SessionID) (bool, e
 		rec.IsTerminated = true
 		s.store.sessions[id] = rec
 	}
-	return ok, nil
+	return s.killFreed, nil
 }
 
 // Catch-up is capped at three durable rows but advances past the whole missed
@@ -313,6 +314,32 @@ func TestTickFailsRunWhenSpawnErrorLeavesIncompleteAutomationSession(t *testing.
 	}
 	if len(spawner.calls) != 1 {
 		t.Fatalf("spawns = %d, want 1", len(spawner.calls))
+	}
+	if len(spawner.kills) != 1 || spawner.kills[0] != "scheduled-session-1" {
+		t.Fatalf("kills = %v, want retained session teardown", spawner.kills)
+	}
+}
+
+func TestTickFailsRunWhenRetainedSessionKillPreservesWorkspace(t *testing.T) {
+	now := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
+	store := newSchedulerStore()
+	store.automations["automation-1"] = domain.Automation{ID: "automation-1", ProjectID: "scheduled", Enabled: true, NextRunAt: now.Add(time.Hour)}
+	runID := domain.AutomationRunID("run-1")
+	store.runs[runID] = domain.AutomationRun{ID: runID, AutomationID: "automation-1", ScheduledFor: now, Status: domain.AutomationRunPending}
+	spawner := &recordingSpawner{
+		store:          store,
+		spawnErr:       errors.New("completion marker failed"),
+		killFreed:      false,
+		leaveSeedOnErr: true,
+	}
+	svc := New(Deps{Store: store, Spawner: spawner, Clock: func() time.Time { return now }})
+
+	if err := svc.Tick(context.Background(), now); err == nil {
+		t.Fatal("Tick succeeded, want spawn diagnostic")
+	}
+	run := store.runs[runID]
+	if run.Status != domain.AutomationRunFailed || run.FinishedAt == nil {
+		t.Fatalf("run = %#v, want failed after successful teardown with preserved workspace", run)
 	}
 	if len(spawner.kills) != 1 || spawner.kills[0] != "scheduled-session-1" {
 		t.Fatalf("kills = %v, want retained session teardown", spawner.kills)

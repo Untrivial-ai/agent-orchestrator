@@ -159,12 +159,9 @@ func (s *Service) dispatch(ctx context.Context, store schedulerStore, run domain
 				return errors.Join(spawnErr, markErr)
 			}
 			if !session.IsTerminated {
-				killed, killErr := s.spawner.Kill(context.WithoutCancel(ctx), session.ID)
+				_, killErr := s.spawner.Kill(context.WithoutCancel(ctx), session.ID)
 				if killErr != nil {
 					return errors.Join(spawnErr, killErr)
-				}
-				if !killed {
-					return errors.Join(spawnErr, fmt.Errorf("kill retained automation session %s: not found", session.ID))
 				}
 			}
 			_, markErr := store.FailAutomationRun(context.WithoutCancel(ctx), run.ID, runError(spawnErr), now)
