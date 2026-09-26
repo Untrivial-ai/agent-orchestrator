@@ -30,7 +30,7 @@ import {
 	type WheelEvent as ReactWheelEvent,
 } from "react";
 import { ArrowDown, ChevronDown, Loader2, TriangleAlert, Undo2 } from "lucide-react";
-import { AnimatePresence, Reorder, motion, useDragControls } from "motion/react";
+import { Reorder, useDragControls } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import {
@@ -3381,20 +3381,7 @@ const TurnGroup = memo(function TurnGroup({
 				const item = run.items[0];
 				return item?.kind === "message" && item.role === "user";
 			}).map(renderRun)}
-			<AnimatePresence initial={false}>
-				{group.live ? (
-					<motion.div
-						key="working-status"
-						initial={{ opacity: 1, width: "auto" }}
-						animate={{ opacity: 1, width: "auto" }}
-						exit={{ opacity: 0, width: 0 }}
-						transition={{ duration: 0.18, ease: "easeOut" }}
-						className="overflow-hidden"
-					>
-						<LiveResponseStatus startedAt={group.liveStartedAt} />
-					</motion.div>
-				) : null}
-			</AnimatePresence>
+			{group.live ? <LiveResponseStatus startedAt={group.liveStartedAt} /> : null}
 			{!group.outcome && runs.filter((run) => {
 				const item = run.items[0];
 				return !(item?.kind === "message" && item.role === "user");
