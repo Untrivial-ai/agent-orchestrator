@@ -64,6 +64,10 @@ async function createChromeFixture(root: string): Promise<{ localAppData: string
 	const past = chromiumMicros("2020-01-01T00:00:00.000Z");
 	const insertCookie = cookies.prepare("INSERT INTO cookies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 	insertCookie.run(".github.com", "session", "usable", Buffer.alloc(0), "/", future, 1, 1, 1, "", future, future);
+	insertCookie.run(
+		"github.com", "__Host-user_session_same_site", "usable", Buffer.alloc(0), "/",
+		future, 1, 1, 2, "", future - 1, future - 1,
+	);
 	insertCookie.run(".github.com", "empty", "", Buffer.alloc(0), "/", future, 1, 0, 1, "", future - 1, future - 1);
 	insertCookie.run(".github.com", "app-bound", "", Buffer.from("v20-unavailable"), "/", future, 1, 1, 1, "", future - 2, future - 2);
 	insertCookie.run(".github.com", "expired", "old", Buffer.alloc(0), "/", past, 1, 0, 1, "", past, past);
@@ -667,13 +671,22 @@ describe("BrowserProfileImportService", () => {
 			destination: { mode: "merge", name: "Imported Chrome" },
 		}, progress);
 
-		expect(result.entries[0]).toMatchObject({ importedCookies: 3, skippedCookies: 3, importedHistoryEntries: 2 });
+		expect(result.entries[0]).toMatchObject({ importedCookies: 4, skippedCookies: 3, importedHistoryEntries: 2 });
 		expect(result.entries[0]!.warnings).toEqual(expect.arrayContaining([
 			expect.objectContaining({ code: "encrypted-cookies-skipped", count: 1 }),
 			expect.objectContaining({ code: "expired-cookies-skipped", count: 1 }),
 			expect.objectContaining({ code: "isolated-cookies-skipped", count: 1 }),
 		]));
-		expect([...cookiesByPartition.values()][0]).toHaveLength(3);
+		const importedCookies = [...cookiesByPartition.values()][0] as Array<Record<string, unknown>>;
+		expect(importedCookies).toHaveLength(4);
+		expect(importedCookies.find((cookie) => cookie.name === "session")).toMatchObject({ domain: ".github.com" });
+		expect(importedCookies.find((cookie) => cookie.name === "__Host-user_session_same_site")).toMatchObject({
+			url: "https://github.com/",
+			path: "/",
+			secure: true,
+			sameSite: "strict",
+		});
+		expect(importedCookies.find((cookie) => cookie.name === "__Host-user_session_same_site")).not.toHaveProperty("domain");
 		expect(progress).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "importing", completed: 1, total: 1 }));
 		const importedProfile = result.entries[0]!.destinationProfile;
 		expect(await new BrowserHistoryStore({ stateDir }).suggest(importedProfile.id, "openai")).toEqual([
@@ -1063,10 +1076,10 @@ describe("BrowserProfileImportService", () => {
 		}, vi.fn());
 
 		expect(importedCookies).toBe(20_000);
-		expect(result.entries[0]).toMatchObject({ importedCookies: 20_000, skippedCookies: 6 });
+		expect(result.entries[0]).toMatchObject({ importedCookies: 20_000, skippedCookies: 7 });
 		expect(result.entries[0]!.warnings).toEqual(expect.arrayContaining([
 			{ code: "isolated-cookies-skipped", count: 1 },
-			{ code: "cookie-limit-truncated", count: 5 },
+			{ code: "cookie-limit-truncated", count: 6 },
 		]));
 	});
 
