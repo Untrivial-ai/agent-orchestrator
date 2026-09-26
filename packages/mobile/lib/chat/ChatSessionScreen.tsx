@@ -339,65 +339,63 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		const current = conversation.snapshot;
 		if (!menuOpen || !current) return;
 		setMenuOpen(false);
-		void dismissKeyboardBeforeSheet(keyboardVisible).then(() => {
-			const entry: ConversationActionsEntry = {
-				kind: "conversation-actions",
-				sessionId: session.id,
-				snapshot: current,
-				subscribeEntry: (listener) => {
-					actionsListeners.current.add(listener);
-					listener(actionsEntryRef.current ?? entry);
-					return () => { actionsListeners.current.delete(listener); };
-				},
-				sessionTitle: sessionName,
-				openingShell,
-				compacting: conversation.pendingActions.includes("compact"),
-				mcpReloading: conversation.pendingActions.includes("mcp"),
-				refreshing: conversation.refreshing,
-				compactSupported: can(current, "compaction") && !conversationActionUnsupported("compact", conversation.actionCodes.compact),
-				mcpReloadSupported: can(current, "mcp_reload") && !conversationActionUnsupported("mcp", conversation.actionCodes.mcp),
-				interfaceSupported: Boolean(interfaceSwitch.status?.supported),
-				interfaceReason: interfaceSwitch.status?.reason || interfaceSwitch.error,
-				interfaceSwitching: interfaceTransitionActive || interfaceSwitch.starting,
-				// Orchestrators are not deleted from here; the board owns their lifecycle.
-				canDelete: !("projectName" in session),
-				canPin: !("projectName" in session),
-				pinned: "projectName" in session ? false : Boolean(session.isPinned),
-				onMap: () => router.push(chatSheetRoute({ kind: "conversation-map", markers: conversationMarkers(actionsEntryRef.current?.snapshot ?? current), onSelect: setJumpToSequence })),
-				onOpenShell: () => void openShell(),
-				onPreview: () => router.push({ pathname: "/preview/[id]", params: { id: session.id, title, previewUrl: "previewUrl" in session ? session.previewUrl ?? undefined : undefined } }),
-				onPullRequests: () => { setActiveProject(session.projectId); router.push("/(tabs)/prs"); },
-				onSettings: () => void openTurnSettings(),
-				onSwitchInterface: requestInterfaceSwitch,
-				onCompact: () => void conversation.compact().catch(() => {}),
-				onReload: () => void conversation.reloadMcp().catch(() => {}),
-				onRename: () => router.push(chatSheetRoute({
-					kind: "conversation-rename",
-					initialTitle: sessionName,
-					onRename: (next) => renameWorker(session.id, next),
-				})),
-				onTogglePin: () => {
-					if ("projectName" in session) return;
-					void setWorkerPinned(session.id, !session.isPinned).catch(() => {});
-				},
-				onRefresh: () => void conversation.refresh(),
-				onDelete: () => {
-					haptics.warning();
-					Alert.alert(
-						"Delete session?",
-						`This terminates ${sessionName}. Its conversation and worktree are preserved.`,
-						[
-							{ text: "Cancel", style: "cancel" },
-							// Leave first: the session this screen is showing is about to stop
-							// existing, and the board is where its row disappears from.
-							{ text: "Delete session", style: "destructive", onPress: () => { backOr(router); void kill(session.id).catch(() => {}); } },
-						],
-					);
-				},
-			};
-			actionsEntryRef.current = entry;
-			router.push(chatSheetRoute(entry));
-		});
+		const entry: ConversationActionsEntry = {
+			kind: "conversation-actions",
+			sessionId: session.id,
+			snapshot: current,
+			subscribeEntry: (listener) => {
+				actionsListeners.current.add(listener);
+				listener(actionsEntryRef.current ?? entry);
+				return () => { actionsListeners.current.delete(listener); };
+			},
+			sessionTitle: sessionName,
+			openingShell,
+			compacting: conversation.pendingActions.includes("compact"),
+			mcpReloading: conversation.pendingActions.includes("mcp"),
+			refreshing: conversation.refreshing,
+			compactSupported: can(current, "compaction") && !conversationActionUnsupported("compact", conversation.actionCodes.compact),
+			mcpReloadSupported: can(current, "mcp_reload") && !conversationActionUnsupported("mcp", conversation.actionCodes.mcp),
+			interfaceSupported: Boolean(interfaceSwitch.status?.supported),
+			interfaceReason: interfaceSwitch.status?.reason || interfaceSwitch.error,
+			interfaceSwitching: interfaceTransitionActive || interfaceSwitch.starting,
+			// Orchestrators are not deleted from here; the board owns their lifecycle.
+			canDelete: !("projectName" in session),
+			canPin: !("projectName" in session),
+			pinned: "projectName" in session ? false : Boolean(session.isPinned),
+			onMap: () => router.push(chatSheetRoute({ kind: "conversation-map", markers: conversationMarkers(actionsEntryRef.current?.snapshot ?? current), onSelect: setJumpToSequence })),
+			onOpenShell: () => void openShell(),
+			onPreview: () => router.push({ pathname: "/preview/[id]", params: { id: session.id, title, previewUrl: "previewUrl" in session ? session.previewUrl ?? undefined : undefined } }),
+			onPullRequests: () => { setActiveProject(session.projectId); router.push("/(tabs)/prs"); },
+			onSettings: () => void openTurnSettings(),
+			onSwitchInterface: requestInterfaceSwitch,
+			onCompact: () => void conversation.compact().catch(() => {}),
+			onReload: () => void conversation.reloadMcp().catch(() => {}),
+			onRename: () => router.push(chatSheetRoute({
+				kind: "conversation-rename",
+				initialTitle: sessionName,
+				onRename: (next) => renameWorker(session.id, next),
+			})),
+			onTogglePin: () => {
+				if ("projectName" in session) return;
+				void setWorkerPinned(session.id, !session.isPinned).catch(() => {});
+			},
+			onRefresh: () => void conversation.refresh(),
+			onDelete: () => {
+				haptics.warning();
+				Alert.alert(
+					"Delete session?",
+					`This terminates ${sessionName}. Its conversation and worktree are preserved.`,
+					[
+						{ text: "Cancel", style: "cancel" },
+						// Leave first: the session this screen is showing is about to stop
+						// existing, and the board is where its row disappears from.
+						{ text: "Delete session", style: "destructive", onPress: () => { backOr(router); void kill(session.id).catch(() => {}); } },
+					],
+				);
+			},
+		};
+		actionsEntryRef.current = entry;
+		void dismissKeyboardBeforeSheet(keyboardVisible).then(() => router.push(chatSheetRoute(actionsEntryRef.current ?? entry)));
 	}, [conversation, interfaceSwitch, interfaceTransitionActive, keyboardVisible, menuOpen, openShell, openTurnSettings, openingShell, requestInterfaceSwitch, router, session, sessionName, setActiveProject, setWorkerPinned, title]);
 
 	// The poll keeps retrying on its own at up to 8s; this is for the user who can
