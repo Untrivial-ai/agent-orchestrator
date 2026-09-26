@@ -91,10 +91,21 @@ export function orderedProviderControls(options: ChatConfigOption[]): ChatConfig
 	return options.sort((a, b) => priority[providerTurnControlKind(a)] - priority[providerTurnControlKind(b)]);
 }
 
+/**
+ * A provider `mode` option replaces the Approvals row only when it offers
+ * approval choices. OpenCode advertises build/plan there — execution modes —
+ * and mistaking them for approvals leaves the session with no way to bypass.
+ */
+function isPermissionModeOption(option: ChatConfigOption): boolean {
+	if (option.category !== "mode" && option.id !== "mode") return false;
+	return option.choices.some((choice) =>
+		![choice.value, choice.name].some((text) => /^(?:plan|agent|build)(?:[\s_-]mode)?$/i.test(text.trim())));
+}
+
 export function turnSettingsRows(snapshot: ConversationSnapshot, models: ChatModel[], options: ChatConfigOption[]): TurnSettingRow[] {
 	const selectedModel = models.find((model) => model.id === snapshot.settings.model) ?? models.find((model) => model.default);
 	const providerModel = options.some((option) => option.category === "model" || option.id === "model" || option.id === "agent");
-	const providerMode = options.some((option) => option.category === "mode" || option.id === "mode");
+	const providerMode = options.some(isPermissionModeOption);
 	const rows: TurnSettingRow[] = [];
 
 	if ((!can(snapshot, "config_options") || !providerModel) && models.length) {

@@ -68,6 +68,182 @@ func TestSessionCreateAllowsPrimeAgentHarness(t *testing.T) {
 	}
 }
 
+func TestTaskPreparationPromotionPreservesWorkspace(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	prepared := sampleRecord("mer")
+	prepared.IsTaskPreparation = true
+	prepared.ProvisionState = domain.SessionProvisionProvisioning
+	prepared.Metadata.WorkspacePath = ""
+	created, err := s.CreateSession(ctx, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.SetSessionProvisionedWorkspace(ctx, created.ID, "ao/mer-1/root", "/prepared", "/repo", created.UpdatedAt); err != nil || !ok {
+		t.Fatalf("publish prepared workspace = %v, %v", ok, err)
+	}
+
+	visible := sampleRecord("mer")
+	visible.Harness = domain.HarnessCodex
+	visible.Metadata.Effort = "high"
+	if ok, err := s.PromoteTaskPreparation(ctx, created.ID, visible); err != nil || !ok {
+		t.Fatalf("promote preparation = %v, %v", ok, err)
+	}
+	got, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("get promoted session = %v, %v", ok, err)
+	}
+	if got.IsTaskPreparation || got.Harness != domain.HarnessCodex || got.Metadata.Effort != "high" || got.Metadata.Branch != "ao/mer-1/root" || got.Metadata.WorkspacePath != "/prepared" {
+		t.Fatalf("promoted session = %+v", got)
+	}
+}
+
+func TestTaskPreparationBaseWriteCannotOverwritePromotedSession(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	prepared := sampleRecord("mer")
+	prepared.IsTaskPreparation = true
+	prepared.ProvisionState = domain.SessionProvisionProvisioning
+	prepared.Metadata.WorkspacePath = ""
+	created, err := s.CreateSession(ctx, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.SetTaskPreparationBase(ctx, created.ID, "base-sha", "refs/heads/main"); err != nil || !ok {
+		t.Fatalf("record hidden preparation base = %v, %v", ok, err)
+	}
+	visible := sampleRecord("mer")
+	visible.Harness = domain.HarnessCodex
+	visible.DisplayName = "Visible task"
+	visible.Metadata.Model = "codex-model"
+	if ok, err := s.PromoteTaskPreparation(ctx, created.ID, visible); err != nil || !ok {
+		t.Fatalf("promote preparation = %v, %v", ok, err)
+	}
+	if ok, err := s.SetTaskPreparationBase(ctx, created.ID, "late-sha", "refs/heads/old"); err != nil || ok {
+		t.Fatalf("late preparation base write = %v, %v, want fenced no-op", ok, err)
+	}
+	got, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("read promoted session = %v, %v", ok, err)
+	}
+	if got.Harness != visible.Harness || got.DisplayName != visible.DisplayName || got.Metadata.Model != visible.Metadata.Model || got.Metadata.DiffBaseSHA != "base-sha" || got.Metadata.DiffBaseRef != "refs/heads/main" {
+		t.Fatalf("late preparation write changed promoted session: %+v", got)
+	}
+}
+
+func TestProvisionedWorkspaceRejectsTerminatedSession(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	rec := sampleRecord("mer")
+	rec.ProvisionState = domain.SessionProvisionProvisioning
+	created, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.IsTerminated = true
+	if err := s.UpdateSession(ctx, created); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.SetSessionProvisionedWorkspace(ctx, created.ID, "ao/mer-1/root", "/late", "/repo", created.UpdatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated {
+		t.Fatal("terminated session accepted a late workspace publication")
+	}
+}
+
+func TestProvisionedWorkspaceRetainsLateFailedWorktree(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	rec := sampleRecord("mer")
+	rec.ProvisionState = domain.SessionProvisionFailed
+	rec.IsTerminated = true
+	rec.Metadata.WorkspacePath = ""
+	created, err := s.CreateSession(ctx, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.SetSessionProvisionedWorkspace(ctx, created.ID, "ao/mer-1/root", "/dirty-partial", "/repo", created.UpdatedAt)
+	if err != nil || !updated {
+		t.Fatalf("retain late failed worktree = (%v, %v)", updated, err)
+	}
+	stored, ok, err := s.GetSession(ctx, created.ID)
+	if err != nil || !ok || stored.Metadata.WorkspacePath != "/dirty-partial" || !stored.IsTerminated {
+		t.Fatalf("failed session lost dirty worktree: %+v, exists=%v, err=%v", stored, ok, err)
+	}
+	updated, err = s.SetSessionProvisionedWorkspace(ctx, created.ID, "ao/other", "/other", "/repo", created.UpdatedAt)
+	if err != nil || updated {
+		t.Fatalf("late worktree replaced retained path = (%v, %v)", updated, err)
+	}
+}
+
+func TestUpdateSessionPreservesConcurrentProvisionState(t *testing.T) {
+	for _, tc := range []struct {
+		state domain.SessionProvisionState
+		cause string
+	}{
+		{state: domain.SessionProvisionReady},
+		{state: domain.SessionProvisionFailed, cause: "agent start failed"},
+	} {
+		t.Run(string(tc.state), func(t *testing.T) {
+			s := newTestStore(t)
+			ctx := context.Background()
+			seedProject(t, s, "mer")
+			rec := sampleRecord("mer")
+			rec.ProvisionState = domain.SessionProvisionProvisioning
+			created, err := s.CreateSession(ctx, rec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stale, ok, err := s.GetSession(ctx, created.ID)
+			if err != nil || !ok {
+				t.Fatalf("get session: %v, %v", ok, err)
+			}
+			if applied, err := s.SetSessionProvisionState(ctx, created.ID, tc.state, tc.cause, created.UpdatedAt.Add(time.Second)); err != nil || !applied {
+				t.Fatalf("publish provision state: %v, %v", applied, err)
+			}
+			published, ok, err := s.GetSession(ctx, created.ID)
+			if err != nil || !ok || published.ProvisionState != tc.state || published.ProvisionError != tc.cause {
+				t.Fatalf("published provision state: session=%+v ok=%v err=%v", published, ok, err)
+			}
+			stale.DisplayName = "lifecycle update"
+			if err := s.UpdateSession(ctx, stale); err != nil {
+				t.Fatal(err)
+			}
+			got, ok, err := s.GetSession(ctx, created.ID)
+			if err != nil || !ok {
+				t.Fatalf("get updated session: %v, %v", ok, err)
+			}
+			if got.DisplayName != stale.DisplayName || got.ProvisionState != tc.state || got.ProvisionError != tc.cause {
+				t.Fatalf("stale lifecycle update overwrote provisioning facts: name=%q state=%q error=%q", got.DisplayName, got.ProvisionState, got.ProvisionError)
+			}
+		})
+	}
+}
+
+func TestDeleteTaskPreparationRemovesItsCDC(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	prepared := sampleRecord("mer")
+	prepared.IsTaskPreparation = true
+	created, err := s.CreateSession(ctx, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := s.DeleteTaskPreparation(ctx, created.ID); err != nil || !deleted {
+		t.Fatalf("delete preparation = %v, %v", deleted, err)
+	}
+	if _, ok, err := s.GetSession(ctx, created.ID); err != nil || ok {
+		t.Fatalf("get deleted preparation = %v, %v", ok, err)
+	}
+}
+
 func TestSessionPersistsReviewerHarness(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -1832,8 +2008,8 @@ func TestSessionWorktreesRoundTrip(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 	rows := []domain.SessionWorktreeRecord{
-		{SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName, Branch: "ao/ws-1", BaseSHA: "root-base", BaseRef: "refs/remotes/origin/trunk", WorktreePath: "/managed/ws/ws-1", State: "active"},
-		{SessionID: rec.ID, RepoName: "api", Branch: "ao/ws-1", BaseSHA: "api-base", BaseRef: "refs/remotes/origin/dev", WorktreePath: "/managed/ws/ws-1/api", PreservedRef: "refs/ao/preserved/ws-1", State: "removed"},
+		{SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName, Branch: "ao/ws-1", BaseSHA: "root-base", BaseRef: "refs/remotes/origin/trunk", CreationSHA: "root-created", WorktreePath: "/managed/ws/ws-1", State: "active"},
+		{SessionID: rec.ID, RepoName: "api", Branch: "ao/ws-1", BaseSHA: "api-base", BaseRef: "refs/remotes/origin/dev", CreationSHA: "api-created", WorktreePath: "/managed/ws/ws-1/api", PreservedRef: "refs/ao/preserved/ws-1", State: "removed"},
 	}
 	for _, row := range rows {
 		if err := s.UpsertSessionWorktree(ctx, row); err != nil {
@@ -1929,6 +2105,7 @@ func TestRememberProjectPermissionsPinsExistingSessions(t *testing.T) {
 			t.Fatal(err)
 		}
 		row.Mode = domain.NormalizeSessionMode(row.Mode)
+		row.ProvisionState = domain.SessionProvisionReady
 		row.Metadata.ConversationCheckpointState = domain.ConversationCheckpointEmpty
 		row.Metadata.Permissions = tc.want
 		if tc.saved == "" {

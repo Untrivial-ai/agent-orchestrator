@@ -731,39 +731,123 @@ func (c *Client) repositoryToken(
 
 // resolveInstallationRepositoryIDs maps declared extra-repository full names
 // ("owner/repo") to their numeric IDs, but only for repositories the
-// installation actually has access to. Enumerating the installation's
-// repositories (rather than fetching each by name) guarantees every returned ID
-// is one the installation can mint a token for, so a broadened checkout token
-// never 422s on an extra repository that lives outside the installation.
-// Unmatched extras are silently skipped; the result preserves input order and
-// contains no duplicates.
+// installation can actually mint a token for. It first enumerates the
+// installation's repositories; any declared name the enumeration does not cover
+// is retried with a direct GET /repos/{owner}/{repo} and then confirmed grantable
+// by minting a single-repo token. The GET matters because the installation
+// listing is eventually consistent: a repository the App can access may not
+// appear in the paginated list for a short window after it is granted or flipped
+// to private, and without the retry a (typically private) extra would be dropped
+// from the checkout scope even though the App can read it. The mint confirmation
+// matters because GET /repos answers 200 for ANY public repository, including ones
+// outside this installation that it cannot scope a token to; adding such an ID
+// would 422 the whole broadened checkout token and fail the primary clone too. A
+// repository that is not grantable (404 on the GET, or a failed confirming mint)
+// is reported as unresolved rather than force-added, so every returned ID is still
+// one the installation can mint a token for and a broadened checkout token never
+// 422s. The result preserves input order, contains no duplicates, and returns the
+// declared names that could not be resolved.
 func (c *Client) resolveInstallationRepositoryIDs(
 	ctx context.Context,
 	installationID int64,
 	fullNames []string,
-) ([]int64, error) {
+) (ids []int64, unresolved []string, err error) {
 	if installationID <= 0 || len(fullNames) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	repositories, err := c.ListRepositories(ctx, installationID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	byName := make(map[string]int64, len(repositories))
 	for _, repository := range repositories {
 		byName[strings.ToLower(strings.Trim(repository.FullName, "/"))] = repository.ID
 	}
-	ids := make([]int64, 0, len(fullNames))
+	// The fallback token is minted at most once, and only if a declared name is
+	// missing from the listing. A failure to mint it leaves matched extras intact
+	// and marks the rest unresolved, so a hiccup here never regresses the repos
+	// that already resolved from the listing.
+	var (
+		fallbackToken    string
+		fallbackTokenErr error
+		fallbackMinted   bool
+	)
+	ids = make([]int64, 0, len(fullNames))
 	seen := make(map[int64]bool, len(fullNames))
 	for _, fullName := range fullNames {
-		id, ok := byName[strings.ToLower(strings.Trim(strings.TrimSpace(fullName), "/"))]
-		if !ok || id <= 0 || seen[id] {
+		normalized := strings.ToLower(strings.Trim(strings.TrimSpace(fullName), "/"))
+		if normalized == "" {
+			continue
+		}
+		id, ok := byName[normalized]
+		if !ok {
+			if !fallbackMinted {
+				fallbackToken, fallbackTokenErr = c.installationToken(ctx, installationID)
+				fallbackMinted = true
+			}
+			if fallbackTokenErr != nil {
+				unresolved = append(unresolved, normalized)
+				continue
+			}
+			resolvedID, resolveErr := c.installationRepositoryID(ctx, fallbackToken, normalized)
+			if resolveErr != nil {
+				unresolved = append(unresolved, normalized)
+				continue
+			}
+			// GET /repos returns 200 for any public repo, including one outside
+			// this installation, but the installation can only scope a token to a
+			// repo it was granted. Confirm the repo is grantable before adding it,
+			// so a declared public extra outside the installation is dropped here
+			// instead of 422ing the whole checkout token mint (which would fail the
+			// primary clone). This keeps every returned ID one the installation can
+			// mint, exactly as the listing-only path guaranteed.
+			if _, mintErr := c.repositoryToken(ctx, installationID, resolvedID); mintErr != nil {
+				unresolved = append(unresolved, normalized)
+				continue
+			}
+			id = resolvedID
+		}
+		if id <= 0 || seen[id] {
 			continue
 		}
 		seen[id] = true
 		ids = append(ids, id)
 	}
-	return ids, nil
+	return ids, unresolved, nil
+}
+
+// installationRepositoryID resolves a single "owner/repo" to its numeric ID via a
+// direct GET /repos/{owner}/{repo} with the installation token. It backs
+// resolveInstallationRepositoryIDs' fallback for repositories missing from the
+// eventually-consistent installation listing. A repository the installation
+// cannot access returns an *HTTPError with StatusCode 404, which the caller treats
+// as unresolved; the token minted here is the installation's own, so this never
+// widens access beyond what the App is already granted.
+func (c *Client) installationRepositoryID(
+	ctx context.Context,
+	installationToken, fullName string,
+) (int64, error) {
+	owner, name, ok := strings.Cut(strings.Trim(strings.TrimSpace(fullName), "/"), "/")
+	owner = strings.TrimSpace(owner)
+	name = strings.TrimSpace(name)
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return 0, errors.New("GitHub repository full name is invalid")
+	}
+	var repository Repository
+	if err := c.userJSON(
+		ctx,
+		installationToken,
+		http.MethodGet,
+		"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name),
+		nil,
+		&repository,
+	); err != nil {
+		return 0, err
+	}
+	if repository.ID <= 0 {
+		return 0, errors.New("GitHub returned a repository without an ID")
+	}
+	return repository.ID, nil
 }
 
 // repositoryReadTokenForRepos mints a short-lived installation token scoped to a

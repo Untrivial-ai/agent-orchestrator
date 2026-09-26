@@ -88,6 +88,26 @@ type recordingLauncher struct {
 	prepared            []domain.SessionID
 	preparePolicy       []domain.SessionInterfaceTransitionPolicy
 	aborted             []domain.SessionID
+
+	// The asynchronous spawn path records the opening prompt instead of sending
+	// it, then drains once the controller is live.
+	queued   []string
+	queueErr error
+	drainErr error
+	drained  []domain.SessionID
+}
+
+func (l *recordingLauncher) QueueChatPrompt(_ context.Context, _ domain.SessionID, text string) (string, error) {
+	if l.queueErr != nil {
+		return "", l.queueErr
+	}
+	l.queued = append(l.queued, text)
+	return "turn-1", nil
+}
+
+func (l *recordingLauncher) DrainChatQueue(_ context.Context, id domain.SessionID) error {
+	l.drained = append(l.drained, id)
+	return l.drainErr
 }
 
 type historicalChatRestoreStore struct {
@@ -1597,4 +1617,12 @@ func TestChatSpawn_RollbackGivesEachCleanupStepAFreshDeadline(t *testing.T) {
 	if !st.sessions["mer-1"].IsTerminated {
 		t.Fatal("session row was not terminated after chat shutdown exhausted its deadline")
 	}
+}
+
+func (l *deadlineConsumingChatLauncher) QueueChatPrompt(_ context.Context, _ domain.SessionID, _ string) (string, error) {
+	return "", nil
+}
+
+func (l *deadlineConsumingChatLauncher) DrainChatQueue(_ context.Context, _ domain.SessionID) error {
+	return nil
 }

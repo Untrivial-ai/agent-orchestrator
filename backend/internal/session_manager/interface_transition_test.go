@@ -3452,3 +3452,11 @@ func TestInterfaceTransitionStatusReportsUnverifiedWhenInspectionFails(t *testin
 		t.Fatalf("StartInterfaceTransition error = %v, want inspection failure", err)
 	}
 }
+
+func (c *transitionChat) QueueChatPrompt(_ context.Context, _ domain.SessionID, _ string) (string, error) {
+	return "", nil
+}
+
+func (c *transitionChat) DrainChatQueue(_ context.Context, _ domain.SessionID) error {
+	return nil
+}

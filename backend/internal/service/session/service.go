@@ -81,6 +81,8 @@ type commander interface {
 	Cleanup(ctx context.Context, project domain.ProjectID) (sessionmanager.CleanupResult, error)
 	RollbackSpawn(ctx context.Context, id domain.SessionID) (deleted, killed bool, err error)
 	StageAttachments(ctx context.Context, id domain.SessionID, attachments []ports.SpawnAttachment) ([]string, error)
+	PrepareTaskWorkspace(context.Context, domain.ProjectRecord) (domain.TaskPreparationToken, error)
+	CancelTaskPreparation(context.Context, domain.TaskPreparationToken) error
 }
 
 // interfaceTransitionCommander is an optional command capability. Keeping it
@@ -387,7 +389,12 @@ func (s *Service) isFirstSession(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return len(rows) == 0, nil
+	for _, row := range rows {
+		if !row.IsTaskPreparation {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (s *Service) emitSpawned(ctx context.Context, rec domain.SessionRecord, durationMs int64) {
@@ -1055,6 +1062,9 @@ func (s *Service) listRecords(ctx context.Context, project domain.ProjectID) ([]
 }
 
 func matchesSessionFilter(rec domain.SessionRecord, filter ListFilter) bool {
+	if rec.IsTaskPreparation {
+		return false
+	}
 	if filter.Active != nil && rec.IsTerminated == *filter.Active {
 		return false
 	}
@@ -1076,6 +1086,9 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 		return domain.Session{}, fmt.Errorf("get %s: %w", id, err)
 	}
 	if !ok {
+		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	if rec.IsTaskPreparation {
 		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	}
 	sess, err := s.toSession(ctx, rec)

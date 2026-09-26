@@ -142,6 +142,13 @@ type fakeModelDiscoverer struct {
 	overlap                atomic.Bool
 }
 
+type blockingSubsequentModelDiscoverer struct {
+	*fakeModelDiscoverer
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
 func (f *fakeModelDiscoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
 	f.discoverCalls.Add(1)
 	active := f.active.Add(1)
@@ -182,6 +189,18 @@ func (f *fakeModelDiscoverer) Discover(ctx context.Context, request ports.AgentM
 		f.successfulCalls.Add(1)
 	}
 	return catalog, discoverErr
+}
+
+func (f *blockingSubsequentModelDiscoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
+	if f.discoverCalls.Load() > 0 {
+		f.once.Do(func() { close(f.started) })
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return ports.AgentModelCatalog{}, ctx.Err()
+		}
+	}
+	return f.fakeModelDiscoverer.Discover(ctx, request)
 }
 
 func TestCatalogFreshnessUsesMachineLocalDateAndTimezone(t *testing.T) {
@@ -1984,11 +2003,16 @@ func TestModelsFingerprintsTheSameProjectInputsDiscoveryReads(t *testing.T) {
 
 func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 	cache := &fakeModelCache{}
-	discoverer := &fakeModelDiscoverer{version: "v1", catalog: ports.AgentModelCatalog{
-		SelectionMode: ports.ModelSelectionCatalog,
-		Models:        []ports.AgentModelInfo{{ID: "model-one"}},
-		Source:        "cli",
-	}}
+	discoverer := &blockingSubsequentModelDiscoverer{
+		fakeModelDiscoverer: &fakeModelDiscoverer{version: "v1", catalog: ports.AgentModelCatalog{
+			SelectionMode: ports.ModelSelectionCatalog,
+			Models:        []ports.AgentModelInfo{{ID: "model-one"}},
+			Source:        "cli",
+		}},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	defer close(discoverer.release)
 	svc := newService([]agentregistry.HarnessAgent{
 		harnessAgent("opencode", "OpenCode", nil),
 	}, cache, nil, discoverer)
@@ -2031,6 +2055,14 @@ func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 	}
 	if len(stale.Models) != 1 || stale.Models[0].ID != "model-one" {
 		t.Fatalf("models = %#v, want the cached catalog served immediately", stale.Models)
+	}
+	select {
+	case <-discoverer.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for background cache revalidation")
+	}
+	if discoverer.discoverCalls.Load() != 1 {
+		t.Fatalf("discovery calls = %d before releasing revalidation, want the cached catalog served immediately", discoverer.discoverCalls.Load())
 	}
 }
 

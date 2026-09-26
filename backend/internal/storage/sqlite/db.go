@@ -303,6 +303,12 @@ func migrate(db *sql.DB) error {
 	if err := repairRenumberedChatMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered chat migration history: %w", err)
 	}
+	if err := repairRenumberedCueMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered cue migration history: %w", err)
+	}
+	if err := repairRenumberedTaskProvisioningMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered task-provisioning migration history: %w", err)
+	}
 	if err := repairRenumberedUsageCostMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered usage-cost migration history: %w", err)
 	}
@@ -345,9 +351,6 @@ func migrate(db *sql.DB) error {
 	if err := prepareSessionReviewerAgentConfigMigration(db); err != nil {
 		return fmt.Errorf("prepare session reviewer agent-config migration: %w", err)
 	}
-	if err := repairRenumberedCueMigrationHistory(db); err != nil {
-		return fmt.Errorf("repair renumbered cue migration history: %w", err)
-	}
 	// Builds can advance a database past a migration that is added or
 	// renumbered later (notably across fast-moving Nightly releases). Apply
 	// those embedded migrations instead of permanently wedging daemon startup
@@ -358,51 +361,51 @@ func migrate(db *sql.DB) error {
 	return reconcileSchema(db)
 }
 
-// repairRenumberedCueMigrationHistory preserves preview databases where Cues
-// used 0149 or 0155 before main assigned those versions to other migrations.
-// Move only an identifiable Cue schema to 0156 so Goose can apply the upstream
-// migration that owns the old number.
+// repairRenumberedCueMigrationHistory preserves preview Cue databases that
+// recorded 0149, 0155, or 0156 for Cues before main assigned those versions
+// to other features. Move only an identifiable Cue schema to 0159 before the
+// upstream migration repairs inspect or reuse the old ledger entries.
 func repairRenumberedCueMigrationHistory(db *sql.DB) error {
 	var gooseTable int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`).Scan(&gooseTable); err != nil || gooseTable == 0 {
 		return err
 	}
-	var cueColumns, reviewerColumns int
+	var cueColumns, reviewerColumn, provisionColumns, unrealHarness int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('cues') WHERE name IN ('id', 'project_id', 'name', 'description', 'type', 'command', 'prompt', 'created_at', 'updated_at')`).Scan(&cueColumns); err != nil {
 		return err
 	}
 	if cueColumns != 9 {
 		return nil
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('review') WHERE name = 'interface_mode'`).Scan(&reviewerColumns); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('review') WHERE name = 'interface_mode'`).Scan(&reviewerColumn); err != nil {
 		return err
 	}
-	var oldApplied, collidedApplied, canonicalApplied int
-	if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id = 149 ORDER BY id DESC LIMIT 1), 0)`).Scan(&oldApplied); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('provision_state', 'provision_error')`).Scan(&provisionColumns); err != nil {
 		return err
 	}
-	if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id = 155 ORDER BY id DESC LIMIT 1), 0)`).Scan(&collidedApplied); err != nil {
+	if err := db.QueryRow(`SELECT instr(sql, 'unreal-agent') FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`).Scan(&unrealHarness); err != nil {
 		return err
 	}
-	if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id = 156 ORDER BY id DESC LIMIT 1), 0)`).Scan(&canonicalApplied); err != nil {
-		return err
+	var applied149, applied155, applied156, applied159 int
+	for _, item := range []struct {
+		version int
+		result  *int
+	}{{149, &applied149}, {155, &applied155}, {156, &applied156}, {159, &applied159}} {
+		if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id = ? ORDER BY id DESC LIMIT 1), 0)`, item.version).Scan(item.result); err != nil {
+			return err
+		}
 	}
-	if canonicalApplied != 0 {
+	if applied159 != 0 {
 		return nil
 	}
 	oldVersion := 0
-	if oldApplied != 0 && reviewerColumns == 0 {
+	switch {
+	case applied156 != 0 && provisionColumns != 2:
+		oldVersion = 156
+	case applied155 != 0 && unrealHarness == 0 && provisionColumns != 2:
+		oldVersion = 155
+	case applied149 != 0 && reviewerColumn == 0 && provisionColumns != 2:
 		oldVersion = 149
-	} else if collidedApplied != 0 {
-		// Upstream's 0155 adds unreal-agent to the sessions CHECK. If that
-		// change is already present, the ledger entry does not belong to Cues.
-		var sessionsSQL string
-		if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`).Scan(&sessionsSQL); err != nil {
-			return err
-		}
-		if !strings.Contains(sessionsSQL, "'unreal-agent'") {
-			oldVersion = 155
-		}
 	}
 	if oldVersion == 0 {
 		return nil
@@ -412,11 +415,169 @@ func repairRenumberedCueMigrationHistory(db *sql.DB) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (156, 1)`); err != nil {
+	if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (159, 1)`); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = ?`, oldVersion); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+// repairRenumberedTaskProvisioningMigrationHistory preserves development
+// databases that applied this branch's migrations at 0149/0150, 0150/0151,
+// or 0155/0156/0157. Main owns those numbers now; map the physical schema to
+// 0156/0157/0158 before Goose replays the missing main migrations.
+func repairRenumberedTaskProvisioningMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var provisionColumns, taskPreparationColumn, creationSHAColumn, reviewerColumn, catalogColumn, unrealHarness int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('provision_state', 'provision_error')`,
+	).Scan(&provisionColumns); err != nil {
+		return err
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'is_task_preparation'`,
+	).Scan(&taskPreparationColumn); err != nil {
+		return err
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('session_worktrees') WHERE name = 'creation_sha'`,
+	).Scan(&creationSHAColumn); err != nil {
+		return err
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('review') WHERE name = 'interface_mode'`,
+	).Scan(&reviewerColumn); err != nil {
+		return err
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_model_catalog') WHERE name = 'metadata_json'`,
+	).Scan(&catalogColumn); err != nil {
+		return err
+	}
+	if provisionColumns != 2 && taskPreparationColumn == 0 {
+		return nil
+	}
+	if err := db.QueryRow(
+		`SELECT instr(sql, 'unreal-agent') FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`,
+	).Scan(&unrealHarness); err != nil {
+		return err
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	applied := func(version int64) (bool, error) {
+		var applied int
+		if err := tx.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = ? ORDER BY id DESC LIMIT 1
+), 0)`, version).Scan(&applied); err != nil {
+			return false, err
+		}
+		return applied == 1, nil
+	}
+	mapVersion := func(legacyVersion, canonicalVersion int64) (bool, error) {
+		legacyApplied, err := applied(legacyVersion)
+		if err != nil || !legacyApplied {
+			return false, err
+		}
+		if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`, canonicalVersion); err != nil {
+			return false, err
+		}
+		if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = ?`, legacyVersion); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	oldProvision155, err := applied(155)
+	if err != nil {
+		return err
+	}
+	if oldProvision155 && provisionColumns == 2 && unrealHarness == 0 {
+		// This branch used 0155 before main shipped the Unreal Agent migration
+		// at that number. Shift highest first so each applied marker survives.
+		if creationSHAColumn != 0 {
+			if _, err := mapVersion(157, 158); err != nil {
+				return err
+			}
+		}
+		if taskPreparationColumn != 0 {
+			if _, err := mapVersion(156, 157); err != nil {
+				return err
+			}
+		}
+		if _, err := mapVersion(155, 156); err != nil {
+			return err
+		}
+	}
+
+	provisionMappedFrom150 := false
+	canonicalProvisionApplied, err := applied(156)
+	if err != nil {
+		return err
+	}
+	if provisionColumns == 2 && !canonicalProvisionApplied {
+		legacyVersion := int64(149)
+		if reviewerColumn != 0 {
+			// Once main's catalog column exists, 0150 belongs to main.
+			if catalogColumn == 0 {
+				legacyVersion = 150
+			} else {
+				legacyVersion = 0
+			}
+		}
+		if legacyVersion != 0 {
+			mapped, err := mapVersion(legacyVersion, 156)
+			if err != nil {
+				return err
+			}
+			provisionMappedFrom150 = mapped && legacyVersion == 150
+		}
+	}
+
+	canonicalPreparationApplied, err := applied(157)
+	if err != nil {
+		return err
+	}
+	released150 := provisionMappedFrom150
+	if taskPreparationColumn != 0 && !canonicalPreparationApplied {
+		legacyVersion := int64(150)
+		if catalogColumn != 0 || provisionMappedFrom150 {
+			legacyVersion = 151
+		}
+		mapped, err := mapVersion(legacyVersion, 157)
+		if err != nil {
+			return err
+		}
+		released150 = released150 || mapped && legacyVersion == 150
+	}
+	if released150 && catalogColumn == 0 {
+		// Main's 0151 may already have installed global catalog triggers. Drop
+		// them before replaying 0150, then replay 0151 to restore global CDC.
+		if _, err := tx.Exec(`DROP TRIGGER IF EXISTS agent_model_catalog_cdc_insert`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DROP TRIGGER IF EXISTS agent_model_catalog_cdc_update`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = 151`); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

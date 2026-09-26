@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -105,6 +105,18 @@ describe("GlobalNewTaskDialog", () => {
 			useUiStore.getState().requestNewTask("proj-7");
 		});
 		expect(await screen.findByTestId("new-task-dialog")).toHaveAttribute("data-project", "proj-7");
+	});
+
+	it("does not replay a consumed request after the shell remounts", async () => {
+		renderDialog();
+		act(() => {
+			useUiStore.getState().requestNewTask("proj-7");
+		});
+		await screen.findByTestId("new-task-dialog");
+
+		cleanup();
+		renderDialog();
+		expect(screen.queryByTestId("new-task-dialog")).not.toBeInTheDocument();
 	});
 
 	it("does not retarget or replay a request received while the dialog is open", async () => {

@@ -18,6 +18,12 @@ func TestMigratePreservesPreviewCuesAtOldVersion155(t *testing.T) {
 	assertPreviewCueMigration(t, db)
 }
 
+func TestMigratePreservesPreviewCuesAtOldVersion156(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, 155)
+	seedPreviewCues(t, db, 156)
+	assertPreviewCueMigration(t, db)
+}
+
 func seedPreviewCues(t *testing.T, db *sql.DB, version int64) {
 	t.Helper()
 	_, err := db.Exec(`
@@ -74,7 +80,7 @@ func assertPreviewCueMigration(t *testing.T, db *sql.DB) {
 	if !strings.Contains(sessionsSQL, "'unreal-agent'") {
 		t.Fatal("upstream Unreal Agent migration was not applied")
 	}
-	for _, version := range []int{149, 155, 156} {
+	for _, version := range []int{149, 155, 156, 157, 158, 159} {
 		var applied int
 		if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id = ? ORDER BY id DESC LIMIT 1), 0)`, version).Scan(&applied); err != nil {
 			t.Fatal(err)
