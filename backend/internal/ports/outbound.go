@@ -344,11 +344,16 @@ type Workspace interface {
 }
 
 // WorkspaceDefaultBranchRefresher is an optional capability for Git-backed
-// workspaces. Resolution is local-only so callers can retain the canonical ref
-// even when the subsequent best-effort network refresh fails.
+// workspaces. Automatic resolution may query the remote for its current HEAD.
 type WorkspaceDefaultBranchRefresher interface {
 	ResolveDefaultBranch(ctx context.Context, repoPath, configuredBranch string) (WorkspaceDefaultBranch, error)
 	FetchDefaultBranch(ctx context.Context, repoPath string, target WorkspaceDefaultBranch) error
+}
+
+// WorkspaceLocalDefaultBranchResolver optionally resolves cached repository
+// metadata without network I/O, for importing local conversation history.
+type WorkspaceLocalDefaultBranchResolver interface {
+	ResolveLocalDefaultBranch(ctx context.Context, repoPath, configuredBranch string) (WorkspaceDefaultBranch, error)
 }
 
 // WorkspaceDefaultBranch is a locally resolved default-branch target. BaseRef

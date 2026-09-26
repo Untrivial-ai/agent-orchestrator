@@ -6,10 +6,27 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+// nativeConfigDirEnvKey maps an imported provider to the environment variable
+// that points its CLI at a specific state root. An imported conversation may
+// live under a non-default home, so the launched agent must be told where to
+// find the transcript it is resuming. An unknown provider yields "" (no
+// override; the agent uses its default home).
+func nativeConfigDirEnvKey(provider domain.AgentHarness) string {
+	switch provider {
+	case domain.HarnessClaudeCode:
+		return "CLAUDE_CONFIG_DIR"
+	case domain.HarnessCodex:
+		return "CODEX_HOME"
+	default:
+		return ""
+	}
+}
 
 // The chat-mode controller launch.
 //
@@ -200,6 +217,25 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 		m.augmentAgentRuntimeEnv(agent, env)
 	}
 
+	// Importing an existing provider conversation: bind the controller to the
+	// native id so its transcript is resumed and replayed, and point the agent's
+	// CLI at the state root the transcript lives under.
+	var (
+		resumeNativeID string
+		historyMode    = ports.ChatHistoryImport
+	)
+	if rns := in.cfg.ResumeNativeSession; rns != nil {
+		resumeNativeID = rns.NativeSessionID
+		// An import without its transcript is an empty session, so a missing
+		// replay is fatal rather than something to start fresh past.
+		historyMode = ports.ChatHistoryRequired
+		if dir := strings.TrimSpace(rns.ConfigDir); dir != "" {
+			if key := nativeConfigDirEnvKey(rns.Provider); key != "" {
+				env[key] = dir
+			}
+		}
+	}
+
 	var (
 		controllerCommitted bool
 		completionErr       error
@@ -218,6 +254,8 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 		SystemPrompt:            in.systemPrompt,
 		AdditionalDirectories:   workspaceProjectDirectories(in.workspace.Path, in.workspaceProject),
 		ExpectedControllerOwner: in.record.ControllerOwner(),
+		ProviderConversationID:  resumeNativeID,
+		HistoryMode:             historyMode,
 		PrepareControllerEnv: func(launchCtx context.Context, expected domain.SessionControllerOwner) (map[string]string, error) {
 			prepared, launchEnv, prepareErr := m.prepareChatControllerEnv(
 				launchCtx, in.record, in.project.Config.Env, expected,
@@ -233,8 +271,12 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 		},
 		ControllerReady: func(started ChatStarted) (ChatControllerCommit, error) {
 			metadata := domain.SessionMetadata{
-				Permissions:       in.record.Metadata.Permissions,
-				Branch:            in.workspace.Branch,
+				Permissions: in.record.Metadata.Permissions,
+				Branch:      in.workspace.Branch,
+				// An imported conversation keeps the branch it ran on even when
+				// the workspace had to be created on a different one, so its
+				// pull request stays discoverable.
+				SourceBranch:      importedSourceBranch(in.cfg),
 				WorkspacePath:     in.workspace.Path,
 				WorkspaceRepoPath: in.workspace.RepoPath,
 				Prompt:            in.prompt,
@@ -422,6 +464,11 @@ func (m *Manager) resumeChatController(
 	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
 	if agent, ok := m.agents.Agent(rec.Harness); ok {
 		m.augmentAgentRuntimeEnv(agent, env)
+	}
+	if dir := importedConfigDir(rec.Metadata.NativeTranscriptPath, rec.Harness); dir != "" {
+		if key := nativeConfigDirEnvKey(rec.Harness); key != "" {
+			env[key] = dir
+		}
 	}
 	historyMode := ports.ChatHistoryImport
 	var providerHandoff *domain.ChatProviderHandoff

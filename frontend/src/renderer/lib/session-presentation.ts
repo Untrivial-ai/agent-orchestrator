@@ -76,9 +76,11 @@ export function getSessionStatusDotView(
 		displayStatus?: string;
 		scmStatus?: SessionStatus;
 		status: SessionStatus;
+		importedHistory?: boolean;
 	},
 	t: TFunction = appI18n.t,
 ): SessionStatusDotView {
+	if (session.importedHistory) return {className: "bg-muted-foreground", breathe: false};
 	const working = isAgentActivityWorking(session.activity);
 	const closedWithoutMerge = session.displayStatus === "Closed without merge";
 	const sectionStatus: SessionStatus =

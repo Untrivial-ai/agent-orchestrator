@@ -124,6 +124,8 @@ import { useUiStore } from "../stores/ui-store";
 import { useKeybindingsStore } from "../stores/keybindings-store";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { CreateProjectFlow, type CloneProjectInput, type CreateProjectInput } from "./CreateProjectFlow";
+import { ImportSessionDialog } from "./ImportSessionDialog";
+import { useImportRunStore } from "../stores/import-run-store";
 import { ResizeHandle } from "./ResizeHandle";
 import { NAV_ROW_HIGHLIGHT_HOST_CLASS, NavRowHighlight } from "./NavRowHighlight";
 import { isMacPlatform } from "../lib/platform";
@@ -1206,6 +1208,9 @@ const ProjectItem = memo(function ProjectItem({
 		);
 	const projectActive = dashboardActive || orchestratorActive;
 	const queryClient = useQueryClient();
+	const [importOpen, setImportOpen] = useState(false);
+	const importRun = useImportRunStore((state) => state.runs[workspace.id]);
+	const importLabel = importRun?.running ? t("importSession.importingProgress", { done: importRun.progress.done, total: importRun.progress.total }) : t("importSearch.projectAction");
 	const [removeError, setRemoveError] = useState<string | null>(null);
 	const [isRemoving, setIsRemoving] = useState(false);
 	const [confirmOpen, setConfirmOpen] = useState(false);
@@ -1556,6 +1561,10 @@ const ProjectItem = memo(function ProjectItem({
 											<Plus aria-hidden="true" />
 											{t("shell.newTask")}
 										</DropdownMenuItem>
+										<DropdownMenuItem onSelect={() => setImportOpen(true)}>
+											{importLabel}
+											{!!importRun?.errors.length && ` (${importRun.errors.length})`}
+										</DropdownMenuItem>
 										<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
 											<Settings aria-hidden="true" />
 											{t("shell.projectSettings")}
@@ -1583,6 +1592,7 @@ const ProjectItem = memo(function ProjectItem({
 							{removeError}
 						</div>
 					) : null}
+					{importOpen && <ImportSessionDialog open={importOpen} onOpenChange={setImportOpen} projectId={workspace.id} projectName={workspace.name} />}
 					{/* project-sidebar__sessions: indented under the project parent so worker
           sessions read as children without adding a persistent guide rail. */}
 		<AnimatePresence initial={false}>
@@ -1657,6 +1667,8 @@ const ProjectItem = memo(function ProjectItem({
 					<Plus aria-hidden="true" />
 					{t("shell.newTask")}
 				</ContextMenuItem>
+				{workspace.kind !== STANDALONE_PROJECT_KIND && <>
+				<ContextMenuItem onSelect={() => setImportOpen(true)}>{importLabel}{!!importRun?.errors.length && ` (${importRun.errors.length})`}</ContextMenuItem>
 				<ContextMenuItem onSelect={() => selection.goSettings(workspace.id)}>
 					<Settings aria-hidden="true" />
 					{t("shell.projectSettings")}
@@ -1669,6 +1681,7 @@ const ProjectItem = memo(function ProjectItem({
 					<Trash2 aria-hidden="true" />
 					{t("shell.removeProjectTitle")}
 				</ContextMenuItem>
+				</>}
 			</ContextMenuContent>
 		</ContextMenu>
 	);

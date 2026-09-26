@@ -964,7 +964,12 @@ func normalizeItem(params json.RawMessage, completed bool) []ports.ChatEvent {
 	if err := json.Unmarshal(params, &p); err != nil {
 		return nil
 	}
-	it := p.Item
+	return normalizeTypedItem(p.TurnID, p.Item, completed)
+}
+
+// normalizeTypedItem shares the projection between wire notifications and
+// already decoded history, without serializing every tool payload again.
+func normalizeTypedItem(turnID string, it threadItem, completed bool) []ports.ChatEvent {
 
 	// The user's own message comes back from the provider as an item. AO already
 	// persisted it when the send was accepted, so re-emitting it would duplicate
@@ -983,7 +988,7 @@ func normalizeItem(params json.RawMessage, completed bool) []ports.ChatEvent {
 		}
 		return []ports.ChatEvent{{
 			Kind:           ports.ChatEventCompacted,
-			ProviderTurnID: p.TurnID,
+			ProviderTurnID: turnID,
 			ProviderItemID: it.itemID(),
 		}}
 	}
@@ -996,7 +1001,7 @@ func normalizeItem(params json.RawMessage, completed bool) []ports.ChatEvent {
 		}
 		return []ports.ChatEvent{{
 			Kind:           ports.ChatEventMessageCompleted,
-			ProviderTurnID: p.TurnID,
+			ProviderTurnID: turnID,
 			ProviderItemID: it.itemID(),
 			Text:           deref(it.Text),
 		}}
@@ -1008,7 +1013,7 @@ func normalizeItem(params json.RawMessage, completed bool) []ports.ChatEvent {
 	}
 
 	ev := ports.ChatEvent{
-		ProviderTurnID: p.TurnID,
+		ProviderTurnID: turnID,
 		ProviderItemID: it.itemID(),
 		ActivityKind:   kind,
 		Summary:        summary,

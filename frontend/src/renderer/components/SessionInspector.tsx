@@ -205,7 +205,11 @@ export const SessionInspector = memo(function SessionInspector({
 		session ? Boolean(state.inspectorSessions[session.id]?.browserUnseen) : false,
 	);
 	const inspectorQueryClient = useQueryClient();
-	const localFilesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
+	// An imported session has no workspace to diff, so asking for its changed
+	// files would only produce an error badge.
+	const localFilesChangedCount = useSessionWorkspaceFilesChangedCount(
+		browserOnly || session?.importedHistory ? undefined : session?.id,
+	);
 	const localWorkspaceData = session ? inspectorQueryClient.getQueryData<{ files?: unknown[] }>(sessionWorkspaceFilesQueryKey(session.id)) : undefined;
 	const { client: cloudCpClient, ready: cloudReady, baseUrl: cloudBaseUrl } = useCloudCp();
 	const cloudOrgId = session?.cloud?.orgId;
@@ -1294,7 +1298,7 @@ function ActivityTimeline({ prs, session }: { prs: SessionPRSummary[]; session: 
 	pushEvent(
 		{
 			tone: "neutral",
-			content: <>{appI18n.t("inspector.timeline.createdWorkspace")}</>,
+			content: <>{session.importedHistory ? appI18n.t("importSession.imported") : appI18n.t("inspector.timeline.createdWorkspace")}</>,
 			timestamp: formatTimeCompact(createdAt),
 		},
 		createdAt,

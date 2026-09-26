@@ -31,6 +31,7 @@ export type NavigateTarget =
 	| { to: "/sessions/$sessionId"; params: { sessionId: string } };
 
 export type CommandAction =
+	| { kind: "find-import-session" }
 	| { kind: "navigate"; target: NavigateTarget }
 	| { kind: "open-new-task"; projectId: string }
 	| { kind: "open-new-project" }

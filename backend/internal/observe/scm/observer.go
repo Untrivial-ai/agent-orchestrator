@@ -751,14 +751,21 @@ func (o *Observer) discoverSubjects(ctx context.Context) (map[string]*subject, [
 			}
 		}
 		repos := append([]ports.SCMRepo(nil), scanRepos[sess.ProjectID]...)
-		sessionRepos = append(sessionRepos, checkoutSessionRepos(sess, branch, proj.Kind.WithDefault() == domain.ProjectKindWorkspace, repos)...)
-		childRepos, err := o.workspaceSCMSessionRepos(ctx, proj, sess, branch)
+		// An imported session is matched on the branch its conversation ran on as
+		// well as the branch it owns, because git may not have let it take the
+		// original. Each branch needs its own subject, but the repositories behind
+		// them are the same, so they are resolved once rather than per branch.
+		branches := sessionMatchBranches(sess)
+		for _, candidate := range branches {
+			sessionRepos = append(sessionRepos, checkoutSessionRepos(sess, candidate, proj.Kind.WithDefault() == domain.ProjectKindWorkspace, scanRepos[sess.ProjectID])...)
+		}
+		childRepos, err := o.workspaceSCMSessionRepos(ctx, proj, sess, branches)
 		if err != nil {
 			return nil, nil, err
 		}
 		for _, child := range childRepos {
 			sessionRepos = append(sessionRepos, child)
-			repos = append(repos, child.repo)
+			repos = appendRepoOnce(repos, child.repo)
 		}
 		if len(repos) == 0 {
 			o.logger.Debug("scm observer: project has no supported SCM origins", "project", proj.ID)
@@ -836,7 +843,7 @@ func checkoutSessionRepos(sess domain.SessionRecord, branch string, workspace bo
 	return result
 }
 
-func (o *Observer) workspaceSCMSessionRepos(ctx context.Context, proj domain.ProjectRecord, sess domain.SessionRecord, branch string) ([]sessionRepo, error) {
+func (o *Observer) workspaceSCMSessionRepos(ctx context.Context, proj domain.ProjectRecord, sess domain.SessionRecord, branches []string) ([]sessionRepo, error) {
 	if proj.Kind.WithDefault() != domain.ProjectKindWorkspace {
 		return nil, nil
 	}
@@ -857,7 +864,23 @@ func (o *Observer) workspaceSCMSessionRepos(ctx context.Context, proj domain.Pro
 		childPath := filepath.Join(proj.Path, filepath.FromSlash(child.RelativePath))
 		checkouts = append(checkouts, o.resolveScanRepos(ctx, domain.ProjectRecord{Path: childPath}, repo))
 	}
-	return checkoutSessionRepos(sess, branch, true, checkouts...), nil
+	var result []sessionRepo
+	for _, branch := range branches {
+		result = append(result, checkoutSessionRepos(sess, branch, true, checkouts...)...)
+	}
+	return result, nil
+}
+
+// appendRepoOnce keeps the scan list free of duplicates when a session is
+// matched on more than one branch.
+func appendRepoOnce(repos []ports.SCMRepo, repo ports.SCMRepo) []ports.SCMRepo {
+	key := strings.ToLower(prKey(repo, 0))
+	for _, existing := range repos {
+		if strings.ToLower(prKey(existing, 0)) == key {
+			return repos
+		}
+	}
+	return append(repos, repo)
 }
 
 func repoForTrackedPR(pr domain.PullRequest, repos []ports.SCMRepo) (ports.SCMRepo, bool) {
@@ -1220,6 +1243,29 @@ func workspaceHyphenBranch(sr sessionRepo) bool {
 	// a generated branch and broaden their ownership.
 	n, err := strconv.Atoi(suffix)
 	return err == nil && n >= 2 && strconv.Itoa(n) == suffix
+}
+
+// sessionMatchBranches lists every branch a pull request may be matched against
+// for one session, most specific first.
+//
+// It is normally just the branch the session owns. An imported conversation
+// also carries the branch it originally ran on, which is often not the branch
+// its session ended up with: git allows one checkout per branch, so an import
+// whose branch was already checked out elsewhere lands on a fresh one. Without
+// matching that original too, every imported session sits awaiting a pull
+// request that exists but can never be found.
+func sessionMatchBranches(sess domain.SessionRecord) []string {
+	branch := strings.TrimSpace(sess.Metadata.Branch)
+	source := strings.TrimSpace(sess.Metadata.SourceBranch)
+
+	branches := make([]string, 0, 2)
+	if branch != "" {
+		branches = append(branches, branch)
+	}
+	if source != "" && source != branch {
+		branches = append(branches, source)
+	}
+	return branches
 }
 
 func sessionBranchPrefixes(branch string) []string {

@@ -38,6 +38,7 @@ type Workspace struct {
 
 var _ ports.Workspace = (*Workspace)(nil)
 var _ ports.WorkspaceDefaultBranchRefresher = (*Workspace)(nil)
+var _ ports.WorkspaceLocalDefaultBranchResolver = (*Workspace)(nil)
 var _ ports.WorkspaceProject = (*Workspace)(nil)
 var _ ports.WorkspaceObserver = (*Workspace)(nil)
 var _ ports.WorkspaceReclaimer = (*Workspace)(nil)
@@ -51,9 +52,18 @@ func New(deps Deps) *Workspace {
 	}
 }
 
-// ResolveDefaultBranch delegates local default-branch resolution to the git workspace adapter.
+// ResolveDefaultBranch delegates authoritative default-branch resolution to the git adapter.
 func (w *Workspace) ResolveDefaultBranch(ctx context.Context, repoPath, configuredBranch string) (ports.WorkspaceDefaultBranch, error) {
 	return w.git.ResolveDefaultBranch(ctx, repoPath, configuredBranch)
+}
+
+// ResolveLocalDefaultBranch delegates import resolution without remote I/O.
+func (w *Workspace) ResolveLocalDefaultBranch(ctx context.Context, repoPath, configuredBranch string) (ports.WorkspaceDefaultBranch, error) {
+	local, ok := w.git.(ports.WorkspaceLocalDefaultBranchResolver)
+	if !ok {
+		return ports.WorkspaceDefaultBranch{}, errors.New("git workspace does not support local default-branch resolution")
+	}
+	return local.ResolveLocalDefaultBranch(ctx, repoPath, configuredBranch)
 }
 
 // FetchDefaultBranch delegates default-branch fetching to the git workspace adapter.
