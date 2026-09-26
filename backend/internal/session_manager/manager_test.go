@@ -4297,9 +4297,132 @@ func TestCleanup_SkipsWorkspaceReleaseWhenShellTerminalsWontClose(t *testing.T) 
 	if len(res.Skipped) != 1 || res.Skipped[0].SessionID != "mer-1" {
 		t.Fatalf("skipped = %+v, want mer-1 reported", res.Skipped)
 	}
+	if res.Skipped[0].Class != "shell_terminal_open" {
+		t.Fatalf("class = %q, want shell_terminal_open", res.Skipped[0].Class)
+	}
 	if ws.destroyed != 0 {
 		t.Fatal("workspace must not be destroyed while a scoped shell is still alive")
 	}
+}
+
+// ForceTeardownProject must prove the process is dead and stash uncommitted
+// work before ForceDestroy runs — never delete a workspace under a live
+// process, and never discard dirty work without a stash ref first.
+func TestForceTeardownProject_StashesBeforeForceDestroyAndProvesProcessDead(t *testing.T) {
+	m, st, rt, ws := newManager()
+	st.sharedLog = &[]string{}
+	ws.sharedLog = st.sharedLog
+	st.sessions["mer-1"] = mkLive("mer-1")
+
+	if err := m.ForceTeardownProject(ctx, "mer"); err != nil {
+		t.Fatalf("ForceTeardownProject: %v", err)
+	}
+
+	calls := *st.sharedLog
+	var stash, force, cleared bool
+	for _, call := range calls {
+		switch {
+		case strings.HasPrefix(call, "StashUncommitted:"):
+			if force {
+				t.Fatalf("stash after ForceDestroy in order %v", calls)
+			}
+			stash = true
+		case strings.HasPrefix(call, "ForceDestroy:"):
+			if !stash {
+				t.Fatalf("ForceDestroy before StashUncommitted in order %v", calls)
+			}
+			force = true
+		case strings.HasPrefix(call, "DeleteSessionWorktrees:"):
+			if !force {
+				t.Fatalf("DeleteSessionWorktrees before ForceDestroy in order %v", calls)
+			}
+			cleared = true
+		}
+	}
+	if rt.destroyed != 1 {
+		t.Fatalf("runtime destroys = %d, want 1 (process must be proven dead first)", rt.destroyed)
+	}
+	if !stash || !force || !cleared {
+		t.Fatalf("stash=%v force=%v cleared=%v calls=%v, want stash then force then clear markers", stash, force, cleared, calls)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("row must be marked terminated after confirmed teardown")
+	}
+	if marks := m.lcm.(*fakeLCM).terminated["mer-1"]; marks != 1 {
+		t.Fatalf("MarkTerminated calls = %d, want 1", marks)
+	}
+}
+
+// A runtime that cannot be destroyed means the process may still be alive;
+// ForceTeardownProject must refuse to touch the worktree in that case.
+func TestForceTeardownProject_RuntimeDestroyFailureStopsBeforeForceDestroy(t *testing.T) {
+	m, st, rt, ws := newManager()
+	st.sessions["mer-1"] = mkLive("mer-1")
+	rt.destroyErr = errors.New("runtime still running")
+
+	err := m.ForceTeardownProject(ctx, "mer")
+	if err == nil || !strings.Contains(err.Error(), "runtime") {
+		t.Fatalf("err = %v, want runtime destroy failure", err)
+	}
+	if ws.forceDestroyErr != nil && ws.callsHasPrefix("ForceDestroy:") {
+		t.Fatalf("ForceDestroy must not run when runtime destroy fails; calls=%v", ws.calls)
+	}
+	for _, call := range ws.calls {
+		if strings.HasPrefix(call, "ForceDestroy:") {
+			t.Fatalf("ForceDestroy ran despite runtime failure: %v", ws.calls)
+		}
+	}
+	if st.sessions["mer-1"].IsTerminated {
+		t.Fatal("row must not be marked terminated when the process cannot be proven dead")
+	}
+}
+
+// An open shell terminal must gate force teardown the same way Kill/Cleanup
+// gate normal teardown: deleting the directory under a live shell is unsafe.
+func TestForceTeardownProject_ShellTerminalFailureStopsBeforeForceDestroy(t *testing.T) {
+	m, st, _, ws := newManager()
+	m.SetShellTerminalCloser(&fakeShellTerminalCloser{err: errors.New("shellterm-1: still alive")})
+	st.sessions["mer-1"] = mkLive("mer-1")
+
+	err := m.ForceTeardownProject(ctx, "mer")
+	if err == nil || !strings.Contains(err.Error(), "shell terminal") {
+		t.Fatalf("err = %v, want shell terminal failure", err)
+	}
+	for _, call := range ws.calls {
+		if strings.HasPrefix(call, "ForceDestroy:") {
+			t.Fatalf("ForceDestroy ran despite open shell: %v", ws.calls)
+		}
+	}
+}
+
+// A missing source repository must not keep a stale project registered:
+// force cleanup logs and continues so ArchiveProject can still run.
+func TestForceTeardownProject_ToleratesMissingRepository(t *testing.T) {
+	m, st, rt, ws := newManager()
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
+	ws.forceDestroyErr = fmt.Errorf("gitworktree: repository is no longer on disk: %w", ports.ErrWorkspaceRepoUnavailable)
+	ws.stashErr = ports.ErrWorkspaceRepoUnavailable
+
+	if err := m.ForceTeardownProject(ctx, "mer"); err != nil {
+		t.Fatalf("ForceTeardownProject with missing repo = %v, want nil so project can unregister", err)
+	}
+	if rt.destroyed != 0 {
+		t.Fatalf("runtime destroys = %d for already-terminated session, want 0", rt.destroyed)
+	}
+	if !st.sessions["mer-1"].IsTerminated {
+		t.Fatal("already-terminated row should stay terminated")
+	}
+}
+
+// Stub so the workspace fake can expose whether ForceDestroy ran without
+// relying on sharedLog in tests that do not wire one.
+func (w *fakeWorkspace) callsHasPrefix(prefix string) bool {
+	for _, call := range w.calls {
+		if strings.HasPrefix(call, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestCleanup_ReportsSkippedWorkspaces: a refused teardown must be visible in
@@ -4322,6 +4445,9 @@ func TestCleanup_ReportsSkippedWorkspaces(t *testing.T) {
 	if res.Skipped[0].Reason != "workspace has uncommitted changes" {
 		t.Fatalf("reason = %q", res.Skipped[0].Reason)
 	}
+	if res.Skipped[0].Class != "workspace_dirty" {
+		t.Fatalf("class = %q, want workspace_dirty", res.Skipped[0].Class)
+	}
 
 	// A non-dirty teardown failure is reported too — but with a fixed public
 	// reason: the raw cause carries internal filesystem paths and belongs in
@@ -4333,6 +4459,9 @@ func TestCleanup_ReportsSkippedWorkspaces(t *testing.T) {
 	}
 	if len(res.Skipped) != 1 || res.Skipped[0].Reason != "workspace teardown failed" {
 		t.Fatalf("skipped = %v, want fixed teardown-failed reason", res.Skipped)
+	}
+	if res.Skipped[0].Class != "workspace_teardown_failed" {
+		t.Fatalf("class = %q, want workspace_teardown_failed", res.Skipped[0].Class)
 	}
 	if strings.Contains(res.Skipped[0].Reason, "disk on fire") {
 		t.Fatalf("raw internal error leaked into public reason: %q", res.Skipped[0].Reason)

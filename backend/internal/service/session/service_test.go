@@ -2495,6 +2495,9 @@ type fakeCommander struct {
 	sendErr          error
 	sendFunc         func(domain.SessionID, string) error
 	cleanupErr       error
+	cleanupResult    *sessionmanager.CleanupResult
+	forceProjects    []domain.ProjectID
+	forceErr         error
 	spawnErr         error
 	spawnRecord      domain.SessionRecord
 	spawnFunc        func(ports.SpawnConfig) domain.SessionRecord
@@ -2632,9 +2635,12 @@ func (f *fakeCommander) Cleanup(_ context.Context, project domain.ProjectID) (se
 	if f.cleanupErr != nil {
 		return sessionmanager.CleanupResult{}, f.cleanupErr
 	}
+	if f.cleanupResult != nil {
+		return *f.cleanupResult, nil
+	}
 	return sessionmanager.CleanupResult{
 		Cleaned: []domain.SessionID{"mer-1"},
-		Skipped: []sessionmanager.CleanupSkip{{SessionID: "mer-2", Reason: "workspace has uncommitted changes"}},
+		Skipped: []sessionmanager.CleanupSkip{{SessionID: "mer-2", Reason: "workspace has uncommitted changes", Class: "workspace_dirty"}},
 	}, nil
 }
 func (f *fakeCommander) RollbackSpawn(context.Context, domain.SessionID) (bool, bool, error) {
@@ -2673,7 +2679,7 @@ func TestTeardownProjectKillsActiveSessionsThenCleansProject(t *testing.T) {
 	fc := &fakeCommander{}
 	svc := &Service{manager: fc, store: st}
 
-	if err := svc.TeardownProject(context.Background(), "mer"); err != nil {
+	if _, err := svc.TeardownProject(context.Background(), "mer"); err != nil {
 		t.Fatalf("TeardownProject: %v", err)
 	}
 	if len(fc.killed) != 1 || fc.killed[0] != "mer-1" {
@@ -2709,7 +2715,7 @@ func TestTeardownProjectKillsActiveSessionsConcurrently(t *testing.T) {
 	svc := &Service{manager: fc, store: st}
 
 	done := make(chan error, 1)
-	go func() { done <- svc.TeardownProject(context.Background(), "mer") }()
+	go func() { _, err := svc.TeardownProject(context.Background(), "mer"); done <- err }()
 
 	select {
 	case <-mer1Entered:
@@ -2743,19 +2749,98 @@ func TestTeardownProjectKillsActiveSessionsConcurrently(t *testing.T) {
 	}
 }
 
+func (f *fakeCommander) ForceTeardownProject(_ context.Context, project domain.ProjectID) error {
+	f.forceProjects = append(f.forceProjects, project)
+	return f.forceErr
+}
+
 func TestTeardownProjectStopsOnKillError(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
 	boom := errors.New("boom")
-	fc := &fakeCommander{killErr: boom}
+	fc := &fakeCommander{
+		killErr:       boom,
+		cleanupResult: &sessionmanager.CleanupResult{Cleaned: []domain.SessionID{}, Skipped: []sessionmanager.CleanupSkip{}},
+	}
 	svc := &Service{manager: fc, store: st}
 
-	err := svc.TeardownProject(context.Background(), "mer")
-	if !errors.Is(err, boom) {
-		t.Fatalf("TeardownProject err = %v, want boom", err)
+	out, err := svc.TeardownProject(context.Background(), "mer")
+	if err != nil {
+		t.Fatalf("TeardownProject err = %v, want nil", err)
 	}
-	if len(fc.cleanupProjects) != 0 {
-		t.Fatalf("cleanup projects = %#v, want none after kill failure", fc.cleanupProjects)
+	if !out.Blocked {
+		t.Fatal("TeardownProject outcome was not blocked after a kill failure")
+	}
+	if len(out.Blockers) != 1 || out.Blockers[0].Class != "session_kill_failed" {
+		t.Fatalf("blockers = %#v, want one session_kill_failed", out.Blockers)
+	}
+	if out.Blockers[0].SessionID != "mer-1" {
+		t.Fatalf("blocker session = %s, want mer-1", out.Blockers[0].SessionID)
+	}
+	if len(fc.cleanupProjects) != 1 {
+		t.Fatalf("cleanup projects = %#v, want cleanup despite kill failure", fc.cleanupProjects)
+	}
+}
+
+// Kill failures and dirty worktrees must surface as distinct blocker classes
+// so the force confirmation can distinguish "process may still be live" from
+// "uncommitted work needs preservation".
+func TestTeardownProjectDistinguishesBlockerClasses(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
+	st.sessions["mer-2"] = domain.SessionRecord{ID: "mer-2", ProjectID: "mer", IsTerminated: true}
+	fc := &fakeCommander{
+		killErr: errors.New("runtime destroy failed"),
+		cleanupResult: &sessionmanager.CleanupResult{
+			Cleaned: []domain.SessionID{},
+			Skipped: []sessionmanager.CleanupSkip{
+				{SessionID: "mer-2", Reason: "workspace has uncommitted changes", Class: "workspace_dirty"},
+			},
+		},
+	}
+	svc := &Service{manager: fc, store: st, telemetry: &fakeTelemetrySink{}}
+
+	out, err := svc.TeardownProject(context.Background(), "mer")
+	if err != nil {
+		t.Fatalf("TeardownProject: %v", err)
+	}
+	if !out.Blocked {
+		t.Fatal("want blocked for kill + dirty")
+	}
+	classes := map[string]bool{}
+	for _, b := range out.Blockers {
+		classes[b.Class] = true
+	}
+	if !classes["session_kill_failed"] || !classes["workspace_dirty"] {
+		t.Fatalf("blocker classes = %v, want session_kill_failed and workspace_dirty", classes)
+	}
+}
+
+// A missing source repository alone must not block unregistering a stale
+// project: force cannot restore a repo the user already deleted, and there is
+// no AO-managed workspace left to protect.
+func TestTeardownProjectRepositoryMissingAloneDoesNotBlock(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", IsTerminated: true}
+	fc := &fakeCommander{
+		cleanupResult: &sessionmanager.CleanupResult{
+			Cleaned: []domain.SessionID{},
+			Skipped: []sessionmanager.CleanupSkip{
+				{SessionID: "mer-1", Reason: "project repository is missing; remove worktree manually", Class: "repository_missing"},
+			},
+		},
+	}
+	svc := &Service{manager: fc, store: st}
+
+	out, err := svc.TeardownProject(context.Background(), "mer")
+	if err != nil {
+		t.Fatalf("TeardownProject: %v", err)
+	}
+	if out.Blocked {
+		t.Fatalf("repository_missing alone must not block; blockers=%#v", out.Blockers)
+	}
+	if len(out.Blockers) != 1 || out.Blockers[0].Class != "repository_missing" {
+		t.Fatalf("blockers = %#v, want repository_missing recorded for diagnostics", out.Blockers)
 	}
 }
 

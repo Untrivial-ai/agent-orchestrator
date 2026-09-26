@@ -2264,6 +2264,17 @@ paths:
         schema:
           description: Project identifier (registry key).
           type: string
+      - description: When true, force-remove protected AO-managed session workspaces
+          after an explicit user confirmation, preserving uncommitted work under refs/ao/preserved/<session-id>
+          before each workspace is removed. Never applies to the source repository.
+        in: query
+        name: force
+        schema:
+          description: When true, force-remove protected AO-managed session workspaces
+            after an explicit user confirmation, preserving uncommitted work under
+            refs/ao/preserved/<session-id> before each workspace is removed. Never
+            applies to the source repository.
+          type: boolean
       responses:
         "200":
           content:
@@ -2283,6 +2294,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
         "500":
           content:
             application/json:

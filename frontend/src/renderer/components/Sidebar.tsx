@@ -431,7 +431,7 @@ type SidebarProps = {
 	onCloneProject: (input: CloneProjectInput) => Promise<void>;
 	onCreateProject: (input: CreateProjectInput) => Promise<void>;
 	onInitializeProject: (path: string) => Promise<void>;
-	onRemoveProject: (projectId: string) => Promise<void>;
+	onRemoveProject: (projectId: string, force?: boolean) => Promise<void>;
 	/** Fixed shell chrome that also consumes the live sidebar width. */
 	resizeAuxiliaryTargetRef?: RefObject<HTMLElement | null>;
 };
@@ -1162,6 +1162,26 @@ export function Sidebar({
 
 type Selection = ReturnType<typeof useSelection>;
 
+type ProjectRemoveBlocker = { class?: string; reason?: string };
+
+// readProjectRemoveBlockers extracts the structured blockers the daemon
+// attaches to PROJECT_REMOVE_BLOCKED error details. Returns [] when details
+// are missing or malformed so the force dialog still opens with copy only.
+function readProjectRemoveBlockers(err: unknown): ProjectRemoveBlocker[] {
+	const details = (err as { details?: unknown }).details;
+	if (typeof details !== "object" || details === null) return [];
+	const blockers = (details as { blockers?: unknown }).blockers;
+	if (!Array.isArray(blockers)) return [];
+	return blockers.flatMap((item): ProjectRemoveBlocker[] => {
+		if (typeof item !== "object" || item === null) return [];
+		const record = item as { class?: unknown; reason?: unknown };
+		return [{
+			class: typeof record.class === "string" ? record.class : undefined,
+			reason: typeof record.reason === "string" ? record.reason : undefined,
+		}];
+	});
+}
+
 type ProjectItemProps = {
 	workspace: WorkspaceSummary;
 	expanded: boolean;
@@ -1171,7 +1191,7 @@ type ProjectItemProps = {
 	consumeDragClick: (id: string) => boolean;
 	layoutSettled: boolean;
 	onToggle: (projectId: string) => void;
-	onRemoveProject: (projectId: string) => Promise<void>;
+	onRemoveProject: (projectId: string, force?: boolean) => Promise<void>;
 	suppressInitialExpandAnimation: boolean;
 	onProjectDragStart: (event: ReactDragEvent<HTMLElement>, projectId: string) => void;
 	onProjectDragEnd: () => void;
@@ -1209,6 +1229,11 @@ const ProjectItem = memo(function ProjectItem({
 	const [removeError, setRemoveError] = useState<string | null>(null);
 	const [isRemoving, setIsRemoving] = useState(false);
 	const [confirmOpen, setConfirmOpen] = useState(false);
+	const [forceConfirmOpen, setForceConfirmOpen] = useState(false);
+	// Structured blockers from PROJECT_REMOVE_BLOCKED so the force confirmation
+	// can show *why* AO refused (dirty worktree, live process, open shell, …)
+	// instead of a single generic warning.
+	const [forceBlockers, setForceBlockers] = useState<Array<{ class?: string; reason?: string }>>([]);
 	const [isSpawning, setIsSpawning] = useState(false);
 	// Skip enter animation on first mount — sessions arrive async and we don't
 	// want them to slide in on every sidebar load. Only animate on subsequent
@@ -1326,6 +1351,14 @@ const ProjectItem = memo(function ProjectItem({
 		}
 	};
 
+	const handleForceRemove = async () => {
+		setForceConfirmOpen(false);
+		setIsRemoving(true);
+		try { await onRemoveProject(workspace.id, true); }
+		catch (err) { setRemoveError(err instanceof Error ? err.message : t("shell.couldNotRemoveProject")); }
+		finally { setIsRemoving(false); }
+	};
+
 	// Expanded + already on the project board → collapse. Expanded + on a
 	// session (orchestrator or worker) → board. Collapsed → expand + board.
 	// Do not treat orchestratorActive like the board: the project row is the
@@ -1370,6 +1403,11 @@ const ProjectItem = memo(function ProjectItem({
 		try {
 			await onRemoveProject(workspace.id);
 		} catch (err) {
+			if (err instanceof Error && (err as Error & { code?: string }).code === "PROJECT_REMOVE_BLOCKED") {
+				setForceBlockers(readProjectRemoveBlockers(err));
+				setForceConfirmOpen(true);
+				return;
+			}
 			const message = err instanceof Error ? err.message : t("shell.couldNotRemoveProject");
 			setRemoveError(message);
 		} finally {
@@ -1649,6 +1687,32 @@ const ProjectItem = memo(function ProjectItem({
 						confirmLabel={t("shell.remove")}
 						destructive
 						onConfirm={handleConfirmRemove}
+					/>
+					<ConfirmDialog
+						open={forceConfirmOpen}
+						onOpenChange={(open) => {
+							setForceConfirmOpen(open);
+							if (!open) setForceBlockers([]);
+						}}
+						title={t("shell.forceRemoveProjectTitle")}
+						description={
+							<>
+								<p className="text-sm font-medium text-foreground">{t("shell.forceRemoveProjectLead")}</p>
+								<p className="mt-1 text-xs text-muted-foreground">{t("shell.forceRemoveProjectBody")}</p>
+								{forceBlockers.length > 0 ? (
+									<ul className="mt-2 space-y-1 text-xs text-muted-foreground" data-testid="force-remove-blockers">
+										{forceBlockers.map((blocker, index) => (
+											<li key={`${blocker.class ?? "blocker"}-${index}`}>
+												{blocker.reason || blocker.class}
+											</li>
+										))}
+									</ul>
+								) : null}
+							</>
+						}
+						confirmLabel={t("shell.forceRemoveProjectConfirm")}
+						destructive
+						onConfirm={handleForceRemove}
 					/>
 				</motion.li>
 			</ContextMenuTrigger>
