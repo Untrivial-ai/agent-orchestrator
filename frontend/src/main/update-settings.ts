@@ -28,8 +28,11 @@ export interface UpdateSettings {
 
 // Live state of an automatic or manual update check/download, streamed to the
 // renderer so Settings and the sidebar can reflect progress.
+// "retry-scheduled" is a calm, non-error resting state: a staged build failed
+// verification but AO will re-download and re-prepare it on the next automatic
+// check, so the renderer shows a plain "will try again" line, not a red failure.
 export type UpdateState =
-	"idle" | "checking" | "available" | "not-available" | "downloading" | "preparing" | "downloaded" | "error" | "unsupported";
+	"idle" | "checking" | "available" | "not-available" | "downloading" | "preparing" | "downloaded" | "retry-scheduled" | "error" | "unsupported";
 
 export interface UpdateStatus {
 	state: UpdateState;
