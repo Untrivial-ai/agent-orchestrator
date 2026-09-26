@@ -201,6 +201,27 @@ describe("HarnessSettingsSection", () => {
 		expect(screen.queryByText(/sign in/i)).not.toBeInTheDocument();
 	});
 
+	it("reports Devin installed but requiring sign-in after verified install", async () => {
+		const readiness = catalogWithInstalled("claude-code");
+		readiness.agents.push({
+			...readiness.agents[0],
+			id: "devin",
+			label: "Devin",
+			installation: { ...readiness.agents[0].installation, state: "installed" },
+			authentication: { ...readiness.agents[0].authentication, state: "unauthorized" },
+		});
+		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness") return { data: readiness } as never;
+			if (path === "/api/v1/agents/installers") return { data: plans } as never;
+			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [{ target: "devin", status: "succeeded", method: "official-installer", output: "Installed — sign-in required. Run devin in a terminal to sign in." }] } } as never;
+			return { data: undefined } as never;
+		});
+		renderSection();
+		const row = (await screen.findByText("Devin")).closest('[data-agent="devin"]') as HTMLElement;
+		await waitFor(() => expect(row).toHaveTextContent("Installed — sign-in required"));
+		expect(row).not.toHaveTextContent("Installation failed");
+	});
+
 	it("shows the authentication action for an installed agent and opens documentation", async () => {
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness") return { data: catalog } as never;

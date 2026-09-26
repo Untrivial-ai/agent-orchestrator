@@ -1105,6 +1105,7 @@
 	"settings.harness.installFailed": "Installation failed.",
 	"settings.harness.installed": "Installed",
 	"settings.harness.installationUnknown": "Installation status unknown",
+	"settings.harness.installedSignInRequired": "Installed — sign-in required",
 	"settings.harness.authorized": "Authorized",
 	"settings.harness.installing": "Installing…",
 	"settings.harness.instructions": "Instructions",
