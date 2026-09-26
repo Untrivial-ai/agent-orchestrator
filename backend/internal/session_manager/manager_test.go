@@ -2407,6 +2407,38 @@ func TestSpawnAutomationAfterStartPromptFailureDoesNotCompleteLaunch(t *testing.
 	}
 }
 
+func TestSpawnAutomationChatMarksLaunchCompletedAfterPromptDelivery(t *testing.T) {
+	st := newFakeStore()
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
+	chat := &recordingLauncher{}
+	m := New(Deps{
+		Runtime:   &fakeRuntime{},
+		Agents:    fakeAgents{},
+		Workspace: &fakeWorkspace{},
+		Store:     st,
+		Messenger: &fakeMessenger{},
+		Lifecycle: &fakeLCM{store: st},
+		Chat:      chat,
+		LookPath:  func(string) (string, error) { return "/bin/true", nil },
+	})
+	runID := domain.AutomationRunID("run-chat")
+
+	session, _, _, err := m.Spawn(ctx, ports.SpawnConfig{
+		ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		RequestedMode: domain.SessionModeChat, Prompt: "do it", AutomationRunID: &runID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.turns) != 1 || chat.turns[0] != "do it" {
+		t.Fatalf("chat turns = %v, want initial prompt", chat.turns)
+	}
+	rec := st.sessions[session.ID]
+	if !rec.AutomationLaunchCompleted || !session.AutomationLaunchCompleted {
+		t.Fatalf("automation launch completed store=%v returned=%v, want both true", rec.AutomationLaunchCompleted, session.AutomationLaunchCompleted)
+	}
+}
+
 func TestSpawnWorkspaceRecordFailurePreservesDirtyWorkspace(t *testing.T) {
 	m, st, _, ws := newManager()
 	project := st.projects["mer"]

@@ -151,6 +151,16 @@ func (s *Service) dispatch(ctx context.Context, store schedulerStore, run domain
 	})
 	if spawnErr != nil {
 		var apiError *apierr.Error
+		if session, ok, lookupErr := store.GetSessionByAutomationRunID(context.WithoutCancel(ctx), run.ID); lookupErr != nil {
+			return errors.Join(spawnErr, lookupErr)
+		} else if ok {
+			if session.AutomationLaunchCompleted {
+				_, markErr := store.MarkAutomationRunRunning(context.WithoutCancel(ctx), run.ID, session.ID, now)
+				return errors.Join(spawnErr, markErr)
+			}
+			_, markErr := store.FailAutomationRun(context.WithoutCancel(ctx), run.ID, runError(spawnErr), now)
+			return errors.Join(spawnErr, markErr)
+		}
 		permanent := errors.As(spawnErr, &apiError) && (apiError.Kind == apierr.KindInvalid || apiError.Kind == apierr.KindNotFound)
 		if permanent {
 			_, markErr := store.FailAutomationRun(context.WithoutCancel(ctx), run.ID, runError(spawnErr), now)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -136,14 +137,22 @@ func (f *schedulerMemoryStore) ReleaseAutomationRun(_ context.Context, id domain
 }
 
 type recordingSpawner struct {
-	store *schedulerMemoryStore
-	calls []ports.SpawnConfig
-	kills []domain.SessionID
+	store          *schedulerMemoryStore
+	calls          []ports.SpawnConfig
+	kills          []domain.SessionID
+	spawnErr       error
+	leaveSeedOnErr bool
 }
 
 func (s *recordingSpawner) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error) {
 	s.calls = append(s.calls, cfg)
 	id := domain.SessionID("scheduled-session-" + string(rune('1'+len(s.calls)-1)))
+	if s.spawnErr != nil {
+		if s.leaveSeedOnErr {
+			s.store.sessions[id] = domain.SessionRecord{ID: id, ProjectID: cfg.ProjectID, AutomationRunID: cfg.AutomationRunID}
+		}
+		return domain.Session{}, 0, 0, s.spawnErr
+	}
 	rec := domain.SessionRecord{ID: id, ProjectID: cfg.ProjectID, AutomationRunID: cfg.AutomationRunID}
 	s.store.sessions[id] = rec
 	return domain.Session{SessionRecord: rec}, 0, 0, nil
@@ -270,5 +279,34 @@ func TestTickReleasesExpiredSpawningClaimWithoutSession(t *testing.T) {
 	}
 	if len(spawner.calls) != 0 {
 		t.Fatalf("spawns = %d, want 0", len(spawner.calls))
+	}
+}
+
+// If workspace provisioning dirties the worktree and rollback preserves the
+// automation seed row, requeueing only creates an infinite
+// "incomplete prior launch" loop. The scheduler must make that retained-row
+// failure terminal for the occurrence.
+func TestTickFailsRunWhenSpawnErrorLeavesIncompleteAutomationSession(t *testing.T) {
+	now := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
+	store := newSchedulerStore()
+	store.automations["automation-1"] = domain.Automation{ID: "automation-1", ProjectID: "scheduled", Enabled: true, NextRunAt: now.Add(time.Hour)}
+	runID := domain.AutomationRunID("run-1")
+	store.runs[runID] = domain.AutomationRun{ID: runID, AutomationID: "automation-1", ScheduledFor: now, Status: domain.AutomationRunPending}
+	spawner := &recordingSpawner{
+		store:          store,
+		spawnErr:       apierr.Conflict("WORKSPACE_PROVISION_FAILED", "postCreate failed", nil),
+		leaveSeedOnErr: true,
+	}
+	svc := New(Deps{Store: store, Spawner: spawner, Clock: func() time.Time { return now }})
+
+	if err := svc.Tick(context.Background(), now); err == nil {
+		t.Fatal("Tick succeeded, want spawn diagnostic")
+	}
+	run := store.runs[runID]
+	if run.Status != domain.AutomationRunFailed || run.ErrorMessage == "" {
+		t.Fatalf("run = %#v, want terminal failure with message", run)
+	}
+	if len(spawner.calls) != 1 {
+		t.Fatalf("spawns = %d, want 1", len(spawner.calls))
 	}
 }

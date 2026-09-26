@@ -1190,6 +1190,15 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		if err != nil {
 			return domain.SessionRecord{}, 0, 0, err
 		}
+		if cfg.AutomationRunID != nil {
+			if err := m.markAutomationLaunchCompleted(ctx, id); err != nil {
+				return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrSpawnCommit, err)
+			}
+			rec, err = m.getRecord(ctx, id)
+			if err != nil {
+				return domain.SessionRecord{}, 0, 0, err
+			}
+		}
 		return rec, promptBytes, systemPromptBytes, nil
 	}
 

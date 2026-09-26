@@ -110,7 +110,7 @@ type AutomationFormSubmit = {
 	kind?: "worker" | "orchestrator";
 	harness?: string;
 	timezone?: string;
-	rrule: string;
+	rrule?: string;
 };
 type ScheduleFields = { preset: string; time: string; raw: string };
 type AutomationFormDialogProps = {
@@ -290,23 +290,22 @@ function AutomationFormDialog({
 			document.getElementById(AUTOMATION_FIELD_IDS[firstInvalid])?.focus();
 			return;
 		}
-		let rrule =
+		const nextRRule =
 			preset === "daily"
 				? `FREQ=DAILY;BYHOUR=${parsedTime!.hour};BYMINUTE=${parsedTime!.minute};BYSECOND=0`
 				: preset === "weekly"
 					? `FREQ=WEEKLY;BYDAY=MO;BYHOUR=${parsedTime!.hour};BYMINUTE=${parsedTime!.minute};BYSECOND=0`
 					: raw;
-		if (editing && automation && initialSchedule && preset === initialSchedule.preset && time === initialSchedule.time && raw === initialSchedule.raw) {
-			rrule = automation.rrule;
-		}
+		const scheduleChanged = !(editing && automation && initialSchedule && preset === initialSchedule.preset && time === initialSchedule.time && raw === initialSchedule.raw);
+		const harnessChanged = !editing || harness !== (automation?.harness ?? "");
 		await onSubmit({
 			// Kind is not a form choice: automations are workers, and editing
 			// leaves the stored kind untouched.
 			...(editing ? {} : { projectId, timezone, kind: "worker" as const }),
 			displayName: name,
 			prompt,
-			harness: selectedHarness || undefined,
-			rrule,
+			...(harnessChanged && selectedHarness ? { harness: selectedHarness } : {}),
+			...(scheduleChanged ? { rrule: nextRRule } : {}),
 		});
 	}
 
