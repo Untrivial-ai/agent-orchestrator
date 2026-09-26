@@ -383,7 +383,16 @@ func Discover(ctx context.Context, agentID, binary, workingDir string, env map[s
 		return base, errors.New("codex model discovery requires app-server")
 	}
 	if hasConfigDiscoverySource(agentID) {
-		return discoverConfigCatalog(agentID, workingDir, env)
+		catalog, err := discoverConfigCatalog(agentID, workingDir, env)
+		if err == nil {
+			return catalog, nil
+		}
+		// opencode and kilocode also expose the full model registry through
+		// their CLI; without a usable config (or with one that pins no models)
+		// fall through to command discovery instead of failing the picker.
+		if agentID != "opencode" && agentID != "kilocode" {
+			return catalog, err
+		}
 	}
 	spec, ok := commandSpecs[agentID]
 	if !ok {
