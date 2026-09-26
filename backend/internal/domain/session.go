@@ -156,11 +156,18 @@ type SessionMetadata struct {
 // facts: identity, agent harness, activity_state, is_terminated, and operational
 // metadata. The user-facing Status is derived from these facts plus PR facts.
 type SessionRecord struct {
-	ID        SessionID    `json:"id"`
-	ProjectID ProjectID    `json:"projectId,omitempty"`
-	IssueID   IssueID      `json:"issueId,omitempty"`
-	Kind      SessionKind  `json:"kind"`
-	Harness   AgentHarness `json:"harness,omitempty"`
+	ID        SessionID `json:"id"`
+	ProjectID ProjectID `json:"projectId,omitempty"`
+	// AutomationRunID is the optional durable origin for an unattended spawn.
+	// It is internal lifecycle data, not part of the session API read model.
+	AutomationRunID *AutomationRunID `json:"-"`
+	// AutomationLaunchCompleted is set atomically with the final lifecycle
+	// commit. A seed carrying AutomationRunID alone is not proof that its
+	// workspace/controller launch completed.
+	AutomationLaunchCompleted bool         `json:"-"`
+	IssueID                   IssueID      `json:"issueId,omitempty"`
+	Kind                      SessionKind  `json:"kind"`
+	Harness                   AgentHarness `json:"harness,omitempty"`
 	// ReviewerHarness is this session's preferred reviewer. Empty delegates to
 	// the project configuration.
 	ReviewerHarness   ReviewerHarness `json:"reviewerHarness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`

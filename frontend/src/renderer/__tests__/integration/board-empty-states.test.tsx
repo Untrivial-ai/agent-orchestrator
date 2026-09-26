@@ -72,7 +72,12 @@ vi.mock("../../lib/bridge", () => ({
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@tanstack/react-router")>();
-	return { ...actual, useNavigate: () => navigateMock, useParams: () => paramsMock };
+	return {
+		...actual,
+		useNavigate: () => navigateMock,
+		useParams: () => paramsMock,
+		useLocation: () => ({ pathname: paramsMock.projectId ? `/projects/${paramsMock.projectId}` : "/" }),
+	};
 });
 
 import { SessionsBoard } from "../../components/SessionsBoard";

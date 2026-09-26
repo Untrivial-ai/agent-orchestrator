@@ -282,6 +282,18 @@ func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			return domain.Session{}, 0, 0, err
 		}
 		if len(existing) > 0 {
+			if cfg.AutomationRunID != nil {
+				for _, candidate := range existing {
+					if candidate.AutomationRunID != nil && *candidate.AutomationRunID == *cfg.AutomationRunID {
+						return candidate, 0, 0, nil
+					}
+				}
+				return domain.Session{}, 0, 0, apierr.Conflict(
+					"ORCHESTRATOR_ALREADY_ACTIVE",
+					"Another orchestrator is already active for this project",
+					nil,
+				)
+			}
 			return newestSession(existing), 0, 0, nil
 		}
 	}

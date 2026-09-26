@@ -20,6 +20,32 @@ import (
 func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	created, _, err := s.createSessionLocked(ctx, rec)
+	return created, err
+}
+
+// CreateAutomationSession reports whether it inserted the seed. Callers must
+// not continue launching when fresh=false unless the returned row carries the
+// durable launch-complete marker.
+func (s *Store) CreateAutomationSession(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error) {
+	if rec.AutomationRunID == nil {
+		return domain.SessionRecord{}, false, fmt.Errorf("automation run id is required")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.createSessionLocked(ctx, rec)
+}
+
+func (s *Store) createSessionLocked(ctx context.Context, rec domain.SessionRecord) (domain.SessionRecord, bool, error) {
+	if rec.AutomationRunID != nil {
+		existing, err := s.qw.GetSessionByAutomationRunID(ctx, rec.AutomationRunID)
+		if err == nil {
+			return rowToRecord(gen.GetSessionRow(existing)), false, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return domain.SessionRecord{}, false, fmt.Errorf("find session for automation run %s: %w", *rec.AutomationRunID, err)
+		}
+	}
 
 	var num int64
 	var err error
@@ -31,13 +57,13 @@ func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (do
 		num, err = s.qw.NextSessionNum(ctx, optionalProjectID(rec.ProjectID))
 	}
 	if err != nil {
-		return domain.SessionRecord{}, fmt.Errorf("next session num for %s: %w", rec.ProjectID, err)
+		return domain.SessionRecord{}, false, fmt.Errorf("next session num for %s: %w", rec.ProjectID, err)
 	}
 	for {
 		rec.ID = domain.SessionID(fmt.Sprintf("%s-%d", prefix, num))
 		exists, err := s.qw.SessionIDExists(ctx, rec.ID)
 		if err != nil {
-			return domain.SessionRecord{}, fmt.Errorf("check session id %s: %w", rec.ID, err)
+			return domain.SessionRecord{}, false, fmt.Errorf("check session id %s: %w", rec.ID, err)
 		}
 		if !exists {
 			break
@@ -45,9 +71,15 @@ func (s *Store) CreateSession(ctx context.Context, rec domain.SessionRecord) (do
 		num++
 	}
 	if err := s.qw.InsertSession(ctx, recordToInsert(rec, num)); err != nil {
-		return domain.SessionRecord{}, fmt.Errorf("insert session %s: %w", rec.ID, err)
+		if rec.AutomationRunID != nil {
+			existing, reloadErr := s.qw.GetSessionByAutomationRunID(ctx, rec.AutomationRunID)
+			if reloadErr == nil {
+				return rowToRecord(gen.GetSessionRow(existing)), false, nil
+			}
+		}
+		return domain.SessionRecord{}, false, fmt.Errorf("insert session %s: %w", rec.ID, err)
 	}
-	return rec, nil
+	return rec, true, nil
 }
 
 // SetSessionProvisionedWorkspace records the worktree as soon as it exists,
@@ -579,6 +611,19 @@ func (s *Store) GetSession(ctx context.Context, id domain.SessionID) (domain.Ses
 	return getSessionRowToRecord(row), true, nil
 }
 
+// GetSessionByAutomationRunID returns the unique session spawned for a durable
+// automation occurrence, if one exists.
+func (s *Store) GetSessionByAutomationRunID(ctx context.Context, id domain.AutomationRunID) (domain.SessionRecord, bool, error) {
+	row, err := s.qr.GetSessionByAutomationRunID(ctx, &id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.SessionRecord{}, false, nil
+	}
+	if err != nil {
+		return domain.SessionRecord{}, false, fmt.Errorf("get automation session %s: %w", id, err)
+	}
+	return rowToRecord(gen.GetSessionRow(row)), true, nil
+}
+
 // ListSessions returns every session in a project, ordered by num.
 func (s *Store) ListSessions(ctx context.Context, project domain.ProjectID) ([]domain.SessionRecord, error) {
 	rows, err := s.qr.ListSessionsByProject(ctx, optionalProjectID(project))
@@ -615,17 +660,19 @@ func mapListAllSessionsRows(rows []gen.ListAllSessionsRow) []domain.SessionRecor
 
 func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 	return domain.SessionRecord{
-		Revision:          row.Revision,
-		ID:                row.ID,
-		ProjectID:         projectIDValue(row.ProjectID),
-		IssueID:           row.IssueID,
-		Kind:              row.Kind,
-		Harness:           row.Harness,
-		ReviewerHarness:   row.ReviewerHarness,
-		ReviewerConfig:    unmarshalAgentConfig(row.ReviewerAgentConfig),
-		AutoReviewEnabled: row.AutoReviewEnabled,
-		DisplayName:       row.DisplayName,
-		Mode:              domain.NormalizeSessionMode(row.SessionMode),
+		Revision:                  row.Revision,
+		ID:                        row.ID,
+		ProjectID:                 projectIDValue(row.ProjectID),
+		AutomationRunID:           row.AutomationRunID,
+		AutomationLaunchCompleted: row.AutomationLaunchCompleted,
+		IssueID:                   row.IssueID,
+		Kind:                      row.Kind,
+		Harness:                   row.Harness,
+		ReviewerHarness:           row.ReviewerHarness,
+		ReviewerConfig:            unmarshalAgentConfig(row.ReviewerAgentConfig),
+		AutoReviewEnabled:         row.AutoReviewEnabled,
+		DisplayName:               row.DisplayName,
+		Mode:                      domain.NormalizeSessionMode(row.SessionMode),
 		Activity: domain.Activity{
 			State:          row.ActivityState,
 			LastActivityAt: row.ActivityLastAt,
@@ -749,6 +796,8 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		ProvisionState:                   rec.ProvisionState.WithDefault(),
 		ProvisionError:                   rec.ProvisionError,
 		IsTaskPreparation:                rec.IsTaskPreparation,
+		AutomationRunID:                  rec.AutomationRunID,
+		AutomationLaunchCompleted:        rec.AutomationLaunchCompleted,
 	}
 }
 
@@ -805,6 +854,7 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		Model:                            rec.Metadata.Model,
 		Effort:                           rec.Metadata.Effort,
 		UpdatedAt:                        rec.UpdatedAt,
+		AutomationLaunchCompleted:        rec.AutomationLaunchCompleted,
 	}
 }
 

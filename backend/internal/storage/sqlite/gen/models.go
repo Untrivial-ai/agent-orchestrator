@@ -157,6 +157,38 @@ type AppSetting struct {
 	CloudOffering      bool
 }
 
+type Automation struct {
+	ID          domain.AutomationID
+	ProjectID   domain.ProjectID
+	DisplayName string
+	Prompt      string
+	Kind        domain.SessionKind
+	Harness     domain.AgentHarness
+	RruleText   string
+	Timezone    string
+	Enabled     bool
+	NextRunAt   time.Time
+	LastRunAt   sql.NullTime
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type AutomationRun struct {
+	ID             domain.AutomationRunID
+	AutomationID   domain.AutomationID
+	ScheduledFor   time.Time
+	SessionID      *domain.SessionID
+	Status         domain.AutomationRunStatus
+	AttemptCount   int64
+	ClaimedAt      sql.NullTime
+	LeaseExpiresAt sql.NullTime
+	StartedAt      sql.NullTime
+	FinishedAt     sql.NullTime
+	ErrorMessage   sql.NullString
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 type ChangeLog struct {
 	Seq       int64
 	ProjectID *domain.ProjectID
@@ -627,6 +659,8 @@ type Session struct {
 	ProvisionState                   domain.SessionProvisionState
 	ProvisionError                   string
 	IsTaskPreparation                bool
+	AutomationRunID                  *domain.AutomationRunID
+	AutomationLaunchCompleted        bool
 }
 
 type SessionCleanupFact struct {

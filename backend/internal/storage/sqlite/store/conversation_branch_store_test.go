@@ -932,6 +932,7 @@ func TestConversationBranchPointDescribesSiblingNavigation(t *testing.T) {
 	}
 	if point == nil {
 		t.Fatalf("branch points = %+v", snapshot.BranchPoints)
+		return
 	}
 	if point.Position != 3 || point.Total != 3 || point.PreviousBranchID != "branch-child-1" || point.NextBranchID != "" {
 		t.Fatalf("active child branch point = %+v", *point)

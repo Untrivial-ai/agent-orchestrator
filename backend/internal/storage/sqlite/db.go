@@ -333,6 +333,9 @@ func migrate(db *sql.DB) error {
 	if err := repairRenumberedPRReviewPartialMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered PR review-partial migration history: %w", err)
 	}
+	if err := repairBurnedAutomationsMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair burned automations migration history: %w", err)
+	}
 	if err := prepareBurnedSchemaRepairs(db); err != nil {
 		return fmt.Errorf("prepare burned schema repairs: %w", err)
 	}
@@ -1690,6 +1693,72 @@ SELECT COALESCE((
 		return err
 	}
 	return tx.Commit()
+}
+
+// repairBurnedAutomationsMigrationHistory preserves development databases that
+// saw Phase C automations at a moving migration number. Version 159 is the
+// canonical automations migration now; if it was recorded without the physical
+// automations schema, release it so goose applies 0159_automations.sql. If an
+// older local branch already applied automations at 0156, mark 0159 applied and
+// release 0156 only when the canonical session-provisioning columns are absent,
+// so main's session-provisioning migration can run without replaying on healthy
+// current schemas.
+func repairBurnedAutomationsMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var automationsTable, automationRunID, provisionColumns int
+	if err := db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'automations'),
+		(SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'automation_run_id'),
+		(SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('provision_state', 'provision_error'))`).Scan(
+		&automationsTable, &automationRunID, &provisionColumns,
+	); err != nil {
+		return err
+	}
+	applied := func(version int64) (bool, error) {
+		var value int
+		if err := db.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = ? ORDER BY id DESC LIMIT 1
+), 0)`, version).Scan(&value); err != nil {
+			return false, err
+		}
+		return value == 1, nil
+	}
+	applied159, err := applied(159)
+	if err != nil {
+		return err
+	}
+	applied156, err := applied(156)
+	if err != nil {
+		return err
+	}
+	if automationsTable > 0 && automationRunID > 0 {
+		if applied156 && provisionColumns != 2 {
+			if _, err := db.Exec(`DELETE FROM goose_db_version WHERE version_id = 156`); err != nil {
+				return err
+			}
+		}
+		if !applied159 {
+			_, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (159, 1)`)
+			return err
+		}
+		return nil
+	}
+	if !applied159 {
+		return nil
+	}
+	_, err = db.Exec(`DELETE FROM goose_db_version WHERE version_id = 159`)
+	return err
 }
 
 // schemaRepairs lists the column-level effects of migrations that real

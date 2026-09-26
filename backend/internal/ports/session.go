@@ -18,6 +18,9 @@ var ErrActivityProjectionContention = errors.New("activity projection contention
 type SpawnConfig struct {
 	ProjectID domain.ProjectID
 	IssueID   domain.IssueID
+	// AutomationRunID makes one scheduled occurrence idempotent across daemon
+	// restarts. Ordinary interactive spawns leave this unset.
+	AutomationRunID *domain.AutomationRunID
 	// ParentSessionID identifies the AO orchestrator that requested this worker
 	// through `ao spawn`. The daemon validates this reference and derives any
 	// inherited settings itself; callers never supply an inherited policy.

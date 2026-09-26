@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "../stores/ui-store";
 import { TooltipProvider } from "./ui/tooltip";
 
-const { paramsMock, useWorkspaceQueryMock } = vi.hoisted(() => ({
+const { locationMock, paramsMock, useWorkspaceQueryMock } = vi.hoisted(() => ({
+	locationMock: { pathname: "/" },
 	paramsMock: { projectId: undefined as string | undefined, sessionId: undefined as string | undefined },
 	useWorkspaceQueryMock: vi.fn(),
 }));
@@ -13,6 +14,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@tanstack/react-router")>();
 	return {
 		...actual,
+		useLocation: () => locationMock,
 		useNavigate: () => vi.fn(),
 		useParams: () => paramsMock,
 	};

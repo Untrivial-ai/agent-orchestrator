@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AO Phase C — Automations Implementation Plan</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161923;
+    --panel-border: #262b3a;
+    --text: #e4e6ec;
+    --muted: #9aa1b2;
+    --accent: #5b8cff;
+    --accent-bg: rgba(91, 140, 255, 0.12);
+    --good: #6fd88a;
+    --good-bg: rgba(111, 216, 138, 0.12);
+    --warn: #ffa94d;
+    --warn-bg: rgba(255, 169, 77, 0.12);
+    --bad: #ff7b86;
+    --code-bg: #1d2130;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 48px 24px 96px; }
+  header h1 { font-size: 27px; margin: 0 0 8px; letter-spacing: -0.01em; }
+  header .subtitle { color: var(--muted); font-size: 15px; margin-bottom: 4px; }
+  header .source { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .verdict, .scope-note, .risk-note {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 18px 20px;
+    margin-bottom: 20px;
+    font-size: 14.5px;
+    color: #cfd3e0;
+  }
+  .verdict { border-left: 3px solid var(--accent); }
+  .scope-note { border-left: 3px solid var(--warn); margin-bottom: 40px; }
+  .risk-note { border-left: 3px solid var(--bad); }
+  .verdict strong, .scope-note strong, .risk-note strong { color: var(--text); }
+  .verdict ol, .verdict ul, .scope-note ul, .risk-note ul { margin: 10px 0 0; padding-left: 22px; }
+  .verdict li, .scope-note li, .risk-note li { margin-bottom: 4px; }
+  .toc {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin: 24px 0 40px;
+  }
+  .toc-title { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; margin-bottom: 8px; }
+  .toc ol { columns: 2; column-gap: 36px; margin: 0; padding-left: 22px; }
+  .toc li { color: var(--muted); font-size: 13.5px; margin: 4px 0; break-inside: avoid; }
+  h2 {
+    font-size: 21px;
+    margin: 52px 0 4px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    scroll-margin-top: 20px;
+  }
+  h2 .phase-badge {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--accent-bg);
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  h2::after { content: ""; flex: 1; height: 1px; background: var(--panel-border); }
+  .goal { color: var(--muted); font-size: 14.5px; margin: 4px 0 22px; padding-left: 2px; }
+  .goal strong { color: #c7cbda; }
+  h3 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 28px 0 12px; font-weight: 700; }
+  .card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px; padding: 16px 18px; margin-bottom: 12px; }
+  .card-title { font-size: 14.5px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+  .card-body { color: #c7cbda; font-size: 14px; }
+  .card-body p { margin: 0 0 8px; }
+  .card-body p:last-child { margin-bottom: 0; }
+  .card-body ul, .card-body ol { margin: 6px 0 0; padding-left: 20px; }
+  .card-body li { margin-bottom: 5px; }
+  code { font-family: "SF Mono", Consolas, "Liberation Mono", monospace; background: var(--code-bg); color: #a9c1ff; padding: 1px 6px; border-radius: 4px; font-size: 12.5px; }
+  pre { background: var(--code-bg); border: 1px solid var(--panel-border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font-size: 12.5px; color: #a9c1ff; margin: 10px 0; line-height: 1.55; }
+  pre code { background: none; padding: 0; color: inherit; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 18px; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--panel-border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
+  td { color: #c7cbda; }
+  td code { white-space: nowrap; }
+  .tag-reuse, .tag-new, .tag-gate { border-radius: 5px; padding: 1px 7px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+  .tag-reuse { color: var(--good); background: var(--good-bg); }
+  .tag-new { color: var(--accent); background: var(--accent-bg); }
+  .tag-gate { color: var(--warn); background: var(--warn-bg); }
+  .flow { display: flex; gap: 8px; align-items: stretch; margin: 12px 0; flex-wrap: wrap; }
+  .flow-step { flex: 1 1 135px; min-width: 0; background: var(--code-bg); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px 12px; }
+  .flow-step strong { display: block; color: var(--text); font-size: 12px; }
+  .flow-step span { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+  .checklist { list-style: none; margin: 0; padding: 0; }
+  .checklist li { padding: 8px 0 8px 26px; position: relative; font-size: 14px; color: #c7cbda; border-bottom: 1px solid var(--panel-border); }
+  .checklist li:last-child { border-bottom: none; }
+  .checklist li::before { content: "✓"; position: absolute; left: 0; color: var(--good); font-weight: 700; }
+  .checklist strong { color: var(--text); }
+  footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--panel-border); color: var(--muted); font-size: 12.5px; }
+  @media (max-width: 700px) { .toc ol { columns: 1; } .wrap { padding: 28px 16px 64px; } h2 { align-items: flex-start; flex-wrap: wrap; } h2::after { display: none; } }
+  @media print { body { background: #fff; color: #111; } .card, table, .verdict, .scope-note, .risk-note { break-inside: avoid; } .toc { display: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Phase C — durable scheduled automations</h1>
+    <div class="subtitle">Detailed implementation plan for recurring unattended AO sessions in the Go rewrite.</div>
+    <div class="source">Derived from <code>plan-git-state-automations-port-detection.html</code> and the approved engineering specification at <a href="superpowers/specs/2026-08-25-phase-c-automations-design.md">docs/superpowers/specs/2026-08-25-phase-c-automations-design.md</a> · target branch <code>feat/phase-c-automations</code></div>
+  </header>
+
+  <div class="verdict">
+    <strong>What this implementation ships</strong> — one complete vertical slice for defining, scheduling, spawning, recovering, and inspecting recurring AO work:
+    <ol>
+      <li>Durable automation definitions and per-occurrence run history in SQLite.</li>
+      <li>Validated RRULE scheduling with explicit IANA timezone support and five-field cron input sugar.</li>
+      <li>Daemon-owned materialization, transactional claims, non-overlapping dispatch, and bounded crash recovery.</li>
+      <li>Idempotent creation of ordinary AO sessions through the existing session service.</li>
+      <li>REST CRUD + run history, thin <code>ao automation</code> CLI commands, and an Electron Automations screen.</li>
+      <li>Generated API/sqlc artifacts, narrow tests throughout, broad automated verification, and manual desktop proof before the PR ships.</li>
+    </ol>
+  </div>
+
+  <div class="scope-note">
+    <strong>Decisions already resolved:</strong>
+    <ul>
+      <li>Delivery guarantee is <strong>at least once</strong>; application idempotency prevents duplicate sessions in normal retries.</li>
+      <li>One automation may have only <strong>one spawning or running occurrence</strong>. Later due occurrences remain pending.</li>
+      <li>Restart catch-up is capped at <strong>three missed occurrences</strong>; <code>next_run_at</code> always advances beyond the current time.</li>
+      <li>Disabling pauses new materialization and dispatch. It does not kill a running session, delete history, or replay the disabled interval when re-enabled.</li>
+      <li>A run completes only when the linked session is durably <code>is_terminated</code>. An unavailable runtime probe is not proof of death.</li>
+      <li>The daemon remains the authority. The frontend and CLI do not open SQLite or spawn agents directly.</li>
+    </ul>
+  </div>
+
+  <div class="toc">
+    <div class="toc-title">Implementation sections</div>
+    <ol>
+      <li><a href="#architecture">Architecture and ownership</a></li>
+      <li><a href="#domain">Domain model</a></li>
+      <li><a href="#storage">Migration and storage</a></li>
+      <li><a href="#schedule">Schedule validation</a></li>
+      <li><a href="#dispatch">Materialization and dispatch</a></li>
+      <li><a href="#recovery">Startup reconciliation</a></li>
+      <li><a href="#sessions">Session integration</a></li>
+      <li><a href="#api">REST API contract</a></li>
+      <li><a href="#cli">CLI commands</a></li>
+      <li><a href="#frontend">Electron frontend</a></li>
+      <li><a href="#files">File-by-file map</a></li>
+      <li><a href="#delivery">Implementation sequence</a></li>
+      <li><a href="#tests">Automated tests</a></li>
+      <li><a href="#manual">Manual verification</a></li>
+      <li><a href="#done">Definition of done</a></li>
+    </ol>
+  </div>
+
+  <h2 id="architecture">1. Architecture <span class="phase-badge">Daemon-owned</span></h2>
+  <div class="goal"><strong>Goal:</strong> add scheduling as a daemon service without creating a second agent execution path or moving durable behavior into Electron.</div>
+
+  <h3>Responsibility boundaries</h3>
+  <table>
+    <tr><th>Unit</th><th>Owns</th><th>Must not own</th></tr>
+    <tr><td><code>domain/automation.go</code></td><td>IDs, enums, definition/run records, validation vocabulary.</td><td>SQL, HTTP, recurrence library calls, timers.</td></tr>
+    <tr><td><code>service/automation/</code></td><td>CRUD, schedule parsing, occurrence materialization, claims, advancement, reconciliation, session dispatch.</td><td>HTTP request parsing or UI state.</td></tr>
+    <tr><td><code>observe/automations/</code></td><td>Polling cadence and cancellation.</td><td>Scheduling decisions, SQL transactions, direct spawning.</td></tr>
+    <tr><td>SQLite store</td><td>Atomic persistence, leases, uniqueness, and query ordering.</td><td>Business decisions derived from runtime state.</td></tr>
+    <tr><td>Session service</td><td>Normal workspace/runtime/agent creation and durable lifecycle.</td><td>Recurrence calculation.</td></tr>
+    <tr><td>REST / CLI / Electron</td><td>User input, presentation, transport, cache refresh.</td><td>Direct database or runtime access.</td></tr>
+  </table>
+
+  <div class="flow" aria-label="Automation execution flow">
+    <div class="flow-step"><strong>Observer tick</strong><span>supplies current time</span></div>
+    <div class="flow-step"><strong>Automation service</strong><span>materializes + claims</span></div>
+    <div class="flow-step"><strong>SQLite</strong><span>durable run identity</span></div>
+    <div class="flow-step"><strong>Session service</strong><span>ordinary AO spawn</span></div>
+    <div class="flow-step"><strong>Lifecycle facts</strong><span>running → completed</span></div>
+  </div>
+
+  <h3>Existing patterns to reuse</h3>
+  <div class="card"><div class="card-body"><ul>
+    <li><strong>Background observer:</strong> follow <code>observe/reaper</code> and <code>observe/trackerintake</code> for ticker ownership, context cancellation, logging, and shutdown channel behavior.</li>
+    <li><strong>Daemon wiring:</strong> construct the automation service after storage and session services exist; reconcile before beginning the recurring observer.</li>
+    <li><strong>Spawn boundary:</strong> extend the current service-level spawn configuration rather than importing a controller or recreating worktree/runtime logic.</li>
+    <li><strong>Error shape:</strong> reuse <code>apierr</code> and the current request-ID/error envelope path.</li>
+    <li><strong>Generated contracts:</strong> edit controller DTO/spec sources, then regenerate; never hand-maintain generated OpenAPI or sqlc code.</li>
+  </ul></div></div>
+
+  <h2 id="domain">2. Domain model <span class="phase-badge">New vocabulary</span></h2>
+  <div class="goal"><strong>Goal:</strong> make persisted facts and state transitions explicit without storing derived UI status.</div>
+
+  <h3>Core types</h3>
+  <pre><code>type AutomationKind string
+const (
+    AutomationKindWorker       AutomationKind = "worker"
+    AutomationKindOrchestrator AutomationKind = "orchestrator"
+)
+
+type AutomationRunStatus string
+const (
+    RunPending   AutomationRunStatus = "pending"
+    RunSpawning  AutomationRunStatus = "spawning"
+    RunRunning   AutomationRunStatus = "running"
+    RunCompleted AutomationRunStatus = "completed"
+    RunFailed    AutomationRunStatus = "failed"
+)</code></pre>
+
+  <div class="card"><div class="card-title">Validation invariants</div><div class="card-body"><ul>
+    <li><code>display_name</code>: trimmed, 1–120 characters.</li>
+    <li><code>prompt</code>: trimmed, 1–4096 characters; never copied into run errors or routine logs.</li>
+    <li><code>kind</code>: only <code>worker</code> or <code>orchestrator</code>.</li>
+    <li><code>harness</code>: optional; empty resolves through AO’s existing configured default.</li>
+    <li><code>timezone</code>: required valid IANA name; timestamps persist in UTC.</li>
+    <li>Exactly one schedule input on create: <code>rrule</code> or <code>cron</code>.</li>
+  </ul></div></div>
+
+  <h2 id="storage">3. Persistence <span class="phase-badge">Migration 0109</span></h2>
+  <div class="goal"><strong>Goal:</strong> persist definitions, occurrence identities, claims, spawn links, and terminal outcomes strongly enough to recover after any daemon interruption.</div>
+
+  <h3>New migration — <code>backend/internal/storage/sqlite/migrations/0109_automations.sql</code></h3>
+  <p class="goal">The earlier source plan named migration <code>0053</code>; that number is obsolete on current <code>main</code>. Phase C adds the next migration, <code>0109</code>, and does not modify any merged migration.</p>
+  <table>
+    <tr><th>Table</th><th>Columns</th><th>Constraints / indexes</th></tr>
+    <tr><td><code>automations</code></td><td><code>id</code>, <code>project_id</code>, <code>display_name</code>, <code>prompt</code>, <code>kind</code>, <code>harness</code>, <code>rrule_text</code>, <code>timezone</code>, <code>enabled</code>, <code>next_run_at</code>, <code>last_run_at</code>, timestamps</td><td>Project FK; kind/enabled CHECKs; index on <code>(enabled, next_run_at)</code>.</td></tr>
+    <tr><td><code>automation_runs</code></td><td><code>id</code>, <code>automation_id</code>, <code>scheduled_for</code>, <code>session_id</code>, <code>status</code>, <code>attempt_count</code>, <code>claimed_at</code>, <code>lease_expires_at</code>, <code>started_at</code>, <code>finished_at</code>, <code>error_message</code>, timestamps</td><td>Automation FK cascade; nullable session FK; status CHECK; <code>UNIQUE(automation_id, scheduled_for)</code>; claim/history indexes.</td></tr>
+    <tr><td><code>sessions</code> alteration</td><td>nullable <code>automation_run_id</code></td><td>Unique run origin. Deleting automation history preserves the spawned session and clears this nullable link.</td></tr>
+  </table>
+
+  <h3>CDC and deletion behavior</h3>
+  <div class="card"><div class="card-body"><ul>
+    <li>Do not widen the mature <code>change_log.event_type</code> allowlist for this feature; automation mutations use direct query-cache updates plus a short visible-page refetch interval.</li>
+    <li>Do not emit parallel manual CDC events from store methods. Existing session CDC refreshes linked-session presentation.</li>
+    <li>Deleting an automation cascades run history. Spawned sessions remain durable user work.</li>
+    <li>Disabling changes only future scheduler behavior. Existing history and a currently running session remain untouched.</li>
+  </ul></div></div>
+
+  <h3>sqlc query families</h3>
+  <table>
+    <tr><th>Family</th><th>Required operations</th></tr>
+    <tr><td>Definitions</td><td>Create, get, paginated list/filter, patch supported fields, enable/disable, delete.</td></tr>
+    <tr><td>Materialization</td><td>Read due definitions; insert occurrence idempotently; advance next/last timestamps atomically.</td></tr>
+    <tr><td>Claims</td><td>Find oldest eligible pending run; acquire an expiring lease; reject when a sibling is spawning/running.</td></tr>
+    <tr><td>Lifecycle</td><td>Attach session, mark running/completed/failed, list history, find expired leases and active linked runs.</td></tr>
+    <tr><td>Recovery</td><td>Find run by occurrence, find session by <code>automation_run_id</code>, list structurally incomplete records.</td></tr>
+  </table>
+
+  <h2 id="schedule">4. Schedule parsing and validation <span class="phase-badge">Timezone-safe</span></h2>
+  <div class="goal"><strong>Goal:</strong> canonicalize every accepted schedule into an RRULE plus IANA timezone and compute deterministic future occurrences.</div>
+  <div class="card"><div class="card-title">Create / update pipeline</div><div class="card-body"><ol>
+    <li>Trim input and require exactly one of <code>rrule</code> or <code>cron</code>.</li>
+    <li>Load the supplied IANA timezone. Reject ambiguous fixed abbreviations such as <code>IST</code>.</li>
+    <li>For cron, accept standard five-field syntax and translate only when meaning is preserved; reject unsupported constructs.</li>
+    <li>Parse the canonical RRULE and reject unsupported forms, rules with no future occurrence, and frequency faster than one minute.</li>
+    <li>Calculate <code>next_run_at</code> using the named zone, then persist UTC. Retain the RRULE and timezone for future advancement.</li>
+  </ol></div></div>
+  <div class="card"><div class="card-title">DST contract</div><div class="card-body"><p>Wall-clock intent belongs to the named timezone; storage and comparisons use UTC. Tests lock behavior for spring-forward gaps, fall-back repeated hours, monthly boundaries, leap days, and month-end schedules. The recurrence library stays behind the service boundary.</p></div></div>
+
+  <h2 id="dispatch">5. Materialization and dispatch <span class="phase-badge">At least once</span></h2>
+  <div class="goal"><strong>Goal:</strong> turn due times into durable runs before spawning, prevent overlap, and guarantee progress even when spawning fails.</div>
+
+  <h3>Tick algorithm</h3>
+  <div class="card"><div class="card-body"><ol>
+    <li>The observer calls <code>automation.Service.Tick(ctx, now.UTC())</code>; it contains no scheduling logic.</li>
+    <li>For each enabled due definition, open a transaction and enumerate occurrences from persisted <code>next_run_at</code>.</li>
+    <li>Insert at most three <code>pending</code> rows; the unique occurrence key makes repeated polls harmless.</li>
+    <li>Set <code>last_run_at</code> to the last materialized occurrence and advance <code>next_run_at</code> strictly beyond <code>now</code>, even when more than three were missed.</li>
+    <li>After commit, select the oldest eligible pending run for each automation.</li>
+    <li>If a sibling is <code>spawning</code> or <code>running</code>, leave the pending occurrence queued.</li>
+    <li>Acquire a bounded lease and increment <code>attempt_count</code> transactionally.</li>
+    <li>Spawn through the existing session service; attach the session and mark the run <code>running</code>.</li>
+  </ol></div></div>
+  <pre><code>pending --claim lease--> spawning --session linked--> running --session terminated--> completed
+   |                         |
+   | waits behind active     +-- permanent structural failure --------------------> failed
+   | run                     +-- crash or transient interruption -----------------> reconcile</code></pre>
+
+  <h3>Failure classification</h3>
+  <table>
+    <tr><th>Failure</th><th>Run result</th><th>Reason</th></tr>
+    <tr><td>Invalid durable configuration</td><td><code>failed</code></td><td>Retry cannot repair persisted input.</td></tr>
+    <tr><td>Required project/entity permanently missing</td><td><code>failed</code></td><td>Structural failure must be visible.</td></tr>
+    <tr><td>Daemon exits after claim, before link</td><td>lease expires; reconcile</td><td>Outcome may be unknown.</td></tr>
+    <tr><td>Temporary runtime/spawn error</td><td>recoverable retry path</td><td>At-least-once dispatch requires safe retry.</td></tr>
+    <tr><td>Runtime probe unavailable</td><td>remain <code>running</code></td><td>Unknown does not mean terminated.</td></tr>
+  </table>
+
+  <h2 id="recovery">6. Startup reconciliation <span class="phase-badge">Crash recovery</span></h2>
+  <div class="goal"><strong>Goal:</strong> repair interrupted state before the recurring observer creates new work.</div>
+  <div class="card"><div class="card-title">Daemon startup order</div><div class="card-body"><ol>
+    <li>Open storage and construct current runtime/session services.</li>
+    <li>Construct automation store/service dependencies.</li>
+    <li>Run <code>automationService.Reconcile(ctx)</code> best-effort with structured logs.</li>
+    <li>Start the automation observer after reconciliation returns.</li>
+    <li>On shutdown, cancel the shared context and wait for its completion channel.</li>
+  </ol></div></div>
+  <table>
+    <tr><th>Persisted state</th><th>Recovery action</th></tr>
+    <tr><td>Expired <code>spawning</code> lease with linked session</td><td>Read durable session facts; mark running or completed.</td></tr>
+    <tr><td>Expired lease without link, but session found by <code>automation_run_id</code></td><td>Attach it; do not spawn a duplicate.</td></tr>
+    <tr><td>Expired lease and no matching session</td><td>Return to eligible retry while preserving attempt history.</td></tr>
+    <tr><td><code>running</code> with terminated linked session</td><td>Mark completed and set <code>finished_at</code>.</td></tr>
+    <tr><td><code>running</code> with missing/non-terminated session</td><td>Remain running unless durable structure proves permanent invalidity.</td></tr>
+    <tr><td>Definition due during downtime</td><td>Materialize up to three missed occurrences and advance beyond now.</td></tr>
+  </table>
+
+  <h2 id="sessions">7. Session integration <span class="phase-badge">Existing spawn path</span></h2>
+  <div class="goal"><strong>Goal:</strong> make an automated run a normal AO session after creation while retaining its origin link.</div>
+  <div class="card"><div class="card-body"><ul>
+    <li>Add optional <code>AutomationRunID</code> to the service/port spawn configuration and persist it with session creation.</li>
+    <li>Before spawning, query by run ID. If a session exists, return/link it as the idempotent result.</li>
+    <li>If two workers race, the unique link selects a winner; the loser re-reads the winning session.</li>
+    <li>Populate project, prompt, kind, and optional harness from the definition. Resolve remaining defaults through the existing spawn flow.</li>
+    <li>Do not add automation-specific worktree, terminal, agent, reaper, or display-status logic.</li>
+    <li>Use durable <code>is_terminated</code> as completion proof. Failed/unknown probes do not complete a run.</li>
+  </ul></div></div>
+
+  <h2 id="api">8. REST API <span class="phase-badge">Generated contract</span></h2>
+  <div class="goal"><strong>Goal:</strong> expose the complete feature through the loopback daemon while preserving AO envelopes, request IDs, and pagination.</div>
+  <table>
+    <tr><th>Method</th><th>Route</th><th>Behavior</th></tr>
+    <tr><td><code>GET</code></td><td><code>/api/v1/automations</code></td><td>Paginated list with project/enabled filters and next/last summary.</td></tr>
+    <tr><td><code>POST</code></td><td><code>/api/v1/automations</code></td><td>Validate, canonicalize schedule, compute first future run, persist.</td></tr>
+    <tr><td><code>GET</code></td><td><code>/api/v1/automations/{automationId}</code></td><td>Return one definition or standard not-found envelope.</td></tr>
+    <tr><td><code>PATCH</code></td><td><code>/api/v1/automations/{automationId}</code></td><td>Patch mutable fields; schedule/timezone edits recompute <code>next_run_at</code>.</td></tr>
+    <tr><td><code>DELETE</code></td><td><code>/api/v1/automations/{automationId}</code></td><td>Delete definition/history; preserve sessions.</td></tr>
+    <tr><td><code>GET</code></td><td><code>/api/v1/automations/{automationId}/runs</code></td><td>Newest-first paginated history with linked session and bounded error.</td></tr>
+  </table>
+
+  <h3>Representative create request</h3>
+  <pre><code>POST /api/v1/automations
+{
+  "projectId": "ao-clean",
+  "displayName": "Morning triage",
+  "prompt": "Review new issues, group duplicates, and propose priorities.",
+  "kind": "worker",
+  "harness": "codex",
+  "cron": "0 9 * * 1-5",
+  "timezone": "Asia/Calcutta",
+  "enabled": true
+}</code></pre>
+  <div class="card"><div class="card-title">Contract regeneration</div><div class="card-body"><p>Edit DTOs in <code>backend/internal/httpd/controllers/dto.go</code> and operation/schema registration in <code>backend/internal/httpd/apispec/specgen/build.go</code>. Run <code>npm run api</code> and commit <code>openapi.yaml</code> plus <code>frontend/src/api/schema.ts</code> together. CLI DTOs remain hand-mirrored.</p></div></div>
+
+  <h2 id="cli">9. CLI <span class="phase-badge">Thin HTTP client</span></h2>
+  <div class="goal"><strong>Goal:</strong> provide scripting parity without bypassing daemon service boundaries.</div>
+  <pre><code>ao automation create --project &lt;id&gt; --name "Morning triage" \
+  --prompt "Review new issues" --cron "0 9 * * 1-5" \
+  --timezone "Asia/Calcutta" --kind worker --harness codex
+
+ao automation list [--project &lt;id&gt;] [--enabled] [--json]
+ao automation get &lt;automation-id&gt; [--json]
+ao automation update &lt;automation-id&gt; [field flags | --enable | --disable]
+ao automation delete &lt;automation-id&gt; [--yes]
+ao automation runs &lt;automation-id&gt; [--status running] [--json]</code></pre>
+  <div class="card"><div class="card-body"><ul>
+    <li>Use existing <code>commandContext</code> JSON helpers and mirrored CLI DTO patterns.</li>
+    <li>Return <code>usageError</code> for invalid/missing arguments so misuse exits 2.</li>
+    <li>Preserve daemon error envelopes for service failures so they exit 1 with actionable context.</li>
+    <li>Require destructive confirmation for delete unless <code>--yes</code> is passed.</li>
+    <li>Default output is concise human-readable tables; <code>--json</code> exposes stable structures.</li>
+  </ul></div></div>
+
+  <h2 id="frontend">10. Electron frontend <span class="phase-badge">Supervisor UI</span></h2>
+  <div class="goal"><strong>Goal:</strong> make automations discoverable and operable without moving scheduler logic into React.</div>
+  <h3>Global Automations screen</h3>
+  <div class="card"><div class="card-body"><ul>
+    <li>Add <strong>Automations</strong> to global navigation rather than nesting it inside one session.</li>
+    <li>Rows show name, project, humanized schedule + timezone, next run, latest status, and enabled state.</li>
+    <li>Create/edit dialog provides daily/weekly presets plus advanced raw RRULE or cron input; the server remains authoritative.</li>
+    <li>Enabled toggle is optimistic but rolls back and shows the daemon error when mutation fails.</li>
+    <li>Delete confirmation explains that history is removed while spawned sessions remain.</li>
+    <li>Expandable run history shows schedule time, status, attempts, failure context, and a link to the spawned session.</li>
+  </ul></div></div>
+  <div class="card"><div class="card-title">Query behavior</div><div class="card-body"><p>Add list/detail/run hooks and mutations around the generated API client. Update or invalidate exact query keys after writes. Do not invent manual CDC event types in this PR; use direct cache updates plus a short refetch interval while visible. Existing session CDC updates linked-session presentation.</p></div></div>
+
+  <h2 id="files">11. File-by-file change map <span class="phase-badge">Expected scope</span></h2>
+  <table>
+    <tr><th>Area</th><th>Files / directories</th><th>Change</th></tr>
+    <tr><td>Domain</td><td><code>backend/internal/domain/automation.go</code></td><td>Definition/run records, IDs, enums, durable fields.</td></tr>
+    <tr><td>Ports</td><td><code>backend/internal/ports/...</code></td><td>Store/service boundaries and optional run origin in spawn config.</td></tr>
+    <tr><td>Migration</td><td><code>storage/sqlite/migrations/0109_automations.sql</code></td><td>Tables, indexes, constraints, and the session idempotency link.</td></tr>
+    <tr><td>Queries</td><td><code>storage/sqlite/queries/automations.sql</code></td><td>CRUD, due reads, claims, lifecycle, recovery, history.</td></tr>
+    <tr><td>Generated storage</td><td><code>storage/sqlite/gen/*</code></td><td>Regenerate with <code>npm run sqlc</code>; never hand-edit.</td></tr>
+    <tr><td>Service</td><td><code>backend/internal/service/automation/</code></td><td>Schedule wrapper, CRUD, tick, dispatch, reconcile.</td></tr>
+    <tr><td>Observer</td><td><code>backend/internal/observe/automations/</code></td><td>Ticker and cancellation only.</td></tr>
+    <tr><td>Session</td><td>existing spawn/store call sites</td><td>Idempotent run link and existing-session recovery.</td></tr>
+    <tr><td>Daemon</td><td><code>backend/internal/daemon/...</code></td><td>Construct, reconcile, start observer, shutdown wait.</td></tr>
+    <tr><td>HTTP</td><td><code>controllers/automations.go</code>, <code>dto.go</code>, router</td><td>CRUD/history, mapping, errors, pagination.</td></tr>
+    <tr><td>API spec</td><td><code>apispec/specgen/build.go</code>, <code>openapi.yaml</code></td><td>Operations/schema registry and generation.</td></tr>
+    <tr><td>CLI</td><td><code>backend/internal/cli/automation.go</code> + tests</td><td>Six thin client commands.</td></tr>
+    <tr><td>Frontend</td><td>generated schema, hooks, navigation, Automations view</td><td>Typed data access and complete management surface.</td></tr>
+  </table>
+
+  <h2 id="delivery">12. Implementation sequence <span class="phase-badge">One PR</span></h2>
+  <div class="goal"><strong>Goal:</strong> keep commits reviewable while building one coherent vertical feature.</div>
+  <div class="card"><div class="card-title">Step 1 — Domain and persistence <span class="tag-new">foundation</span></div><div class="card-body"><p>Write schema/store tests; add domain types, migration, queries, session link, and regenerate sqlc. Verify up/down, constraints, and query ordering.</p></div></div>
+  <div class="card"><div class="card-title">Step 2 — Recurrence engine <span class="tag-new">core</span></div><div class="card-body"><p>Add the recurrence dependency behind a narrow service wrapper. Drive RRULE, cron, timezone, DST, validation, and next-occurrence behavior through table tests.</p></div></div>
+  <div class="card"><div class="card-title">Step 3 — Scheduler and recovery <span class="tag-new">reliability</span></div><div class="card-body"><p>Implement materialization, non-overlap, claims, idempotent spawn linking, completion, and startup catch-up using injected clocks and fakes.</p></div></div>
+  <div class="card"><div class="card-title">Step 4 — REST and generated API <span class="tag-reuse">contract</span></div><div class="card-body"><p>Add routes/DTOs/errors, regenerate API artifacts, and run route/spec parity tests.</p></div></div>
+  <div class="card"><div class="card-title">Step 5 — CLI and Electron <span class="tag-reuse">surfaces</span></div><div class="card-body"><p>Add thin CLI parity and the global typed frontend view. Cover validation, rollback, delete, history, and session navigation.</p></div></div>
+  <div class="card"><div class="card-title">Step 6 — Integration hardening <span class="tag-gate">ship gate</span></div><div class="card-body"><p>Run focused then broad verification. Exercise daemon restarts and real schedules in Electron, document intentional omissions, and open one Phase C PR.</p></div></div>
+
+  <h2 id="tests">13. Automated test plan <span class="phase-badge">Evidence</span></h2>
+  <table>
+    <tr><th>Layer</th><th>Required cases</th></tr>
+    <tr><td>Schedule unit</td><td>Valid/invalid RRULE; cron translation/rejection; no future occurrence; minute floor; IANA timezone; DST gap/repeat; month/leap boundaries.</td></tr>
+    <tr><td>Migration/store</td><td>Up/down; CHECK/FK; unique occurrence; unique run/session link; due ordering; paging; cascade history; session preservation.</td></tr>
+    <tr><td>Materialization</td><td>Not due; single due; three-run cap; advance beyond now; repeated tick produces no duplicate.</td></tr>
+    <tr><td>Claims/dispatch</td><td>Atomic lease; expiry; one active blocks next; oldest pending first; successful link; race returns existing session.</td></tr>
+    <tr><td>Reconciliation</td><td>Interrupted before spawn; after session creation; linked running/terminated; unknown probe remains running; structural failure.</td></tr>
+    <tr><td>Service CRUD</td><td>Happy path; bounds; missing project; schedule recompute; disable/re-enable; deletion semantics.</td></tr>
+    <tr><td>HTTP</td><td>CRUD/history; filters/pagination; malformed IDs; validation envelopes; not found; request ID; route/spec parity.</td></tr>
+    <tr><td>CLI</td><td>Every command; missing args exit 2; server failure exit 1; JSON; delete confirmation.</td></tr>
+    <tr><td>Frontend</td><td>Loading/empty/error; create preset/raw; server validation; toggle rollback; delete; history; session navigation.</td></tr>
+  </table>
+
+  <h3>Verification commands</h3>
+  <pre><code>npm run sqlc
+npm run api
+
+cd backend
+go test ./internal/service/automation/... ./internal/observe/automations/...
+go test ./internal/storage/sqlite/... ./internal/httpd/... ./internal/cli/...
+go build ./...
+go test ./...
+go test -race ./...
+go vet ./...
+
+cd ..
+npm run lint
+npm run frontend:typecheck
+cd frontend
+npm run build</code></pre>
+
+  <h2 id="manual">14. Manual verification <span class="phase-badge">AO desktop</span></h2>
+  <div class="goal"><strong>Goal:</strong> prove the real Electron supervisor, daemon, session lifecycle, and restart behavior—not only isolated services.</div>
+  <ul class="checklist">
+    <li><strong>Create:</strong> create a near-future one-minute automation and verify schedule, timezone, and next run.</li>
+    <li><strong>Dispatch:</strong> confirm exactly one normal AO session appears with expected project, prompt, kind, and harness.</li>
+    <li><strong>History:</strong> confirm pending → spawning → running and the session link.</li>
+    <li><strong>Completion:</strong> terminate through normal AO controls and confirm the run becomes completed.</li>
+    <li><strong>Non-overlap:</strong> keep one session running through the next occurrence; confirm the later run waits pending.</li>
+    <li><strong>Restart before spawn:</strong> restart after claim; confirm recovery creates or links exactly one session.</li>
+    <li><strong>Restart after spawn:</strong> restart before run linking; confirm the existing session is attached.</li>
+    <li><strong>Catch-up:</strong> simulate more than three missed occurrences; confirm only three materialize and next run is future.</li>
+    <li><strong>Disable/re-enable:</strong> confirm no new work while disabled and no disabled-window replay.</li>
+    <li><strong>Error:</strong> provoke a permanent dependency failure; confirm useful bounded context without prompt leakage.</li>
+    <li><strong>Delete:</strong> confirm definition/history disappear while the spawned session remains usable.</li>
+    <li><strong>CLI parity:</strong> exercise create/list/get/update/runs/delete and observe the same state in Electron.</li>
+  </ul>
+
+  <h2 id="done">15. Definition of done <span class="phase-badge">PR ready</span></h2>
+  <ul class="checklist">
+    <li>All new state remains beneath the existing <code>~/.ao</code> data directory.</li>
+    <li>The primary listener remains loopback-only; no new network-facing bind is added.</li>
+    <li>The CLI remains an HTTP client and Electron remains a supervisor.</li>
+    <li>No merged migration or generated sqlc file is hand-edited.</li>
+    <li>OpenAPI and frontend schema artifacts are regenerated and committed together.</li>
+    <li>Duplicate polls/restarts cannot duplicate occurrence rows or linked sessions in the covered failure model.</li>
+    <li>Unknown runtime health never terminates or completes work.</li>
+    <li>Catch-up, non-overlap, disable, re-enable, and delete semantics match this plan.</li>
+    <li>Narrow tests, race/build/vet, lint, frontend typecheck/build, and manual Electron scenarios pass.</li>
+    <li>The PR body explains intentional omissions and any investigation documented instead of changed.</li>
+  </ul>
+
+  <div class="risk-note" style="margin-top:32px">
+    <strong>Intentional omissions</strong>
+    <ul>
+      <li>No seconds-level schedules, event/webhook triggers, or distributed multi-daemon scheduling.</li>
+      <li>No overlapping runs or configurable catch-up policy beyond the fixed cap.</li>
+      <li>No force-kill when an automation is disabled or deleted.</li>
+      <li>No manual “run now” unless it falls out naturally without weakening occurrence identity.</li>
+      <li>No new custom CDC protocol solely for the Automations screen.</li>
+    </ul>
+  </div>
+
+  <footer>
+    Phase C implementation plan · branch <code>feat/phase-c-automations</code> · approved design commit <code>8b6a0aacc</code>. This document follows the compact engineering-plan format of <code>plan-git-state-automations-port-detection.html</code>.
+  </footer>
+
+</div>
+</body>
+</html>

@@ -17,7 +17,8 @@ import { TooltipProvider } from "./ui/tooltip";
 import { sessionInterfaceTransitionQueryKey } from "../hooks/useSessionInterfaceTransition";
 import { sessionInterfaceTransitionStatus } from "../test/interface-transition-fixtures";
 
-const { navigateMock, onKilledMock, paramsMock, postMock, spawnMock, useWorkspaceQueryMock } = vi.hoisted(() => ({
+const { locationMock, navigateMock, onKilledMock, paramsMock, postMock, spawnMock, useWorkspaceQueryMock } = vi.hoisted(() => ({
+	locationMock: { pathname: "/" },
 	navigateMock: vi.fn(),
 	onKilledMock: vi.fn(),
 	paramsMock: { projectId: undefined as string | undefined, sessionId: undefined as string | undefined },
@@ -30,6 +31,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@tanstack/react-router")>();
 	return {
 		...actual,
+		useLocation: () => locationMock,
 		useNavigate: () => navigateMock,
 		useParams: () => paramsMock,
 	};
@@ -207,6 +209,7 @@ async function clickKillDialogConfirm() {
 }
 
 beforeEach(() => {
+	locationMock.pathname = "/";
 	navigateMock.mockReset();
 	onKilledMock.mockReset();
 	paramsMock.projectId = undefined;
@@ -216,6 +219,23 @@ beforeEach(() => {
 	useWorkspaceQueryMock.mockReset();
 	useWorkspaceQueryMock.mockReturnValue({ data: [], isError: false, isLoading: false, isSuccess: true });
 	useUiStore.setState({ inspectorSessions: {}, settingsModal: null });
+});
+
+describe("ShellTopbar route identity", () => {
+	it("identifies the Automations route instead of presenting it as the board", () => {
+		locationMock.pathname = "/automations";
+		render(
+			<QueryClientProvider client={new QueryClient()}>
+				<TooltipProvider>
+					<ShellTopbar />
+				</TooltipProvider>
+			</QueryClientProvider>,
+		);
+
+		const identity = screen.getByTestId("automations-topbar-label");
+		expect(identity).toHaveTextContent("Automations");
+		expect(screen.queryByTestId("board-topbar-label")).not.toBeInTheDocument();
+	});
 });
 
 describe("ShellTopbar status pill", () => {
