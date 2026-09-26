@@ -30,7 +30,7 @@
   "devDependencies": {
     "openapi-typescript": "7.4.4",
     "typescript": "~5.9.2",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "publishConfig": {
     "access": "public"

@@ -17,7 +17,7 @@
     "geist": "^1.7.0",
     "lucide-react": "^0.563.0",
     "mdast-util-directive": "^3.1.0",
-    "next": "^16.2.11",
+    "next": "^16.3.6",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "remark-gfm": "^4.0.1",
