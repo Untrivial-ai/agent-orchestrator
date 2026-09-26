@@ -3933,15 +3933,16 @@ describe("staged install rejection", () => {
     // promise a restart that fails. This also re-enables auto-download, which
     // is what drives the re-extraction.
     expect(module.getUpdateStatus().staged).toBeUndefined();
+    // A recoverable first failure: reported calmly, not as a red error.
     expect(statusMessages().at(-1)?.payload).toMatchObject({
-      state: "error",
-      message: expect.stringContaining("prepare it again"),
+      state: "retry-scheduled",
+      message: expect.stringContaining("try again automatically"),
     });
     consoleErrorSpy.mockRestore();
   });
 
-  it("discards the download once the same build fails a second time", async () => {
-    // A re-extraction failing too is the first real evidence the bytes are
+  it("discards the download once the same build fails a third time", async () => {
+    // Two re-extractions failing too is the first real evidence the bytes are
     // suspect, so now the zip goes.
     const consoleErrorSpy = vi
       .spyOn(console, "error")
@@ -3954,13 +3955,15 @@ describe("staged install rejection", () => {
     updaterEvents.get("error")?.(rejection);
     updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
     updaterEvents.get("error")?.(rejection);
+    updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+    updaterEvents.get("error")?.(rejection);
 
     // Deferred, not fired and forgotten: the clear is queued on the operation
     // chain, so it has not run at the instant the rejection is handled.
     expect(autoUpdater.downloadedUpdateHelper.clear).not.toHaveBeenCalled();
     expect(statusMessages().at(-1)?.payload).toMatchObject({
       state: "error",
-      message: expect.stringContaining("stopped retrying on its own"),
+      message: expect.stringContaining("manually"),
     });
 
     // ...and the next operation cannot begin until it has. Awaiting one drains
@@ -3975,23 +3978,23 @@ describe("staged install rejection", () => {
   // cheap re-preparation. Unbounded, that is also a loop: fetch 176 MB, fail
   // verification, discard, fetch again, on every check for as long as the app
   // runs. These three cover the bound and both of its resets.
-  const failTwice = (
+  const failUntilExhausted = (
     updaterEvents: Map<string, (...args: unknown[]) => unknown>,
   ) => {
-    updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
-    updaterEvents.get("error")?.(rejection);
-    updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
-    updaterEvents.get("error")?.(rejection);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      updaterEvents.get("update-downloaded")?.({ version: "2.1.0" });
+      updaterEvents.get("error")?.(rejection);
+    }
   };
 
-  it("stops automatically re-downloading a build that failed twice", async () => {
+  it("stops automatically re-downloading a build that used up its retries", async () => {
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
     const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
 
     await module.checkForUpdatesNow(stateDir);
-    failTwice(updaterEvents);
+    failUntilExhausted(updaterEvents);
 
     await module.startAutoUpdates(stateDir);
 
@@ -4008,7 +4011,7 @@ describe("staged install rejection", () => {
     const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
 
     await module.checkForUpdatesNow(stateDir);
-    failTwice(updaterEvents);
+    failUntilExhausted(updaterEvents);
     updaterEvents.get("update-available")?.({ version: "2.2.0" });
 
     await module.startAutoUpdates(stateDir);
@@ -4061,15 +4064,15 @@ describe("staged install rejection", () => {
   });
 
   it("restores the budget when the user checks again", async () => {
-    // The exhausted message tells the user to check for updates again, so that
-    // has to actually do something.
+    // Once the automatic retries are spent, an explicit manual check is the user's
+    // way back in, so it has to reset the budget and re-arm auto-download.
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
     const { module, autoUpdater, updaterEvents } = await importAutoUpdater();
 
     await module.checkForUpdatesNow(stateDir);
-    failTwice(updaterEvents);
+    failUntilExhausted(updaterEvents);
     await module.checkForUpdatesNow(stateDir);
 
     await module.startAutoUpdates(stateDir);
@@ -4102,8 +4105,8 @@ describe("staged install rejection", () => {
 
     expect(statusMessages().at(-1)?.payload).toEqual(afterFirstDelivery);
     expect(statusMessages().at(-1)?.payload).toMatchObject({
-      state: "error",
-      message: expect.stringContaining("prepare it again"),
+      state: "retry-scheduled",
+      message: expect.stringContaining("try again automatically"),
     });
     // The repeat must not be miscounted as a genuine second failure, which
     // would discard a download that has only actually failed once.
@@ -4133,7 +4136,8 @@ describe("staged install rejection", () => {
   it("surfaces the failure even on an automatic check", async () => {
     // The automatic path suppresses one-off failures so the UI does not flash
     // an error nobody asked for. That suppression must not swallow this class:
-    // an install the user cannot retry out of is exactly what has to be shown.
+    // a staged build that failed to install is exactly what has to be shown,
+    // even when the report is the calm "will retry" line.
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
@@ -4149,7 +4153,7 @@ describe("staged install rejection", () => {
     });
     await module.startAutoUpdates(stateDir);
 
-    expect(module.getUpdateStatus().state).toBe("error");
+    expect(module.getUpdateStatus().state).toBe("retry-scheduled");
     expect(module.getUpdateStatus().staged).toBeUndefined();
     consoleErrorSpy.mockRestore();
   });
@@ -4181,7 +4185,7 @@ describe("staged install rejection", () => {
     );
 
     expect(module.getUpdateStatus().staged).toBeUndefined();
-    expect(module.getUpdateStatus().state).toBe("error");
+    expect(module.getUpdateStatus().state).toBe("retry-scheduled");
     consoleErrorSpy.mockRestore();
   });
 
@@ -4204,7 +4208,7 @@ describe("staged install rejection", () => {
     );
 
     expect(module.getUpdateStatus().staged).toBeUndefined();
-    expect(module.getUpdateStatus().state).toBe("error");
+    expect(module.getUpdateStatus().state).toBe("retry-scheduled");
     consoleErrorSpy.mockRestore();
   });
 

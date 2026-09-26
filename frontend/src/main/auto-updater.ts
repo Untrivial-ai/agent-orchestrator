@@ -232,7 +232,13 @@ function requiredFreeBytesToStage(archiveBytes: number | undefined): number {
 }
 // Short user-facing lines; the raw ditto/pkzip/codesign detail is logged, not shown.
 const STAGE_STALL_MESSAGE = "Couldn't finish preparing the update. AO stayed open, so nothing changed. Retry to try again.";
-const STAGE_DISK_MESSAGE = "Not enough disk space to install the update. Free up space, then retry.";
+const STAGE_DISK_MESSAGE = "Your Mac is out of disk space, so AO can't install the update. Free up some space, then try again.";
+// Shown while AO will re-download and re-prepare a build that failed verification.
+// Deliberately calm, non-technical, and rendered as a non-error state.
+const VERIFY_RETRY_MESSAGE = "AO couldn't verify the downloaded update. It will try again automatically in about 15 minutes.";
+// Shown once the automatic retries are used up: a real dead end that needs the
+// user to update by hand, so it stays an error state.
+const VERIFY_GIVE_UP_MESSAGE = "AO couldn't install this update automatically. Download the latest version manually from GitHub Releases to update.";
 let nativePreparationBlocked: Error | undefined;
 let rejectNativeOperation: ((error: Error) => void) | undefined;
 let nativePreparation: { version: string; promise: Promise<void>; finish(error?: Error): void } | undefined;
@@ -1580,12 +1586,13 @@ let handledInstallRejection: { version: string | undefined } | undefined;
  * How many times one build may fail verification before AO stops re-preparing
  * it on every check.
  *
- * Two: the first failure buys a re-preparation from the archive already in the
- * cache, the second discards that archive. A third automatic attempt would just
- * re-download the same bytes on every check forever, which is the loop this
- * bound exists to stop.
+ * Three: the first failure buys a re-preparation from the archive already in the
+ * cache; the next two re-download and re-prepare from scratch on the following
+ * automatic checks (about 15 minutes apart). Once those are spent AO stops so it
+ * cannot re-download the same bytes on every check forever, and points the user
+ * at a manual install instead.
  */
-const MAX_AUTOMATIC_INSTALL_ATTEMPTS = 2;
+const MAX_AUTOMATIC_INSTALL_ATTEMPTS = 3;
 
 /**
  * True once a build has used up its automatic recovery attempts.
@@ -1980,21 +1987,19 @@ function wireUpdaterEvents(): void {
         ).catch(() => undefined);
       }
       console.error(
-        `staged update rejected at install time (attempt ${failures}${exhausted ? ", discarding cached download and stopping automatic retries" : ""}):`,
+        `staged update rejected at install time (attempt ${failures} of ${MAX_AUTOMATIC_INSTALL_ATTEMPTS}${exhausted ? ", discarding cached download and stopping automatic retries" : ""}):`,
         err,
       );
+      // Until the retries are used up this is a routine, self-healing condition:
+      // report it calmly (non-error state, no red, no raw Squirrel detail) so the
+      // user is not alarmed by a failure the app is already recovering from. Only
+      // the terminal give-up stays an error, because that one needs the user to act.
       broadcast(
-        withActiveRequest({
-          state: "error",
-          message:
-            exhausted
-              ? "Couldn't install the update — the copy failed verification twice. " +
-                "AO has discarded the download and stopped retrying on its own. Check " +
-                "for updates again to start a fresh one, or download the latest build " +
-                "manually and install it over this one."
-              : "Couldn't install the update — the downloaded copy failed verification. " +
-                "AO will prepare it again on the next check.",
-        }),
+        withActiveRequest(
+          exhausted
+            ? { state: "error", message: VERIFY_GIVE_UP_MESSAGE }
+            : { state: "retry-scheduled", message: VERIFY_RETRY_MESSAGE },
+        ),
       );
       return;
     }

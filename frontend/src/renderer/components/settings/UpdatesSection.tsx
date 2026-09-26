@@ -135,7 +135,7 @@ export function UpdatesSection({ titleHidden }: { titleHidden?: boolean } = {}) 
 		} else if (status.state === "downloaded") {
 			void aoBridge.updates.install();
 			autoProgressRef.current = null;
-		} else if (status.state === "error" || status.state === "unsupported" || status.state === "not-available") {
+		} else if (status.state === "error" || status.state === "unsupported" || status.state === "not-available" || status.state === "retry-scheduled") {
 			autoProgressRef.current = null;
 		}
 	}, [status]);
@@ -683,6 +683,13 @@ function UpdateStatusLine({
 		case "unsupported":
 			icon = <Info className="size-icon-sm shrink-0" aria-hidden="true" />;
 			label = status.message ?? t("settings.updates.needInstalledApp");
+			break;
+		case "retry-scheduled":
+			// Non-error on purpose: AO is recovering on its own, so this reads as a
+			// neutral status line (muted text, clock icon), never a red failure.
+			icon = <Clock3 className="size-icon-sm shrink-0" aria-hidden="true" />;
+			label = status.message ?? t("settings.updates.updateFailed");
+			detail = status.version ? t("settings.updates.targetVersion", { version: status.version }) : null;
 			break;
 		case "error":
 			className = "text-error";
