@@ -8,10 +8,10 @@ import { describe, expect, it } from "vitest";
 const source = readFileSync(fileURLToPath(new URL("./ChatTurnSettingsControl.ios.tsx", import.meta.url)), "utf8");
 
 describe("iOS turn settings menu anchor", () => {
-	it("keeps the trigger width stable as selected labels change", () => {
+	it("keeps a stable left-side anchor as selected labels change", () => {
 		expect(source).toContain("matchContents={{ horizontal: false, vertical: true }}");
 		expect(source).toContain('ignoreSafeArea="all"');
-		expect(source).toContain('host: { width: "100%", height: 44 }');
+		expect(source).toContain('host: { alignSelf: "flex-start", width: 220, maxWidth: "100%", height: 44 }');
 		expect(source).toContain("<Spacer />");
 		expect(source).toContain('frame({ maxWidth: 1000, alignment: "leading" })');
 	});

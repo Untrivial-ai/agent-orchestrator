@@ -73,5 +73,7 @@ function settingSymbol(row: TurnSettingRow): string | undefined {
 }
 
 const styles = StyleSheet.create({
-	host: { width: "100%", height: 44 },
+	// A full-width Host centers the native menu over the composer. Keep its
+	// button a fixed width at the left; long summaries truncate inside it.
+	host: { alignSelf: "flex-start", width: 220, maxWidth: "100%", height: 44 },
 });
