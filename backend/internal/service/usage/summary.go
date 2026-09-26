@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
@@ -14,6 +15,7 @@ type usageSummaryStore interface {
 	GetSession(context.Context, domain.SessionID) (domain.SessionRecord, bool, error)
 	ListCompactSessionUsageAggregates(context.Context, domain.ProjectID) ([]domain.CompactSessionUsageAggregate, error)
 	ListUsageModelAggregates(context.Context, domain.SessionID) ([]domain.UsageModelAggregate, error)
+	GetUsageSessionEventWindow(context.Context, domain.SessionID) (domain.UsageEventWindow, error)
 	GetUsageSessionIncomplete(context.Context, domain.SessionID) (bool, error)
 }
 
@@ -74,6 +76,10 @@ func (r *SummaryReader) Get(ctx context.Context, sessionID domain.SessionID) (do
 	if err != nil {
 		return domain.SessionUsageSummary{}, err
 	}
+	window, err := r.store.GetUsageSessionEventWindow(ctx, sessionID)
+	if err != nil {
+		return domain.SessionUsageSummary{}, err
+	}
 	totals, err := usageTotals(models)
 	if err != nil {
 		return domain.SessionUsageSummary{}, err
@@ -84,7 +90,52 @@ func (r *SummaryReader) Get(ctx context.Context, sessionID domain.SessionID) (do
 	}
 	return domain.SessionUsageSummary{
 		SessionID: sessionID, Incomplete: incomplete, Totals: totals, Harnesses: harnesses,
+		Turns: window.EventCount, TokensPerSecond: usageTokensPerSecond(totals.OutputTokens, window),
 	}, nil
+}
+
+// activeTimeGapCutoff caps how much wall-clock a single inter-event gap may
+// contribute to the throughput divisor. Consecutive assistant responses of
+// one turn arrive seconds apart (the tool calls between them usually finish
+// faster too); a longer silence is user/orchestrator think time or an idle
+// pause between turns — not generation.
+const activeTimeGapCutoff = 2 * time.Minute
+
+// usageTokensPerSecond divides OUTPUT tokens by active time: the sum of
+// inter-event timestamp deltas no longer than activeTimeGapCutoff. The raw
+// first-to-last span was rejected in review (#5775) because it also counts
+// think time, long tool runs, and idle gaps between turns, reporting a
+// materially misleading rate; capped per-gap deltas approximate the time the
+// model actually spent producing tokens. Output tokens are the numerator —
+// input and its cache reads ride along per turn and would inflate the rate
+// to physically impossible numbers. Any unknown input — uncounted output, a
+// missing timestamp, a single event with no elapsed time — leaves throughput
+// unavailable rather than reporting a silently wrong rate.
+func usageTokensPerSecond(output *int64, window domain.UsageEventWindow) *float64 {
+	if output == nil || window.KnownCreatedAtCount != window.EventCount {
+		return nil
+	}
+	seconds := usageActiveSeconds(window.Timestamps)
+	if seconds <= 0 {
+		return nil
+	}
+	throughput := float64(*output) / seconds
+	return &throughput
+}
+
+// usageActiveSeconds sums the deltas between consecutive known timestamps,
+// skipping gaps past activeTimeGapCutoff and non-monotonic pairs. The first
+// event of each turn contributes its tokens but no time: its own generation
+// span is not observable, and skipping it biases the rate only slightly
+// upward.
+func usageActiveSeconds(timestamps []time.Time) float64 {
+	var total float64
+	for i := 1; i < len(timestamps); i++ {
+		if delta := timestamps[i].Sub(timestamps[i-1]); delta > 0 && delta <= activeTimeGapCutoff {
+			total += delta.Seconds()
+		}
+	}
+	return total
 }
 
 func usageTotals(models []domain.UsageModelAggregate) (domain.UsageMetricTotals, error) {

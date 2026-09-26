@@ -960,6 +960,31 @@ func usageEventReplayDisposition(existing gen.GetModelUsageEventByKeyRow, event 
 	return existing.BillingProviderID.String == event.BillingProviderID, false
 }
 
+// GetUsageSessionEventWindow returns the visible-event count with the parsed
+// transcript timestamps turns and throughput read from, ordered ascending.
+// created_at scans as sql.NullTime on plain column reads (only aggregates
+// lose the type), and SQL text ordering is not trusted for the timestamp
+// formats the driver round-trips, so the order is enforced here.
+func (s *Store) GetUsageSessionEventWindow(ctx context.Context, sessionID domain.SessionID) (domain.UsageEventWindow, error) {
+	rows, err := s.qr.ListUsageSessionEventTimestamps(ctx, sessionID)
+	if err != nil {
+		return domain.UsageEventWindow{}, fmt.Errorf("usage event timestamps for session %s: %w", sessionID, err)
+	}
+	window := domain.UsageEventWindow{
+		EventCount: int64(len(rows)),
+		Timestamps: make([]time.Time, 0, len(rows)),
+	}
+	for _, created := range rows {
+		if !created.Valid {
+			continue
+		}
+		window.KnownCreatedAtCount++
+		window.Timestamps = append(window.Timestamps, created.Time)
+	}
+	sort.Slice(window.Timestamps, func(i, j int) bool { return window.Timestamps[i].Before(window.Timestamps[j]) })
+	return window, nil
+}
+
 func usageAggregateFromGen(row gen.AggregateUsageBySessionHarnessModelRow) domain.UsageModelAggregate {
 	return domain.UsageModelAggregate{
 		Harness: row.Harness,
