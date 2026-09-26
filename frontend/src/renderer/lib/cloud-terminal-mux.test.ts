@@ -140,4 +140,33 @@ describe("createCloudTerminalMux cursor resume", () => {
 		expect(chunks.join("")).toContain("\x1b[2J");
 		mux.dispose();
 	});
+
+	it("caps pending input while the socket is not yet open", async () => {
+		FakeWebSocket.instances = [];
+		let resolveTicket: (value: string) => void = () => undefined;
+		const mux = createCloudTerminalMux({
+			wsBaseUrl: "wss://cp.example.com/api/cloud/v1",
+			kind: "agent",
+			mintTicket: () =>
+				new Promise<string>((resolve) => {
+					resolveTicket = resolve;
+				}),
+			WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+		});
+		// Ticket still pending → no socket yet, so sendInput must queue.
+		for (let i = 0; i < 80; i += 1) mux.sendInput("agent", `k${i}`);
+		resolveTicket("ticket-1");
+		await settle();
+		expect(FakeWebSocket.instances).toHaveLength(1);
+		const ws = FakeWebSocket.instances[0];
+		// Fake sockets do not auto-fire "open"; the production path flushes the
+		// pending queue on that event.
+		ws.emit("open", {});
+		const inputs = sentJSON(ws).filter((frame) => frame.type === "input");
+		// Older keystrokes are dropped once the queue hits the 64-entry cap.
+		expect(inputs).toHaveLength(64);
+		expect(inputs[0]?.data).toBe("k16");
+		expect(inputs[63]?.data).toBe("k79");
+		mux.dispose();
+	});
 });

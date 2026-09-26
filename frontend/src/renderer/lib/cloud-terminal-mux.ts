@@ -78,6 +78,11 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 	let exited = false;
 	let connectionState: MuxConnectionState | undefined;
 	let pendingResize: { cols: number; rows: number } | null = null;
+	// Cap queued keystrokes while the sandbox socket is still connecting. An
+	// unbounded array here retains every typed character (and paste) for the
+	// whole cold-start window and can grow without limit if the worker never
+	// checks in.
+	const MAX_PENDING_INPUT = 64;
 	const pendingInput: string[] = [];
 
 	const setConnectionState = (next: MuxConnectionState) => {
@@ -229,7 +234,9 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 			sendResize(cols, rows);
 		},
 		sendInput: (_id, input) => {
-			if (!sendJSON({ type: "input", data: input })) pendingInput.push(input);
+			if (sendJSON({ type: "input", data: input })) return;
+			if (pendingInput.length >= MAX_PENDING_INPUT) pendingInput.shift();
+			pendingInput.push(input);
 		},
 		resize: (_id, cols, rows) => {
 			sendResize(cols, rows);

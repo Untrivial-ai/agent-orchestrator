@@ -1,9 +1,11 @@
 package terminal
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -143,6 +145,26 @@ func TestAttachmentBuffersInputUntilPTYReady(t *testing.T) {
 	close(releaseSpawn)
 
 	eventually(t, time.Second, func() bool { return string(pty.writtenBytes()) == "hello\n" })
+}
+
+func TestAttachmentRejectsPendingInputAboveCap(t *testing.T) {
+	a := newTestAttachment(&fakeSource{alive: true}, nil, nil)
+	chunk := bytes.Repeat([]byte("x"), 8<<10)
+	released := 0
+	release := func() { released++ }
+	for pending := 0; pending+len(chunk) <= maxPendingInputBytes; pending += len(chunk) {
+		if err := a.writeLeased(chunk, release); err != nil {
+			t.Fatalf("write within cap: %v", err)
+		}
+	}
+	if err := a.writeLeased(chunk, release); err == nil {
+		t.Fatal("expected pending input buffer full")
+	} else if !strings.Contains(err.Error(), "pending input buffer full") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if released != 1 {
+		t.Fatalf("lease releases = %d, want 1 for the rejected write", released)
+	}
 }
 
 func TestAttachmentReleasesBufferedInputLeaseWhenClosedBeforePTYReady(t *testing.T) {

@@ -27,6 +27,10 @@ type Source interface {
 const (
 	defaultMaxReattach       = 5
 	defaultReattachResetTime = 5 * time.Second
+	// maxPendingInputBytes caps keystrokes buffered while attach is still in
+	// flight. Without a cap, a reconnect loop plus a bursty paste can retain an
+	// unbounded slice of copies of every chunk until setPTY flushes.
+	maxPendingInputBytes = 64 << 10
 )
 
 // attachment is ONE client's hold on a pane: a private attach Stream opened per
@@ -247,6 +251,15 @@ func (a *attachment) writeLeased(p []byte, release func()) error {
 	}
 	pty := a.pty
 	if pty == nil || !a.inputReady {
+		pendingBytes := 0
+		for _, item := range a.pendingInput {
+			pendingBytes += len(item.data)
+		}
+		if pendingBytes+len(chunk) > maxPendingInputBytes {
+			a.mu.Unlock()
+			releaseInput(release)
+			return errors.New("terminal: pending input buffer full")
+		}
 		a.pendingInput = append(a.pendingInput, pendingInput{data: chunk, release: release})
 		a.mu.Unlock()
 		return nil
