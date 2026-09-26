@@ -341,6 +341,12 @@ async function importAutoUpdater(
   };
   const startMacUpdateProgress = vi.fn(async () => ({ assertAlive: vi.fn(), fail: vi.fn(async () => undefined) }));
   vi.doMock("./mac-update-progress", () => ({ startMacUpdateProgress }));
+  const watchdog = {
+    armLinuxUpdateWatchdog: vi.fn(() => true),
+    isLinuxUpdateWatchdogArmed: vi.fn(() => false),
+    consumeUpdateRelaunchFailure: vi.fn(async () => undefined),
+  };
+  vi.doMock("./linux-update-watchdog", () => watchdog);
   autoUpdater.on.mockImplementation(
     (event: string, handler: UpdaterEventHandler) => {
       updaterEvents.set(event, (...args: any[]) => {
@@ -378,11 +384,15 @@ async function importAutoUpdater(
     MacDifferentialV2Updater: class { constructor() { return autoUpdater; } },
   }));
   vi.doMock("electron-updater", () => ({ autoUpdater }));
+  const appEvents = new Map<string, (...args: any[]) => void>();
   vi.doMock("electron", () => ({
     autoUpdater: nativeAutoUpdater,
     app: {
       isPackaged: options.isPackaged ?? true,
       getVersion: () => options.version ?? "1.0.0",
+      on: (event: string, handler: (...args: any[]) => void) => {
+        appEvents.set(event, handler);
+      },
     },
     BrowserWindow,
     dialog,
@@ -429,6 +439,7 @@ async function importAutoUpdater(
   return {
     nativeAutoUpdater,
     startMacUpdateProgress,
+    watchdog,
     sent,
     rendererSend,
     statusMessages,
@@ -437,6 +448,7 @@ async function importAutoUpdater(
     autoUpdater,
     dialog,
     BrowserWindow,
+    appEvents,
     updaterEvents,
     nativeUpdaterEvents,
     readUpdateSettings,
@@ -3621,6 +3633,177 @@ describe("quitAndInstallUpdate", () => {
       expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
     } finally {
       restore();
+    }
+  });
+
+  it("blocks a Linux install when the AppImage file is missing", async () => {
+    const restore = stubProcess("linux", "/usr/bin/node");
+    vi.stubEnv("APPIMAGE", nodePath.join(stateDir, "missing.AppImage"));
+    try {
+      const { module, autoUpdater, updaterEvents, watchdog } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+      await expect(module.quitAndInstallUpdate()).rejects.toThrow(/AppImage file doesn't exist/);
+      expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+      expect(watchdog.armLinuxUpdateWatchdog).not.toHaveBeenCalled();
+    } finally {
+      restore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("arms the relaunch watchdog before a Linux install", async () => {
+    const restore = stubProcess("linux", "/usr/bin/node");
+    const appImage = nodePath.join(stateDir, "agent-orchestrator.AppImage");
+    writeFileSync(appImage, "#!/bin/sh\n");
+    vi.stubEnv("APPIMAGE", appImage);
+    try {
+      const { module, autoUpdater, updaterEvents, watchdog } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+      await module.quitAndInstallUpdate();
+      expect(watchdog.armLinuxUpdateWatchdog).toHaveBeenCalledWith(expect.objectContaining({
+        stateDir,
+        appImagePath: appImage,
+        version: "2.0.0",
+        flagTracked: true,
+      }));
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    } finally {
+      restore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not arm the Linux watchdog when APPIMAGE is unset", async () => {
+    const restore = stubProcess("linux", "/usr/bin/node");
+    vi.stubEnv("APPIMAGE", "");
+    try {
+      const { module, autoUpdater, updaterEvents, watchdog } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+      await module.quitAndInstallUpdate();
+      expect(watchdog.armLinuxUpdateWatchdog).not.toHaveBeenCalled();
+      expect(autoUpdater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    } finally {
+      restore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("arms the Linux watchdog on quit when install-on-quit is active", async () => {
+    const restore = stubProcess("linux", "/usr/bin/node");
+    const appImage = nodePath.join(stateDir, "agent-orchestrator.AppImage");
+    writeFileSync(appImage, "#!/bin/sh\n");
+    vi.stubEnv("APPIMAGE", appImage);
+    try {
+      const { module, autoUpdater, updaterEvents, appEvents, watchdog } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+      autoUpdater.autoInstallOnAppQuit = true;
+      appEvents.get("before-quit")?.();
+      expect(watchdog.armLinuxUpdateWatchdog).toHaveBeenCalledWith(expect.objectContaining({
+        stateDir,
+        appImagePath: appImage,
+        version: "2.0.0",
+        flagTracked: false,
+      }));
+    } finally {
+      restore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not arm the Linux watchdog on a plain quit", async () => {
+    const restore = stubProcess("linux", "/usr/bin/node");
+    const appImage = nodePath.join(stateDir, "agent-orchestrator.AppImage");
+    writeFileSync(appImage, "#!/bin/sh\n");
+    vi.stubEnv("APPIMAGE", appImage);
+    try {
+      const { module, autoUpdater, updaterEvents, appEvents, watchdog } = await importAutoUpdater();
+      await module.checkForUpdatesNow(stateDir);
+      updaterEvents.get("update-downloaded")?.({ version: "2.0.0" });
+      autoUpdater.autoInstallOnAppQuit = false;
+      appEvents.get("before-quit")?.();
+      expect(watchdog.armLinuxUpdateWatchdog).not.toHaveBeenCalled();
+    } finally {
+      restore();
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("getLinuxInstallBlocker", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+    vi.unstubAllEnvs();
+  });
+
+  it("fails open when APPIMAGE is unset", async () => {
+    const restore = stubProcess("linux", "/usr/bin/node");
+    try {
+      const { module } = await importAutoUpdater();
+      expect(module.getLinuxInstallBlocker()).toBeUndefined();
+    } finally {
+      restore();
+    }
+  });
+
+  it("fails open off Linux even with a broken AppImage path", async () => {
+    const restore = stubProcess("darwin", "/usr/bin/node");
+    vi.stubEnv("APPIMAGE", nodePath.join(stateDir, "missing.AppImage"));
+    try {
+      const { module } = await importAutoUpdater();
+      expect(module.getLinuxInstallBlocker()).toBeUndefined();
+    } finally {
+      restore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("blocks when the declared AppImage file is missing", async () => {
+    const restore = stubProcess("linux", "/usr/bin/node");
+    vi.stubEnv("APPIMAGE", nodePath.join(stateDir, "missing.AppImage"));
+    try {
+      const { module } = await importAutoUpdater();
+      expect(module.getLinuxInstallBlocker()).toMatch(/doesn't exist/);
+    } finally {
+      restore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+it("blocks when the AppImage directory is not writable", async () => {
+    if (process.getuid?.() === 0) return;
+    const restore = stubProcess("linux", "/usr/bin/node");
+    const dir = mkdtempSync(nodePath.join(os.tmpdir(), "ao-updater-ro-"));
+    try {
+      const appImage = nodePath.join(dir, "agent-orchestrator.AppImage");
+      writeFileSync(appImage, "#!/bin/sh\n");
+      chmodSync(dir, 0o555);
+      vi.stubEnv("APPIMAGE", appImage);
+      const { module } = await importAutoUpdater();
+      expect(module.getLinuxInstallBlocker()).toMatch(/isn't writable/);
+    } finally {
+      chmodSync(dir, 0o755);
+      rmSync(dir, { recursive: true, force: true });
+      restore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("allows the install when the AppImage exists in a writable directory", async () => {
+    const restore = stubProcess("linux", "/usr/bin/node");
+    const appImage = nodePath.join(stateDir, "agent-orchestrator.AppImage");
+    writeFileSync(appImage, "#!/bin/sh\n");
+    vi.stubEnv("APPIMAGE", appImage);
+    try {
+      const { module } = await importAutoUpdater();
+      expect(module.getLinuxInstallBlocker()).toBeUndefined();
+    } finally {
+      restore();
+      vi.unstubAllEnvs();
     }
   });
 });

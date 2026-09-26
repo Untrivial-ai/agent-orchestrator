@@ -5,6 +5,7 @@ import macDifferentialRollout from "../../scripts/mac-differential-rollout.json"
 import { CancellationToken } from "builder-util-runtime";
 import { app, dialog, autoUpdater as nativeAutoUpdater } from "electron";
 import { startMacUpdateProgress } from "./mac-update-progress";
+import { armLinuxUpdateWatchdog } from "./linux-update-watchdog";
 import { markUpdateRelaunch } from "./update-relaunch-flag";
 import { accessSync, constants as fsConstants, existsSync, lstatSync, readFileSync, readdirSync, statfsSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
@@ -1732,6 +1733,26 @@ function wireUpdaterEvents(): void {
       }
     });
   }
+  if (process.platform === "linux") {
+    // Install-on-quit runs while the app is already shutting down, and the swap
+    // failure is invisible: the process exits either way. Arm the same detached
+    // watchdog the explicit path uses so a failed quit install still ends with
+    // a running app. Strictly gated on autoInstallOnAppQuit (which
+    // applyInstallOnQuitPolicy already clears for blocked locations): arming on
+    // a plain quit would relaunch the app after the user closed it.
+    app.on("before-quit", () => {
+      if (!autoUpdater.autoInstallOnAppQuit) return;
+      const appImage = process.env.APPIMAGE;
+      if (!appImage || !escalationStateDir || !stagedVersion) return;
+      if (!hasStagedBuild()) return;
+      armLinuxUpdateWatchdog({
+        stateDir: escalationStateDir,
+        appImagePath: appImage,
+        version: stagedVersion,
+        flagTracked: false,
+      });
+    });
+  }
   // Registered last so a native update-downloaded reaches the sentinel handler
   // through the test harness's single-handler map lookup.
   installE2EUpdateSentinel();
@@ -2633,6 +2654,39 @@ export function getMacInstallBlocker(): string | undefined {
   return undefined;
 }
 
+// getLinuxInstallBlocker is the Linux install preflight, mirroring the macOS
+// one above. electron-updater's AppImageUpdater replaces the running AppImage
+// in place (rename into its directory) and relaunches it as a detached spawn
+// the app never observes, so installing from a location that cannot work fails
+// as silently as the macOS translocation case (#3527, #5575). Detect it up
+// front so the button path reports it and install-on-quit stays off. Fails
+// open when APPIMAGE is unset: without it nothing can install anyway
+// (electron-updater's isUpdaterActive is false) and dev runs must not guess
+// from an unrelated working directory; a missing-but-declared file is a
+// positive blocker, because the declared install location cannot work.
+export function getLinuxInstallBlocker(): string | undefined {
+  if (process.platform !== "linux") return undefined;
+  const appImage = process.env.APPIMAGE;
+  if (!appImage || !path.isAbsolute(appImage)) return undefined;
+  if (!existsSync(appImage)) {
+    return (
+      "The update can't be installed because this app's AppImage file doesn't exist anymore: " +
+      `${appImage}. Reinstall agent-orchestrator and restart to update.`
+    );
+  }
+  // The updater unlinks the old file and renames the new one in, so the PARENT
+  // directory is what has to be writable, not the file itself.
+  try {
+    accessSync(path.dirname(appImage), fsConstants.W_OK);
+  } catch {
+    return (
+      "The update can't be installed because Agent Orchestrator's location isn't writable: " +
+      `${path.dirname(appImage)}. Fix that folder's permissions, then restart to update.`
+    );
+  }
+  return undefined;
+}
+
 // applyInstallOnQuitPolicy keeps autoInstallOnAppQuit honest. Every check path
 // sets it to true, and the "downloaded" status row tells the user the build
 // installs on quit. When the install cannot work from this location that is a
@@ -2640,7 +2694,7 @@ export function getMacInstallBlocker(): string | undefined {
 // did, and #3527's dialog only ever covered the button. Turning it off makes
 // the staged build wait for a location it can actually install from.
 function applyInstallOnQuitPolicy(): void {
-  const blocker = getMacInstallBlocker();
+  const blocker = getMacInstallBlocker() ?? getLinuxInstallBlocker();
   autoUpdater.autoInstallOnAppQuit = blocker === undefined && !awaitingStagedReplacement && !nativePreparationBlocked;
   if (awaitingStagedReplacement) {
     console.info(
@@ -2669,7 +2723,7 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
   if (awaitingStagedReplacement) {
     throw new Error("Check for updates and download an update before restarting to install.");
   }
-  const blocker = getMacInstallBlocker();
+  const blocker = getMacInstallBlocker() ?? getLinuxInstallBlocker();
   if (blocker !== undefined) {
     throw new Error(blocker);
   }
@@ -2698,6 +2752,18 @@ export async function quitAndInstallUpdate(confirmedVersion?: string): Promise<U
         }),
         new Promise<void>((resolve) => setTimeout(resolve, 750)),
       ]);
+    }
+    if (process.platform === "linux" && process.env.APPIMAGE && escalationStateDir && stagedVersion) {
+      // electron-updater's AppImage relaunch is a detached, unobserved spawn:
+      // the app quits here even when nothing ever comes up. Arm the detached
+      // watchdog that relaunches the AppImage (or retires the update state) if
+      // the next build never appears. Best-effort: a failed arm still installs.
+      armLinuxUpdateWatchdog({
+        stateDir: escalationStateDir,
+        appImagePath: process.env.APPIMAGE,
+        version: stagedVersion,
+        flagTracked: true,
+      });
     }
     autoUpdater.quitAndInstall(false, true);
     return;
