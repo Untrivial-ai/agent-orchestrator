@@ -11,7 +11,7 @@ import {
 } from "@aoagents/product-ui";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Info, Pencil } from "lucide-react";
 import type { components } from "../../api/schema";
 import {
@@ -60,6 +60,7 @@ type SettingsSaveResult = {
 export type ProjectSettingsSection = "general" | "agents" | "workflow" | "intake";
 export type ProjectSettingsSaveState = {
 	phase: "idle" | "pending" | "saving" | "saved" | "failed";
+	dirty?: boolean;
 	error?: string;
 	replacementError?: string;
 };
@@ -162,6 +163,7 @@ function SettingsBody({
 		intakeRepo: intake.repo ?? "",
 		intakeAssignee: intake.assignee ?? "",
 	});
+	const savedForm = useRef(form);
 	const [savedAt, setSavedAt] = useState<number | null>(null);
 	const [showSaving, setShowSaving] = useState(false);
 	const [replacementError, setReplacementError] = useState<string | null>(null);
@@ -308,6 +310,7 @@ function SettingsBody({
 		},
 		onSuccess: async (result) => {
 			void captureRendererEvent("ao.renderer.settings_save_succeeded", { project_id: projectId });
+			savedForm.current = form;
 			setSavedAt(Date.now());
 			setReplacementError(result.replacementError);
 			setValidationError(null);
@@ -353,6 +356,7 @@ function SettingsBody({
 				: t("settings.project.saveFailed")
 			: undefined;
 		onSaveState?.({
+			dirty: JSON.stringify(form) !== JSON.stringify(savedForm.current),
 			phase: validationError || mutationError
 				? "failed"
 				: mutation.isPending
@@ -369,6 +373,7 @@ function SettingsBody({
 		mutation.error,
 		mutation.isError,
 		mutation.isPending,
+		form,
 		onSaveState,
 		replacementError,
 		savedAt,
