@@ -286,14 +286,10 @@ func (p *Plugin) NativeConversationID(
 	currentMode domain.SessionMode,
 	providerConversationID string,
 ) (string, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return "", false, err
+	id, ok, err := agentbase.HookOrProviderConversationID(ctx, session, currentMode, providerConversationID)
+	if err != nil || ok || currentMode == domain.SessionModeChat {
+		return id, ok, err
 	}
-	if currentMode == domain.SessionModeChat {
-		id := strings.TrimSpace(providerConversationID)
-		return id, id != "", nil
-	}
-	id := strings.TrimSpace(session.Metadata[ports.MetadataKeyAgentSessionID])
 	if id == "" && session.ID != "" {
 		id = claudeSessionUUID(session.ID)
 	}
@@ -323,43 +319,16 @@ func (p *Plugin) NativeConversationExists(
 	if !isUUID(id) {
 		return false, nil
 	}
-	configDir := strings.TrimSpace(env["CLAUDE_CONFIG_DIR"])
-	if configDir == "" {
-		configDir = strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
-	}
-	if configDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return false, fmt.Errorf("claude-code: resolve transcript root: %w", err)
-		}
-		configDir = filepath.Join(home, ".claude")
+	configDir, err := agentbase.ProviderHomeDir(env, "CLAUDE_CONFIG_DIR", ".claude")
+	if err != nil {
+		return false, fmt.Errorf("claude-code: resolve transcript root: %w", err)
 	}
 	projectsDir := filepath.Join(configDir, "projects")
-	projects, err := os.ReadDir(projectsDir)
-	if os.IsNotExist(err) {
-		return false, nil
-	}
+	found, err := agentbase.TranscriptInProjects(ctx, projectsDir, id+".jsonl")
 	if err != nil {
-		return false, fmt.Errorf("claude-code: read transcript root %s: %w", projectsDir, err)
+		return false, fmt.Errorf("claude-code: inspect transcript for %s: %w", id, err)
 	}
-	for _, project := range projects {
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
-		if !project.IsDir() {
-			continue
-		}
-		info, err := os.Stat(filepath.Join(projectsDir, project.Name(), id+".jsonl"))
-		switch {
-		case err == nil && info.Mode().IsRegular() && info.Size() > 0:
-			return true, nil
-		case err == nil, os.IsNotExist(err):
-			continue
-		default:
-			return false, fmt.Errorf("claude-code: inspect transcript for %s: %w", id, err)
-		}
-	}
-	return false, nil
+	return found, nil
 }
 
 func isUUID(value string) bool {

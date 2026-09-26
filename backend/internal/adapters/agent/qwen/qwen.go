@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -176,15 +175,7 @@ func (p *Plugin) NativeConversationID(
 	currentMode domain.SessionMode,
 	providerConversationID string,
 ) (string, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return "", false, err
-	}
-	if currentMode == domain.SessionModeChat {
-		id := strings.TrimSpace(providerConversationID)
-		return id, id != "", nil
-	}
-	id := strings.TrimSpace(session.Metadata[ports.MetadataKeyAgentSessionID])
-	return id, id != "", nil
+	return agentbase.HookOrProviderConversationID(ctx, session, currentMode, providerConversationID)
 }
 
 // NativeConversationExists reports whether a Qwen session UUID has a
@@ -202,43 +193,12 @@ func (p *Plugin) NativeConversationExists(
 	if !valid {
 		return false, nil
 	}
-	qwenHome := strings.TrimSpace(env["QWEN_HOME"])
-	if qwenHome == "" {
-		qwenHome = strings.TrimSpace(os.Getenv("QWEN_HOME"))
+	qwenHome, err := agentbase.ProviderHomeDir(env, "QWEN_HOME", ".qwen")
+	if err != nil {
+		return false, fmt.Errorf("qwen: resolve chats root: %w", err)
 	}
-	if qwenHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return false, fmt.Errorf("qwen: resolve chats root: %w", err)
-		}
-		qwenHome = filepath.Join(home, ".qwen")
-	}
-
-	found := false
 	projectsDir := filepath.Join(qwenHome, "projects")
-	err := filepath.WalkDir(projectsDir, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() || !qwenTranscriptNameMatches(entry.Name(), id) {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if info.Mode().IsRegular() && info.Size() > 0 {
-			found = true
-			return fs.SkipAll
-		}
-		return nil
-	})
-	if os.IsNotExist(err) {
-		return false, nil
-	}
+	found, err := agentbase.TranscriptInProjects(ctx, projectsDir, filepath.Join("chats", id+".jsonl"))
 	if err != nil {
 		return false, fmt.Errorf("qwen: inspect chats root %s: %w", projectsDir, err)
 	}
@@ -251,10 +211,6 @@ func canonicalQwenSessionID(value string) (string, bool) {
 		return "", false
 	}
 	return parsed.String(), true
-}
-
-func qwenTranscriptNameMatches(name, nativeConversationID string) bool {
-	return name == nativeConversationID+".jsonl"
 }
 
 // Qwen Code's append-system-prompt flag accepts inline text only. The manager

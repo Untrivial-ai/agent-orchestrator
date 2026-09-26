@@ -7,8 +7,11 @@ package agentbase
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -29,6 +32,104 @@ func AppendModelFlag(cmd *[]string, cfg ports.AgentConfig, flag string) {
 	if model := strings.TrimSpace(cfg.Model); model != "" {
 		*cmd = append(*cmd, flag, model)
 	}
+}
+
+// ProviderHomeDir resolves an agent's data directory from the session
+// environment, then the daemon environment, then the user's home directory.
+func ProviderHomeDir(env map[string]string, envName, dotDir string) (string, error) {
+	if dir := strings.TrimSpace(env[envName]); dir != "" {
+		return dir, nil
+	}
+	if dir := strings.TrimSpace(os.Getenv(envName)); dir != "" {
+		return dir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, dotDir), nil
+}
+
+// TranscriptInProjects checks one relative transcript path beneath each
+// provider project directory. A leading * on the filename matches provider
+// prefixes such as timestamps; all other characters are literal. The lookup
+// never walks recursively. Only non-empty regular files count as persisted.
+func TranscriptInProjects(ctx context.Context, projectsDir, relativePath string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	projects, err := os.ReadDir(projectsDir)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, project := range projects {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		if !project.IsDir() {
+			continue
+		}
+		name := filepath.Base(relativePath)
+		if !strings.HasPrefix(name, "*") {
+			info, err := os.Stat(filepath.Join(projectsDir, project.Name(), relativePath))
+			switch {
+			case err == nil && info.Mode().IsRegular() && info.Size() > 0:
+				return true, nil
+			case err == nil, os.IsNotExist(err):
+				continue
+			default:
+				return false, err
+			}
+		}
+		candidateDir := filepath.Join(projectsDir, project.Name(), filepath.Dir(relativePath))
+		entries, err := os.ReadDir(candidateDir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			matched := strings.HasSuffix(entry.Name(), strings.TrimPrefix(name, "*"))
+			if !matched {
+				continue
+			}
+			info, err := entry.Info()
+			switch {
+			case err == nil && info.Mode().IsRegular() && info.Size() > 0:
+				return true, nil
+			case err == nil:
+				continue
+			default:
+				return false, err
+			}
+		}
+	}
+	return false, nil
+}
+
+// HookOrProviderConversationID selects the provider conversation id in Chat
+// mode and the hook-captured native id in terminal mode.
+func HookOrProviderConversationID(
+	ctx context.Context,
+	session ports.SessionRef,
+	currentMode domain.SessionMode,
+	providerConversationID string,
+) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	id := strings.TrimSpace(session.Metadata[ports.MetadataKeyAgentSessionID])
+	if currentMode == domain.SessionModeChat {
+		id = strings.TrimSpace(providerConversationID)
+	}
+	return id, id != "", nil
 }
 
 // Base provides no-op defaults for the optional ports.Agent methods. Embed it in

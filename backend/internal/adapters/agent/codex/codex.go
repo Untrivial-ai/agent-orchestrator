@@ -212,15 +212,7 @@ func (p *Plugin) NativeConversationID(
 	currentMode domain.SessionMode,
 	providerConversationID string,
 ) (string, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return "", false, err
-	}
-	if currentMode == domain.SessionModeChat {
-		id := strings.TrimSpace(providerConversationID)
-		return id, id != "", nil
-	}
-	id := strings.TrimSpace(session.Metadata[ports.MetadataKeyAgentSessionID])
-	return id, id != "", nil
+	return agentbase.HookOrProviderConversationID(ctx, session, currentMode, providerConversationID)
 }
 
 // NativeConversationExists distinguishes a Codex thread UUID from a thread

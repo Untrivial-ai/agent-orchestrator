@@ -315,12 +315,20 @@ func TestNativeConversationExistsRequiresPersistedSessionFile(t *testing.T) {
 	if err := os.MkdirAll(sessionDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(sessionDir, "2026-09-10T16-48-30-999Z_"+id+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+	transcript := filepath.Join(sessionDir, "2026-09-10T16-48-30-999Z_"+id+".jsonl")
+	if err := os.WriteFile(transcript, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	p := &Plugin{}
 	exists, err := p.NativeConversationExists(context.Background(), ports.SessionRef{}, id, nil)
+	if err != nil || exists {
+		t.Fatalf("empty transcript: exists=%v err=%v", exists, err)
+	}
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exists, err = p.NativeConversationExists(context.Background(), ports.SessionRef{}, id, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

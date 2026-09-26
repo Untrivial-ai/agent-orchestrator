@@ -5,7 +5,6 @@ package omp
 
 import (
 	"context"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,42 +127,12 @@ func (p *Plugin) NativeConversationExists(ctx context.Context, _ ports.SessionRe
 	if id == "" {
 		return false, nil
 	}
-	configDir := strings.TrimSpace(env["PI_CODING_AGENT_DIR"])
-	if configDir == "" {
-		configDir = strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR"))
+	configDir, err := agentbase.ProviderHomeDir(env, "PI_CODING_AGENT_DIR", filepath.Join(".omp", "agent"))
+	if err != nil {
+		return false, err
 	}
-	if configDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return false, err
-		}
-		configDir = filepath.Join(home, ".omp", "agent")
-	}
-	found := false
 	sessionsDir := filepath.Join(configDir, "sessions")
-	err := filepath.WalkDir(sessionsDir, func(_ string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_"+id+".jsonl") {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if info.Mode().IsRegular() {
-			found = true
-			return fs.SkipAll
-		}
-		return nil
-	})
-	if os.IsNotExist(err) {
-		return false, nil
-	}
+	found, err := agentbase.TranscriptInProjects(ctx, sessionsDir, "*_"+id+".jsonl")
 	if err != nil {
 		return false, err
 	}
