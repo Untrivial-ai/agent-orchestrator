@@ -201,6 +201,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 		pendingAcceptedTurnId,
 	} = commands;
 	const conversationWorkKnown = Boolean(snapshot);
+	const durableEchoObservations = useRef(new Map<string, number>());
 	const acceptedLocalTurnObserved = Boolean(
 		pendingAcceptedTurnId && snapshot?.turns.some((turn) => turn.id === pendingAcceptedTurnId),
 	);
@@ -224,7 +225,24 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 			),
 		);
 		for (const echo of localEchos) {
-			if (echo.turnId && durableHumanTurnIds.has(echo.turnId)) acknowledgeLocalEcho?.(echo.turnId);
+			if (!echo.turnId || !durableHumanTurnIds.has(echo.turnId)) continue;
+			const firstObservedAt = durableEchoObservations.current.get(echo.turnId);
+			if (firstObservedAt === undefined) {
+				// Do not retire the optimistic bubble on the first durable snapshot. A
+				// focus/visibility refresh can immediately replay an older snapshot; the
+				// local echo must bridge that gap instead of disappearing and reappearing.
+				durableEchoObservations.current.set(echo.turnId, snapshot.latestSequence);
+				continue;
+			}
+			if (snapshot.latestSequence > firstObservedAt) {
+				durableEchoObservations.current.delete(echo.turnId);
+				acknowledgeLocalEcho?.(echo.turnId);
+			}
+		}
+		for (const turnId of durableEchoObservations.current.keys()) {
+			if (!localEchos.some((echo) => echo.turnId === turnId)) {
+				durableEchoObservations.current.delete(turnId);
+			}
 		}
 	}, [acknowledgeLocalEcho, localEchos, snapshot]);
 	useEffect(() => {
