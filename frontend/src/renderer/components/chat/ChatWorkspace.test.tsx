@@ -294,6 +294,17 @@ describe("HumanMessage attachments", () => {
 		expect(screen.queryByRole("img")).not.toBeInTheDocument();
 		expect(document.body.textContent).toContain(text);
 	});
+
+	it("linkifies session URLs without parsing the human message as Markdown", () => {
+		const text = "Notes:\n- fix *bug*\nao://sessions/proj/sess\n> write test";
+		const { container } = render(<HumanMessage message={humanMessage(text)} sessionId="ao-1" />);
+
+		const paragraph = container.querySelector(".cursor-chat-human-message > p");
+		expect(paragraph).toHaveClass("whitespace-pre-wrap");
+		expect(paragraph?.textContent).toBe(text);
+		expect(screen.getByRole("link", { name: "ao://sessions/proj/sess" })).toBeInTheDocument();
+		expect(container.querySelector("ul, blockquote, em")).toBeNull();
+	});
 });
 
 describe("Chat message timestamps", () => {
@@ -1817,6 +1828,18 @@ Task: Address the feedback below according to its wording. Visual adjustments ar
 		render(<OriginMessage message={message} />);
 		expect(screen.getByText(/Checks failed on the base branch/)).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Show full report" })).not.toBeInTheDocument();
+	});
+
+	it("linkifies session URLs without parsing an origin preview as Markdown", () => {
+		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
+		const text = "Notes:\n- fix *bug*\nao://sessions/proj/sess\n> write test";
+		const { container } = render(<OriginMessage message={{ ...source, text }} />);
+
+		const paragraph = container.querySelector(".cursor-chat-origin-message > p");
+		expect(paragraph).toHaveClass("whitespace-pre-wrap");
+		expect(paragraph?.textContent).toBe(text);
+		expect(screen.getByRole("link", { name: "ao://sessions/proj/sess" })).toBeInTheDocument();
+		expect(container.querySelector("ul, blockquote, em")).toBeNull();
 	});
 });
 

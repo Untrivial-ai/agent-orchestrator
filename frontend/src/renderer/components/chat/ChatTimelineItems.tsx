@@ -61,8 +61,7 @@ import { cn } from "../../lib/utils";
 import { caretNotation, stripAnsi } from "../../lib/ansi";
 import { getApiBaseUrl } from "../../lib/api-client";
 import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
-import { ActivityTitle, ChatMarkdown } from "./ChatMarkdown";
-import { findSessionLinks } from "../../lib/session-links";
+import { ActivityTitle, ChatMarkdown, SessionLinkedText } from "./ChatMarkdown";
 import { HighlightedCode } from "./HighlightedCode";
 import { CopyButton } from "./CopyButton";
 import { HumanMessageEditor } from "./HumanMessageEditor";
@@ -576,11 +575,9 @@ export function HumanMessage({
 					)}
 				>
 					{body ? (
-						findSessionLinks(body).length > 0 ? (
-							<ChatMarkdown text={body} />
-						) : (
-							<p className="break-words whitespace-pre-wrap text-pretty">{body}</p>
-						)
+						<p className="break-words whitespace-pre-wrap text-pretty">
+							<SessionLinkedText text={body} />
+						</p>
 					) : null}
 					<StagedAttachmentItems
 						paths={attachments}
@@ -672,15 +669,9 @@ export function OriginMessage({ message }: { message: ConversationMessage }) {
 			{longReport && expanded ? (
 				<ChatMarkdown text={message.text} muted />
 			) : (
-				findSessionLinks(preview).length > 0 ? (
-					<div className={cn(longReport && "line-clamp-3")}>
-						<ChatMarkdown text={preview} muted />
-					</div>
-				) : (
-					<p className={cn("text-sm leading-relaxed text-muted-foreground", longReport && "line-clamp-3")}>
-						{preview}
-					</p>
-				)
+				<p className={cn("whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground", longReport && "line-clamp-3")}>
+					<SessionLinkedText text={preview} />
+				</p>
 			)}
 			{longReport ? (
 				<button

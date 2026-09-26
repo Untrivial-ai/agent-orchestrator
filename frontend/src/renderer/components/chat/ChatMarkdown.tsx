@@ -40,7 +40,7 @@ import { WrapText } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { canonicalLanguage } from "../../lib/code-highlight";
 import { fenceOf } from "../../lib/markdown-fence";
-import { isSessionLink, remarkSessionLinks } from "../../lib/session-links";
+import { findSessionLinks, isSessionLink, remarkSessionLinks } from "../../lib/session-links";
 import {
 	isPotentialWorkspaceFileLink,
 	isWebLink,
@@ -280,6 +280,25 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 		</AppLink>
 	);
 }
+
+/** Linkify canonical session URLs without interpreting any surrounding text as Markdown. */
+export const SessionLinkedText = memo(function SessionLinkedText({ text }: { text: string }) {
+	const links = findSessionLinks(text);
+	if (links.length === 0) return text;
+	const content: ReactNode[] = [];
+	let cursor = 0;
+	for (const link of links) {
+		if (link.start > cursor) content.push(text.slice(cursor, link.start));
+		content.push(
+			<MarkdownLink key={`${link.start}:${link.text}`} href={link.text}>
+				{link.text}
+			</MarkdownLink>,
+		);
+		cursor = link.end;
+	}
+	if (cursor < text.length) content.push(text.slice(cursor));
+	return <>{content}</>;
+});
 
 /**
  * A mermaid fence with the streaming state it was rendered under.
