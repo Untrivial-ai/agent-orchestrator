@@ -76,6 +76,7 @@ beforeEach(() => {
 		if (path === "/api/v1/agents/codex/accounts/ensure") return { data: { accountRevision: 0, accounts: [], capabilities: {}, deviceReconciliation: { status: "verified", activeAccountVerified: false, reasonCode: "verified", retryable: false } } } as never;
 		throw new Error(`Unexpected POST ${path}`);
 	});
+	vi.spyOn(apiClient, "PUT").mockResolvedValue({ data: { project } } as never);
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -183,7 +184,7 @@ describe("Settings recovery modal integration", () => {
 		expect(await screen.findByRole("button", { name: "Default worker agent" })).toHaveTextContent("Codex");
 		expect(screen.getByRole("button", { name: "Agents" })).toHaveAttribute("aria-current", "page");
 		expect(document.getElementById("project-settings-form")).toBe(form);
-		await userEvent.click(screen.getByRole("button", { name: "Identity" }));
+		await userEvent.click(screen.getByRole("button", { name: "General" }));
 		expect(await screen.findByRole("button", { name: "Edit Project name" })).toHaveTextContent("Unsaved project name");
 		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "proj-1" });
 		await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close settings" }));

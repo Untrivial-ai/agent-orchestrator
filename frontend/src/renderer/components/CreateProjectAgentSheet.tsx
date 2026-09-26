@@ -413,7 +413,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 	labelClassName?: string;
 	contentClassName?: string;
 	value: string;
-	variant?: "stacked" | "settings-row" | "chip";
+	variant?: "stacked" | "settings-row" | "settings-control" | "chip";
 }) {
 	const { t } = useTranslation();
 	const fallbackAgents: AgentInfo[] = AGENT_OPTIONS.map((agent) => unknownAgentReadiness(agent, agentLabel(agent)));
@@ -431,15 +431,14 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 	const managementAction = manageAgents ? { label: t("agentSelector.manage"), onSelect: management.requestManagement } : undefined;
 	const setupHint = needsSetup ? <span className="text-xs text-muted-foreground">{t("agentSelector.needsSetup")}</span> : null;
 
-	if (variant === "settings-row") {
+	if (variant === "settings-row" || variant === "settings-control") {
 		const menuOptions = visibleOptions.map((agent) => ({
 			value: agent.id,
 			label: agent.label,
 			disabled: agent.disabled,
 		}));
 
-		return (
-			<SettingsRow icon={icon} label={label}>
+		const control = (
 				<SettingsOptionMenu
 					aria-label={label}
 					value={value}
@@ -451,15 +450,15 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 					onCloseAutoFocus={management.onCloseAutoFocus}
 					disabled={disabled}
 					onChange={onChange}
-					triggerClassName={invalid ? "text-error" : undefined}
+					triggerClassName={cn(variant === "settings-control" && "w-full justify-between", invalid && "text-error")}
 					menuClassName={cn("settings-agent-menu-surface", AGENT_MENU_WIDTH)}
 					menuItemClassName="settings-agent-menu-item"
 					renderTrigger={() => (
-						<>
+						<span className="flex min-w-0 items-center gap-2">
 							{selectedOption ? <AgentAvatar provider={selectedOption.id} className="size-icon-lg" /> : null}
 							<span className="min-w-0 truncate">{selectedOption?.label ?? placeholder}</span>
 							{setupHint}
-						</>
+						</span>
 					)}
 					renderMenuItem={(option, selected) => {
 						const agent = options.find((entry) => entry.id === option.value);
@@ -476,8 +475,8 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 						);
 					}}
 				/>
-			</SettingsRow>
 		);
+		return variant === "settings-row" ? <SettingsRow icon={icon} label={label}>{control}</SettingsRow> : control;
 	}
 
 	// Chip: the value reads as part of a sentence ("Runs with Codex") rather than

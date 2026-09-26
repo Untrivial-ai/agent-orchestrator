@@ -50,6 +50,9 @@ vi.mock("./ProjectSettingsForm", () => ({
 			>
 				Trigger failed save
 			</button>
+			<button type="button" onClick={() => onSaveState?.({ phase: "saved" })}>
+				Complete save
+			</button>
 		</>
 	),
 }));
@@ -85,10 +88,13 @@ describe("SettingsDialog", () => {
 
 		await userEvent.click(await screen.findByRole("button", { name: "Start pending save" }));
 		const closeButton = screen.getByRole("button", { name: "Close settings" });
-		expect(closeButton).toBeDisabled();
+		await userEvent.click(closeButton);
+		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "proj-1" });
 
 		await userEvent.keyboard("{Escape}");
 		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "proj-1" });
+		await userEvent.click(screen.getByRole("button", { name: "Complete save" }));
+		expect(useUiStore.getState().settingsModal).toBeNull();
 	});
 
 	it("renders visible error message when project settings save fails", async () => {

@@ -126,9 +126,9 @@ export function IntakeFields({
 	if (variant === "settings") {
 		return (
 			<div className="flex flex-col gap-1.5">
-				<SettingsRow label={t("settings.project.enableIssueIntake")}>
+				<SettingsRow label={t("createProject.workOnAssignedIssues")}>
 					<Switch
-						aria-label={t("settings.project.enableIssueIntake")}
+						aria-label={t("createProject.workOnAssignedIssues")}
 						checked={form.enabled}
 						onCheckedChange={(enabled) => onChange({ enabled })}
 					/>
