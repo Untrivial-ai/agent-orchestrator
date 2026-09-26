@@ -160,6 +160,10 @@ var shippedMigrations = map[int64]string{
 	155: "0155_allow_unreal_agent_harness.sql",
 }
 
+func init() {
+	shippedMigrations[149] = "0149_schema_app_version.sql"
+}
+
 // burnedVersion reports version numbers that must never be (re)used: they
 // shipped in a release and were then deleted, so real installs have them
 // recorded as applied while this repository ships no file with that number. A
