@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { parsePatchFiles, type DiffLineAnnotation, type FileDiffMetadata } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
+import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { fetchPRFileRevision, fetchWorkspaceFileRevision, type FilesSource, type WorkspaceDiffScope, type WorkspaceFileDetail } from "../../hooks/useSessionWorkspaceFiles";
 import { parseUnifiedDiff, type DiffRow } from "../../lib/diff-parser";
 import { useUiStore } from "../../stores/ui-store";
 import { FileAnnotationComposer, LineFeedbackButtonControl, type FileAnnotationModel } from "../WorkspaceDiffView";
 import { AO_PIERRE_SURFACE_CSS } from "./pierreTheme";
+import { endsAtLastHunk, hydratedCopy, patchIdentity } from "./trailingContext";
 import { usePersistentGutterUtility } from "./usePersistentGutterUtility";
 
 const metadataCache = new Map<string, FileDiffMetadata>();
 const MAX_METADATA_CACHE_ENTRIES = 100;
+// Same bound as the review list: bigger files keep the "more context" row and
+// load on click instead of being fetched up front.
+const END_OF_FILE_PREFETCH_MAX_BYTES = 128 * 1024;
 
 function cachedMetadata(detail: WorkspaceFileDetail): FileDiffMetadata | null {
 	if (!detail.diff) return null;
@@ -47,6 +52,8 @@ export function AoDiffFile({
 	split,
 	commitSha,
 	source = { kind: "workspace" },
+	hideFileHeader = false,
+	extraCSS = "",
 }: {
 	annotation: FileAnnotationModel;
 	detail: WorkspaceFileDetail;
@@ -57,6 +64,10 @@ export function AoDiffFile({
 	split: boolean;
 	commitSha?: string;
 	source?: FilesSource;
+	/** Opt-in (Files panel preview): the caller's toolbar already names the file. */
+	hideFileHeader?: boolean;
+	/** Opt-in extra surface CSS appended after the shared surface CSS. */
+	extraCSS?: string;
 }) {
 	const { t } = useTranslation();
 	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
@@ -99,6 +110,21 @@ export function AoDiffFile({
 		},
 		[commitSha, detail.path, detail.previousPath, detail.workspaceVersion, scope, sessionId, source, t],
 	);
+	// The detail patch is git's --unified=3, which endsAtLastHunk assumes. When it
+	// proves the file ends at the last hunk, load the full contents up front so
+	// Pierre has no dead "More unchanged context may be available" row to draw.
+	const endsAtEndOfFile = metadata != null && detail.size <= END_OF_FILE_PREFETCH_MAX_BYTES && endsAtLastHunk(metadata);
+	const endOfFileContents = useQuery({
+		queryKey: ["files-preview-end-of-file", sessionId, source.kind === "pull_request" ? source.url : "workspace", scope, commitSha ?? "", detail.path, endsAtEndOfFile && metadata ? patchIdentity(metadata) : ""] as const,
+		queryFn: () => loadDiffFiles(metadata as FileDiffMetadata),
+		enabled: endsAtEndOfFile,
+		retry: false,
+		staleTime: Infinity,
+	});
+	const fileDiff = useMemo(
+		() => (endsAtEndOfFile && metadata && endOfFileContents.data ? hydratedCopy(metadata, endOfFileContents.data) : null) ?? metadata,
+		[endOfFileContents.data, endsAtEndOfFile, metadata],
+	);
 	const beginLineAnnotation = useCallback((side: "deletions" | "additions", lineNumber: number) => {
 		const { row, rowIndex } = rowForLine(rows, side, lineNumber);
 		if (!row || row.kind === "hunk") return;
@@ -130,12 +156,13 @@ export function AoDiffFile({
 		>
 			<FileDiff
 				disableWorkerPool={typeof Worker === "undefined"}
-				fileDiff={metadata}
+				fileDiff={fileDiff ?? metadata}
 				lineAnnotations={lineAnnotations}
 				options={{
 					collapsedContextThreshold: 8,
 					diffIndicators: "classic",
 					diffStyle: split ? "split" : "unified",
+					disableFileHeader: hideFileHeader,
 					enableGutterUtility: true,
 					expansionLineCount: 20,
 					hunkSeparators: "line-info",
@@ -149,7 +176,7 @@ export function AoDiffFile({
 					themeType: resolvedTheme,
 					tokenizeMaxLength: 200_000,
 					tokenizeMaxLineLength: 2_000,
-					unsafeCSS: AO_PIERRE_SURFACE_CSS,
+					unsafeCSS: AO_PIERRE_SURFACE_CSS + extraCSS,
 				}}
 				renderAnnotation={() => <FileAnnotationComposer annotation={annotation} />}
 				renderGutterUtility={(getHoveredLine) => (

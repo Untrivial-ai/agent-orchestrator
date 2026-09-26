@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { LoaderCircle, MessageSquarePlus, Pencil, Save, X } from "lucide-react";
+import { Eye, FileCode2, GitCompareArrows, LoaderCircle, MessageSquarePlus, Pencil, Save, X } from "lucide-react";
 import { Editor, type EditorFactory } from "@pierre/diffs/edit";
 import { EditProvider } from "@pierre/diffs/react";
 import {
@@ -25,10 +25,16 @@ import {
 	type FileAnnotationModel,
 } from "./WorkspaceDiffView";
 import { ReadOnlyFileView } from "./ReadOnlyFileView";
+import { WorkspaceEntryIcon } from "./WorkspaceEntryIcon";
 import { AoDiffFile } from "./diffs/AoDiffFile";
+import { AO_PIERRE_FILES_REVIEW_CSS } from "./diffs/pierreTheme";
 import { Button } from "./ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { MarkdownFileView } from "./markdown/MarkdownFileView";
+
+// Edit-mode Cancel/Save sit beside icon-sm toolbar buttons; keep them the same
+// height with small text and icons so they do not dwarf the toolbar.
+const EDIT_ACTION_CLASS = "h-6 gap-1 px-2 text-xs";
 
 export type FileViewMode = "diff" | "file" | "rendered";
 export type FileOpenOptions = { commitSha?: string; editing?: boolean; mode?: FileViewMode; scope?: WorkspaceDiffScope };
@@ -68,6 +74,11 @@ export function FileContentPane({
 	split: boolean;
 	scope?: WorkspaceDiffScope;
 	source?: FilesSource;
+	/**
+	 * @deprecated Ignored: centre file tabs and the Files panel now share the
+	 * compact toolbar (breadcrumb + status/counts, icon mode switches).
+	 */
+	toolbar?: "tabs" | "compact";
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
@@ -210,67 +221,98 @@ export function FileContentPane({
 		&& annotation.target?.path === detail.path
 		&& annotation.target.side === "file"
 		&& annotation.target.line == null;
-	const tabs = (
-		<div className="sticky top-0 z-20 flex min-h-9 items-center gap-2 border-b border-border bg-surface px-2 py-1">
-			{statusLabel[detail.status] ? (
-				<span className={cn("shrink-0 font-mono text-2xs font-semibold", statusTone[detail.status])}>
-					{statusLabel[detail.status]}
-				</span>
-			) : null}
-			{hasDisplayModeChoice ? <div aria-label={t("files.fileDisplayMode")} className="flex items-center" role="tablist">
-				{detail.status !== "unmodified" ? (
-					<Button aria-selected={effectiveMode === "diff"} className="h-6 rounded px-2 text-2xs" disabled={editing} onClick={() => setMode("diff")} role="tab" size="sm" type="button" variant={effectiveMode === "diff" ? "secondary" : "ghost"}>
-						{t("files.diff")}
-					</Button>
-				) : null}
-				<Button aria-selected={effectiveMode === "file"} className="h-6 rounded px-2 text-2xs" disabled={editing} onClick={() => setMode("file")} role="tab" size="sm" type="button" variant={effectiveMode === "file" ? "secondary" : "ghost"}>
-					{t("files.fileView")}{unsavedIndicator}
+	const compactModeButton = (mode: FileViewMode, label: string, icon: React.ReactNode) => (
+		<Tooltip key={mode}>
+			<TooltipTrigger asChild>
+				<Button
+					aria-label={label}
+					aria-selected={effectiveMode === mode}
+					className={cn("text-muted-foreground hover:text-foreground", effectiveMode === mode && "bg-interactive-active text-foreground")}
+					disabled={editing}
+					onClick={() => setMode(mode)}
+					role="tab"
+					size="icon-sm"
+					type="button"
+					variant="ghost"
+				>
+					{icon}
 				</Button>
-				{renderedAvailable ? (
-					<Button aria-selected={effectiveMode === "rendered"} className="h-6 rounded px-2 text-2xs" disabled={editing} onClick={() => setMode("rendered")} role="tab" size="sm" type="button" variant={effectiveMode === "rendered" ? "secondary" : "ghost"}>
-						{t("files.rendered")}
-					</Button>
-				) : null}
-			</div> : (
-				<span className="flex min-w-0 items-center gap-1.5 px-2 text-xs text-foreground" title={path}>
-					<span className="truncate">{fileName}</span>{unsavedIndicator}
+			</TooltipTrigger>
+			<TooltipContent side="bottom">{label}</TooltipContent>
+		</Tooltip>
+	);
+	const pathSegments = detail.path.split("/");
+	const compactTabs = (
+		<div className="sticky top-0 z-20 flex min-h-9 items-center gap-2 border-b border-border bg-background px-3 py-1">
+			<nav aria-label={t("files.filePath")} className="flex min-w-0 flex-1 items-center gap-1.5" title={detail.path}>
+				<WorkspaceEntryIcon className="size-icon-base" kind="file" name={fileName} />
+				<span className="flex min-w-0 items-center text-xs">
+					{pathSegments.slice(0, -1).map((segment, index) => (
+						<span className="flex min-w-0 shrink items-center text-muted-foreground" key={`${index}:${segment}`}>
+							<span className="truncate">{segment}</span>
+							<span aria-hidden="true" className="px-1 text-passive">/</span>
+						</span>
+					))}
+					<span className="shrink-0 truncate text-foreground">{fileName}</span>
 				</span>
-			)}
-			{editing ? (
-				<div className="ml-auto flex items-center gap-1">
-					<Button aria-label={t("files.cancelEditing")} disabled={saving} onClick={cancelEditing} size="sm" type="button" variant="ghost"><X aria-hidden="true" />{t("files.cancelEditing")}</Button>
-					<Button aria-label={t("files.saveFile")} disabled={saving || !hasUnsavedChanges} onClick={() => void saveEditing()} size="sm" type="button" variant="primary">{saving ? <LoaderCircle aria-hidden="true" className="animate-spin" /> : <Save aria-hidden="true" />}{t("files.saveFile")}</Button>
-				</div>
-			) : (
-				<>
-					{editable ? (
+				{unsavedIndicator}
+				{detail.status !== "unmodified" ? (
+					<span className="ml-1.5 flex shrink-0 items-center gap-1.5 text-xs tabular-nums">
+						{statusLabel[detail.status] ? <span className={cn("font-semibold", statusTone[detail.status])}>{statusLabel[detail.status]}</span> : null}
+						<span className="text-success">+{detail.additions}</span>
+						<span className="text-error">−{detail.deletions}</span>
+					</span>
+				) : null}
+			</nav>
+			{/* Mode switches and file actions share one row and one gap. */}
+			<div className="flex shrink-0 items-center gap-0.5">
+				{hasDisplayModeChoice ? (
+					<div aria-label={t("files.fileDisplayMode")} className="flex shrink-0 items-center gap-0.5" role="tablist">
+						{detail.status !== "unmodified" ? compactModeButton("diff", t("files.diff"), <GitCompareArrows aria-hidden="true" className="size-icon-sm" />) : null}
+						{compactModeButton("file", t("files.fileView"), <FileCode2 aria-hidden="true" className="size-icon-sm" />)}
+						{renderedAvailable ? compactModeButton("rendered", t("files.rendered"), <Eye aria-hidden="true" className="size-icon-sm" />) : null}
+					</div>
+				) : null}
+				{editing ? (
+					<div className="flex shrink-0 items-center gap-1">
+						<Button aria-label={t("files.cancelEditing")} className={EDIT_ACTION_CLASS} disabled={saving} onClick={cancelEditing} size="sm" type="button" variant="ghost"><X aria-hidden="true" className="size-icon-sm" />{t("files.cancelEditing")}</Button>
+						<Button aria-label={t("files.saveFile")} className={EDIT_ACTION_CLASS} disabled={saving || !hasUnsavedChanges} onClick={() => void saveEditing()} size="sm" type="button" variant="primary">{saving ? <LoaderCircle aria-hidden="true" className="size-icon-sm animate-spin" /> : <Save aria-hidden="true" className="size-icon-sm" />}{t("files.saveFile")}</Button>
+					</div>
+				) : (
+					<div className="flex shrink-0 items-center gap-0.5">
+						{editable ? (
+							<Tooltip>
+								<TooltipTrigger asChild><Button aria-label={t("files.editFile")} className="text-muted-foreground hover:text-foreground" onClick={beginEditing} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button></TooltipTrigger>
+								<TooltipContent side="bottom">{t("files.editFile")}</TooltipContent>
+							</Tooltip>
+						) : null}
 						<Tooltip>
-							<TooltipTrigger asChild><Button aria-label={t("files.editFile")} className="ml-auto" onClick={beginEditing} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" /></Button></TooltipTrigger>
-							<TooltipContent side="bottom">{t("files.editFile")}</TooltipContent>
+							<TooltipTrigger asChild>
+								<Button
+									aria-label={t("files.addFeedback")}
+									className="text-muted-foreground hover:text-foreground"
+									onClick={() => annotation.begin({ path: detail.path, previousPath: detail.previousPath, side: "file", scope, surface: "focused", workspaceVersion: detail.workspaceVersion, fileFingerprint: detail.fileFingerprint })}
+									size="icon-sm"
+									type="button"
+									variant="ghost"
+								>
+									<MessageSquarePlus aria-hidden="true" className="size-icon-sm" />
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent side="bottom">{t("files.addFeedback")}</TooltipContent>
 						</Tooltip>
-					) : <span className="ml-auto" />}
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<Button
-						aria-label={t("files.addFeedback")}
-						onClick={() => annotation.begin({ path: detail.path, previousPath: detail.previousPath, side: "file", scope, surface: "focused", workspaceVersion: detail.workspaceVersion, fileFingerprint: detail.fileFingerprint })}
-						size="icon-sm"
-						type="button"
-						variant="ghost"
-					>
-						<MessageSquarePlus aria-hidden="true" />
-					</Button>
-				</TooltipTrigger>
-				<TooltipContent side="bottom">{t("files.addFeedback")}</TooltipContent>
-			</Tooltip>
-				</>
-			)}
-			{wholeFileAnnotationActive ? (
-				<div className="absolute right-2 top-full z-50 w-[min(32rem,calc(100%-1rem))] overflow-hidden rounded-md border border-border bg-surface shadow-xl">
-					<FileAnnotationComposer annotation={annotation} />
-				</div>
-			) : null}
+					</div>
+				)}
+			</div>
 		</div>
+	);
+	// Both the Files panel and a centre file tab use the compact icon toolbar.
+	// Whole-file feedback opens in the page flow right under it, not over the code.
+	const toolbarNode = (
+		<>
+			{compactTabs}
+			{wholeFileAnnotationActive ? <FileAnnotationComposer annotation={annotation} /> : null}
+		</>
 	);
 
 	if (detail.status !== "unmodified") {
@@ -293,7 +335,7 @@ export function FileContentPane({
 		);
 		return (
 			<div className="relative min-w-0">
-				{tabs}
+				{toolbarNode}
 				<EditProvider createEditor={createReviewEditor}>
 				{effectiveMode === "diff" ? (
 					<AoDiffFile
@@ -306,6 +348,10 @@ export function FileContentPane({
 						split={split && canSplitCompare(detail.status)}
 						commitSha={commitSha}
 						source={source}
+						// Files panel preview: the compact toolbar already shows the name
+						// and counts, and its filler gutters sit on the canvas.
+						extraCSS={AO_PIERRE_FILES_REVIEW_CSS}
+						hideFileHeader
 					/>
 				) : effectiveMode === "rendered" && renderedAvailable ? (
 					<MarkdownFileView content={detail.content} filePath={path} sessionId={sessionId} truncated={detail.contentTruncated} version={query.dataUpdatedAt} />
@@ -319,7 +365,7 @@ export function FileContentPane({
 	}
 	return (
 		<div className="relative min-w-0">
-			{tabs}
+			{toolbarNode}
 			<EditProvider createEditor={createReviewEditor}>
 			{effectiveMode === "rendered" && renderedAvailable ? (
 				<MarkdownFileView content={detail.content} filePath={path} sessionId={sessionId} truncated={detail.contentTruncated} version={query.dataUpdatedAt} />

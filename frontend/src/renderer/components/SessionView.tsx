@@ -30,6 +30,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { NotificationCenter } from "./NotificationCenter";
 import { ResizeHandle } from "./ResizeHandle";
 import { SessionFileExplorer } from "./SessionFileExplorer";
+import { FilesTopbarHostContext } from "./files-topbar-host";
 import { CloudFileContentPane, CloudWorkspaceDiff } from "./CloudWorkspaceDiff";
 import { SessionFileTab } from "./SessionFileTabs";
 import { SessionFileWorkspace } from "./SessionFileWorkspace";
@@ -124,6 +125,9 @@ const CHAT_READABLE_MIN_PX = 560;
 // canvas workflow. This is still wide enough for the timeline and composer, and
 // is separate from the roomier utility-view floor above.
 const BROWSER_CHAT_MIN_PX = 440;
+// Files sizes like the other utility views (same default, cap and remembered
+// width); it only keeps a wider floor so its tree + preview stay usable.
+const FILES_WORKSPACE_MIN_PX = 460;
 type CenterFileOpenRequest = { commitSha?: string; editing: boolean; key: number; mode: FileViewMode; scope?: FileOpenOptions["scope"] };
 const EMPTY_AUXILIARY_TAB_ORDER: string[] = [];
 // The inspector tab labels respond to the tablist's remaining width. The
@@ -226,7 +230,7 @@ function inspectorSizing(view: InspectorView): InspectorSizing {
 	return {
 		chatMinWidth: CHAT_READABLE_MIN_PX,
 		defaultWidth: WORKSPACE_DEFAULT_PX,
-		minWidth: WORKSPACE_MIN_PX,
+		minWidth: view === "files" ? FILES_WORKSPACE_MIN_PX : WORKSPACE_MIN_PX,
 		maxPercent: WORKSPACE_MAX_PERCENT,
 		mode: view === "files" ? "files" : "utility",
 		storageKey: inspectorWidthStorageKey,
@@ -600,6 +604,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		phase: "docked",
 	});
 	const [filesPoppedOut, setFilesPoppedOut] = useState(false);
+	const [filesPopoutTopbarHost, setFilesPopoutTopbarHost] = useState<HTMLDivElement | null>(null);
 	const [filesSplit, setFilesSplit] = useState(() => window.localStorage.getItem("ao.files.diffStyle") === "split");
 	const [filePreviewRequestsBySession, setFilePreviewRequestsBySession] = useState<
 		Record<string, { path: string; key: number }>
@@ -2302,6 +2307,10 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					if (!open) settleUnsafeDraftLeave(false);
 				}}
 			/>
+			{/* Maximized files wear the maximized browser's chrome: a backdrop, the
+          filter pinned in the titlebar band where the browser's address bar
+          sits, and an inset frame for the explorer. The explorer mounts once
+          the band exists so the filter never renders inline first. */}
 			{filesPoppedOut && session
 				? createPortal(
 						<div
@@ -2310,17 +2319,32 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								shellTopbarHiddenByPlatform && !isNativeFullScreen && "files-popout-overlay--mac-windowed",
 							)}
 						>
-							{session.cloud ? (
-								<CloudWorkspaceDiff annotation={fileAnnotation} isMaximized onOpenFile={openCenterFile} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
-							) : (
-								<SessionFileExplorer
-									isMaximized
-									onSplitChange={setFilesSplit}
-									onToggleMaximized={handleToggleFilesPopOut}
-									sessionId={session.id}
-									split={filesSplit}
-								/>
-							)}
+							<div aria-hidden="true" className="files-popout-backdrop" />
+							<div
+								className={cn(
+									"files-popout-titlebar",
+									shellTopbarHiddenByPlatform && !isNativeFullScreen && "files-popout-titlebar--mac-windowed",
+								)}
+								data-testid="files-popout-topbar"
+								ref={setFilesPopoutTopbarHost}
+							/>
+							<div className="files-popout-frame">
+								{filesPopoutTopbarHost ? (
+									<FilesTopbarHostContext.Provider value={filesPopoutTopbarHost}>
+										{session.cloud ? (
+											<CloudWorkspaceDiff annotation={fileAnnotation} isMaximized onOpenFile={openCenterFile} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
+										) : (
+											<SessionFileExplorer
+												isMaximized
+												onSplitChange={setFilesSplit}
+												onToggleMaximized={handleToggleFilesPopOut}
+												sessionId={session.id}
+												split={filesSplit}
+											/>
+										)}
+									</FilesTopbarHostContext.Provider>
+								) : null}
+							</div>
 						</div>,
 						document.body,
 					)
