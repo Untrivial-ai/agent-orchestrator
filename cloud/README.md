@@ -199,8 +199,8 @@ API keeps running. Application rollback does not reverse an applied migration,
 so migrations must remain compatible with the previous API release.
 
 Only migration code and the tested application artifacts are promoted. Sandbox
-provider and worker settings come from the target environment's `nodeops` or
-`coder` document and its `worker` Secrets Manager JSON entry; deployment
+provider and worker settings come from the target environment's `nodeops`,
+`coder`, or `freestyle` document and its `worker` Secrets Manager JSON entry; deployment
 validates every required field before registering ECS tasks. Production uses
 the provider verified in staging. No provider auto-pause value is set by
 deployment.
@@ -263,7 +263,7 @@ All resource routes use `/api/cloud/v1`. Project and session creation require an
 WorkOS access tokens and local development tokens both use
 `Authorization: Bearer <token>`.
 
-The workspace review routes are provider-neutral. Docker, NodeOps, and Coder
+The workspace review routes are provider-neutral. Docker, NodeOps, Coder, and Freestyle
 workers all execute the same Git/file review protocol through the durable
 worker-request transport; the control-plane API and desktop UI do not branch
 on the sandbox provider.

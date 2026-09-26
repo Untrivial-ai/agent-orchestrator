@@ -11,11 +11,12 @@ import (
 )
 
 const (
-	ProviderDocker  = "docker"
-	ProviderDaytona = "daytona"
-	ProviderECS     = "ecs"
-	ProviderNodeOps = "nodeops"
-	ProviderCoder   = "coder"
+	ProviderDocker    = "docker"
+	ProviderDaytona   = "daytona"
+	ProviderECS       = "ecs"
+	ProviderNodeOps   = "nodeops"
+	ProviderCoder     = "coder"
+	ProviderFreestyle = "freestyle"
 
 	DefaultProvider       = ProviderDocker
 	DefaultWorkerTokenTTL = 15 * time.Minute
@@ -52,6 +53,32 @@ type DockerConfig struct {
 	Network        string
 	Namespace      string
 	WorkerTokenTTL time.Duration
+}
+
+type FreestyleConfig struct {
+	BaseURL        string
+	APIKey         string
+	SnapshotID     string
+	WorkerTokenTTL time.Duration
+}
+
+func (c FreestyleConfig) Validate() error {
+	endpoint, err := url.Parse(strings.TrimSpace(c.BaseURL))
+	if err != nil || endpoint.Host == "" || endpoint.User != nil ||
+		(endpoint.Scheme != "http" && endpoint.Scheme != "https") ||
+		(endpoint.Path != "" && endpoint.Path != "/") || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		return errors.New("AO_CLOUD_FREESTYLE_URL must be an absolute http or https origin")
+	}
+	if strings.TrimSpace(c.APIKey) == "" {
+		return errors.New("AO_CLOUD_FREESTYLE_API_KEY is required")
+	}
+	if strings.TrimSpace(c.SnapshotID) == "" {
+		return errors.New("AO_CLOUD_FREESTYLE_SNAPSHOT_ID is required")
+	}
+	if c.WorkerTokenTTL <= 0 {
+		return errors.New("AO_CLOUD_FREESTYLE_WORKER_TOKEN_TTL must be positive")
+	}
+	return nil
 }
 
 type CoderConfig struct {
@@ -268,11 +295,12 @@ func (c NodeOpsConfig) Validate() error {
 }
 
 type ProvisioningDefaults struct {
-	Provider string
-	Release  string
-	NodeOps  NodeOpsConfig
-	Docker   DockerConfig
-	Coder    CoderConfig
+	Provider  string
+	Release   string
+	NodeOps   NodeOpsConfig
+	Docker    DockerConfig
+	Coder     CoderConfig
+	Freestyle FreestyleConfig
 }
 
 type Plan struct {
@@ -359,6 +387,18 @@ func (d ProvisioningDefaults) SessionPlanForProviderWithCoder(harness, providerO
 			"workerImage": strings.TrimSpace(d.Docker.WorkerImage),
 			"network":     strings.TrimSpace(d.Docker.Network),
 			"namespace":   strings.TrimSpace(d.Docker.Namespace),
+		}
+	} else if provider == ProviderFreestyle {
+		if err := d.Freestyle.Validate(); err != nil {
+			return Plan{}, err
+		}
+		resourceProfile["freestyle"] = map[string]any{
+			"baseUrl":               strings.TrimRight(strings.TrimSpace(d.Freestyle.BaseURL), "/"),
+			"snapshotId":            strings.TrimSpace(d.Freestyle.SnapshotID),
+			"workerTokenTtlSeconds": int64(d.Freestyle.WorkerTokenTTL / time.Second),
+		}
+		bootstrapContext["freestyle"] = map[string]any{
+			"snapshotId": strings.TrimSpace(d.Freestyle.SnapshotID),
 		}
 	} else if provider == ProviderCoder {
 		if err := d.Coder.Validate(); err != nil {

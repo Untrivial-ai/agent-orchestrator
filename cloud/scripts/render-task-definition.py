@@ -29,7 +29,7 @@ def main() -> None:
     parser.add_argument("--runtime-database-user", default="")
     parser.add_argument("--worker-image", default="")
     parser.add_argument(
-        "--sandbox-provider", choices=("nodeops", "coder"), default="nodeops"
+        "--sandbox-provider", choices=("nodeops", "coder", "freestyle"), default="nodeops"
     )
     parser.add_argument(
         "--sandbox-providers",

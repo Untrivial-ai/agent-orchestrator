@@ -16,6 +16,7 @@ ROLLBACK_ALARM="${AO_CLOUD_PRODUCTION_ROLLBACK_ALARM:-ao-cloud-production-target
 RUNTIME_DATABASE_USER="${AO_CLOUD_RUNTIME_DATABASE_USER:-ao_cloud_app}"
 NODEOPS_SECRET_ID="${AO_CLOUD_NODEOPS_SECRET_ID:-ao-cloud/production/nodeops}"
 CODER_SECRET_ID="${AO_CLOUD_CODER_SECRET_ID:-ao-cloud/production/coder}"
+FREESTYLE_SECRET_ID="${AO_CLOUD_FREESTYLE_SECRET_ID:-ao-cloud/production/freestyle}"
 WORKER_SECRET_ID="${AO_CLOUD_WORKER_SECRET_ID:-ao-cloud/production/worker}"
 
 AWS_OPTIONS=(--region "$REGION")
@@ -80,8 +81,8 @@ print(environment["AO_CLOUD_SANDBOX_PROVIDER"])
 PY
 )"
 SANDBOX_PROVIDER="${AO_CLOUD_SANDBOX_PROVIDER:-$staging_provider}"
-if [[ "$SANDBOX_PROVIDER" != "nodeops" && "$SANDBOX_PROVIDER" != "coder" ]]; then
-	echo "AO_CLOUD_SANDBOX_PROVIDER must be nodeops or coder." >&2
+if [[ "$SANDBOX_PROVIDER" != "nodeops" && "$SANDBOX_PROVIDER" != "coder" && "$SANDBOX_PROVIDER" != "freestyle" ]]; then
+	echo "AO_CLOUD_SANDBOX_PROVIDER must be nodeops, coder, or freestyle." >&2
 	exit 1
 fi
 if [[ "$SANDBOX_PROVIDER" != "$staging_provider" ]]; then
@@ -108,8 +109,8 @@ PY
 PROVIDERS="${AO_CLOUD_SANDBOX_PROVIDERS:-$staging_providers}"
 IFS=',' read -ra _providers_list <<<"$PROVIDERS"
 for _provider in "${_providers_list[@]}"; do
-	if [[ "$_provider" != "nodeops" && "$_provider" != "coder" ]]; then
-		echo "AO_CLOUD_SANDBOX_PROVIDERS entries must each be nodeops or coder, got: $_provider" >&2
+	if [[ "$_provider" != "nodeops" && "$_provider" != "coder" && "$_provider" != "freestyle" ]]; then
+		echo "AO_CLOUD_SANDBOX_PROVIDERS entries must each be nodeops, coder, or freestyle, got: $_provider" >&2
 		exit 1
 	fi
 done
@@ -269,6 +270,19 @@ if providers_has coder; then
 		--worker <(printf '%s' "$worker_settings")
 	unset coder_settings
 fi
+if providers_has freestyle; then
+	freestyle_secret_arn="$(secret_arn "$FREESTYLE_SECRET_ID")"
+	freestyle_settings="$(
+		aws_cli secretsmanager get-secret-value \
+			--secret-id "$FREESTYLE_SECRET_ID" \
+			--query SecretString \
+			--output text
+	)"
+	./scripts/validate-hosted-settings.py \
+		--freestyle <(printf '%s' "$freestyle_settings") \
+		--worker <(printf '%s' "$worker_settings")
+	unset freestyle_settings
+fi
 unset worker_settings
 
 aws_cli iam get-role --role-name ao-cloud-production-execution-role >/dev/null
@@ -328,6 +342,14 @@ register_api_task() {
 			--set-secret "AO_CLOUD_CODER_PARAMETERS_JSON=${coder_secret_arn}:parameters_json::"
 			--set-secret "AO_CLOUD_CODER_DURABLE_ROOT=${coder_secret_arn}:durable_root::"
 			--set-secret "AO_CLOUD_CODER_WORKER_TOKEN_TTL=${coder_secret_arn}:worker_token_ttl::"
+		)
+	fi
+	if providers_has freestyle; then
+		render_args+=(
+			--set-secret "AO_CLOUD_FREESTYLE_URL=${freestyle_secret_arn}:url::"
+			--set-secret "AO_CLOUD_FREESTYLE_API_KEY=${freestyle_secret_arn}:api_key::"
+			--set-secret "AO_CLOUD_FREESTYLE_SNAPSHOT_ID=${freestyle_secret_arn}:snapshot_id::"
+			--set-secret "AO_CLOUD_FREESTYLE_WORKER_TOKEN_TTL=${freestyle_secret_arn}:worker_token_ttl::"
 		)
 	fi
 	if providers_has nodeops; then

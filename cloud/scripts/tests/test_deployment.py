@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from lib.deployment import (
     CODER_SECRET_ENV,
+    FREESTYLE_SECRET_ENV,
     NODEOPS_SECRET_ENV,
     WORKER_SECRET_ENV,
     build_task_definition,
@@ -34,6 +35,14 @@ def hosted_secret_overrides(environment="production"):
 def coder_secret_overrides(environment="production"):
     return secret_environment(
         f"arn:secret:ao-cloud/{environment}/coder", CODER_SECRET_ENV
+    ) | secret_environment(
+        f"arn:secret:ao-cloud/{environment}/worker", WORKER_SECRET_ENV
+    )
+
+
+def freestyle_secret_overrides(environment="staging"):
+    return secret_environment(
+        f"arn:secret:ao-cloud/{environment}/freestyle", FREESTYLE_SECRET_ENV
     ) | secret_environment(
         f"arn:secret:ao-cloud/{environment}/worker", WORKER_SECRET_ENV
     )
@@ -85,6 +94,18 @@ def coder_settings():
             "agent_name": "main",
             "parameters_json": '{"instance_type":"t3.medium"}',
             "durable_root": "/home/coder",
+            "worker_token_ttl": "15m",
+        },
+        hosted_settings()[1],
+    )
+
+
+def freestyle_settings():
+    return (
+        {
+            "url": "https://api.freestyle.sh",
+            "api_key": "freestyle-secret",
+            "snapshot_id": "freestyle/ubuntu",
             "worker_token_ttl": "15m",
         },
         hosted_settings()[1],
@@ -373,6 +394,64 @@ class TaskDefinitionTests(unittest.TestCase):
                 secret_overrides=hosted_secret_overrides("staging"),
             )
 
+    def test_switches_to_freestyle_and_prunes_other_credentials(self):
+        source = task_source("staging")
+        source["taskDefinition"]["containerDefinitions"][0]["secrets"].extend(
+            {"name": name, "valueFrom": value}
+            for name, value in multi_provider_secret_overrides("staging").items()
+        )
+        payload = build_task_definition(
+            source,
+            family="ao-cloud-staging-api",
+            container_name="control-plane",
+            image=CONTROL_IMAGE,
+            worker_image=WORKER_IMAGE,
+            release="abc123",
+            environment="staging",
+            log_group="/ao-cloud/staging/control-plane",
+            region="eu-north-1",
+            sandbox_provider="freestyle",
+            secret_overrides=freestyle_secret_overrides("staging"),
+        )
+        rendered = payload["containerDefinitions"][0]
+        secrets = {item["name"] for item in rendered["secrets"]}
+        self.assertTrue(set(FREESTYLE_SECRET_ENV) <= secrets)
+        self.assertFalse(set(NODEOPS_SECRET_ENV) & secrets)
+        self.assertFalse(set(CODER_SECRET_ENV) & secrets)
+        validate_task_artifacts(
+            {"taskDefinition": payload, "tags": payload["tags"]},
+            container_name="control-plane",
+            control_image=CONTROL_IMAGE,
+            worker_image=WORKER_IMAGE,
+        )
+
+    def test_multi_provider_retains_freestyle_credentials(self):
+        payload = build_task_definition(
+            task_source("staging"),
+            family="ao-cloud-staging-api",
+            container_name="control-plane",
+            image=CONTROL_IMAGE,
+            worker_image=WORKER_IMAGE,
+            release="abc123",
+            environment="staging",
+            log_group="/ao-cloud/staging/control-plane",
+            region="eu-north-1",
+            sandbox_provider="nodeops",
+            sandbox_providers=["nodeops", "freestyle"],
+            secret_overrides=hosted_secret_overrides("staging")
+            | freestyle_secret_overrides("staging"),
+        )
+        secrets = {
+            item["name"] for item in payload["containerDefinitions"][0]["secrets"]
+        }
+        self.assertTrue(set(FREESTYLE_SECRET_ENV) <= secrets)
+        validate_task_artifacts(
+            {"taskDefinition": payload, "tags": payload["tags"]},
+            container_name="control-plane",
+            control_image=CONTROL_IMAGE,
+            worker_image=WORKER_IMAGE,
+        )
+
     def test_rejects_primary_provider_outside_available_set(self):
         with self.assertRaisesRegex(ValueError, "must be one of the available providers"):
             build_task_definition(
@@ -494,6 +573,16 @@ class HostedSettingsTests(unittest.TestCase):
     def test_accepts_coder_settings(self):
         coder, worker = coder_settings()
         validate_hosted_settings(coder, worker, provider="coder")
+
+    def test_accepts_freestyle_settings(self):
+        freestyle, worker = freestyle_settings()
+        validate_hosted_settings(freestyle, worker, provider="freestyle")
+
+    def test_rejects_non_https_freestyle_url(self):
+        freestyle, worker = freestyle_settings()
+        freestyle["url"] = "http://api.freestyle.sh"
+        with self.assertRaisesRegex(ValueError, "HTTPS origin"):
+            validate_hosted_settings(freestyle, worker, provider="freestyle")
 
     def test_rejects_invalid_coder_parameters(self):
         coder, worker = coder_settings()

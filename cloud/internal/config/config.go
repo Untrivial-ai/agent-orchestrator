@@ -121,6 +121,11 @@ type Config struct {
 	CoderDurableRoot    string
 	CoderWorkerTokenTTL time.Duration
 
+	FreestyleURL            string
+	FreestyleAPIKey         string
+	FreestyleSnapshotID     string
+	FreestyleWorkerTokenTTL time.Duration
+
 	GitHub GitHubConfig
 }
 
@@ -255,6 +260,12 @@ func Load() (Config, error) {
 		CoderWorkerTokenTTL: durationEnv(
 			"AO_CLOUD_CODER_WORKER_TOKEN_TTL", sandbox.DefaultWorkerTokenTTL,
 		),
+		FreestyleURL:        envOrDefault("AO_CLOUD_FREESTYLE_URL", "https://api.freestyle.sh"),
+		FreestyleAPIKey:     strings.TrimSpace(os.Getenv("AO_CLOUD_FREESTYLE_API_KEY")),
+		FreestyleSnapshotID: envOrDefault("AO_CLOUD_FREESTYLE_SNAPSHOT_ID", "freestyle/ubuntu"),
+		FreestyleWorkerTokenTTL: durationEnv(
+			"AO_CLOUD_FREESTYLE_WORKER_TOKEN_TTL", sandbox.DefaultWorkerTokenTTL,
+		),
 
 		GitHub: GitHubConfig{
 			AppID:          int64Env("AO_CLOUD_GITHUB_APP_ID"),
@@ -351,12 +362,12 @@ func Load() (Config, error) {
 		return Config{}, errors.New("AO_CLOUD_LOCAL_SESSION_TTL must be positive")
 	}
 	switch cfg.SandboxProvider {
-	case "ecs", "daytona", "docker", "nodeops", "coder":
+	case "ecs", "daytona", "docker", "nodeops", "coder", "freestyle":
 	default:
-		return Config{}, errors.New("AO_CLOUD_SANDBOX_PROVIDER must be coder, daytona, docker, ecs, or nodeops")
+		return Config{}, errors.New("AO_CLOUD_SANDBOX_PROVIDER must be coder, daytona, docker, ecs, freestyle, or nodeops")
 	}
-	if cfg.Hosted() && cfg.SandboxProvider != "nodeops" && cfg.SandboxProvider != "coder" {
-		return Config{}, errors.New("AO_CLOUD_SANDBOX_PROVIDER must be coder or nodeops in staging and production")
+	if cfg.Hosted() && cfg.SandboxProvider != "nodeops" && cfg.SandboxProvider != "coder" && cfg.SandboxProvider != "freestyle" {
+		return Config{}, errors.New("AO_CLOUD_SANDBOX_PROVIDER must be coder, freestyle, or nodeops in staging and production")
 	}
 	available, err := resolveAvailableProviders(cfg.SandboxProvider, cfg.Hosted())
 	if err != nil {
@@ -415,6 +426,19 @@ func Load() (Config, error) {
 					err = errors.New("AO_CLOUD_CODER_URL must use HTTPS in hosted environments")
 				}
 			}
+		case "freestyle":
+			err = (sandbox.FreestyleConfig{
+				BaseURL:        cfg.FreestyleURL,
+				APIKey:         cfg.FreestyleAPIKey,
+				SnapshotID:     cfg.FreestyleSnapshotID,
+				WorkerTokenTTL: cfg.FreestyleWorkerTokenTTL,
+			}).Validate()
+			if err == nil {
+				freestyleURL, _ := url.Parse(cfg.FreestyleURL)
+				if cfg.Hosted() && freestyleURL.Scheme != "https" {
+					err = errors.New("AO_CLOUD_FREESTYLE_URL must use HTTPS in hosted environments")
+				}
+			}
 		}
 		if err != nil {
 			if cfg.Hosted() {
@@ -441,7 +465,7 @@ func Load() (Config, error) {
 		// be trusted if its token is signed by a key strong enough to matter.
 		if cfg.PublicURL == "" {
 			return Config{}, errors.New(
-				"AO_CLOUD_PUBLIC_URL is required when a nodeops, docker, or coder provider is available",
+				"AO_CLOUD_PUBLIC_URL is required when a nodeops, docker, coder, or freestyle provider is available",
 			)
 		}
 		// A worker reads this origin out of its environment and dials it with
@@ -462,7 +486,7 @@ func Load() (Config, error) {
 			)
 		}
 	}
-	if cfg.SandboxProvider == "nodeops" || cfg.SandboxProvider == "coder" {
+	if cfg.SandboxProvider == "nodeops" || cfg.SandboxProvider == "coder" || cfg.SandboxProvider == "freestyle" {
 		if cfg.WorkerBinaryPath == "" {
 			return Config{}, fmt.Errorf("AO_CLOUD_WORKER_BINARY_PATH is required when AO_CLOUD_SANDBOX_PROVIDER=%s", cfg.SandboxProvider)
 		}
@@ -590,6 +614,9 @@ func (c Config) WorkerTokenTTL() time.Duration {
 	if c.SandboxProvider == sandbox.ProviderCoder {
 		return c.CoderWorkerTokenTTL
 	}
+	if c.SandboxProvider == sandbox.ProviderFreestyle {
+		return c.FreestyleWorkerTokenTTL
+	}
 	return c.NodeOpsWorkerTokenTTL
 }
 
@@ -625,9 +652,8 @@ func durationEnv(key string, fallback time.Duration) time.Duration {
 }
 
 // defaultSandboxProvider picks the provider an unconfigured deployment gets.
-// Hosted environments run on NodeOps, which is also the only provider they are
-// allowed to run on; locally there is no NodeOps account, so the default is the
-// provider a developer can actually reach.
+// Hosted environments default to NodeOps; local development defaults to the
+// provider a developer can reach without a hosted account.
 func defaultSandboxProvider(hosted bool) string {
 	if hosted {
 		return sandbox.ProviderNodeOps
@@ -640,7 +666,7 @@ func defaultSandboxProvider(hosted bool) string {
 // includes defaultProvider, so an unset value yields exactly the single default
 // and existing single-provider deployments are unchanged. Order is preserved
 // (default first) and duplicates are dropped. Every entry must be a known
-// provider, and in hosted environments only nodeops and coder are permitted,
+// provider, and in hosted environments only nodeops, coder, and freestyle are permitted,
 // mirroring the AO_CLOUD_SANDBOX_PROVIDER rules.
 func resolveAvailableProviders(defaultProvider string, hosted bool) ([]string, error) {
 	list := []string{defaultProvider}
@@ -655,13 +681,13 @@ func resolveAvailableProviders(defaultProvider string, hosted bool) ([]string, e
 	}
 	for _, provider := range list {
 		switch provider {
-		case "ecs", "daytona", "docker", "nodeops", "coder":
+		case "ecs", "daytona", "docker", "nodeops", "coder", "freestyle":
 		default:
 			return nil, fmt.Errorf("AO_CLOUD_SANDBOX_PROVIDERS contains unknown provider %q", provider)
 		}
-		if hosted && provider != "nodeops" && provider != "coder" {
+		if hosted && provider != "nodeops" && provider != "coder" && provider != "freestyle" {
 			return nil, fmt.Errorf(
-				"AO_CLOUD_SANDBOX_PROVIDERS may only contain coder or nodeops in staging and production, got %q",
+				"AO_CLOUD_SANDBOX_PROVIDERS may only contain coder, freestyle, or nodeops in staging and production, got %q",
 				provider,
 			)
 		}
@@ -690,7 +716,7 @@ func lowerCSVList(raw string) []string {
 func providersRequireWorkerHome(providers []string) bool {
 	for _, provider := range providers {
 		switch provider {
-		case "nodeops", "docker", "coder":
+		case "nodeops", "docker", "coder", "freestyle":
 			return true
 		}
 	}
