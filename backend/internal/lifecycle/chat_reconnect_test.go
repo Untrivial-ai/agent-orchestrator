@@ -1,6 +1,7 @@
 package lifecycle
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -52,7 +53,7 @@ func TestMarkChatReconnectedRejectsChangedOwnership(t *testing.T) {
 			if err := m.MarkChatReconnected(ctx, rec.ID, metadata); err == nil {
 				t.Fatal("reconnected a different owner")
 			}
-			if st.sessions[rec.ID] != rec {
+			if !reflect.DeepEqual(st.sessions[rec.ID], rec) {
 				t.Fatal("rejected reconnect mutated the session")
 			}
 		})
