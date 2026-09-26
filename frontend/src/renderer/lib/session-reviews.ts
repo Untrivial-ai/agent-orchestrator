@@ -98,11 +98,17 @@ export function reviewSessionRunAction(reviewStates: PRReviewState[], isTriggeri
 // left behind by an earlier commit — neither follows from a PR's review decision.
 const MOCK_RUNNING_PR = 322;
 const MOCK_STALE_PR = 324;
+const MOCK_EXTREME_RUNNING_PR = 405;
+const MOCK_EXTREME_STALE_PR = 406;
 
 function mockReviewsResponse(session: WorkspaceSession): ReviewsResponse {
+	const runningPrNumber = session.id === "demo-review-extreme" ? MOCK_EXTREME_RUNNING_PR : MOCK_RUNNING_PR;
+	const stalePrNumber = session.id === "demo-review-extreme" ? MOCK_EXTREME_STALE_PR : MOCK_STALE_PR;
+	const previewHarnesses = ["codex", "claude-code", "copilot", "aider"] as const;
 	const states: PRReviewState[] = sortedPRs(session).map((pr, index) => {
 		const targetSha = `demo${pr.number}${index}`;
 		const reviewedAt = new Date(Date.now() - (index + 1) * 11 * 60 * 1000).toISOString();
+		const harness = previewHarnesses[index % previewHarnesses.length];
 		const latestRun =
 			pr.review === "approved" || pr.review === "changes_requested"
 				? {
@@ -114,7 +120,7 @@ function mockReviewsResponse(session: WorkspaceSession): ReviewsResponse {
 								: "Demo review found **polish feedback** for the terminal presentation.\n\n- Tighten toolbar density\n- Recheck contrast",
 						createdAt: reviewedAt,
 						githubReviewId: `${pr.number}01`,
-						harness: "codex",
+						harness,
 						id: `demo-review-run-${pr.number}`,
 						prUrl: pr.url,
 						reviewId: `demo-review-${pr.number}`,
@@ -144,7 +150,7 @@ function mockReviewsResponse(session: WorkspaceSession): ReviewsResponse {
 		});
 		// A couple of PRs are pinned to states the review decision alone cannot
 		// produce, so the preview shows every shape the panel can render.
-		if (pr.number === MOCK_RUNNING_PR) {
+		if (pr.number === runningPrNumber) {
 			return {
 				latestRun: run({ status: "running", id: `demo-review-run-${pr.number}-live` }),
 				prNumber: pr.number,
@@ -154,7 +160,7 @@ function mockReviewsResponse(session: WorkspaceSession): ReviewsResponse {
 				title: mockReviewTitle(pr.number),
 			};
 		}
-		if (pr.number === MOCK_STALE_PR) {
+		if (pr.number === stalePrNumber) {
 			// Reviewed, then a new commit landed: the verdict is about code that
 			// has since changed, so the panel demotes it to "Previous".
 			return {
@@ -225,7 +231,23 @@ function mockReviewsResponse(session: WorkspaceSession): ReviewsResponse {
 	return { reviewerHandleId: `${session.id}-reviewer`, reviews: states, runs };
 }
 
+const DEMO_REVIEW_EXTREME_TITLES: Record<number, string> = {
+	401: "Stack inspector review rows behind one accordion",
+	402: "Dedupe GitHub review threads when AO already imported the comment",
+	403: "Align PR cards with accordion gutter in Summary and Reviews",
+	404: "Draft: mobile Connect review parity (do not merge yet)",
+	405: "Reviewer session kill switch while auto-review owns the run",
+	406: "Re-run review after force-push rewrote the last AO verdict",
+	407: "Request re-review when external reviewer dismisses without resolve",
+	408: "Load-more review history when a PR has twelve agent passes",
+	409: "Merge queue blocked: waiting on parent stack PR #401",
+	410: "Eight unresolved inline comments on BrowserPanel resize handle",
+	411: "Extremely long pull request title that should wrap across multiple lines in the inspector rail without blowing out the verdict column or clipping the chevron on narrow widths",
+	412: "Codex + Claude both approved; GitHub still shows review required",
+};
+
 function mockReviewTitle(prNumber: number): string {
+	if (DEMO_REVIEW_EXTREME_TITLES[prNumber]) return DEMO_REVIEW_EXTREME_TITLES[prNumber];
 	switch (prNumber) {
 		case 319:
 			return "Browser preview rail renders inside AO";

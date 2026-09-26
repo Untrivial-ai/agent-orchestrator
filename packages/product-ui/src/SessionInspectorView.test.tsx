@@ -94,7 +94,7 @@ describe("SessionInspectorShellView", () => {
 		expect(screen.getByRole("tablist").parentElement).toHaveClass("pl-1");
 		expect(screen.getByRole("tablist").parentElement).not.toHaveClass("pl-2", "pl-2.5");
 		expect(screen.getByRole("tablist").parentElement?.nextElementSibling).toHaveClass(
-			"board-scrollbar",
+			"inspector-scrollbar",
 			"overflow-x-hidden",
 		);
 		expect(screen.getByRole("tab", { name: "Summary" })).toHaveAttribute("aria-selected", "true");

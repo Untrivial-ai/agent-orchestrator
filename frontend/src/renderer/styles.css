@@ -46,6 +46,7 @@
 	--text-base: var(--font-size-md);
 
 	/* Typography — token-named half-steps (text-control = dense 13px chrome) */
+	--text-nano: var(--font-size-nano);
 	--text-micro: var(--font-size-xs);
 	--text-2xs: var(--font-size-2xs);
 	--text-caption: var(--font-size-caption);
@@ -1569,6 +1570,18 @@ textarea,
 
 .board-scrollbar::-webkit-scrollbar-corner {
 	background: transparent;
+}
+
+/* Inspector rail: keep scroll without a permanent gutter eating content width. */
+.inspector-scrollbar {
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
+
+.inspector-scrollbar::-webkit-scrollbar {
+	display: none;
+	width: 0;
+	height: 0;
 }
 
 .settings-thin-scrollbar {
