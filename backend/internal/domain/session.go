@@ -1,6 +1,21 @@
 package domain
 
-import "time"
+import (
+	"regexp"
+	"time"
+)
+
+// SessionIDPatternSource is the canonical alphabet for AO-issued session ids.
+// It is exported so command allowlists can embed the same constrained token
+// without maintaining a second copy of the contract.
+const SessionIDPatternSource = `[A-Za-z0-9][A-Za-z0-9._-]*`
+
+var sessionIDPattern = regexp.MustCompile(`^` + SessionIDPatternSource + `$`)
+
+// ValidSessionID reports whether value is safe to use as an AO session id.
+func ValidSessionID(value string) bool {
+	return sessionIDPattern.MatchString(value)
+}
 
 // These ID types are distinct string types so they can't be swapped at a call
 // site by accident.

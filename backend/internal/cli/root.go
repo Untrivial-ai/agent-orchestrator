@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemon"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/processalive"
 	"github.com/aoagents/agent-orchestrator/backend/internal/telemetrymeta"
@@ -264,7 +265,7 @@ func cliInvocationActorType(cmd *cobra.Command) string {
 	if strings.TrimSpace(cmd.CommandPath()) == "ao hooks" {
 		return "agent"
 	}
-	if sessionIDPattern.MatchString(strings.TrimSpace(os.Getenv("AO_SESSION_ID"))) {
+	if domain.ValidSessionID(strings.TrimSpace(os.Getenv("AO_SESSION_ID"))) {
 		return "agent"
 	}
 	return "user"
