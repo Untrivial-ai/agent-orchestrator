@@ -62,3 +62,33 @@ type SCMReviewResolveRequest struct {
 type SCMReviewResolver interface {
 	ResolveReviewThread(ctx context.Context, request SCMReviewResolveRequest) error
 }
+
+// SCMReviewComment is one inline comment of a daemon-published review.
+type SCMReviewComment struct {
+	Path string
+	Line int
+	Body string
+}
+
+// SCMReviewPublishRequest is one COMMENT review the daemon publishes: a summary
+// body plus optional inline comments, anchored at CommitSHA (empty = the PR's
+// current head).
+type SCMReviewPublishRequest struct {
+	PR        SCMPRRef
+	CommitSHA string
+	Body      string
+	Comments  []SCMReviewComment
+}
+
+// SCMReviewPublishResult reports the provider-created review.
+type SCMReviewPublishResult struct {
+	ReviewID string
+	HTMLURL  string
+}
+
+// SCMReviewPublisher publishes pull-request reviews through an SCM provider.
+// AO owns publication since #5701: reviewers submit to AO and never post to
+// the provider themselves.
+type SCMReviewPublisher interface {
+	PublishReview(ctx context.Context, request SCMReviewPublishRequest) (SCMReviewPublishResult, error)
+}

@@ -168,21 +168,18 @@ func TestSpawnRejectsEmptySessionID(t *testing.T) {
 	}
 }
 
-// TestReviewSubmitBatchRejectsEmptyEntries ensures batch review submit fails
-// instead of printing success when any returned entry is missing its run ID
-// or verdict — including empty objects and JSON nulls.
-func TestReviewSubmitBatchRejectsEmptyEntries(t *testing.T) {
-	batchInput := `[{"runId":"run-1","verdict":"approved"}]`
+// TestReviewSubmitRejectsEmptyEntries ensures review submit fails instead of
+// printing success when the returned run is missing its run ID or verdict —
+// including empty objects and JSON nulls.
+func TestReviewSubmitRejectsEmptyEntries(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
 	}{
-		{"empty entry", `{"reviews":[{}]}`},
-		{"null entry", `{"reviews":[null]}`},
-		{"id-only entry", `{"reviews":[{"id":"run-1"}]}`},
-		{"verdict-only entry", `{"reviews":[{"verdict":"approved"}]}`},
-		{"one bad entry among good", `{"reviews":[{"id":"run-1","verdict":"approved"},{}]}`},
-		{"empty array and empty single", `{"reviews":[]}`},
+		{"empty review", `{"review":{}}`},
+		{"null review", `{"review":null}`},
+		{"id-only review", `{"review":{"id":"run-1"}}`},
+		{"verdict-only review", `{"review":{"verdict":"approved"}}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -195,9 +192,9 @@ func TestReviewSubmitBatchRejectsEmptyEntries(t *testing.T) {
 			writeRunFileFor(t, cfg, srv)
 
 			deps := Deps{ProcessAlive: func(int) bool { return true }}
-			deps.In = strings.NewReader(batchInput)
+			deps.In = strings.NewReader("ship it")
 			out, _, err := executeCLI(t, deps,
-				"review", "submit", "sess-1", "--reviews", "-")
+				"review", "submit", "sess-1", "--run", "run-1", "--verdict", "approved", "--body", "-")
 			if err == nil {
 				t.Fatalf("body %q: expected batch submit error, got nil", tt.body)
 			}

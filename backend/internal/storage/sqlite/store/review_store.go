@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -226,18 +227,38 @@ func (s *Store) InsertReviewRun(ctx context.Context, r domain.ReviewRun) error {
 	return err
 }
 
-// UpdateReviewRunResult sets the status/verdict/body and the GitHub review id of
-// a running review pass.
-func (s *Store) UpdateReviewRunResult(ctx context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string, autoInjectReview bool) (bool, error) {
+// UpdateReviewRunResult sets the status/verdict/body/findings and the GitHub
+// review id of a running review pass.
+func (s *Store) UpdateReviewRunResult(ctx context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, findingsJSON, githubReviewID string, autoInjectReview bool) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	n, err := s.qw.UpdateReviewRunResult(ctx, gen.UpdateReviewRunResultParams{
 		Status:           status,
 		Verdict:          verdict,
 		Body:             body,
+		Findings:         findingsJSON,
 		GithubReviewID:   githubReviewID,
 		AutoInjectReview: autoInjectReview,
 		ID:               id,
+	})
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// UpdateReviewRunPublication records the outcome of one daemon-side publication
+// attempt. A non-empty githubReviewID is stored; otherwise a previously
+// recorded id is preserved.
+func (s *Store) UpdateReviewRunPublication(ctx context.Context, id string, state domain.ReviewRunPublishState, githubReviewID, publishError string) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.UpdateReviewRunPublication(ctx, gen.UpdateReviewRunPublicationParams{
+		PublishState:   string(state),
+		Column2:        githubReviewID,
+		GithubReviewID: githubReviewID,
+		PublishError:   publishError,
+		ID:             id,
 	})
 	if err != nil {
 		return false, err
@@ -466,6 +487,19 @@ func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {
 		t := r.DeliveredAt.Time
 		deliveredAt = &t
 	}
+	var findings []domain.ReviewFinding
+	if strings.TrimSpace(r.Findings) != "" {
+		if err := json.Unmarshal([]byte(r.Findings), &findings); err != nil {
+			findings = nil
+		}
+	}
+	if findings == nil {
+		findings = []domain.ReviewFinding{}
+	}
+	state := domain.ReviewRunPublishState(r.PublishState)
+	if state == "" {
+		state = domain.ReviewPublishPending
+	}
 	return domain.ReviewRun{
 		ID:               r.ID,
 		ReviewID:         r.ReviewID,
@@ -479,6 +513,9 @@ func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {
 		Verdict:          r.Verdict,
 		Body:             r.Body,
 		GithubReviewID:   r.GithubReviewID,
+		Findings:         findings,
+		PublishState:     state,
+		PublishError:     r.PublishError,
 		CreatedAt:        r.CreatedAt,
 		DeliveredAt:      deliveredAt,
 		AutoInjectReview: r.AutoInjectReview,
