@@ -224,8 +224,14 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	// sessions; it just cannot be resumed after a disconnect. The resume
 	// capability is downgraded in conversationCapabilities, and Resume()
 	// returns ErrChatResumeFailed if called.
+	additionalDirectoriesSupported := init.AgentCapabilities.SessionCapabilities.AdditionalDirectories != nil
+	if len(cfg.AdditionalDirectories) > 0 && !additionalDirectoriesSupported {
+		d.log.Warn("ACP agent did not advertise additionalDirectories; using cwd only",
+			"harness", d.cfg.Harness, "session_id", cfg.SessionID,
+			"dropped_directories", len(cfg.AdditionalDirectories), "cwd", cfg.WorkspacePath)
+	}
 	additional, err := normalizeAdditionalDirectories(cfg.WorkspacePath, cfg.AdditionalDirectories,
-		init.AgentCapabilities.SessionCapabilities.AdditionalDirectories != nil)
+		additionalDirectoriesSupported)
 	if err != nil {
 		conv.discard()
 		return nil, err
@@ -364,8 +370,14 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		conv.discard()
 		return nil, fmt.Errorf("%w: ACP agent supports neither session/load nor session/resume", ports.ErrChatResumeFailed)
 	}
+	additionalDirectoriesSupported := init.AgentCapabilities.SessionCapabilities.AdditionalDirectories != nil
+	if len(cfg.AdditionalDirectories) > 0 && !additionalDirectoriesSupported {
+		d.log.Warn("ACP agent did not advertise additionalDirectories; using cwd only",
+			"harness", d.cfg.Harness, "session_id", cfg.SessionID,
+			"dropped_directories", len(cfg.AdditionalDirectories), "cwd", cfg.WorkspacePath)
+	}
 	additional, err := normalizeAdditionalDirectories(cfg.WorkspacePath, cfg.AdditionalDirectories,
-		init.AgentCapabilities.SessionCapabilities.AdditionalDirectories != nil)
+		additionalDirectoriesSupported)
 	if err != nil {
 		conv.discard()
 		if isACPAuthRequired(err) {
