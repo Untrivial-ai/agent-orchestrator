@@ -1358,14 +1358,29 @@ func delayedCancelSpawn(
 	}
 }
 
+func assertAdditionalDirectoriesDroppedLog(t *testing.T, logs *bytes.Buffer, cwd string) {
+	t.Helper()
+	for _, want := range []string{
+		`"level":"WARN"`,
+		"ACP agent did not advertise additionalDirectories; using cwd only",
+		`"dropped_directories":1`,
+		`"cwd":"` + cwd + `"`,
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("log output missing %q: %s", want, logs.String())
+		}
+	}
+}
+
 func TestACPDriverStartsCwdOnlyWhenAdditionalDirectoriesAreUnsupported(t *testing.T) {
 	agent := &fakeAgent{}
+	var logs bytes.Buffer
 	driver := New(Config{
 		Harness:      domain.HarnessClaudeCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}, slog.New(slog.NewJSONHandler(&logs, nil)))
 	driver.useTestProcess(fakeSpawn(agent))
 
 	root := t.TempDir()
@@ -1387,6 +1402,7 @@ func TestACPDriverStartsCwdOnlyWhenAdditionalDirectoriesAreUnsupported(t *testin
 	if len(params.AdditionalDirectories) != 0 {
 		t.Fatalf("session/new additional directories = %#v, want none", params.AdditionalDirectories)
 	}
+	assertAdditionalDirectoriesDroppedLog(t, &logs, root)
 }
 
 func TestACPDriverResumesCwdOnlyWhenAdditionalDirectoriesAreUnsupported(t *testing.T) {
@@ -1397,12 +1413,13 @@ func TestACPDriverResumesCwdOnlyWhenAdditionalDirectoriesAreUnsupported(t *testi
 			},
 		},
 	}
+	var logs bytes.Buffer
 	driver := New(Config{
 		Harness:      domain.HarnessClaudeCode,
 		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
 		Probe:        func(context.Context) error { return nil },
 		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}, slog.New(slog.NewJSONHandler(&logs, nil)))
 	driver.useTestProcess(fakeSpawn(agent))
 
 	root := t.TempDir()
@@ -1429,6 +1446,7 @@ func TestACPDriverResumesCwdOnlyWhenAdditionalDirectoriesAreUnsupported(t *testi
 	if len(params.AdditionalDirectories) != 0 {
 		t.Fatalf("session/resume additional directories = %#v, want none", params.AdditionalDirectories)
 	}
+	assertAdditionalDirectoriesDroppedLog(t, &logs, root)
 }
 
 func TestACPDriverNegotiatesRichClientCapabilitiesAndNativePromptContent(t *testing.T) {
