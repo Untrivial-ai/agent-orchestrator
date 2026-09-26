@@ -35,6 +35,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/codexops"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemon/supervisor"
+	"github.com/aoagents/agent-orchestrator/backend/internal/datadirlock"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
@@ -217,6 +218,20 @@ func Run() error {
 	} else if live != nil && runFileOwnerServing(&http.Client{Timeout: staleProbeTimeout}, config.LoopbackHost, live) {
 		return fmt.Errorf("daemon already running (pid %d, port %d); refusing to start", live.PID, live.Port)
 	}
+
+	// Take the data-directory lock before touching SQLite. The run-file check
+	// above only proves nobody else owns this port/run file; it says nothing
+	// about the data dir, so a second daemon with a different AO_PORT/AO_RUN_FILE
+	// but the same AO_DATA_DIR would otherwise open and hot-migrate the database
+	// underneath the first daemon, invalidating its prepared statements against
+	// the new schema (issue #3716). The lock is scoped to the data dir alone and
+	// is released on clean shutdown; a crashed holder's lock is dropped by the OS,
+	// so a successor reclaims it with no stale-lock bookkeeping.
+	dataDirLock, err := datadirlock.Acquire(cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("acquire data dir lock: %w", err)
+	}
+	defer func() { _ = dataDirLock.Release() }()
 
 	// Open the durable store and bring up the CDC substrate: DB triggers capture
 	// changes into change_log, the poller tails it, and the broadcaster fans
