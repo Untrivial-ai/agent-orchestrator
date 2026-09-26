@@ -1,6 +1,6 @@
 import { Feather } from "../lib/icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
 import { Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -16,6 +16,7 @@ import {
 import type { Theme } from "../lib/theme";
 import { haptics } from "../lib/haptics";
 import { clearOnboardingSkipped } from "../lib/onboardingStore";
+import { completeOnboarding } from "../lib/onboardingNavigation";
 import { pairFromCode } from "../lib/pairFlow";
 import { isLegacyPairingCode, parsePairingCode } from "../lib/pairingCode";
 import { saveHost, setActiveHost } from "../lib/hosts";
@@ -35,6 +36,7 @@ export default function PairScreen() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const router = useRouter();
+	const navigation = useNavigation();
 	const insets = useSafeAreaInsets();
 	const { from } = useLocalSearchParams<{ from?: string }>();
 	const fromOnboarding = from === "onboarding";
@@ -75,7 +77,7 @@ export default function PairScreen() {
 	async function finish() {
 		await clearOnboardingSkipped();
 		await reloadConfig(); // reconnect with the new credentials
-		if (fromOnboarding) router.replace("/");
+		if (fromOnboarding) completeOnboarding(navigation);
 		else backOr(router);
 	}
 
