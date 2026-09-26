@@ -58,6 +58,69 @@ func TestResolveFallsBackToCachedHeadWhenRemoteIsOffline(t *testing.T) {
 	}
 }
 
+func TestResolveFallsBackToUniqueFetchedBranchWhenRemoteAuthenticationFails(t *testing.T) {
+	_, repo := remoteRepo(t, "main")
+	runGit(t, repo, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+	resolver := New("", func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		if len(args) > 2 && args[2] == "ls-remote" {
+			return nil, errors.New("authentication required")
+		}
+		return runCommand(ctx, binary, args...)
+	})
+
+	inspected, err := resolver.Inspect(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	want := Resolution{Branch: "main", Remote: "origin", Ref: "refs/remotes/origin/main", Source: SourceUniqueRemoteBranch}
+	if inspected != want {
+		t.Fatalf("inspected resolution = %#v, want %#v", inspected, want)
+	}
+
+	resolution, err := resolver.Resolve(context.Background(), context.Background(), repo)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolution != want {
+		t.Fatalf("resolution = %#v, want %#v", resolution, want)
+	}
+}
+
+func TestResolveDoesNotGuessAmongFetchedBranchesWhenRemoteAuthenticationFails(t *testing.T) {
+	_, repo := remoteRepo(t, "main")
+	runGit(t, repo, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+	runGit(t, repo, "update-ref", "refs/remotes/origin/dev", "HEAD")
+	resolver := New("", func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		if len(args) > 2 && args[2] == "ls-remote" {
+			return nil, errors.New("authentication required")
+		}
+		return runCommand(ctx, binary, args...)
+	})
+
+	_, err := resolver.Resolve(context.Background(), context.Background(), repo)
+	if !errors.Is(err, ErrUnresolved) {
+		t.Fatalf("Resolve error = %v, want ErrUnresolved", err)
+	}
+}
+
+func TestResolvePrefersCachedHeadOverUniqueFetchedBranch(t *testing.T) {
+	_, repo := remoteRepo(t, "trunk")
+	resolver := New("", func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		if len(args) > 2 && args[2] == "ls-remote" {
+			return nil, errors.New("authentication required")
+		}
+		return runCommand(ctx, binary, args...)
+	})
+
+	resolution, err := resolver.Resolve(context.Background(), context.Background(), repo)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolution.Branch != "trunk" || resolution.Source != SourceCachedRemoteHead {
+		t.Fatalf("resolution = %#v, want cached remote HEAD", resolution)
+	}
+}
+
 func TestResolveNeverFallsBackToCurrentOrConventionalBranch(t *testing.T) {
 	repo := localRepo(t, "main")
 	runGit(t, repo, "switch", "-c", "feature/temporary")

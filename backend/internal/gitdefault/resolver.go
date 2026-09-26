@@ -28,6 +28,8 @@ const (
 // should ask the user to configure one rather than guessing from HEAD.
 var ErrUnresolved = errors.New("git default branch is unresolved")
 
+var errLiveRemoteUnavailable = errors.New("live remote HEAD lookup unavailable")
+
 // Source describes the repository-level signal used for a resolution.
 type Source string
 
@@ -36,6 +38,8 @@ const (
 	SourceLiveRemoteHead Source = "live_remote_head"
 	// SourceCachedRemoteHead means the branch came from the selected remote's cached HEAD.
 	SourceCachedRemoteHead Source = "cached_remote_head"
+	// SourceUniqueRemoteBranch means the selected remote has exactly one fetched branch.
+	SourceUniqueRemoteBranch Source = "unique_remote_branch"
 	// SourceAOInitialized means AO recorded the branch when it initialized the repository.
 	SourceAOInitialized Source = "ao_initialized"
 )
@@ -101,6 +105,9 @@ func (r *Resolver) Inspect(ctx context.Context, repo string) (Resolution, error)
 	}
 	if cached, ok := r.cachedRemoteHead(ctx, repo, remote); ok {
 		return cached, nil
+	}
+	if unique, ok := r.uniqueRemoteBranch(ctx, repo, remote); ok {
+		return unique, nil
 	}
 	if initialized, ok := r.initializedBeforeFirstPush(ctx, repo, remote); ok {
 		return initialized, nil
@@ -179,7 +186,12 @@ func (r *Resolver) Resolve(ctx, remoteCtx context.Context, repo string) (Resolut
 		return cached, nil
 	}
 	// A known live default must not be replaced by the initial local branch
-	// merely because fetching it failed.
+	// or a different fetched branch merely because fetching it failed.
+	if branch == "" && errors.Is(liveErr, errLiveRemoteUnavailable) {
+		if unique, ok := r.uniqueRemoteBranch(ctx, repo, remote); ok {
+			return unique, nil
+		}
+	}
 	if branch == "" {
 		if initialized, ok := r.initializedBeforeFirstPush(ctx, repo, remote); ok {
 			return initialized, nil
@@ -243,7 +255,7 @@ func (r *Resolver) selectRemote(ctx context.Context, repo string) (string, []str
 func (r *Resolver) liveRemoteHead(ctx context.Context, repo, remote string) (string, error) {
 	out, err := r.run(ctx, r.binary, "-C", repo, "ls-remote", "--symref", "--", remote, "HEAD")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %w", errLiveRemoteUnavailable, err)
 	}
 	branch, err := parseRemoteHEAD(string(out))
 	if err != nil {
@@ -268,6 +280,29 @@ func (r *Resolver) cachedRemoteHead(ctx context.Context, repo, remote string) (R
 		return Resolution{}, false
 	}
 	return Resolution{Branch: branch, Remote: remote, Ref: target, Source: SourceCachedRemoteHead}, true
+}
+
+// uniqueRemoteBranch recovers when the selected remote cannot be contacted and
+// has no cached symbolic HEAD. A sole fetched branch is unambiguous local
+// evidence; two or more branches provide no safe basis for choosing a default.
+func (r *Resolver) uniqueRemoteBranch(ctx context.Context, repo, remote string) (Resolution, bool) {
+	prefix := "refs/remotes/" + remote + "/"
+	out, err := r.run(ctx, r.binary, "-C", repo, "for-each-ref", "--format=%(refname)", prefix)
+	if err != nil {
+		return Resolution{}, false
+	}
+	var resolution Resolution
+	for _, ref := range nonEmptyLines(string(out)) {
+		if ref == remoteHeadRef(remote) || !strings.HasPrefix(ref, prefix) || !r.refExists(ctx, repo, ref) {
+			continue
+		}
+		branch := strings.TrimPrefix(ref, prefix)
+		if branch == "" || r.validateBranch(ctx, repo, branch) != nil || resolution.Ref != "" {
+			return Resolution{}, false
+		}
+		resolution = Resolution{Branch: branch, Remote: remote, Ref: ref, Source: SourceUniqueRemoteBranch}
+	}
+	return resolution, resolution.Ref != ""
 }
 
 func (r *Resolver) resolveAOInitialized(ctx context.Context, repo string) (Resolution, error) {
