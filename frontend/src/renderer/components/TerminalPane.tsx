@@ -1094,7 +1094,14 @@ function AttachedTerminal({
 			return;
 		}
 	}, [initFailed, onFatal, onTerminalStateChange]);
-	const handleLinkOpen = useSessionBrowserLink(session);
+	const sessionBrowserLink = useSessionBrowserLink(session);
+	// A session-less pane — the harness and Codex login shells in Settings, the
+	// GitHub onboarding notice, the standalone /terminals screen — has no AO
+	// Browser panel to open into, and useSessionBrowserLink silently no-ops
+	// without one. Withhold the callback so the terminal's "Open in AO Browser"
+	// item renders disabled and a click falls back to the system browser, the
+	// same contract _shell.tsx applies to chat links.
+	const handleLinkOpen = isSessionActive ? sessionBrowserLink : undefined;
 	const restoreSession = useCallback(async () => {
 		if (!session?.id || !canRestoreSession || isRestoring) return;
 		setIsRestoring(true);

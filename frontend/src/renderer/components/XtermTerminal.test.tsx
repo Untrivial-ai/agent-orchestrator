@@ -2364,6 +2364,24 @@ describe("XtermTerminal", () => {
 		expect(onLinkOpen).not.toHaveBeenCalled();
 	});
 
+	it.each([
+		["plain", "left"],
+		["OSC 8", "left"],
+	])("opens %s web links in the system browser when the pane has no AO Browser", (kind) => {
+		// The harness and Codex login shells in Settings render a session-less pane,
+		// so TerminalPane withholds onLinkOpen. Without a fallback the click on a
+		// device-auth URL was swallowed and nothing opened at all.
+		const openExternal = vi.fn().mockResolvedValue(undefined);
+		window.ao!.app.openExternal = openExternal;
+		render(<XtermTerminal theme="dark" />);
+		const oscHandler = state.lastTerminal!.options.linkHandler as { activate: (event: MouseEvent, uri: string) => void };
+		const handler = kind === "plain" ? state.linkHandler! : oscHandler.activate;
+
+		handler({} as MouseEvent, "https://app.cline.bot/device/AB12-CD34");
+
+		expect(openExternal).toHaveBeenCalledWith("https://app.cline.bot/device/AB12-CD34");
+	});
+
 	it("opens non-web links (mailto:) in the system browser, not the AO browser", () => {
 		const open = vi.spyOn(window, "open").mockReturnValue(null);
 		const onLinkOpen = vi.fn();

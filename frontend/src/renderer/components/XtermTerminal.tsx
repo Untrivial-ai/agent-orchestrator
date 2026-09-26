@@ -618,11 +618,15 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			// link in the system browser instead — see the context menu below. Cmd-click
 			// follows the same escape hatch as links in the Chat surface.
 			if (isWebLink(uri)) {
-				if (event.altKey || event.metaKey) {
+				// A pane with no AO Browser to open into (the session-less login shells
+				// in Settings) leaves onLinkOpen undefined. Send the click to the system
+				// browser rather than swallowing it, the same fallback AppLink uses.
+				const openInAOBrowser = callbacksRef.current.onLinkOpen;
+				if (event.altKey || event.metaKey || !openInAOBrowser) {
 					void openLinkInSystemBrowser(uri);
 					return;
 				}
-				callbacksRef.current.onLinkOpen?.(uri);
+				openInAOBrowser(uri);
 				return;
 			}
 			window.open(uri, "_blank", "noopener");
