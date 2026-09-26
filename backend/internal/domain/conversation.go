@@ -702,6 +702,9 @@ var ErrNoConversation = errors.New("session has no conversation")
 // queue is the normal case, not an error.
 var ErrNoQueuedTurn = errors.New("no queued turn")
 
+// ErrSessionNotProvisioning rejects a pre-controller turn after startup ended.
+var ErrSessionNotProvisioning = errors.New("session is not provisioning")
+
 // ErrNoConversationTurn reports a turn id that is not in the conversation it was
 // named against. It lives here rather than in the storage layer so a controller and
 // an HTTP handler can both recognize it without importing SQLite.

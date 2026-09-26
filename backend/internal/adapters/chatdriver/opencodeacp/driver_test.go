@@ -13,30 +13,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func TestConfigureUsesNativeACPAndAlwaysCarriesTheTiers(t *testing.T) {
-	args, env, err := configure(context.Background(), acpdriver.LaunchConfig{})
-	if err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	if len(args) != 1 || args[0] != "acp" {
-		t.Fatalf("args = %#v", args)
-	}
-	var config struct {
-		DefaultAgent string                    `json:"default_agent"`
-		Agent        map[string]map[string]any `json:"agent"`
-	}
-	if err := json.Unmarshal([]byte(env["OPENCODE_CONFIG_CONTENT"]), &config); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
-	// A session without standing instructions still needs its permission tiers.
-	if config.DefaultAgent != "ao-default" || len(config.Agent) != 4 {
-		t.Fatalf("config = %#v", config)
-	}
-	if prompt, ok := config.Agent["ao-default"]["prompt"]; ok {
-		t.Fatalf("prompt = %q, want none", prompt)
-	}
-}
-
 func TestSessionOptionsUseProviderAdvertisedModelOption(t *testing.T) {
 	if got := sessionOptions(ports.ChatTurnSettings{}); got != nil {
 		t.Fatalf("empty settings = %#v", got)
@@ -119,33 +95,35 @@ func TestSessionOptionsForwardsEffortAfterModel(t *testing.T) {
 
 func TestConfigureInjectsThePermissionTiersOpenCodeEnforces(t *testing.T) {
 	for _, test := range []struct {
-		mode ports.PermissionMode
-		want string
+		mode   ports.PermissionMode
+		want   string
+		prompt string
 	}{
-		{mode: ports.PermissionModeDefault, want: "ao-default"},
-		{mode: ports.PermissionModeAcceptEdits, want: "ao-accept-edits"},
-		{mode: ports.PermissionModeAuto, want: "ao-auto"},
-		{mode: ports.PermissionModeBypassPermissions, want: "ao-bypass"},
+		{want: "ao-default"}, // No standing instructions still needs every tier.
+		{mode: ports.PermissionModeDefault, want: "ao-default", prompt: "Follow AO worker rules."},
+		{mode: ports.PermissionModeAcceptEdits, want: "ao-accept-edits", prompt: "Follow AO worker rules."},
+		{mode: ports.PermissionModeAuto, want: "ao-auto", prompt: "Follow AO worker rules."},
+		{mode: ports.PermissionModeBypassPermissions, want: "ao-bypass", prompt: "Follow AO worker rules."},
 	} {
 		t.Run(string(test.mode), func(t *testing.T) {
-			_, env, err := configure(context.Background(), acpdriver.LaunchConfig{
-				SessionID: "worker-1", SystemPrompt: "Follow AO worker rules.", Permissions: test.mode,
+			args, env, err := configure(context.Background(), acpdriver.LaunchConfig{
+				SessionID: "worker-1", SystemPrompt: test.prompt, Permissions: test.mode,
 			})
 			if err != nil {
 				t.Fatalf("configure: %v", err)
 			}
+			if len(args) != 1 || args[0] != "acp" {
+				t.Fatalf("args = %#v", args)
+			}
 			var config struct {
-				DefaultAgent string `json:"default_agent"`
-				Agent        map[string]struct {
-					Prompt     string `json:"prompt"`
-					Permission any    `json:"permission"`
-				} `json:"agent"`
+				DefaultAgent string                    `json:"default_agent"`
+				Agent        map[string]map[string]any `json:"agent"`
 			}
 			if err := json.Unmarshal([]byte(env["OPENCODE_CONFIG_CONTENT"]), &config); err != nil {
 				t.Fatalf("decode config: %v", err)
 			}
-			if config.DefaultAgent != test.want {
-				t.Fatalf("default agent = %q, want %q", config.DefaultAgent, test.want)
+			if config.DefaultAgent != test.want || len(config.Agent) != 4 {
+				t.Fatalf("config = %#v, want default agent %q and four tiers", config, test.want)
 			}
 			// Every tier is advertised, so the picker can switch to any of them
 			// mid-session, and each carries AO's standing instructions.
@@ -154,28 +132,21 @@ func TestConfigureInjectsThePermissionTiersOpenCodeEnforces(t *testing.T) {
 				if !ok {
 					t.Fatalf("tier %q missing from %#v", tier, config.Agent)
 				}
-				if agent.Prompt != "Follow AO worker rules." {
-					t.Fatalf("tier %q prompt = %q", tier, agent.Prompt)
+				if prompt, ok := agent["prompt"]; ok != (test.prompt != "") || (ok && prompt != test.prompt) {
+					t.Fatalf("tier %q prompt = %#v, want %q (omitted when empty)", tier, prompt, test.prompt)
 				}
-			}
-			if config.Agent["ao-default"].Permission != nil {
-				t.Fatalf("default tier = %#v, want the user's own rules", config.Agent["ao-default"].Permission)
 			}
 			// Accept edits and auto write no rules at all: AO answers their
 			// requests instead, so whatever the user or repository denied is
 			// never asked about and stays denied.
 			for _, tier := range []string{"ao-default", "ao-accept-edits", "ao-auto"} {
-				if got := config.Agent[tier].Permission; got != nil {
+				if got := config.Agent[tier]["permission"]; got != nil {
 					t.Fatalf("tier %q permission = %#v, want the provider's own policy", tier, got)
 				}
 			}
-			// Bypass is the exception, and OpenCode enforces it.
-			if got := config.Agent["ao-bypass"].Permission; got != "allow" {
-				t.Fatalf("bypass tier = %#v, want scalar full access", got)
-			}
 			// OpenCode's scalar full-access form: a wildcard rule can still lose
 			// to a more specific deny contributed by another config layer.
-			if got := config.Agent["ao-bypass"].Permission; got != "allow" {
+			if got := config.Agent["ao-bypass"]["permission"]; got != "allow" {
 				t.Fatalf("bypass tier = %#v", got)
 			}
 		})

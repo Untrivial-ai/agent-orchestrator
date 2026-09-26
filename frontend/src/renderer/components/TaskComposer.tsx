@@ -18,7 +18,6 @@ import {
 	cacheAgentReadiness,
 	ensureAgentReadiness,
 	useAgentReadinessQuery,
-	useEnsureAgentReadiness,
 } from "../hooks/useAgentReadinessQuery";
 import { type FileAttachmentPayload, useFileAttachments } from "../hooks/useFileAttachments";
 import { useSettings } from "../hooks/useSettings";
@@ -62,6 +61,7 @@ type CreateTaskInput = {
 	mode?: "chat" | "tui";
 	approvalMode?: "bypass-permissions";
 	attachments?: FileAttachmentPayload[];
+	taskPreparation?: string;
 };
 
 const CHAT_PREFLIGHT_CODES = new Set([
@@ -72,6 +72,13 @@ const CHAT_PREFLIGHT_CODES = new Set([
 ]);
 
 const READINESS_RECONCILE_CODES = new Set(["AGENT_BINARY_NOT_FOUND", "AGENT_AUTH_REQUIRED", "CHAT_AUTH_REQUIRED"]);
+
+function cancelTaskPreparation(token: string): void {
+	if (!token) return;
+	void apiClient.DELETE("/api/v1/task-preparations/{token}", {
+		params: { path: { token } },
+	});
+}
 
 class TaskCreateError extends Error {
 	constructor(
@@ -125,6 +132,7 @@ export function TaskComposer({
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [error, setError] = useState<string | undefined>();
 	const [fallbackAction, setFallbackAction] = useState<FallbackAction>();
+	const taskPreparationRef = useRef("");
 	const {
 		attachments,
 		error: attachmentError,
@@ -200,6 +208,7 @@ export function TaskComposer({
 						...(input.mode ? { mode: input.mode } : {}),
 						...(input.approvalMode ? { approvalMode: input.approvalMode } : {}),
 						...(input.attachments && input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+						...(input.taskPreparation ? { taskPreparation: input.taskPreparation } : {}),
 					},
 				});
 				if (error) {
@@ -281,6 +290,32 @@ export function TaskComposer({
 			return data.project as Project;
 		},
 	});
+	useEffect(() => {
+		const id = projectQuery.data?.id;
+		if (!id) return;
+		let disposed = false;
+		taskPreparationRef.current = "";
+		void apiClient.POST("/api/v1/projects/{id}/tasks/prepare", {
+			params: { path: { id } },
+		}).then(
+			({ data }) => {
+				const token = data?.taskPreparation ?? "";
+				if (!token) return;
+				if (disposed) {
+					cancelTaskPreparation(token);
+					return;
+				}
+				taskPreparationRef.current = token;
+			},
+			() => undefined,
+		);
+		return () => {
+			disposed = true;
+			const token = taskPreparationRef.current;
+			taskPreparationRef.current = "";
+			cancelTaskPreparation(token);
+		};
+	}, [projectQuery.data?.id]);
 	const agentsQuery = useAgentReadinessQuery();
 	const { settings } = useSettings();
 	// The composer preselects the agent and model a spawn would actually use
@@ -335,12 +370,6 @@ export function TaskComposer({
 	);
 	const defaultWorkerAgent = rememberedAgentIsAvailable ? rememberedAgent : configuredDefaultAgent;
 	const selectedAgent = agent || defaultWorkerAgent;
-	useEnsureAgentReadiness();
-	useEnsureAgentReadiness({
-		agentIds: selectedAgent ? [selectedAgent] : [],
-		enabled: selectedAgent !== "",
-		purpose: "launch",
-	});
 	const defaultWorkerModel =
 		projectConfig?.worker?.agentConfig?.model ?? projectConfig?.agentConfig?.model ?? "";
 	const defaultWorkerMode = projectConfig?.worker?.agentConfig?.mode ?? projectConfig?.agentConfig?.mode ?? "";
@@ -531,6 +560,7 @@ export function TaskComposer({
 				}
 			}
 			const attachmentPayloads = await toSettledPayload();
+			const submittedPreparation = taskPreparationRef.current;
 			const sessionId = await createTask({
 				projectId,
 				brief,
@@ -543,7 +573,15 @@ export function TaskComposer({
 				mode: interfaceMode,
 				approvalMode,
 				attachments: attachmentPayloads.length > 0 ? attachmentPayloads : undefined,
+				taskPreparation: submittedPreparation || undefined,
 			});
+			const preparationAfterSubmit = taskPreparationRef.current;
+			taskPreparationRef.current = "";
+			// DELETE is intentionally idempotent after a successful claim. It also
+			// reclaims a preparation that resolved after this submission captured its
+			// token, instead of leaving that unused worktree until TTL expiry.
+			cancelTaskPreparation(submittedPreparation);
+			cancelTaskPreparation(preparationAfterSubmit);
 			if (selectedAgent) {
 				const preference: TaskComposerAgentPreference = {
 					model: cleanModel,

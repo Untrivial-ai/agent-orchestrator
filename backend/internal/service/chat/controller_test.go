@@ -6188,6 +6188,11 @@ func TestStartSettlesWorkLeftByAKilledController(t *testing.T) {
 		Now:      h.now,
 	})
 	t.Cleanup(func() { _ = next.Stop(context.Background(), testSession) })
+	// Retry moves an interrupted async start back to provisioning. That state
+	// must not hide the running turn left by its previous controller.
+	if _, err := h.st.SetSessionProvisionState(ctx, testSession, domain.SessionProvisionProvisioning, "", h.now()); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := next.Start(ctx, chatsvc.StartConfig{
 		SessionID:              testSession,

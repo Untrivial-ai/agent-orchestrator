@@ -64,6 +64,18 @@ type SpawnConfig struct {
 	// consume inline binary data). Any file type is accepted except for
 	// explicitly blocked types (e.g., SVG for security reasons).
 	Attachments []SpawnAttachment
+
+	// Async asks for a Chat spawn that answers as soon as the session row and
+	// its conversation exist, leaving the worktree and the agent controller to
+	// finish in the background. Only a caller with a UI to return to should set
+	// it: `ao spawn` and the tests rely on a returned session being fully live.
+	// Ignored for TUI mode and for orchestrators, which own a project-scoped
+	// narrative that must not be rebound before its controller exists.
+	Async bool
+	// TaskPreparation is the opaque speculative-worktree token returned while
+	// the desktop's New Task dialog is open. It is a hint: an absent or expired
+	// token falls back to ordinary workspace creation.
+	TaskPreparation domain.TaskPreparationToken
 }
 
 // SpawnAttachment is a single file attached to a spawn request. Data holds the

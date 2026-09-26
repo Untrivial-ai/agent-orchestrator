@@ -82,8 +82,131 @@ func (s *Store) createSessionLocked(ctx context.Context, rec domain.SessionRecor
 	return rec, true, nil
 }
 
-// UpdateSession writes the full mutable state of an existing session. The
-// id/project/num/created_at are immutable and not touched here.
+// SetSessionProvisionedWorkspace records the worktree as soon as it exists,
+// ahead of the controller commit that writes the rest of the row.
+func (s *Store) SetSessionProvisionedWorkspace(
+	ctx context.Context,
+	id domain.SessionID,
+	branch, workspacePath, workspaceRepoPath string,
+	now time.Time,
+) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.SetSessionProvisionedWorkspace(ctx, gen.SetSessionProvisionedWorkspaceParams{
+		Branch:            branch,
+		WorkspacePath:     workspacePath,
+		WorkspaceRepoPath: workspaceRepoPath,
+		UpdatedAt:         now,
+		ID:                id,
+	})
+	if err != nil {
+		return false, fmt.Errorf("record provisioned workspace for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+// SetTaskPreparationBase records the immutable base only while the row is hidden.
+func (s *Store) SetTaskPreparationBase(ctx context.Context, id domain.SessionID, baseSHA, baseRef string) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.SetTaskPreparationBase(ctx, gen.SetTaskPreparationBaseParams{
+		DiffBaseSha: baseSHA,
+		DiffBaseRef: baseRef,
+		ID:          id,
+	})
+	if err != nil {
+		return false, fmt.Errorf("record task preparation base for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+// SetSessionProvisionState publishes an asynchronous Chat spawn's progress. It
+// writes only these two fields: the background start races the controller
+// commit, which owns the rest of the row.
+func (s *Store) SetSessionProvisionState(
+	ctx context.Context,
+	id domain.SessionID,
+	state domain.SessionProvisionState,
+	provisionError string,
+	now time.Time,
+) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.SetSessionProvisionState(ctx, gen.SetSessionProvisionStateParams{
+		ProvisionState: state.WithDefault(),
+		ProvisionError: provisionError,
+		UpdatedAt:      now,
+		ID:             id,
+	})
+	if err != nil {
+		return false, fmt.Errorf("set provision state for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+// PromoteTaskPreparation makes a hidden speculative row visible without
+// touching workspace facts that may be published by the preparation goroutine.
+func (s *Store) PromoteTaskPreparation(ctx context.Context, id domain.SessionID, rec domain.SessionRecord) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	activity := normalActivity(rec.Activity, rec.UpdatedAt)
+	rows, err := s.qw.PromoteTaskPreparation(ctx, gen.PromoteTaskPreparationParams{
+		IssueID:            rec.IssueID,
+		Kind:               rec.Kind,
+		Harness:            rec.Harness,
+		AutoReviewEnabled:  rec.AutoReviewEnabled,
+		DisplayName:        rec.DisplayName,
+		ActivityState:      activity.State,
+		ActivityLastAt:     activity.LastActivityAt,
+		SessionMode:        domain.NormalizeSessionMode(rec.Mode),
+		Model:              rec.Metadata.Model,
+		Effort:             rec.Metadata.Effort,
+		SessionPermissions: string(rec.Metadata.Permissions),
+		CreatedAt:          rec.CreatedAt,
+		UpdatedAt:          rec.UpdatedAt,
+		AutoInjectReview:   rec.AutoInjectReview,
+		AutoInjectCI:       rec.AutoInjectCI,
+		ProvisionState:     rec.ProvisionState.WithDefault(),
+		ID:                 id,
+	})
+	if err != nil {
+		return false, fmt.Errorf("promote task preparation %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+// DeleteTaskPreparation removes only a row that has not been claimed.
+func (s *Store) DeleteTaskPreparation(ctx context.Context, id domain.SessionID) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.writeDB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin delete task preparation %s: %w", id, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM change_log
+WHERE session_id = ?
+  AND EXISTS (SELECT 1 FROM sessions WHERE id = ? AND is_task_preparation = 1)`, id, id); err != nil {
+		return false, fmt.Errorf("delete task preparation %s change log: %w", id, err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ? AND is_task_preparation = 1`, id)
+	if err != nil {
+		return false, fmt.Errorf("delete task preparation %s: %w", id, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("delete task preparation %s rows affected: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit delete task preparation %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
+// UpdateSession writes the general mutable state of an existing session. The
+// provisioning state is owned by SetSessionProvisionState so stale lifecycle
+// snapshots cannot overwrite asynchronous start progress.
 func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -496,7 +619,7 @@ func (s *Store) GetSessionByAutomationRunID(ctx context.Context, id domain.Autom
 		return domain.SessionRecord{}, false, nil
 	}
 	if err != nil {
-		return domain.SessionRecord{}, false, fmt.Errorf("get session for automation run %s: %w", id, err)
+		return domain.SessionRecord{}, false, fmt.Errorf("get automation session %s: %w", id, err)
 	}
 	return rowToRecord(gen.GetSessionRow(row)), true, nil
 }
@@ -596,6 +719,9 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		CleanupGeneration: row.CleanupGeneration,
 		CreatedAt:         row.CreatedAt,
 		UpdatedAt:         row.UpdatedAt,
+		ProvisionState:    row.ProvisionState.WithDefault(),
+		ProvisionError:    row.ProvisionError,
+		IsTaskPreparation: row.IsTaskPreparation,
 	}
 }
 
@@ -667,6 +793,9 @@ func recordToInsert(rec domain.SessionRecord, num int64) gen.InsertSessionParams
 		SessionPermissions:               string(rec.Metadata.Permissions),
 		CreatedAt:                        rec.CreatedAt,
 		UpdatedAt:                        rec.UpdatedAt,
+		ProvisionState:                   rec.ProvisionState.WithDefault(),
+		ProvisionError:                   rec.ProvisionError,
+		IsTaskPreparation:                rec.IsTaskPreparation,
 		AutomationRunID:                  rec.AutomationRunID,
 		AutomationLaunchCompleted:        rec.AutomationLaunchCompleted,
 	}
@@ -724,8 +853,8 @@ func recordToUpdate(rec domain.SessionRecord) gen.UpdateSessionParams {
 		ControllerGeneration:             rec.Metadata.ControllerGeneration,
 		Model:                            rec.Metadata.Model,
 		Effort:                           rec.Metadata.Effort,
-		AutomationLaunchCompleted:        rec.AutomationLaunchCompleted,
 		UpdatedAt:                        rec.UpdatedAt,
+		AutomationLaunchCompleted:        rec.AutomationLaunchCompleted,
 	}
 }
 
