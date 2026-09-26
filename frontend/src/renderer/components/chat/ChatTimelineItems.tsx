@@ -869,7 +869,8 @@ export function LiveResponseStatus({ startedAt, settling = false }: { startedAt?
 			<motion.div
 				initial={false}
 				animate={{ width: settling ? 0 : 24, opacity: settling ? 0 : 1 }}
-				transition={{ duration: 0.18, ease: "easeOut" }}
+				transition={{ duration: 0.12, ease: "linear" }}
+				style={{ willChange: "width, opacity" }}
 				className="flex shrink-0 items-center overflow-hidden"
 			>
 				<div className="mx-0.5 flex size-5 shrink-0 items-center">
