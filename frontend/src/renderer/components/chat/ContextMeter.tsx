@@ -130,6 +130,8 @@ export function ContextMeter({
 
 function ContextReadout({ usage }: { usage: ConversationUsage }) {
 	const { contextUsed, contextWindow } = usage;
+	// A border separates the tooltip without the layered shadow's hover halos.
+	const tooltipSurface = "border border-border shadow-none";
 
 	// Failed turns can report 0 used with a valid model limit. Until there is a
 	// positive reading, drawing 0% would claim headroom we have not measured.
@@ -142,6 +144,7 @@ function ContextReadout({ usage }: { usage: ConversationUsage }) {
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<span
+						role="img"
 						aria-label={`Context ${used} / ${total}`}
 						className="relative inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
 						data-context-meter=""
@@ -153,7 +156,7 @@ function ContextReadout({ usage }: { usage: ConversationUsage }) {
 						<span aria-hidden="true" className="absolute text-[10px]">?</span>
 					</span>
 				</TooltipTrigger>
-				<TooltipContent className="shadow-none">
+				<TooltipContent className={tooltipSurface}>
 					<p className="font-medium">Context {compactUsed} / {compactTotal}</p>
 					<p>{contextUsed <= 0 ? "The provider has not reported current context used." : "The provider has not reported a context window."} Conversation fullness is unknown.</p>
 				</TooltipContent>
@@ -191,13 +194,13 @@ function ContextReadout({ usage }: { usage: ConversationUsage }) {
 						<circle
 							cx="12" cy="12" fill="none" r="9" stroke="currentColor" strokeWidth="3"
 							strokeLinecap="round" pathLength="100"
-							strokeDasharray={`${Math.max(fraction * 100, 2)} 100`}
+							strokeDasharray={`${Math.max(fraction * 100, 8)} 100`}
 							className="transition-[stroke-dasharray] duration-300"
 						/>
 					</svg>
 				</div>
 			</TooltipTrigger>
-			<TooltipContent className="shadow-none">
+			<TooltipContent className={tooltipSurface}>
 				<p className="font-medium">Context window</p>
 				<p className="tabular-nums">{compactUsage} tokens ({percent}%)</p>
 				{severity !== "normal" ? (

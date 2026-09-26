@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { compactContextUsageLabel, contextReadout, contextUsageLabel, elapsedLabel, mcpServerFailureLabel, quotaWarning, resetLabel, workingElapsedLabel } from "./conversationChrome";
+import { compactContextUsageLabel, compactTokenCount, contextReadout, contextUsageLabel, elapsedLabel, mcpServerFailureLabel, quotaWarning, resetLabel, workingElapsedLabel } from "./conversationChrome";
 
 describe("mobile Chat conversation chrome", () => {
-	it("uses the same context thresholds and visible minimum as desktop", () => {
+	it("uses desktop context thresholds and keeps a minimum bar fill visible", () => {
 		expect(contextReadout({ contextUsed: 1, contextWindow: 1000, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 1 }))
 			.toMatchObject({ percent: 0, fillPercent: 2, severity: "normal" });
 		expect(contextReadout({ contextUsed: 70, contextWindow: 100, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalTokens: 70 })?.severity).toBe("warn");
@@ -18,6 +18,12 @@ describe("mobile Chat conversation chrome", () => {
 		expect(contextUsageLabel({ ...usage, contextWindow: 0 })).toBe("Context unavailable");
 		expect(contextUsageLabel()).toBe("Context unavailable");
 		expect(contextReadout({ ...usage, contextUsed: 0 })).not.toHaveProperty("percent");
+	});
+
+	it("uses the next unit when rounding would show 1000K or 1000M", () => {
+		expect(compactTokenCount(999_949)).toBe("999.9K");
+		expect(compactTokenCount(999_950)).toBe("1M");
+		expect(compactTokenCount(999_999_999)).toBe("1B");
 	});
 
 	it("warns on the tighter reported quota window and ignores absent ones", () => {

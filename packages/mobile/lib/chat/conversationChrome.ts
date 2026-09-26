@@ -25,12 +25,18 @@ export function contextUsageLabel(usage?: ConversationUsage): string {
 
 export function compactContextUsageLabel(usage?: ConversationUsage): string {
 	if (!usage || usage.contextWindow <= 0 || usage.contextUsed <= 0) return "Context unavailable";
-	const compact = (tokens: number): string => {
-		if (tokens < 1_000) return String(tokens);
-		const [unit, suffix] = tokens >= 1_000_000_000 ? [1_000_000_000, "B"] : tokens >= 1_000_000 ? [1_000_000, "M"] : [1_000, "K"];
-		return `${(tokens / unit).toFixed(1).replace(/\.0$/, "")}${suffix}`;
-	};
-	return `${compact(usage.contextUsed)} / ${compact(usage.contextWindow)} context tokens`;
+	return `${compactTokenCount(usage.contextUsed)} / ${compactTokenCount(usage.contextWindow)} context tokens`;
+}
+
+export function compactTokenCount(tokens: number): string {
+	if (tokens < 1_000) return String(tokens);
+	let unit = tokens >= 1_000_000_000 ? 1_000_000_000 : tokens >= 1_000_000 ? 1_000_000 : 1_000;
+	let rounded = Number((tokens / unit).toFixed(1));
+	if (rounded >= 1_000 && unit < 1_000_000_000) {
+		unit *= 1_000;
+		rounded = Number((tokens / unit).toFixed(1));
+	}
+	return `${rounded}${unit === 1_000_000_000 ? "B" : unit === 1_000_000 ? "M" : "K"}`;
 }
 
 export function quotaWarning(limits?: ConversationRateLimits): {

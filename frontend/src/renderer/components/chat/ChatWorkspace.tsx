@@ -663,6 +663,7 @@ function ChatWorkspaceContent({
 		// A click fires after a drag selection ends. Focusing the composer here would
 		// collapse the range the user just selected in the transcript.
 		if (window.getSelection()?.isCollapsed === false) return;
+		// The focusable context tooltip must not redirect focus to the composer.
 		if (
 			target.closest(
 				"button, a, input, textarea, select, [contenteditable='true'], [role='button'], [role='option'], [data-context-meter], [role='menuitem'], [role='dialog'], [data-testid='session-terminal'], .xterm, .terminal-surface",

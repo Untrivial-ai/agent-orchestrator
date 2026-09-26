@@ -133,7 +133,7 @@ describe("patchClaudeContextUsage", () => {
 		expect(patched).toContain("lastAssistantTotalUsage = contextUsage.totalTokens");
 		expect(patched).toContain("session.contextWindowSize = contextUsage.rawMaxTokens");
 
-		const start = patched.indexOf("// AO: use the SDK's full context snapshot.");
+		const start = patched.indexOf("// AO: use the SDK's context snapshot.");
 		const end = patched.indexOf("if (session.cancelled) {", start);
 		const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 		const run = new AsyncFunction("session", "sendUpdate", `
@@ -163,6 +163,18 @@ describe("patchClaudeContextUsage", () => {
 		});
 		expect(fallbackUpdates.map(({ used, size }) => [used, size])).toEqual([[9, 100]]);
 		expect(fallback.contextWindowAuthoritative).toBe(false);
+
+		const zero = {
+			contextWindowSize: 100,
+			contextWindowAuthoritative: false,
+			query: { getContextUsage: async () => ({ totalTokens: 0, rawMaxTokens: 200 }) },
+		};
+		const zeroUpdates = [];
+		await run.call({ logger: { error: () => {} } }, zero, (notification) => {
+			zeroUpdates.push(notification.update);
+		});
+		expect(zeroUpdates.map(({ used, size }) => [used, size])).toEqual([[9, 100]]);
+		expect(zero.contextWindowAuthoritative).toBe(false);
 	});
 });
 

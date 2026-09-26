@@ -58,7 +58,7 @@ describe("ContextMeter", () => {
 
 	it("keeps a nearly-empty conversation's fill visible", () => {
 		render(<ContextMeter usage={usage({ contextUsed: 100 })} />);
-		expect(fill()).toHaveAttribute("stroke-dasharray", "2 100");
+		expect(fill()).toHaveAttribute("stroke-dasharray", "8 100");
 	});
 
 	describe("threshold colours", () => {
@@ -91,7 +91,7 @@ describe("ContextMeter", () => {
 		// No window means no honest fullness. Drawing an empty bar would claim a
 		// conversation is roomy when it might be nearly full.
 		expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
-		const readout = screen.getByLabelText("Context 18,055 / unknown");
+		const readout = screen.getByRole("img", { name: "Context 18,055 / unknown" });
 		await userEvent.hover(readout);
 		expect(await screen.findByRole("tooltip")).toHaveTextContent("Context 18.1K / unknown");
 	});
@@ -103,7 +103,7 @@ describe("ContextMeter", () => {
 
 	it("does not claim a failed turn with zero reported used is 0% full", () => {
 		render(<ContextMeter usage={usage({ contextUsed: 0, contextWindow: 262_144 })} />);
-		expect(screen.getByLabelText("Context unknown / 262,144")).toBeInTheDocument();
+		expect(screen.getByRole("img", { name: "Context unknown / 262,144" })).toBeInTheDocument();
 		expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
 	});
 

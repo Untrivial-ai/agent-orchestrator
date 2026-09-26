@@ -5,7 +5,7 @@ import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { SheetHeader } from "../ui";
 import type { ConversationActionsEntry } from "./chatSheetRegistry";
-import { compactContextUsageLabel, contextReadout, contextUsageLabel } from "./conversationChrome";
+import { compactContextUsageLabel, compactTokenCount, contextReadout, contextUsageLabel } from "./conversationChrome";
 import { conversationMenuSections, type ConversationMenuAction } from "./conversationMenuModel";
 import { can, type ConversationSnapshot } from "./types";
 import { type, space } from "../tokens";
@@ -54,12 +54,12 @@ export function ConversationActionsSheet({ entry, snapshot, onAction }: { entry:
 						return <ActionRow key={action} {...item} divider={index < section.actions.length - 1} onPress={() => onAction(item.run)} />;
 					})}</View>
 			</View>}
-		ListFooterComponent={<View style={styles.usage}>
+		ListFooterComponent={snapshot.usage || snapshot.rateLimits ? <View style={styles.usage}>
 				<Text style={styles.sectionTitle}>Context & usage</Text>
 				<Text accessibilityLabel={contextUsageLabel(snapshot.usage)} style={styles.usageText}>{compactContextUsageLabel(snapshot.usage)}</Text>
-				{snapshot.usage ? <><Text style={styles.usageText}>{formatTokens(snapshot.usage.inputTokens)} in · {formatTokens(snapshot.usage.outputTokens)} out{snapshot.usage.cost != null ? ` · ${snapshot.usage.currency || "$"}${snapshot.usage.cost.toFixed(4)}` : ""}</Text>{context?.fillPercent !== undefined ? <View style={styles.contextTrack}><View style={[styles.contextFill, { width: `${context.fillPercent}%` }]} /></View> : null}</> : null}
+				{snapshot.usage ? <><Text style={styles.usageText}>{compactTokenCount(snapshot.usage.inputTokens)} in · {compactTokenCount(snapshot.usage.outputTokens)} out{snapshot.usage.cost != null ? ` · ${snapshot.usage.currency || "$"}${snapshot.usage.cost.toFixed(4)}` : ""}</Text>{context?.fillPercent !== undefined ? <View style={styles.contextTrack}><View style={[styles.contextFill, { width: `${context.fillPercent}%` }]} /></View> : null}</> : null}
 				{snapshot.rateLimits ? <Text style={styles.usageText}>{snapshot.rateLimits.planLabel || "Primary limit"} · {Math.round(snapshot.rateLimits.primaryUsedPercent)}% used{formatReset(snapshot.rateLimits.primaryResetsInSeconds)}</Text> : null}
-			</View>}
+			</View> : null}
 	/>;
 }
 
@@ -74,7 +74,6 @@ function ActionRow({ icon, label, hint, value, disabled, destructive, divider, o
 	</Pressable>;
 }
 
-function formatTokens(value: number): string { return value >= 1_000 ? `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k` : String(value); }
 function formatReset(seconds?: number): string { if (seconds === undefined || seconds < 0) return ""; if (seconds < 60) return ` · resets in ${Math.ceil(seconds)}s`; if (seconds < 3600) return ` · resets in ${Math.ceil(seconds / 60)}m`; return ` · resets in ${Math.ceil(seconds / 3600)}h`; }
 
 const makeStyles = (t: Theme) => StyleSheet.create({

@@ -6,6 +6,7 @@ export type ConversationActionsEntry = {
 	kind: "conversation-actions";
 	sessionId: string;
 	snapshot: ConversationSnapshot;
+	subscribeEntry(listener: (entry: ConversationActionsEntry) => void): () => void;
 	sessionTitle: string;
 	openingShell: boolean;
 	compacting: boolean;
