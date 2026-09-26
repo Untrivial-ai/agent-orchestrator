@@ -2092,6 +2092,7 @@ describe("ChatWorkspace message actions", () => {
 
 	it("lets only the newest daemon session incarnation own restored drafts", async () => {
 		const snapshot = idleSnapshot();
+		const onSend = vi.fn();
 		const firstIncarnation = {
 			...chatSession,
 			createdAt: "2026-08-25T09:00:00.000Z",
@@ -2104,7 +2105,7 @@ describe("ChatWorkspace message actions", () => {
 			<ChatWorkspace
 				snapshot={snapshot}
 				session={firstIncarnation}
-				onSend={vi.fn()}
+				onSend={onSend}
 			/>,
 		);
 		await typeInLexicalEditor(
@@ -2116,7 +2117,7 @@ describe("ChatWorkspace message actions", () => {
 			<ChatWorkspace
 				snapshot={snapshot}
 				session={replacementIncarnation}
-				onSend={vi.fn()}
+				onSend={onSend}
 			/>,
 		);
 		const replacementComposer = await screen.findByLabelText("Message the agent");
@@ -2135,11 +2136,14 @@ describe("ChatWorkspace message actions", () => {
 			<ChatWorkspace
 				snapshot={snapshot}
 				session={firstIncarnation}
-				onSend={vi.fn()}
+				onSend={onSend}
 			/>,
 		);
-		expect(await screen.findByRole("alert")).toHaveTextContent("older session incarnation");
-		expect(screen.queryByLabelText("Message the agent")).not.toBeInTheDocument();
+		expect(await screen.findByRole("status")).toHaveTextContent("view is out of date");
+		const staleComposer = await screen.findByLabelText("Message the agent");
+		await typeInLexicalEditor(staleComposer, "continue on the current session");
+		fireEvent.keyDown(staleComposer, { key: "Enter" });
+		await waitFor(() => expect(onSend.mock.calls[0]?.[0]).toBe("continue on the current session"));
 		expect(
 			readChatSessionDraft({
 				sessionId: snapshot.sessionId,
@@ -2148,8 +2152,9 @@ describe("ChatWorkspace message actions", () => {
 		).toBe("replacement draft");
 	});
 
-	it("stays fail-closed until exact incarnation activation storage recovers", async () => {
+	it("keeps Chat usable in memory when draft storage cannot activate", async () => {
 		const snapshot = idleSnapshot();
+		const onSend = vi.fn();
 		const session = {
 			...chatSession,
 			createdAt: "2026-08-26T09:30:00.000Z",
@@ -2167,24 +2172,16 @@ describe("ChatWorkspace message actions", () => {
 		const localStorage = vi.spyOn(window, "localStorage", "get").mockReturnValue(storage);
 
 		try {
-			render(<ChatWorkspace snapshot={snapshot} session={session} onSend={vi.fn()} />);
-			expect(await screen.findByRole("alert")).toHaveTextContent(
-				"Chat draft storage could not be activated",
+			render(<ChatWorkspace snapshot={snapshot} session={session} onSend={onSend} />);
+			expect(await screen.findByRole("status")).toHaveTextContent(
+				"Saved Chat state could not be restored",
 			);
-			expect(screen.queryByLabelText("Message the agent")).not.toBeInTheDocument();
-
-			failWrites = false;
-			await userEvent.click(screen.getByRole("button", { name: "Retry draft restore" }));
 			const composer = await screen.findByLabelText("Message the agent");
-			await typeInLexicalEditor(composer, "durable after recovery");
-			await waitFor(() =>
-				expect(
-					readChatSessionDraft(
-						{ sessionId: snapshot.sessionId, incarnation: session.createdAt },
-						backing,
-					).composer.text,
-				).toBe("durable after recovery"),
-			);
+			await typeInLexicalEditor(composer, "send without draft storage");
+			fireEvent.keyDown(composer, { key: "Enter" });
+			await waitFor(() => expect(onSend.mock.calls[0]?.[0]).toBe("send without draft storage"));
+			expect(screen.getByLabelText("Message the agent")).toHaveTextContent("");
+			expect(failWrites).toBe(true);
 		} finally {
 			localStorage.mockRestore();
 		}

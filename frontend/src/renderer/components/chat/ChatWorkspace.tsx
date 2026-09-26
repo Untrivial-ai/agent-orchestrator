@@ -491,13 +491,12 @@ type ChatWorkspaceActivation =
 	| { key: string; state: "failed"; reason: "obsolete" | "storage" };
 
 /**
- * Do not mount any renderer draft owner until the daemon incarnation has
- * authoritatively claimed its storage scope. The activation transition itself
- * owns cleanup of the predecessor; callbacks from that obsolete surface can
- * then only fail closed against the successor lease.
+ * Only let a daemon incarnation own durable renderer drafts after it has
+ * authoritatively claimed its storage scope. If that fails, keep Chat mounted
+ * with an in-memory composer; callbacks from an obsolete surface must never
+ * write through the successor's lease.
  */
 export function ChatWorkspace(props: ChatWorkspaceProps) {
-	const translateDraft = useChatDraftTranslation();
 	const { snapshot, session } = props;
 	const draftScope = useMemo<ChatDraftScope>(
 		() => ({
@@ -510,7 +509,6 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
 	);
 	const scopeKey = chatDraftScopeKey(draftScope);
 	const [activation, setActivation] = useState<ChatWorkspaceActivation>();
-	const [activationAttempt, setActivationAttempt] = useState(0);
 
 	useLayoutEffect(() => {
 		// Snapshot-only previews have no daemon session incarnation to arbitrate.
@@ -526,43 +524,45 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
 		}
 		if (result.replaced) purgeFileAttachmentsForSession(draftScope.sessionId);
 		setActivation({ key: scopeKey, state: "active" });
-	}, [activationAttempt, draftScope, scopeKey, session?.createdAt]);
+	}, [draftScope, scopeKey, session?.createdAt]);
 
 	if (activation?.key !== scopeKey || activation.state !== "active") {
 		const failure = activation?.key === scopeKey && activation.state === "failed"
 			? activation.reason
 			: undefined;
+		// Draft ownership protects renderer-local recovery data, not the daemon's
+		// conversation. Keep the session usable when that optional storage scope is
+		// unavailable; the degraded composer runs in memory and cannot overwrite the
+		// newer incarnation's saved draft.
+		if (!failure) {
+			return (
+				<section
+					aria-label="Chat"
+					className="cursor-chat-surface flex h-full min-h-0 flex-col items-center justify-center px-6 [font-size:var(--chat-font-size)]"
+					data-session-mode={snapshot.mode}
+					style={{ "--chat-font-size": `${CHAT_FONT_SIZE_DEFAULT}px` } as CSSProperties}
+				/>
+			);
+		}
 		return (
-			<section
-				aria-label="Chat"
-				className="cursor-chat-surface flex h-full min-h-0 flex-col items-center justify-center px-6 [font-size:var(--chat-font-size)]"
-				data-session-mode={snapshot.mode}
-				style={{ "--chat-font-size": `${CHAT_FONT_SIZE_DEFAULT}px` } as CSSProperties}
-			>
-				{failure ? (
-					<div className="max-w-lg rounded-lg border border-border bg-card p-4">
-						<p className="text-sm text-foreground" role="alert">
-							{failure === "obsolete"
-								? "This Chat view belongs to an older session incarnation. Reopen the current session to continue."
-								: translateDraft("chat.draft.storageUnavailable")}
-						</p>
-						{failure === "storage" ? (
-							<Button
-								className="mt-3"
-								onClick={() => setActivationAttempt((attempt) => attempt + 1)}
-								type="button"
-								variant="outline"
-							>
-								Retry draft restore
-							</Button>
-						) : null}
-					</div>
-				) : null}
-			</section>
+			<ChatWorkspaceContent
+				key={scopeKey}
+				{...props}
+				draftScope={draftScope}
+				draftPersistenceAvailable={false}
+				draftRecoveryWarning={failure}
+			/>
 		);
 	}
 
-	return <ChatWorkspaceContent key={scopeKey} {...props} draftScope={draftScope} />;
+	return (
+		<ChatWorkspaceContent
+			key={scopeKey}
+			{...props}
+			draftScope={draftScope}
+			draftPersistenceAvailable
+		/>
+	);
 }
 
 function ChatWorkspaceContent({
@@ -659,7 +659,13 @@ function ChatWorkspaceContent({
 	cancelQueuedTurnPendingTurnId,
 	editQueuedTurnPendingTurnId,
 	draftScope,
-}: ChatWorkspaceProps & { draftScope: ChatDraftScope }) {
+	draftPersistenceAvailable = true,
+	draftRecoveryWarning,
+}: ChatWorkspaceProps & {
+	draftScope: ChatDraftScope;
+	draftPersistenceAvailable?: boolean;
+	draftRecoveryWarning?: "obsolete" | "storage";
+}) {
 	const draftScopeKey = chatDraftScopeKey(draftScope);
 	const turn = activeTurn(snapshot);
 	const hasPendingInteraction = snapshot.items.some(
@@ -1244,7 +1250,9 @@ function ChatWorkspaceContent({
 					canSteer={canSteerQueuedMessage}
 					onPromoteQueuedTurn={newWorkDisabled ? undefined : promoteQueuedTurn}
 					onBeginQueuedEdit={
-						newWorkDisabled || !onEditQueuedTurn ? undefined : beginQueuedEdit
+						newWorkDisabled || !draftPersistenceAvailable || !onEditQueuedTurn
+							? undefined
+							: beginQueuedEdit
 					}
 					onCancelQueuedTurn={newWorkDisabled ? undefined : handleCancelQueuedTurn}
 					onReorderQueuedTurns={newWorkDisabled ? undefined : onReorderQueuedTurns}
@@ -1258,6 +1266,7 @@ function ChatWorkspaceContent({
 			cancelQueuedTurnPendingTurnId,
 			handleCancelQueuedTurn,
 			newWorkDisabled,
+			draftPersistenceAvailable,
 			onEditQueuedTurn,
 			onReorderQueuedTurns,
 			promoteQueuedTurn,
@@ -1440,6 +1449,19 @@ function ChatWorkspaceContent({
 					{snapshot.account ? (
 						<ReauthBanner account={snapshot.account} harness={snapshot.harness} reasonInTimeline={reauthErrorInChat} />
 					) : null}
+					{draftRecoveryWarning ? (
+						<div
+							className="mx-4 mt-3 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-sm text-muted-foreground"
+							role="status"
+						>
+							<AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
+							<p>
+								{draftRecoveryWarning === "obsolete"
+									? "This Chat view is out of date. The conversation is still available, but unsent drafts cannot be restored or saved here."
+									: "Saved Chat state could not be restored. The conversation is still available, but unsent drafts will not be saved in this view."}
+							</p>
+						</div>
+					) : null}
 					<ControllerBanner
 						controller={snapshot.controller}
 						transitioning={controllerTransitioning}
@@ -1471,7 +1493,7 @@ function ChatWorkspaceContent({
 									onOpenFiles={onOpenFiles}
 									onOpenFile={onOpenFile}
 									retryControl={retryControl}
-									onEditHumanMessage={editHumanMessage}
+									onEditHumanMessage={draftPersistenceAvailable ? editHumanMessage : undefined}
 									editPending={editMessagePending}
 									editBusy={Boolean(turn)}
 									editError={editMessageError}
@@ -1510,7 +1532,7 @@ function ChatWorkspaceContent({
 									approval={composerApproval}
 									elicitation={composerElicitation}
 									onSend={handleComposerSend}
-									draftSeed={composerDraftSeed}
+									draftSeed={draftPersistenceAvailable ? composerDraftSeed : undefined}
 									editingQueuedTurnId={queueEdit?.turnId}
 									queuedEditRecovery={Boolean(queueEdit?.clientMessageId)}
 									savingQueuedEditPending={Boolean(
@@ -1555,8 +1577,12 @@ function ChatWorkspaceContent({
 									compacting={compacting}
 									compactUnavailable={compactUnavailable}
 									compactBlocked={Boolean(turn)}
-									draftSessionId={queueEdit ? undefined : snapshot.sessionId}
-									draftSessionIncarnation={draftScope.incarnation}
+									draftSessionId={
+										draftPersistenceAvailable && !queueEdit ? snapshot.sessionId : undefined
+									}
+									draftSessionIncarnation={
+										draftPersistenceAvailable ? draftScope.incarnation : undefined
+									}
 									acceptedClientMessageIds={acceptedClientMessageIds}
 									/>
 								</div>
