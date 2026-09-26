@@ -3905,6 +3905,69 @@ html.sidebar-reordering * {
 	}
 }
 
+/* Files filter field. Visually matches the browser address field, but is its
+   own rule set so browser styles never change because of the Files panel. */
+.inspector-field-input {
+	width: 100%;
+	box-sizing: border-box;
+	height: var(--size-control-md);
+	border-color: var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--bg);
+	font-family: var(--font-family-base);
+	font-size: 12px;
+	transition:
+		border-color var(--duration-fast) ease,
+		box-shadow var(--duration-fast) ease;
+}
+
+.inspector-field-input:focus,
+.inspector-field-input:focus-visible {
+	border-color: color-mix(in oklab, var(--ring) 60%, var(--color-border));
+	box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
+	outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.inspector-field-input {
+		transition: none;
+	}
+}
+
+/* Files tab: the filter field sits in the inspector top bar exactly where the
+   browser's address field does, with the same centered track and focus
+   widening. It always stays on the top row; the panel shares the browser's
+   minimum width, so the track shrinks instead of wrapping. */
+.session-inspector__topbar:has(> .files-panel__topbar-host) {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 240px) minmax(0, 1fr);
+	padding-left: 0;
+	transition: grid-template-columns var(--duration-fast) ease;
+}
+
+.session-inspector__topbar:has(> .files-panel__topbar-host :focus) {
+	grid-template-columns: minmax(0, 1fr) clamp(240px, 52cqw, 560px) minmax(0, 1fr);
+}
+
+.session-inspector__topbar:has(> .files-panel__topbar-host) > .session-inspector__tablist {
+	grid-column: 1;
+	padding-left: var(--space-1);
+}
+
+.session-inspector__topbar > .files-panel__topbar-host {
+	grid-column: 2;
+	width: 100%;
+}
+
+.session-inspector__topbar > .files-panel__topbar-host > * {
+	transform: translateX(clamp(32px, 6cqw, 48px));
+}
+
+.session-inspector__topbar:has(> .files-panel__topbar-host) > .session-inspector-actions-spacer {
+	grid-column: 3;
+	justify-self: end;
+}
+
 .session-inspector__tab-button {
 	flex: none;
 	gap: 0;
@@ -4533,14 +4596,21 @@ html.sidebar-reordering * {
    hides the shell topbar; windowed mode reserves the native traffic-light band,
    while native fullscreen keeps a 0px top inset. Linux keeps its ShellTopbar
    offset below. */
+/* Maximized files use the same geometry as the maximized browser (backdrop,
+   titlebar band, inset frame) but their own rules, so the native-view
+   composition overrides for the browser never reach the files overlay. */
 .files-popout-overlay {
+	--browser-popout-top: env(titlebar-area-height, 0px);
+	--browser-popout-inline-inset: var(--size-center-panel-inline-inset);
+	box-sizing: border-box;
 	position: fixed;
-	inset: env(titlebar-area-height, 0px) 0 0;
+	inset: var(--browser-popout-top) 0 0;
 	z-index: 40;
-	background: color-mix(in srgb, var(--bg) 94%, black);
+	overflow: hidden;
+	background: transparent;
 	/* The macOS shell has a separate traffic-light drag strip. Keep the
-	   maximized browser surface interactive even if those regions overlap while
-	   the window is transitioning between layouts. */
+	   maximized surface interactive even if those regions overlap while the
+	   window is transitioning between layouts. */
 	-webkit-app-region: no-drag;
 }
 
@@ -4582,6 +4652,29 @@ html.sidebar-reordering * {
 	box-shadow: none;
 }
 
+.files-popout-backdrop {
+	position: absolute;
+	inset: 0;
+	background: color-mix(in srgb, var(--bg) 94%, black);
+}
+
+.files-popout-frame {
+	position: absolute;
+	top: 0;
+	right: var(--browser-popout-inline-inset);
+	left: var(--browser-popout-inline-inset);
+	display: flex;
+	height: 100%;
+	flex-direction: column;
+	overflow: hidden;
+	background: var(--bg);
+}
+
+.files-popout-frame > * {
+	min-height: 0;
+	flex: 1 1 auto;
+}
+
 /* Keep native browser/files surfaces below the custom Windows titlebar. The
    Browser frame is positioned inside that inset overlay, so its measured dock
    top subtracts this same value during the geometry transition. */
@@ -4612,6 +4705,10 @@ body:has(#root .platform-windows) > .files-popout-overlay {
 	--browser-popout-inline-inset: var(--size-center-panel-inset-mac);
 }
 
+.files-popout-overlay--mac-windowed {
+	--browser-popout-inline-inset: var(--size-center-panel-inset-mac);
+}
+
 .browser-popout-overlay .browser-panel__toolbar,
 .browser-popout-overlay .browser-panel__toolbar *,
 .browser-panel__address-bar,
@@ -4626,6 +4723,11 @@ body:has(#root .platform-windows) > .files-popout-overlay {
 }
 
 body:has(#root .platform-linux) > .browser-popout-overlay {
+	top: var(--size-shell-topbar);
+	--browser-popout-top: var(--size-shell-topbar);
+}
+
+body:has(#root .platform-linux) > .files-popout-overlay {
 	top: var(--size-shell-topbar);
 	--browser-popout-top: var(--size-shell-topbar);
 }
@@ -4697,6 +4799,63 @@ body:has(#root .platform-linux) > .browser-popout-overlay {
 .browser-popout-frame > .browser-panel {
 	min-height: 0;
 	flex: 1 1 auto;
+}
+
+/* The Files filter takes the browser address bar's slot: centred in the
+   titlebar band and widening the same way while focused. */
+.files-popout-titlebar {
+	position: fixed;
+	top: 0;
+	right: 0;
+	left: 0;
+	z-index: 41;
+	display: flex;
+	height: var(--browser-popout-top);
+	min-width: 0;
+	align-items: center;
+	border-bottom: 1px solid var(--border);
+	background: var(--bg);
+	-webkit-app-region: no-drag;
+}
+
+.files-popout-titlebar--mac-windowed {
+	padding-right: var(--space-3);
+	padding-left: var(--size-titlebar-content-offset);
+}
+
+.files-popout-titlebar > label {
+	position: absolute;
+	left: 50%;
+	width: min(480px, calc(100vw - 32px));
+	transform: translateX(-50%);
+	transition: width var(--duration-fast) ease;
+}
+
+.files-popout-titlebar > label:focus-within {
+	width: min(760px, calc(100vw - 32px));
+}
+
+.files-popout-titlebar--mac-windowed > label {
+	max-width: calc(100vw - (2 * var(--size-titlebar-content-offset)));
+}
+
+/* Without the traffic-light reserve (native macOS fullscreen) the band is at
+   least a tab row tall; the frame starts right below it. Subtracting the
+   overlay's own top keeps that exact where the overlay already sits below a
+   Windows or Linux titlebar. */
+.files-popout-overlay:not(.files-popout-overlay--mac-windowed) .files-popout-titlebar {
+	height: max(var(--browser-popout-top), var(--size-inspector-tabs));
+}
+
+.files-popout-overlay:not(.files-popout-overlay--mac-windowed) .files-popout-frame {
+	top: calc(max(var(--browser-popout-top), var(--size-inspector-tabs)) - var(--browser-popout-top));
+	height: calc(100% - (max(var(--browser-popout-top), var(--size-inspector-tabs)) - var(--browser-popout-top)));
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.files-popout-titlebar > label {
+		transition: none;
+	}
 }
 
 .browser-panel__topbar-host,

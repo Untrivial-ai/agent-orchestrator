@@ -8,27 +8,54 @@ import type { FileAnnotationModel } from "../WorkspaceDiffView";
 import { TooltipProvider } from "../ui/tooltip";
 import { WorkspaceReviewPane } from "./WorkspaceReviewPane";
 
-const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
+const { getMock, postMock } = vi.hoisted(() => ({ getMock: vi.fn(), postMock: vi.fn() }));
 
 vi.mock("../../lib/api-client", () => ({
-	apiClient: { POST: postMock, GET: vi.fn() },
+	apiClient: { POST: postMock, GET: getMock },
 	apiErrorMessage: (error: unknown, fallback = "Request failed") => error instanceof Error ? error.message : fallback,
 }));
 
+// Minimal patch-only "change" metadata. A patch containing "ends-at-eof" gets a
+// last hunk that ends on a change (the file provably ends there); any other
+// keeps three lines of trailing context (the file may continue).
 vi.mock("@pierre/diffs", () => ({
-	parsePatchFiles: (patch: string) => patch ? [{ files: [{ name: patch.includes("README.md") ? "README.md" : "src/App.tsx", type: "changed" }] }] : [],
+	hydratePartialDiff: (_mode: string, fileDiff: object) => ({ ...fileDiff, isPartial: false }),
+	parsePatchFiles: (patch: string) => patch ? [{ files: [{
+		name: patch.includes("README.md") ? "README.md" : "src/App.tsx",
+		type: "change",
+		isPartial: true,
+		deletionLines: [],
+		additionLines: [],
+		hunks: [{
+			deletionStart: 1,
+			deletionCount: 3,
+			additionStart: 1,
+			additionCount: 4,
+			noEOFCRAdditions: false,
+			noEOFCRDeletions: false,
+			hunkContent: patch.includes("ends-at-eof")
+				? [{ type: "context", lines: 3 }, { type: "change", additions: 1, deletions: 0 }]
+				: [{ type: "change", additions: 1, deletions: 0 }, { type: "context", lines: 3 }],
+		}],
+	}] }] : [],
 }));
 
 vi.mock("@pierre/diffs/react", () => ({
-	CodeView: ({ className, items, options, renderCustomHeader, renderGutterUtility }: {
+	CodeView: ({ className, items, options, renderAnnotation, renderCustomHeader, renderGutterUtility }: {
 		className: string;
-		items: Array<{ id: string; collapsed?: boolean }>;
+		items: Array<{ id: string; collapsed?: boolean; fileDiff?: { isPartial?: boolean }; annotations?: Array<{ lineNumber: number; side: string }> }>;
 		options: { enableGutterUtility?: boolean; overflow?: string; unsafeCSS?: string };
+		renderAnnotation?: () => ReactNode;
 		renderCustomHeader: (item: { id: string }) => ReactNode;
 		renderGutterUtility?: (getHoveredLine: () => { lineNumber: number; side: "additions" }, item: { id: string }) => ReactNode;
 	}) => (
 		<div className={className} data-gutter-enabled={String(Boolean(options.enableGutterUtility))} data-overflow={options.overflow} data-surface-css={options.unsafeCSS} data-testid="code-view">
-			{items.map((item) => <div data-collapsed={String(Boolean(item.collapsed))} key={item.id}>{renderCustomHeader(item)}</div>)}
+			{items.map((item) => (
+				<div data-collapsed={String(Boolean(item.collapsed))} data-partial={String(item.fileDiff?.isPartial)} key={item.id}>
+					{renderCustomHeader(item)}
+					{item.annotations?.map((entry) => <div data-annotation-line={entry.lineNumber} data-annotation-side={entry.side} key={`${entry.side}:${entry.lineNumber}`}>{renderAnnotation?.()}</div>)}
+				</div>
+			))}
 			{items[0] ? renderGutterUtility?.(() => ({ lineNumber: 7, side: "additions" }), items[0]) : null}
 		</div>
 	),
@@ -86,6 +113,7 @@ function renderWithQuery(children: ReactNode) {
 describe("WorkspaceReviewPane", () => {
 	beforeEach(() => {
 		window.localStorage.clear();
+		getMock.mockReset();
 		postMock.mockReset().mockResolvedValue({
 			data: {
 				sessionId: "sess-1",
@@ -110,11 +138,94 @@ describe("WorkspaceReviewPane", () => {
 		await userEvent.click(screen.getByRole("checkbox", { name: "Mark src/App.tsx as viewed" }));
 		expect(screen.getByText("1 of 1 viewed")).toBeInTheDocument();
 		expect(screen.getByRole("checkbox", { name: "Mark src/App.tsx as not viewed" })).toHaveClass("size-4");
-		expect(screen.getByRole("checkbox", { name: "Mark src/App.tsx as not viewed" })).toHaveStyle({
-			backgroundColor: "#fff",
-			borderColor: "#fff",
-			color: "#000",
+		// Checked styling comes from theme tokens (foreground box, background
+		// check), not hardcoded colours, so it follows light and dark mode.
+		const viewedBox = screen.getByRole("checkbox", { name: "Mark src/App.tsx as not viewed" });
+		expect(viewedBox).toHaveAttribute("data-state", "checked");
+		expect(viewedBox).toHaveClass("data-[state=checked]:bg-foreground", "data-[state=checked]:text-background");
+		expect(viewedBox.getAttribute("style") ?? "").not.toMatch(/#fff|#000/);
+	});
+
+	it("loads a file that ends at its last change up front, so its diff has no trailing context row", async () => {
+		postMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				workspaceVersion: "workspace-1",
+				groups: [{ repository: "", patch: "diff --git a/README.md b/README.md\nends-at-eof\n", truncated: false, includedPaths: ["README.md"], deferred: [] }],
+			},
 		});
+		getMock.mockImplementation(async (_url: string, init: { params: { query: { side: "before" | "after" } } }) => ({
+			data: { binary: false, content: init.params.query.side === "before" ? "a\n" : "a\nb\n", revision: `rev-${init.params.query.side}`, truncated: false },
+		}));
+		const data = workspace([{ path: "README.md", status: "modified", additions: 1, deletions: 0, size: 20, binary: false }]);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+
+		await waitFor(() => expect(screen.getByTestId("code-view").querySelector("[data-partial]")).toHaveAttribute("data-partial", "false"));
+		for (const side of ["before", "after"]) {
+			expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/file/revision", expect.objectContaining({
+				params: expect.objectContaining({ query: expect.objectContaining({ path: "README.md", side }) }),
+			}));
+		}
+	});
+
+	it("holds a file that ends at its last change until its contents load, instead of flashing the patch-only diff", async () => {
+		postMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				workspaceVersion: "workspace-1",
+				groups: [{ repository: "", patch: "diff --git a/README.md b/README.md\nends-at-eof\n", truncated: false, includedPaths: ["README.md"], deferred: [] }],
+			},
+		});
+		let release = () => {};
+		const contentsReady = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		getMock.mockImplementation(async (_url: string, init: { params: { query: { side: "before" | "after" } } }) => {
+			await contentsReady;
+			return { data: { binary: false, content: init.params.query.side === "before" ? "a\n" : "a\nb\n", revision: `rev-${init.params.query.side}`, truncated: false } };
+		});
+		const data = workspace([{ path: "README.md", status: "modified", additions: 1, deletions: 0, size: 20, binary: false }]);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+
+		await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+		expect(screen.getByText("Loading diff...")).toBeInTheDocument();
+		expect(screen.queryByTestId("code-view")).not.toBeInTheDocument();
+
+		release();
+		await waitFor(() => expect(screen.getByTestId("code-view").querySelector("[data-partial]")).toHaveAttribute("data-partial", "false"));
+		expect(screen.queryByText("Loading diff...")).not.toBeInTheDocument();
+	});
+
+	it("stops holding after a stalled contents request and shows the patch-only diff", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			postMock.mockResolvedValue({
+				data: {
+					sessionId: "sess-1",
+					workspaceVersion: "workspace-1",
+					groups: [{ repository: "", patch: "diff --git a/README.md b/README.md\nends-at-eof\n", truncated: false, includedPaths: ["README.md"], deferred: [] }],
+				},
+			});
+			getMock.mockImplementation(() => new Promise(() => {}));
+			const data = workspace([{ path: "README.md", status: "modified", additions: 1, deletions: 0, size: 20, binary: false }]);
+			renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+
+			await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+			expect(screen.queryByTestId("code-view")).not.toBeInTheDocument();
+			await vi.advanceTimersByTimeAsync(1600);
+			await waitFor(() => expect(screen.getByTestId("code-view").querySelector("[data-partial]")).toHaveAttribute("data-partial", "true"));
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps the patch-only diff (and its load-more row) when the file may continue", async () => {
+		const data = workspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 0, size: 20, binary: false }]);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+
+		expect(await screen.findByTestId("code-view")).toBeInTheDocument();
+		expect(screen.getByTestId("code-view").querySelector("[data-partial]")).toHaveAttribute("data-partial", "true");
+		expect(getMock).not.toHaveBeenCalled();
 	});
 
 	it("collapses and expands file items through controlled CodeView state", async () => {
@@ -122,9 +233,9 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
 		expect(await screen.findByTestId("code-view")).toBeInTheDocument();
 
-		await userEvent.click(screen.getAllByRole("button", { name: "Collapse src/App.tsx" })[1]);
+		await userEvent.click(screen.getByRole("button", { name: "Collapse src/App.tsx" }));
 		expect(screen.getByTestId("code-view").querySelector("[data-collapsed]"))?.toHaveAttribute("data-collapsed", "true");
-		await userEvent.click(screen.getAllByRole("button", { name: "Expand src/App.tsx" })[1]);
+		await userEvent.click(screen.getByRole("button", { name: "Expand src/App.tsx" }));
 		expect(screen.getByTestId("code-view").querySelector("[data-collapsed]"))?.toHaveAttribute("data-collapsed", "false");
 	});
 
@@ -150,7 +261,7 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={model} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
 		expect(await screen.findByRole("textbox", { name: /Feedback for src\/App\.tsx/ })).toBeInTheDocument();
 
-		await userEvent.click(screen.getAllByRole("button", { name: "Collapse src/App.tsx" })[1]);
+		await userEvent.click(screen.getByRole("button", { name: "Collapse src/App.tsx" }));
 		expect(model.cancel).toHaveBeenCalledOnce();
 	});
 
@@ -187,6 +298,15 @@ describe("WorkspaceReviewPane", () => {
 		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx", { commitSha: "commit-1", mode: "diff", scope: "committed" });
 	});
 
+	it("hides the open-in-center action when no center pane is reachable", async () => {
+		const data = committedWorkspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "file-1" }]);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} canOpenInCenter={false} data={data} filter="" onBrowseAll={vi.fn()} onOpenFile={vi.fn()} sessionId="sess-1" split={false} />);
+		expect(await screen.findByTestId("code-view")).toBeInTheDocument();
+
+		expect(screen.queryByRole("button", { name: "Open diff in center" })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Open full file" })).toBeInTheDocument();
+	});
+
 	it("opens a changed diff directly in syntax-aware edit mode", async () => {
 		const onOpenFile = vi.fn();
 		const data = committedWorkspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, editable: true, fileFingerprint: "file-1" }]);
@@ -212,7 +332,12 @@ describe("WorkspaceReviewPane", () => {
 		renderWithQuery(<WorkspaceReviewPane annotation={model} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
 
 		const composer = await screen.findByRole("textbox", { name: /Feedback for src\/App\.tsx/ });
-		expect(composer.closest(".relative.bg-surface")).toContainElement(screen.getAllByRole("button", { name: "Collapse src/App.tsx" })[1]);
+		// A popover under the header, portaled above the list (so a later file's
+		// header can't cover it), not a row inside one diff column.
+		// (jsdom boxes are zero-sized, so Radix's hideWhenDetached hides it from role queries.)
+		expect(composer.closest('[role="dialog"]')).toHaveAttribute("aria-label", "Add feedback");
+		expect(composer.closest("[data-annotation-line]")).toBeNull();
+		expect(screen.getByTestId("code-view").querySelector("[data-annotation-line]")).toBeNull();
 	});
 
 	it("opens deleted markdown as source because no current rendered revision exists", async () => {
