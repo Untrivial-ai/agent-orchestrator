@@ -1603,6 +1603,95 @@ type ListCompactSessionUsageResponse struct {
 	Sessions []CompactSessionUsageResponse `json:"sessions"`
 }
 
+// SessionMemoryProcessResponse is one process in a session's runtime tree.
+type SessionMemoryProcessResponse struct {
+	PID        int     `json:"pid"`
+	PPID       int     `json:"ppid"`
+	RSSBytes   uint64  `json:"rssBytes" minimum:"0"`
+	CPUPercent float64 `json:"cpuPercent" minimum:"0" description:"Share of one core used since the previous sample; zero on the first."`
+	Command    string  `json:"command"`
+}
+
+// SessionMemoryResponse is the resident memory of one live session's process
+// tree at sampledAt. Sessions without a live runtime are absent, never zero.
+type SessionMemoryResponse struct {
+	SessionID    domain.SessionID               `json:"sessionId"`
+	RSSBytes     uint64                         `json:"rssBytes" minimum:"0" description:"Resident set size summed over the runtime process tree."`
+	ProcessCount int                            `json:"processCount" minimum:"0"`
+	CPUPercent   float64                        `json:"cpuPercent" minimum:"0" description:"Share of one core the whole tree used since the previous sample; zero on the first."`
+	SampledAt    time.Time                      `json:"sampledAt"`
+	Processes    []SessionMemoryProcessResponse `json:"processes"`
+	// Activity is what the agent has been doing, from its tool hooks. Absent
+	// for harnesses that emit none (the process tree is all there is).
+	Activity *SessionActivityResponse `json:"activity,omitempty"`
+}
+
+// SessionStepResponse is one tool call the agent made: which kind of tool
+// and when. Deliberately not what it was given; the window is a glance.
+type SessionStepResponse struct {
+	Tool      string     `json:"tool"`
+	StartedAt time.Time  `json:"startedAt"`
+	EndedAt   *time.Time `json:"endedAt,omitempty" description:"Absent while the tool is still running."`
+	Failed    bool       `json:"failed"`
+}
+
+// SessionActivityResponse is the step in flight and the last few finished.
+type SessionActivityResponse struct {
+	Current *SessionStepResponse `json:"current,omitempty"`
+	// Recent is newest first, at most a handful.
+	Recent []SessionStepResponse `json:"recent"`
+}
+
+// ListSessionMemoryResponse is the batch memory reading for the board.
+type ListSessionMemoryResponse struct {
+	Sessions []SessionMemoryResponse `json:"sessions"`
+	// System is host RAM for the panel's total bar. Absent where the
+	// platform can't be read.
+	System *SystemMemoryResponse `json:"system,omitempty"`
+	// App is the resident memory of everything AO runs (daemon, desktop
+	// shell, every live session), for the topbar pressure indicator.
+	App *AppMemoryResponse `json:"app,omitempty"`
+}
+
+// AppMemoryResponse is everything AO runs at sample time, with AO's own
+// daemon and shell broken out so the panel can pin them as their own row.
+type AppMemoryResponse struct {
+	RSSBytes     uint64  `json:"rssBytes" minimum:"0"`
+	ProcessCount int     `json:"processCount" minimum:"0"`
+	CPUPercent   float64 `json:"cpuPercent" minimum:"0"`
+	// Own is the daemon and desktop shell alone, without any session.
+	Own *SessionMemoryResponse `json:"own,omitempty"`
+}
+
+// SystemMemoryResponse is the host's headroom at sample time. The pressure
+// light reads this, never AO's share: a machine about to swap is red whoever
+// holds the memory.
+type SystemMemoryResponse struct {
+	TotalBytes     uint64 `json:"totalBytes" minimum:"0"`
+	AvailableBytes uint64 `json:"availableBytes" minimum:"0" description:"What the kernel would hand out without swapping (MemAvailable)."`
+	SwapTotalBytes uint64 `json:"swapTotalBytes" minimum:"0"`
+	SwapUsedBytes  uint64 `json:"swapUsedBytes" minimum:"0"`
+	// SwapBytesPerSec is how fast pages moved to or from swap since the
+	// previous sample. Sustained non-zero is the frozen-cursor signal.
+	SwapBytesPerSec float64 `json:"swapBytesPerSec" minimum:"0"`
+	CPUCount        int     `json:"cpuCount" minimum:"0"`
+	// Load1 is the one-minute load average; over cpuCount means work is
+	// queueing. -1 on a platform with no such concept (Windows); never
+	// otherwise negative.
+	Load1 float64 `json:"load1"`
+	// CPUPercent is how busy the whole host was since the previous sample,
+	// 0..100 across all cores; zero on the first sample.
+	CPUPercent float64 `json:"cpuPercent" minimum:"0"`
+	// PressureRaw is the kernel's memory-pressure figure: PSI "some avg10"
+	// (percent of the last ten seconds a task stalled on memory) on Linux,
+	// macOS's own kernel pressure level (1/2/4) on macOS, or 100 minus the
+	// available percent where neither is available. Clients derive
+	// fine / tight-soon / tight from it.
+	PressureRaw float64 `json:"pressureRaw" minimum:"0"`
+	// PressureSource says which reading produced pressureRaw.
+	PressureSource string `json:"pressureSource" enum:"psi,available_pct,memorystatus"`
+}
+
 // UsageTotalsResponse is the canonical telemetry aggregate for one scope.
 //
 // Provider-specific counters are no longer projected here: they live verbatim

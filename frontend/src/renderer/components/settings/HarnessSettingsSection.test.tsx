@@ -794,6 +794,13 @@ describe("HarnessSettingsSection", () => {
 			if (path === "/api/v1/agents/readiness") return { data: catalog } as never;
 			if (path === "/api/v1/agents/installers") return { data: plans } as never;
 			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [{ target: "codex", status: "failed", method: "npm", error: "exit status 1", output: "permission denied", expectedDestination: "/Users/test/.npm/bin/codex" }] } } as never;
+			if (path === "/api/v1/usage/sessions/memory") {
+				return { data: {
+					sessions: [{ sessionId: "s1", rssBytes: 641_728_512, processCount: 3, cpuPercent: 0, sampledAt: "2026-09-22T00:00:00Z", processes: [] }],
+					app: { rssBytes: 2 * 1024 ** 3, processCount: 20, cpuPercent: 12 },
+					system: { totalBytes: 32 * 1024 ** 3, availableBytes: 4 * 1024 ** 3, swapTotalBytes: 0, swapUsedBytes: 0, swapBytesPerSec: 0, cpuCount: 8, load1: 1.25, cpuPercent: 30, pressureRaw: 5, pressureSource: "psi" },
+				} } as never;
+			}
 			return { data: undefined } as never;
 		});
 		const user = userEvent.setup();
@@ -803,7 +810,58 @@ describe("HarnessSettingsSection", () => {
 		expect(row).toHaveTextContent("permission denied");
 		expect(row).toHaveTextContent("/Users/test/.npm/bin/codex");
 		await user.click(within(row).getByRole("button", { name: "Copy diagnostics" }));
-		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("permission denied"));
+		await waitFor(() => expect(window.ao!.clipboard.writeText).toHaveBeenCalled());
+		const copied = vi.mocked(window.ao!.clipboard.writeText).mock.calls.at(-1)![0] as string;
+		// The machine the install died on is part of the report.
+		expect(copied).toContain("permission denied");
+		expect(copied).toContain("Memory: AO 2.1 GB · available 4.3 GB of 34.4 GB");
+		expect(copied).toContain("CPU: 30% of 8 cores · load 1.25");
+		expect(copied).toContain("Live sessions: 1 · 642 MB");
+	});
+
+	it("leaves load out of copied diagnostics on a platform with no load average", async () => {
+		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness") return { data: catalog } as never;
+			if (path === "/api/v1/agents/installers") return { data: plans } as never;
+			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [{ target: "codex", status: "failed", method: "npm", error: "exit status 1", output: "permission denied", expectedDestination: "/Users/test/.npm/bin/codex" }] } } as never;
+			if (path === "/api/v1/usage/sessions/memory") {
+				return { data: {
+					sessions: [],
+					app: { rssBytes: 2 * 1024 ** 3, processCount: 20, cpuPercent: 12 },
+					// Windows reports load1 = -1 to mean "no such concept here", not 0.
+					system: { totalBytes: 32 * 1024 ** 3, availableBytes: 4 * 1024 ** 3, swapTotalBytes: 0, swapUsedBytes: 0, swapBytesPerSec: 0, cpuCount: 8, load1: -1, cpuPercent: 30, pressureRaw: 5, pressureSource: "available_pct" },
+				} } as never;
+			}
+			return { data: undefined } as never;
+		});
+		const user = userEvent.setup();
+		renderSection();
+		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
+		await user.click(await within(row).findByRole("button", { name: "Show diagnostics" }));
+		await user.click(within(row).getByRole("button", { name: "Copy diagnostics" }));
+		await waitFor(() => expect(window.ao!.clipboard.writeText).toHaveBeenCalled());
+		const copied = vi.mocked(window.ao!.clipboard.writeText).mock.calls.at(-1)![0] as string;
+		expect(copied).toContain("CPU: 30% of 8 cores");
+		expect(copied).not.toContain("load");
+	});
+
+	it("still copies diagnostics when the host cannot be measured", async () => {
+		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
+			if (path === "/api/v1/agents/readiness") return { data: catalog } as never;
+			if (path === "/api/v1/agents/installers") return { data: plans } as never;
+			if (path === "/api/v1/agents/install-jobs") return { data: { jobs: [{ target: "codex", status: "failed", method: "npm", error: "exit status 1", output: "permission denied" }] } } as never;
+			if (path === "/api/v1/usage/sessions/memory") return { error: { code: "MEMORY_UNSUPPORTED" } } as never;
+			return { data: undefined } as never;
+		});
+		const user = userEvent.setup();
+		renderSection();
+		const row = (await screen.findByText("Codex")).closest('[data-agent="codex"]') as HTMLElement;
+		await user.click(await within(row).findByRole("button", { name: "Show diagnostics" }));
+		await user.click(within(row).getByRole("button", { name: "Copy diagnostics" }));
+		await waitFor(() => expect(window.ao!.clipboard.writeText).toHaveBeenCalled());
+		const copied = vi.mocked(window.ao!.clipboard.writeText).mock.calls.at(-1)![0] as string;
+		expect(copied).toContain("permission denied");
+		expect(copied).not.toContain("Machine");
 	});
 
 	it("surfaces install job polling failures", async () => {

@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { Check, Copy, Download, LoaderCircle, LogIn, Search, TriangleAlert, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -11,6 +11,7 @@ import {
 } from "../../hooks/useAgentReadinessQuery";
 import { agentAuthPlansQueryKey, probeAgentAuth, useAgentAuthPlans, useStartAgentAuth } from "../../hooks/useAgentAuth";
 import { agentModelsQueryPrefix } from "../../hooks/useAgentModelsQuery";
+import { fetchSessionMemory, formatCPU, formatMemory, sessionMemoryQueryOptions } from "../../hooks/useSessionMemory";
 import { closeShellTerminal, shellTerminalsQueryKey } from "../../hooks/useShellTerminals";
 import type { TerminalSessionState } from "../../hooks/useTerminalSession";
 import { agentLabel, AGENT_OPTIONS, type AgentId } from "../../lib/agent-options";
@@ -97,6 +98,41 @@ function diagnosticsText(agentId: AgentId, job: InstallJob): string {
 		job.error ? `Error: ${job.error}` : "",
 		job.output ? `Output:\n${job.output}` : "",
 	].filter(Boolean).join("\n");
+}
+
+/**
+ * What the machine looked like when the diagnostics were copied: an install
+ * that dies on a host with no memory left reads very differently from one
+ * that dies on an idle laptop. Fetched once on the click rather than polled,
+ * and left out entirely where the daemon cannot measure the host. English,
+ * like the rest of this report: it is read by whoever fixes the bug.
+ */
+async function machineText(queryClient: QueryClient): Promise<string> {
+	let reading: Awaited<ReturnType<typeof fetchSessionMemory>>;
+	try {
+		reading = await queryClient.fetchQuery(sessionMemoryQueryOptions());
+	} catch {
+		return "";
+	}
+	const { app, system, sessions } = reading;
+	if (!app && !system) return "";
+	const lines = ["Machine"];
+	if (app && system) {
+		lines.push(`Memory: AO ${formatMemory(app.rssBytes)} · available ${formatMemory(system.availableBytes)} of ${formatMemory(system.totalBytes)}`);
+	} else if (app) {
+		lines.push(`Memory: AO ${formatMemory(app.rssBytes)}`);
+	}
+	if (system) {
+		// Windows has no load average and reports the sentinel -1 rather than a
+		// fabricated 0; leave the figure out of the report entirely there.
+		const load = system.load1 >= 0 ? ` · load ${system.load1.toFixed(2)}` : "";
+		lines.push(`CPU: ${formatCPU(system.cpuPercent)} of ${system.cpuCount} cores${load}`);
+		if (system.swapBytesPerSec > 0) lines.push(`Swapping: ${formatMemory(system.swapBytesPerSec)}/s`);
+	}
+	if (sessions.length > 0) {
+		lines.push(`Live sessions: ${sessions.length} · ${formatMemory(sessions.reduce((sum, s) => sum + s.rssBytes, 0))}`);
+	}
+	return lines.join("\n");
 }
 
 function installMethodLabel(method: { id: string; label: string } | undefined, fallback?: string): string | undefined {
@@ -327,6 +363,12 @@ export function HarnessSettingsSection({
 		} finally {
 			endAction(agentId);
 		}
+	};
+
+	/** Diagnostics plus the machine they were taken on. */
+	const copyDiagnostics = async (agentId: AgentId, job: InstallJob) => {
+		const machine = await machineText(queryClient);
+		await copyText(agentId, [diagnosticsText(agentId, job), machine].filter(Boolean).join("\n\n"));
 	};
 
 	const copyText = async (agentId: AgentId, text: string) => {
@@ -616,8 +658,8 @@ export function HarnessSettingsSection({
 								{job?.method ? <p><span className="font-medium text-settings-label">{t("settings.harness.method")}:</span> {job.method}</p> : null}
 								{job?.expectedDestination ? <p className="break-all"><span className="font-medium text-settings-label">{t("settings.harness.expectedDestination")}:</span> {job.expectedDestination}</p> : null}
 								{job?.error ? <p className="mt-2 whitespace-pre-wrap text-error">{job.error}</p> : null}
-								{job?.output ? <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono">{job.output}</pre> : null}
-								<Button className="mt-2" size="sm" variant="outline" onClick={() => job && void copyText(agentId, diagnosticsText(agentId, job))}><Copy aria-hidden="true" />{t("settings.harness.copyDiagnostics")}</Button>
+								{job?.output ? <pre className="settings-thin-scrollbar mt-2 max-h-40 overflow-auto overscroll-contain whitespace-pre-wrap break-words font-mono">{job.output}</pre> : null}
+								<Button className="mt-2" size="sm" variant="outline" onClick={() => job && void copyDiagnostics(agentId, job)}><Copy aria-hidden="true" />{t("settings.harness.copyDiagnostics")}</Button>
 							</div>
 						</div>
 					</div>

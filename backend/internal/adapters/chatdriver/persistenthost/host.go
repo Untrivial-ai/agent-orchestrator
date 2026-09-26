@@ -484,6 +484,17 @@ func bindConnToContext(ctx context.Context, conn net.Conn) func(error) error {
 	}
 }
 
+// HostPID returns the live provider host pid recorded for sessionID, for
+// memory accounting of runtime-less Chat sessions. A missing descriptor or an
+// exited host reports false; nothing is ever started or stopped here.
+func HostPID(dataDir, sessionID string) (int, bool) {
+	d, err := readDescriptor(dataDir, sessionID)
+	if err != nil || d.PID <= 0 || !processalive.Alive(d.PID) {
+		return 0, false
+	}
+	return d.PID, true
+}
+
 // Shutdown terminates current session ownership and waits for it to end.
 // Missing/dead hosts are harmless; unknown live owners fail closed.
 // The protocol acknowledgement only confirms that shutdown was requested.

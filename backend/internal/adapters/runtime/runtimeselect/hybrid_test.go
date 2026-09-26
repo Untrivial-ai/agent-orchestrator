@@ -116,6 +116,15 @@ func (f *fakeBackend) IsExactSupervisedProcessAlive(_ context.Context, handle po
 	return true, nil
 }
 
+func (f *fakeBackend) ProcessRootPIDs(_ context.Context, handle ports.RuntimeHandle) ([]int, error) {
+	f.record("roots", handle)
+	return []int{1234}, nil
+}
+
+func (f *fakeBackend) ServerPID(_ context.Context) (int, bool) {
+	return 0, false
+}
+
 type restartableFakeBackend struct{ fakeBackend }
 
 func (f *restartableFakeBackend) Restart(_ context.Context, handle ports.RuntimeHandle, _ ports.RuntimeConfig) (ports.RuntimeHandle, error) {

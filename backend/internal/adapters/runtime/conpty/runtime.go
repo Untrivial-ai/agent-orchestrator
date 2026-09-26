@@ -474,6 +474,25 @@ func (r *Runtime) IsExactSupervisedProcessAlive(ctx context.Context, handle port
 	return r.IsSupervisedProcessAlive(ctx, handle, ref)
 }
 
+// ProcessRootPIDs returns the PTY host pid so memory accounting can walk the
+// agent process tree it supervises. An unregistered session yields no pids.
+func (r *Runtime) ProcessRootPIDs(ctx context.Context, handle ports.RuntimeHandle) ([]int, error) {
+	sess, err := r.resolveWithEvidence(ctx, handle.ID)
+	if err != nil {
+		return nil, fmt.Errorf("conpty: resolve runtime %q: %w", handle.ID, err)
+	}
+	if sess == nil || sess.pid <= 0 {
+		return nil, nil
+	}
+	return []int{sess.pid}, nil
+}
+
+// ServerPID has no equivalent here: ConPTY hosts one pty per session rather
+// than sharing a detached server the way tmux does.
+func (r *Runtime) ServerPID(ctx context.Context) (int, bool) {
+	return 0, false
+}
+
 // SendMessage chunks message and writes it to the pty-host followed by Enter.
 func (r *Runtime) SendMessage(ctx context.Context, handle ports.RuntimeHandle, message string) error {
 	sess, err := r.resolveWithEvidence(ctx, handle.ID)

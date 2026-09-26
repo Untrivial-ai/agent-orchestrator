@@ -24,6 +24,7 @@ type routedBackend interface {
 	ports.StyledTerminalOutputReader
 	ports.SupervisedProcessInspector
 	ports.ExactSupervisedProcessInspector
+	ports.RuntimeProcessRootInspector
 }
 
 type hybridRuntime struct {
@@ -38,6 +39,7 @@ var _ ports.RuntimeRestarter = (*hybridRuntime)(nil)
 var _ ports.StyledTerminalOutputReader = (*hybridRuntime)(nil)
 var _ ports.SupervisedProcessInspector = (*hybridRuntime)(nil)
 var _ ports.ExactSupervisedProcessInspector = (*hybridRuntime)(nil)
+var _ ports.RuntimeProcessRootInspector = (*hybridRuntime)(nil)
 
 func newHybridRuntime(legacy, direct routedBackend, log *slog.Logger, platform string) *hybridRuntime {
 	if log == nil {
@@ -118,6 +120,12 @@ func (r *hybridRuntime) GetOutput(ctx context.Context, handle ports.RuntimeHandl
 	return backend.GetOutput(ctx, raw, lines)
 }
 
+// ServerPID always asks the legacy (tmux) backend: it's the one shared
+// detached server, regardless of which backend owns any given session.
+func (r *hybridRuntime) ServerPID(ctx context.Context) (int, bool) {
+	return r.legacy.ServerPID(ctx)
+}
+
 func (r *hybridRuntime) GetStyledOutput(ctx context.Context, handle ports.RuntimeHandle, lines int) (string, error) {
 	backend, raw := r.route(handle)
 	return backend.GetStyledOutput(ctx, raw, lines)
@@ -151,6 +159,11 @@ func (r *hybridRuntime) Restart(ctx context.Context, handle ports.RuntimeHandle,
 	// Re-enter the normal creation policy so an unavailable replacement host
 	// can still recover the session on tmux and return its unprefixed handle.
 	return r.Create(ctx, cfg)
+}
+
+func (r *hybridRuntime) ProcessRootPIDs(ctx context.Context, handle ports.RuntimeHandle) ([]int, error) {
+	backend, raw := r.route(handle)
+	return backend.ProcessRootPIDs(ctx, raw)
 }
 
 func (r *hybridRuntime) route(handle ports.RuntimeHandle) (routedBackend, ports.RuntimeHandle) {

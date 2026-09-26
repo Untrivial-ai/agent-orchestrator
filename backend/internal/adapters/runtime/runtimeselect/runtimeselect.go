@@ -20,12 +20,16 @@ import (
 type Runtime interface {
 	ports.Runtime // Create, Destroy, IsAlive
 	ports.RuntimeChildInspector
+	ports.RuntimeProcessRootInspector
 	ports.FencedRuntimeProber
 	ports.Attacher
 	Interrupt(ctx context.Context, handle ports.RuntimeHandle) error
 	SendInput(ctx context.Context, handle ports.RuntimeHandle, input string) error
 	SendMessage(ctx context.Context, handle ports.RuntimeHandle, message string) error
 	GetOutput(ctx context.Context, handle ports.RuntimeHandle, lines int) (string, error)
+	// ServerPID names AO's own detached session-host process, where the
+	// backend has one (tmux). Zero, false where it does not (ConPTY).
+	ServerPID(ctx context.Context) (int, bool)
 }
 
 // Compile-time assertions: both concrete adapters must implement the union

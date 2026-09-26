@@ -2731,6 +2731,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/usage/sessions/memory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List resident memory of each live session's runtime process tree */
+        get: operations["listSessionMemory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2922,6 +2939,13 @@ export interface components {
         };
         AgentSwitchResponse: {
             switch: components["schemas"]["AgentSwitch"];
+        };
+        AppMemoryResponse: {
+            /** Format: double */
+            cpuPercent: number;
+            own?: components["schemas"]["SessionMemoryResponse"];
+            processCount: number;
+            rssBytes: number;
         };
         AttachmentInput: {
             data: string;
@@ -3851,6 +3875,11 @@ export interface components {
             reviews: components["schemas"]["PRReviewState"][];
             runs: components["schemas"]["ReviewRun"][];
         };
+        ListSessionMemoryResponse: {
+            app?: components["schemas"]["AppMemoryResponse"];
+            sessions: components["schemas"]["SessionMemoryResponse"][];
+            system?: components["schemas"]["SystemMemoryResponse"];
+        };
         ListSessionPRsResponse: {
             prs: components["schemas"]["SessionPRSummary"][];
             sessionId: string;
@@ -4286,6 +4315,10 @@ export interface components {
             ok: boolean;
             sessionId: string;
         };
+        SessionActivityResponse: {
+            current?: components["schemas"]["SessionStepResponse"];
+            recent: components["schemas"]["SessionStepResponse"][];
+        };
         SessionInterfaceTransition: {
             /** Format: date-time */
             completedAt?: null | string;
@@ -4317,6 +4350,32 @@ export interface components {
             /** @enum {string} */
             targetMode: "chat" | "tui";
             transition?: components["schemas"]["SessionInterfaceTransition"];
+        };
+        SessionMemoryProcessResponse: {
+            command: string;
+            /**
+             * Format: double
+             * @description Share of one core used since the previous sample; zero on the first.
+             */
+            cpuPercent: number;
+            pid: number;
+            ppid: number;
+            rssBytes: number;
+        };
+        SessionMemoryResponse: {
+            activity?: components["schemas"]["SessionActivityResponse"];
+            /**
+             * Format: double
+             * @description Share of one core the whole tree used since the previous sample; zero on the first.
+             */
+            cpuPercent: number;
+            processCount: number;
+            processes: components["schemas"]["SessionMemoryProcessResponse"][];
+            /** @description Resident set size summed over the runtime process tree. */
+            rssBytes: number;
+            /** Format: date-time */
+            sampledAt: string;
+            sessionId: string;
         };
         SessionPRCISummary: {
             autoInjectCI: boolean;
@@ -4433,6 +4492,17 @@ export interface components {
         };
         SessionResponse: {
             session: components["schemas"]["ControllersSessionView"];
+        };
+        SessionStepResponse: {
+            /**
+             * Format: date-time
+             * @description Absent while the tool is still running.
+             */
+            endedAt?: null | string;
+            failed: boolean;
+            /** Format: date-time */
+            startedAt: string;
+            tool: string;
         };
         SessionUsageResponse: {
             harnesses: components["schemas"]["UsageHarnessResponse"][];
@@ -4722,6 +4792,24 @@ export interface components {
              * @enum {string}
              */
             targetHarness: "claude-code" | "codex";
+        };
+        SystemMemoryResponse: {
+            /** @description What the kernel would hand out without swapping (MemAvailable). */
+            availableBytes: number;
+            cpuCount: number;
+            /** Format: double */
+            cpuPercent: number;
+            /** Format: double */
+            load1: number;
+            /** Format: double */
+            pressureRaw: number;
+            /** @enum {string} */
+            pressureSource: "psi" | "available_pct" | "memorystatus";
+            /** Format: double */
+            swapBytesPerSec: number;
+            swapTotalBytes: number;
+            swapUsedBytes: number;
+            totalBytes: number;
         };
         SystemRequirement: {
             /** @description Extra context: the resolved path when satisfied, or why it is not. */
@@ -14957,6 +15045,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    listSessionMemory: {
+        parameters: {
+            query?: {
+                /** @description Optional project id filter for dashboard cards. */
+                projectId?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListSessionMemoryResponse"];
                 };
             };
             /** @description Internal Server Error */

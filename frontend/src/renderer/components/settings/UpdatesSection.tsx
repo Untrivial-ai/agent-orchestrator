@@ -575,7 +575,7 @@ function UpdateActions({
 					<p className="text-caption font-medium uppercase tracking-wide text-settings-muted">
 						{t("update.restart.whatsNew")}
 					</p>
-					<p className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-line text-pretty text-sm leading-5 text-settings-label">
+					<p className="settings-thin-scrollbar mt-1.5 max-h-40 overflow-y-auto overscroll-contain whitespace-pre-line text-pretty text-sm leading-5 text-settings-label">
 						{status.releaseNotes}
 					</p>
 				</div>

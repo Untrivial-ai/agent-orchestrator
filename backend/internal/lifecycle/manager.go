@@ -247,6 +247,9 @@ type Manager struct {
 	// flights tracks, per session, the in-flight tool executions and the
 	// pending permission dialog's identity (see toolFlight). Guarded by mu.
 	flights map[domain.SessionID]*toolFlight
+	// steps is each session's recent tool calls for the memory window, from
+	// tool-use hooks (see steps.go). Guarded by mu.
+	steps map[domain.SessionID][]domain.SessionStep
 	// pendingLaunches closes the small ordering gap between starting a supervised
 	// process and durably recording its generation in MarkSpawned. A hook from
 	// that exact generation waits on ready instead of being discarded as stale.
@@ -280,6 +283,7 @@ func New(store sessionStore, messenger ports.AgentMessenger, opts ...Option) *Ma
 		clock:                       clock,
 		react:                       newReactionState(),
 		flights:                     map[domain.SessionID]*toolFlight{},
+		steps:                       map[domain.SessionID][]domain.SessionStep{},
 		pendingLaunches:             map[domain.SessionID]pendingLaunch{},
 		steerActive:                 func(domain.AgentHarness) bool { return false },
 		startupSignalGatesInput:     func(domain.AgentHarness) bool { return false },
@@ -603,6 +607,7 @@ func (m *Manager) ApplyActivitySignal(ctx context.Context, id domain.SessionID, 
 	}
 	projectionAttempts := 0
 	originalSignal := s
+	stepRecorded := false
 retryProjection:
 	s = originalSignal
 	rec, ok, err := m.store.GetSession(ctx, id)
@@ -618,6 +623,7 @@ retryProjection:
 	now := m.clock()
 	if rec.IsTerminated {
 		delete(m.flights, id)
+		delete(m.steps, id)
 		m.mu.Unlock()
 		return nil
 	}
@@ -663,6 +669,10 @@ retryProjection:
 	if s.ExpectedRevision != nil && rec.Revision != *s.ExpectedRevision {
 		m.mu.Unlock()
 		return nil
+	}
+	if !stepRecorded {
+		m.recordStepLocked(id, s, now)
+		stepRecorded = true
 	}
 	// Conversation text is meaningful only inside one provider identity, owner
 	// generation, and main turn. Reduce it as one durable state machine so a Stop

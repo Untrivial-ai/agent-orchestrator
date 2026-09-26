@@ -2163,3 +2163,32 @@ func exitCodeErr(t *testing.T, code int) error {
 	}
 	return err
 }
+
+func TestRuntime_ServerPID(t *testing.T) {
+	t.Run("parses the server pid tmux reports", func(t *testing.T) {
+		r, fr := newTestRuntime(0)
+		fr.outputs = [][]byte{[]byte("54321\n")}
+		pid, ok := r.ServerPID(context.Background())
+		if !ok || pid != 54321 {
+			t.Fatalf("ServerPID() = %d, %v, want 54321, true", pid, ok)
+		}
+	})
+
+	t.Run("false on a runner error", func(t *testing.T) {
+		r, fr := newTestRuntime(0)
+		fr.err = errors.New("no server running")
+		pid, ok := r.ServerPID(context.Background())
+		if ok || pid != 0 {
+			t.Fatalf("ServerPID() = %d, %v, want 0, false", pid, ok)
+		}
+	})
+
+	t.Run("false on unparseable output", func(t *testing.T) {
+		r, fr := newTestRuntime(0)
+		fr.outputs = [][]byte{[]byte("not-a-pid\n")}
+		pid, ok := r.ServerPID(context.Background())
+		if ok || pid != 0 {
+			t.Fatalf("ServerPID() = %d, %v, want 0, false", pid, ok)
+		}
+	})
+}

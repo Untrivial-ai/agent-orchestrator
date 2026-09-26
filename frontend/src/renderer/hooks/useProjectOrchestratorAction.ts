@@ -122,7 +122,7 @@ export function useProjectOrchestratorAction({
 	const openNewTask = () => {
 		if (projectId && !isProjectRestarting && !isProvisioning) useUiStore.getState().requestNewTask(projectId);
 	};
-	return { orchestrator, isSpawning, isProjectRestarting, isProvisioning, spawnError,
+	return { projectId, orchestrator, isSpawning, isProjectRestarting, isProvisioning, spawnError,
 		canCreateAsTui: isChatPreflightError(error), openOrchestrator, openNewTask };
 }
 

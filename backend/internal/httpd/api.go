@@ -31,6 +31,8 @@ type APIDeps struct {
 	Activity           controllers.ActivityRecorder
 	UsageHooks         controllers.UsageHookRecorder
 	UsageSummary       controllers.UsageSummaryService
+	SessionMemory      controllers.SessionMemoryService
+	SessionSteps       controllers.SessionStepsReader
 	PRs                prsvc.ActionManager
 	Reviews            reviewsvc.Manager
 	Notifications      controllers.NotificationService
@@ -167,8 +169,10 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 			PreviewServer: deps.PreviewServer,
 			Capabilities:  deps.SessionCapabilities,
 		},
-		desktop:       &controllers.DesktopWorkspaceController{Svc: deps.DesktopWorkspaces},
-		usage:         &controllers.UsageController{Svc: deps.UsageSummary, Log: loggerOrDefault(log)},
+		desktop: &controllers.DesktopWorkspaceController{Svc: deps.DesktopWorkspaces},
+		usage: &controllers.UsageController{
+			Svc: deps.UsageSummary, Memory: deps.SessionMemory, Steps: deps.SessionSteps, Log: loggerOrDefault(log),
+		},
 		prs:           &controllers.PRsController{Svc: deps.PRs},
 		reviews:       &controllers.ReviewsController{Svc: deps.Reviews},
 		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},

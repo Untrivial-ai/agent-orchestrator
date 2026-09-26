@@ -246,6 +246,14 @@ type SupervisedProcessInspector interface {
 	IsSupervisedProcessAlive(ctx context.Context, handle RuntimeHandle, ref SupervisedProcessRef) (bool, error)
 }
 
+// RuntimeProcessRootInspector exposes the operating-system pids at the root of
+// a runtime's process tree (a tmux pane leader, a PTY host). Memory accounting
+// walks their descendants. It is an optional capability: a runtime without it
+// simply reports no memory reading rather than zero.
+type RuntimeProcessRootInspector interface {
+	ProcessRootPIDs(ctx context.Context, handle RuntimeHandle) ([]int, error)
+}
+
 // ExactSupervisedProcessInspector is the strict launch-generation probe used
 // at agent-switch ownership boundaries. Unlike SupervisedProcessInspector it
 // must never treat an arbitrary child of a preserved shell as the requested

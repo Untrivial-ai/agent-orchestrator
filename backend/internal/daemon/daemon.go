@@ -550,6 +550,26 @@ func Run() error {
 		return fmt.Errorf("wire session service: %w", err)
 	}
 	sessionSvc.SetChatProviderPreserver(chatSvc.PreservesProviderOnRestart)
+	memoryReader := usagesvc.NewMemoryReader(usagesvc.MemoryReaderDeps{
+		Store: store, Runtime: runtimeAdapter, CacheTTL: 2 * time.Second,
+		ChatHostPID: func(id domain.SessionID) (int, bool) {
+			return persistenthost.HostPID(cfg.DataDir, string(id))
+		},
+		// The desktop shell spawns an app-owned daemon, so its parent is
+		// the Electron main process and that tree is the rest of AO.
+		AppRootPIDs: func() []int {
+			roots := []int{os.Getpid()}
+			if os.Getenv("AO_OWNER") == "app" {
+				roots = append(roots, os.Getppid())
+			}
+			// The tmux server behind AO's sessions detaches and reparents to
+			// init, so it is a descendant of neither of the above.
+			if pid, ok := runtimeAdapter.ServerPID(context.Background()); ok {
+				roots = append(roots, pid)
+			}
+			return roots
+		},
+	})
 	sessMgr = wiredSessMgr
 	if tunable, ok := sessMgr.(interface {
 		SetModelCatalog(interface {
@@ -874,6 +894,8 @@ func Run() error {
 		Activity:           lcStack.LCM,
 		UsageHooks:         usageCollector,
 		UsageSummary:       usagesvc.NewSummaryReader(store),
+		SessionMemory:      memoryReader,
+		SessionSteps:       lcStack.LCM,
 		Telemetry:          telemetrySink,
 		Mobile:             mc,
 		DevImport: devimportsvc.New(devimportsvc.Deps{

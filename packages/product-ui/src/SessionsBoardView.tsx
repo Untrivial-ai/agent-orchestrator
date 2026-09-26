@@ -234,6 +234,9 @@ export type SessionCardViewProps = {
 	prs?: BoardPullRequestPresentation[];
 	renderAvatar: (provider: string) => ReactNode;
 	renderUsage?: (usage: BoardUsagePresentation) => ReactNode;
+	/** Live cost on the machine (memory, CPU while working), shown before
+	 * token usage. Grey unless this card is part of the fix for a tight machine. */
+	resource?: BoardUsagePresentation & { tone?: "neutral" | "warning" | "critical" };
 	session: BoardSessionPresentation;
 	translate?: ProductUITranslator;
 	usage?: BoardUsagePresentation;
@@ -253,6 +256,7 @@ export function SessionCardView({
 	prs = [],
 	renderAvatar,
 	renderUsage = (usage) => <SessionUsageMetricView usage={usage} />,
+	resource,
 	session,
 	translate,
 	usage,
@@ -393,6 +397,15 @@ export function SessionCardView({
 					</span>
 				</div>
 				<div className="ml-auto flex shrink-0 items-center gap-2 whitespace-nowrap text-2xs text-muted-foreground">
+					{resource ? (
+						<SessionUsageMetricView
+							className={cn(resource.tone === "critical" && "text-destructive", resource.tone === "warning" && "text-warning")}
+							data-resource-tone={resource.tone ?? "neutral"}
+							data-testid="session-resource"
+							usage={resource}
+						/>
+					) : null}
+					{resource ? <span aria-hidden="true" className="text-border-strong">·</span> : null}
 					{usage ? renderUsage(usage) : null}
 					{usage ? <span aria-hidden="true" className="text-border-strong">·</span> : null}
 					<span className="tabular-nums text-muted-foreground" title={labels.updatedAt(session.updatedAt)}>
@@ -598,6 +611,7 @@ export const SessionsArchiveView = memo(function SessionsArchiveView<
 	renderSessionCard,
 	resetKey,
 	sessions,
+	trailing,
 }: {
 	labels: {
 		archive: string;
@@ -608,6 +622,8 @@ export const SessionsArchiveView = memo(function SessionsArchiveView<
 	/** Collapse and drop deferred cards when the board scope changes (e.g. projectId). */
 	resetKey?: string;
 	sessions: TSession[];
+	/** Right-aligned status in the bar, outside the toggle (e.g. memory pressure). */
+	trailing?: ReactNode;
 }) {
 	const prefersReducedMotion = useReducedMotion();
 	const [expanded, setExpanded] = useState(false);
@@ -632,35 +648,41 @@ export const SessionsArchiveView = memo(function SessionsArchiveView<
 		};
 	}, [expanded, cardsReady]);
 
-	if (sessions.length === 0) return null;
+	if (sessions.length === 0 && !trailing) return null;
 
 	return (
 		<div className="absolute inset-x-0 bottom-0 z-20 border-t border-border-strong bg-background px-3">
-			{/* Full-row hit target: the control stretches edge-to-edge so empty
-			    space beside the label toggles archive too. Height must match
-			    archiveToggleOffsetClassName on the board. */}
-			<button
-				aria-expanded={expanded}
-				aria-label={labels.archiveAria}
-				className={cn(
-					"group flex w-full min-w-0 items-center gap-2 py-0 text-muted-foreground transition-colors hover:text-foreground",
-					archiveToggleHeightClassName,
-					expanded ? "min-h-11" : "min-h-row-md",
+			<div className={cn("flex items-center gap-2", archiveToggleHeightClassName)}>
+				{/* Full-row hit target: the control stretches edge-to-edge so empty
+				    space beside the label toggles archive too. Height must match
+				    archiveToggleOffsetClassName on the board. */}
+				{sessions.length > 0 ? (
+					<button
+						aria-expanded={expanded}
+						aria-label={labels.archiveAria}
+						className={cn(
+							"group flex h-full min-w-0 flex-1 items-center gap-2 py-0 text-muted-foreground transition-colors hover:text-foreground",
+							expanded ? "min-h-11" : "min-h-row-md",
+						)}
+						onClick={() => setExpanded((open) => !open)}
+						type="button"
+					>
+						<ChevronIcon
+							className={cn(
+								"size-icon-2xs shrink-0 transition-transform duration-[140ms] ease-[cubic-bezier(0.25,0.46,0.45,0.94)]",
+								prefersReducedMotion && "transition-none",
+								expanded && "rotate-90",
+							)}
+							direction="right"
+						/>
+						<span className="text-2xs font-medium tracking-wide-sm">{labels.archive}</span>
+						<span className="ml-1.5 font-mono text-micro text-passive">{sessions.length}</span>
+					</button>
+				) : (
+					<div className="min-w-0 flex-1" />
 				)}
-				onClick={() => setExpanded((open) => !open)}
-				type="button"
-			>
-				<ChevronIcon
-					className={cn(
-						"size-icon-2xs shrink-0 transition-transform duration-[140ms] ease-[cubic-bezier(0.25,0.46,0.45,0.94)]",
-						prefersReducedMotion && "transition-none",
-						expanded && "rotate-90",
-					)}
-					direction="right"
-				/>
-				<span className="text-2xs font-medium tracking-wide-sm">{labels.archive}</span>
-				<span className="ml-1.5 font-mono text-micro text-passive">{sessions.length}</span>
-			</button>
+				{trailing ? <div className="flex shrink-0 items-center">{trailing}</div> : null}
+			</div>
 			{/* Keep the sheet mounted after first open; height tracks `expanded`. */}
 			{cardsReady ? (
 				<motion.div
@@ -700,6 +722,7 @@ export const SessionsArchiveView = memo(function SessionsArchiveView<
 	renderSessionCard: (session: TSession) => ReactNode;
 	resetKey?: string;
 	sessions: TSession[];
+	trailing?: ReactNode;
 }) => ReactElement | null;
 
 function sameLabel(a: string, b: string): boolean {
