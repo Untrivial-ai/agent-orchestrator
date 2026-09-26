@@ -325,6 +325,7 @@ func TestTunnelRuntimeAdvertisesOnceRegistered(t *testing.T) {
 	got := r.Endpoint()
 	if got == nil {
 		t.Fatal("no endpoint after the connector registered and was confirmed")
+		return
 	}
 	if !got.Ready || got.Hostname != "abc.trycloudflare.com" {
 		t.Fatalf("got %+v", got)

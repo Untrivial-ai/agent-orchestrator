@@ -28,17 +28,19 @@ func testLogger() *slog.Logger {
 // fakeShellRuntime records every runtime call so tests can assert on what was
 // spawned and what was torn down.
 type fakeShellRuntime struct {
-	created   []ports.RuntimeConfig
-	destroyed []string
-	sentCh    chan sentInput
+	created     []ports.RuntimeConfig
+	destroyed   []string
+	interrupted []string
+	sentCh      chan sentInput
 
-	createErr   error
-	destroyErr  error
-	sendErr     error
-	output      string
-	outputMu    sync.RWMutex
-	outputErr   error
-	outputReady <-chan struct{}
+	createErr    error
+	createCtxErr bool
+	destroyErr   error
+	sendErr      error
+	output       string
+	outputMu     sync.RWMutex
+	outputErr    error
+	outputReady  <-chan struct{}
 	// aliveByHandle answers IsAlive; a handle absent from the map is dead.
 	aliveByHandle map[string]bool
 	aliveErr      error
@@ -56,7 +58,10 @@ func newFakeShellRuntime() *fakeShellRuntime {
 	return &fakeShellRuntime{aliveByHandle: map[string]bool{}, sentCh: make(chan sentInput, 1)}
 }
 
-func (f *fakeShellRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+func (f *fakeShellRuntime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+	if f.createCtxErr && ctx.Err() != nil {
+		return ports.RuntimeHandle{}, ctx.Err()
+	}
 	if f.createErr != nil {
 		return ports.RuntimeHandle{}, f.createErr
 	}
@@ -76,6 +81,12 @@ func (f *fakeShellRuntime) Destroy(_ context.Context, handle ports.RuntimeHandle
 		delete(f.aliveByHandle, handle.ID)
 	}
 	return f.destroyErr
+}
+
+func (f *fakeShellRuntime) Interrupt(_ context.Context, handle ports.RuntimeHandle) error {
+	f.interrupted = append(f.interrupted, handle.ID)
+	f.childExited = true
+	return nil
 }
 
 func (f *fakeShellRuntime) SendInput(_ context.Context, handle ports.RuntimeHandle, input string) error {
@@ -233,6 +244,8 @@ func (f *fakeProjectRootLocator) ProjectRoot(_ context.Context, id domain.Projec
 type fakeSessionWorkspace struct {
 	workspacePath string
 	projectID     domain.ProjectID
+	activity      domain.ActivityState
+	terminated    bool
 }
 
 type fakeSessionWorkspaceLocator struct {
@@ -249,6 +262,17 @@ func (f *fakeSessionWorkspaceLocator) SessionWorkspace(_ context.Context, id dom
 		return "", "", apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	}
 	return ws.workspacePath, ws.projectID, nil
+}
+
+func (f *fakeSessionWorkspaceLocator) CueCommandSessionTarget(_ context.Context, id domain.SessionID) (CueCommandSessionTarget, error) {
+	if f.err != nil {
+		return CueCommandSessionTarget{}, f.err
+	}
+	ws, ok := f.sessions[id]
+	if !ok {
+		return CueCommandSessionTarget{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	return CueCommandSessionTarget{ProjectID: ws.projectID, WorkspacePath: ws.workspacePath, Activity: ws.activity, IsTerminated: ws.terminated}, nil
 }
 
 // newTestService wires a service with deterministic ids so assertions can name

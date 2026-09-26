@@ -1,4 +1,4 @@
-import { Bot, GitBranch, Inbox, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
+import { Bot, Disc3, GitBranch, Inbox, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useRef, useState } from "react";
@@ -10,15 +10,21 @@ import { GlobalSettingsForm } from "./GlobalSettingsForm";
 import {
 	ProjectSettingsForm,
 	type ProjectSettingsSaveState,
-	type ProjectSettingsSection,
+	type ProjectSettingsSection as ProjectFormSection,
 } from "./ProjectSettingsForm";
+import { CuesSettings } from "./CuesDialog";
 import {
 	DialogHeader,
 	settingsDialogBodyClass,
 	settingsDialogContentClass,
 	settingsDialogHeaderClass,
 } from "./ui/dialog";
-import { type GlobalSettingsSection, type SettingsModal, useUiStore } from "../stores/ui-store";
+import {
+	type GlobalSettingsSection,
+	type ProjectSettingsSection,
+	type SettingsModal,
+	useUiStore,
+} from "../stores/ui-store";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { globalSettingsItem, visibleGlobalSettings } from "./settings/settingsCatalog";
@@ -64,6 +70,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 		{ id: "agents", label: t("settings.project.agents"), icon: Bot },
 		{ id: "workflow", label: t("settings.project.workflow"), icon: GitBranch },
 		{ id: "intake", label: t("settings.project.intake"), icon: Inbox },
+		{ id: "cues", label: t("cues.title"), icon: Disc3 },
 	];
 
 	const isProjectSettings = displaySettings?.scope === "project";
@@ -71,14 +78,17 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	const [focusAgentId, setFocusAgentId] = useState<string>();
 	const [activeProjectSection, setActiveProjectSection] = useState<ProjectSettingsSection>("general");
 	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>(initialProjectSaveState);
+	const [cueBusy, setCueBusy] = useState(false);
 	const globalSettingsWasOpen = useRef(false);
+	const projectOperationPending =
+		projectSaveState.phase === "pending" || projectSaveState.phase === "saving" || cueBusy;
 
 	const activeLabel = isProjectSettings
 		? (projectSections.find((s) => s.id === activeProjectSection)?.label ?? t("settings.project.identity"))
 		: globalSettingsItem(activeSection, { cloudEnabled }).label(t);
 
 	const closeSettingsDialog = () => {
-		if (isProjectSettings && (projectSaveState.phase === "pending" || projectSaveState.phase === "saving")) return;
+		if (isProjectSettings && projectOperationPending) return;
 		closeSettings();
 	};
 	const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -105,8 +115,9 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 			setActiveSection(globalSettingsItem(settingsModal.section ?? "general", { cloudEnabled }).id);
 		}
 		if (settingsModal?.scope === "project") {
-			setActiveProjectSection("general");
+			setActiveProjectSection(settingsModal.section ?? "general");
 			setProjectSaveState(initialProjectSaveState());
+			setCueBusy(false);
 		}
 	}, [cloudEnabled, settingsModal]);
 
@@ -178,6 +189,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 											icon={icon}
 											key={id}
 											label={label}
+											disabled={projectOperationPending}
 											onClick={() => setActiveProjectSection(id)}
 										/>
 									))
@@ -194,7 +206,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 										/>
 									))}
 						</nav>
-						{isProjectSettings && (
+						{isProjectSettings && activeProjectSection !== "cues" && (
 							<div className="mt-auto flex flex-col gap-2 border-t border-(--color-border-settings-dialog-header) p-3">
 								<Button
 									type="submit"
@@ -249,7 +261,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 							<button
 								aria-label={t("settings.close")}
 								className="settings-close-button"
-								disabled={isProjectSettings && (projectSaveState.phase === "pending" || projectSaveState.phase === "saving")}
+								disabled={isProjectSettings && projectOperationPending}
 								onClick={closeSettingsDialog}
 								ref={closeButtonRef}
 								type="button"
@@ -262,10 +274,15 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 							className={cn(settingsDialogBodyClass, "settings-dialog-body flex-1 px-(--size-modal-padding) pt-0")}
 						>
 							{isBodyReady ? (
-								displaySettings?.scope === "project" ? (
+								displaySettings?.scope === "project" && activeProjectSection === "cues" ? (
+									<CuesSettings
+										projectId={displaySettings.projectId}
+										onBusyChange={setCueBusy}
+									/>
+								) : displaySettings?.scope === "project" ? (
 									<ProjectSettingsForm
 										projectId={displaySettings.projectId}
-										section={activeProjectSection}
+										section={activeProjectSection as ProjectFormSection}
 										onSaveState={setProjectSaveState}
 									/>
 								) : (

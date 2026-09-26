@@ -45,12 +45,13 @@ type ProjectRootLocator interface {
 // of its own yet. The daemon wiring adapts the session service to it.
 type SessionWorkspaceLocator interface {
 	SessionWorkspace(ctx context.Context, id domain.SessionID) (workspacePath string, projectID domain.ProjectID, err error)
+	CueCommandSessionTarget(ctx context.Context, id domain.SessionID) (CueCommandSessionTarget, error)
 }
 
 // Service opens, lists, and closes standalone shell terminals.
 //
-// User shells survive desktop and daemon restarts. appRunID scopes only trusted
-// command terminals, whose owning authentication flow ends with the app launch.
+// User shells survive desktop and daemon restarts. appRunID scopes trusted
+// auth terminals, whose owning authentication flow ends with the app launch.
 type Service struct {
 	runtime  ShellRuntime
 	store    Store
@@ -75,7 +76,6 @@ type Service struct {
 	// never allocates an entry here — only real sessions do, bounding growth to
 	// the shape AO's single-user daemon actually runs.
 	gates map[domain.SessionID]*sessionGate
-
 	// onSessionGateWait, when set, is called the instant a session-scoped
 	// OpenShellTerminal or CloseShellTerminal is about to attempt gate.mu.Lock()
 	// — before the (possibly blocking) call, so it fires whether or not the
@@ -313,6 +313,99 @@ func (s *Service) OpenCommandTerminal(ctx context.Context, in OpenCommandTermina
 	return terminal, nil
 }
 
+// RunCueCommand opens a new normal shell terminal for each trusted command.
+// It never creates or messages an agent session.
+func (s *Service) RunCueCommand(ctx context.Context, in RunCueCommandInput) (ShellTerminal, error) {
+	if err := ctx.Err(); err != nil {
+		return ShellTerminal{}, err
+	}
+	if in.ProjectID == "" {
+		return ShellTerminal{}, apierr.Invalid("CUE_COMMAND_PROJECT_REQUIRED", "A project is required to run a command Cue", nil)
+	}
+	if strings.TrimSpace(in.Command) == "" {
+		return ShellTerminal{}, apierr.Invalid("CUE_COMMAND_REQUIRED", "A command is required to run a command Cue", nil)
+	}
+	workingDir, projectID, err := s.resolveCueCommandWorkingDir(ctx, in.ProjectID, in.SessionID)
+	if err != nil {
+		return ShellTerminal{}, err
+	}
+	if in.SessionID != "" {
+		release, acquireErr := s.acquireSessionGate(ctx, in.SessionID)
+		if acquireErr != nil {
+			return ShellTerminal{}, acquireErr
+		}
+		defer release()
+		// Recheck inside the teardown gate before opening a shell.
+		workingDir, projectID, err = s.resolveCueCommandWorkingDir(ctx, in.ProjectID, in.SessionID)
+		if err != nil {
+			return ShellTerminal{}, err
+		}
+	}
+	records, err := s.store.SelectRestorableShellTerminals(ctx, s.appRunID)
+	if err != nil {
+		return ShellTerminal{}, fmt.Errorf("run cue command: list terminals: %w", err)
+	}
+	argv, usedFallback := resolveUserLoginShell(in.Shell)
+	if usedFallback {
+		return ShellTerminal{}, apierr.Invalid("SHELL_TERMINAL_SHELL_UNAVAILABLE",
+			fmt.Sprintf("The selected shell is unavailable: %s. Choose another shell in Settings.", in.Shell), nil)
+	}
+	if len(argv) == 0 {
+		return ShellTerminal{}, apierr.Internal("SHELL_TERMINAL_NO_SHELL", "Could not determine a shell to launch. Set SHELL (macOS/Linux) or ComSpec (Windows).")
+	}
+	terminal, err := s.openTerminal(ctx, openTerminalConfig{argv: argv, env: s.pinnedEnv(), projectID: projectID,
+		sessionID: in.SessionID, workingDir: workingDir, title: nextShellTerminalTitle(records)})
+	if err != nil {
+		return ShellTerminal{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return ShellTerminal{}, err
+	}
+	if err := s.runtime.SendMessage(ctx, ports.RuntimeHandle{ID: terminal.HandleID}, in.Command); err != nil {
+		return ShellTerminal{}, fmt.Errorf("run cue command: send to terminal %s: %w", terminal.HandleID, err)
+	}
+	return terminal, nil
+}
+
+func (s *Service) resolveCueCommandWorkingDir(ctx context.Context, projectID domain.ProjectID, sessionID domain.SessionID) (string, domain.ProjectID, error) {
+	if sessionID == "" {
+		root, err := s.resolveProjectRootOrDataDir(ctx, projectID)
+		if err != nil {
+			return "", "", err
+		}
+		if !filepath.IsAbs(root) {
+			return "", "", apierr.Conflict("CUE_TARGET_CONFLICT", "The project root is unavailable", nil)
+		}
+		info, statErr := os.Stat(root)
+		if statErr != nil || !info.IsDir() {
+			return "", "", apierr.Conflict("CUE_TARGET_CONFLICT", "The project root is unavailable", nil)
+		}
+		return filepath.Clean(root), projectID, nil
+	}
+	if s.sessions == nil {
+		return "", "", apierr.Internal("SHELL_TERMINAL_NO_SESSION_LOOKUP", "Session lookup is unavailable")
+	}
+	target, err := s.sessions.CueCommandSessionTarget(ctx, sessionID)
+	if err != nil {
+		return "", "", fmt.Errorf("run cue command: resolve session %s: %w", sessionID, err)
+	}
+	if target.ProjectID != projectID {
+		return "", "", apierr.Conflict("CUE_TARGET_CONFLICT", "The selected session belongs to another project", nil)
+	}
+	if target.IsTerminated || target.Activity == domain.ActivityExited || target.Activity == domain.ActivityBlocked {
+		return "", "", apierr.Conflict("CUE_TARGET_CONFLICT", "The selected session cannot run command Cues", nil)
+	}
+	workspace := strings.TrimSpace(target.WorkspacePath)
+	if workspace == "" || !filepath.IsAbs(workspace) {
+		return "", "", apierr.Conflict("CUE_TARGET_CONFLICT", "The selected session worktree is unavailable", nil)
+	}
+	info, statErr := os.Stat(workspace)
+	if statErr != nil || !info.IsDir() {
+		return "", "", apierr.Conflict("CUE_TARGET_CONFLICT", "The selected session worktree is unavailable", nil)
+	}
+	return filepath.Clean(workspace), target.ProjectID, nil
+}
+
 const (
 	initialInputTimeout      = 10 * time.Second
 	initialInputPollInterval = 50 * time.Millisecond
@@ -543,7 +636,7 @@ func (s *Service) CloseShellTerminal(ctx context.Context, handleID string) error
 }
 
 // ListShellTerminalsForCurrentAppRun returns durable shells from every launch
-// plus the current launch's trusted command terminals,
+// plus the current launch's trusted auth terminals,
 // closing any whose child exited (the user typed `exit`, or the machine
 // rebooted out from under a persisted row). Retained hosts are destroyed before
 // their rows are removed; failed cleanup keeps the row available for retry.
@@ -580,7 +673,7 @@ func (s *Service) ListShellTerminalsForCurrentAppRun(ctx context.Context) ([]She
 }
 
 // ReapShellTerminalsFromPreviousAppRuns prunes confirmed-dead user shells and
-// destroys abandoned trusted command terminals. Live or unknown user runtimes
+// destroys abandoned trusted auth terminals. Live or unknown user runtimes
 // are preserved with their original associations and attach handles.
 func (s *Service) ReapShellTerminalsFromPreviousAppRuns(ctx context.Context) (int64, error) {
 	orphans, err := s.store.SelectShellTerminalsFromPreviousAppRuns(ctx, s.appRunID)

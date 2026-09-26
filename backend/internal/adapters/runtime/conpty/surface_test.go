@@ -48,3 +48,12 @@ func TestRenderedSurfaceDrainsTerminalReplies(t *testing.T) {
 		t.Fatal("rendered surface blocked while answering a terminal query")
 	}
 }
+
+func TestRenderedSurfaceKeepsOnlyRepaintedProgress(t *testing.T) {
+	surface := newRenderedSurface(80, 12)
+	surface.Write([]byte("Downloading 1%\r\x1b[2KDownloading 10%\r\x1b[2KDownloaded 100%\r\n"))
+	output := surface.Tail(12)
+	if !strings.Contains(output, "Downloaded 100%") || strings.Contains(output, "Downloading 1%") || strings.Contains(output, "Downloading 10%") {
+		t.Fatalf("rendered progress = %q", output)
+	}
+}

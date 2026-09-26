@@ -131,6 +131,7 @@
 	--color-sidebar-ring: var(--sidebar-ring);
 	--color-terminal: var(--color-bg-terminal);
 	--color-terminal-opaque: var(--color-bg-terminal-opaque);
+	--color-terminal-foreground: var(--color-text-terminal);
 	--color-terminal-dim: var(--color-text-terminal-dim);
 	--color-scrim: var(--bridge-scrim);
 
@@ -3041,6 +3042,22 @@ html.sidebar-reordering * {
 }
 
 .workspace-topbar-actions .topbar-control:active:not(:disabled) {
+	transform: scale(0.96);
+}
+
+/* A control that anchors a popover must not transform while pressed. The menu is
+   positioned from the trigger's rect, so scaling the trigger drags the open menu
+   along with it. Press feedback moves to the glyph, which the menu does not
+   measure. */
+.workspace-topbar-actions .topbar-control--static-press:active:not(:disabled) {
+	transform: none;
+}
+
+.workspace-topbar-actions .topbar-control--static-press > svg {
+	transition: transform var(--duration-fast) ease-out;
+}
+
+.workspace-topbar-actions .topbar-control--static-press:active:not(:disabled) > svg {
 	transform: scale(0.96);
 }
 

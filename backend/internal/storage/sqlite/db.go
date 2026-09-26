@@ -303,6 +303,9 @@ func migrate(db *sql.DB) error {
 	if err := repairRenumberedChatMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered chat migration history: %w", err)
 	}
+	if err := repairRenumberedCueMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered cue migration history: %w", err)
+	}
 	if err := repairRenumberedTaskProvisioningMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered task-provisioning migration history: %w", err)
 	}
@@ -356,6 +359,69 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	return reconcileSchema(db)
+}
+
+// repairRenumberedCueMigrationHistory preserves preview Cue databases that
+// recorded 0149, 0155, or 0156 for Cues before main assigned those versions
+// to other features. Move only an identifiable Cue schema to 0159 before the
+// upstream migration repairs inspect or reuse the old ledger entries.
+func repairRenumberedCueMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`).Scan(&gooseTable); err != nil || gooseTable == 0 {
+		return err
+	}
+	var cueColumns, reviewerColumn, provisionColumns, unrealHarness int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('cues') WHERE name IN ('id', 'project_id', 'name', 'description', 'type', 'command', 'prompt', 'created_at', 'updated_at')`).Scan(&cueColumns); err != nil {
+		return err
+	}
+	if cueColumns != 9 {
+		return nil
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('review') WHERE name = 'interface_mode'`).Scan(&reviewerColumn); err != nil {
+		return err
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('provision_state', 'provision_error')`).Scan(&provisionColumns); err != nil {
+		return err
+	}
+	if err := db.QueryRow(`SELECT instr(sql, 'unreal-agent') FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`).Scan(&unrealHarness); err != nil {
+		return err
+	}
+	var applied149, applied155, applied156, applied159 int
+	for _, item := range []struct {
+		version int
+		result  *int
+	}{{149, &applied149}, {155, &applied155}, {156, &applied156}, {159, &applied159}} {
+		if err := db.QueryRow(`SELECT COALESCE((SELECT is_applied FROM goose_db_version WHERE version_id = ? ORDER BY id DESC LIMIT 1), 0)`, item.version).Scan(item.result); err != nil {
+			return err
+		}
+	}
+	if applied159 != 0 {
+		return nil
+	}
+	oldVersion := 0
+	switch {
+	case applied156 != 0 && provisionColumns != 2:
+		oldVersion = 156
+	case applied155 != 0 && unrealHarness == 0 && provisionColumns != 2:
+		oldVersion = 155
+	case applied149 != 0 && reviewerColumn == 0 && provisionColumns != 2:
+		oldVersion = 149
+	}
+	if oldVersion == 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (159, 1)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = ?`, oldVersion); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // repairRenumberedTaskProvisioningMigrationHistory preserves development

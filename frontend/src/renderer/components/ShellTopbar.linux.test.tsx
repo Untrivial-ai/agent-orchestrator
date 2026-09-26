@@ -76,4 +76,17 @@ describe("ShellTopbar on Linux", () => {
 		const header = screen.getByTestId("board-topbar-label").closest("header");
 		expect(header).toHaveStyle({ paddingLeft: "18px" });
 	});
+
+	it("shows the play-icon cue runner on project boards", () => {
+		paramsMock.projectId = "proj-1";
+		render(
+			<QueryClientProvider client={new QueryClient()}>
+				<TooltipProvider>
+					<ShellTopbar />
+				</TooltipProvider>
+			</QueryClientProvider>,
+		);
+
+		expect(screen.getByRole("button", { name: "Run a cue" }).querySelector(".lucide-play")).not.toBeNull();
+	});
 });

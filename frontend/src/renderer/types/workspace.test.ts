@@ -7,6 +7,7 @@ import {
 	newestActiveOrchestrator,
 	orchestratorHealth,
 	sessionAgentExited,
+	sessionCueTargetAvailable,
 	sessionIsActive,
 	sessionNeedsAttention,
 	toAgentProvider,
@@ -128,6 +129,22 @@ describe("sessionAgentExited", () => {
 			).toBe(false);
 		},
 	);
+});
+
+describe("sessionCueTargetAvailable", () => {
+	it("accepts an active session even when activity has not been observed", () => {
+		expect(sessionCueTargetAvailable(sessionWith({}))).toBe(true);
+	});
+
+	it.each(["exited", "blocked"] as const)("rejects %s activity", (state) => {
+		expect(sessionCueTargetAvailable(sessionWith({ activity: { state, lastActivityAt: "2026-09-25T00:00:00Z" } }))).toBe(false);
+	});
+
+	it("rejects both terminated facts", () => {
+		expect(sessionCueTargetAvailable(sessionWith({ isTerminated: true }))).toBe(false);
+		expect(sessionCueTargetAvailable(sessionWith({ status: "terminated" }))).toBe(false);
+		expect(sessionCueTargetAvailable(undefined)).toBe(false);
+	});
 });
 
 describe("findProjectOrchestrator", () => {
