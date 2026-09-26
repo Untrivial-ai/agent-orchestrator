@@ -154,7 +154,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 						settingsDialogContentClass,
 						"fixed left-1/2 top-1/2 h-(--size-settings-dialog-height) w-(--size-settings-dialog-wide) max-h-none -translate-x-1/2 -translate-y-1/2 origin-center overflow-hidden p-0 animate-modal-in motion-reduce:animate-none sm:rounded-lg",
 						isProjectSettings && activeProjectSection === "general" && "h-auto max-h-[calc(100vh-3rem)]",
-						isProjectSettings && activeProjectSection === "agents" && "h-[min(24rem,calc(100vh-3rem))]",
+						isProjectSettings && activeProjectSection === "agents" && "h-[min(40rem,calc(100vh-3rem))]",
 					)}
 					onOpenAutoFocus={(event) => event.preventDefault()}
 					onEscapeKeyDown={(event) => {
