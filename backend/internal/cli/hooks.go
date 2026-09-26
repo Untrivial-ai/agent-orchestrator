@@ -399,25 +399,26 @@ type claudePermissionHookOutput struct {
 	} `json:"hookSpecificOutput"`
 }
 
-// reviewerSubmitCommandPattern matches the exact command shapes the review
-// prompt dictates: a single-quoted JSON literal fed through `printf '%s'` into
-// either the GitHub review POST or `ao review submit`. Claude Code ≥ 2.1.257
-// prompts on any Bash command its analyzer cannot verify statically, and allow
-// rules never match such commands, so the headless reviewer would hang. The
-// shape is safe to auto-allow: `printf '%s'` performs no format interpretation
-// and a single-quoted operand (quote-backslash-quote-quote for embedded single
-// quotes, as the prompt instructs) cannot expand or run anything. The
-// captured session id is checked against AO_REVIEW_WORKER_SESSION_ID after the
-// match.
+// reviewerSubmitCommandPattern matches the exact command shape the review
+// prompt dictates: the single-quoted Markdown review body fed through
+// `printf '%s'` into `ao review submit`, with the repeatable --comment-* trio
+// for inline findings. Claude Code ≥ 2.1.257 prompts on any Bash command its
+// analyzer cannot verify statically, and allow rules never match such
+// commands, so the headless reviewer would hang. The shape is safe to
+// auto-allow: `printf '%s'` performs no format interpretation and a
+// single-quoted operand (quote-backslash-quote-quote for embedded single
+// quotes, as the prompt instructs) cannot expand or run anything. The captured
+// session id is checked against AO_REVIEW_WORKER_SESSION_ID after the match.
+// There is deliberately no gh api alternative: publication is daemon-owned
+// since #5701.
 const reviewerSubmitJSONLiteral = `'[^']*(?:'\\''[^']*)*'`
 
-var reviewerSubmitCommandPattern = regexp.MustCompile(`^printf '%s' ` + reviewerSubmitJSONLiteral + ` \| (?:` +
-	`gh api --method POST repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pulls/[0-9]+/reviews --input - --jq '\.id'` +
-	`|ao review submit --session (?P<session>[A-Za-z0-9_-]+) --reviews -)$`)
+var reviewerSubmitCommandPattern = regexp.MustCompile(`^printf '%s' ` + reviewerSubmitJSONLiteral + ` \| ao review submit --session (?P<session>[A-Za-z0-9_-]+) --run [A-Za-z0-9_-]+ --verdict (?:approved|changes_requested) --body -(?: --comment-path [A-Za-z0-9_./-]+ --comment-line [0-9]+ --comment-body ` + reviewerSubmitJSONLiteral + `)*$`)
 
 const reviewerPermissionDenyMessage = "AO headless reviewer: no human can answer permission prompts. " +
 	"Use only the allowlisted read commands (git diff/log/show/status, gh pr view/diff/checks, Read, Grep, Glob) " +
-	"and the exact single-line `printf '%s' '<json>' | ...` submit commands from the review task."
+	"and the exact single-line `printf '%s' '<review markdown>' | ao review submit ...` command from the review task. " +
+	"AO publishes the GitHub review; do not run gh api."
 
 // reviewerPermissionDecision answers a Claude Code reviewer's PermissionRequest:
 // allow the exact submit shapes, deny everything else so the session degrades

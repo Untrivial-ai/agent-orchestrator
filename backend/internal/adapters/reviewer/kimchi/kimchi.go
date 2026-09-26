@@ -19,19 +19,20 @@ const HostTrustWarning = "experimental host-trusted reviewer: Kimchi tool allow/
 // with. Instead of bypassPermissions — which skips Kimchi's permission system
 // entirely — it launches in --auto mode where these rules are honored. The
 // reviewer can read the checkout and run the few commands it needs (git
-// diff/log/status to inspect the PR, gh api to post the review, printf to pipe
-// JSON, and `ao review submit` to record the verdict) without stalling. This is
-// hardening, not an OS sandbox; the adapter remains host-trusted.
+// diff/log/status to inspect the PR, gh pr view/diff/checks to read PR
+// metadata, printf to pipe the review body, and `ao review submit` to record
+// the verdict) without stalling. Publication is daemon-owned since #5701, so
+// gh has no write access here. This is hardening, not an OS sandbox; the
+// adapter remains host-trusted.
 //
-// The review protocol (review/prompt.go step 1) requires the piped command:
+// The review protocol (review/prompt.go) requires the piped command:
 //
-//	printf '%s' '{...}' | gh api --method POST .../reviews --input -
+//	printf '%s' '<review markdown>' | ao review submit ...
 //
 // Kimchi's allow matcher is single-segment only, so piped commands can't be
 // auto-approved by an allow rule — they fall to the classifier under --auto.
-// Including both bash(printf:*) and bash(gh:*) ensures the classifier
-// recognizes each segment. Dangerous gh verbs (merge, DELETE/PUT/PATCH, gist)
-// are denied in reviewerDisallowedTools; git show is denied there too.
+// Including both bash(printf:*) and the read-only gh verbs ensures the
+// classifier recognizes each segment. git show is denied there too.
 // Kimchi's rule parser is case-insensitive on tool names, so lowercase tool
 // names are used to match Kimchi's internal names.
 var reviewerAllowedTools = []string{
@@ -42,7 +43,9 @@ var reviewerAllowedTools = []string{
 	"bash(git diff:*)",
 	"bash(git log:*)",
 	"bash(git status:*)",
-	"bash(gh:*)",
+	"bash(gh pr view:*)",
+	"bash(gh pr diff:*)",
+	"bash(gh pr checks:*)",
 	"bash(ao review submit:*)",
 }
 
@@ -58,10 +61,9 @@ var reviewerAllowedTools = []string{
 // tool is always blocked regardless of allow rules. This ordering was verified
 // directly from Kimchi source.
 //
-// The blanket bash(gh:*) deny was removed because the review protocol requires
-// gh api --method POST to post reviews. Instead, specific dangerous gh verbs
-// are denied: pr merge (self-merge), api --method DELETE/PUT/PATCH (mutate
-// repo state), and gist (exfiltration).
+// gh api is not allowlisted at all since #5701 (publication is daemon-owned);
+// the denies below block the dangerous gh verbs a misbehaving model might try
+// anyway.
 var reviewerDisallowedTools = []string{
 	"edit",
 	"write",
@@ -69,9 +71,7 @@ var reviewerDisallowedTools = []string{
 	"bash(git commit:*)",
 	"bash(git show:*)",
 	"bash(gh pr merge:*)",
-	"bash(gh api --method DELETE:*)",
-	"bash(gh api --method PUT:*)",
-	"bash(gh api --method PATCH:*)",
+	"bash(gh api:*)",
 	"bash(gh gist:*)",
 }
 
@@ -97,7 +97,8 @@ var _ ports.ReviewerRestorer = (*Reviewer)(nil)
 // ReviewCommand builds the argv to launch a fresh Kimchi reviewer over the
 // worker's checkout. --auto keeps the session moving while the allow/deny tool
 // lists provide best-effort hardening for the review tools (git
-// diff/log/status to inspect the PR, gh api to post the review, printf to pipe
+// diff/log/status to inspect the PR, gh pr view/diff/checks to read PR
+// metadata, printf to pipe
 // JSON, and `ao review submit` to record the verdict). The deny list covers
 // common mutation paths, but does not make the process read-only or isolated.
 func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {

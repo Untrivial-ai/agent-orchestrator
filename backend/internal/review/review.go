@@ -40,7 +40,7 @@ type Store interface {
 	ListReviewsBySession(ctx stdctx.Context, id domain.SessionID) ([]domain.Review, error)
 	ClearReviewerHandleByHarness(ctx stdctx.Context, id domain.SessionID, harness domain.ReviewerHarness) error
 	InsertReviewRun(ctx stdctx.Context, r domain.ReviewRun) error
-	UpdateReviewRunResult(ctx stdctx.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string, autoInjectReview bool) (bool, error)
+	UpdateReviewRunResult(ctx stdctx.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, findingsJSON, githubReviewID string, autoInjectReview bool) (bool, error)
 	UpdateReviewAgentSessionID(ctx stdctx.Context, id, agentSessionID string) (bool, error)
 	SupersedeStaleRunningReviewRuns(ctx stdctx.Context, sessionID domain.SessionID, prURL, targetSHA, body string) (int64, error)
 	CancelRunningReviewRunsBySession(ctx stdctx.Context, sessionID domain.SessionID, body string) (int64, error)
@@ -394,7 +394,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 
 	failRuns := func(start int, err error) error {
 		for _, run := range created[start:] {
-			if _, updateErr := e.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunFailed, domain.VerdictNone, err.Error(), "", run.AutoInjectReview); updateErr != nil {
+			if _, updateErr := e.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunFailed, domain.VerdictNone, err.Error(), "", "", run.AutoInjectReview); updateErr != nil {
 				return updateErr
 			}
 		}
@@ -817,7 +817,7 @@ func (e *Engine) failRunningRestoredRuns(ctx stdctx.Context, runs []domain.Revie
 		if run.Status != domain.ReviewRunRunning {
 			continue
 		}
-		if _, err := e.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunFailed, domain.VerdictNone, body, "", run.AutoInjectReview); err != nil {
+		if _, err := e.store.UpdateReviewRunResult(ctx, run.ID, domain.ReviewRunFailed, domain.VerdictNone, body, "", "", run.AutoInjectReview); err != nil {
 			return fmt.Errorf("fail review run %q after reviewer restore: %w", run.ID, err)
 		}
 	}

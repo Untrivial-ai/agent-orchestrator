@@ -3273,6 +3273,14 @@ export interface components {
         ControllersSetSessionAutoReviewRequest: {
             enabled: boolean;
         };
+        ControllersSubmitReviewComment: {
+            /** @description Single-line finding body. Multi-line prose belongs in the review body. */
+            body: string;
+            /** @description Line in the file's diff the finding anchors to. */
+            line: number;
+            /** @description Repository path the finding anchors to. */
+            path: string;
+        };
         ControllersUpdateCloudOfferingRequest: {
             enabled: null | boolean;
         };
@@ -3588,6 +3596,11 @@ export interface components {
             /** Format: date-time */
             lastActivityAt: string;
             state: string;
+        };
+        DomainReviewFinding: {
+            body: string;
+            line: number;
+            path: string;
         };
         DomainReviewerConfig: {
             agentConfig?: components["schemas"]["AgentConfig"];
@@ -4234,10 +4247,13 @@ export interface components {
             createdAt: string;
             /** Format: date-time */
             deliveredAt?: null | string;
+            findings?: components["schemas"]["DomainReviewFinding"][];
             githubReviewId: string;
             harness: string;
             id: string;
             prUrl: string;
+            publishError?: string;
+            publishState: string;
             reviewId: string;
             sessionId: string;
             status: string;
@@ -4691,26 +4707,14 @@ export interface components {
             sourceGenerationId: string;
         };
         SubmitReviewInput: {
-            /** @description Review body recorded by AO. Required for changes_requested. */
+            /** @description Review body recorded by AO and published to the provider. Required for changes_requested. */
             body?: string;
-            /** @description Id of the GitHub PR review the reviewer posted, if any. */
-            githubReviewId?: string;
-            /** @description Batched review results recorded by one reviewer CLI command. */
-            reviews?: components["schemas"]["SubmitReviewItem"][];
+            /** @description Inline findings published as the review's anchored comments. */
+            comments?: components["schemas"]["ControllersSubmitReviewComment"][];
             /** @description Review run id being completed. */
             runId?: string;
             /** @description Review verdict: approved or changes_requested. */
             verdict?: string;
-        };
-        SubmitReviewItem: {
-            /** @description Review body recorded by AO. Required for changes_requested. */
-            body?: string;
-            /** @description Id of the GitHub PR review the reviewer posted, if any. */
-            githubReviewId?: string;
-            /** @description Review run id being completed. */
-            runId: string;
-            /** @description Review verdict: approved or changes_requested. */
-            verdict: string;
         };
         SwitchAgentRequest: {
             /** @description Optional retry key. Reusing it with a different request is rejected. */

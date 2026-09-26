@@ -9476,6 +9476,23 @@ components:
       required:
       - enabled
       type: object
+    ControllersSubmitReviewComment:
+      properties:
+        body:
+          description: Single-line finding body. Multi-line prose belongs in the review
+            body.
+          type: string
+        line:
+          description: Line in the file's diff the finding anchors to.
+          type: integer
+        path:
+          description: Repository path the finding anchors to.
+          type: string
+      required:
+      - path
+      - line
+      - body
+      type: object
     ControllersUpdateCloudOfferingRequest:
       properties:
         enabled:
@@ -10337,6 +10354,19 @@ components:
       required:
       - state
       - lastActivityAt
+      type: object
+    DomainReviewFinding:
+      properties:
+        body:
+          type: string
+        line:
+          type: integer
+        path:
+          type: string
+      required:
+      - path
+      - line
+      - body
       type: object
     DomainReviewerConfig:
       properties:
@@ -12015,6 +12045,10 @@ components:
           type:
           - "null"
           - string
+        findings:
+          items:
+            $ref: '#/components/schemas/DomainReviewFinding'
+          type: array
         githubReviewId:
           type: string
         harness:
@@ -12022,6 +12056,10 @@ components:
         id:
           type: string
         prUrl:
+          type: string
+        publishError:
+          type: string
+        publishState:
           type: string
         reviewId:
           type: string
@@ -12051,6 +12089,7 @@ components:
       - verdict
       - body
       - githubReviewId
+      - publishState
       - createdAt
       - autoInjectReview
       type: object
@@ -13207,15 +13246,13 @@ components:
     SubmitReviewInput:
       properties:
         body:
-          description: Review body recorded by AO. Required for changes_requested.
+          description: Review body recorded by AO and published to the provider. Required
+            for changes_requested.
           type: string
-        githubReviewId:
-          description: Id of the GitHub PR review the reviewer posted, if any.
-          type: string
-        reviews:
-          description: Batched review results recorded by one reviewer CLI command.
+        comments:
+          description: Inline findings published as the review's anchored comments.
           items:
-            $ref: '#/components/schemas/SubmitReviewItem'
+            $ref: '#/components/schemas/ControllersSubmitReviewComment'
           type: array
         runId:
           description: Review run id being completed.
@@ -13223,24 +13260,6 @@ components:
         verdict:
           description: 'Review verdict: approved or changes_requested.'
           type: string
-      type: object
-    SubmitReviewItem:
-      properties:
-        body:
-          description: Review body recorded by AO. Required for changes_requested.
-          type: string
-        githubReviewId:
-          description: Id of the GitHub PR review the reviewer posted, if any.
-          type: string
-        runId:
-          description: Review run id being completed.
-          type: string
-        verdict:
-          description: 'Review verdict: approved or changes_requested.'
-          type: string
-      required:
-      - runId
-      - verdict
       type: object
     SwitchAgentRequest:
       properties:

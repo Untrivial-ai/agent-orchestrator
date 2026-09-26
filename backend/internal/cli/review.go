@@ -2,12 +2,10 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -34,6 +32,8 @@ type reviewRun struct {
 	Verdict        string     `json:"verdict"`
 	Body           string     `json:"body"`
 	GithubReviewID string     `json:"githubReviewId"`
+	PublishState   string     `json:"publishState"`
+	PublishError   string     `json:"publishError,omitempty"`
 	CreatedAt      time.Time  `json:"createdAt"`
 	DeliveredAt    *time.Time `json:"deliveredAt,omitempty"`
 }
@@ -66,30 +66,31 @@ type reviewRunResponse struct {
 	ReviewerHandleID string      `json:"reviewerHandleId"`
 }
 
-// submitReviewItem mirrors controllers.SubmitReviewItem.
-type submitReviewItem struct {
-	RunID          string `json:"runId"`
-	Verdict        string `json:"verdict"`
-	Body           string `json:"body,omitempty"`
-	GithubReviewID string `json:"githubReviewId,omitempty"`
+// submitReviewComment is one inline finding in a submit request.
+type submitReviewComment struct {
+	Path string `json:"path"`
+	Line int    `json:"line"`
+	Body string `json:"body"`
 }
 
 // submitReviewRequest mirrors controllers.SubmitReviewInput.
 type submitReviewRequest struct {
-	RunID          string             `json:"runId,omitempty"`
-	Verdict        string             `json:"verdict,omitempty"`
-	Body           string             `json:"body,omitempty"`
-	GithubReviewID string             `json:"githubReviewId,omitempty"`
-	Reviews        []submitReviewItem `json:"reviews,omitempty"`
+	RunID    string                `json:"runId,omitempty"`
+	Verdict  string                `json:"verdict,omitempty"`
+	Body     string                `json:"body,omitempty"`
+	Comments []submitReviewComment `json:"comments,omitempty"`
 }
 
 type reviewSubmitOptions struct {
-	session  string
-	runID    string
-	verdict  string
-	body     string
-	reviewID string
-	reviews  string
+	session      string
+	runID        string
+	verdict      string
+	body         string
+	reviewID     string
+	reviews      string
+	commentPaths []string
+	commentLines []int
+	commentBodys []string
 }
 
 type reviewSessionOptions struct {
@@ -143,8 +144,13 @@ func newReviewSubmitCommand(ctx *commandContext) *cobra.Command {
 	var opts reviewSubmitOptions
 	cmd := &cobra.Command{
 		Use:   "submit [worker-session-id]",
-		Short: "Record a reviewer's result for a worker's PR",
-		Args:  atMostOneArg,
+		Short: "Record a reviewer's result for a worker's PR and publish it to GitHub",
+		Long: "Record a reviewer's result for a worker's PR and publish it to GitHub.\n" +
+			"Pipe the full Markdown review body from stdin (--body -); AO publishes the\n" +
+			"GitHub review (summary plus inline findings) and records the returned id, so\n" +
+			"reviewers never post to GitHub themselves. Repeating an identical submission\n" +
+			"is safe: the recorded result is returned without republishing.",
+		Args: atMostOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return ctx.submitReview(cmd, args, opts)
 		},
@@ -157,9 +163,16 @@ func newReviewSubmitCommand(ctx *commandContext) *cobra.Command {
 	cmd.Flags().StringVar(&opts.session, "session", "", "Worker session id (or pass it as the positional argument)")
 	cmd.Flags().StringVar(&opts.runID, "run", "", "Review run id (required)")
 	cmd.Flags().StringVar(&opts.verdict, "verdict", "", "Review verdict: approved or changes_requested (required)")
-	cmd.Flags().StringVar(&opts.body, "body", "", "Review body: a path to a Markdown file, or - to read from stdin (so nothing is written into the worktree)")
-	cmd.Flags().StringVar(&opts.reviewID, "review-id", "", "Id of the GitHub PR review just posted (the .id from the gh api POST that created the review)")
-	cmd.Flags().StringVar(&opts.reviews, "reviews", "", "JSON review results array or object: a path, or - to read from stdin")
+	cmd.Flags().StringVar(&opts.body, "body", "", "Review body: - to read the Markdown from stdin (so nothing is written into the worktree)")
+	cmd.Flags().StringArrayVar(&opts.commentPaths, "comment-path", nil, "Inline finding path; repeat together with --comment-line and --comment-body, one occurrence group per finding")
+	cmd.Flags().IntSliceVar(&opts.commentLines, "comment-line", nil, "Inline finding line; repeat together with --comment-path and --comment-body")
+	cmd.Flags().StringArrayVar(&opts.commentBodys, "comment-body", nil, "Single-line inline finding body; repeat together with --comment-path and --comment-line")
+	// Legacy inputs from the pre-#5701 contract, kept only to fail with a
+	// message that names the replacement instead of "unknown flag".
+	cmd.Flags().StringVar(&opts.reviews, "reviews", "", "Removed: submit one review per run with --run, --verdict, --body, and the --comment-* flags")
+	_ = cmd.Flags().MarkHidden("reviews")
+	cmd.Flags().StringVar(&opts.reviewID, "review-id", "", "Removed: GitHub review ids are outputs; AO publishes the review and records the id")
+	_ = cmd.Flags().MarkHidden("review-id")
 	return cmd
 }
 
@@ -172,7 +185,10 @@ func (c *commandContext) submitReview(cmd *cobra.Command, args []string, opts re
 		return usageError{errors.New("usage: worker session id is required (positional or --session)")}
 	}
 	if strings.TrimSpace(opts.reviews) != "" {
-		return c.submitReviewBatch(cmd, session, opts)
+		return usageError{errors.New("--reviews was removed: submit one review per run with --run, --verdict, --body, and the --comment-* flags")}
+	}
+	if strings.TrimSpace(opts.reviewID) != "" {
+		return usageError{errors.New("--review-id was removed: GitHub review ids are outputs; AO publishes the review and records the id")}
 	}
 	runID := strings.TrimSpace(opts.runID)
 	if runID == "" {
@@ -183,25 +199,29 @@ func (c *commandContext) submitReview(cmd *cobra.Command, args []string, opts re
 		return usageError{errors.New("usage: --verdict is required (approved or changes_requested)")}
 	}
 	var body string
-	if path := strings.TrimSpace(opts.body); path != "" {
-		var raw []byte
-		var err error
-		if path == "-" {
-			// Read the review from stdin so the reviewer never has to write a file
-			// into its checkout (where it could be committed onto the worker branch).
-			raw, err = io.ReadAll(cmd.InOrStdin())
-		} else {
-			raw, err = os.ReadFile(path)
-		}
+	switch bodyArg := strings.TrimSpace(opts.body); bodyArg {
+	case "":
+	case "-":
+		// Read the review from stdin so the reviewer never has to write a file
+		// into its checkout (where it could be committed onto the worker branch).
+		raw, err := io.ReadAll(cmd.InOrStdin())
 		if err != nil {
 			return usageError{fmt.Errorf("read review body: %w", err)}
 		}
 		body = string(raw)
+	default:
+		return usageError{errors.New("--body only accepts - (stdin): pipe the review Markdown from stdin instead of passing a file path")}
 	}
-	reviewID := strings.TrimSpace(opts.reviewID)
+	findings, err := pairReviewFindings(opts.commentPaths, opts.commentLines, opts.commentBodys)
+	if err != nil {
+		return err
+	}
+	if verdict == "changes_requested" && strings.TrimSpace(body) == "" {
+		return usageError{errors.New("a changes_requested review requires a body: pipe the Markdown from stdin with --body -")}
+	}
 	path := "sessions/" + url.PathEscape(session) + "/reviews/submit"
 	var res reviewRunResponse
-	if err := c.postReviewJSON(cmd.Context(), path, submitReviewRequest{RunID: runID, Verdict: verdict, Body: body, GithubReviewID: reviewID}, &res); err != nil {
+	if err := c.postReviewJSON(cmd.Context(), path, submitReviewRequest{RunID: runID, Verdict: verdict, Body: body, Comments: findings}, &res); err != nil {
 		return err
 	}
 	// A submit response always carries the recorded run's ID and verdict; a
@@ -210,42 +230,65 @@ func (c *commandContext) submitReview(cmd *cobra.Command, args []string, opts re
 	if strings.TrimSpace(res.Review.ID) == "" || strings.TrimSpace(res.Review.Verdict) == "" {
 		return fmt.Errorf("daemon returned empty review result for %s", session)
 	}
-	_, err := fmt.Fprintf(cmd.OutOrStdout(), "recorded %s review for %s\n", res.Review.Verdict, session)
+	out := cmd.OutOrStdout()
+	if _, err := fmt.Fprintf(out, "recorded %s review for %s\n", res.Review.Verdict, session); err != nil {
+		return err
+	}
+	// The publication result rides on the same invocation. Nothing here fails
+	// the CLI: the review result itself is recorded; only the daemon-side
+	// GitHub publication can report a problem.
+	switch res.Review.PublishState {
+	case "", "published":
+		_, err = fmt.Fprintf(out, "published GitHub review %s\n", strings.TrimSpace(res.Review.GithubReviewID))
+	case "failed":
+		msg := strings.TrimSpace(res.Review.PublishError)
+		if msg == "" {
+			msg = "provider rejected the review"
+		}
+		_, err = fmt.Fprintf(out, "GitHub publication failed: %s\nThe review result is recorded; rerun the same command to retry publication\n", msg)
+	case "uncertain", "pending", "publishing":
+		reason := strings.TrimSpace(res.Review.PublishError)
+		if reason == "" {
+			reason = "interrupted mid-publish"
+		}
+		_, err = fmt.Fprintf(out, "GitHub publication outcome unknown (%s); check the pull request before resubmitting\n", reason)
+	default:
+		_, err = fmt.Fprintf(out, "GitHub publication state %q\n", res.Review.PublishState)
+	}
 	return err
 }
 
-func (c *commandContext) submitReviewBatch(cmd *cobra.Command, session string, opts reviewSubmitOptions) error {
-	if strings.TrimSpace(opts.runID) != "" || strings.TrimSpace(opts.verdict) != "" || strings.TrimSpace(opts.body) != "" || strings.TrimSpace(opts.reviewID) != "" {
-		return usageError{errors.New("usage: --reviews cannot be combined with --run, --verdict, --body, or --review-id")}
+// pairReviewFindings builds the inline findings from the repeatable comment
+// flags. Values pair by occurrence: the n-th occurrence of each flag forms one
+// finding, and any incomplete group is rejected instead of silently reordered.
+// Finding bodies are single-line by contract — multi-line prose belongs in the
+// review body, not in shell-quoted flag values.
+func pairReviewFindings(paths []string, lines []int, bodys []string) ([]submitReviewComment, error) {
+	if len(paths) == 0 && len(lines) == 0 && len(bodys) == 0 {
+		return nil, nil
 	}
-	reviews, err := readReviewItems(cmd, strings.TrimSpace(opts.reviews))
-	if err != nil {
-		return err
+	if len(paths) != len(lines) || len(paths) != len(bodys) {
+		return nil, usageError{fmt.Errorf("incomplete inline finding: --comment-path, --comment-line, and --comment-body must occur the same number of times (got %d, %d, %d)", len(paths), len(lines), len(bodys))}
 	}
-	path := "sessions/" + url.PathEscape(session) + "/reviews/submit"
-	var res reviewRunResponse
-	if err := c.postReviewJSON(cmd.Context(), path, submitReviewRequest{Reviews: reviews}, &res); err != nil {
-		return err
-	}
-	// Batch success is the recorded runs array: every returned entry must
-	// carry its run ID and verdict. An empty array falls back to requiring
-	// a fully-populated single review. Anything less is a broken contract,
-	// not a success to print.
-	if len(res.Reviews) > 0 {
-		for _, run := range res.Reviews {
-			if strings.TrimSpace(run.ID) == "" || strings.TrimSpace(run.Verdict) == "" {
-				return fmt.Errorf("daemon returned empty review result for %s", session)
-			}
+	findings := make([]submitReviewComment, 0, len(paths))
+	for i := range paths {
+		findPath := strings.TrimSpace(paths[i])
+		findBody := bodys[i]
+		switch {
+		case findPath == "":
+			return nil, usageError{fmt.Errorf("inline finding %d: --comment-path must not be blank", i+1)}
+		case strings.ContainsAny(findPath, "\n\r"):
+			return nil, usageError{fmt.Errorf("inline finding %d: --comment-path must be a single line", i+1)}
+		case lines[i] <= 0:
+			return nil, usageError{fmt.Errorf("inline finding %d: --comment-line must be a positive line number", i+1)}
+		case strings.TrimSpace(findBody) == "":
+			return nil, usageError{fmt.Errorf("inline finding %d: --comment-body must not be blank", i+1)}
+		case strings.ContainsAny(findBody, "\n\r"):
+			return nil, usageError{fmt.Errorf("inline finding %d: --comment-body must be single-line; multi-line prose belongs in the review body", i+1)}
 		}
-	} else if strings.TrimSpace(res.Review.ID) == "" || strings.TrimSpace(res.Review.Verdict) == "" {
-		return fmt.Errorf("daemon returned empty review result for %s", session)
+		findings = append(findings, submitReviewComment{Path: findPath, Line: lines[i], Body: findBody})
 	}
-	count := len(res.Reviews)
-	if count == 0 {
-		count = len(reviews)
-	}
-	_, err = fmt.Fprintf(cmd.OutOrStdout(), "recorded %d review(s) for %s\n", count, session)
-	return err
+	return findings, nil
 }
 
 // postReviewJSON retries only transport-level daemon unavailability. The
@@ -375,29 +418,4 @@ func writeReviewList(cmd *cobra.Command, session string, res listReviewsResponse
 		}
 	}
 	return tw.Flush()
-}
-
-func readReviewItems(cmd *cobra.Command, path string) ([]submitReviewItem, error) {
-	var raw []byte
-	var err error
-	if path == "-" {
-		raw, err = io.ReadAll(cmd.InOrStdin())
-	} else {
-		raw, err = os.ReadFile(path)
-	}
-	if err != nil {
-		return nil, usageError{fmt.Errorf("read review results: %w", err)}
-	}
-	var req submitReviewRequest
-	if err := json.Unmarshal(raw, &req); err == nil && len(req.Reviews) > 0 {
-		return req.Reviews, nil
-	}
-	var reviews []submitReviewItem
-	if err := json.Unmarshal(raw, &reviews); err != nil {
-		return nil, usageError{fmt.Errorf("decode review results JSON: %w", err)}
-	}
-	if len(reviews) == 0 {
-		return nil, usageError{errors.New("usage: --reviews requires at least one review result")}
-	}
-	return reviews, nil
 }

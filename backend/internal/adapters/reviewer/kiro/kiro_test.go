@@ -73,7 +73,7 @@ func TestReviewCommandBuildsReadOnlyInteractiveTUI(t *testing.T) {
 	if !slices.Equal(cfg.Tools, []string{"read", "glob", "grep", "shell"}) || slices.Contains(cfg.AllowedTools, "shell") {
 		t.Fatalf("tool policy = tools %#v allowed %#v", cfg.Tools, cfg.AllowedTools)
 	}
-	if !cfg.ToolsSettings.Shell.DenyByDefault || len(cfg.ToolsSettings.Shell.AllowedCommands) != 6 || len(cfg.ToolsSettings.Shell.DeniedCommands) == 0 {
+	if !cfg.ToolsSettings.Shell.DenyByDefault || len(cfg.ToolsSettings.Shell.AllowedCommands) != 5 || len(cfg.ToolsSettings.Shell.DeniedCommands) == 0 {
 		t.Fatalf("shell policy = %+v", cfg.ToolsSettings.Shell)
 	}
 	for _, command := range cfg.ToolsSettings.Shell.AllowedCommands {
