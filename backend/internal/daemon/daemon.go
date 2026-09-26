@@ -66,6 +66,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
+	userconfigsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/userconfig"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite"
@@ -628,6 +629,11 @@ func Run() error {
 	mc := &controllers.MobileController{Bridge: bs}
 	browserService := browsersvc.New(sessionSvc, browserBroker, browserAuthority)
 
+	// User-scope agent config: the lowest-precedence scope above projects. Backed
+	// by the singleton user_config row; has no effect on workers until the merge
+	// layer (#2999) wires it into effectiveAgentConfig.
+	userConfigSvc := userconfigsvc.New(store)
+
 	// Standalone shell terminals: user-opened shells with no agent session
 	// behind them. They reuse the same runtime adapter (and therefore the same
 	// terminal mux) as session panes, but keep their own ids, storage, and
@@ -846,6 +852,7 @@ func Run() error {
 		Projects:           projectSvc,
 		HostID:             hostIdentity.HostID,
 		Endpoints:          bs,
+		UserConfig:         userConfigSvc,
 		Agents:             agentSvc,
 		CodexAccounts:      agentSvc,
 		SystemChecks:       systemChecks,
