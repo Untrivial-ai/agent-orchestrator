@@ -3442,8 +3442,10 @@ const TurnGroup = memo(function TurnGroup({
 							className="gap-2 px-1 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
 							trailing={null}
 						>
-							Worked for {group.outcome.durationMs !== undefined ? <TurnDuration durationMs={group.outcome.durationMs} /> : null}
-							<ChevronDown aria-hidden="true" className="ml-1 size-3.5 shrink-0 transition-transform duration-200 group-data-[state=open]/row:rotate-180" />
+							<span className="inline-flex w-fit items-center gap-1">
+								Worked for {group.outcome.durationMs !== undefined ? <TurnDuration durationMs={group.outcome.durationMs} inline /> : null}
+								<ChevronDown aria-hidden="true" className="size-3.5 shrink-0 transition-transform duration-200 group-data-[state=open]/row:rotate-180" />
+							</span>
 						</AccordionTrigger>
 						<AccordionContent className="space-y-2 pb-2 pt-1">
 							{workedRuns.map(renderRun)}

@@ -2824,11 +2824,14 @@ function fileBasename(path: string): string {
 /* -------------------------------------------------------------------------- */
 
 /** Turn wall-clock duration; lives on the action row next to rollback, not the Done divider. */
-export function TurnDuration({ durationMs }: { durationMs: number }) {
+export function TurnDuration({ durationMs, inline = false }: { durationMs: number; inline?: boolean }) {
 	if (durationMs <= 0) return null;
 	return (
 		<span
-			className="shrink-0 px-1 font-sans text-[12px] leading-none tabular-nums text-muted-foreground"
+			className={cn(
+				"shrink-0 font-sans text-[12px] leading-none tabular-nums text-muted-foreground",
+				!inline && "px-1",
+			)}
 			aria-label={`Time spent: ${formatDuration(durationMs)}`}
 		>
 			{formatDuration(durationMs)}
