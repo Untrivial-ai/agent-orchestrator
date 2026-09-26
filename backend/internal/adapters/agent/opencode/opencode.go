@@ -414,14 +414,10 @@ type opencodeAgentSettings struct {
 // `read` is never named, so OpenCode's default `.env` deny survives every mode
 // but bypass.
 func opencodePermissionConfig(mode ports.PermissionMode) map[string]string {
-	switch ports.NormalizePermissionMode(mode) {
-	case ports.PermissionModeAcceptEdits:
+	if ports.NormalizePermissionMode(mode) == ports.PermissionModeAcceptEdits {
 		return map[string]string{"edit": "allow"}
-	case ports.PermissionModeAuto:
-		return nil // the caller supplies OpenCode's --auto, or emulates it
-	default:
-		return nil
 	}
+	return nil
 }
 
 func opencodeConfigEnvPrefix(permissions ports.PermissionMode, inlinePrompt, promptFile, sessionID string) ([]string, string, error) {
@@ -482,47 +478,17 @@ func opencodeConfigEnvPrefix(permissions ports.PermissionMode, inlinePrompt, pro
 // session runs — a global `permission` rule could only be written at launch and
 // never taken back, so tightening a mode mid-session would change the label and
 // nothing else.
-const (
-	ACPAgentDefault     = "ao-default"
-	ACPAgentAcceptEdits = "ao-accept-edits"
-	ACPAgentAuto        = "ao-auto"
-	ACPAgentBypass      = "ao-bypass"
-)
-
-var acpAgentPermissions = map[string]ports.PermissionMode{
-	ACPAgentDefault:     ports.PermissionModeDefault,
-	ACPAgentAcceptEdits: ports.PermissionModeAcceptEdits,
-	ACPAgentAuto:        ports.PermissionModeAuto,
-	ACPAgentBypass:      ports.PermissionModeBypassPermissions,
-}
-
-// acpAgentPermission is the ruleset AO writes for one tier.
-//
-// Only bypass gets one. Accept edits and auto are answered per request instead,
-// the way OpenCode's own --auto is: its Auto handler replies to each permission
-// request rather than rewriting config, so a rule the user or repository denied
-// never raises a request and stays denied without AO having to know about it.
-// Reconstructing that policy here would mean reading every source OpenCode
-// merges — global, project, .opencode, managed, remote — and being wrong in
-// AO's favour whenever a source was unreadable.
-func acpAgentPermission(mode ports.PermissionMode) any {
-	if ports.NormalizePermissionMode(mode) == ports.PermissionModeBypassPermissions {
-		return "allow"
-	}
-	return nil
-}
-
-// ACPAgentForPermissions is the agent a session starts on.
-func ACPAgentForPermissions(permissions ports.PermissionMode) string {
+// acpAgentForPermissions is the agent a session starts on.
+func acpAgentForPermissions(permissions ports.PermissionMode) string {
 	switch ports.NormalizePermissionMode(permissions) {
 	case ports.PermissionModeAcceptEdits:
-		return ACPAgentAcceptEdits
+		return "ao-accept-edits"
 	case ports.PermissionModeAuto:
-		return ACPAgentAuto
+		return "ao-auto"
 	case ports.PermissionModeBypassPermissions:
-		return ACPAgentBypass
+		return "ao-bypass"
 	default:
-		return ACPAgentDefault
+		return "ao-default"
 	}
 }
 
@@ -550,14 +516,20 @@ func PrepareACPConfigContent(
 	if agents == nil {
 		agents = map[string]any{}
 	}
-	for name, mode := range acpAgentPermissions {
-		agents[name] = opencodeAgentSettings{
-			Mode: "primary", Prompt: systemPrompt,
-			Permission: acpAgentPermission(mode),
+	for _, mode := range []ports.PermissionMode{
+		ports.PermissionModeDefault, ports.PermissionModeAcceptEdits,
+		ports.PermissionModeAuto, ports.PermissionModeBypassPermissions,
+	} {
+		agent := opencodeAgentSettings{Mode: "primary", Prompt: systemPrompt}
+		// Only bypass writes a rule. Accept edits and auto answer requests,
+		// like OpenCode's --auto, so explicit provider denies stay denied.
+		if mode == ports.PermissionModeBypassPermissions {
+			agent.Permission = "allow"
 		}
+		agents[acpAgentForPermissions(mode)] = agent
 	}
 	config["agent"] = agents
-	config["default_agent"] = ACPAgentForPermissions(permissions)
+	config["default_agent"] = acpAgentForPermissions(permissions)
 	data, err := json.Marshal(config)
 	if err != nil {
 		return "", fmt.Errorf("opencode: encode ACP agent config: %w", err)

@@ -1593,6 +1593,38 @@ textarea,
 	background-color: color-mix(in srgb, var(--color-scrollbar) 28%, transparent);
 }
 
+/* Repository pickers keep a visible scroll track so a long grant list is
+   discoverable even before the user starts scrolling. */
+.repository-picker-scrollbar {
+	scrollbar-width: auto;
+	scrollbar-color: var(--color-scrollbar) color-mix(in srgb, var(--color-scrollbar) 16%, transparent);
+	scrollbar-gutter: stable;
+}
+
+.repository-picker-scrollbar::-webkit-scrollbar {
+	width: 10px;
+}
+
+.repository-picker-scrollbar::-webkit-scrollbar-track {
+	background: color-mix(in srgb, var(--color-scrollbar) 16%, transparent);
+	border-radius: 999px;
+}
+
+.repository-picker-scrollbar::-webkit-scrollbar-thumb {
+	border-radius: 999px;
+	background: var(--color-scrollbar);
+	/* Keep the thumb grabbable and clearly visible even for a long list, so it
+	   is obvious there are more rows below the fold. */
+	min-height: 28px;
+	border: 2px solid transparent;
+	background-clip: padding-box;
+}
+
+.repository-picker-scrollbar::-webkit-scrollbar-thumb:hover {
+	background: color-mix(in srgb, var(--color-scrollbar) 80%, var(--color-foreground));
+	background-clip: padding-box;
+}
+
 /* Chromium uses the desktop theme's chunky native horizontal scrollbar on
    Linux. Keep the board scroller compact and rounded there without changing
    macOS overlay scrollbars or Windows behavior. */

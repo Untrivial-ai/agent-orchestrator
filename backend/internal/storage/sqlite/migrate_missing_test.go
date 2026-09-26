@@ -1,6 +1,8 @@
 package sqlite
 
 import (
+	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -241,6 +243,33 @@ func TestMigrateRepairsRetrySourceBeforeCancelledTurnRebuild(t *testing.T) {
 		t.Fatalf("retry source schema = column %d, index %d; want 1, 1", columns, indexes)
 	}
 	assertTableSQLContains(t, db, "conversation_turns", "'cancelled'")
+}
+
+func TestMigrateRepairsConversationOpenCodeModeWhenVersionAlreadyClaimed(t *testing.T) {
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	upTo(t, db, 131)
+	if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (132, 1)`); err != nil {
+		t.Fatalf("seed claimed OpenCode mode migration: %v", err)
+	}
+
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate database with claimed OpenCode mode version: %v", err)
+	}
+
+	var columns int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'opencode_mode'`,
+	).Scan(&columns); err != nil {
+		t.Fatalf("query conversation OpenCode mode column: %v", err)
+	}
+	if columns != 1 {
+		t.Fatalf("conversations.opencode_mode count = %d, want 1", columns)
+	}
 }
 
 // TestMigrateAppliesAgentModelCatalogAfterUpstreamMigration covers a database

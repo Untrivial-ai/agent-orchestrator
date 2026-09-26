@@ -144,7 +144,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
-    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
+    provision_state, provision_error, is_task_preparation
 FROM sessions WHERE id = ?
 `
 
@@ -203,6 +204,9 @@ type GetSessionRow struct {
 	Model                            string
 	Effort                           string
 	SessionPermissions               string
+	ProvisionState                   domain.SessionProvisionState
+	ProvisionError                   string
+	IsTaskPreparation                bool
 }
 
 func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessionRow, error) {
@@ -263,6 +267,9 @@ func (q *Queries) GetSession(ctx context.Context, id domain.SessionID) (GetSessi
 		&i.Model,
 		&i.Effort,
 		&i.SessionPermissions,
+		&i.ProvisionState,
+		&i.ProvisionError,
+		&i.IsTaskPreparation,
 	)
 	return i, err
 }
@@ -279,9 +286,10 @@ INSERT INTO sessions (
     native_transcript_path,
     preview_url, preview_revision, terminate_on_pr_merge, cleanup_generation, browser_capability_verifier,
     session_mode, provider_conversation_id, controller_generation, model, effort, session_permissions,
-    created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci
+    created_at, updated_at, is_pinned, pinned_at, auto_inject_review, auto_inject_ci,
+    provision_state, provision_error, is_task_preparation
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 )
 `
 
@@ -339,6 +347,9 @@ type InsertSessionParams struct {
 	PinnedAt                         sql.NullTime
 	AutoInjectReview                 bool
 	AutoInjectCI                     bool
+	ProvisionState                   domain.SessionProvisionState
+	ProvisionError                   string
+	IsTaskPreparation                bool
 }
 
 func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) error {
@@ -396,6 +407,9 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.PinnedAt,
 		arg.AutoInjectReview,
 		arg.AutoInjectCI,
+		arg.ProvisionState,
+		arg.ProvisionError,
+		arg.IsTaskPreparation,
 	)
 	return err
 }
@@ -412,7 +426,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
-    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
+    provision_state, provision_error, is_task_preparation
 FROM sessions ORDER BY project_id, num
 `
 
@@ -471,6 +486,9 @@ type ListAllSessionsRow struct {
 	Model                            string
 	Effort                           string
 	SessionPermissions               string
+	ProvisionState                   domain.SessionProvisionState
+	ProvisionError                   string
+	IsTaskPreparation                bool
 }
 
 func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, error) {
@@ -537,6 +555,9 @@ func (q *Queries) ListAllSessions(ctx context.Context) ([]ListAllSessionsRow, er
 			&i.Model,
 			&i.Effort,
 			&i.SessionPermissions,
+			&i.ProvisionState,
+			&i.ProvisionError,
+			&i.IsTaskPreparation,
 		); err != nil {
 			return nil, err
 		}
@@ -563,7 +584,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     latest_user_prompt, latest_user_prompt_at, latest_assistant_update, latest_assistant_update_at,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
-    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions
+    native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
+    provision_state, provision_error, is_task_preparation
 FROM sessions WHERE project_id IS ? ORDER BY num
 `
 
@@ -622,6 +644,9 @@ type ListSessionsByProjectRow struct {
 	Model                            string
 	Effort                           string
 	SessionPermissions               string
+	ProvisionState                   domain.SessionProvisionState
+	ProvisionError                   string
+	IsTaskPreparation                bool
 }
 
 func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.ProjectID) ([]ListSessionsByProjectRow, error) {
@@ -688,6 +713,9 @@ func (q *Queries) ListSessionsByProject(ctx context.Context, projectID *domain.P
 			&i.Model,
 			&i.Effort,
 			&i.SessionPermissions,
+			&i.ProvisionState,
+			&i.ProvisionError,
+			&i.IsTaskPreparation,
 		); err != nil {
 			return nil, err
 		}
@@ -722,6 +750,78 @@ func (q *Queries) NextStandaloneSessionNum(ctx context.Context) (int64, error) {
 	var next int64
 	err := row.Scan(&next)
 	return next, err
+}
+
+const promoteTaskPreparation = `-- name: PromoteTaskPreparation :execrows
+UPDATE sessions SET
+    issue_id = ?1,
+    kind = ?2,
+    harness = ?3,
+    auto_review_enabled = ?4,
+    display_name = ?5,
+    activity_state = ?6,
+    activity_last_at = ?7,
+    is_terminated = 0,
+    session_mode = ?8,
+    model = ?9,
+    effort = ?10,
+    session_permissions = ?11,
+    created_at = ?12,
+    updated_at = ?13,
+    auto_inject_review = ?14,
+    auto_inject_ci = ?15,
+    provision_state = ?16,
+    provision_error = '',
+    is_task_preparation = 0
+WHERE id = ?17 AND is_task_preparation = 1
+`
+
+type PromoteTaskPreparationParams struct {
+	IssueID            domain.IssueID
+	Kind               domain.SessionKind
+	Harness            domain.AgentHarness
+	AutoReviewEnabled  bool
+	DisplayName        string
+	ActivityState      domain.ActivityState
+	ActivityLastAt     time.Time
+	SessionMode        domain.SessionMode
+	Model              string
+	Effort             string
+	SessionPermissions string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	AutoInjectReview   bool
+	AutoInjectCI       bool
+	ProvisionState     domain.SessionProvisionState
+	ID                 domain.SessionID
+}
+
+// Claim the hidden row without touching branch/workspace facts that may be
+// published concurrently by speculative worktree creation.
+func (q *Queries) PromoteTaskPreparation(ctx context.Context, arg PromoteTaskPreparationParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, promoteTaskPreparation,
+		arg.IssueID,
+		arg.Kind,
+		arg.Harness,
+		arg.AutoReviewEnabled,
+		arg.DisplayName,
+		arg.ActivityState,
+		arg.ActivityLastAt,
+		arg.SessionMode,
+		arg.Model,
+		arg.Effort,
+		arg.SessionPermissions,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.AutoInjectReview,
+		arg.AutoInjectCI,
+		arg.ProvisionState,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const recordSessionHumanMessage = `-- name: RecordSessionHumanMessage :execrows
@@ -1013,6 +1113,78 @@ func (q *Queries) SetSessionPreviewURL(ctx context.Context, arg SetSessionPrevie
 	return result.RowsAffected()
 }
 
+const setSessionProvisionState = `-- name: SetSessionProvisionState :execrows
+UPDATE sessions SET
+    provision_state = ?1,
+    provision_error = ?2,
+    updated_at = ?3
+WHERE id = ?4
+`
+
+type SetSessionProvisionStateParams struct {
+	ProvisionState domain.SessionProvisionState
+	ProvisionError string
+	UpdatedAt      time.Time
+	ID             domain.SessionID
+}
+
+// Publish start-up progress for an asynchronous Chat spawn. Deliberately narrow:
+// it must not replay any other fact of a row the background start is racing with
+// (the controller commit writes the same row from its own goroutine).
+func (q *Queries) SetSessionProvisionState(ctx context.Context, arg SetSessionProvisionStateParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionProvisionState,
+		arg.ProvisionState,
+		arg.ProvisionError,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setSessionProvisionedWorkspace = `-- name: SetSessionProvisionedWorkspace :execrows
+UPDATE sessions SET
+    branch = ?1,
+    workspace_path = ?2,
+    workspace_repo_path = ?3,
+    updated_at = ?4
+WHERE id = ?5
+  AND ((provision_state = 'provisioning' AND is_terminated = 0)
+    OR (provision_state = 'failed' AND (workspace_path = '' OR workspace_path = ?2)))
+`
+
+type SetSessionProvisionedWorkspaceParams struct {
+	Branch            string
+	WorkspacePath     string
+	WorkspaceRepoPath string
+	UpdatedAt         time.Time
+	ID                domain.SessionID
+}
+
+// Publish the worktree the moment it exists, rather than waiting for the
+// controller commit at the end of an asynchronous start. Until this lands the
+// row claims no workspace, so every workspace-scoped read answers
+// SESSION_WORKSPACE_NOT_FOUND for the whole start, long enough for the
+// desktop's bounded readiness poll to give up on a session that is fine.
+// A failed start may still receive a late partial worktree from a claimed
+// preparation. Retain that path for safe cleanup, but never overwrite a live
+// workspace or publish onto a terminated session still provisioning.
+func (q *Queries) SetSessionProvisionedWorkspace(ctx context.Context, arg SetSessionProvisionedWorkspaceParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionProvisionedWorkspace,
+		arg.Branch,
+		arg.WorkspacePath,
+		arg.WorkspaceRepoPath,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setSessionReviewerConfig = `-- name: SetSessionReviewerConfig :execrows
 UPDATE sessions SET reviewer_harness = ?, reviewer_agent_config = ?, updated_at = ? WHERE id = ?
 `
@@ -1049,6 +1221,33 @@ type SetSessionTerminateOnPRMergeParams struct {
 
 func (q *Queries) SetSessionTerminateOnPRMerge(ctx context.Context, arg SetSessionTerminateOnPRMergeParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setSessionTerminateOnPRMerge, arg.TerminateOnPRMerge, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setTaskPreparationBase = `-- name: SetTaskPreparationBase :execrows
+UPDATE sessions SET
+    diff_base_sha = ?1,
+    diff_base_ref = ?2
+WHERE id = ?3
+  AND is_task_preparation = 1
+  AND provision_state = 'provisioning'
+  AND is_terminated = 0
+`
+
+type SetTaskPreparationBaseParams struct {
+	DiffBaseSha string
+	DiffBaseRef string
+	ID          domain.SessionID
+}
+
+// Only the still-hidden reservation may receive its immutable branch base.
+// The preparation worker can finish after promotion, so a full row update
+// here would overwrite the visible session's harness and display fields.
+func (q *Queries) SetTaskPreparationBase(ctx context.Context, arg SetTaskPreparationBaseParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setTaskPreparationBase, arg.DiffBaseSha, arg.DiffBaseRef, arg.ID)
 	if err != nil {
 		return 0, err
 	}

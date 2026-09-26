@@ -162,6 +162,18 @@ describe("queued message attachments", () => {
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 	});
 
+	it("sends new images by workspace path when a queued edit retains native images", async () => {
+		const { edit, stage } = setup("inspect this", [{ type: "image", mimeType: "image/png" }]);
+		await beginEdit();
+		await pasteImage(screen.getByRole("combobox"));
+		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
+		await waitFor(() => expect(edit).toHaveBeenCalledWith("q1", `inspect this\n\n${suffix}`, {
+			retainedContent: [0], clientMessageId: expect.any(String), expectedRevision: 0,
+		}));
+		expect(stage).toHaveBeenCalledOnce();
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+
 	it("opens existing images as chips and retains their server-owned bytes when text changes", async () => {
 		const { edit } = setup(`inspect this\n\n${suffix}`, [{ type: "image", mimeType: "image/png" }]);
 		await beginEdit();
@@ -208,21 +220,16 @@ describe("queued message attachments", () => {
 		));
 	});
 
-	it.each(["image/png", "text/plain"])("counts only native images when adding %s to eight retained images", async (mimeType) => {
+	it.each(["image/png", "text/plain"])("sends %s by workspace path when eight native images are retained", async (mimeType) => {
 		const { edit, stage } = setup("inspect this", Array.from({ length: 8 }, () => ({ type: "image", mimeType: "image/png" })));
 		stage.mockResolvedValue([".ao/attachments/attachment-context.txt"]);
 		await beginEdit();
 		fireEvent.paste(screen.getByRole("combobox"), { clipboardData: { files: [new File(["context"], "new-file", { type: mimeType })], items: [] } });
 		await screen.findByLabelText("Remove new-file");
 		await userEvent.click(screen.getByRole("button", { name: "Send message" }));
-		if (mimeType === "image/png") {
-			await screen.findByText("You can attach up to 8 images.");
-			expect(edit).not.toHaveBeenCalled();
-		} else {
-			await waitFor(() => expect(edit).toHaveBeenCalledWith("q1", "inspect this\n\nAttached files (read these files in the workspace):\n- .ao/attachments/attachment-context.txt", {
-				retainedContent: [0, 1, 2, 3, 4, 5, 6, 7], clientMessageId: expect.any(String), expectedRevision: 0,
-			}));
-		}
+		await waitFor(() => expect(edit).toHaveBeenCalledWith("q1", "inspect this\n\nAttached files (read these files in the workspace):\n- .ao/attachments/attachment-context.txt", {
+			retainedContent: [0, 1, 2, 3, 4, 5, 6, 7], clientMessageId: expect.any(String), expectedRevision: 0,
+		}));
 	});
 
 	it.each(["cancel", "save"])("isolates the ordinary draft and restores it after %s", async (action) => {

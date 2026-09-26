@@ -8,6 +8,7 @@ package claudeacp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,9 @@ import (
 	"strconv"
 	"strings"
 
+	acpsdk "github.com/coder/acp-go-sdk"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
 	acpdriver "github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/acp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -28,15 +32,25 @@ const minimumNodeMajor = 22
 
 type claudePlugin interface {
 	ResolveBinary(context.Context) (string, error)
-	AuthStatus(context.Context) (ports.AgentAuthStatus, error)
+}
+
+type claudeLaunchAuthenticator interface {
+	ValidateLaunchAuth(context.Context, string, map[string]string) (ports.AgentAuthStatus, error)
 }
 
 // New constructs the Claude Code ACP driver over the existing Claude agent
 // plugin. The plugin remains the canonical discovery/auth implementation for
 // both Chat and TUI modes.
-func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
+func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.ChatDriver {
 	return &checkpointDriver{plugin: plugin, ChatDriver: acpdriver.New(acpdriver.Config{
 		Harness: domain.HarnessClaudeCode,
+		// A live rejection is the ground truth that outranks any cached
+		// verdict, so drop the cache the moment one arrives. This is also the
+		// only auth correction that works for credential sources AO cannot
+		// read at all — the Bedrock and Vertex chains — because it needs no
+		// credential, no network call, and no provider knowledge.
+		OnAuthRejected:        claudeAuthRejected(onAuthRejected),
+		PromptResponseFailure: claudePromptResponseFailure,
 		Capabilities: ports.ChatCapabilities{
 			ports.ChatCapabilityStreaming:    true,
 			ports.ChatCapabilityTools:        true,
@@ -60,15 +74,6 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 			if err := validateClaudeACPExecutable(claudeBinary, runtime.GOOS); err != nil {
 				return fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
 			}
-			status, err := plugin.AuthStatus(ctx)
-			if err == nil && status == ports.AgentAuthStatusUnauthorized {
-				return ports.ErrChatAuthRequired
-			}
-			if err != nil && log != nil {
-				// Unknown is not unauthorized. Match AO's runtime probe rule: an
-				// inconclusive local probe is not proof the session cannot run.
-				log.Debug("Claude auth probe inconclusive; continuing", "error", err)
-			}
 			return nil
 		},
 		Launch: func(ctx context.Context, cfg acpdriver.LaunchConfig) (acpdriver.Launch, error) {
@@ -83,13 +88,18 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 			if err := validateClaudeACPExecutable(claudeBinary, runtime.GOOS); err != nil {
 				return acpdriver.Launch{}, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
 			}
-			env := make(map[string]string, len(cfg.Env)+1)
-			for key, value := range cfg.Env {
-				env[key] = value
+			if err := validateClaudeLaunchAuth(ctx, plugin, cfg.WorkspacePath, cfg.Env, log); err != nil {
+				return acpdriver.Launch{}, err
 			}
-			// This is the line that prevents the adapter's optional native Claude
-			// package from becoming a second installation managed by AO.
-			env["CLAUDE_CODE_EXECUTABLE"] = claudeBinary
+			var models []ports.AgentModelInfo
+			if _, preserve := claudeACPModelConfig(cfg.Env); !preserve {
+				var modelErr error
+				models, modelErr = claudecode.ProviderModels(ctx, claudeBinary, cfg.WorkspacePath, cfg.Env)
+				if modelErr != nil && log != nil {
+					log.Debug("Claude provider model discovery unavailable; using ACP defaults", "error", modelErr)
+				}
+			}
+			env := claudeACPLaunchEnv(cfg.Env, claudeBinary, cfg.Model, models)
 			return acpdriver.Launch{
 				Command: runtimeLaunch.command,
 				Args:    runtimeLaunch.args,
@@ -100,6 +110,173 @@ func New(plugin claudePlugin, log *slog.Logger) ports.ChatDriver {
 		SessionMode:    claudeSessionMode,
 		SessionOptions: claudeSessionOptions,
 	}, log)}
+}
+
+func validateClaudeLaunchAuth(ctx context.Context, plugin claudePlugin, workingDir string, env map[string]string, log *slog.Logger) error {
+	validator, ok := plugin.(claudeLaunchAuthenticator)
+	if !ok {
+		return nil
+	}
+	status, err := validator.ValidateLaunchAuth(ctx, workingDir, env)
+	if err != nil {
+		if log != nil {
+			log.Debug("Claude launch auth probe inconclusive; continuing", "error", err)
+		}
+		return nil
+	}
+	if status == ports.AgentAuthStatusUnauthorized {
+		return ports.ErrAgentAuthRequired
+	}
+	return nil
+}
+
+func claudeAuthRejected(notifyDaemon func()) func() {
+	return func() {
+		claudecode.InvalidateAuthCache()
+		if notifyDaemon != nil {
+			notifyDaemon()
+		}
+	}
+}
+
+func claudePromptResponseFailure(response acpsdk.PromptResponse) error {
+	if response.StopReason != acpsdk.StopReasonEndTurn {
+		return nil
+	}
+	air := claudeNestedMap(claudeNestedMap(response.Meta, "jetbrains"), "air")
+	version, versionOK := air["version"].(float64)
+	failure := claudeNestedMap(air, "sessionFailure")
+	id, _ := failure["id"].(string)
+	title, _ := failure["title"].(string)
+	if !versionOK || version < 1 || strings.TrimSpace(id) == "" || strings.TrimSpace(title) == "" || failure["severity"] != "error" {
+		return nil
+	}
+	details, _ := failure["details"].(string)
+	var cause error
+	if actions, ok := failure["actions"].([]any); ok {
+		for _, action := range actions {
+			if action == "login" {
+				cause = ports.ErrChatAuthRequired
+				break
+			}
+		}
+	}
+	return ports.NewChatProviderFailure(strings.TrimSpace(title), strings.TrimSpace(details), cause)
+}
+
+func claudeNestedMap(meta map[string]any, key string) map[string]any {
+	if meta == nil {
+		return nil
+	}
+	value, _ := meta[key].(map[string]any)
+	return value
+}
+
+// claudeACPLaunchEnv gives claude-agent-acp the same provider model IDs AO
+// exposes in its pre-launch picker. The adapter turns availableModels into its
+// authoritative ACP model choices, so a raw first-party ID selected in AO is
+// accepted by session/set_config_option instead of being rejected because the
+// adapter started with aliases only.
+func claudeACPLaunchEnv(
+	input map[string]string,
+	binary string,
+	selectedModel string,
+	models []ports.AgentModelInfo,
+) map[string]string {
+	env := make(map[string]string, len(input)+2)
+	for key, value := range input {
+		env[key] = value
+	}
+	// This prevents the adapter's optional native Claude package from becoming
+	// a second installation managed by AO.
+	env["CLAUDE_CODE_EXECUTABLE"] = binary
+	selected := strings.TrimSpace(selectedModel)
+	if _, configured := input["ANTHROPIC_CUSTOM_MODEL_OPTION"]; selected != "" &&
+		!isClaudeNativeModelAlias(selected) && !configured &&
+		strings.TrimSpace(os.Getenv("ANTHROPIC_CUSTOM_MODEL_OPTION")) == "" {
+		// availableModels restricts Claude Code's built-in picker but does not
+		// make every provider-discovered API ID a selectable SDK model. The
+		// custom option is the supported bridge for the one API model AO is
+		// actually starting this session with.
+		env["ANTHROPIC_CUSTOM_MODEL_OPTION"] = selected
+	}
+	config, preserve := claudeACPModelConfig(input)
+	if preserve {
+		return env
+	}
+
+	ids := make([]string, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	// With no provider catalog, leave native aliases to claude-agent-acp. An
+	// availableModels list containing only the selected alias would replace its
+	// full built-in picker with that single model.
+	if len(ids) == 0 && isClaudeNativeModelAlias(selected) {
+		return env
+	}
+	if selected != "" {
+		if _, exists := seen[selected]; !exists {
+			ids = append(ids, selected)
+		}
+	}
+	if len(ids) == 0 {
+		return env
+	}
+
+	encodedIDs, err := json.Marshal(ids)
+	if err != nil {
+		return env
+	}
+	config["availableModels"] = encodedIDs
+	encodedConfig, err := json.Marshal(config)
+	if err != nil {
+		return env
+	}
+	env["CLAUDE_MODEL_CONFIG"] = string(encodedConfig)
+	return env
+}
+
+func isClaudeNativeModelAlias(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "default", "sonnet", "opus", "haiku", "fable", "opus[1m]":
+		return true
+	default:
+		return false
+	}
+}
+
+// claudeACPModelConfig returns a mergeable user configuration. preserve is
+// true when AO must pass the value through untouched, either because the user
+// supplied an authoritative availableModels list or because ACP should report
+// malformed configuration itself. Callers can also use preserve to avoid a
+// provider lookup whose result would be discarded.
+func claudeACPModelConfig(input map[string]string) (map[string]json.RawMessage, bool) {
+	raw, configured := input["CLAUDE_MODEL_CONFIG"]
+	if !configured {
+		raw = os.Getenv("CLAUDE_MODEL_CONFIG")
+	}
+	config := make(map[string]json.RawMessage)
+	if strings.TrimSpace(raw) == "" {
+		return config, false
+	}
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		return nil, true
+	}
+	if config == nil {
+		return nil, true
+	}
+	_, userRestricted := config["availableModels"]
+	return config, userRestricted
 }
 
 func validateClaudeACPExecutable(binary, goos string) error {

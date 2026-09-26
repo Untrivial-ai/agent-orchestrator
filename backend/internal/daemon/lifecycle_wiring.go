@@ -172,6 +172,7 @@ type sessionLifecycle interface {
 	ReconcileStartupSafety(ctx context.Context) error
 	ReconcileBackground(ctx context.Context) error
 	RestoreAll(ctx context.Context) error
+	WaitBackgroundWorkers(ctx context.Context) error
 	WaitAgentSwitchWorkers(ctx context.Context) error
 	Kill(ctx context.Context, id domain.SessionID) (bool, error)
 	Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error
@@ -623,6 +624,22 @@ func (c chatLauncher) RelayChatTurnWithID(
 	text, clientMessageID string,
 ) (string, error) {
 	return c.svc.RelayChatTurnWithID(ctx, id, text, clientMessageID)
+}
+
+func (c chatLauncher) QueueChatPrompt(ctx context.Context, id domain.SessionID, text string) (string, error) {
+	turn, err := c.svc.QueueUserMessage(ctx, id, ports.ChatUserMessage{
+		Text: text,
+		// The opening prompt is the user's own task brief, whatever carries it.
+		Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		return "", err
+	}
+	return turn.ID, nil
+}
+
+func (c chatLauncher) DrainChatQueue(ctx context.Context, id domain.SessionID) error {
+	return c.svc.DrainQueued(ctx, id)
 }
 
 func (c chatLauncher) HasLiveChatController(id domain.SessionID) bool {

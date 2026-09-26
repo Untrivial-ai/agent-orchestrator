@@ -31,6 +31,12 @@ import type {
 	CloudCpProviderConnectionResponse,
 	CloudCpProviderConnectionsResponse,
 	CloudCpGitHubReposResponse,
+	CloudCpStartGitHubInstallationResponse,
+	CloudCpGitHubInstallationsResponse,
+	CloudCpSyncGitHubInstallationResponse,
+	CloudCpGitHubUserConnection,
+	CloudCpGitHubRepositoriesPage,
+	CloudCpCreateGitHubProjectRequest,
 	CloudCpPutAgentConnectionRequest,
 	CloudCpPutGitHubPATRequest,
 	CloudCpSendMessageRequest,
@@ -71,6 +77,14 @@ export interface CloudCpClientOptions {
 	getToken: () => Promise<string | null>;
 	/** Transport override; defaults to the global fetch. */
 	fetchImpl?: typeof fetch;
+	/**
+	 * Called whenever a request is rejected with 403. A 403 from the control
+	 * plane means the caller is not a member of the org the request was scoped
+	 * to ("You do not have access to this organization") — i.e. the app's
+	 * selected org is stale (membership changed). The renderer wires this to
+	 * re-resolve the current org so callers stop hammering a dead org.
+	 */
+	onForbidden?: () => void;
 }
 
 export interface CloudCpRequestOptions {
@@ -231,6 +245,32 @@ export interface CloudCpClient {
 		body: CloudCpValidateRepositoryAccessRequest,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpValidateRepositoryAccessResponse>;
+
+	// GitHub App connect flow. See the type comments in ./types for the flow.
+	startGitHubInstallation(
+		orgId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpStartGitHubInstallationResponse>;
+	getGitHubUser(options?: CloudCpRequestOptions): Promise<CloudCpGitHubUserConnection>;
+	listGitHubInstallations(
+		orgId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpGitHubInstallationsResponse>;
+	syncGitHubInstallation(
+		orgId: string,
+		installationId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpSyncGitHubInstallationResponse>;
+	listGitHubRepositories(
+		orgId: string,
+		query?: CloudCpListQuery,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpGitHubRepositoriesPage>;
+	createGitHubProject(
+		orgId: string,
+		body: CloudCpCreateGitHubProjectRequest,
+		options?: CloudCpMutationOptions,
+	): Promise<CloudCpProjectResponse>;
 }
 
 type QueryParams = Record<string, string | number | undefined>;
@@ -296,7 +336,7 @@ function newIdempotencyKey(): string {
 }
 
 export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClient {
-	const { baseUrl, getToken } = options;
+	const { baseUrl, getToken, onForbidden } = options;
 	// Wrap the default so the global fetch is never invoked detached from its
 	// realm (Chromium throws "Illegal invocation" for a bare fetch reference).
 	const doFetch: typeof fetch = options.fetchImpl ?? ((input, init) => fetch(input, init));
@@ -321,7 +361,13 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			body: init.body === undefined ? undefined : JSON.stringify(init.body),
 			signal: init.signal,
 		});
-		if (!response.ok) throw await errorFromResponse(response);
+		if (!response.ok) {
+			// A 403 means the selected org is stale (membership changed) — notify so
+			// the renderer re-resolves the current org instead of stranding every
+			// org-scoped call. Fire before throwing so callers still see the error.
+			if (response.status === 403) onForbidden?.();
+			throw await errorFromResponse(response);
+		}
 		return response;
 	}
 
@@ -521,5 +567,26 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 		listGitHubRepos: (o) => requestJson("GET", "/me/github/repos", { signal: o?.signal }),
 		validateSavedRepositoryAccess: (body, o) =>
 			requestJson("POST", "/me/github-pat/validate-saved-repository", { body, signal: o?.signal }),
+
+		startGitHubInstallation: (orgId, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/github/installations/start`, { signal: o?.signal }),
+		getGitHubUser: (o) => requestJson("GET", "/github/user", { signal: o?.signal }),
+		listGitHubInstallations: (orgId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/github/installations`, { signal: o?.signal }),
+		syncGitHubInstallation: (orgId, installationId, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/github/installations/${seg(installationId)}/sync`, {
+				signal: o?.signal,
+			}),
+		listGitHubRepositories: (orgId, query, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/github/repositories`, {
+				query: { limit: query?.limit, cursor: query?.cursor },
+				signal: o?.signal,
+			}),
+		createGitHubProject: (orgId, body, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/github/projects`, {
+				body,
+				signal: o?.signal,
+				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
+			}),
 	};
 }

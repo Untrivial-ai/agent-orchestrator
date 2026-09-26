@@ -54,6 +54,13 @@ type ChatLauncher interface {
 	HasLiveChatController(id domain.SessionID) bool
 	// StopChat releases a session's controller.
 	StopChat(ctx context.Context, id domain.SessionID) error
+	// QueueChatPrompt records the opening prompt as a queued turn instead of
+	// sending it. An asynchronous spawn has no controller yet; DrainChatQueue
+	// delivers this turn, and anything the user typed after it, in order.
+	QueueChatPrompt(ctx context.Context, id domain.SessionID, text string) (string, error)
+	// DrainChatQueue dispatches what accumulated while the session had no
+	// controller.
+	DrainChatQueue(ctx context.Context, id domain.SessionID) error
 }
 
 type chatBackgroundTaskRunner interface {
@@ -167,6 +174,10 @@ type chatSpawn struct {
 	workspaceProject *ports.WorkspaceProjectInfo
 	prompt           string
 	systemPrompt     string
+	// promptQueued means the opening prompt is already a durable queued turn
+	// (asynchronous spawn). The controller drains it; sending it again here
+	// would deliver the user's brief twice.
+	promptQueued bool
 }
 
 // launchChatController starts the provider controller for a chat session and
@@ -179,7 +190,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	id := in.record.ID
 	releaseCodexAdmission, err := m.acquireCodexControllerAdmission(ctx, in.cfg.Harness)
 	if err != nil {
-		m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false)
+		m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false, in.promptQueued)
 		return domain.SessionRecord{}, wrapSpawnStage(id, ErrChatController, err)
 	}
 	defer releaseCodexAdmission()
@@ -266,8 +277,14 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	if err != nil {
 		if completionErr != nil || controllerCommitted {
 			m.stopChatAfterSpawnFailure(ctx, id)
-			m.rollbackPreparedSpawnWorkspaceAfterFailure(ctx, in.record, in.workspace, in.workspaceProject, true)
-			m.markSpawnFailedTerminatedAfterFailure(ctx, id, false)
+			workspaceDestroyed := m.rollbackPreparedSpawnWorkspaceAfterFailure(ctx, in.record, in.workspace, in.workspaceProject, true)
+			if in.promptQueued {
+				if workspaceDestroyed {
+					m.clearProvisionedWorkspace(ctx, id, in.workspace.Path)
+				}
+			} else {
+				m.markSpawnFailedTerminatedAfterFailure(ctx, id, false)
+			}
 			if completionErr != nil {
 				return domain.SessionRecord{}, wrapSpawnStage(id, ErrSpawnCommit, completionErr)
 			}
@@ -275,14 +292,14 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 		}
 		// No controller exists, so nothing provider-side needs closing. The
 		// runtime was never touched, hence runtimeDestroyed=false.
-		m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false)
+		m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false, in.promptQueued)
 		return domain.SessionRecord{}, wrapSpawnStage(id, ErrChatController, err)
 	}
 
 	// The initial prompt is a normal turn through the controller. There is no
 	// paste-and-Enter equivalent here, and no "deliver after start" variant: the
 	// provider either accepts the turn or reports why.
-	if in.prompt != "" {
+	if in.prompt != "" && !in.promptQueued {
 		if _, err := m.chat.StartChatTurn(ctx, id, in.prompt); err != nil {
 			m.stopChatAfterSpawnFailure(ctx, id)
 			m.rollbackPreparedSpawnWorkspaceAfterFailure(ctx, in.record, in.workspace, in.workspaceProject, true)

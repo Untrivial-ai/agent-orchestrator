@@ -287,6 +287,55 @@ func (s *Service) CompleteOAuth(
 	return installation, nil
 }
 
+// CompleteInstallationOAuth handles GitHub's combined installation and user
+// authorization callback. In this mode (the App requests user authorization
+// during installation) GitHub returns the OAuth code directly to the callback,
+// so there is no second authorization redirect and therefore no PKCE verifier.
+// The original installation state remains the single-use correlation key while
+// the durable attempt advances to the oauth phase, then the normal completion
+// (authority checks, token exchange, installation upsert) runs.
+func (s *Service) CompleteInstallationOAuth(
+	ctx context.Context,
+	state, code string,
+	installationID int64,
+) (domain.GitHubInstallation, error) {
+	if state == "" || code == "" || installationID <= 0 {
+		return domain.GitHubInstallation{}, postgres.ErrInvalid
+	}
+	stateHash := HashState(state)
+	if err := s.store.ValidateGitHubInstallState(ctx, stateHash); err != nil {
+		return domain.GitHubInstallation{}, err
+	}
+	providerInstallation, err := s.client.GetInstallation(ctx, installationID)
+	if err != nil {
+		return domain.GitHubInstallation{}, err
+	}
+	if !InstallationSupportsAuthorityProof(providerInstallation) {
+		return domain.GitHubInstallation{}, postgres.ErrForbidden
+	}
+	// No PKCE verifier: GitHub already performed the authorization during
+	// installation, so we never issued a code_challenge. Store an empty verifier
+	// and reuse the install state as the oauth state so CompleteOAuth can find
+	// the attempt.
+	associatedData := []byte(strconv.FormatInt(installationID, 10))
+	ciphertext, nonce, err := Encrypt(s.stateKey, nil, associatedData)
+	if err != nil {
+		return domain.GitHubInstallation{}, err
+	}
+	if _, err := s.store.BeginGitHubOAuth(
+		ctx,
+		stateHash,
+		toDomainInstallation(providerInstallation),
+		stateHash,
+		ciphertext,
+		nonce,
+		time.Now().UTC().Add(s.installTTL),
+	); err != nil {
+		return domain.GitHubInstallation{}, err
+	}
+	return s.CompleteOAuth(ctx, state, code)
+}
+
 func (s *Service) ListInstallations(
 	ctx context.Context,
 	principal domain.Principal,
@@ -407,7 +456,7 @@ func (s *Service) checkoutRepositoryIDs(
 	if len(fullNames) == 0 {
 		return []int64{primary}
 	}
-	extraIDs, err := s.client.resolveInstallationRepositoryIDs(
+	extraIDs, unresolved, err := s.client.resolveInstallationRepositoryIDs(
 		ctx,
 		authorization.GitHubInstallationID,
 		fullNames,
@@ -416,6 +465,18 @@ func (s *Service) checkoutRepositoryIDs(
 		s.logger.Warn("resolve extra repositories for checkout scope",
 			"error", err, "org_id", orgID, "session_id", sessionID)
 		return []int64{primary}
+	}
+	if len(unresolved) > 0 {
+		// A declared extra the installation cannot access is dropped from the
+		// checkout token scope, so the worker's clone of it will fail. Surface it
+		// loudly (rather than silently narrowing the scope) so the gap is
+		// diagnosable: the usual cause is the repository not being granted to the
+		// GitHub App installation.
+		s.logger.Warn("extra repositories excluded from checkout scope; not accessible to the installation",
+			"unresolved", unresolved,
+			"org_id", orgID,
+			"session_id", sessionID,
+			"installation_id", authorization.GitHubInstallationID)
 	}
 	ids := make([]int64, 0, len(extraIDs)+1)
 	ids = append(ids, primary)
@@ -869,7 +930,35 @@ func (s *Service) processWebhook(
 	return s.sync(ctx, installation)
 }
 
+// sync enumerates the installation's repositories and reconciles its grants.
+// Its triggers overlap deliberately — the durable webhook worker and explicit
+// client sync requests — and every BeginGitHubRepositorySync bumps
+// sync_generation, so
+// whichever Reconcile runs against a superseded generation loses with
+// ErrConflict. Losing is benign: the winner writes the same grants. Re-run
+// with a fresh generation instead of surfacing the conflict, bounded so two
+// racers cannot ping-pong indefinitely.
 func (s *Service) sync(
+	ctx context.Context,
+	installation domain.GitHubInstallation,
+) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * 150 * time.Millisecond):
+			}
+		}
+		if err = s.syncOnce(ctx, installation); !errors.Is(err, postgres.ErrConflict) {
+			return err
+		}
+	}
+	return err
+}
+
+func (s *Service) syncOnce(
 	ctx context.Context,
 	installation domain.GitHubInstallation,
 ) error {
@@ -939,87 +1028,23 @@ func toDomainInstallation(value Installation) domain.GitHubInstallation {
 }
 
 func (s *Service) CompletionHTML(success bool) []byte {
-	return s.completionHTML(success, false)
+	return s.completionHTML(success)
 }
 
 func (s *Service) InstallationCompletionHTML(success bool) []byte {
-	return s.completionHTML(success, true)
+	return s.completionHTML(success)
 }
 
-func (s *Service) completionHTML(success, closeImmediately bool) []byte {
+func (s *Service) completionHTML(success bool) []byte {
 	title := "Connection failed"
-	message := "Return to AO and try connecting GitHub again."
-	statusClass := "error"
-	statusIcon := "!"
-	buttonLabel := "Close window"
-	autoClose := ""
+	message := "GitHub could not finish the connection. Return to AO and try again."
 	if success {
 		title = "GitHub connected"
-		message = "Repository access is ready. Return to AO to continue."
-		statusClass = "success"
-		statusIcon = "✓"
-		// Keep the popup alive long enough for the opener to advance the
-		// account-authorization step into GitHub App installation. The final
-		// step closes it immediately once the installation is visible.
-		if closeImmediately {
-			autoClose = "window.close();"
-		} else {
-			autoClose = "window.setTimeout(function(){window.close()},10000);"
-		}
+		message = "Return to AO. Your repositories will appear in the project picker as soon as they finish syncing. You can close this tab."
 	}
 	return []byte(fmt.Sprintf(
-		`<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark">
-<title>%s · AO</title>
-<style>
-:root{color-scheme:dark;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#090a0c;color:#f4f5f7}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;background:#090a0c}
-main{min-height:100vh;display:grid;place-items:center;padding:32px}
-.content{width:min(100%%,440px);border:1px solid #292c32;border-radius:8px;background:#111317;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.32)}
-.brand{display:flex;align-items:center;gap:10px;margin-bottom:36px;color:#a7abb3;font-size:13px;font-weight:500}
-.brand-mark{display:grid;place-items:center;width:30px;height:30px;border:1px solid #353941;border-radius:7px;background:#1a1d22;color:#f4f5f7;font-size:12px;font-weight:700}
-.status{display:grid;place-items:center;width:44px;height:44px;margin-bottom:20px;border:1px solid;border-radius:50%%;font-size:20px;font-weight:600}
-.status.success{border-color:rgba(74,222,128,.38);background:rgba(74,222,128,.08);color:#4ade80}
-.status.error{border-color:rgba(212,84,79,.42);background:rgba(212,84,79,.09);color:#e16a65}
-h1{margin:0;font-size:24px;line-height:1.25;letter-spacing:0;font-weight:650}
-p{margin:10px 0 0;color:#9ba1aa;font-size:14px;line-height:1.6}
-.footer{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:30px;padding-top:22px;border-top:1px solid #292c32}
-.action{display:inline-flex;height:38px;align-items:center;justify-content:center;border:1px solid #d8dbe1;border-radius:6px;background:#e8eaf0;color:#17191d;padding:0 16px;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
-.action:hover{background:#fff;border-color:#fff}
-.action:focus-visible{outline:2px solid #4d8dff;outline-offset:2px}
-.hint{display:flex;align-items:center;gap:7px;color:#777d87;font-size:12px}
-.hint::before{content:"";width:6px;height:6px;border-radius:50%%;background:#4ade80;box-shadow:0 0 0 3px rgba(74,222,128,.1)}
-.status.error~.footer .hint::before{background:#e16a65;box-shadow:0 0 0 3px rgba(225,106,101,.1)}
-@media(max-width:520px){main{place-items:start;padding:20px}.content{padding:24px}.footer{align-items:flex-start;flex-direction:column-reverse}}
-</style>
-</head>
-<body>
-<main>
-<section class="content" aria-labelledby="title">
-<div class="brand"><span class="brand-mark" aria-hidden="true">AO</span><span>Agent Orchestrator</span></div>
-<div class="status %s" aria-hidden="true">%s</div>
-<h1 id="title">%s</h1>
-<p>%s</p>
-<div class="footer">
-<div class="hint">This window may close automatically.</div>
-<button class="action" type="button" onclick="window.close()">%s</button>
-</div>
-</section>
-</main>
-<script>%s</script>
-</body>
-</html>`,
-		title,
-		statusClass,
-		statusIcon,
-		title,
-		message,
-		buttonLabel,
-		autoClose,
-	))
+		`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title>
+<body style="font:15px -apple-system,system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.5rem;color:#111">
+<main><h1 style="font-size:1.25rem">%s</h1><p style="color:#555">%s</p></main></body></html>`,
+		title, title, message))
 }

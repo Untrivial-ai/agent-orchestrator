@@ -1535,6 +1535,22 @@ describe("attachments", () => {
 		]);
 	});
 
+	it("sends an image above the native limit by workspace path", async () => {
+		const stage = vi.fn().mockResolvedValue([".ao/attachments/large.png"]);
+		const { onSend, field } = renderComposer({ onStageAttachments: stage, nativeImages: true });
+		const largeImage = png("large.png");
+		Object.defineProperty(largeImage, "size", { value: 11 * 1024 * 1024 });
+
+		fireEvent.paste(field, { clipboardData: clipboardData([largeImage]) });
+		await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(1));
+		await typeInComposer(field, "inspect this");
+		await userEvent.keyboard("{Enter}");
+
+		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+		expect(onSend.mock.calls[0]?.[0]).toContain(".ao/attachments/large.png");
+		expect(onSend.mock.calls[0]?.[1]).toBeUndefined();
+	});
+
 	it("stages non-images by path without sending them as native image blocks", async () => {
 		const stage = vi.fn().mockResolvedValue([
 			".ao/attachments/attachment-native.png",

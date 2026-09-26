@@ -627,7 +627,7 @@ describe("SessionsBoard", () => {
 		expect(status).not.toHaveClass("text-status-ready", "text-status-merged");
 	});
 
-	it("keeps a spawning card labeled Working when raw activity has not become active", () => {
+	it("labels a provisioning card with the agent being started", () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [
 				workspaceWithSessions([
@@ -635,6 +635,7 @@ describe("SessionsBoard", () => {
 						id: "s-spawning",
 						title: "spawning-card-task",
 						status: "working",
+						provisionState: "provisioning",
 						activity: { state: "exited", lastActivityAt: "2026-01-01T00:00:00Z" },
 					}),
 				]),
@@ -645,7 +646,8 @@ describe("SessionsBoard", () => {
 
 		renderBoard("p1");
 		const card = screen.getByText("spawning-card-task").closest('[data-testid="board-session-card"]') as HTMLElement;
-		expect(within(card).getByText("Working")).toBeInTheDocument();
+		expect(within(card).getByText("Starting Claude Code…")).toBeInTheDocument();
+		expect(within(card).queryByText("Working")).not.toBeInTheDocument();
 		expect(within(card).queryByText("Exited")).not.toBeInTheDocument();
 	});
 

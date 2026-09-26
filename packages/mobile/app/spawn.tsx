@@ -3,7 +3,7 @@ import { Feather } from "../lib/icons";
 import BottomSheet, { BottomSheetView } from "@expo/ui/community/bottom-sheet";
 import * as DocumentPicker from "expo-document-picker";
 import { File } from "expo-file-system";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	InteractionManager,
 	Platform,
@@ -22,7 +22,7 @@ import { chatErrorCopy, isChatPreflightError } from "../lib/chatError";
 import { haptics } from "../lib/haptics";
 import { resolveSpawnProject } from "../lib/projectFilter";
 import { modelOverride, resolveSpawnAgent, resolveSpawnModel, spawnModelSourceChanged } from "../lib/spawnModel";
-import { appendSpawnAttachments, type SpawnAttachment } from "../lib/spawn-attachments";
+import { appendSpawnAttachments, readSpawnAttachments, type SpawnAttachment } from "../lib/spawn-attachments";
 import { SpawnComposerControls } from "../lib/spawn-composer-controls";
 import { SpawnPromptInput } from "../lib/spawn-prompt-input";
 import { availablePromptHeight } from "../lib/spawnPromptLayout";
@@ -50,6 +50,8 @@ export default function SpawnModal() {
 	const [chatHarnesses, setChatHarnesses] = useState<string[]>([]);
 	const [prompt, setPrompt] = useState("");
 	const [attachments, setAttachments] = useState<SpawnAttachment[]>([]);
+	const attachmentsRef = useRef<SpawnAttachment[]>([]);
+	const pickingAttachments = useRef(false);
 	const [attachmentError, setAttachmentError] = useState<string>();
 	const [model, setModel] = useState("");
 	const [modelTouched, setModelTouched] = useState(false);
@@ -213,6 +215,8 @@ export default function SpawnModal() {
 		setModelTouched(true);
 	};
 	const pickAttachments = async () => {
+		if (pickingAttachments.current) return;
+		pickingAttachments.current = true;
 		setAttachmentError(undefined);
 		try {
 			const result = await DocumentPicker.getDocumentAsync({
@@ -221,31 +225,34 @@ export default function SpawnModal() {
 				type: "*/*",
 			});
 			if (result.canceled) return;
-			const picked: SpawnAttachment[] = [];
-			for (const asset of result.assets) {
+			const picked = result.assets.map((asset) => {
 				const file = new File(asset.uri);
-				const bytes = asset.size ?? file.size ?? 0;
-				// Avoid reading an oversized file into JS memory merely to reject it.
-				if (bytes > 10 * 1024 * 1024) {
-					picked.push({ name: asset.name, mimeType: asset.mimeType || "application/octet-stream", data: "", bytes });
-					continue;
-				}
-				picked.push({
+				return {
 					name: asset.name,
 					mimeType: asset.mimeType || "application/octet-stream",
-					data: await file.base64(),
-					bytes,
-				});
-			}
-			const next = appendSpawnAttachments(attachments, picked);
-			setAttachments(next.attachments);
-			setAttachmentError(next.error);
+					bytes: asset.size ?? file.size,
+					readData: () => file.base64(),
+				};
+			});
+			const before = attachmentsRef.current;
+			const next = await readSpawnAttachments(before, picked);
+			const merged = appendSpawnAttachments(attachmentsRef.current, next.attachments.slice(before.length));
+			attachmentsRef.current = merged.attachments;
+			setAttachments(merged.attachments);
+			setAttachmentError(next.error ?? merged.error);
 		} catch (cause) {
 			setAttachmentError(cause instanceof Error ? cause.message : "Couldn't read that file.");
+		} finally {
+			pickingAttachments.current = false;
+
 		}
 	};
 
 	const onSpawn = async () => {
+		if (pickingAttachments.current) {
+			setAttachmentError("Wait for attachments to finish loading.");
+			return;
+		}
 		// Validated on submit rather than by disabling the button — desktop's
 		// choice, and the better one: a disabled button with no explanation is
 		// worse than a message naming what is missing.
@@ -259,7 +266,7 @@ export default function SpawnModal() {
 				harness: harness || undefined,
 				model: modelOverride(displayedModel, modelTouched),
 				mode,
-				attachments: attachments.map(({ mimeType, data }) => ({ mimeType, data })),
+				attachments: attachmentsRef.current.map(({ mimeType, data }) => ({ mimeType, data })),
 			});
 			haptics.success();
 			// Dismiss the modal first, then open the freshly spawned session's mode-aware surface
@@ -306,7 +313,10 @@ export default function SpawnModal() {
 								<Pressable
 									hitSlop={8}
 									accessibilityLabel={`Remove ${item.name}`}
-									onPress={() => setAttachments((current) => current.filter((candidate) => candidate !== item))}
+									onPress={() => {
+										attachmentsRef.current = attachmentsRef.current.filter((candidate) => candidate !== item);
+										setAttachments(attachmentsRef.current);
+									}}
 								>
 									<Feather name="x" size={iconSize.xs} color={t.textTertiary} />
 								</Pressable>

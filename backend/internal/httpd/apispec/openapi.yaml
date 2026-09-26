@@ -2458,6 +2458,45 @@ paths:
       summary: Remember project permissions for future sessions
       tags:
       - projects
+  /api/v1/projects/{id}/tasks/prepare:
+    post:
+      operationId: prepareTask
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrepareTaskResponse'
+          description: Accepted
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Speculatively create the next task's worktree
+      tags:
+      - projects
   /api/v1/projects/clone:
     post:
       operationId: cloneProject
@@ -7841,6 +7880,35 @@ paths:
       summary: Check local machine readiness (git, tmux, agent harness, gh)
       tags:
       - system
+  /api/v1/task-preparations/{token}:
+    delete:
+      operationId: cancelTaskPreparation
+      parameters:
+      - description: Opaque speculative task-worktree token.
+        in: path
+        name: token
+        required: true
+        schema:
+          description: Opaque speculative task-worktree token.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Cancel an unclaimed speculative task worktree
+      tags:
+      - projects
   /api/v1/usage/sessions:
     get:
       operationId: listCompactSessionUsage
@@ -8034,6 +8102,7 @@ components:
           - unauthorized
           - unknown
           - not_applicable
+          - configured
           type: string
       required:
       - state
@@ -8057,12 +8126,15 @@ components:
     AgentInfo:
       properties:
         authStatus:
-          description: Advisory local auth probe result. authorized means a recent
-            local probe passed; spawn remains the authoritative validation point.
+          description: Auth probe result. authorized means a provider round-trip accepted
+            the credential; configured means a credential exists locally but was never
+            validated, and must not be presented as ready; spawn remains the authoritative
+            validation point.
           enum:
           - authorized
           - unauthorized
           - unknown
+          - configured
           type: string
         id:
           type: string
@@ -9289,6 +9361,14 @@ components:
           type: string
         projectId:
           type: string
+        provisionError:
+          type: string
+        provisionState:
+          enum:
+          - provisioning
+          - ready
+          - failed
+          type: string
         prs:
           items:
             $ref: '#/components/schemas/SessionPRFacts'
@@ -10126,6 +10206,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - unreal-agent
           - fake
           type: string
         approvalMode:
@@ -10156,6 +10237,8 @@ components:
           maxLength: 256
           type: string
         projectId:
+          type: string
+        taskPreparation:
           type: string
       required:
       - projectId
@@ -10749,6 +10832,7 @@ components:
           - kimchi
           - prime-agent
           - omp
+          - unreal-agent
           - cloudflared
           type: string
         updatedAt:
@@ -11018,6 +11102,10 @@ components:
           - base
           - head_fallback
           type: string
+        degraded:
+          type: boolean
+        degradedCode:
+          type: string
         files:
           items:
             $ref: '#/components/schemas/WorkspaceFileSummary'
@@ -11040,6 +11128,7 @@ components:
       - sections
       - commits
       - summary
+      - degraded
       type: object
     ListWorkspaceTreeResponse:
       properties:
@@ -11383,6 +11472,15 @@ components:
       - title
       - targetSha
       - status
+      type: object
+    PrepareTaskResponse:
+      properties:
+        ok:
+          type: boolean
+        taskPreparation:
+          type: string
+      required:
+      - ok
       type: object
     PreviewServerStatusResponse:
       properties:
@@ -12842,6 +12940,13 @@ components:
       type: object
     SpawnSessionRequest:
       properties:
+        approvalMode:
+          enum:
+          - default
+          - accept-edits
+          - auto
+          - bypass-permissions
+          type: string
         attachments:
           items:
             $ref: '#/components/schemas/AttachmentInput'
@@ -12850,6 +12955,9 @@ components:
           type: string
         displayName:
           maxLength: 100
+          type: string
+        effort:
+          maxLength: 32
           type: string
         harness:
           enum:
@@ -12880,6 +12988,7 @@ components:
           - omp
           - prime-agent
           - autohand
+          - unreal-agent
           type: string
         issueId:
           type: string

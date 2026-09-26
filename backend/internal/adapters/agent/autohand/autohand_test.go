@@ -26,6 +26,19 @@ func TestManifestIDMatchesHarness(t *testing.T) {
 	}
 }
 
+func TestAugmentRuntimeEnvDisablesAutomaticBrowserLogin(t *testing.T) {
+	env := map[string]string{autohandNoBrowserEnv: "0", "PRESERVED": "value"}
+
+	(&Plugin{}).AugmentRuntimeEnv(env, t.TempDir())
+
+	if got := env[autohandNoBrowserEnv]; got != "1" {
+		t.Fatalf("%s = %q, want 1", autohandNoBrowserEnv, got)
+	}
+	if got := env["PRESERVED"]; got != "value" {
+		t.Fatalf("PRESERVED = %q, want value", got)
+	}
+}
+
 func TestGetLaunchCommandBuildsArgv(t *testing.T) {
 	plugin := &Plugin{resolvedBinary: "autohand"}
 

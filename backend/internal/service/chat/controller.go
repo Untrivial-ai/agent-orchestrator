@@ -1751,10 +1751,10 @@ func (c *Controller) dispatch(
 // Runs on the projection goroutine, so it observes turn completion in order with
 // everything else the provider said. One message per call: the turn it starts
 // makes the controller busy again, and the next completion drains the next.
-func (c *Controller) drain(ctx context.Context) {
+func (c *Controller) drain(ctx context.Context) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	c.drainLocked(ctx, true)
+	return c.drainLocked(ctx, true)
 }
 
 // drainLocked is drain with the dispatch lock already held. Turn completion
@@ -1763,7 +1763,7 @@ func (c *Controller) drain(ctx context.Context) {
 //
 // allowDispatch gates sending the next queued turn. A pending Stop cutoff forces
 // it true so messages typed after Stop still send.
-func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) {
+func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) error {
 	c.mu.Lock()
 	cutoff := c.cancelQueuedAt
 	c.cancelQueuedAt = time.Time{}
@@ -1773,7 +1773,7 @@ func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) {
 
 	if busy {
 		// Something already claimed the agent, so this drain has nothing to do.
-		return
+		return nil
 	}
 
 	if !cutoff.IsZero() {
@@ -1781,24 +1781,24 @@ func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) {
 		// cancelled; anything typed afterwards is still theirs to send.
 		if err := c.store.CancelQueuedTurns(ctx, c.conversation.ID, cutoff, c.now()); err != nil {
 			c.log.Error("failed to cancel queued turns", "session", c.sessionID, "error", err)
-			return
+			return err
 		}
 		allowDispatch = true
 	}
 	if handoff != controllerHandoffNone && handoff != controllerHandoffInterfaceDrain {
-		return
+		return nil
 	}
 	if !allowDispatch {
-		return
+		return nil
 	}
 
 	queued, err := c.store.NextQueuedTurn(ctx, c.conversation.ID)
 	if errors.Is(err, domain.ErrNoQueuedTurn) {
-		return
+		return nil
 	}
 	if err != nil {
 		c.log.Error("failed to read queued turn", "session", c.sessionID, "error", err)
-		return
+		return err
 	}
 
 	var content []ports.ChatContent
@@ -1808,7 +1808,7 @@ func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) {
 				"queued chat content is corrupt", c.now())
 			c.log.Error("failed to decode queued chat content",
 				"session", c.sessionID, "turn", queued.TurnID, "error", err)
-			return
+			return err
 		}
 	}
 	if _, err := c.dispatch(ctx, queued.TurnID, ports.ChatUserMessage{
@@ -1823,7 +1823,9 @@ func (c *Controller) drainLocked(ctx context.Context, allowDispatch bool) {
 		// discard messages the user can otherwise still see waiting.
 		c.log.Error("failed to dispatch queued turn",
 			"session", c.sessionID, "turn", queued.TurnID, "error", err)
+		return err
 	}
+	return nil
 }
 
 // ArmHandoff is the linearization point for an interface transition. It closes
@@ -1908,7 +1910,10 @@ func (c *Controller) BeginHandoff(
 		// A queued row can exist in the narrow gap after a completion was
 		// projected and before its drain ran. Claim it now so drain mode cannot
 		// report quiescent while accepted work is still waiting.
-		c.drain(ctx)
+		if err := c.drain(ctx); err != nil {
+			c.AbortHandoff()
+			return fmt.Errorf("drain queued turns before handoff: %w", err)
+		}
 	}
 
 	ticker := time.NewTicker(50 * time.Millisecond)
@@ -1933,7 +1938,11 @@ func (c *Controller) BeginHandoff(
 				c.AbortHandoff()
 				return fmt.Errorf("check queued turns before handoff: %w", err)
 			case policy == domain.SessionInterfaceTransitionDrain:
-				c.drainLocked(ctx, true)
+				if err := c.drainLocked(ctx, true); err != nil {
+					c.sendMu.Unlock()
+					c.AbortHandoff()
+					return fmt.Errorf("drain queued turns during handoff: %w", err)
+				}
 			}
 		}
 		c.sendMu.Unlock()
@@ -1988,7 +1997,9 @@ func (c *Controller) AbortHandoff() {
 		close(branchHandoffDone)
 	}
 	if resumeDispatch {
-		go c.drain(context.WithoutCancel(context.Background()))
+		go func() {
+			_ = c.drain(context.Background()) // drain logs failures; no caller waits on abort.
+		}()
 	}
 }
 
@@ -2283,8 +2294,7 @@ func (c *Controller) reconcileDurableTurnsLocked(
 	c.reportActivity(ctx, domain.ActivityIdle, "chat.interrupt.reconciled", now)
 	// drainLocked consumes cancelQueuedAt, cancels only the pre-Stop queue, and
 	// immediately dispatches the oldest surviving post-Stop prompt.
-	c.drainLocked(ctx, true)
-	return nil
+	return c.drainLocked(ctx, true)
 }
 
 // awaitAcknowledgedTurn returns the turn to interrupt once the provider has
@@ -3116,7 +3126,7 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		c.reportActivity(ctx, activityState, activityEvent, now)
 		// Only a completed turn releases queued work; a failed or recovered one holds
 		// the queue so it cannot cascade through the same outage (issue #4861).
-		c.drainLocked(ctx, settledTurnState(event) == domain.TurnStateCompleted)
+		_ = c.drainLocked(ctx, settledTurnState(event) == domain.TurnStateCompleted) // drain logs failures.
 	case ports.ChatEventApprovalRequested:
 		c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.approval.requested", now)
 	case ports.ChatEventApprovalResolved:
@@ -3238,6 +3248,14 @@ func (c *Controller) applyAccount(
 	update ports.ChatAccount,
 	now time.Time,
 ) error {
+	if update.ReauthRecovered {
+		c.mu.Lock()
+		reauthPending := c.account.ReauthRequiredAt != nil
+		c.mu.Unlock()
+		if !reauthPending {
+			return nil
+		}
+	}
 	if err := c.recordAccount(ctx, update, now); err != nil {
 		return err
 	}
@@ -3281,6 +3299,9 @@ func (c *Controller) recordAccount(
 		at := now
 		c.account.ReauthRequiredAt = &at
 		c.account.ReauthReason = update.ReauthReason
+	} else if update.ReauthRecovered {
+		c.account.ReauthRequiredAt = nil
+		c.account.ReauthReason = ""
 	}
 	account := c.account
 	c.mu.Unlock()

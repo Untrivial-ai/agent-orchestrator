@@ -940,6 +940,17 @@ func (s *Store) appendUserMessage(
 ) (created bool, err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if generation == "" && reviewID == "" {
+		// A Send may have read "provisioning" just before Kill or Ready.
+		// Session writes share writeMu, so this check and the append are atomic.
+		record, readErr := s.qw.GetSession(ctx, session)
+		if readErr != nil {
+			return false, fmt.Errorf("check queued session %s: %w", session, readErr)
+		}
+		if record.IsTerminated || !record.ProvisionState.IsProvisioning() {
+			return false, domain.ErrSessionNotProvisioning
+		}
+	}
 
 	if retryOfTurnID != "" {
 		_, lookupErr := s.qr.SelectConversationRetryTurnIDBySource(ctx,
