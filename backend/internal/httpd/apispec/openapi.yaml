@@ -2264,6 +2264,18 @@ paths:
         schema:
           description: Project identifier (registry key).
           type: string
+      - description: When true, remove the project even when it has live sessions;
+          those sessions are stopped and their workspaces reclaimed. Without it a
+          project with live sessions is refused.
+        in: query
+        name: force
+        schema:
+          description: When true, remove the project even when it has live sessions;
+            those sessions are stopped and their workspaces reclaimed. Without it
+            a project with live sessions is refused.
+          type:
+          - "null"
+          - boolean
       responses:
         "200":
           content:
@@ -2283,6 +2295,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
         "500":
           content:
             application/json:

@@ -27,6 +27,11 @@ const DefaultTickInterval = 5 * time.Second
 // next probe; a wrongly-applied mass termination archives the user's entire
 // board. The breaker only engages above massDeadMinSessions so small boards
 // (where two agents finishing together is normal) keep exact behavior.
+//
+// The same reasoning applies per project (issue #4948): a project whose whole
+// session set reads dead in one pass is one outage, and a healthy rest of the
+// board must not dilute that fraction below the trip line. The board-wide check
+// stays, so an outage spanning projects still trips.
 const (
 	massDeadMinSessions = 5
 	massDeadFraction    = 0.5
@@ -141,8 +146,9 @@ func (r *Reaper) loop(ctx context.Context, done chan<- struct{}) {
 //
 // Probing and reporting are two phases so the cycle can be arbitrated as a
 // whole: if the dead fraction of one pass trips the mass-death circuit
-// breaker, every dead conclusion in that pass is downgraded to a failed probe
-// before anything reaches the LCM, and the pass is logged at error level.
+// breaker — board-wide or for a single project — every dead conclusion the
+// breaker covers is downgraded to a failed probe before anything reaches the
+// LCM, and the trip is logged at error level.
 //
 // Tick is exported so the daemon (and tests) can drive cycles synchronously,
 // and so the Start goroutine has a single chokepoint to log against.
@@ -159,11 +165,14 @@ func (r *Reaper) Tick(ctx context.Context) error {
 	}
 
 	type observation struct {
-		id    domain.SessionID
-		facts ports.RuntimeFacts
+		id      domain.SessionID
+		project domain.ProjectID
+		facts   ports.RuntimeFacts
 	}
+	type tally struct{ dead, probed int }
 	var observations []observation
 	dead := 0
+	byProject := map[domain.ProjectID]*tally{}
 	for _, sess := range sessions {
 		if sess.IsTerminated {
 			continue
@@ -175,17 +184,46 @@ func (r *Reaper) Tick(ctx context.Context) error {
 		if facts.Runtime == ports.ProbeDead {
 			dead++
 		}
-		observations = append(observations, observation{id: sess.ID, facts: facts})
+		// Standalone sessions have no project to group under; the board-wide
+		// check below is their only breaker.
+		if sess.ProjectID != "" {
+			t := byProject[sess.ProjectID]
+			if t == nil {
+				t = &tally{}
+				byProject[sess.ProjectID] = t
+			}
+			t.probed++
+			if facts.Runtime == ports.ProbeDead {
+				t.dead++
+			}
+		}
+		observations = append(observations, observation{id: sess.ID, project: sess.ProjectID, facts: facts})
 	}
 
-	if dead >= massDeadMinSessions && float64(dead) > massDeadFraction*float64(len(observations)) {
+	boardTripped := dead >= massDeadMinSessions && float64(dead) > massDeadFraction*float64(len(observations))
+	trippedProjects := map[domain.ProjectID]bool{}
+	for project, t := range byProject {
+		if t.dead >= massDeadMinSessions && float64(t.dead) > massDeadFraction*float64(t.probed) {
+			trippedProjects[project] = true
+		}
+	}
+	if boardTripped || len(trippedProjects) > 0 {
 		// 28 unrelated agents do not exit within one probe pass of each other.
 		// Whatever produced this pass is an outage, not N deaths; leave the
 		// board untouched and let the next probe decide.
-		r.logger.Error("reaper: mass-death circuit breaker tripped, reporting the pass as inconclusive",
-			"dead", dead, "probed", len(observations))
+		if boardTripped {
+			r.logger.Error("reaper: mass-death circuit breaker tripped, reporting the pass as inconclusive",
+				"dead", dead, "probed", len(observations))
+		}
+		for project := range trippedProjects {
+			r.logger.Error("reaper: project mass-death circuit breaker tripped, reporting the project's pass as inconclusive",
+				"project", project, "dead", byProject[project].dead, "probed", byProject[project].probed)
+		}
 		for i := range observations {
-			if observations[i].facts.Runtime == ports.ProbeDead {
+			if observations[i].facts.Runtime != ports.ProbeDead {
+				continue
+			}
+			if boardTripped || trippedProjects[observations[i].project] {
 				observations[i].facts.Runtime = ports.ProbeFailed
 			}
 		}

@@ -7,10 +7,13 @@ package controllers
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
@@ -200,7 +203,16 @@ func (c *ProjectsController) remove(w http.ResponseWriter, r *http.Request) {
 		apispec.NotImplemented(w, r, "DELETE", "/api/v1/projects/{id}")
 		return
 	}
-	result, err := c.Mgr.Remove(r.Context(), projectID(r))
+	force := false
+	if raw := strings.TrimSpace(r.URL.Query().Get("force")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			envelope.WriteError(w, r, apierr.Invalid("INVALID_QUERY", "force must be a boolean", nil))
+			return
+		}
+		force = parsed
+	}
+	result, err := c.Mgr.Remove(r.Context(), projectID(r), force)
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
