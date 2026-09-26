@@ -208,7 +208,7 @@ describe("HarnessSettingsSection", () => {
 			id: "devin",
 			label: "Devin",
 			installation: { ...readiness.agents[0].installation, state: "installed" },
-			authentication: { ...readiness.agents[0].authentication, state: "unauthorized" },
+			authentication: { ...readiness.agents[0].authentication, state: "unknown" },
 		});
 		vi.mocked(apiClient.GET).mockImplementation(async (path) => {
 			if (path === "/api/v1/agents/readiness") return { data: readiness } as never;

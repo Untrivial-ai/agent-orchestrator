@@ -502,7 +502,7 @@ export function HarnessSettingsSection({
 						const showInstallationStatus = authStatus === "authorized"
 							|| authStatus === "not_applicable"
 							|| (!authPlans.isPending && (!authPlan || authPlan.action === "instructions"));
-						const devinSignInRequired = agentId === "devin" && job?.status === "succeeded" && authStatus === "unauthorized" && !authState?.checking && !authState?.error;
+						const devinSignInRequired = agentId === "devin" && job?.status === "succeeded" && authStatus !== "authorized" && job.output?.includes("Installed — sign-in required.") && !authState?.checking && !authState?.error;
 						const rowHasError = failed || Boolean(authState?.error);
 						const rowAuthWorkflow = authWorkflow?.agentId === agentId ? authWorkflow : null;
 						const hasDiagnostics = Boolean(
