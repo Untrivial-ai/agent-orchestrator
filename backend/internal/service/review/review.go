@@ -672,8 +672,14 @@ func (s *Service) submitOne(ctx context.Context, workerID domain.SessionID, revi
 	if !verdict.Valid() {
 		return domain.ReviewRun{}, fmt.Errorf("%w: verdict must be %q or %q", ErrInvalid, domain.VerdictApproved, domain.VerdictChangesRequested)
 	}
-	if verdict == domain.VerdictChangesRequested && body == "" {
-		return domain.ReviewRun{}, fmt.Errorf("%w: a changes_requested review requires a body", ErrInvalid)
+	if verdict == domain.VerdictChangesRequested {
+		if err := domain.ValidateReviewBody(body); err != nil {
+			return domain.ReviewRun{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+	} else if body != "" {
+		if err := domain.ValidateReviewContent(body); err != nil {
+			return domain.ReviewRun{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
 	}
 	run, ok, err := s.store.GetReviewRun(ctx, runID)
 	if err != nil {

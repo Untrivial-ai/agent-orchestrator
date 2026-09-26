@@ -1044,3 +1044,71 @@ func TestReusedOrSkippedAutoPassStillCountsAsTriggered(t *testing.T) {
 		})
 	}
 }
+
+func TestSubmitOne_ValidatesBodyIntegrity(t *testing.T) {
+	st := &fakeStore{ok: true}
+	resetRun := func() {
+		st.run = domain.ReviewRun{
+			ID:        "run-1",
+			SessionID: "worker-1",
+			Status:    domain.ReviewRunRunning,
+		}
+	}
+	svc := New(nil, st)
+
+	// Whitespace-only body should be rejected
+	resetRun()
+	_, err := svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictChangesRequested, "   \t\n  ", "")
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for whitespace-only body, got %v", err)
+	}
+
+	// Invalid UTF-8 body should be rejected
+	resetRun()
+	_, err = svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictChangesRequested, string([]byte{0xff, 0xfe, 0xfd}), "")
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for invalid UTF-8 body, got %v", err)
+	}
+
+	// Oversized body should be rejected
+	resetRun()
+	huge := strings.Repeat("x", domain.MaxReviewSubmitBodySize+1)
+	_, err = svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictChangesRequested, huge, "")
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for oversized body, got %v", err)
+	}
+
+	// Valid body should succeed
+	resetRun()
+	run, err := svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictChangesRequested, "please fix the lint error", "")
+	if err != nil {
+		t.Fatalf("expected valid review body to succeed, got %v", err)
+	}
+	if run.Verdict != domain.VerdictChangesRequested || run.Body != "please fix the lint error" {
+		t.Fatalf("unexpected run result: %+v", run)
+	}
+
+	// Approved with empty body should succeed
+	resetRun()
+	run, err = svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictApproved, "", "")
+	if err != nil {
+		t.Fatalf("expected approved with empty body to succeed, got %v", err)
+	}
+	if run.Verdict != domain.VerdictApproved || run.Body != "" {
+		t.Fatalf("unexpected run result: %+v", run)
+	}
+
+	// Approved with invalid UTF-8 body should be rejected
+	resetRun()
+	_, err = svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictApproved, string([]byte{0xff, 0xfe, 0xfd}), "")
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for approved with invalid UTF-8 body, got %v", err)
+	}
+
+	// Approved with oversized body should be rejected
+	resetRun()
+	_, err = svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictApproved, huge, "")
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("expected ErrInvalid for approved with oversized body, got %v", err)
+	}
+}

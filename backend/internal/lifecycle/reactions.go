@@ -69,7 +69,7 @@ func (m *Manager) ApplyReviewBatch(ctx context.Context, workerID domain.SessionI
 		return results[i].RunID < results[j].RunID
 	})
 	var msg strings.Builder
-	fmt.Fprintf(&msg, "[AO reviewer] AO's internal code reviewer submitted %d review(s) requesting changes.\n", len(results))
+	fmt.Fprintf(&msg, "[AO reviewer] AO's internal code reviewer submitted %d review(s) requesting changes.\n\n%s\n", len(results), domain.ReviewTrustBoundary)
 	var sigParts []string
 	for i, r := range results {
 		fmt.Fprintf(&msg, "\nReview %d\nPR: %s\nVerdict: %s", i+1, domain.SanitizeControlChars(r.PRURL), domain.SanitizeControlChars(string(r.Verdict)))
@@ -82,7 +82,7 @@ func (m *Manager) ApplyReviewBatch(ctx context.Context, workerID domain.SessionI
 			fmt.Fprintf(&msg, "\nOnce you have addressed it, reply on GitHub review %s with how you addressed it, then resolve the review comment threads you addressed.", safeReviewID)
 		}
 		if r.Body != "" {
-			fmt.Fprintf(&msg, "\n\nReview body:\n%s\n", domain.SanitizeControlChars(r.Body))
+			fmt.Fprintf(&msg, "\n\nReview body:\n%s\n", domain.SanitizeReviewBody(r.Body))
 		}
 		sigParts = append(sigParts, strings.Join([]string{r.RunID, r.PRURL, r.TargetSHA, r.GithubReviewID, r.Body}, "\x00"))
 	}
@@ -99,6 +99,23 @@ func (m *Manager) ApplyReviewBatch(ctx context.Context, workerID domain.SessionI
 		// delivered — it must re-fire once the session is workable again.
 		return ReviewDeliveryNoop, nil
 	}
+	m.react.mu.Lock()
+	prURLs := make(map[string]bool)
+	for _, r := range results {
+		if r.GithubReviewID != "" && r.PRURL != "" {
+			if !m.react.loaded[r.PRURL] {
+				_ = m.loadPRSignaturesLocked(ctx, r.PRURL)
+				m.react.loaded[r.PRURL] = true
+			}
+			revKey := "review:" + r.PRURL + ":" + r.GithubReviewID
+			m.react.seen[revKey] = string(domain.ReviewChangesRequest)
+			prURLs[r.PRURL] = true
+		}
+	}
+	for prURL := range prURLs {
+		_ = m.persistPRSignaturesLocked(ctx, prURL)
+	}
+	m.react.mu.Unlock()
 	return ReviewDeliverySent, nil
 }
 
@@ -853,7 +870,7 @@ func ciFailureSignature(checks []ports.PRCheckObservation) string {
 
 func formatCIFailureMessage(checks []ports.PRCheckObservation) string {
 	var msg strings.Builder
-	msg.WriteString("CI is failing on your PR.\n")
+	fmt.Fprintf(&msg, "CI is failing on your PR.\n\n%s\n", domain.CITrustBoundary)
 	for _, ch := range checks {
 		name := domain.SanitizeControlChars(ch.Name)
 		if strings.TrimSpace(name) == "" {
@@ -868,11 +885,11 @@ func formatCIFailureMessage(checks []ports.PRCheckObservation) string {
 			fmt.Fprintf(&msg, "\nFailure URL: %s", domain.SanitizeControlChars(ch.URL))
 		}
 		if ch.LogTail != "" {
-			// LogTail is raw CI job output; sanitize before it reaches the
-			// agent's live pane so embedded escape sequences can't drive the
-			// terminal (the dedup signature stays on the raw bytes). The fence
+			// LogTail is raw CI job output; sanitize and cap before it reaches the
+			// agent's live pane so embedded escape sequences or runaway logs can't
+			// drive the terminal (the dedup signature stays on the raw bytes). The fence
 			// grows to contain embedded backtick fences without mutating logs.
-			tail := domain.SanitizeControlChars(ch.LogTail)
+			tail := domain.TruncateTextWithLimit(domain.SanitizeControlChars(ch.LogTail), domain.ReviewNudgeBodyLimit)
 			fence := markdownCodeFence(tail)
 			lineCount := len(strings.Split(tail, "\n"))
 			lineLabel := "lines"
@@ -918,8 +935,8 @@ func formatReviewChangesRequestedMessage(review domain.PullRequestReview) string
 	if strings.TrimSpace(author) == "" {
 		author = "unknown reviewer"
 	}
-	fmt.Fprintf(&msg, "A changes-requested review from @%s is on your PR.", author)
-	if body := domain.SanitizeControlChars(review.Body); strings.TrimSpace(body) != "" {
+	fmt.Fprintf(&msg, "A changes-requested review from @%s is on your PR.\n\n%s", author, domain.ReviewTrustBoundary)
+	if body := domain.SanitizeReviewBody(review.Body); strings.TrimSpace(body) != "" {
 		fmt.Fprintf(&msg, "\n\nReview body:\n%s", body)
 	}
 	if review.URL != "" {
@@ -937,7 +954,7 @@ func formatReviewCommentsMessage(comments []ports.PRCommentObservation) string {
 		return "A reviewer left feedback on your PR. Address it and push. Fetch the review details only if you need additional context beyond what AO has provided here."
 	}
 	var msg strings.Builder
-	fmt.Fprintf(&msg, "The following %d unresolved review comment(s) are on your PR as of just now. You should not need to re-fetch this data unless you need additional context.\n", len(comments))
+	fmt.Fprintf(&msg, "The following %d unresolved review comment(s) are on your PR as of just now. You should not need to re-fetch this data unless you need additional context.\n\n%s\n", len(comments), domain.ReviewTrustBoundary)
 	for i, c := range comments {
 		location := "(general)"
 		if c.File != "" {
@@ -952,8 +969,8 @@ func formatReviewCommentsMessage(comments []ports.PRCommentObservation) string {
 		}
 		// Comment bodies are attacker-influenced (anyone who can comment on the
 		// PR) and get pasted into the agent's live pane; strip control/escape
-		// chars before formatting them.
-		body := domain.SanitizeControlChars(c.Body)
+		// chars and cap length before formatting them.
+		body := domain.SanitizeReviewBody(c.Body)
 		fmt.Fprintf(&msg, "\n%d. %s (@%s):\n%s", i+1, location, author, body)
 		if c.URL != "" {
 			fmt.Fprintf(&msg, "\n   %s", domain.SanitizeControlChars(c.URL))
