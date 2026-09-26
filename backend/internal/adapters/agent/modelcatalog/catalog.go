@@ -402,7 +402,7 @@ func Discover(ctx context.Context, agentID, binary, workingDir string, env map[s
 	cmd := modelCommand(runCtx, binary, spec.args, workingDir, env)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return base, modelDiscoveryError(runCtx, agentID, err)
+		return base, modelDiscoveryError(runCtx, agentID, err, output)
 	}
 	models, err := spec.parser(output)
 	if err != nil {
@@ -636,14 +636,41 @@ func mergedEnvironment(base []string, overrides map[string]string) []string {
 	return out
 }
 
-func modelDiscoveryError(runCtx context.Context, agentID string, commandErr error) error {
+func modelDiscoveryError(runCtx context.Context, agentID string, commandErr error, output []byte) error {
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("%s model discovery timed out after %s", agentID, commandTimeout)
 	}
 	if errors.Is(runCtx.Err(), context.Canceled) {
 		return fmt.Errorf("%s model discovery canceled: %w", agentID, context.Canceled)
 	}
+	// A CLI's own stderr is the only place it explains a non-zero exit (a bad
+	// config, a missing provider, a parse failure). Discarding it turns every
+	// failure into an opaque "exit status 1"; surfacing a bounded tail makes the
+	// cause visible in the cached RefreshError and the logs.
+	if detail := discoveryErrorDetail(output); detail != "" {
+		return fmt.Errorf("%s model discovery: %w: %s", agentID, commandErr, detail)
+	}
 	return fmt.Errorf("%s model discovery: %w", agentID, commandErr)
+}
+
+// discoveryErrorDetailMax bounds how much command output a discovery error
+// carries — enough to show the CLI's explanation without letting a chatty tool
+// flood the error string or the logs.
+const discoveryErrorDetailMax = 500
+
+// discoveryErrorDetail returns a bounded, single-line, ANSI-stripped tail of a
+// failed model command's combined output. The tail is where a CLI's error
+// summary lands after any progress noise; whitespace is collapsed so the result
+// is a single log-friendly line.
+func discoveryErrorDetail(output []byte) string {
+	cleaned := strings.Join(strings.Fields(ansiPattern.ReplaceAllString(string(output), "")), " ")
+	if cleaned == "" {
+		return ""
+	}
+	if runes := []rune(cleaned); len(runes) > discoveryErrorDetailMax {
+		cleaned = "…" + string(runes[len(runes)-discoveryErrorDetailMax:])
+	}
+	return cleaned
 }
 
 // BinaryVersion returns a short non-sensitive executable-metadata fingerprint

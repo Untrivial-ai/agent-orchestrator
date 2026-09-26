@@ -45,9 +45,38 @@ func TestCommandDiscoveryTimeoutAllowsSlowModelRegistries(t *testing.T) {
 func TestModelDiscoveryErrorExplainsTimeout(t *testing.T) {
 	deadlineCtx, deadlineCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer deadlineCancel()
-	err := modelDiscoveryError(deadlineCtx, "kilocode", errors.New("signal: killed"))
+	err := modelDiscoveryError(deadlineCtx, "kilocode", errors.New("signal: killed"), nil)
 	if !strings.Contains(err.Error(), "kilocode model discovery timed out after 20s") {
 		t.Fatalf("error = %q, want clear timeout", err)
+	}
+}
+
+func TestModelDiscoveryErrorSurfacesCommandOutput(t *testing.T) {
+	// A live-exit failure must carry the CLI's own stderr so an "exit status 1"
+	// is diagnosable; ANSI is stripped and whitespace collapsed to one line.
+	err := modelDiscoveryError(context.Background(), "opencode", errors.New("exit status 1"),
+		[]byte("\x1b[31mError:\x1b[0m Configuration is invalid at\n  /x/opencode.json: bad file reference\n"))
+	msg := err.Error()
+	if !strings.Contains(msg, "opencode model discovery: exit status 1") {
+		t.Fatalf("error = %q, want wrapped exit status", err)
+	}
+	if !strings.Contains(msg, "Configuration is invalid at /x/opencode.json: bad file reference") {
+		t.Fatalf("error = %q, want single-line command output", err)
+	}
+	if strings.Contains(msg, "\x1b[") {
+		t.Fatalf("error = %q, want ANSI stripped", err)
+	}
+}
+
+func TestModelDiscoveryErrorTailBounded(t *testing.T) {
+	err := modelDiscoveryError(context.Background(), "opencode", errors.New("exit status 1"),
+		[]byte(strings.Repeat("x", discoveryErrorDetailMax*3)))
+	// The detail is the wrapped error plus a bounded, ellipsis-prefixed tail.
+	if detail := discoveryErrorDetail([]byte(strings.Repeat("x", discoveryErrorDetailMax*3))); len([]rune(detail)) != discoveryErrorDetailMax+1 {
+		t.Fatalf("detail rune length = %d, want %d", len([]rune(detail)), discoveryErrorDetailMax+1)
+	}
+	if !strings.Contains(err.Error(), "…") {
+		t.Fatalf("error = %q, want truncation ellipsis", err)
 	}
 }
 
