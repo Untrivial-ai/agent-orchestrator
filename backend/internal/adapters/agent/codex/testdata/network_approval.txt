@@ -1,0 +1,12 @@
+
+  Do you want to approve network access to "example.com"?
+
+  Reason: network request blocked
+
+
+› 1. Yes, just this once (y)
+  2. Yes, and allow this host for this conversation (a)
+  3. Yes, and allow this host in the future (p)
+  4. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel
