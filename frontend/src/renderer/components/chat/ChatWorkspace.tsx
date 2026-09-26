@@ -1454,7 +1454,7 @@ function ChatWorkspaceContent({
 							className="mx-4 mt-3 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-sm text-muted-foreground"
 							role="status"
 						>
-							<AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
+							<TriangleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
 							<p>
 								{draftRecoveryWarning === "obsolete"
 									? "This Chat view is out of date. The conversation is still available, but unsent drafts cannot be restored or saved here."
