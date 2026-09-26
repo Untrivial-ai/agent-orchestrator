@@ -103,6 +103,47 @@ type GitLabConfig struct {
 	HostTokens map[string]string
 }
 
+// OneDevConfig carries the OneDev host allowlist, the default access token,
+// and per-host token overrides. Like GitLabConfig it is loaded once at daemon
+// boot from environment variables (no hot-reload).
+//
+// Unlike GitHub and GitLab there is no public OneDev instance, so there is no
+// implicitly-allowed host: AllowedHosts is required configuration, and the
+// OneDev provider fails construction when it is empty rather than defaulting
+// to some public endpoint.
+type OneDevConfig struct {
+	// Token is the default OneDev access token (AO_ONEDEV_TOKEN), applied to
+	// any allowed host without an entry in HostTokens. Empty means the
+	// adapter falls back to its own credential resolution (ONEDEV_TOKEN, then
+	// any configured credential helper).
+	Token string
+	// AllowedHosts is the list of OneDev instances the provider may talk to.
+	// Each entry is "host", "host:port", or a scheme-qualified
+	// "http://host:port" — plain HTTP must be written explicitly, because a
+	// self-hosted OneDev is commonly reached over HTTP on a private network.
+	AllowedHosts []string
+	// HostTokens maps an allowed host to an access-token override. Hosts
+	// without an explicit entry fall back to Token.
+	HostTokens map[string]string
+	// IssueStates maps this estate's OneDev issue state names onto AO's
+	// normalized issue-state vocabulary ("open", "in_progress", "review",
+	// "done", "cancelled"), e.g. "Blocked=open,Verifying=review".
+	//
+	// OneDev issue states are configured per instance rather than fixed by the
+	// product, so there is no correct mapping to hardcode. Entries merge onto
+	// the tracker's defaults, matching an existing name case-insensitively, and
+	// a state named by neither normalizes to "open" — see the OneDev tracker's
+	// package doc for why the default leans open rather than done. The value is
+	// validated by the tracker adapter, which owns the normalized vocabulary.
+	IssueStates map[string]string
+	// IssueAssigneeField names the OneDev custom field carrying issue
+	// assignees. Empty uses the tracker's default ("Assignees", the field
+	// OneDev's stock issue template defines). OneDev has no built-in assignee,
+	// so an instance that renamed the field must say so here or assignee-scoped
+	// issue intake will not match.
+	IssueAssigneeField string
+}
+
 // DefaultAllowedOrigins are the browser origins the daemon's CORS boundary
 // trusts. General routes additionally admit loopback-served content, while
 // credential-management routes accept only this exact list (plus native
@@ -172,6 +213,9 @@ type Config struct {
 	// (AO_CLOUD_CONTROL_PLANE_URL). When set it must be an http(s) URL; empty
 	// means no control plane is configured, which keeps the cloud offering off.
 	CloudControlPlaneURL string
+	// OneDev carries the OneDev host allowlist, default token, and per-host
+	// token overrides, loaded once at boot from environment variables.
+	OneDev OneDevConfig
 }
 
 // Addr returns the host:port the HTTP server binds. It uses net.JoinHostPort so
@@ -206,6 +250,11 @@ func (c Config) Addr() string {
 //	AO_CLOUD_OFFERING          cloud offering flag off|on (default off)
 //	AO_LOCAL_OFFERING          local offering off|on (default on)
 //	AO_CLOUD_CONTROL_PLANE_URL cloud control plane base URL (trimmed, must be http(s))
+//	AO_ONEDEV_TOKEN            default OneDev access token
+//	AO_ONEDEV_ALLOWED_HOSTS    comma-separated OneDev hosts (host[:port] or http://host:port)
+//	AO_ONEDEV_HOST_TOKENS      host=token,host=token per-host token overrides
+//	AO_ONEDEV_ISSUE_STATES     OneDevState=normalized,... issue-state mapping overrides
+//	AO_ONEDEV_ISSUE_ASSIGNEE_FIELD  OneDev custom field holding issue assignees
 //
 // The bind host is not configurable: the daemon is loopback-only by design.
 func Load() (Config, error) {
@@ -321,15 +370,7 @@ func Load() (Config, error) {
 	}
 
 	if raw, ok := os.LookupEnv("AO_GITLAB_ALLOWED_HOSTS"); ok && raw != "" {
-		hosts := make([]string, 0, 4)
-		for _, h := range strings.Split(raw, ",") {
-			h = strings.TrimSpace(h)
-			if h == "" {
-				continue
-			}
-			hosts = append(hosts, h)
-		}
-		cfg.GitLab.AllowedHosts = hosts
+		cfg.GitLab.AllowedHosts = parseHostList(raw)
 	}
 
 	if raw, ok := os.LookupEnv("AO_GITLAB_HOST_TOKENS"); ok && raw != "" {
@@ -368,6 +409,33 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 		cfg.CloudControlPlaneURL = u
+	}
+	if raw, ok := os.LookupEnv("AO_ONEDEV_TOKEN"); ok {
+		cfg.OneDev.Token = strings.TrimSpace(raw)
+	}
+
+	if raw, ok := os.LookupEnv("AO_ONEDEV_ALLOWED_HOSTS"); ok && raw != "" {
+		cfg.OneDev.AllowedHosts = parseHostList(raw)
+	}
+
+	if raw, ok := os.LookupEnv("AO_ONEDEV_HOST_TOKENS"); ok && raw != "" {
+		tokens, err := parseHostTokenMap("AO_ONEDEV_HOST_TOKENS", raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.OneDev.HostTokens = tokens
+	}
+
+	if raw, ok := os.LookupEnv("AO_ONEDEV_ISSUE_STATES"); ok && raw != "" {
+		states, err := parseHostTokenMap("AO_ONEDEV_ISSUE_STATES", raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.OneDev.IssueStates = states
+	}
+
+	if raw, ok := os.LookupEnv("AO_ONEDEV_ISSUE_ASSIGNEE_FIELD"); ok {
+		cfg.OneDev.IssueAssigneeField = strings.TrimSpace(raw)
 	}
 
 	runFile, err := resolveRunFilePath()
@@ -427,11 +495,28 @@ func parseTelemetryDisabledEvents(raw string) []string {
 	return names
 }
 
-// parseHostTokenMap parses a host=token,host=token map. Whitespace around
-// entries, hosts, and tokens is trimmed. Empty entries and entries without an
-// equals sign are skipped. A token containing an equals sign is rejected as
-// ambiguous (a token value with embedded '=' would be indistinguishable from
-// a malformed entry).
+// parseHostList parses a comma-separated host list, trimming whitespace and
+// dropping empty entries. It returns nil when no entry survives, so an
+// all-whitespace value reads the same as an unset one.
+func parseHostList(raw string) []string {
+	hosts := make([]string, 0, 4)
+	for _, h := range strings.Split(raw, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			hosts = append(hosts, h)
+		}
+	}
+	if len(hosts) == 0 {
+		return nil
+	}
+	return hosts
+}
+
+// parseHostTokenMap parses a key=value,key=value map. It is named for its
+// first caller (the per-host token overrides) but carries no host semantics,
+// so AO_ONEDEV_ISSUE_STATES uses it too. Whitespace around entries, keys and
+// values is trimmed. Empty entries and entries without an equals sign are
+// skipped. A value containing an equals sign is rejected as ambiguous (it
+// would be indistinguishable from a malformed entry).
 func parseHostTokenMap(name, raw string) (map[string]string, error) {
 	tokens := make(map[string]string, 4)
 	for _, entry := range strings.Split(raw, ",") {
@@ -448,10 +533,10 @@ func parseHostTokenMap(name, raw string) (map[string]string, error) {
 		if host == "" {
 			continue
 		}
-		// Reject tokens containing '=' — they would be ambiguous on re-parse
+		// Reject values containing '=' — they would be ambiguous on re-parse
 		// and likely indicate a malformed entry (e.g. host=token=with=equals).
 		if strings.ContainsRune(token, '=') {
-			return nil, fmt.Errorf("invalid %s entry %q: token contains '='", name, entry)
+			return nil, fmt.Errorf("invalid %s entry %q: value contains '='", name, entry)
 		}
 		tokens[host] = token
 	}

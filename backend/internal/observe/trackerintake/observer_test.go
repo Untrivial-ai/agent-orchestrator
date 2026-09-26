@@ -672,3 +672,104 @@ func TestCanonicalIssueIDGitLabHostDisambiguates(t *testing.T) {
 		t.Fatalf("gitlab.com and self-managed with same native produced identical IssueID %q", dotCom)
 	}
 }
+
+func TestTrackerRepoOneDev(t *testing.T) {
+	cases := []struct {
+		name       string
+		origin     string
+		wantNative string
+		wantHost   string
+	}{
+		{
+			name:       "root project over http",
+			origin:     "http://192.168.1.30:6610/productone.git",
+			wantNative: "productone",
+			wantHost:   "192.168.1.30:6610",
+		},
+		{
+			name:       "nested project",
+			origin:     "http://onedev.internal:6610/Homelab/tools/curatarr.git",
+			wantNative: "Homelab/tools/curatarr",
+			wantHost:   "onedev.internal:6610",
+		},
+		{
+			name: "ssh remote keeps the git port",
+			// OneDev serves git over SSH on a different port than its API; the
+			// adapter resolves the two against its allowlist by hostname, so
+			// the authority is carried through rather than rewritten here.
+			origin:     "ssh://git@192.168.1.30:6611/Homelab/curatarr.git",
+			wantNative: "Homelab/curatarr",
+			wantHost:   "192.168.1.30:6611",
+		},
+		{
+			name:       "scp-style remote",
+			origin:     "git@onedev.internal:Homelab/curatarr.git",
+			wantNative: "Homelab/curatarr",
+			wantHost:   "onedev.internal",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			project := domain.ProjectRecord{
+				ID:            "demo",
+				RepoOriginURL: tc.origin,
+				Config: domain.ProjectConfig{TrackerIntake: domain.TrackerIntakeConfig{
+					Enabled:  true,
+					Provider: domain.TrackerProviderOneDev,
+					Assignee: "alice",
+				}},
+			}
+			repo, ok := trackerRepo(project, project.Config.TrackerIntake.WithDefaults())
+			if !ok {
+				t.Fatal("trackerRepo ok = false")
+			}
+			if repo.Provider != domain.TrackerProviderOneDev {
+				t.Errorf("Provider = %q, want onedev", repo.Provider)
+			}
+			if repo.Native != tc.wantNative {
+				t.Errorf("Native = %q, want %q", repo.Native, tc.wantNative)
+			}
+			if repo.Host != tc.wantHost {
+				t.Errorf("Host = %q, want %q", repo.Host, tc.wantHost)
+			}
+		})
+	}
+}
+
+// TestTrackerRepoOneDevRejectsTraversalPaths keeps a traversal-shaped remote
+// from becoming a project path that is later interpolated into a query and a
+// browser URL.
+func TestTrackerRepoOneDevRejectsTraversalPaths(t *testing.T) {
+	for _, origin := range []string{
+		"http://onedev.internal:6610/../etc.git",
+		"http://onedev.internal:6610/Homelab//curatarr.git",
+		"http://onedev.internal:6610/.git",
+	} {
+		project := domain.ProjectRecord{
+			ID:            "demo",
+			RepoOriginURL: origin,
+			Config: domain.ProjectConfig{TrackerIntake: domain.TrackerIntakeConfig{
+				Enabled:  true,
+				Provider: domain.TrackerProviderOneDev,
+				Assignee: "alice",
+			}},
+		}
+		if _, ok := trackerRepo(project, project.Config.TrackerIntake.WithDefaults()); ok {
+			t.Errorf("trackerRepo(%q) ok = true, want false", origin)
+		}
+	}
+}
+
+// TestCanonicalIssueIDNamespacesByProvider pins that a OneDev issue and a
+// GitHub issue with the same native id cannot collide in sessions.issue_id,
+// which is what stops intake's duplicate suppression from confusing them.
+func TestCanonicalIssueIDNamespacesByProvider(t *testing.T) {
+	gh := CanonicalIssueID(domain.TrackerID{Provider: domain.TrackerProviderGitHub, Native: "acme/demo#1"})
+	od := CanonicalIssueID(domain.TrackerID{Provider: domain.TrackerProviderOneDev, Native: "acme/demo#1"})
+	if gh == od {
+		t.Fatalf("github and onedev issue ids collide: %q", gh)
+	}
+	if od != "onedev:acme/demo#1" {
+		t.Errorf("CanonicalIssueID = %q, want onedev:acme/demo#1", od)
+	}
+}

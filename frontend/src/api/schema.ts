@@ -4706,7 +4706,7 @@ export interface components {
             assignee?: string;
             enabled?: boolean;
             /** @enum {string} */
-            provider?: "github" | "gitlab";
+            provider?: "github" | "gitlab" | "onedev";
             repo?: string;
         };
         TriggerReviewRequest: {

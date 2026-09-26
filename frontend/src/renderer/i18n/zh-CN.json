@@ -1583,6 +1583,8 @@
 	"settings.project.repoNotDetected": "无法从此项目的 Git 源检测到 GitHub 仓库。",
 	"settings.project.assignee": "受理人",
 	"settings.project.intakeAssigneePlaceholder": "输入用户名，或输入 * 以匹配任何人",
+	"settings.project.intakeProvider": "问题跟踪器",
+	"settings.project.intakeProviderAutomatic": "自动（根据仓库）",
 	"settings.project.intakeDescription": "从匹配的跟踪器议题自动创建工作会话。",
 	"settings.project.intakeHelpAria": "启用议题接入有什么作用？",
 	"settings.project.intakeTooltip": "为每个匹配的议题自动创建一个工作会话。",

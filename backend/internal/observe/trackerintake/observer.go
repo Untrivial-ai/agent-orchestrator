@@ -373,6 +373,9 @@ func parseRepoNative(remote string, provider domain.TrackerProvider) (string, bo
 // Host). For GitLab, "gitlab.com" and "www.gitlab.com" normalize to ""
 // (zero value = gitlab.com); self-managed hosts pass through unchanged.
 func repoHostFromOrigin(remote string, provider domain.TrackerProvider) string {
+	if provider == domain.TrackerProviderOneDev {
+		return strings.ToLower(strings.TrimSpace(hostFromRemote(remote)))
+	}
 	if provider != domain.TrackerProviderGitLab {
 		return ""
 	}
@@ -408,14 +411,14 @@ func cleanRepoPath(path string, provider domain.TrackerProvider) string {
 	path = strings.Trim(strings.TrimSpace(path), "/")
 	path = strings.TrimSuffix(path, ".git")
 	parts := strings.Split(path, "/")
-	if len(parts) < 2 {
+	if len(parts) < 2 && provider != domain.TrackerProviderOneDev {
 		return ""
 	}
 	// GitLab supports nested groups (group/subgroup/repo). The full namespace
 	// path is required for GraphQL's fullPath parameter and REST project lookups.
-	if provider == domain.TrackerProviderGitLab {
+	if provider == domain.TrackerProviderGitLab || provider == domain.TrackerProviderOneDev {
 		for _, p := range parts {
-			if strings.TrimSpace(p) == "" {
+			if strings.TrimSpace(p) == "" || (provider == domain.TrackerProviderOneDev && (p == "." || p == "..")) {
 				return ""
 			}
 		}

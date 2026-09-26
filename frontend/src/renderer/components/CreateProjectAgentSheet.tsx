@@ -42,7 +42,7 @@ export type CreateProjectAgentSelection = {
 	trackerIntake?: TrackerIntakeConfig;
 };
 
-const EMPTY_INTAKE: IntakeForm = { enabled: false, repo: "", assignee: "" };
+const EMPTY_INTAKE: IntakeForm = { enabled: false, provider: "", repo: "", assignee: "" };
 const AGENT_MENU_WIDTH = "w-56! min-w-56! max-w-56!";
 type CreateProjectAgentSheetProps = {
 	error?: string | null;

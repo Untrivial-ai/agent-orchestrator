@@ -1582,6 +1582,8 @@
 	"settings.project.repoNotDetected": "이 프로젝트의 git origin에서 GitHub 저장소를 감지할 수 없습니다.",
 	"settings.project.assignee": "담당자",
 	"settings.project.intakeAssigneePlaceholder": "사용자 이름 입력, 또는 * 로 전체",
+	"settings.project.intakeProvider": "이슈 추적기",
+	"settings.project.intakeProviderAutomatic": "자동 (저장소 기준)",
 	"settings.project.intakeDescription": "일치하는 트래커 이슈에서 워커 세션을 자동으로 시작합니다.",
 	"settings.project.intakeHelpAria": "이슈 인테이크를 사용하면 어떻게 되나요?",
 	"settings.project.intakeTooltip": "일치하는 각 이슈에 대해 워커 세션을 자동으로 시작합니다.",

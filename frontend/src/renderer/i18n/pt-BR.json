@@ -1606,6 +1606,8 @@
 	"settings.project.repoNotDetected": "Não foi possível detectar um repositório GitHub a partir do origin git deste projeto.",
 	"settings.project.assignee": "Responsável",
 	"settings.project.intakeAssigneePlaceholder": "digite o nome de usuário ou * para qualquer",
+	"settings.project.intakeProvider": "Rastreador de issues",
+	"settings.project.intakeProviderAutomatic": "Automático (do repositório)",
 	"settings.project.intakeDescription": "Inicia sessões de worker automaticamente a partir de issues do tracker correspondentes.",
 	"settings.project.intakeHelpAria": "O que a ativação do intake de issues faz?",
 	"settings.project.intakeTooltip": "Inicia automaticamente uma sessão de worker para cada issue do tracker correspondente.",

@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	trackergitlab "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/gitlab"
 	trackermulti "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/multi"
+	trackeronedev "github.com/aoagents/agent-orchestrator/backend/internal/adapters/tracker/onedev"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -220,7 +222,7 @@ func TestNewMultiTracker_WithGitLabConfig(t *testing.T) {
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	tracker := newMultiTracker(cfg, log)
+	tracker := newMultiTracker(cfg, config.OneDevConfig{}, log)
 	if tracker == nil {
 		t.Fatal("newMultiTracker = nil, want non-nil when GitLab token is available")
 	}
@@ -334,7 +336,7 @@ func TestWiring_NewMultiTracker_DoesNotProbeGHCLIAtBoot(t *testing.T) {
 	t.Setenv("PATH", binDir)
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	tracker := newMultiTracker(config.GitLabConfig{}, log)
+	tracker := newMultiTracker(config.GitLabConfig{}, config.OneDevConfig{}, log)
 	if tracker == nil {
 		t.Fatal("newMultiTracker = nil, want non-nil: the GitHub slot is lazily constructed and always present")
 	}
@@ -366,3 +368,129 @@ func writeRecordingGHExecutable(t *testing.T, dir string) {
 		t.Fatalf("write fake gh: %v", err)
 	}
 }
+
+func TestNewMultiTrackerResolvesEveryRegisteredProvider(t *testing.T) {
+	gitlabCfg, onedevCfg := fullyConfiguredTrackerEnv(t)
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tracker := newMultiTracker(gitlabCfg, onedevCfg, log)
+	if tracker == nil {
+		t.Fatal("newMultiTracker = nil, want non-nil when every provider is configured")
+	}
+
+	// Each id names a host that is deliberately not allowlisted (GitLab,
+	// OneDev) or is malformed (GitHub, which has no host concept), so the
+	// sub-tracker rejects it locally.
+	ids := map[domain.TrackerProvider]domain.TrackerID{
+		domain.TrackerProviderGitHub: {Provider: domain.TrackerProviderGitHub, Native: "no-hash-here"},
+		domain.TrackerProviderGitLab: {Provider: domain.TrackerProviderGitLab, Native: "group/project#1", Host: "gitlab.attacker.example"},
+		domain.TrackerProviderOneDev: {Provider: domain.TrackerProviderOneDev, Native: "productone#1", Host: "onedev.attacker.example"},
+	}
+	for _, provider := range allTrackerProviders {
+		_, err := tracker.Get(context.Background(), ids[provider])
+		if err == nil {
+			t.Errorf("Get(%s) = nil error; want the sub-tracker's own rejection", provider)
+			continue
+		}
+		if errors.Is(err, trackermulti.ErrUnknownProvider) {
+			t.Errorf("Get(%s) = %v; provider is not registered with the multi-tracker", provider, err)
+		}
+	}
+
+	// List routes on TrackerRepo.Provider rather than TrackerID.Provider, so
+	// it is a separate dispatch path and needs its own assertion.
+	repos := map[domain.TrackerProvider]domain.TrackerRepo{
+		domain.TrackerProviderGitHub: {Provider: domain.TrackerProviderGitHub, Native: "not-a-repo"},
+		domain.TrackerProviderGitLab: {Provider: domain.TrackerProviderGitLab, Native: "group/project", Host: "gitlab.attacker.example"},
+		domain.TrackerProviderOneDev: {Provider: domain.TrackerProviderOneDev, Native: "productone", Host: "onedev.attacker.example"},
+	}
+	for _, provider := range allTrackerProviders {
+		_, err := tracker.List(context.Background(), repos[provider], domain.ListFilter{})
+		if errors.Is(err, trackermulti.ErrUnknownProvider) {
+			t.Errorf("List(%s) = %v; provider is not registered with the multi-tracker", provider, err)
+		}
+	}
+}
+
+// TestNewOneDevTrackerDisabledWithoutAllowedHosts pins the degrade-gracefully
+// path: OneDev has no public instance, so the common case is an operator who
+// never configured one. That must disable only the OneDev tracker.
+func TestNewOneDevTrackerDisabledWithoutAllowedHosts(t *testing.T) {
+	t.Setenv("AO_GITHUB_TOKEN", "gh-test-token")
+	t.Setenv("AO_ONEDEV_TOKEN", "od-test-token")
+
+	if _, err := newOneDevTracker(config.OneDevConfig{Token: "od-test-token"}); !errors.Is(err, trackeronedev.ErrNoAllowedHosts) {
+		t.Fatalf("newOneDevTracker with no hosts = %v, want ErrNoAllowedHosts", err)
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tracker := newMultiTracker(config.GitLabConfig{}, config.OneDevConfig{}, log)
+	if tracker == nil {
+		t.Fatal("newMultiTracker = nil; an unconfigured OneDev must not disable the other trackers")
+	}
+	_, err := tracker.Get(context.Background(), domain.TrackerID{
+		Provider: domain.TrackerProviderOneDev, Native: "productone#1", Host: "onedev.internal.example",
+	})
+	if !errors.Is(err, trackermulti.ErrUnknownProvider) {
+		t.Errorf("Get(onedev) with no OneDev configured = %v, want ErrUnknownProvider", err)
+	}
+}
+
+// TestNewOneDevTrackerPassesConfigThrough covers the two issue-specific knobs
+// and the failure mode of a bad state override, which must name the state
+// rather than silently falling back to the defaults it was meant to replace.
+func TestNewOneDevTrackerPassesConfigThrough(t *testing.T) {
+	cfg := config.OneDevConfig{
+		Token:              "od-test-token",
+		AllowedHosts:       []string{"http://onedev.internal.example:6610"},
+		IssueStates:        map[string]string{"Blocked": "in_progress"},
+		IssueAssigneeField: "Owner",
+	}
+	tracker, err := newOneDevTracker(cfg)
+	if err != nil {
+		t.Fatalf("newOneDevTracker: %v", err)
+	}
+	od, ok := tracker.(*trackeronedev.Tracker)
+	if !ok {
+		t.Fatalf("newOneDevTracker returned %T, want *trackeronedev.Tracker", tracker)
+	}
+	if err := od.ConfigForHost("onedev.internal.example:6610"); err != nil {
+		t.Errorf("configured host rejected: %v", err)
+	}
+	if err := od.ConfigForHost("other.example.com"); !errors.Is(err, trackeronedev.ErrHostNotAllowed) {
+		t.Errorf("unconfigured host = %v, want ErrHostNotAllowed", err)
+	}
+
+	cfg.IssueStates = map[string]string{"Blocked": "stuck"}
+	if _, err := newOneDevTracker(cfg); err == nil {
+		t.Error("newOneDevTracker accepted an unknown normalized state; want an error")
+	} else if !strings.Contains(err.Error(), "Blocked") {
+		t.Errorf("error %q does not name the offending state", err)
+	}
+}
+
+var allTrackerProviders = []domain.TrackerProvider{
+	domain.TrackerProviderGitHub,
+	domain.TrackerProviderGitLab,
+	domain.TrackerProviderOneDev,
+}
+
+// fullyConfiguredTrackerEnv gives every tracker provider what it needs to
+// construct, so a test can assert on registration rather than on which
+// credential happened to be present on the machine running it.
+func fullyConfiguredTrackerEnv(t *testing.T) (config.GitLabConfig, config.OneDevConfig) {
+	t.Helper()
+	t.Setenv("AO_GITHUB_TOKEN", "gh-test-token")
+	t.Setenv("AO_GITLAB_TOKEN", "gl-test-token")
+	t.Setenv("AO_ONEDEV_TOKEN", "od-test-token")
+	return config.GitLabConfig{AllowedHosts: []string{"gitlab.internal.example"}},
+		config.OneDevConfig{
+			Token:        "od-test-token",
+			AllowedHosts: []string{"http://onedev.internal.example:6610"},
+		}
+}
+
+// TestTrackerSubTrackersRegistersEveryProvider pins that every provider AO
+// ships a tracker adapter for is actually registered. The SCM side shipped
+// with only one of three constructors covered and the gap reached a live
+// daemon; this is the tracker-side equivalent guard.

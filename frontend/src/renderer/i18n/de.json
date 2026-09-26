@@ -1582,6 +1582,8 @@
 	"settings.project.repoNotDetected": "Aus dem Git-Origin dieses Projekts konnte kein GitHub-Repo erkannt werden.",
 	"settings.project.assignee": "Assignee",
 	"settings.project.intakeAssigneePlaceholder": "Benutzernamen eingeben oder * für alle",
+	"settings.project.intakeProvider": "Issue-Tracker",
+	"settings.project.intakeProviderAutomatic": "Automatisch (aus dem Repository)",
 	"settings.project.intakeDescription": "Worker-Sitzungen automatisch aus passenden Tracker-Issues starten.",
 	"settings.project.intakeHelpAria": "Was bewirkt die Aktivierung des Issue-Intakes?",
 	"settings.project.intakeTooltip": "Startet automatisch eine Worker-Sitzung für jedes passende Tracker-Issue.",
