@@ -35,7 +35,19 @@ const (
 	nativeHistorySettleLimit   = 45 * time.Second
 	branchHandoffReportLimit   = 5 * time.Second
 	retryClientMessagePrefix   = "retry-attempt/"
+	providerFailureWatchdogID  = "ao-provider-failure-watchdog:"
+	providerHostRestartID      = "ao-provider-host-restart:"
 )
+
+// StaleProviderFailureTimeout bounds an ACP reconnect episode that never emits
+// another output item or terminal turn event. It is shared by the periodic
+// watchdog and live-provider restoration so a daemon restart cannot extend the
+// same wedge indefinitely.
+const StaleProviderFailureTimeout = 10 * time.Minute
+
+const staleProviderFailureMessage = "Connection to Claude was interrupted and never confirmed completion after reconnecting. Please retry."
+
+const sharedProviderHostRestartMessage = "This turn was interrupted because AO restarted the shared Claude connection after another turn stopped responding. Please retry."
 
 // nativeHistoryLoadAttemptLimit bounds one provider re-observation inside the
 // settle budget. An ACP refresh is a full session/load; without this bound a
@@ -44,6 +56,8 @@ const (
 var nativeHistoryLoadAttemptLimit = 30 * time.Second
 
 var errNativeHistoryLoadAttemptTimeout = errors.New("native history load attempt exceeded its time limit")
+
+var errStaleProviderFailureSuperseded = errors.New("stale provider failure was superseded by progress")
 
 // Store is the durable conversation surface the controller needs. Implemented by
 // the SQLite store.
@@ -72,6 +86,10 @@ type Store interface {
 	AppendRetryUserMessage(ctx context.Context, conversationID string, session domain.SessionID, generation string, msg domain.ConversationMessage, turnID, retryOfTurnID string, now time.Time) (bool, error)
 	AppendReviewRetryUserMessage(ctx context.Context, conversationID string, session domain.SessionID, reviewID, generation string, msg domain.ConversationMessage, turnID, retryOfTurnID string, now time.Time) (bool, error)
 	BindTurnToProvider(ctx context.Context, turnID, providerTurnID string, now time.Time) error
+	SettleStaleProviderFailure(ctx context.Context, conversationID, providerTurnID, watchdogEventID, errMessage string, updatedBefore, now time.Time, terminationPending bool) (bool, error)
+	ListRunningTurnsForConversationHost(ctx context.Context, conversationID string, sessionID domain.SessionID) ([]domain.ConversationTurn, error)
+	ProviderHostTerminationPending(ctx context.Context, conversationID string, sessionID domain.SessionID) (bool, error)
+	ClearProviderHostTerminationPending(ctx context.Context, conversationID string, sessionID domain.SessionID) error
 	SettleTurn(ctx context.Context, conversationID, providerTurnID string, state domain.TurnState, errMessage string, now time.Time) error
 	SettleTurnByID(ctx context.Context, turnID string, state domain.TurnState, errMessage string, now time.Time) error
 	SettleOrphanedTurns(ctx context.Context, session domain.SessionID, now time.Time) error
@@ -174,6 +192,7 @@ const (
 	controllerHandoffInterfaceDrain
 	controllerHandoffInterfaceInterrupt
 	controllerHandoffIdleBranch
+	controllerHandoffProviderRecovery
 )
 
 func interfaceHandoff(policy domain.SessionInterfaceTransitionPolicy) controllerHandoff {
@@ -375,24 +394,171 @@ func (c *Controller) owner() domain.ConversationOwner {
 // before a replacement daemon publishes a reconnected controller. The provider
 // kept running while AO was detached, so forgetting this turn would let a new
 // Send start a second root turn on the same native conversation.
-func (c *Controller) restoreLiveTurnOwnership(turns []domain.ConversationTurn) string {
+func (c *Controller) restoreLiveTurnOwnership(
+	ctx context.Context,
+	turns []domain.ConversationTurn,
+) (providerTurnID string, staleTurnSettled bool, err error) {
 	var latest *domain.ConversationTurn
+	running := make([]*domain.ConversationTurn, 0, len(turns))
 	for i := range turns {
 		turn := &turns[i]
-		if turn.State != domain.TurnStateRunning || turn.ProviderTurnID == "" || turn.RolledBackAt != nil {
+		if turn.HandledBySessionID != c.sessionID || turn.State != domain.TurnStateRunning ||
+			turn.ProviderTurnID == "" || turn.RolledBackAt != nil {
 			continue
 		}
+		running = append(running, turn)
 		if latest == nil || turn.RequestedAt.After(latest.RequestedAt) {
 			latest = turn
 		}
 	}
 	if latest == nil {
-		return ""
+		return "", false, nil
+	}
+	// A nested provider turn usually starts after its root. Check every running
+	// candidate for the unchanged stale-reconnect predicate before restoring the
+	// newest one as volatile ownership; otherwise a fresh nested row can hide its
+	// older wedged root during daemon restart.
+	for i := len(running) - 1; i >= 0; i-- {
+		candidate := running[i]
+		c.pendingTurnID = candidate.ProviderTurnID
+		c.ackedTurnID = candidate.ProviderTurnID
+		c.state = ports.ChatControllerBusy
+		settled, recoverErr := c.recoverStaleProviderFailure(ctx, c.now(), true)
+		if recoverErr != nil {
+			return "", false, recoverErr
+		}
+		if settled {
+			return "", true, nil
+		}
 	}
 	c.pendingTurnID = latest.ProviderTurnID
 	c.ackedTurnID = latest.ProviderTurnID
 	c.state = ports.ChatControllerBusy
-	return latest.ProviderTurnID
+	return latest.ProviderTurnID, false, nil
+}
+
+// failOtherRunningTurnsForHostRestart closes every other durable turn whose
+// provider work shares the host that restart recovery is about to destroy. Each
+// turn uses the normal failed terminal-event projection so its streaming output
+// and activities settle together, but its reason remains distinct from the turn
+// whose own reconnect timeout triggered recovery.
+func (c *Controller) failOtherRunningTurnsForHostRestart(ctx context.Context) error {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
+	turns, err := c.store.ListRunningTurnsForConversationHost(ctx, c.conversation.ID, c.sessionID)
+	if err != nil {
+		return err
+	}
+	for _, turn := range turns {
+		if turn.ProviderTurnID == "" {
+			return fmt.Errorf("refuse shared provider host restart: running turn %s has no provider turn id", turn.ID)
+		}
+		event := ports.ChatEvent{
+			Kind:                   ports.ChatEventTurnCompleted,
+			ProviderEventID:        providerHostRestartID + turn.ID,
+			ProviderTurnID:         turn.ProviderTurnID,
+			ProviderConversationID: c.conv.ProviderConversationID(),
+			TurnState:              domain.TurnStateFailed,
+			Err:                    errors.New(sharedProviderHostRestartMessage), //nolint:staticcheck // User-facing timeline copy is a complete sentence.
+		}
+		projected, primaryTurn, projectErr := c.projectEvent(ctx, event)
+		if projectErr != nil {
+			return fmt.Errorf("fail turn %s before shared provider host restart: %w", turn.ID, projectErr)
+		}
+		if projected {
+			c.afterProject(ctx, event, primaryTurn)
+		}
+	}
+	return nil
+}
+
+// recoverStaleProviderFailure settles through the same normalized terminal-event
+// projection used by an upstream turn/completed notification. That keeps durable
+// activities, volatile controller ownership, lifecycle activity, and queue-hold
+// behavior on one path.
+func (c *Controller) recoverStaleProviderFailure(
+	ctx context.Context,
+	observedAt time.Time,
+	terminationPending bool,
+) (bool, error) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
+	c.mu.Lock()
+	providerTurnID := c.pendingTurnID
+	controllerState := c.state
+	handoff := c.handoff
+	c.mu.Unlock()
+	if providerTurnID == "" || controllerState == ports.ChatControllerStopped || handoff != controllerHandoffNone {
+		return false, nil
+	}
+
+	event := ports.ChatEvent{
+		Kind:                   ports.ChatEventTurnCompleted,
+		ProviderEventID:        providerFailureWatchdogID + providerTurnID,
+		ProviderTurnID:         providerTurnID,
+		ProviderConversationID: c.conv.ProviderConversationID(),
+		TurnState:              domain.TurnStateFailed,
+		Err:                    errors.New(staleProviderFailureMessage), //nolint:staticcheck // User-facing timeline copy is a complete sentence.
+	}
+	var settled bool
+	projected, primaryTurn, err := c.projectEventWithApply(ctx, event, func(txCtx context.Context) error {
+		var settleErr error
+		settled, settleErr = c.store.SettleStaleProviderFailure(
+			txCtx,
+			c.conversation.ID,
+			providerTurnID,
+			event.ProviderEventID,
+			staleProviderFailureMessage,
+			observedAt.Add(-StaleProviderFailureTimeout),
+			c.now(),
+			terminationPending,
+		)
+		if settleErr != nil {
+			return settleErr
+		}
+		if !settled {
+			return errStaleProviderFailureSuperseded
+		}
+		return nil
+	})
+	if errors.Is(err, errStaleProviderFailureSuperseded) {
+		return false, nil
+	}
+	if err != nil || !projected {
+		return false, err
+	}
+	c.afterProject(ctx, event, primaryTurn)
+	if terminationPending {
+		c.mu.Lock()
+		// Keep intake closed between durable settlement and host replacement. A
+		// second prompt sent through the old ACP relay would otherwise race the
+		// still-active prompt RPC that caused this recovery.
+		c.handoff = controllerHandoffProviderRecovery
+		c.suppressStoppedActivity = true
+		c.mu.Unlock()
+	}
+	c.log.Warn("settled turn after provider reconnect timed out",
+		"session", c.sessionID, "providerTurn", providerTurnID)
+	return true, nil
+}
+
+// armProviderRecovery closes intake while a previously persisted termination
+// obligation is retried. It refuses to take ownership from an unrelated branch
+// or interface handoff already in progress.
+func (c *Controller) armProviderRecovery() bool {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.handoff != controllerHandoffNone && c.handoff != controllerHandoffProviderRecovery {
+		return false
+	}
+	c.handoff = controllerHandoffProviderRecovery
+	c.suppressStoppedActivity = true
+	return true
 }
 
 // start begins live provider consumption after any durable native history has
@@ -2513,9 +2679,11 @@ func (c *Controller) project() {
 			continue
 		}
 		// A lifecycle event and a concurrent Send must agree on whether the root
-		// conversation is busy. Holding the same lock Send/dispatch use closes the
-		// window between the durable projection and the in-memory ownership update.
-		lifecycle := event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted
+		// conversation is busy. Provider-failure activity updates use the same lock
+		// so the durable reconnect marker and volatile ownership move in order. The
+		// watchdog's SQL compare-and-set arbitrates ordinary streamed progress without
+		// forcing every delta through this lock.
+		lifecycle := serializesTurnOwnership(event)
 		if lifecycle {
 			c.sendMu.Lock()
 		}
@@ -2591,9 +2759,35 @@ func (c *Controller) project() {
 	}
 }
 
+func serializesTurnOwnership(event ports.ChatEvent) bool {
+	if event.Kind == ports.ChatEventTurnStarted || event.Kind == ports.ChatEventTurnCompleted {
+		return true
+	}
+	if event.Kind != ports.ChatEventActivityStarted && event.Kind != ports.ChatEventActivityCompleted {
+		return false
+	}
+	if event.ActivityKind != domain.ActivityKindSystem {
+		return false
+	}
+	var detail struct {
+		Event string `json:"event"`
+	}
+	return json.Unmarshal(event.Detail, &detail) == nil && detail.Event == "provider.failure"
+}
+
 // projectEvent archives one normalized provider event and applies its durable
 // projection in the same SQLite transaction.
 func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (bool, bool, error) {
+	return c.projectEventWithApply(ctx, event, func(txCtx context.Context) error {
+		return c.apply(txCtx, event)
+	})
+}
+
+func (c *Controller) projectEventWithApply(
+	ctx context.Context,
+	event ports.ChatEvent,
+	apply func(context.Context) error,
+) (bool, bool, error) {
 	record := map[string]any{
 		"kind":                   event.Kind,
 		"providerEventId":        event.ProviderEventID,
@@ -2646,7 +2840,7 @@ func (c *Controller) projectEvent(ctx context.Context, event ports.ChatEvent) (b
 	}
 	projected, err := c.store.ProjectProviderEvent(ctx, c.conversation.ID, c.sessionID,
 		c.generation, event.ProviderEventID, string(event.Kind), string(payload), c.now(),
-		func(txCtx context.Context) error { return c.apply(txCtx, event) })
+		apply)
 	if err != nil || !projected {
 		return projected, false, err
 	}

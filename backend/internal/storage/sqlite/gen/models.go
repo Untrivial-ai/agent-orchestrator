@@ -328,24 +328,25 @@ type ConversationSteerDelivery struct {
 }
 
 type ConversationTurn struct {
-	ID                   string
-	ConversationID       string
-	HandledBySessionID   domain.SessionID
-	ProviderTurnID       string
-	ControllerGeneration string
-	State                domain.TurnState
-	ErrorMessage         string
-	RequestedAt          time.Time
-	StartedAt            sql.NullTime
-	CompletedAt          sql.NullTime
-	DiffJson             string
-	RolledBackAt         sql.NullTime
-	PlanJson             string
-	BranchID             string
-	PromotionStartedAt   sql.NullTime
-	PromotedToTurnID     sql.NullString
-	RetryOfTurnID        sql.NullString
-	HandledByReviewID    sql.NullString
+	ID                             string
+	ConversationID                 string
+	HandledBySessionID             domain.SessionID
+	ProviderTurnID                 string
+	ControllerGeneration           string
+	State                          domain.TurnState
+	ErrorMessage                   string
+	RequestedAt                    time.Time
+	StartedAt                      sql.NullTime
+	CompletedAt                    sql.NullTime
+	DiffJson                       string
+	RolledBackAt                   sql.NullTime
+	PlanJson                       string
+	BranchID                       string
+	PromotionStartedAt             sql.NullTime
+	PromotedToTurnID               sql.NullString
+	RetryOfTurnID                  sql.NullString
+	HandledByReviewID              sql.NullString
+	ProviderHostTerminationPending int64
 }
 
 type ModelUsageEvent struct {
