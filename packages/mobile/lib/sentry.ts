@@ -41,15 +41,14 @@ function dsn(): string {
 }
 
 const LOCAL_URL = /(?:\bhttps?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|100\.\d+\.\d+\.\d+|[^\s/]+\.ts\.net)(?::\d+)?\S*)/gi;
-const HOME_PATH = /\/(?:Users|home|data\/data)\/[^\s"']+/g;
-function scrub(value: unknown): unknown {
-	if (typeof value === "string") return value.replace(LOCAL_URL, "[redacted-url]").replace(HOME_PATH, "[redacted-path]");
-	return value;
+const HOME_PATH = /\/(?:Users|home|data\/data)\/[^\r\n"']+/g;
+export function scrubMobileTelemetryText(value: string): string {
+	return value.replace(LOCAL_URL, "[redacted-url]").replace(HOME_PATH, "[redacted-path]");
 }
 function scrubEvent(event: Record<string, unknown>): Record<string, unknown> {
-	if (typeof event.message === "string") event.message = scrub(event.message) as string;
+	if (typeof event.message === "string") event.message = scrubMobileTelemetryText(event.message);
 	const exception = event.exception as { values?: Array<{ value?: unknown }> } | undefined;
-	for (const v of exception?.values ?? []) if (typeof v.value === "string") v.value = scrub(v.value);
+	for (const v of exception?.values ?? []) if (typeof v.value === "string") v.value = scrubMobileTelemetryText(v.value);
 	return event;
 }
 

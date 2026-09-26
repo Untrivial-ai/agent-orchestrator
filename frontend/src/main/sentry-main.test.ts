@@ -7,7 +7,7 @@ describe("sanitizeRendererCapture", () => {
 			consentGeneration: "generation-1",
 			kind: "exception",
 			level: "error",
-			message: "failed /Users/alice/project/file.ts at http://127.0.0.1:3001/api and C:\\Users\\alice\\repo\\file.ts",
+			message: "failed at http://127.0.0.1:3001/api and C:\\Users\\alice\\repo\\file.ts",
 			tags: {
 				operation: "GET http://localhost:3001/api/v1/sessions",
 				category: "file:///home/alice/private.txt",
@@ -20,13 +20,33 @@ describe("sanitizeRendererCapture", () => {
 			consentGeneration: "generation-1",
 			kind: "exception",
 			level: "error",
-			message: "failed [redacted-path] at [redacted-url] and [redacted-path]",
+			message: "failed at [redacted-url] and [redacted-path]",
 			tags: {
 				operation: "GET [redacted-url]",
 				category: "[redacted-url]",
 			},
 		});
-		expect(input.message).toContain("/Users/alice");
+		expect(input.message).toContain("C:\\Users\\alice");
+	});
+
+	it("redacts full paths containing spaces or delimiter-like text", () => {
+		const base = { consentGeneration: "generation-1", kind: "exception" } as const;
+
+		expect(sanitizeRendererCapture({ ...base, message: "open /Users/alice/build error logs/x.ts" })?.message).toBe(
+			"open [redacted-path]",
+		);
+		expect(sanitizeRendererCapture({ ...base, message: "open /home/alice/a: b/c.md" })?.message).toBe(
+			"open [redacted-path]",
+		);
+		expect(sanitizeRendererCapture({ ...base, message: "open C:\\Users\\alice\\My Documents\\secret.txt" })?.message).toBe(
+			"open [redacted-path]",
+		);
+		expect(sanitizeRendererCapture({ ...base, message: "open file:///home/alice/My Notes/private.txt" })?.message).toBe(
+			"open [redacted-url]",
+		);
+		expect(sanitizeRendererCapture({ ...base, message: "load app://renderer/My Project/index.html" })?.message).toBe(
+			"load [redacted-url]",
+		);
 	});
 
 	it("rejects unknown fields, tags, kinds, and levels", () => {

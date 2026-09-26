@@ -20,9 +20,9 @@ const TAG_KEYS = new Set([
 ]);
 const CAPTURE_KINDS = new Set<RendererTelemetryCapture["kind"]>(["exception", "message", "breadcrumb"]);
 const CAPTURE_LEVELS = new Set<NonNullable<RendererTelemetryCapture["level"]>>(["fatal", "error", "warning", "info"]);
-const LOCAL_URL = /(?:\bfile:\/\/\/\S+|\bapp:\/\/renderer\/\S+|\bhttps?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\S*)/gi;
-const HOME_PATH = /\/(?:Users|home)\/[^\s"']+/g;
-const WIN_PATH = /[A-Za-z]:\\[^\s"']+|\\\\[^\s"']+/g;
+const LOCAL_URL = /(?:\bfile:\/\/\/[^\r\n"']+|\bapp:\/\/renderer\/[^\r\n"']+|\bhttps?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\S*)/gi;
+const HOME_PATH = /\/(?:Users|home)\/[^\r\n"']+/g;
+const WIN_PATH = /[A-Za-z]:\\[^\r\n"']+|\\\\[^\r\n"']+/g;
 
 export async function initMainSentry(_version: string, _cacheRoot: string): Promise<DesktopTelemetryTransport | null> {
 	return null;

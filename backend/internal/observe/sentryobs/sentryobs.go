@@ -43,13 +43,12 @@ func scrub(s string) string {
 }
 
 func scrubPath(path string) string {
-	for _, marker := range []string{" failed", " denied", " error", " no such file"} {
-		if i := strings.Index(path, marker); i >= 0 {
-			return "[redacted-path]" + path[i:]
+	// Only retain complete, terminal error phrases. Searching inside the match
+	// can mistake a directory name for the error boundary and re-expose its tail.
+	for _, suffix := range []string{" failed", " denied", " error", " no such file"} {
+		if strings.HasSuffix(path, suffix) {
+			return "[redacted-path]" + suffix
 		}
-	}
-	if i := strings.Index(path, ": "); i >= 0 {
-		return "[redacted-path]" + path[i+1:]
 	}
 	return "[redacted-path]"
 }

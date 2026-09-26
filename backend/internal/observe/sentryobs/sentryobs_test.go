@@ -18,7 +18,10 @@ func TestScrubRedactsLocalPaths(t *testing.T) {
 		"read /home/bob/ao/worktree/x.go failed":                      "read [redacted-path] failed",
 		`stat C:\Users\carol\AppData\ao\db failed`:                    "stat [redacted-path] failed",
 		"open /Users/dave/Library/Mobile Documents/report.md: denied": "open [redacted-path] denied",
-		"no paths here": "no paths here",
+		"stat /Users/alice/build error logs/x.go: no such file":       "stat [redacted-path] no such file",
+		"read /home/alice/build failed output/result.txt":             "read [redacted-path]",
+		"open /Users/alice/a: b/c.md":                                 "open [redacted-path]",
+		"no paths here":                                               "no paths here",
 	}
 	for in, want := range cases {
 		if got := scrub(in); got != want {
