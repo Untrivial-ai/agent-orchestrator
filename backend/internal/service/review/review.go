@@ -840,6 +840,19 @@ func (s *Service) publishSubmitted(ctx context.Context, workerID domain.SessionI
 }
 
 func (s *Service) publishOne(ctx context.Context, workerID domain.SessionID, run *domain.ReviewRun) {
+	// The publish mutex serializes attempts, but the caller's run copy was
+	// fetched before the lock: a concurrent identical submission may have
+	// published and persisted the new state meanwhile. Re-read it so the
+	// decision below uses the store, not a stale snapshot.
+	if current, ok, err := s.store.GetReviewRun(ctx, run.ID); err != nil {
+		return
+	} else if ok {
+		run.PublishState = current.PublishState
+		run.PublishError = current.PublishError
+		if current.GithubReviewID != "" {
+			run.GithubReviewID = current.GithubReviewID
+		}
+	}
 	switch run.PublishState {
 	case domain.ReviewPublishPublished:
 		// The provider already holds this run's review; its id is recorded.

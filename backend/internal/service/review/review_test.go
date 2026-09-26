@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 )
 
 type fakeStore struct {
+	mu                      sync.Mutex
 	run                     domain.ReviewRun
 	ok                      bool
 	review                  domain.Review
@@ -38,6 +40,8 @@ type fakeStore struct {
 }
 
 func (f *fakeStore) GetReviewByID(_ context.Context, id string) (domain.Review, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.reviewOK && f.review.ID == id {
 		return f.review, true, nil
 	}
@@ -45,6 +49,8 @@ func (f *fakeStore) GetReviewByID(_ context.Context, id string) (domain.Review, 
 }
 
 func (f *fakeStore) UpdateReviewActivity(_ context.Context, id string, state domain.ActivityState, agentSessionID, launchID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if !f.reviewOK || f.review.ID != id {
 		return false, nil
 	}
@@ -68,6 +74,8 @@ func (f *fakeStore) UpdateReviewActivity(_ context.Context, id string, state dom
 }
 
 func (f *fakeStore) GetReviewRun(_ context.Context, id string) (domain.ReviewRun, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, run := range f.batchRuns {
 		if run.ID == id {
 			return run, true, nil
@@ -80,6 +88,8 @@ func (f *fakeStore) GetReviewRun(_ context.Context, id string) (domain.ReviewRun
 }
 
 func (f *fakeStore) GetSession(_ context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	enabled := true
 	if f.sessionAutoInjectReview != nil {
 		enabled = *f.sessionAutoInjectReview
@@ -88,6 +98,8 @@ func (f *fakeStore) GetSession(_ context.Context, id domain.SessionID) (domain.S
 }
 
 func (f *fakeStore) UpdateReviewRunResult(_ context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, findingsJSON, githubReviewID string, autoInjectReview bool) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for i := range f.batchRuns {
 		if f.batchRuns[i].ID == id {
 			if f.batchRuns[i].Status != domain.ReviewRunRunning {
@@ -124,6 +136,8 @@ func (f *fakeStore) UpdateReviewRunResult(_ context.Context, id string, status d
 }
 
 func (f *fakeStore) UpdateReviewRunPublication(_ context.Context, id string, state domain.ReviewRunPublishState, githubReviewID, publishError string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.publishCalls++
 	f.publishStates = append(f.publishStates, state)
 	apply := func(run *domain.ReviewRun) {
@@ -144,6 +158,8 @@ func (f *fakeStore) UpdateReviewRunPublication(_ context.Context, id string, sta
 }
 
 func (f *fakeStore) MarkReviewRunDelivered(_ context.Context, id string, deliveredAt time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.markCalls++
 	f.markedIDs = append(f.markedIDs, id)
 	if f.run.ID == id && f.run.Status == domain.ReviewRunComplete && f.run.DeliveredAt == nil {
@@ -164,26 +180,36 @@ func (f *fakeStore) MarkReviewRunDelivered(_ context.Context, id string, deliver
 }
 
 func (f *fakeStore) ListReviewRunsByBatch(context.Context, domain.SessionID, string) ([]domain.ReviewRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := append([]domain.ReviewRun(nil), f.batchRuns...)
 	return out, nil
 }
 
 func (f *fakeStore) ListPRsBySession(context.Context, domain.SessionID) ([]domain.PullRequest, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := append([]domain.PullRequest(nil), f.prs...)
 	return out, nil
 }
 
 func (f *fakeStore) ListPRReviews(_ context.Context, prURL string) ([]domain.PullRequestReview, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := append([]domain.PullRequestReview(nil), f.prReviews[prURL]...)
 	return out, nil
 }
 
 func (f *fakeStore) ListPRComments(_ context.Context, prURL string) ([]domain.PullRequestComment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := append([]domain.PullRequestComment(nil), f.prComments[prURL]...)
 	return out, nil
 }
 
 func (f *fakeStore) MarkPRCommentResolved(_ context.Context, prURL, commentID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.resolvedCommentIDs = append(f.resolvedCommentIDs, commentID)
 	comments := f.prComments[prURL]
 	for i := range comments {
