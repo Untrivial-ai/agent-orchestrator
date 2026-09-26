@@ -1,4 +1,4 @@
-import { Bot, GitBranch, Inbox, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
+import { Bot, GitBranch, Inbox, MonitorCog, X, type LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useRef, useState } from "react";
@@ -20,7 +20,6 @@ import {
 } from "./ui/dialog";
 import { type GlobalSettingsSection, type SettingsModal, useUiStore } from "../stores/ui-store";
 import { cn } from "../lib/utils";
-import { Button } from "./ui/button";
 import { globalSettingsItem, visibleGlobalSettings } from "./settings/settingsCatalog";
 
 function initialProjectSaveState(): ProjectSettingsSaveState {
@@ -71,6 +70,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	const [focusAgentId, setFocusAgentId] = useState<string>();
 	const [activeProjectSection, setActiveProjectSection] = useState<ProjectSettingsSection>("general");
 	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>(initialProjectSaveState);
+	const closeAfterSave = useRef(false);
 	const globalSettingsWasOpen = useRef(false);
 
 	const activeLabel = isProjectSettings
@@ -79,8 +79,26 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 
 	const closeSettingsDialog = () => {
 		if (isProjectSettings && (projectSaveState.phase === "pending" || projectSaveState.phase === "saving")) return;
+		if (isProjectSettings && projectSaveState.dirty) {
+			if (closeAfterSave.current) return;
+			const form = document.getElementById("project-settings-form") as HTMLFormElement | null;
+			if (form) {
+				closeAfterSave.current = true;
+				form.requestSubmit();
+				return;
+			}
+		}
 		closeSettings();
 	};
+	useEffect(() => {
+		if (!closeAfterSave.current) return;
+		if (projectSaveState.phase === "saved") {
+			closeAfterSave.current = false;
+			closeSettings();
+		} else if (projectSaveState.phase === "failed") {
+			closeAfterSave.current = false;
+		}
+	}, [closeSettings, projectSaveState.phase]);
 	const closeButtonRef = useRef<HTMLButtonElement>(null);
 	const contentRef = useRef<HTMLDivElement>(null);
 	const returnFocusRef = useRef(document.activeElement as HTMLElement | null);
@@ -194,47 +212,11 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 										/>
 									))}
 						</nav>
-						{isProjectSettings && (
-							<div className="mt-auto flex flex-col gap-2 border-t border-(--color-border-settings-dialog-header) p-3">
-								<Button
-									type="submit"
-									form="project-settings-form"
-									variant="footer-primary"
-									className={cn(
-										"w-full rounded-md",
-										projectSaveState.phase === "failed" &&
-											"border-error bg-error/15 text-error hover:bg-error/20",
-									)}
-									disabled={projectSaveState.phase === "pending" || projectSaveState.phase === "saving"}
-									aria-live="polite"
-									title={
-										projectSaveState.error ??
-										(projectSaveState.replacementError
-											? t("settings.project.restartFailed", { error: projectSaveState.replacementError })
-											: undefined)
-									}
-								>
-									{projectSaveState.phase === "saving" ? (
-										t("settings.project.saving")
-									) : projectSaveState.phase === "saved" ? (
-										t("settings.project.saved")
-									) : projectSaveState.phase === "failed" ? (
-										<>
-											<TriangleAlert className="size-4" aria-hidden="true" />
-											{t("settings.project.saveFailed")}
-										</>
-									) : (
-										t("settings.project.saveChanges")
-									)}
-								</Button>
-								{projectSaveState.phase === "failed" && projectSaveState.error && (
-									<p className="mt-1.5 px-0.5 text-xs text-destructive leading-tight" role="alert">
-										{projectSaveState.error}
-									</p>
-								)}
-								<span className="sr-only" role="status" aria-live="polite">
-									{projectSaveState.phase === "saved" ? t("settings.project.saved") : ""}
-								</span>
+						{isProjectSettings && projectSaveState.phase === "failed" && projectSaveState.error && (
+							<div className="mt-auto border-t border-(--color-border-settings-dialog-header) p-3">
+								<p className="px-0.5 text-xs text-destructive leading-tight" role="alert">
+									{projectSaveState.error}
+								</p>
 							</div>
 						)}
 					</aside>
