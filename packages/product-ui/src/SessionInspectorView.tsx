@@ -320,11 +320,11 @@ export function InspectorPullRequestCardView({
 	);
 	return (
 		<article className="min-w-0 w-full rounded-lg border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3 py-2">
-			<div className="flex min-w-0 items-start justify-between gap-2">
+			<div className="flex min-w-0 items-baseline justify-between gap-2">
 				<span className="min-w-0 flex-1 text-sm font-semibold leading-snug tracking-tight text-settings-label">{pr.title || `PR #${pr.number}`}</span>
-				<div className="flex shrink-0 items-center gap-1.5">
+				<div className="flex shrink-0 items-baseline gap-1.5">
 					{pr.state !== "open" ? stateBadge : null}
-					<span className="font-mono text-2xs text-settings-muted">#{pr.number}</span>
+					<span className="font-mono text-xs font-medium tabular-nums text-settings-label">#{pr.number}</span>
 				</div>
 			</div>
 			{branchRange ? <p className="mt-0.5 min-w-0 truncate font-mono text-2xs text-settings-muted" title={branchRange}>{branchRange}</p> : null}
