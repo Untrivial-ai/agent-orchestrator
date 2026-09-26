@@ -2147,7 +2147,10 @@ func (s *Store) AppendAssistantDelta(
 		return nil
 
 	case errors.Is(err, sql.ErrNoRows):
-		turnID := s.turnIDFor(ctx, conversationID, providerTurnID)
+		turnID, lookupErr := s.turnIDFor(ctx, conversationID, providerTurnID)
+		if lookupErr != nil {
+			return lookupErr
+		}
 		return s.inTx(ctx, "insert assistant message", func(q *gen.Queries) error {
 			sequence, seqErr := q.NextConversationSequence(ctx, gen.NextConversationSequenceParams{
 				UpdatedAt: now,
@@ -2194,7 +2197,10 @@ func (s *Store) SettleAssistantMessage(
 	if errors.Is(err, sql.ErrNoRows) {
 		// A message whose deltas AO never saw — possible if it completed inside a
 		// reconnect window. Record it whole rather than dropping it.
-		turnID := s.turnIDFor(ctx, conversationID, providerTurnID)
+		turnID, lookupErr := s.turnIDFor(ctx, conversationID, providerTurnID)
+		if lookupErr != nil {
+			return lookupErr
+		}
 		return s.inTx(ctx, "insert assistant message", func(q *gen.Queries) error {
 			sequence, seqErr := q.NextConversationSequence(ctx, gen.NextConversationSequenceParams{
 				UpdatedAt: now,
@@ -2269,7 +2275,10 @@ func (s *Store) UpsertActivity(
 		}
 	}
 
-	turnID := s.turnIDFor(ctx, conversationID, providerTurnID)
+	turnID, err := s.turnIDFor(ctx, conversationID, providerTurnID)
+	if err != nil {
+		return err
+	}
 	return s.inTx(ctx, "insert activity", func(q *gen.Queries) error {
 		sequence, seqErr := q.NextConversationSequence(ctx, gen.NextConversationSequenceParams{
 			UpdatedAt: now,
@@ -2753,7 +2762,10 @@ func (s *Store) LoadConversationSnapshotPage(
 	if err != nil {
 		return ConversationSnapshot{}, err
 	}
-	presentation := s.conversationHistoryPresentation(ctx, conversationID)
+	presentation, err := s.conversationHistoryPresentation(ctx, conversationID)
+	if err != nil {
+		return ConversationSnapshot{}, err
+	}
 	if beforeSequence <= visibleAfterSequence {
 		snapshot := ConversationSnapshot{
 			Conversation:                     conversationToDomain(conv),
@@ -2957,7 +2969,10 @@ func (s *Store) LoadConversationSnapshot(
 		return ConversationSnapshot{}, fmt.Errorf("select activities: %w", err)
 	}
 
-	presentation := s.conversationHistoryPresentation(ctx, conversationID)
+	presentation, err := s.conversationHistoryPresentation(ctx, conversationID)
+	if err != nil {
+		return ConversationSnapshot{}, err
+	}
 	snapshot := ConversationSnapshot{
 		Conversation:                     conversationToDomain(conv),
 		ActiveBranch:                     presentation.activeBranch,
@@ -3023,10 +3038,10 @@ func (p conversationHistoryPresentation) filterInactiveProviderTurn(turn *domain
 func (s *Store) conversationHistoryPresentation(
 	ctx context.Context,
 	conversationID string,
-) conversationHistoryPresentation {
+) (conversationHistoryPresentation, error) {
 	branches, err := s.ConversationBranches(ctx, conversationID)
 	if err != nil {
-		return conversationHistoryPresentation{}
+		return conversationHistoryPresentation{}, err
 	}
 	presentation := conversationHistoryPresentation{
 		branchProviderScopes: make(map[string]string, len(branches)),
@@ -3041,9 +3056,11 @@ func (s *Store) conversationHistoryPresentation(
 				branch.ParentBranchID != "" && branch.ReplacedTurnID != ""
 		}
 	}
-	if sequence, queryErr := s.qr.SelectConversationNativeForkAvailableAfterSequence(ctx, conversationID); queryErr == nil {
-		presentation.nativeForkAvailableAfterSequence = sequence
+	sequence, err := s.qr.SelectConversationNativeForkAvailableAfterSequence(ctx, conversationID)
+	if err != nil {
+		return conversationHistoryPresentation{}, fmt.Errorf("select native fork boundary for conversation %s: %w", conversationID, err)
 	}
+	presentation.nativeForkAvailableAfterSequence = sequence
 	for _, branch := range branches {
 		if branch.ID == presentation.activeProviderBindingID {
 			presentation.editFloorSequence = branch.ForkAfterSequence
@@ -3052,7 +3069,7 @@ func (s *Store) conversationHistoryPresentation(
 	}
 	presentation.branchPoints = conversationBranchPointsForProviderBinding(
 		branches, presentation.activeProviderBindingID)
-	return presentation
+	return presentation, nil
 }
 
 func conversationBranchPointsForProviderBinding(
@@ -3108,22 +3125,24 @@ func conversationBranchPointsForProviderBinding(
 
 /* ---- helpers ---------------------------------------------------------- */
 
-// turnIDFor resolves a provider turn id to AO's turn id, or nil when the turn is
-// unknown. An item with no turn still belongs in the timeline, so an unresolved
-// lookup is not an error.
-func (s *Store) turnIDFor(ctx context.Context, conversationID, providerTurnID string) sql.NullString {
+// turnIDFor resolves a provider turn id to AO's turn id. An empty or unknown
+// provider turn leaves the item unlinked; a failed lookup must stop the write.
+func (s *Store) turnIDFor(ctx context.Context, conversationID, providerTurnID string) (sql.NullString, error) {
 	if providerTurnID == "" {
-		return sql.NullString{}
+		return sql.NullString{}, nil
 	}
 	row, err := s.conversationReader(ctx).SelectConversationTurnByProviderID(ctx,
 		gen.SelectConversationTurnByProviderIDParams{
 			ConversationID: conversationID,
 			ProviderTurnID: providerTurnID,
 		})
-	if err != nil {
-		return sql.NullString{}
+	if errors.Is(err, sql.ErrNoRows) {
+		return sql.NullString{}, nil
 	}
-	return sql.NullString{String: row.ID, Valid: true}
+	if err != nil {
+		return sql.NullString{}, fmt.Errorf("select provider turn %s in conversation %s: %w", providerTurnID, conversationID, err)
+	}
+	return sql.NullString{String: row.ID, Valid: true}, nil
 }
 
 func conversationToDomain(row gen.Conversation) domain.ConversationRecord {
