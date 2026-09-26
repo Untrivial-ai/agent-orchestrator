@@ -541,11 +541,16 @@ function SettingsBody({
 								model={form.reviewerModel}
 								mode={form.reviewerMode}
 								projectId={projectId}
-								onConfigChange={(_harness, config) => setForm((f) => ({
-									...f,
-									reviewerModel: config.model ?? "",
-									reviewerMode: config.mode ?? "",
-								}))}
+								onConfigChange={(harness, config) => setForm((f) => {
+									const nextHarness = harness || (config.model || config.mode ? defaultReviewerHarness : "");
+									return {
+										...f,
+										reviewerHarness: nextHarness,
+										...(nextHarness !== f.reviewerHarness ? { reviewerEffort: "", reviewerPermissions: "" } : {}),
+										reviewerModel: config.model ?? "",
+										reviewerMode: config.mode ?? "",
+									};
+								})}
 								onChange={(v) =>
 								setForm((f) => ({
 									...f,

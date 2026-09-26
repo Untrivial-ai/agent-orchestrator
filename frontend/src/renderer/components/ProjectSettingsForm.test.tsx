@@ -1486,6 +1486,59 @@ describe("ProjectSettingsForm", () => {
 		);
 	});
 
+	it("saves a concrete model selected from the inherited reviewer", async () => {
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/agents/readiness") return agentCatalogResponse;
+			if (path === "/api/v1/agents/{agent}/models") {
+				return {
+					data: {
+						agentId: "codex",
+						selectionMode: "catalog",
+						models: [
+							{ id: "gpt-5", label: "GPT-5", isDefault: true },
+							{ id: "gpt-5-mini", label: "GPT-5 Mini" },
+						],
+					},
+					error: undefined,
+				};
+			}
+			return {
+				data: {
+					status: "ok",
+					project: {
+						id: "proj-1",
+						name: "Project One",
+						kind: "single_repo",
+						path: "/repo/project-one",
+						repo: "",
+						config: { worker: { agent: "codex" }, orchestrator: { agent: "claude-code" } },
+					},
+				},
+				error: undefined,
+			};
+		});
+
+		renderSettings("proj-1", undefined, "agents");
+		const reviewer = await screen.findByRole("button", { name: "Reviewer agent" });
+		await userEvent.click(reviewer);
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Codex" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "GPT-5 Mini" }));
+		expect(reviewer).toHaveTextContent("Codex · GPT-5 Mini");
+
+		submitSettings();
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		expect(putMock).toHaveBeenCalledWith(
+			"/api/v1/projects/{id}",
+			expect.objectContaining({
+				body: expect.objectContaining({
+					config: expect.objectContaining({
+						reviewers: [{ harness: "codex", agentConfig: { model: "gpt-5-mini" } }],
+					}),
+				}),
+			}),
+		);
+	});
+
 	it("hides the Copilot reviewer when its binary is missing", async () => {
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents/readiness") {
