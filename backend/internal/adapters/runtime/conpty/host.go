@@ -55,6 +55,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		cfg:       cfg,
 		clients:   make(map[net.Conn]*clientState),
 		surface:   newRenderedSurface(initialConPTYColumns, initialConPTYRows),
+		modes:     newModeTracker(),
 		shutdownC: make(chan struct{}),
 	}
 	return h.run(ctx)
@@ -112,6 +113,13 @@ type host struct {
 	mu      sync.Mutex
 	clients map[net.Conn]*clientState
 	surface *renderedSurface
+	// modes follows the DEC private modes the program negotiated, so a client
+	// attaching after they scrolled out of the ring still receives them (see
+	// modeTracker). pumpPTY updates it right after the ring and before the
+	// chunk is broadcast, so at the snapshot taken in handleConn it is at most
+	// one chunk behind the ring, and that chunk is inside the replay, which
+	// Restore accounts for.
+	modes *modeTracker
 
 	// curCols/curRows are the grid the host last applied to the shared PTY (0,0
 	// = none applied yet). Guarded by mu; used to skip redundant resizes.
@@ -235,6 +243,7 @@ func (h *host) pumpPTY() {
 			copy(chunk, buf[:n])
 			h.cfg.Ring.Append(chunk)
 			h.surface.Write(chunk)
+			_, _ = h.modes.Write(chunk)
 			if frame, err := EncodeMessage(MsgTerminalData, chunk); err == nil {
 				h.broadcast(frame)
 			}
@@ -350,8 +359,25 @@ func (h *host) handleConn(conn net.Conn) {
 	// h.mu hold. broadcast() also takes h.mu, so any PTY chunk is either already
 	// in this snapshot or queued strictly after it. The writer goroutine keeps
 	// the socket itself outside this critical section.
+	//
+	// The snapshot is prefixed with the modes the program has set that the
+	// snapshot itself no longer carries. The ring is bounded, so the
+	// alternate-screen / mouse / bracketed-paste handshake a full-screen
+	// program prints once at startup is the first thing it forgets; without
+	// the prefix a late attacher renders the replay in its normal buffer with
+	// mouse reporting off and cannot scroll the program (#5039). tmux re-sends
+	// these on every attach, and the mux layer relies on the runtime doing so
+	// (internal/terminal/attachment.go).
+	//
+	// Restore re-scans the snapshot under h.mu, so broadcast waits for it.
+	// The scan is the tracker's byte loop (BenchmarkModeTracker: ~410 MB/s,
+	// no allocation), under half a millisecond for a full ring, on a path
+	// that already held this lock while EncodeMessage copied the same bytes.
 	h.mu.Lock()
 	snap := h.cfg.Ring.Replay()
+	if prefix := h.modes.Restore(snap); len(prefix) > 0 {
+		snap = append(prefix, snap...)
+	}
 	if len(snap) > 0 {
 		snapFrame, err := EncodeMessage(MsgTerminalData, snap)
 		if err != nil || !client.enqueue(snapFrame) {
