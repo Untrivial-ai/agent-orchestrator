@@ -20,6 +20,16 @@ const state = vi.hoisted(() => ({
 		resultListeners: Set<(results: { resultCount: number; resultIndex: number }) => void>;
 	},
 	mouseMoveListener: vi.fn(),
+	// Renderer (WebGL/canvas) test seams — see the addon mocks below.
+	webglAddons: [] as Array<{ disposed: boolean; triggerContextLoss: () => void }>,
+	canvasAddonLoads: 0,
+	loseContext: vi.fn(),
+	webglConstructError: false,
+	webglDisposeThrows: false,
+	fakeGl: null as null | {
+		isContextLost: () => boolean;
+		getExtension: (name: string) => { loseContext: () => void } | null;
+	},
 	lastTerminal: null as null | {
 		write(data: Uint8Array, done?: () => void): void;
 		keyHandler?: (event: KeyboardEvent) => boolean;
@@ -157,9 +167,31 @@ vi.mock("@xterm/xterm", () => ({
 			state.lastTerminal = this;
 		}
 
-		loadAddon() {}
+		hostEl: HTMLElement | null = null;
+		loadAddon(addon: unknown) {
+			// Mirror the real addons' side effects the renderer controller relies on:
+			// the WebGL addon appends its canvas (which exposes a getContext), the
+			// canvas fallback just registers. A prior 2D `.xterm-link-layer` canvas is
+			// already present so the controller must pick the new WebGL one by diff.
+			const kind = (addon as { __kind?: string } | null)?.__kind;
+			if (kind === "webgl") {
+				const canvas = document.createElement("canvas");
+				canvas.getContext = ((type: string) =>
+					type === "webgl2" || type === "webgl" ? state.fakeGl : null) as HTMLCanvasElement["getContext"];
+				(addon as { __canvas?: HTMLCanvasElement }).__canvas = canvas;
+				this.hostEl?.appendChild(canvas);
+			} else if (kind === "canvas") {
+				state.canvasAddonLoads += 1;
+			}
+		}
 		open(host: HTMLElement) {
+			this.hostEl = host;
 			host.appendChild(document.createElement("textarea"));
+			// The real WebGL renderer sits beside xterm's 2D link-layer canvas; keep
+			// one here so the controller's before/after canvas diff has to skip it.
+			const linkLayer = document.createElement("canvas");
+			linkLayer.className = "xterm-link-layer";
+			host.appendChild(linkLayer);
 			if (state.queueViewportSyncOnOpen) {
 				window.setTimeout(() => state.lifecycle.push("viewport-sync"), 0);
 			}
@@ -253,13 +285,36 @@ vi.mock("@xterm/addon-web-links", () => ({
 }));
 
 vi.mock("@xterm/addon-canvas", () => ({
-	CanvasAddon: class FakeCanvasAddon {},
+	CanvasAddon: class FakeCanvasAddon {
+		__kind = "canvas";
+	},
 }));
 
 vi.mock("@xterm/addon-webgl", () => ({
 	WebglAddon: class FakeWebglAddon {
-		onContextLoss() {}
-		dispose() {}
+		__kind = "webgl";
+		__canvas?: HTMLCanvasElement;
+		disposed = false;
+		private contextLossHandler: (() => void) | null = null;
+
+		constructor() {
+			if (state.webglConstructError) throw new Error("WebGL unavailable");
+			state.webglAddons.push(this);
+		}
+		onContextLoss(handler: () => void) {
+			this.contextLossHandler = handler;
+		}
+		// Test helper: simulate Chromium force-losing this context.
+		triggerContextLoss() {
+			this.contextLossHandler?.();
+		}
+		dispose() {
+			this.disposed = true;
+			// The real dispose() detaches its canvas; mirror that so the controller's
+			// captured context is the only handle left.
+			this.__canvas?.remove();
+			if (state.webglDisposeThrows) throw new Error("dispose failed");
+		}
 	},
 }));
 
@@ -283,6 +338,16 @@ describe("XtermTerminal", () => {
 		state.queueViewportSyncOnOpen = false;
 		state.searchAddon = null;
 		state.mouseMoveListener.mockClear();
+		state.webglAddons.length = 0;
+		state.canvasAddonLoads = 0;
+		state.loseContext.mockClear();
+		state.webglConstructError = false;
+		state.webglDisposeThrows = false;
+		state.fakeGl = {
+			isContextLost: () => false,
+			getExtension: (name: string) =>
+				name === "WEBGL_lose_context" ? { loseContext: state.loseContext } : null,
+		};
 		setNavigatorPlatform("Linux x86_64");
 		window.ao!.clipboard.writeText = vi.fn().mockResolvedValue(undefined);
 		window.ao!.clipboard.readText = vi.fn().mockResolvedValue("");
@@ -386,6 +451,87 @@ describe("XtermTerminal", () => {
 
 		expect(state.lastTerminal!.options.drawBoldTextInBrightColors).toBe(true);
 		expect(state.lastTerminal!.options.minimumContrastRatio).toBe(1);
+	});
+
+	describe("WebGL renderer lifecycle (#5662)", () => {
+		it("force-frees the WebGL context when parked and restores it when shown", () => {
+			const { rerender } = render(<XtermTerminal isVisible theme="dark" />);
+			expect(state.webglAddons).toHaveLength(1);
+			const first = state.webglAddons[0];
+
+			// Park: the pane's context must be disposed AND explicitly force-freed via
+			// WEBGL_lose_context, or a merely-disposed context keeps counting against
+			// Chromium's cap until GC and still evicts live panes.
+			act(() => rerender(<XtermTerminal isVisible={false} theme="dark" />));
+			expect(first.disposed).toBe(true);
+			expect(state.loseContext).toHaveBeenCalledTimes(1);
+
+			// Un-park: a fresh WebGL renderer is loaded for the now-visible pane.
+			act(() => rerender(<XtermTerminal isVisible theme="dark" />));
+			expect(state.webglAddons).toHaveLength(2);
+			expect(state.webglAddons[1].disposed).toBe(false);
+		});
+
+		it("keeps a context-lost pane on canvas and does not reload WebGL on un-park", () => {
+			const { rerender } = render(<XtermTerminal isVisible theme="dark" />);
+			expect(state.webglAddons).toHaveLength(1);
+
+			// Chromium force-loses the live context: swap to canvas permanently.
+			act(() => state.webglAddons[0].triggerContextLoss());
+			expect(state.canvasAddonLoads).toBe(1);
+
+			// Parking a canvas pane frees nothing (2D context holds no WebGL slot)...
+			act(() => rerender(<XtermTerminal isVisible={false} theme="dark" />));
+			expect(state.loseContext).not.toHaveBeenCalled();
+			// ...and un-parking must NOT reload WebGL — it stays on the canvas fallback.
+			act(() => rerender(<XtermTerminal isVisible theme="dark" />));
+			expect(state.webglAddons).toHaveLength(1);
+		});
+
+		it("degrades to canvas when a parked context cannot be provably force-freed", () => {
+			// No WEBGL_lose_context extension: we cannot prove the slot was reclaimed.
+			state.fakeGl = { isContextLost: () => false, getExtension: () => null };
+			const { rerender } = render(<XtermTerminal isVisible theme="dark" />);
+
+			act(() => rerender(<XtermTerminal isVisible={false} theme="dark" />));
+			expect(state.loseContext).not.toHaveBeenCalled();
+			// Falls back to canvas (0 WebGL slots) rather than falsely marking 'parked'.
+			expect(state.canvasAddonLoads).toBe(1);
+			// So un-park does not reload WebGL either.
+			act(() => rerender(<XtermTerminal isVisible theme="dark" />));
+			expect(state.webglAddons).toHaveLength(1);
+		});
+
+		it("still loads the canvas fallback when WebGL dispose throws on context loss", () => {
+			state.webglDisposeThrows = true;
+			render(<XtermTerminal isVisible theme="dark" />);
+			expect(state.webglAddons).toHaveLength(1);
+
+			// A throwing dispose() inside onContextLoss must not prevent the canvas
+			// fallback from loading, or the pane is left with no renderer at all (#4949).
+			act(() => state.webglAddons[0].triggerContextLoss());
+			expect(state.canvasAddonLoads).toBe(1);
+		});
+
+		it("falls back to canvas when the WebGL renderer cannot be constructed", () => {
+			state.webglConstructError = true;
+			render(<XtermTerminal isVisible theme="dark" />);
+			expect(state.webglAddons).toHaveLength(0);
+			expect(state.canvasAddonLoads).toBe(1);
+		});
+
+		it("force-frees the WebGL context on unmount (terminal destroy)", () => {
+			const view = render(<XtermTerminal isVisible theme="dark" />);
+			expect(state.webglAddons).toHaveLength(1);
+			expect(state.loseContext).not.toHaveBeenCalled();
+
+			// Destroying a visible WebGL terminal must RELEASE its context, not just
+			// dispose the addon: dispose() alone leaves the context counted against
+			// Chromium's cap until GC, so open/close churn would evict live panes.
+			act(() => view.unmount());
+			expect(state.webglAddons[0].disposed).toBe(true);
+			expect(state.loseContext).toHaveBeenCalledTimes(1);
+		});
 	});
 
 	it("focuses the terminal when human input is requested", async () => {
