@@ -16,6 +16,8 @@ import { agentModelsQueryKey, agentModelsQueryOptions, refreshAgentModels, reval
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { isConcreteModelID, modelChoiceLabel } from "../lib/agent-model-choices";
+import { WORKER_DEFAULT_REVIEWERS } from "../lib/reviewer-harnesses";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
 import { OrchestratorSpawnError, spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { captureRendererEvent } from "../lib/telemetry";
@@ -34,6 +36,7 @@ type Project = components["schemas"]["Project"];
 type ProjectConfig = components["schemas"]["ProjectConfig"];
 type TrackerIntakeConfig = components["schemas"]["TrackerIntakeConfig"];
 
+const PERMISSION_MODE_VALUES = ["auto", "accept-edits", "bypass-permissions"] as const;
 const DEFAULT_BRANCH_AUTO = "auto";
 
 const projectQueryKey = (id: string) => ["project", id] as const;
@@ -184,6 +187,7 @@ function SettingsBody({
 	const effectiveIntakeRepo = form.intakeRepo.trim() || deriveRepoPath(project.repo);
 	const intakeSetupIncomplete = !isScratchProject && intakeNeedsRule(intakeForm);
 	const reviewerWarning = reviewerTrustWarning(form.reviewerHarness);
+	const defaultReviewerHarness = WORKER_DEFAULT_REVIEWERS[form.workerAgent] ?? "claude-code";
 	const mutation = useMutation({
 		mutationFn: async (values: typeof form) => {
 			const savedKey = JSON.stringify(values);
@@ -654,6 +658,7 @@ function SettingsBody({
 									mode={form.reviewerMode}
 									projectId={projectId}
 									harnessOnly
+									defaultHarness={defaultReviewerHarness}
 									triggerClassName="w-full"
 									onChange={(reviewerHarness) =>
 										setForm((f) => ({
@@ -671,22 +676,20 @@ function SettingsBody({
 									}
 									ariaLabel={t("settings.project.defaultReviewer")}
 									agents={agentCatalog?.agents}
-									defaultOptionLabel={t("settings.project.workerDefault")}
-									defaultTriggerLabel={t("settings.project.workerDefault")}
 									disabled={agentsQuery.isFetching && agentCatalog === undefined}
 								/>
 							}
 							model={
 								<AgentModelField
 									role="reviewer"
-									agentId={form.reviewerHarness}
+									agentId={form.reviewerHarness || defaultReviewerHarness}
 									projectId={projectId}
 									model={form.reviewerModel}
 									mode={form.reviewerMode}
 									effort={form.reviewerEffort}
-									onModelChange={(reviewerModel) => setForm((f) => ({ ...f, reviewerModel }))}
-									onModeChange={(reviewerMode) => setForm((f) => ({ ...f, reviewerMode }))}
-									onEffortChange={(reviewerEffort) => setForm((f) => ({ ...f, reviewerEffort }))}
+									onModelChange={(reviewerModel) => setForm((f) => ({ ...f, reviewerHarness: f.reviewerHarness || defaultReviewerHarness, reviewerModel }))}
+									onModeChange={(reviewerMode) => setForm((f) => ({ ...f, reviewerHarness: f.reviewerHarness || defaultReviewerHarness, reviewerMode }))}
+									onEffortChange={(reviewerEffort) => setForm((f) => ({ ...f, reviewerHarness: f.reviewerHarness || defaultReviewerHarness, reviewerEffort }))}
 									onValidityChange={(valid) =>
 										setTuningValidity((value) => ({
 											...value,
@@ -697,6 +700,22 @@ function SettingsBody({
 							}
 						/>
 					)}
+					<div className={isScratchProject ? "grid grid-cols-2 gap-3 border-t border-border/60 pt-4" : "grid grid-cols-3 gap-3 border-t border-border/60 pt-4"}>
+						<div className="min-w-0 space-y-1.5">
+							<span className="text-xs text-settings-muted">{t("settings.project.roleApproval", { role: t("settings.models.workerRole") })}</span>
+							<PermissionModeSelect ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.workerRole") })} value={form.workerPermissions} agentId={form.workerAgent} onChange={(workerPermissions) => setForm((f) => ({ ...f, workerPermissions }))} />
+						</div>
+						<div className="min-w-0 space-y-1.5">
+							<span className="text-xs text-settings-muted">{t("settings.project.roleApproval", { role: t("settings.models.orchestratorRole") })}</span>
+							<PermissionModeSelect ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.orchestratorRole") })} value={form.orchestratorPermissions} agentId={form.orchestratorAgent} onChange={(orchestratorPermissions) => setForm((f) => ({ ...f, orchestratorPermissions }))} />
+						</div>
+						{!isScratchProject && (
+							<div className="min-w-0 space-y-1.5">
+								<span className="text-xs text-settings-muted">{t("settings.project.roleApproval", { role: t("settings.models.reviewerRole") })}</span>
+								<PermissionModeSelect ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.reviewerRole") })} value={form.reviewerPermissions} agentId={form.reviewerHarness || defaultReviewerHarness} onChange={(reviewerPermissions) => setForm((f) => ({ ...f, reviewerHarness: f.reviewerHarness || defaultReviewerHarness, reviewerPermissions }))} />
+							</div>
+						)}
+					</div>
 					{missingRequiredAgent && (
 						<p className="px-3 pb-2 text-xs text-error" role="alert">
 							{t("settings.project.agentsRequired")}
@@ -770,24 +789,26 @@ function AgentModelField({
 	}
 
 	if (isMode) {
-		const options = [
-			{ value: "__default__", label: t("settings.models.agentDefault") },
-			...(catalog.models ?? []).map((item) => ({
-				value: item.id,
-				label: item.label,
-			})),
-		];
+		const defaultMode = catalog.models?.find((item) => item.isDefault && isConcreteModelID(item.id))?.id;
+		const selectedMode = isConcreteModelID(mode) ? mode : "";
+		const options = (catalog.models ?? []).filter((item) => isConcreteModelID(item.id)).map((item) => ({
+			value: item.id,
+			label: modelChoiceLabel(item),
+		}));
 		return (
 			<>
 				<div className="min-w-0">
 					<div className="flex min-w-0 items-center gap-2">
 						<SettingsOptionMenu
 							aria-label={label}
-							value={mode || "__default__"}
+							value={selectedMode || defaultMode || ""}
 							options={options}
+							placeholder={t("settings.models.modeNotReported")}
+							action={selectedMode && !defaultMode ? { label: t("settings.models.useAgentMode"), onSelect: () => onModeChange("") } : undefined}
 							triggerClassName="w-full justify-between"
+							disabled={options.length === 0 && !(selectedMode && !defaultMode)}
 							onChange={(value) => {
-								onModeChange(value === "__default__" ? "" : value);
+								onModeChange(value === defaultMode ? "" : value);
 								onModelChange("");
 							}}
 						/>
@@ -853,6 +874,30 @@ function ProjectAgentRoleRow({ label, agent, model }: { label: string; agent: Re
 			<div className="min-w-0">{agent}</div>
 			<div className="min-w-0">{model}</div>
 		</div>
+	);
+}
+
+function PermissionModeSelect({ ariaLabel, value, agentId, onChange }: { ariaLabel: string; value: string; agentId: string; onChange: (value: string) => void }) {
+	const { t } = useTranslation();
+	const options: { value: string; label: string }[] = PERMISSION_MODE_VALUES.map((permission) => ({
+		value: permission,
+		label: permission === "accept-edits" ? t("settings.project.permissionAcceptEdits") : permission === "auto" ? t("settings.project.permissionAuto") : t("settings.project.permissionBypass"),
+	}));
+	if (agentId !== "codex") {
+		options.unshift({
+			value: "default",
+			label: agentId === "claude-code" ? t("settings.project.permissionUseClaude") : t("settings.project.permissionUseAgent"),
+		});
+	}
+	return (
+		<SettingsOptionMenu
+			aria-label={ariaLabel}
+			value={value === "default" && agentId === "codex" ? "bypass-permissions" : value || "auto"}
+			options={options}
+			placeholder={t("settings.project.permissionNotReported")}
+			triggerClassName="w-full justify-between"
+			onChange={onChange}
+		/>
 	);
 }
 

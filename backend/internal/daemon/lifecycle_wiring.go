@@ -487,7 +487,7 @@ func buildAgentResolver(defaultAgent string, log *slog.Logger) (ports.AgentResol
 	}
 	resolver := agentRegistry{reg: reg}
 	if _, ok := resolver.Agent(domain.AgentHarness(defaultAgent)); !ok {
-		return nil, fmt.Errorf("configured default agent %q is not a registered adapter", defaultAgent)
+		return nil, fmt.Errorf("configured agent %q is not a registered adapter", defaultAgent)
 	}
 	ids := make([]string, 0)
 	for _, mf := range reg.Manifests() {

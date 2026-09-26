@@ -27,6 +27,17 @@ func TestModelCommandUsesProjectWorkingDirectory(t *testing.T) {
 	}
 }
 
+func TestNormalizeShowsConcreteNameForDefaultCatalogModel(t *testing.T) {
+	got := normalize([]ports.AgentModelInfo{
+		{ID: "opus", Label: "Opus (default)"},
+		{ID: "sonnet", Label: "Default (recommended)"},
+	})
+	if len(got) != 2 || got[0].ID != "opus" || got[0].Label != "Opus" || !got[0].IsDefault ||
+		got[1].ID != "sonnet" || got[1].Label != "sonnet" || !got[1].IsDefault {
+		t.Fatalf("normalized models = %#v", got)
+	}
+}
+
 func environmentContains(env []string, wanted string) bool {
 	for _, item := range env {
 		if item == wanted {

@@ -27,14 +27,14 @@ function renderCombobox(
 describe("AgentModelCombobox", () => {
 	beforeEach(() => window.localStorage.clear());
 
-	it("shows effort on a second trigger line and keeps effort pinned to the menu bottom", async () => {
+	it("shows resolved effort beside the model and keeps effort in the menu", async () => {
 		function Picker() {
 			const [model, setModel] = useState("capable");
 			const [effort, setEffort] = useState("high");
 			return <AgentModelCombobox aria-label="Worker model" value={model}
 				models={[
 					{ id: "capable", label: "Capable", efforts: ["low", "high"] },
-					{ id: "plain", label: "Plain", efforts: ["low"] },
+					{ id: "plain", label: "Plain", efforts: ["default", "low"], defaultEffort: "low" },
 				]}
 				onChange={setModel} onCustom={setModel} compact
 				tuning={{ effort, onEffortChange: setEffort }} />;
@@ -45,13 +45,22 @@ describe("AgentModelCombobox", () => {
 		expect(picker).toHaveTextContent("High");
 		await userEvent.click(picker);
 		expect(screen.getByRole("menuitem", { name: "Capable" })).toHaveAttribute("aria-current", "true");
-		expect(screen.getByRole("menuitem", { name: /Effort/ })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: /Reasoning effort/ })).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("menuitem", { name: "Plain" }));
-		expect(picker).toHaveTextContent("Plain");
-		expect(picker).toHaveTextContent("Provider default");
+		expect(picker).toHaveTextContent("Plain · Low");
+		expect(screen.queryByRole("menuitemradio", { name: "High" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Provider default" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Default" })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Low" })).toHaveAttribute("aria-checked", "true");
+		await userEvent.hover(screen.getByRole("menuitem", { name: "Capable" }));
+		expect(screen.getByRole("menuitemradio", { name: "Low" })).toBeInTheDocument();
+		await userEvent.hover(screen.getByRole("menuitemradio", { name: "Low" }));
+		expect(screen.getByRole("menuitemradio", { name: "Low" })).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
+		expect(picker).toHaveTextContent("Plain · Low");
 		expect(screen.queryByRole("menuitem", { name: "Plain" })).not.toBeInTheDocument();
 		await userEvent.click(picker);
-		await userEvent.click(screen.getByRole("menuitem", { name: /Effort/ }));
+		await userEvent.click(screen.getByRole("menuitem", { name: /Reasoning effort/ }));
 		await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
 		expect(picker).toHaveTextContent("Plain");
 		expect(picker).toHaveTextContent("Low");
@@ -68,7 +77,7 @@ describe("AgentModelCombobox", () => {
 		);
 
 		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
-		const effortTrigger = screen.getByRole("menuitem", { name: /Effort/ });
+		const effortTrigger = screen.getByRole("menuitem", { name: /Reasoning effort/ });
 		act(() => effortTrigger.focus());
 		await userEvent.keyboard("{ArrowRight}");
 		const lowEffort = screen.getByRole("menuitemradio", { name: "Low" });
@@ -100,6 +109,61 @@ describe("AgentModelCombobox", () => {
 
 		expect(picker).toHaveTextContent("Plain");
 		expect(screen.queryByRole("menuitem", { name: "Plain" })).not.toBeInTheDocument();
+	});
+
+	it("shows the reported model without creating an override or a blank choice", async () => {
+		const { onChange } = renderCombobox([{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol", isDefault: true }]);
+		const picker = screen.getByRole("button", { name: "Worker model" });
+		expect(picker).toHaveTextContent("GPT-5.6 Sol");
+		expect(onChange).not.toHaveBeenCalled();
+		await userEvent.click(picker);
+		expect(screen.queryByRole("menuitem", { name: "Agent default" })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "GPT-5.6 Sol" })).toBeInTheDocument();
+	});
+
+	it("clears an override when the reported agent model is selected", async () => {
+		const { onChange } = renderCombobox([
+			{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol", isDefault: true },
+			{ id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+		], { value: "gpt-5.6-luna" });
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "GPT-5.6 Sol" }));
+		expect(onChange).toHaveBeenCalledWith("");
+	});
+
+	it("can clear an override when the agent does not report its model", async () => {
+		const { onChange } = renderCombobox([
+			{ id: "default", label: "Default (recommended)", isDefault: true },
+			{ id: "sonnet", label: "Sonnet" },
+		], { value: "sonnet" });
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "Use agent model" }));
+		expect(onChange).toHaveBeenCalledWith("");
+	});
+
+	it("clears an effort override when the reported agent effort is selected", async () => {
+		const onEffortChange = vi.fn();
+		renderCombobox([
+			{ id: "capable", label: "Capable", isDefault: true, efforts: ["low", "high"], defaultEffort: "low" },
+		], { value: "capable", compact: true, tuning: { effort: "high", onEffortChange } });
+		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
+		act(() => screen.getByRole("menuitem", { name: /Reasoning effort/ }).focus());
+		await userEvent.keyboard("{ArrowRight}");
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "Low" }));
+		expect(onEffortChange).toHaveBeenCalledWith("");
+	});
+
+	it("does not invent a concrete model for an opaque provider choice", async () => {
+		const { onChange } = renderCombobox([
+			{ id: "default", label: "Default (recommended)", isDefault: true },
+			{ id: "sonnet", label: "Sonnet" },
+		]);
+		const picker = screen.getByRole("button", { name: "Worker model" });
+		expect(picker).toHaveTextContent("Model not reported");
+		expect(onChange).not.toHaveBeenCalled();
+		await userEvent.click(picker);
+		expect(screen.queryByRole("menuitem", { name: /Default/ })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Sonnet" })).toBeInTheDocument();
 	});
 
 	it("keeps the model menu closed while its owning operation is pending", async () => {
@@ -142,9 +206,9 @@ describe("AgentModelCombobox", () => {
 		renderCombobox(models);
 		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
 
-		// Agent default and 50 catalog models. The custom-model action appears
+		// The first 50 catalog models. The custom-model action appears
 		// only after the user types a value that does not match the catalog.
-		expect(screen.getAllByRole("menuitem")).toHaveLength(51);
+		expect(screen.getAllByRole("menuitem")).toHaveLength(50);
 		expect(screen.getByText("Showing 50 of 1,397 matching models — type to narrow")).toBeInTheDocument();
 		expect(screen.queryByRole("menuitem", { name: /Model 1000/ })).not.toBeInTheDocument();
 	});
@@ -241,7 +305,7 @@ describe("AgentModelCombobox", () => {
 		await userEvent.type(search, "missing-model");
 		const refresh = screen.getByRole("button", { name: "Refresh models" });
 		expect(search.parentElement?.parentElement).toContainElement(refresh);
-		expect(screen.queryByText(/Last updated/)).not.toBeInTheDocument();
+		expect(screen.getByText(/Last updated/)).toBeInTheDocument();
 		await userEvent.click(refresh);
 		const busy = screen.getByRole("button", { name: /Refreshing/ });
 		expect(busy).toBeDisabled();
@@ -325,8 +389,8 @@ describe("AgentModelCombobox", () => {
 		renderCombobox(models, { recentScope: "codex" });
 		await userEvent.click(screen.getByRole("button", { name: "Worker model" }));
 
-		const groupLabels = screen.getAllByText(/Current & defaults|Recent/).map((node) => node.textContent);
-		expect(groupLabels).toEqual(["Current & defaults", "Recent"]);
+		const groupLabels = screen.getAllByText(/Pinned models|Recent/).map((node) => node.textContent);
+		expect(groupLabels).toEqual(["Pinned models", "Recent"]);
 	});
 
 	it("shows machine IDs only when they disambiguate duplicate model names", async () => {

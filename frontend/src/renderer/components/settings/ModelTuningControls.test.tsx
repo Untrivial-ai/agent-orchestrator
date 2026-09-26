@@ -11,13 +11,14 @@ const models: Model[] = [
 		id: "capable",
 		label: "Capable",
 		isDefault: true,
-		efforts: ["low", "high"],
+		efforts: ["default", "low", "high"],
+		defaultEffort: "low",
 	},
 	{ id: "plain", label: "Plain", efforts: ["low"] },
 ];
 
 describe("ModelTuningControls", () => {
-	it("exposes the provider default and an accessible effort selector", async () => {
+	it("shows the reported effort without saving it until selected", async () => {
 		const onEffortChange = vi.fn();
 		render(
 			<ModelTuningControls
@@ -31,8 +32,11 @@ describe("ModelTuningControls", () => {
 		);
 
 		const effort = screen.getByRole("button", { name: "Worker Effort" });
-		expect(effort).toHaveTextContent("Provider default");
+		expect(effort).toHaveTextContent("low");
+		expect(onEffortChange).not.toHaveBeenCalled();
 		await userEvent.click(effort);
+		expect(screen.queryByRole("menuitem", { name: "Provider default" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: "default" })).not.toBeInTheDocument();
 		await userEvent.click(await screen.findByRole("menuitem", { name: "high" }));
 		expect(onEffortChange).toHaveBeenCalledWith("high");
 	});

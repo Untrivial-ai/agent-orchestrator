@@ -569,7 +569,7 @@ describe("TaskComposer", () => {
 		);
 
 		expect(startTask()).toBeDisabled();
-		expect(screen.getByRole("status", { name: "loading project context…" })).toBeInTheDocument();
+		expect(screen.queryByTestId("execution-context")).not.toBeInTheDocument();
 		fireEvent.change(task(), { target: { value: "should wait" } });
 		fireEvent.keyDown(task(), { key: "Enter", shiftKey: false, altKey: false });
 		expect(h.post).not.toHaveBeenCalled();
@@ -1392,7 +1392,7 @@ describe("TaskComposer", () => {
 		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("opus[1m]");
 	});
 
-	it("preselects the first catalog model when none is marked default", async () => {
+	it("does not invent a catalog default when none is reported", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
 				return {
@@ -1414,15 +1414,19 @@ describe("TaskComposer", () => {
 		);
 
 		const picker = await screen.findByRole("button", { name: "Model" });
-		expect(picker).toHaveTextContent("GPT-5");
-		expect(picker).not.toHaveTextContent("Use codex's default");
+		expect(picker).toHaveTextContent("Model not reported");
 
 		await userEvent.click(picker);
-		expect(screen.queryByRole("menuitem", { name: "Use codex's default" })).not.toBeInTheDocument();
 		expect(await screen.findByRole("menuitem", { name: "GPT-5" })).toBeInTheDocument();
+		await userEvent.keyboard("{Escape}");
+		h.post.mockResolvedValueOnce({ data: { workerId: "sess-unreported-model" } });
+		fireEvent.change(task(), { target: { value: "Use the provider's model" } });
+		fireEvent.click(startTask());
+		await waitFor(() => expect(h.post).toHaveBeenCalled());
+		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("model");
 	});
 
-	it("spawns with the project worker model even when the user never opens the picker", async () => {
+	it("inherits the project worker model without saving it as a task override", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
 				return {
@@ -1460,14 +1464,10 @@ describe("TaskComposer", () => {
 		fireEvent.change(task(), { target: { value: "Use project default model" } });
 		fireEvent.click(screen.getByText("Start task"));
 
-		await waitFor(() =>
-			expect(h.post).toHaveBeenCalledWith(
-				"/api/v1/orchestrators/delegate",
-				expect.objectContaining({
-					body: expect.objectContaining({ agent: "codex", model: "gpt-5" }),
-				}),
-			),
-		);
+		await waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+		expect(h.post.mock.calls[0][1].body).toEqual(expect.objectContaining({ agent: "codex" }));
+		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("model");
+		expect(JSON.parse(window.localStorage.getItem("ao.taskComposer.preferences.v1") ?? "{}")["proj-1"].agents.codex.model).toBe("");
 	});
 
 	it("forwards model refresh metadata to the task picker", async () => {
@@ -1559,6 +1559,7 @@ describe("TaskComposer", () => {
 
 		const model = await screen.findByRole("button", { name: "Model" });
 		await userEvent.click(model);
+		expect(screen.queryByRole("menuitem", { name: "Use agent model" })).not.toBeInTheDocument();
 		await userEvent.type(screen.getByRole("searchbox", { name: "Search model" }), "gpt-5.1");
 		await userEvent.click(screen.getByRole("menuitem", { name: "Use “gpt-5.1” as a custom model" }));
 		fireEvent.change(task(), { target: { value: "Use the selected model" } });
@@ -1585,7 +1586,8 @@ describe("TaskComposer", () => {
 							id: "gpt-test",
 							label: "GPT Test",
 							isDefault: true,
-							efforts: ["low", "high"],
+							efforts: ["default", "low", "high"],
+							defaultEffort: "low",
 						}],
 						allowCustom: true,
 						refreshRecommended: false,
@@ -1617,9 +1619,137 @@ describe("TaskComposer", () => {
 		expect(h.post.mock.calls[1][1].body).toEqual(expect.objectContaining({ effort: "low" }));
 
 		await userEvent.click(effortPicker);
-		await userEvent.click(await screen.findByRole("menuitem", { name: "Default" }));
+		expect(screen.queryByRole("menuitem", { name: "Default" })).not.toBeInTheDocument();
+		await userEvent.click(await screen.findByRole("menuitem", { name: "High" }));
 		fireEvent.click(screen.getByText("Start task"));
 		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(3));
-		expect(h.post.mock.calls[2][1].body).toEqual(expect.objectContaining({ effort: "" }));
+		expect(h.post.mock.calls[2][1].body).not.toHaveProperty("effort");
+		expect(JSON.parse(window.localStorage.getItem("ao.taskComposer.preferences.v1") ?? "{}")["proj-1"].agents.codex).not.toHaveProperty("effort");
+	});
+
+	it("returns to the reported agent effort without pinning it", async () => {
+		h.get.mockImplementation(async (path: string) => path.includes("/models")
+			? { data: { agent: "codex", selectionMode: "catalog", models: [
+				{ id: "gpt-test", label: "GPT Test", isDefault: true, efforts: ["low", "high"], defaultEffort: "low" },
+			], allowCustom: true } }
+			: { data: { status: "ok", project: { config: { worker: { agent: "codex" } } } } });
+		h.post.mockResolvedValue({ data: { workerId: "sess-tuned" } });
+
+		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
+		const picker = await screen.findByRole("button", { name: "Effort" });
+		expect(picker).toHaveTextContent("Low");
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: "High" }));
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: "Low" }));
+		fireEvent.click(startTask());
+		await waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("effort");
+		expect(JSON.parse(window.localStorage.getItem("ao.taskComposer.preferences.v1") ?? "{}")["proj-1"].agents.codex).not.toHaveProperty("effort");
+	});
+
+	it("can clear an effort choice when the agent reports no preferred level", async () => {
+		h.get.mockImplementation(async (path: string) => path.includes("/models")
+			? { data: { agent: "codex", selectionMode: "catalog", models: [
+				{ id: "gpt-test", label: "GPT Test", isDefault: true, efforts: ["low", "high"] },
+			], allowCustom: true } }
+			: { data: { status: "ok", project: { config: { worker: { agent: "codex" } } } } });
+		h.post.mockResolvedValue({ data: { workerId: "sess-tuned" } });
+
+		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
+		const picker = await screen.findByRole("button", { name: "Effort" });
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: "High" }));
+		await userEvent.click(picker);
+		await userEvent.click(screen.getByRole("menuitem", { name: "Use agent effort" }));
+		expect(picker).toHaveTextContent("Effort not reported");
+		fireEvent.click(startTask());
+		await waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("effort");
+		expect(JSON.parse(window.localStorage.getItem("ao.taskComposer.preferences.v1") ?? "{}")["proj-1"].agents.codex).not.toHaveProperty("effort");
+	});
+
+	it("shows a stored implicit model as the catalog choice without pinning it", async () => {
+		h.get.mockImplementation(async (path: string) => path.includes("/models")
+			? { data: { agent: "codex", selectionMode: "catalog", models: [{ id: "gpt-test", label: "GPT Test", isDefault: true }], allowCustom: true } }
+			: { data: { status: "ok", project: { config: { worker: { agent: "codex", agentConfig: { model: "default" } } } } } });
+		h.post.mockResolvedValue({ data: { workerId: "sess-1" } });
+
+		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("GPT Test");
+		fireEvent.click(screen.getByText("Start task"));
+		await waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("model");
+		expect(JSON.parse(window.localStorage.getItem("ao.taskComposer.preferences.v1") ?? "{}")["proj-1"].agents.codex.model).toBe("");
+	});
+
+	it.each([
+		{ selectionMode: "catalog", preferred: "GPT New", alternative: "GPT Old", preferenceField: "model" },
+		{ selectionMode: "mode", preferred: "Plan", alternative: "Fast", preferenceField: "mode" },
+	] as const)("returns $selectionMode to the provider's choice after a custom selection", async ({ selectionMode, preferred, alternative, preferenceField }) => {
+		h.get.mockImplementation(async (path: string) => path.includes("/models")
+			? { data: { agent: "codex", selectionMode, models: [
+				{ id: "preferred", label: preferred, isDefault: true },
+				{ id: "alternative", label: alternative },
+			], allowCustom: selectionMode === "catalog" } }
+			: { data: { status: "ok", project: { agent: "codex", config: {} } } });
+		h.post.mockResolvedValue({ data: { workerId: "sess-1" } });
+
+		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
+		const picker = await screen.findByRole("button", { name: "Model" });
+		expect(picker).toHaveTextContent(preferred);
+		await userEvent.click(picker);
+		await userEvent.click(await screen.findByRole("menuitem", { name: alternative }));
+		fireEvent.click(startTask());
+		await waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+		expect(h.post.mock.calls[0][1].body.model).toBe("alternative");
+
+		await userEvent.click(picker);
+		await userEvent.click(await screen.findByRole("menuitem", { name: preferred }));
+		expect(picker).toHaveTextContent(preferred);
+		fireEvent.click(startTask());
+		await waitFor(() => expect(h.post).toHaveBeenCalledTimes(2));
+		expect(h.post.mock.calls[1][1].body).not.toHaveProperty("model");
+		const saved = JSON.parse(window.localStorage.getItem("ao.taskComposer.preferences.v1") ?? "{}")["proj-1"].agents.codex;
+		expect(saved[preferenceField]).toBe("");
+	});
+
+	it("overrides an explicitly configured project model when choosing the provider's model", async () => {
+		h.get.mockImplementation(async (path: string) => path.includes("/models")
+			? { data: { agent: "codex", selectionMode: "catalog", models: [
+				{ id: "gpt-new", label: "GPT New", isDefault: true },
+				{ id: "gpt-old", label: "GPT Old" },
+			], allowCustom: true } }
+			: { data: { status: "ok", project: { agent: "codex", config: { worker: { agent: "codex", agentConfig: { model: "gpt-old" } } } } } });
+		h.post.mockResolvedValue({ data: { workerId: "sess-1" } });
+
+		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
+		const picker = await screen.findByRole("button", { name: "Model" });
+		expect(picker).toHaveTextContent("GPT Old");
+		await userEvent.click(picker);
+		await userEvent.click(await screen.findByRole("menuitem", { name: "GPT New" }));
+		expect(picker).toHaveTextContent("GPT New");
+		fireEvent.click(startTask());
+		await waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+		expect(h.post.mock.calls[0][1].body.model).toBe("gpt-new");
+	});
+
+	it("clears a mode override when the agent reports no preferred mode", async () => {
+		h.get.mockImplementation(async (path: string) => path.includes("/models")
+			? { data: { agent: "codex", selectionMode: "mode", models: [{ id: "fast", label: "Fast" }], allowCustom: false } }
+			: { data: { status: "ok", project: { agent: "codex", config: {} } } });
+		h.post.mockResolvedValue({ data: { workerId: "sess-1" } });
+
+		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
+		const picker = await screen.findByRole("button", { name: "Model" });
+		await userEvent.click(picker);
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Fast" }));
+		expect(picker).toHaveTextContent("Fast");
+		await userEvent.click(picker);
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Use agent mode" }));
+		expect(picker).toHaveTextContent("Mode not reported");
+		fireEvent.click(startTask());
+		await waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("model");
 	});
 });

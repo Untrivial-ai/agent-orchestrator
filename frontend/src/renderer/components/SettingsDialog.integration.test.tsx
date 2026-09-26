@@ -106,8 +106,8 @@ describe("Settings recovery modal integration", () => {
 		const client = renderDialogs();
 		await userEvent.click(await screen.findByRole("button", { name: "Agents" }));
 		const projectDialog = screen.getByRole("dialog");
-		const trigger = await screen.findByLabelText("Default worker agent");
-		await openAgentManagement("Default worker agent");
+		const trigger = await screen.findByLabelText("Worker agent");
+		await openAgentManagement("Worker agent");
 		await screen.findByRole("textbox", { name: "Search harnesses" });
 
 		act(() => client.setQueryData(agentReadinessQueryKey, {
@@ -174,14 +174,14 @@ describe("Settings recovery modal integration", () => {
 		await userEvent.type(name, "Unsaved project name");
 		await userEvent.click(screen.getByRole("button", { name: "Agents" }));
 		const form = document.getElementById("project-settings-form");
-		await openAgentManagement("Default worker agent");
+		await openAgentManagement("Worker agent");
 		await screen.findByRole("textbox", { name: "Search harnesses" });
 
 		expect(form).toBeInTheDocument();
 		if (dismiss === "Escape") await userEvent.keyboard("{Escape}");
 		else await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
 
-		expect(await screen.findByRole("button", { name: "Default worker agent" })).toHaveTextContent("Codex");
+		expect(await screen.findByRole("button", { name: "Worker agent" })).toHaveTextContent("Codex");
 		expect(screen.getByRole("button", { name: "Agents" })).toHaveAttribute("aria-current", "page");
 		expect(document.getElementById("project-settings-form")).toBe(form);
 		await userEvent.click(screen.getByRole("button", { name: "General" }));
