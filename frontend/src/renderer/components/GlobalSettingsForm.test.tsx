@@ -339,7 +339,7 @@ describe("GlobalSettingsForm", () => {
 	it("selects Git Bash as the default Windows terminal", async () => {
 		const user = userEvent.setup();
 		renderForm();
-		const selector = await screen.findByLabelText("Default terminal");
+		const selector = await screen.findByLabelText("Terminal shell");
 
 		await user.click(selector);
 		await user.click(await screen.findByRole("menuitem", { name: "Git Bash" }));
@@ -351,7 +351,7 @@ describe("GlobalSettingsForm", () => {
 		const user = userEvent.setup();
 		renderForm();
 
-		await user.click(await screen.findByLabelText("Default terminal"));
+		await user.click(await screen.findByLabelText("Terminal shell"));
 		await user.click(await screen.findByRole("menuitem", { name: "Custom path" }));
 		await waitFor(() => expect(setUiSettings).toHaveBeenCalledWith({ terminalShell: { kind: "custom" } }));
 

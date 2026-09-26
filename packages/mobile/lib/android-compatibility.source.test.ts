@@ -57,8 +57,11 @@ describe("Android native compatibility boundaries", () => {
 		// that moves in step with it inside a native form sheet.
 		expect(spawn).toContain("KeyboardStickyView");
 		expect(spawn).not.toContain("androidGrabber");
-		expect(spawn).toContain('Platform.OS === "ios" ? <View style={styles.flexSpacer} /> : null');
-		expect(spawn).toContain('promptHost: { width: "100%", height: 112 }');
+		// Only iOS's prompt flexes to fill the sheet; Android's sheet sizes to its
+		// content, so a flexing child there would have nothing to fill.
+		expect(spawn).toContain('Platform.OS === "ios" && styles.promptHostFill');
+		expect(spawn).toContain("const PROMPT_MIN_HEIGHT = 112;");
+		expect(spawn).toContain('promptHost: { width: "100%", height: PROMPT_MIN_HEIGHT }');
 		expect(source("../app/_layout.tsx")).toContain('presentation: Platform.OS === "ios" ? "formSheet" : "transparentModal"');
 	});
 
@@ -127,14 +130,26 @@ describe("Android native compatibility boundaries", () => {
 		expect(controls).not.toContain("<Host");
 	});
 
-	it("keeps the iOS Spawn prompt geometry aligned with Android", () => {
+	it("makes the entire iOS Spawn prompt a native text-input hit target", () => {
 		const ios = source("./spawn-prompt-input.ios.tsx");
-		// 112 is now the default for the optional `height` prop rather than a literal
-		// in the style, so the field can grow into whatever room the sheet has left.
+		// A SwiftUI TextField keeps an intrinsic one-line hit target even when its
+		// Host is tall. React Native's native TextInput owns the full frame, so every
+		// visible point in the prompt area focuses the editor.
+		expect(ios).toContain('import { StyleSheet, TextInput } from "react-native"');
+		expect(ios).not.toContain('@expo/ui');
 		expect(ios).toContain("height = 112");
 		expect(ios).toMatch(/paddingHorizontal:\s*space\.lg/);
-		expect(ios).toMatch(/paddingVertical:\s*space\.md/);
-		expect(ios).not.toContain("height: 154");
+		expect(ios).toMatch(/paddingTop:\s*space\.huge/);
+		expect(ios).toMatch(/paddingBottom:\s*space\.md/);
+		expect(ios).toContain('textAlignVertical="top"');
+		expect(ios).toContain("scrollEnabled");
+		expect(ios).toMatch(/style=\{\[styles\.input,\s*\{\s*height,/);
+	});
+
+	it("gives the iOS Spawn prompt modest top breathing room", () => {
+		const spawn = source("../app/spawn.tsx");
+		expect(spawn).toContain('Platform.OS === "ios" && styles.iosContent');
+		expect(spawn).toContain("iosContent: { paddingTop: space.xxxl }");
 	});
 
 	it("waits for the Android destination route before closing the drawer", () => {

@@ -54,7 +54,7 @@ func (s *Store) SetDefaultSessionMode(ctx context.Context, mode domain.SessionMo
 		DefaultSessionMode: mode,
 		UpdatedAt:          now,
 	}); err != nil {
-		return fmt.Errorf("set default session mode: %w", err)
+		return fmt.Errorf("set session mode: %w", err)
 	}
 	return nil
 }

@@ -104,6 +104,15 @@ All AO application state lives under `~/.ao` by default, including the daemon da
 	<Accordion title="The legacy `ao` command is not found">
 		The desktop app does not require it. Only troubleshoot the package manager's global bin path if you intentionally use the frozen legacy CLI.
 	</Accordion>
+	<Accordion title="macOS says the developer cannot be verified">
+		In Finder, right-click Agent Orchestrator, choose Open, then choose Open again in the confirmation dialog. If macOS still blocks the app, run these diagnostics and include the output when opening an issue:
+		```bash
+		sw_vers
+		codesign -dvvv "/Applications/Agent Orchestrator.app"
+		spctl -a -t exec -vvv --ignore-cache --no-cache "/Applications/Agent Orchestrator.app"
+		log show --last 10m --predicate 'subsystem == "com.apple.syspolicy"'
+		```
+	</Accordion>
 </Accordions>
 
 ## Next

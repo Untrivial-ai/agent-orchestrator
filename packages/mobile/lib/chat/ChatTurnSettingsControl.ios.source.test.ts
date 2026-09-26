@@ -8,11 +8,13 @@ import { describe, expect, it } from "vitest";
 const source = readFileSync(fileURLToPath(new URL("./ChatTurnSettingsControl.ios.tsx", import.meta.url)), "utf8");
 
 describe("iOS turn settings menu anchor", () => {
-	it("sizes the native host to its label so the popup stays pinned left", () => {
-		expect(source).toContain("matchContents={{ horizontal: true, vertical: true }}");
+	it("keeps a stable left-side anchor as selected labels change", () => {
+		expect(source).toContain("matchContents={{ horizontal: false, vertical: true }}");
 		expect(source).toContain('ignoreSafeArea="all"');
-		expect(source).not.toContain("<Spacer");
-		expect(source).not.toContain("maxWidth: 1000");
+		expect(source).toContain('host: { alignSelf: "flex-start", width: 220, maxWidth: "100%", height: 44 }');
+		expect(source).toContain('<View pointerEvents="none" accessibilityElementsHidden style={[styles.visibleLabel, disabled && styles.disabledLabel]}>');
+		expect(source).toContain('<RNText numberOfLines={1} style={styles.visibleText}>{label}</RNText>');
+		expect(source).toContain('accessibilityLabel(`Turn settings, ${label}`)');
 	});
 });
 

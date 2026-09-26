@@ -32,7 +32,7 @@ const summary = (overrides: Partial<SessionPRSummary> = {}): SessionPRSummary =>
 });
 
 describe("PRSummaryParts", () => {
-	it("links GitHub authors and successful checks to their provider pages", () => {
+	it("links authors while keeping compact check labels static", () => {
 		render(
 			<>
 				<PRSummaryMeta pr={summary()} />
@@ -45,53 +45,50 @@ describe("PRSummaryParts", () => {
 			"src",
 			"https://avatars.githubusercontent.com/u/123?v=4",
 		);
-		expect(screen.getByRole("link", { name: "Checks passing" })).toHaveAttribute(
-			"href",
-			"https://github.com/acme/repo/pull/7/checks",
-		);
+		expect(screen.getByText("Checks passing")).toBeInTheDocument();
+		expect(screen.queryByRole("link", { name: "Checks passing" })).not.toBeInTheDocument();
 	});
 
-	it("keeps running checks visible and pulsing beneath a higher-priority review blocker", () => {
+	it("shows pending checks, review, and merge state as separate rows", () => {
 		const { container } = render(
 			<PRCardStatusSummary
 				pr={summary({
-					ci: { autoInjectCI: true, state: "pending", failingChecks: [] },
+					ci: { autoInjectCI: true, state: "unknown", failingChecks: [] },
 					review: { decision: "review_required", hasUnresolvedHumanComments: false, unresolvedBy: [] },
 					mergeability: {
-						state: "blocked",
-						reasons: ["review_required"],
+						state: "unknown",
+						reasons: [],
 						prUrl: "https://github.com/acme/repo/pull/7",
 					},
 				})}
 			/>,
 		);
 
-		expect(screen.getByText("Review status")).toBeInTheDocument();
-		expect(screen.getByText("Required review not submitted")).toBeInTheDocument();
-		expect(screen.getByRole("link", { name: "Checks running" })).toHaveAttribute(
-			"href",
-			"https://github.com/acme/repo/pull/7/checks",
-		);
+		expect(screen.getByText("Review pending")).toBeInTheDocument();
+		expect(screen.queryByText("Required review not submitted")).not.toBeInTheDocument();
+		expect(screen.getByText("Merge pending")).toBeInTheDocument();
+		expect(screen.getByText("Checks pending")).toBeInTheDocument();
+		expect(container.querySelector("svg.animate-spin")).not.toBeInTheDocument();
 		expect(container.querySelector(".animate-status-pulse")).toBeInTheDocument();
 	});
 
-	it("optically centers the primary status marker with its text line", () => {
+	it("renders a status marker for each checks, review, and merge row", () => {
 		const { container } = render(<PRCardStatusSummary pr={summary()} />);
 
-		const marker = container.querySelector(".size-dot-sm");
-		expect(marker).toHaveClass("size-dot-sm");
-		expect(marker).not.toHaveClass("mt-1");
+		expect(container.querySelectorAll(".size-dot-sm")).toHaveLength(0);
+		expect(container.querySelectorAll('svg[class*="size-3.5"]')).toHaveLength(3);
 	});
 
-	it("centers a supplied primary action beside the compact status stack", () => {
+	it("places a supplied merge action on the merge-status row", () => {
 		const { container } = render(<PRCardStatusSummary action={<button type="button">Merge</button>} pr={summary()} />);
 
 		const action = screen.getByRole("button", { name: "Merge" });
-		const supportingStatus = screen.getByRole("link", { name: "Checks passing" });
-		expect(action.parentElement).toHaveClass("shrink-0", "self-center");
-		expect(action.parentElement?.parentElement).toHaveClass("items-center");
-		expect(container.querySelector(".grid")).toContainElement(supportingStatus);
-		expect(screen.getByText("Mergeable")).toBeInTheDocument();
+		const supportingStatus = screen.getByText("Checks passing");
+		expect(action.parentElement).toHaveClass("justify-end");
+		expect(action.parentElement?.parentElement).toContainElement(screen.getByText("Ready to merge"));
+		expect(container).toContainElement(supportingStatus);
+		expect(screen.getByText("PR approved")).toBeInTheDocument();
+		expect(screen.queryByRole("link", { name: "Ready to merge" })).not.toBeInTheDocument();
 	});
 
 	it("renders failing check links with visible error contrast", () => {

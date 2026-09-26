@@ -469,9 +469,8 @@ func Run() error {
 			}
 			agentSvc.ObserveActiveCodexAccountCapacity(observation)
 		},
-		// A model the user picked in ChatUI must land on the session before the
-		// next prompt routes, so a later TUI rebuild resumes with the same model
-		// instead of reverting to the project default.
+		// Sync ChatUI's model choice, including clearing its override, before a
+		// later TUI rebuild reads the session metadata.
 		OnModelChanged: func(sessionID domain.SessionID, model string) {
 			if sessMgr == nil {
 				return

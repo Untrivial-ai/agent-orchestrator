@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -593,6 +594,23 @@ func prState(r domain.PullRequest) domain.PRState {
 	}
 }
 
+func commenterJSON(commenters []string) string {
+	data, _ := json.Marshal(commenters)
+	if len(data) == 0 || string(data) == "null" {
+		return "[]"
+	}
+	return string(data)
+}
+
+func parseCommenterJSON(data string) []string {
+	var commenters []string
+	_ = json.Unmarshal([]byte(data), &commenters)
+	if len(commenters) == 0 {
+		return nil
+	}
+	return commenters
+}
+
 func genPRParams(r domain.PullRequest) gen.UpsertPRParams {
 	return gen.UpsertPRParams{
 		URL:                      r.URL,
@@ -617,6 +635,8 @@ func genPRParams(r domain.PullRequest) gen.UpsertPRParams {
 		ChangedFiles:             int64(r.ChangedFiles),
 		Author:                   r.Author,
 		AuthorAvatarURL:          r.AuthorAvatarURL,
+		DiscussionCommentCount:   int64(r.DiscussionCommentCount),
+		DiscussionCommentersJson: commenterJSON(r.DiscussionCommenters),
 		BaseSha:                  r.BaseSHA,
 		MergeCommitSha:           r.MergeCommitSHA,
 		IsDraft:                  boolInt(r.Draft),
@@ -724,6 +744,8 @@ func prRowFromGen(p gen.PR) domain.PullRequest {
 		ChangedFiles:             int(p.ChangedFiles),
 		Author:                   p.Author,
 		AuthorAvatarURL:          p.AuthorAvatarURL,
+		DiscussionCommentCount:   int(p.DiscussionCommentCount),
+		DiscussionCommenters:     parseCommenterJSON(p.DiscussionCommentersJson),
 		BaseSHA:                  p.BaseSha,
 		MergeCommitSHA:           p.MergeCommitSha,
 		ProviderState:            p.ProviderState,

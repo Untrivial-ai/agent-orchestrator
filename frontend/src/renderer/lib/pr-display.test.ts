@@ -203,17 +203,53 @@ describe("prDiffSummary", () => {
 });
 
 describe("prCardPresentation", () => {
-	const priorityCases: Array<[string, Partial<SessionPRSummary>, string]> = [
-		["conflict + passing + approval", { mergeability: { state: "conflicting", reasons: [], prUrl: "" } }, "Not mergeable yet"],
-		["clean + passing + approval", { mergeability: { state: "mergeable", reasons: [], prUrl: "" } }, "Mergeable"],
-		["clean + failing + approval", { ci: { autoInjectCI: true, state: "failing", failingChecks: [] }, mergeability: { state: "mergeable", reasons: [], prUrl: "" } }, "Not mergeable yet"],
+	const priorityCases: Array<[string, Partial<SessionPRSummary>, string, string]> = [
+		[
+			"conflict + passing + approval",
+			{ mergeability: { state: "conflicting", reasons: [], prUrl: "" } },
+			"Merge conflict",
+			"Merge conflict",
+		],
+		[
+			"conflict + failing + approval",
+			{
+				ci: { autoInjectCI: true, state: "failing", failingChecks: [] },
+				mergeability: { state: "conflicting", reasons: [], prUrl: "" },
+			},
+			"Checks failing",
+			"Merge conflict",
+		],
+		[
+			"clean + passing + approval",
+			{ mergeability: { state: "mergeable", reasons: [], prUrl: "" } },
+			"Review approved",
+			"Ready to merge",
+		],
+		[
+			"clean + failing + approval",
+			{
+				ci: { autoInjectCI: true, state: "failing", failingChecks: [] },
+				mergeability: { state: "mergeable", reasons: [], prUrl: "" },
+			},
+			"Checks failing",
+			"Merge blocked",
+		],
+		[
+			"provider blocked + passing + approval",
+			{ mergeability: { state: "blocked", reasons: [], prUrl: "" } },
+			"Merge unavailable",
+			"Merge blocked",
+		],
 	];
-	it.each(priorityCases)("renders the priority stack for %s", (_name, overrides, readiness) => {
+	it.each(priorityCases)("shows %s as explicit status rows", (_name, overrides, primaryLabel, readinessLabel) => {
 		const presentation = prCardPresentation(summary(overrides));
-		expect(presentation.statusRows?.map((status) => status.label)).toEqual(
-			readiness === "Mergeable" ? ["Checks passing", "Review status"] : overrides.mergeability?.state === "conflicting" ? ["Merge conflict", "Checks passing", "Review status"] : ["Checks failing", "Review status"],
-		);
-		expect(presentation.readiness?.label).toBe(readiness);
+		expect(presentation.primary.label).toBe(primaryLabel);
+		expect(presentation.statusRows?.map((status) => status.label)).toEqual([
+			overrides.ci?.state === "failing" ? "Checks failing" : "Checks passing",
+			"PR approved",
+			readinessLabel,
+		]);
+		expect(presentation.readiness).toBeUndefined();
 	});
 
 	it("shows a required review once instead of repeating it as a merge blocker", () => {
@@ -235,52 +271,14 @@ describe("prCardPresentation", () => {
 			tone: "review",
 		});
 		expect(presentation.supporting.map((status) => status.label)).toEqual(["Checks passing"]);
+		expect(presentation.statusRows?.map((status) => status.label)).toEqual([
+			"Checks passing",
+			"Review pending",
+			"Merge blocked",
+		]);
 	});
 
-	it("treats a PR that needs no review as mergeable", () => {
-		const presentation = prCardPresentation(
-			summary({ review: { decision: "none", hasUnresolvedHumanComments: false, unresolvedBy: [] } }),
-		);
-
-		expect(presentation.readiness).toMatchObject({
-			label: "Mergeable",
-			detail: "No merge conflict, checks are passing, and the review requirement is satisfied.",
-			tone: "success",
-		});
-		expect(presentation.statusRows?.find((status) => status.key === "review")?.detail).toBe("No review required");
-	});
-
-	it.each(["review_required", "changes_requested"] as const)("does not call a %s PR mergeable", (decision) => {
-		const presentation = prCardPresentation(
-			summary({ review: { decision, hasUnresolvedHumanComments: false, unresolvedBy: [] } }),
-		);
-
-		expect(presentation.readiness?.label).toBe("Not mergeable yet");
-	});
-
-	it.each(["blocked", "unstable"] as const)("does not call a %s PR mergeable", (state) => {
-		const presentation = prCardPresentation(
-			summary({ mergeability: { state, reasons: [], prUrl: "https://github.com/acme/repo/pull/7" } }),
-		);
-
-		expect(presentation.readiness).toMatchObject({
-			label: "Not mergeable yet",
-			detail: "GitHub currently reports this pull request can't be merged.",
-		});
-	});
-
-	it.each(["approved", "none"] as const)("does not call a %s PR with unresolved review comments mergeable", (decision) => {
-		const presentation = prCardPresentation(
-			summary({ review: { decision, hasUnresolvedHumanComments: true, unresolvedBy: [] } }),
-		);
-
-		expect(presentation.readiness).toMatchObject({
-			label: "Not mergeable yet",
-			detail: "Unresolved review comments must be resolved before this PR can merge.",
-		});
-	});
-
-	it("shows checking merge readiness while provider state is pending", () => {
+	it("uses the primary status while provider state is pending", () => {
 		const presentation = prCardPresentation(
 			summary({
 				ci: { autoInjectCI: true, state: "pending", failingChecks: [] },
@@ -288,11 +286,15 @@ describe("prCardPresentation", () => {
 			}),
 		);
 
-		expect(presentation.readiness?.label).toBe("Checking merge readiness");
-		expect(presentation.readiness?.detail).toBe("Waiting for the latest checks and review state.");
+		expect(presentation.primary.label).toBe("Checks running");
+		expect(presentation.statusRows?.map((status) => status.label)).toEqual([
+			"Checks running",
+			"PR approved",
+			"Merge pending",
+		]);
 	});
 
-	it("prioritizes failing checks over lower-priority review and merge facts", () => {
+	it("keeps reviewer attention left while exposing failing checks and readiness separately", () => {
 		const presentation = prCardPresentation(
 			summary({
 				ci: {
@@ -309,9 +311,14 @@ describe("prCardPresentation", () => {
 			}),
 		);
 
-		expect(presentation.primary.label).toBe("Checks failing");
-		expect(presentation.primary.links[0]).toMatchObject({ label: "unit", href: "https://ci/unit" });
-		expect(presentation.supporting).toEqual([]);
+		expect(presentation.primary.label).toBe("Review required");
+		expect(presentation.supporting[0]).toMatchObject({
+			label: "Checks failing",
+			tone: "error",
+		});
+		expect(presentation.supporting[0].links[0]).toMatchObject({ label: "unit", href: "https://ci/unit" });
+		expect(presentation.statusRows?.[0]?.links[0]).toMatchObject({ label: "unit", href: "https://ci/unit" });
+		expect(presentation.statusRows?.[2]?.label).toBe("Merge blocked");
 	});
 
 	it("retains running checks as linked supporting state when review is the primary action", () => {
@@ -333,6 +340,12 @@ describe("prCardPresentation", () => {
 			href: "https://github.com/acme/repo/pull/7/checks",
 			breathe: true,
 		});
+		expect(presentation.statusRows?.[0]).toMatchObject({
+			label: "Checks running",
+			href: "https://github.com/acme/repo/pull/7/checks",
+			breathe: true,
+		});
+		expect(presentation.statusRows?.[2]?.label).toBe("Merge blocked");
 	});
 
 	it("shows running checks instead of an internal provider blocker", () => {
@@ -373,21 +386,6 @@ describe("prCardPresentation", () => {
 			detail: "GitHub currently reports this pull request can't be merged.",
 			links: [],
 		});
-	});
-
-	it("names GitLab when a merge request is blocked", () => {
-		const url = "https://gitlab.com/acme/repo/-/merge_requests/7";
-		const presentation = prCardPresentation(
-			summary({
-				url,
-				htmlUrl: url,
-				provider: "gitlab",
-				mergeability: { state: "blocked", reasons: ["blocked_by_provider"], prUrl: url },
-			}),
-		);
-
-		expect(presentation.primary.detail).toBe("GitLab currently reports this pull request can't be merged.");
-		expect(presentation.readiness?.detail).toBe("GitLab currently reports this pull request can't be merged.");
 	});
 });
 

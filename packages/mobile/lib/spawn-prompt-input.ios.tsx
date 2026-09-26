@@ -1,34 +1,41 @@
-import { Host, TextInput, useNativeState } from "@expo/ui";
-import { textFieldStyle } from "@expo/ui/swift-ui/modifiers";
-import { useEffect } from "react";
+import { StyleSheet, TextInput } from "react-native";
 import { useTheme, useThemeState } from "./ThemeProvider";
 import type { SpawnPromptInputProps } from "./spawn-prompt-input.android";
-import { type, space } from "./tokens";
+import { space, type } from "./tokens";
 
 export function SpawnPromptInput({ value, onChangeText, height = 112 }: SpawnPromptInputProps) {
 	const t = useTheme();
 	const { scheme } = useThemeState();
-	const nativeValue = useNativeState(value);
-
-	useEffect(() => {
-		if (nativeValue.value !== value) nativeValue.value = value;
-	}, [nativeValue, value]);
 
 	return (
-		<Host style={{ flex: 1, height }} colorScheme={scheme} seedColor={t.accent}>
-			<TextInput
-				value={nativeValue}
-				onChangeText={onChangeText}
-				placeholder="What should this worker do?"
-				multiline
-				numberOfLines={3}
-				maxLength={4096}
-				autoFocus
-				style={{ height, paddingHorizontal: space.lg, paddingVertical: space.md }}
-				textStyle={{ fontFamily: "Geist_400Regular", color: t.textPrimary, fontSize: type.callout.fontSize }}
-				placeholderTextColor={t.textTertiary}
-				modifiers={[textFieldStyle("plain")]}
-			/>
-		</Host>
+		<TextInput
+			accessibilityLabel="Task prompt"
+			value={value}
+			onChangeText={onChangeText}
+			placeholder="What should this worker do?"
+			placeholderTextColor={t.textTertiary}
+			selectionColor={t.accent}
+			keyboardAppearance={scheme}
+			multiline
+			scrollEnabled
+			textAlignVertical="top"
+			autoFocus
+			style={[styles.input, { height, color: t.textPrimary }]}
+		/>
 	);
 }
+
+const styles = StyleSheet.create({
+	// UIKit gives the TextInput itself this complete rectangle, unlike a tall
+	// SwiftUI Host around an intrinsic one-line TextField. Every visible point is
+	// therefore a real editor hit target, and long prompts scroll within it.
+	input: {
+		width: "100%",
+		fontFamily: "Geist_400Regular",
+		fontSize: type.callout.fontSize,
+		lineHeight: type.callout.lineHeight,
+		paddingHorizontal: space.lg,
+		paddingTop: space.huge,
+		paddingBottom: space.md,
+	},
+});

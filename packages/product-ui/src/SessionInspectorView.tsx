@@ -11,8 +11,7 @@ import {
 } from "./icons";
 import {
 	PRCardStatusSummary,
-	PRSummaryMeta,
-	type CountNounLabel,
+	prBranchRange,
 } from "./PRSummaryDisplay";
 import type {
 	PRCardPresentation,
@@ -289,81 +288,65 @@ const prStateTone: Record<InspectorPullRequestState, string> = {
 };
 
 export function InspectorPullRequestCardView({
-	countNounLabel,
 	externalIcon,
 	externalLink: ExternalLink,
 	mergeAction,
 	mergeError,
-	openLabel,
 	pr,
-	pullRequestIcon,
 	statusNotice,
+	viewLabel,
 }: {
-	countNounLabel: CountNounLabel;
 	externalIcon?: ReactNode;
 	externalLink: ExternalLinkComponent;
 	mergeAction?: ReactNode;
 	mergeError?: string | null;
-	openLabel: string;
 	pr: InspectorPullRequest;
-	pullRequestIcon?: ReactNode;
 	statusNotice?: ReactNode;
+	viewLabel: string;
 }) {
+	const branchRange = prBranchRange(pr);
+	const stateBadge = (
+		<span
+			className={cn(
+				"inline-flex h-5 shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-full border border-transparent px-1.5 py-0.5 text-[9px] leading-none font-medium transition-[background-color,border-color,color,box-shadow]",
+				"border-border text-foreground",
+				prStateTone[pr.state],
+			)}
+			data-slot="badge"
+		>
+			{pr.stateLabel}
+		</span>
+	);
 	return (
-		<article className="min-w-0 w-full rounded-lg border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3 py-2.5">
-			{pr.title ? (
-				<ExternalLink
-					className="inline text-sm font-semibold leading-snug tracking-tight text-settings-label underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-					href={pr.href}
-				>
-					{pr.title}
-				</ExternalLink>
-			) : null}
-			<div className={cn("flex min-w-0 items-center gap-2", pr.title && "mt-1.5")}>
-				<ExternalLink
-					ariaLabel={openLabel}
-					className="inline-flex min-w-0 items-center gap-1 font-mono text-xs font-medium text-settings-label decoration-muted-foreground underline-offset-2 hover:text-settings-label hover:underline focus-visible:rounded-sm focus-visible:text-settings-label focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-					href={pr.href}
-				>
-					{pullRequestIcon ?? <GitPullRequestIcon className="size-icon-sm shrink-0" />}
-					<span>PR #{pr.number}</span>
-					{externalIcon ?? <ArrowUpRightIcon className="size-icon-2xs shrink-0" />}
-				</ExternalLink>
-				<span
-					className={cn(
-						"inline-flex h-5 shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-full border border-transparent px-2 py-0.5 text-xs font-medium transition-[background-color,border-color,color,box-shadow] focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 [&>svg]:pointer-events-none [&>svg]:size-3",
-						"border-border text-foreground hover:bg-muted",
-						"h-5 px-1.5 text-[9px] leading-none font-medium",
-						prStateTone[pr.state],
-					)}
-					data-slot="badge"
-				>
-					{pr.stateLabel}
-				</span>
+		<article className="min-w-0 w-full rounded-lg border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3 py-3">
+			<div className="flex min-w-0 items-baseline justify-between gap-2">
+				<span className="min-w-0 flex-1 text-sm font-semibold leading-snug tracking-tight text-settings-label">{pr.title || `PR #${pr.number}`}</span>
+				<div className="flex shrink-0 items-baseline gap-1.5">
+					{pr.state !== "open" ? stateBadge : null}
+					<span className="font-mono text-xs font-medium tabular-nums text-settings-label">#{pr.number}</span>
+				</div>
 			</div>
-			<PRSummaryMeta
-				className="mt-1.5"
-				countNounLabel={countNounLabel}
-				externalLink={ExternalLink}
-				pr={pr}
-			/>
-			{pr.state !== "merged" ? (
-				<>
-					<PRCardStatusSummary
-						action={mergeAction}
-						className="mt-2"
-						externalLink={ExternalLink}
-						presentation={pr.card}
-						reviewDetailsAction={pr.reviewDetailsAction}
-					/>
-					{statusNotice}
-					{mergeError ? (
-						<p className="mt-2 text-2xs leading-normal text-error" role="status">
-							{mergeError}
-						</p>
-					) : null}
-				</>
-			) : null}
+			{branchRange ? <p className="mt-1 min-w-0 truncate font-mono text-2xs text-settings-muted" title={branchRange}>{branchRange}</p> : null}
+			{pr.reviewDetailsAction ? <div className="mt-2 flex min-h-5 items-center text-xs text-settings-muted">{pr.reviewDetailsAction}</div> : null}
+			<div className="mt-2.5 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
+				{pr.state !== "merged" ? (
+					<PRCardStatusSummary externalLink={ExternalLink} presentation={pr.card} />
+				) : (
+					<span />
+				)}
+				<div className="flex items-center gap-2">
+					{mergeAction}
+					<ExternalLink
+						className="inline-flex h-6 items-center gap-1 rounded-md border border-border-strong px-2 text-xs font-medium text-settings-label hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+						href={pr.href}
+					>
+						{viewLabel}
+						{externalIcon ?? <ArrowUpRightIcon className="size-icon-2xs shrink-0" />}
+					</ExternalLink>
+				</div>
+			</div>
+			{statusNotice}
+			{mergeError ? <p className="mt-2 text-2xs leading-normal text-error" role="status">{mergeError}</p> : null}
 		</article>
 	);
 }

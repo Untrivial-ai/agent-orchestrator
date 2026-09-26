@@ -2926,17 +2926,11 @@ func (m *Manager) getRecord(ctx context.Context, id domain.SessionID) (domain.Se
 	return rec, nil
 }
 
-// PersistChatModel records the model the user picked in ChatUI onto the
-// session before the next prompt routes. The durable, API-visible session
-// metadata is the exact source a TUI rebuild reads to refresh the model, so a
-// later interface transition back to TUI keeps the same selection instead of
-// reverting to the project's configured default. Model-only writes never touch
-// the conversation or spawn a new provider session, so history is preserved.
+// PersistChatModel records or clears the ChatUI model override before the next
+// prompt routes. A later TUI rebuild reads this session metadata; the update
+// leaves conversation history and other session fields untouched.
 func (m *Manager) PersistChatModel(ctx context.Context, id domain.SessionID, model string) error {
 	want := strings.TrimSpace(model)
-	if want == "" {
-		return nil
-	}
 	updated, err := m.store.UpdateSessionModel(ctx, id, want)
 	if err != nil {
 		return fmt.Errorf("persist chat model %s: %w", id, err)

@@ -13,7 +13,9 @@ import {
 	InspectorSection as Section,
 	SessionInspectorShellView,
 	SessionInspectorSummaryView,
+	UserAvatar,
 	inspectorEmptyClass,
+	scmUserAvatarUrl,
 	type InspectorPullRequest,
 	type InspectorInlineComment,
 	type InspectorGithubReview,
@@ -27,7 +29,6 @@ import {
 	ArrowUpRight,
 	ChevronDown,
 	ChevronRight,
-	GitPullRequest,
 	GitMerge,
 	Info,
 	Play,
@@ -38,6 +39,7 @@ import {
 } from "lucide-react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { WORKER_DEFAULT_REVIEWERS } from "../lib/reviewer-harnesses";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { captureRendererEvent } from "../lib/telemetry";
 import { formatTimeCompact } from "../lib/format-time";
@@ -56,7 +58,7 @@ import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { clearTerminateSessionState, useTerminateSession } from "../hooks/useTerminateSession";
 import { formatEstimatedCost, type EstimatedCost } from "../lib/format-cost";
-import { prBrowserUrl, prCanMerge, prCardPresentation, prNounKeys, sessionPRDisplaySummaries } from "../lib/pr-display";
+import { prBrowserUrl, prCanMerge, prCardPresentation, sessionPRDisplaySummaries } from "../lib/pr-display";
 import { formatTokenCount } from "../lib/format-token-count";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import {
@@ -223,7 +225,6 @@ export const SessionInspector = memo(function SessionInspector({
 		onViewChange?.(next);
 		if (next === "files") onOpenFiles?.();
 	}, [onOpenFiles, onViewChange]);
-	const openReviews = useCallback(() => setView("reviews"), [setView]);
 	// A persisted/controlled Reviews selection can outlive the last reviewable PR.
 	// Keep the shell on a real, visible tab instead of rendering an empty, unlabelled body.
 	const reviewsAvailable = reviewsTabVisible(session);
@@ -291,7 +292,7 @@ export const SessionInspector = memo(function SessionInspector({
 					session ? <ReviewsView onOpenReviewFile={onOpenReviewFile} onOpenReviewerTerminal={onOpenReviewerTerminal} onOpenReviewerChat={onOpenReviewerChat} onWorkerMessageSent={onWorkerMessageSent} session={session} /> : undefined
 				}
 				summaryView={
-					session ? <SummaryView canOpenReviews={reviewsAvailable} onOpenReviews={openReviews} session={session} /> : undefined
+					session ? <SummaryView session={session} /> : undefined
 				}
 				tabs={tabs}
 			/>
@@ -314,15 +315,7 @@ function normalizeReviewerId(value: string | undefined): string {
 	return value?.trim().replace(/^@+/, "").toLowerCase() ?? "";
 }
 
-const SummaryView = memo(function SummaryView({
-	canOpenReviews,
-	onOpenReviews,
-	session,
-}: {
-	canOpenReviews: boolean;
-	onOpenReviews: () => void;
-	session: WorkspaceSession;
-}) {
+const SummaryView = memo(function SummaryView({ session }: { session: WorkspaceSession }) {
 	const { t } = useTranslation();
 	const query = useSessionScmSummary(session.id);
 	const developerMode = useUiStore((state) => state.developerMode);
@@ -359,9 +352,7 @@ const SummaryView = memo(function SummaryView({
 					{hasPRs ? (
 						prSummaries.map((pr) => (
 							<PRSummaryCard
-								canOpenReviews={canOpenReviews}
 								key={pr.url || pr.htmlUrl || pr.number}
-								onOpenReviews={onOpenReviews}
 								pr={pr}
 								sessionId={session.id}
 							/>
@@ -1207,17 +1198,7 @@ function updateSessionMergePolicy(
 	}));
 }
 
-function PRSummaryCard({
-	canOpenReviews,
-	onOpenReviews,
-	pr,
-	sessionId,
-}: {
-	canOpenReviews: boolean;
-	onOpenReviews: () => void;
-	pr: SessionPRSummary;
-	sessionId: string;
-}) {
+function PRSummaryCard({ pr, sessionId }: { pr: SessionPRSummary; sessionId: string }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const presentation = prCardPresentation(pr);
@@ -1239,20 +1220,58 @@ function PRSummaryCard({
 		},
 	});
 	const mergeError = mergePr.error instanceof Error ? mergePr.error.message : null;
+	const commenters = Array.from(new Set([
+		...(pr.discussionCommenters ?? []),
+		...(pr.review.reviews ?? []).filter((review) => review.body?.trim()).map((review) => review.reviewerId),
+		...pr.review.unresolvedBy.filter((person) => person.count > 0).map((person) => person.reviewerId),
+		...(pr.review.resolvedBy ?? []).filter((person) => person.count > 0).map((person) => person.reviewerId),
+	].map((login) => login.trim()).filter(Boolean)));
+	const commenterAvatars = commenters.length > 0 ? (
+		<div className="inline-flex h-5 shrink-0 items-center" aria-label={t("pr.commenters", { names: commenters.join(", ") })}>
+			{commenters.slice(0, 5).map((login, index) => (
+				<span
+					aria-label={t("pr.commentBy", { name: login })}
+					className={cn("group relative inline-flex size-5 shrink-0 items-center justify-center cursor-default outline-none hover:z-20 focus-visible:z-20", index > 0 && "-ml-0.5")}
+					key={login}
+					role="img"
+					tabIndex={0}
+				>
+					<UserAvatar
+						className="!size-5 border border-(--color-bg-settings-input) shadow-sm transition-transform duration-200 ease-out group-hover:-translate-y-1 group-hover:scale-[1.7] group-focus-visible:-translate-y-1 group-focus-visible:scale-[1.7]"
+						imageUrl={scmUserAvatarUrl(pr.provider, prBrowserUrl(pr), login)}
+						name={login}
+					/>
+					<span className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border-strong bg-popover px-2 py-1 text-2xs text-foreground opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100">
+						@{login}
+					</span>
+				</span>
+			))}
+			{commenters.length > 5 ? (
+				<span className="ml-1.5 text-2xs text-settings-muted">
+					+{commenters.length - 5}
+				</span>
+			) : null}
+		</div>
+	) : null;
+	const discussionCommentCount = pr.discussionCommentCount ?? 0;
+	const discussionCount = discussionCommentCount > 0 ? (
+		<span aria-label={`${discussionCommentCount} ${t("pr.noun.comment", { count: discussionCommentCount })}`} className="inline-flex h-5 items-center gap-1 text-xs leading-none text-settings-muted">
+			<MessageSquare aria-hidden="true" className="size-3.5 shrink-0" />
+			{discussionCommentCount}
+		</span>
+	) : null;
+	const reviewDetailsAction = discussionCount || commenterAvatars ? (
+		<div className="inline-flex h-5 items-center gap-1">{discussionCount}{commenterAvatars}</div>
+	) : undefined;
 	const viewModel: InspectorPullRequest = {
 		...pr,
 		card: presentation,
 		href: prBrowserUrl(pr),
 		stateLabel: t(prStateLabelKeys[pr.state]),
-		reviewDetailsAction: canOpenReviews && pr.review.decision !== "none" ? (
-			<button className="whitespace-nowrap text-2xs text-settings-muted underline-offset-2 hover:underline" onClick={onOpenReviews} type="button">
-				{t("pr.review.viewDetails")} ↗
-			</button>
-		) : undefined,
+		reviewDetailsAction,
 	};
 	return (
 		<InspectorPullRequestCardView
-			countNounLabel={(count, noun) => `${count} ${t(prNounKeys[noun], { count })}`}
 			externalIcon={<ArrowUpRight aria-hidden="true" className="size-icon-2xs shrink-0" strokeWidth={2} />}
 			externalLink={ProductExternalLink}
 			mergeAction={
@@ -1275,9 +1294,8 @@ function PRSummaryCard({
 				) : undefined
 			}
 			mergeError={mergeError}
-			openLabel={t("inspector.openPR", { number: pr.number })}
 			pr={viewModel}
-			pullRequestIcon={<GitPullRequest className="size-icon-sm shrink-0" aria-hidden="true" />}
+			viewLabel={t("pr.card.viewPR")}
 		/>
 	);
 }
@@ -1467,14 +1485,6 @@ function scmTimelineStates(session: WorkspaceSession): ScmTimelineState[] {
 /** Reviewer harness the daemon accepts, typed from the generated schema. */
 type ReviewerHarness = NonNullable<components["schemas"]["TriggerReviewRequest"]["harness"]>;
 type AgentCatalog = components["schemas"]["AgentReadinessResponse"];
-
-const WORKER_DEFAULT_REVIEWERS: Partial<Record<WorkspaceSession["provider"], ReviewerHarness>> = {
-	"claude-code": "claude-code",
-	codex: "codex",
-	opencode: "opencode",
-	muse: "muse",
-	kimchi: "kimchi",
-};
 
 function resolveDefaultReviewerHarness(config: ProjectConfig | undefined, workerHarness: WorkspaceSession["provider"]): ReviewerHarness {
 	const configuredHarness = config?.reviewers?.[0]?.harness;
@@ -2313,7 +2323,6 @@ function ReviewPanel({
 							agents={agentCatalog?.agents}
 							contentAlign="end"
 							defaultHarness={resolvedDefaultHarness}
-							defaultOptionLabel={agentLabel(resolvedDefaultHarness)}
 							disabled={reviewRunning || autoReviewEnabled || isKilling || isSwitchingReviewer || isTriggering || isCancelling}
 							onChange={(next) => onReviewerHarnessPreviewChange(next as ReviewerHarness | "")}
 							onConfigChange={(harness, config) => onReviewerOverrideChange(harness as ReviewerHarness | "", config)}
@@ -2322,7 +2331,6 @@ function ReviewPanel({
 							projectId={session.workspaceId}
 							triggerClassName="review-run-agent-select ml-auto h-control-md w-auto min-w-0 max-w-[11rem] shrink-0 justify-end px-2 text-right text-xs"
 							value={reviewerOverride}
-							showDefaultOption
 						/>
 					</div>
 					<InspectorPolicyRow

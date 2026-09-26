@@ -207,7 +207,9 @@ export function ChatComposer({
 			const route = composerDeliveryRoute(intent, steerEligible);
 			if (route === "steer") await onSteer(trimmed);
 			else await onSend(trimmed, images.length ? images : undefined, resources.length ? resources : undefined);
+			latestText.current = "";
 			setText("");
+			setFieldHeight(COMPOSER_FIELD_HEIGHT);
 			setAttachments([]);
 			void AsyncStorage.removeItem(draftKey);
 			haptics.success();
@@ -394,9 +396,13 @@ export function ChatComposer({
 					accessibilityLabel="Message the agent"
 					editable={!stopped}
 					value={text}
-					onChangeText={setText}
+					onChangeText={(value) => { latestText.current = value; setText(value); }}
 					onSelectionChange={(event) => setCursor(event.nativeEvent.selection.start)}
 					onContentSizeChange={(event) => {
+						if (!latestText.current) {
+							setFieldHeight(COMPOSER_FIELD_HEIGHT);
+							return;
+						}
 						// Native contentSize already includes the TextInput's vertical
 						// padding. Treat it as the field's full height; converting it to
 						// lines counted the padding as an extra line on the first render.
@@ -405,7 +411,7 @@ export function ChatComposer({
 					}}
 					placeholder={stopped ? "Agent is stopped" : deliveryPresentation.placeholder}
 					placeholderTextColor={t.textFaint}
-					style={[styles.input, { height: fieldHeight }]}
+					style={[styles.input, { height: text ? fieldHeight : COMPOSER_FIELD_HEIGHT }]}
 					multiline
 					maxLength={40_000}
 				/>

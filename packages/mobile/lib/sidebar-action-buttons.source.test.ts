@@ -6,7 +6,9 @@ const spawnButton = readFileSync(new URL("./sidebar-spawn-button.android.tsx", i
 
 describe("Android sidebar action buttons", () => {
 	it("keeps the floating controls visible against the drawer", () => {
-		expect(settingsButton).toContain('backgroundColor: active || pressed ? t.accentTint : t.bgElevated');
-		expect(spawnButton).toContain('backgroundColor: pressed ? t.accentTint : t.bgElevated');
+		expect(settingsButton).toContain('backgroundColor: pressed ? t.accentTint : t.bgElevatedHover');
+		expect(spawnButton).toContain('backgroundColor: pressed ? t.accentTint : t.bgElevatedHover');
+		expect(settingsButton).toContain('borderColor: active ? t.accent : t.borderStrong');
+		expect(spawnButton).toContain('borderColor: t.borderStrong');
 	});
 });

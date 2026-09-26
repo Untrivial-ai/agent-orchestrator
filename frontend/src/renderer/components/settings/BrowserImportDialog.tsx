@@ -392,8 +392,7 @@ function ProfilesStep({ source, selected, onChange }: { source: BrowserImportSou
 							onChange={(event) => onChange(event.target.checked ? [...selected, profile.id] : selected.filter((id) => id !== profile.id))}
 							type="checkbox"
 						/>
-						<span className="text-sm font-medium">{profile.name}</span>
-						{profile.default ? <span className="text-xs text-muted-foreground">{t("settings.browserImport.defaultProfile")}</span> : null}
+						<span className="text-sm font-medium">{profile.name.toLowerCase() === "default" ? t("settings.browserImport.defaultProfile") : profile.name}</span>
 					</label>
 					);
 				})}
@@ -475,7 +474,7 @@ function OptionsStep({
 					<div className="grid gap-2">
 						{profiles.map((profile) => (
 							<label className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] items-center gap-3 text-xs" key={profile.id}>
-								<span className="truncate text-muted-foreground">{profile.name}</span>
+								<span className="truncate text-muted-foreground">{profile.name.toLowerCase() === "default" ? t("settings.browserImport.defaultProfile") : profile.name}</span>
 								<Input maxLength={64} onChange={(event) => setDestinationNames((current) => ({ ...current, [profile.id]: event.target.value }))} value={destinationNames[profile.id] ?? ""} />
 							</label>
 						))}
