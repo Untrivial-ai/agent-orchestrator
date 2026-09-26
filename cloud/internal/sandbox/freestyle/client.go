@@ -144,14 +144,22 @@ func (c *Client) Create(ctx context.Context, spec sandbox.Spec) (sandbox.Environ
 	var vm vmView
 	if err := c.request(ctx, http.MethodPost, "/v5/vms", body, nil, &vm); err != nil {
 		var status *statusError
-		if errors.As(err, &status) && status.code == http.StatusConflict {
-			if existing, found, lookupErr := c.FindBySession(ctx, spec.SessionID); lookupErr != nil {
-				return sandbox.Environment{}, lookupErr
-			} else if found {
-				if err := c.verifyOrg(ctx, existing.ID, spec.OrgID); err != nil {
-					return sandbox.Environment{}, err
+		if errors.As(err, &status) {
+			if status.code == http.StatusConflict {
+				if existing, found, lookupErr := c.FindBySession(ctx, spec.SessionID); lookupErr != nil {
+					return sandbox.Environment{}, lookupErr
+				} else if found {
+					if err := c.verifyOrg(ctx, existing.ID, spec.OrgID); err != nil {
+						return sandbox.Environment{}, err
+					}
+					return existing, nil
 				}
-				return existing, nil
+				// Create also returns 409 when capacity is unavailable. Once a
+				// slug collision is ruled out, let reconciliation retry.
+				return sandbox.Environment{}, fmt.Errorf("%w: %v", sandbox.ErrAtCapacity, err)
+			}
+			if status.code == http.StatusTooManyRequests {
+				return sandbox.Environment{}, fmt.Errorf("%w: %v", sandbox.ErrAtCapacity, err)
 			}
 		}
 		return sandbox.Environment{}, err

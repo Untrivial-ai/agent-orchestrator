@@ -128,6 +128,63 @@ func TestCreateRefusesForeignSlug(t *testing.T) {
 	}
 }
 
+func TestCreateRetriesWhenFreestyleHasNoCapacity(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusConflict, http.StatusTooManyRequests} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			t.Parallel()
+			code := "LIMIT_EXCEEDED"
+			if status == http.StatusConflict {
+				code = "CONFLICT"
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					http.NotFound(w, r)
+					return
+				}
+				w.WriteHeader(status)
+				_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": "no VM capacity"})
+			}))
+			defer server.Close()
+			c, err := New(Config{BaseURL: server.URL, APIKey: "test-key", SnapshotID: "freestyle/ubuntu"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = c.Create(context.Background(), sandbox.Spec{SessionID: "session-1", OrgID: "org-1"})
+			if !errors.Is(err, sandbox.ErrAtCapacity) {
+				t.Fatalf("create status %d should retry, got %v", status, err)
+			}
+		})
+	}
+}
+
+func TestCreateConflictDoesNotRetryForeignSlug(t *testing.T) {
+	t.Parallel()
+	lookups := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			lookups++
+			if lookups == 1 {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(testVM("session-1", "different-org", "running"))
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"code":"CONFLICT","message":"slug already used"}`)
+	}))
+	defer server.Close()
+	c, err := New(Config{BaseURL: server.URL, APIKey: "test-key", SnapshotID: "freestyle/ubuntu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Create(context.Background(), sandbox.Spec{SessionID: "session-1", OrgID: "org-1"})
+	if err == nil || errors.Is(err, sandbox.ErrAtCapacity) || !strings.Contains(err.Error(), "another organization") {
+		t.Fatalf("foreign slug conflict = %v", err)
+	}
+}
+
 func TestPauseWaitsForStartingVM(t *testing.T) {
 	t.Parallel()
 	reads := 0
