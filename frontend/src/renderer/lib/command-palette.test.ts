@@ -214,6 +214,7 @@ const reviewRun = (prNumber: number): ReviewRun => ({
 	harness: "codex",
 	id: `run-${prNumber}`,
 	prUrl: `https://github.com/o/r/pull/${prNumber}`,
+	publishState: "published",
 	reviewId: `review-${prNumber}`,
 	sessionId: "w-pr",
 	status: "delivered",
