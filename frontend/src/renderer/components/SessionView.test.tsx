@@ -1,9 +1,11 @@
 import { StrictMode, useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render as rtlRender, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionView } from "./SessionView";
+import { useFilesTopbarHost } from "./files-topbar-host";
 import { SessionTopbarProvider } from "./SessionTopbarPortal";
 import { TooltipProvider } from "./ui/tooltip";
 import type { SessionInterfaceTransitionStatus } from "../hooks/useSessionInterfaceTransition";
@@ -447,10 +449,12 @@ vi.mock("./SessionFileExplorer", () => ({
 		revealRequest?: { path: string; key: number } | null;
 		split?: boolean;
 	}) => {
+		const topbarHost = useFilesTopbarHost();
 		useEffect(() => {
 			if (!isMaximized && revealRequest) onOpenFile?.(revealRequest.path, { mode: "file" });
 		}, [isMaximized, onOpenFile, revealRequest]);
 		return <div>
+			{topbarHost ? createPortal(<input aria-label="files filter" />, topbarHost) : null}
 			<button type="button" onClick={() => onToggleMaximized?.(!isMaximized)}>
 				{isMaximized ? "files center" : "files rail"}
 			</button>
@@ -3504,6 +3508,14 @@ describe("SessionView", () => {
 		const overlay = document.querySelector(".files-popout-overlay");
 		expect(overlay).toHaveClass("files-popout-overlay--mac-windowed");
 		expect(overlay?.parentElement).toBe(document.body);
+		// Same chrome as the maximized browser: the filter sits in the titlebar
+		// band, outside the inset frame that holds the explorer.
+		const titlebar = screen.getByTestId("files-popout-topbar");
+		const frame = overlay?.querySelector(".files-popout-frame");
+		expect(titlebar).toHaveClass("files-popout-titlebar--mac-windowed");
+		expect(within(titlebar).getByRole("textbox", { name: "files filter" })).toBeInTheDocument();
+		expect(frame).toContainElement(screen.getByRole("button", { name: "files center" }));
+		expect(frame).not.toContainElement(titlebar);
 		expect(screen.getByText("terminal center")).toBeInTheDocument();
 
 		fireEvent.click(screen.getByRole("button", { name: "files center" }));
@@ -3523,6 +3535,7 @@ describe("SessionView", () => {
 		fireEvent.click(within(screen.getByTestId("panel-inspector")).getByRole("button", { name: "files rail" }));
 
 		expect(document.querySelector(".files-popout-overlay")).not.toHaveClass("files-popout-overlay--mac-windowed");
+		expect(screen.getByTestId("files-popout-topbar")).not.toHaveClass("files-popout-titlebar--mac-windowed");
 	});
 
 	it("badges Browser as unseen for a new live `ao preview` target instead of auto-opening it", () => {

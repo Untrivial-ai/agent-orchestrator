@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionFileExplorer } from "./SessionFileExplorer";
+import { FilesTopbarHostContext } from "./files-topbar-host";
 import { TooltipProvider } from "./ui/tooltip";
 import { useUiStore } from "../stores/ui-store";
 
@@ -173,6 +174,35 @@ describe("SessionFileExplorer", () => {
 		await userEvent.click(screen.getByRole("tab", { name: "Show file tree" }));
 		expect(screen.getByTestId("tree-changed-only")).toBeInTheDocument();
 		widthSpy.mockRestore();
+	});
+
+	it("keeps the header in place when switching between the Changes and Files views", async () => {
+		renderWithQuery(<SessionFileExplorer isMaximized onToggleMaximized={vi.fn()} sessionId="sess-explorer-steady" />);
+
+		expect(await screen.findByTestId("review-pane")).toBeInTheDocument();
+		const header = screen.getByRole("tab", { name: "Changes" }).closest("header");
+		const changesHeaderClass = header?.className;
+		await userEvent.click(screen.getByRole("tab", { name: "Files" }));
+
+		// The split's divider is drawn on the content, not by growing the header.
+		expect(screen.getByTestId("content-pane")).toBeInTheDocument();
+		expect(header?.className).toBe(changesHeaderClass);
+		expect(header?.nextElementSibling).toHaveClass("border-t");
+	});
+
+	it("renders the maximized filter into the overlay titlebar it is given", () => {
+		const titlebar = document.createElement("div");
+		document.body.append(titlebar);
+		renderWithQuery(
+			<FilesTopbarHostContext.Provider value={titlebar}>
+				<SessionFileExplorer isMaximized onToggleMaximized={vi.fn()} sessionId="sess-explorer-titlebar" />
+			</FilesTopbarHostContext.Provider>,
+		);
+
+		const filter = screen.getByRole("textbox", { name: "Filter files" });
+		expect(titlebar).toContainElement(filter);
+		expect(screen.getByRole("button", { name: "Minimize files" }).closest("header")).not.toContainElement(filter);
+		titlebar.remove();
 	});
 
 	it("defaults to the continuous changes review and can switch to the full file tree", async () => {

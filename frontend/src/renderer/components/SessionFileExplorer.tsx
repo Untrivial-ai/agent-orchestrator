@@ -201,11 +201,12 @@ export function SessionFileExplorer({
 
 	return (
 		<section className="relative flex h-full min-h-0 flex-col bg-background text-foreground" aria-label={t("files.sessionFiles")}>
-			{/* In the tree + preview split the header gets a hairline divider with
-			    only a sliver of space above it, so content never touches the line.
+			{/* The header keeps one geometry in every view (Changes, Files, the
+			    preview + tree split), so switching views never moves its controls;
+			    the split draws its divider on the content below instead.
 			    The trailing actions sit 4px from the right edge with 4px gaps, the same
 			    as the pinned top-bar buttons above them and the review rows below. */}
-			<header className={cn(floatingHeader ? "absolute right-0 top-0 z-10 flex items-center gap-1 pr-1 pt-1" : "flex min-h-10 shrink-0 items-center gap-1 pl-3 pr-1 pt-1", !floatingHeader && (splitView ? "border-b border-border pb-1" : showChanges ? "pb-3" : "pb-1"))}>
+			<header className={floatingHeader ? "absolute right-0 top-0 z-10 flex items-center gap-1 pr-1 pt-1" : "flex shrink-0 items-center gap-1 pb-3 pl-3 pr-1 pt-1"}>
 				{/* One dropdown for "what am I reviewing", laid out like a VCS review
 				    picker: working scopes at the top, then Commits › and Branch ›
 				    flyouts (Branch = Workspace or a PR). */}
@@ -269,7 +270,8 @@ export function SessionFileExplorer({
 					</DropdownMenuContent>
 				</DropdownMenu>
 				) : null}
-				{/* Inline (maximized) the filter sits centred between the picker and the actions. */}
+				{/* The inspector top bar or the maximized overlay's titlebar hosts the
+				    filter; without a host it sits centred between the picker and the actions. */}
 				{filesTopbarHost ? null : <span aria-hidden="true" className="flex-1" />}
 				{filesTopbarHost ? createPortal(filterField, filesTopbarHost) : filterField}
 				<span aria-hidden="true" className="flex-1" />
@@ -405,7 +407,7 @@ export function SessionFileExplorer({
 			) : isMaximized || source.kind === "pull_request" ? (
 				// Preview on the left, tree on the right (collapsible from the header),
 				// like an editor's changed-files rail.
-				<ResizablePanelGroup className="min-h-0 flex-1">
+				<ResizablePanelGroup className="min-h-0 flex-1 border-t border-border">
 					<ResizablePanel defaultSize="74%" minSize="40%">
 						<ContentScrollArea>
 							<FileContentPane annotation={annotation} commitSha={previewRequest?.commitSha} initialEditing={previewRequest?.editing ?? false} initialMode={previewRequest?.mode} initialRequestKey={previewRequest?.key ?? 0} path={selectedPath} previousPath={selectedPreviousPath} scope={previewRequest?.scope} sessionId={sessionId} source={querySource} split={split} toolbar="compact" />

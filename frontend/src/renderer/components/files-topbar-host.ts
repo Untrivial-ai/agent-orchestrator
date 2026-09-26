@@ -1,10 +1,10 @@
 import { createContext, useContext } from "react";
 
 /**
- * The inspector's top-bar slot for the Files tab. Like the browser's address
- * bar, the Files panel renders its filter field into this element when it is
- * shown inside the inspector; outside it (e.g. the maximized center view) there
- * is no host and the field stays in the panel's own header.
+ * The top-bar slot for the Files filter. Like the browser's address bar, the
+ * Files panel renders its filter field into this element: the inspector's top
+ * bar when docked, the maximized overlay's titlebar band when maximized. With
+ * no host the field stays in the panel's own header.
  */
 export const FilesTopbarHostContext = createContext<HTMLElement | null>(null);
 
