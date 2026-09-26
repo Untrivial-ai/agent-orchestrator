@@ -240,7 +240,7 @@ const defaultInstallTimeout = 15 * time.Minute
 // consuming the daemon's entire shutdown drain budget behind a blocked DB.
 const defaultPersistenceTimeout = 2 * time.Second
 
-var devinInstalledLine = regexp.MustCompile(`Installed devin v[^\s]+ to [^\r\n]+/devin\.`)
+var devinInstalledLine = regexp.MustCompile(`Installed devin v\S+ to [^\r\n]+/devin\.`)
 
 // Job is the tracked state of one install run for a Target.
 type Job struct {
@@ -953,7 +953,10 @@ func (s *Service) runAgentInstall(parent context.Context, plan Plan, job *Job) {
 
 func devinInstallConfirmedBeforeLoginCanceled(output string) bool {
 	confirmation := devinInstalledLine.FindStringIndex(output)
-	return confirmation != nil && strings.Contains(output[confirmation[1]:], "Error: Login canceled")
+	if len(confirmation) != 2 {
+		return false
+	}
+	return strings.Contains(output[confirmation[1]:], "Error: Login canceled")
 }
 
 func (s *Service) runAgentVerification(ctx context.Context, job *Job, successNote string) {
