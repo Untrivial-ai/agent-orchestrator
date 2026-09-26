@@ -1358,6 +1358,36 @@ func delayedCancelSpawn(
 	}
 }
 
+func TestACPDriverOmitsNestedDirectoriesWhenAgentDoesNotAdvertiseCapability(t *testing.T) {
+	agent := &fakeAgent{}
+	driver := New(Config{
+		Harness:      domain.HarnessOpenCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch: func(context.Context, LaunchConfig) (Launch, error) {
+			return Launch{Command: "fake"}, nil
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	root := t.TempDir()
+	conversation, err := driver.Start(context.Background(), ports.ChatStartConfig{
+		WorkspacePath:         root,
+		AdditionalDirectories: []string{filepath.Join(root, "api"), filepath.Join(root, "web")},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer conversation.Close()
+
+	agent.mu.Lock()
+	got := append([]string(nil), agent.newParams.AdditionalDirectories...)
+	agent.mu.Unlock()
+	if len(got) != 0 {
+		t.Fatalf("additional directories = %#v, want omitted nested workspace children", got)
+	}
+}
+
 func TestACPDriverNegotiatesRichClientCapabilitiesAndNativePromptContent(t *testing.T) {
 	agent := &fakeAgent{
 		promptNoPermission: true,

@@ -15,11 +15,10 @@ func normalizeAdditionalDirectories(cwd string, directories []string, supported 
 	if len(directories) == 0 {
 		return nil, nil
 	}
-	if !supported {
-		return nil, fmt.Errorf("ACP agent does not support additional workspace directories")
-	}
-	seen := map[string]struct{}{filepath.Clean(cwd): {}}
+	cleanCWD := filepath.Clean(cwd)
+	seen := map[string]struct{}{cleanCWD: {}}
 	out := make([]string, 0, len(directories))
+	allWithinCWD := true
 	for _, directory := range directories {
 		if !filepath.IsAbs(directory) {
 			return nil, fmt.Errorf("additional workspace directory must be absolute, got %q", directory)
@@ -30,6 +29,19 @@ func normalizeAdditionalDirectories(cwd string, directories []string, supported 
 		}
 		seen[clean] = struct{}{}
 		out = append(out, clean)
+		rel, err := filepath.Rel(cleanCWD, clean)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			allWithinCWD = false
+		}
+	}
+	if !supported {
+		// Workspace-project children live below the session root, so an agent
+		// rooted at cwd can already reach them without ACP's optional directory
+		// grant. External roots still require the advertised capability.
+		if allWithinCWD {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("ACP agent does not support additional workspace directories")
 	}
 	return out, nil
 }
