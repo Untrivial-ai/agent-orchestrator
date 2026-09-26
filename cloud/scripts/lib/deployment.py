@@ -47,6 +47,12 @@ CODER_SECRET_ENV = {
     "AO_CLOUD_CODER_DURABLE_ROOT": "durable_root",
     "AO_CLOUD_CODER_WORKER_TOKEN_TTL": "worker_token_ttl",
 }
+FREESTYLE_SECRET_ENV = {
+    "AO_CLOUD_FREESTYLE_URL": "url",
+    "AO_CLOUD_FREESTYLE_API_KEY": "api_key",
+    "AO_CLOUD_FREESTYLE_SNAPSHOT_ID": "snapshot_id",
+    "AO_CLOUD_FREESTYLE_WORKER_TOKEN_TTL": "worker_token_ttl",
+}
 WORKER_SECRET_ENV = {
     "AO_CLOUD_WORKER_SIGNING_KEY": "signing_key",
     "AO_CLOUD_MAX_ACTIVE_SANDBOXES_PER_ORG": "max_active_sandboxes_per_org",
@@ -57,8 +63,9 @@ WORKER_SECRET_ENV = {
 PROVIDER_SECRET_ENV = {
     "nodeops": NODEOPS_SECRET_ENV,
     "coder": CODER_SECRET_ENV,
+    "freestyle": FREESTYLE_SECRET_ENV,
 }
-PROVIDER_ENV_NAMES = set(NODEOPS_SECRET_ENV) | set(CODER_SECRET_ENV) | {
+PROVIDER_ENV_NAMES = set(NODEOPS_SECRET_ENV) | set(CODER_SECRET_ENV) | set(FREESTYLE_SECRET_ENV) | {
     "AO_CLOUD_NODEOPS_ROOTFS_BY_HARNESS",
 }
 PROVIDER_AUTO_PAUSE_ENV = "AO_CLOUD_NODEOPS_AUTO_PAUSE_MINUTES"
@@ -136,8 +143,10 @@ def validate_hosted_settings(
         raise ValueError(f"unsupported hosted sandbox provider: {provider}")
     if provider == "nodeops":
         _validate_nodeops_settings(provider_settings)
-    else:
+    elif provider == "coder":
         _validate_coder_settings(provider_settings)
+    else:
+        _validate_freestyle_settings(provider_settings)
     _require_secret_strings("worker", worker, WORKER_SECRET_ENV.values())
     if len(worker["signing_key"].strip()) < 32:
         raise ValueError("worker signing_key must contain at least 32 characters")
@@ -209,6 +218,25 @@ def _validate_coder_settings(coder: dict[str, Any]) -> None:
         raise ValueError("Coder parameters_json must be an object of string values")
     if _duration_seconds(coder["worker_token_ttl"]) <= 0:
         raise ValueError("Coder worker_token_ttl must be positive")
+
+
+def _validate_freestyle_settings(freestyle: dict[str, Any]) -> None:
+    _require_secret_strings("Freestyle", freestyle, FREESTYLE_SECRET_ENV.values())
+    endpoint = urlparse(freestyle["url"])
+    if (
+        endpoint.scheme != "https"
+        or not endpoint.netloc
+        or endpoint.username is not None
+        or endpoint.path not in ("", "/")
+        or endpoint.query
+        or endpoint.fragment
+    ):
+        raise ValueError("Freestyle url must be an absolute HTTPS origin")
+    for key in ("api_key", "snapshot_id"):
+        if not freestyle[key].strip():
+            raise ValueError(f"Freestyle {key} must not be empty")
+    if _duration_seconds(freestyle["worker_token_ttl"]) <= 0:
+        raise ValueError("Freestyle worker_token_ttl must be positive")
 
 
 def _require_secret_strings(

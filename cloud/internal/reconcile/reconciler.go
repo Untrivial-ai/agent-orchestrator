@@ -1126,6 +1126,9 @@ type providerProfile struct {
 		Ingress          string `json:"ingress"`
 		AutoPauseSeconds int    `json:"autoPauseSeconds"`
 	} `json:"nodeOps"`
+	Freestyle struct {
+		SnapshotID string `json:"snapshotId"`
+	} `json:"freestyle"`
 }
 
 type workerWorkspaceLayout struct {
@@ -1225,13 +1228,17 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 		workerEnvironment["AO_WORKER_HELPER_EXPECTED_SHA256"] = r.workerHelperBinarySHA256
 		workerEnvironment["AO_WORKER_HELPER_PATH"] = r.options.WorkerHelperDestination
 	}
+	rootFS := profile.NodeOps.DefaultRootFS
+	if record.Provider == sandbox.ProviderFreestyle {
+		rootFS = profile.Freestyle.SnapshotID
+	}
 	return sandbox.Spec{
 		Name:             "ao-" + record.SessionID,
 		SessionID:        record.SessionID,
 		OrgID:            record.OrgID,
 		ResourceProfile:  domain.ResourceProfile{CPU: 4, Memory: 8, Disk: 10},
 		Shape:            profile.NodeOps.DefaultShape,
-		RootFS:           profile.NodeOps.DefaultRootFS,
+		RootFS:           rootFS,
 		Ingress:          profile.NodeOps.Ingress,
 		AutoPauseSeconds: profile.NodeOps.AutoPauseSeconds,
 		Environment:      workerEnvironment,

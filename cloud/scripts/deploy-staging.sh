@@ -17,6 +17,7 @@ SANDBOX_PROVIDER="${AO_CLOUD_SANDBOX_PROVIDER:-nodeops}"
 PROVIDERS="${AO_CLOUD_SANDBOX_PROVIDERS:-$SANDBOX_PROVIDER}"
 NODEOPS_SECRET_ID="${AO_CLOUD_NODEOPS_SECRET_ID:-ao-cloud/staging/nodeops}"
 CODER_SECRET_ID="${AO_CLOUD_CODER_SECRET_ID:-ao-cloud/staging/coder}"
+FREESTYLE_SECRET_ID="${AO_CLOUD_FREESTYLE_SECRET_ID:-ao-cloud/staging/freestyle}"
 WORKER_SECRET_ID="${AO_CLOUD_WORKER_SECRET_ID:-ao-cloud/staging/worker}"
 HEAD_SHA="$(git rev-parse HEAD)"
 RELEASE="${1:-$HEAD_SHA}"
@@ -60,14 +61,14 @@ if [[ ! "$RELEASE" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$ ]]; then
 	echo "Release must be a Git SHA or release tag." >&2
 	exit 1
 fi
-if [[ "$SANDBOX_PROVIDER" != "nodeops" && "$SANDBOX_PROVIDER" != "coder" ]]; then
-	echo "AO_CLOUD_SANDBOX_PROVIDER must be nodeops or coder." >&2
+if [[ "$SANDBOX_PROVIDER" != "nodeops" && "$SANDBOX_PROVIDER" != "coder" && "$SANDBOX_PROVIDER" != "freestyle" ]]; then
+	echo "AO_CLOUD_SANDBOX_PROVIDER must be nodeops, coder, or freestyle." >&2
 	exit 1
 fi
 IFS=',' read -ra _providers_list <<<"$PROVIDERS"
 for _provider in "${_providers_list[@]}"; do
-	if [[ "$_provider" != "nodeops" && "$_provider" != "coder" ]]; then
-		echo "AO_CLOUD_SANDBOX_PROVIDERS entries must each be nodeops or coder, got: $_provider" >&2
+	if [[ "$_provider" != "nodeops" && "$_provider" != "coder" && "$_provider" != "freestyle" ]]; then
+		echo "AO_CLOUD_SANDBOX_PROVIDERS entries must each be nodeops, coder, or freestyle, got: $_provider" >&2
 		exit 1
 	fi
 done
@@ -134,6 +135,19 @@ if providers_has coder; then
 		--coder <(printf '%s' "$coder_settings") \
 		--worker <(printf '%s' "$worker_settings")
 	unset coder_settings
+fi
+if providers_has freestyle; then
+	freestyle_secret_arn="$(secret_arn "$FREESTYLE_SECRET_ID")"
+	freestyle_settings="$(
+		aws_cli secretsmanager get-secret-value \
+			--secret-id "$FREESTYLE_SECRET_ID" \
+			--query SecretString \
+			--output text
+	)"
+	./scripts/validate-hosted-settings.py \
+		--freestyle <(printf '%s' "$freestyle_settings") \
+		--worker <(printf '%s' "$worker_settings")
+	unset freestyle_settings
 fi
 unset worker_settings
 
@@ -292,6 +306,14 @@ register_task_definition() {
 				--set-secret "AO_CLOUD_CODER_PARAMETERS_JSON=${coder_secret_arn}:parameters_json::"
 				--set-secret "AO_CLOUD_CODER_DURABLE_ROOT=${coder_secret_arn}:durable_root::"
 				--set-secret "AO_CLOUD_CODER_WORKER_TOKEN_TTL=${coder_secret_arn}:worker_token_ttl::"
+			)
+		fi
+		if providers_has freestyle; then
+			render_args+=(
+				--set-secret "AO_CLOUD_FREESTYLE_URL=${freestyle_secret_arn}:url::"
+				--set-secret "AO_CLOUD_FREESTYLE_API_KEY=${freestyle_secret_arn}:api_key::"
+				--set-secret "AO_CLOUD_FREESTYLE_SNAPSHOT_ID=${freestyle_secret_arn}:snapshot_id::"
+				--set-secret "AO_CLOUD_FREESTYLE_WORKER_TOKEN_TTL=${freestyle_secret_arn}:worker_token_ttl::"
 			)
 		fi
 		if providers_has nodeops; then

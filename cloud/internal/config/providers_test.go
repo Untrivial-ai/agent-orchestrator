@@ -63,6 +63,17 @@ func TestResolveAvailableProvidersAllowsCoderAndNodeOpsWhenHosted(t *testing.T) 
 	}
 }
 
+func TestResolveAvailableProvidersAllowsFreestyleWhenHosted(t *testing.T) {
+	t.Setenv("AO_CLOUD_SANDBOX_PROVIDERS", "freestyle")
+	got, err := resolveAvailableProviders("nodeops", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "nodeops" || got[1] != "freestyle" {
+		t.Fatalf("got %v, want [nodeops freestyle]", got)
+	}
+}
+
 func TestProvidersRequireWorkerHome(t *testing.T) {
 	if providersRequireWorkerHome([]string{"ecs"}) {
 		t.Fatal("ecs does not require a worker home")

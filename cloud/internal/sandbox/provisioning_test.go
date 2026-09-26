@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -140,6 +141,26 @@ func TestSessionPlanForProviderOverridesDefault(t *testing.T) {
 	}
 	if plainPlan.Provider != ProviderDocker {
 		t.Fatalf("SessionPlan provider = %q, want %q", plainPlan.Provider, ProviderDocker)
+	}
+}
+
+func TestFreestyleSessionPlanKeepsSnapshotWithoutSecret(t *testing.T) {
+	t.Parallel()
+	defaults := ProvisioningDefaults{
+		Provider: ProviderFreestyle,
+		Freestyle: FreestyleConfig{
+			BaseURL: "https://api.freestyle.sh", APIKey: "private-key",
+			SnapshotID: "sh-pinned", WorkerTokenTTL: time.Minute,
+		},
+	}
+	plan, err := defaults.SessionPlan("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan.ResourceProfile), `"snapshotId":"sh-pinned"`) ||
+		strings.Contains(string(plan.ResourceProfile), "private-key") ||
+		strings.Contains(string(plan.BootstrapContext), "private-key") {
+		t.Fatalf("unsafe Freestyle session plan: %s", plan.ResourceProfile)
 	}
 }
 

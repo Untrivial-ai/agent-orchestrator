@@ -24,6 +24,7 @@ import (
 	coderprovider "github.com/aoagents/agent-orchestrator/cloud/internal/sandbox/coder"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/sandbox/createos"
 	dockerprovider "github.com/aoagents/agent-orchestrator/cloud/internal/sandbox/docker"
+	freestyleprovider "github.com/aoagents/agent-orchestrator/cloud/internal/sandbox/freestyle"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/sandboxresolve"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/secrets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
@@ -83,6 +84,12 @@ func provisioningDefaults(cfg config.Config) sandbox.ProvisioningDefaults {
 			DurableRoot:    cfg.CoderDurableRoot,
 			WorkerTokenTTL: cfg.CoderWorkerTokenTTL,
 		},
+		Freestyle: sandbox.FreestyleConfig{
+			BaseURL:        cfg.FreestyleURL,
+			APIKey:         cfg.FreestyleAPIKey,
+			SnapshotID:     cfg.FreestyleSnapshotID,
+			WorkerTokenTTL: cfg.FreestyleWorkerTokenTTL,
+		},
 	}
 }
 
@@ -100,14 +107,15 @@ func newSandboxReconciler(
 	// session. AvailableSandboxProviders always contains the default, and is
 	// exactly that default for a single-provider deployment.
 	var (
-		nodeOpsProvider sandbox.Provider
-		dockerProvider  sandbox.Provider
-		coderProvider   sandbox.Provider
-		buildsProvider  bool
+		nodeOpsProvider   sandbox.Provider
+		dockerProvider    sandbox.Provider
+		coderProvider     sandbox.Provider
+		freestyleProvider sandbox.Provider
+		buildsProvider    bool
 	)
 	for _, provider := range cfg.AvailableSandboxProviders {
 		switch provider {
-		case sandbox.ProviderNodeOps, sandbox.ProviderDocker, sandbox.ProviderCoder:
+		case sandbox.ProviderNodeOps, sandbox.ProviderDocker, sandbox.ProviderCoder, sandbox.ProviderFreestyle:
 			buildsProvider = true
 		}
 	}
@@ -157,9 +165,19 @@ func newSandboxReconciler(
 				return nil, err
 			}
 			coderProvider = provider
+		case sandbox.ProviderFreestyle:
+			provider, err := freestyleprovider.New(freestyleprovider.Config{
+				BaseURL:    cfg.FreestyleURL,
+				APIKey:     cfg.FreestyleAPIKey,
+				SnapshotID: cfg.FreestyleSnapshotID,
+			})
+			if err != nil {
+				return nil, err
+			}
+			freestyleProvider = provider
 		}
 	}
-	return reconcile.New(store, sandboxresolve.New(nodeOpsProvider, dockerProvider, coderProvider), reconcile.Options{
+	return reconcile.New(store, sandboxresolve.New(nodeOpsProvider, dockerProvider, coderProvider, freestyleProvider), reconcile.Options{
 		PublicURL:              cfg.PublicURL,
 		TerminalStreamEnabled:  cfg.TerminalStreamEnabled,
 		WorkerBinary:           workerBinary,
@@ -173,14 +191,14 @@ func newSandboxReconciler(
 }
 
 // loadWorkerBinaries reads the worker and helper binaries once at startup, but
-// only where a provider that runs hosted workers (nodeops or coder) is offered.
+// only where a provider that runs hosted workers is offered.
 // Docker-only deployments bake the worker into their image and need neither.
 // Both the reconciler (to advertise the expected hashes) and the API server (to
 // serve the content-addressed self-update endpoint) read the same bytes.
 func loadWorkerBinaries(cfg config.Config) (workerBinary, workerHelperBinary []byte, err error) {
 	needs := false
 	for _, provider := range cfg.AvailableSandboxProviders {
-		if provider == sandbox.ProviderNodeOps || provider == sandbox.ProviderCoder {
+		if provider == sandbox.ProviderNodeOps || provider == sandbox.ProviderCoder || provider == sandbox.ProviderFreestyle {
 			needs = true
 		}
 	}

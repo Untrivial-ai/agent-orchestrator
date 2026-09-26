@@ -16,13 +16,18 @@ AWS_PROFILE=ao-cloud ./scripts/deploy-staging.sh
 ```
 
 NodeOps remains the default. To deploy a release against the environment's
-Coder connection instead:
+Coder connection:
 
 ```bash
 AO_CLOUD_SANDBOX_PROVIDER=coder \
   AWS_PROFILE=ao-cloud \
   ./scripts/deploy-staging.sh
 ```
+
+For Freestyle, set `AO_CLOUD_SANDBOX_PROVIDER=freestyle`; add it to
+`AO_CLOUD_SANDBOX_PROVIDERS` when one control plane must serve multiple
+providers. See [Freestyle sandbox provider](freestyle-sandbox-provider.md)
+for the snapshot and secret setup.
 
 The script requires `AO_CLOUD_RELEASE` to resolve to the clean checkout's
 current full Git SHA and:
@@ -93,6 +98,7 @@ role:
 - `ao-cloud/staging/provider-secret-key`
 - `ao-cloud/staging/nodeops`
 - `ao-cloud/staging/coder` (required only when the Coder provider is selected)
+- `ao-cloud/staging/freestyle` (required when Freestyle is offered)
 - `ao-cloud/staging/worker`
 - `ao-cloud/repository-broker`
 
@@ -114,12 +120,13 @@ intentionally absent from this deployment configuration.
 `durable_root` is the approved template's exact persistent-volume mount point,
 not a deployment-wide assumption about the Coder user's home. It must be an
 absolute normalized non-root path. `parameters_json` must be a JSON object whose
-values are strings; use `{}` when the approved template has no parameters. The
-deployment validates only the selected provider and removes the other
-provider's environment variables and secret references from the new task
-definition. The ECS execution role needs
-`secretsmanager:GetSecretValue` for the selected environment-scoped provider
-secret.
+values are strings; use `{}` when the approved template has no parameters.
+
+`freestyle` is a JSON secret with `url`, `api_key`, `snapshot_id`, and
+`worker_token_ttl`. The deployment validates every offered provider and
+removes credentials belonging to inactive providers from the new task
+definition. The ECS execution role needs `secretsmanager:GetSecretValue` for
+each offered environment-scoped provider secret.
 
 `ao-cloud/repository-broker` is shared only by the production control plane,
 environment control planes, and the server-side web BFF. It is a JSON secret
@@ -246,6 +253,7 @@ The service reads only these production-scoped secrets:
 - `ao-cloud/production/github`
 - `ao-cloud/production/nodeops`
 - `ao-cloud/production/coder` (required only when Coder is running in staging)
+- `ao-cloud/production/freestyle` (required when Freestyle is offered)
 - `ao-cloud/production/worker`
 - `ao-cloud/repository-broker`
 

@@ -13,6 +13,7 @@ import { SettingsSection } from "./SettingsSection";
 const PROVIDER_LABELS: Record<string, string> = {
 	nodeops: "NodeOps",
 	coder: "Coder",
+	freestyle: "Freestyle",
 	docker: "Docker",
 	ecs: "ECS",
 	daytona: "Daytona",

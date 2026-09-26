@@ -12,9 +12,10 @@ import (
 
 // Resolver maps a sandbox row onto the provider that owns its compute.
 type Resolver struct {
-	nodeOps sandbox.Provider
-	docker  sandbox.Provider
-	coder   sandbox.Provider
+	nodeOps   sandbox.Provider
+	docker    sandbox.Provider
+	coder     sandbox.Provider
+	freestyle sandbox.Provider
 }
 
 type sessionScopedProvider interface {
@@ -22,8 +23,8 @@ type sessionScopedProvider interface {
 }
 
 // New creates a resolver backed by the providers enabled for this deployment.
-func New(nodeOps, docker, coder sandbox.Provider) *Resolver {
-	return &Resolver{nodeOps: nodeOps, docker: docker, coder: coder}
+func New(nodeOps, docker, coder, freestyle sandbox.Provider) *Resolver {
+	return &Resolver{nodeOps: nodeOps, docker: docker, coder: coder, freestyle: freestyle}
 }
 
 // Resolve returns the provider authorized for sandbox. The reconciler never
@@ -64,6 +65,14 @@ func (r *Resolver) Resolve(_ context.Context, record domain.Sandbox) (sandbox.Pr
 			return nil, fmt.Errorf("coder sandbox provider does not support durable session profiles")
 		}
 		return scoped.ForSandbox(record)
+	case sandbox.ProviderFreestyle:
+		if record.ProviderConnectionID != "" {
+			return nil, fmt.Errorf("per-organization Freestyle connections are not supported yet")
+		}
+		if r.freestyle == nil {
+			return nil, fmt.Errorf("freestyle sandbox provider is not configured")
+		}
+		return r.freestyle, nil
 	case sandbox.ProviderDaytona, sandbox.ProviderECS:
 		return nil, fmt.Errorf("sandbox provider %q is not configured", record.Provider)
 	default:
