@@ -3460,7 +3460,7 @@ const TurnGroup = memo(function TurnGroup({
 								<ChevronDown aria-hidden="true" className="size-3.5 shrink-0 transition-transform duration-200 group-data-[state=open]/row:rotate-180" />
 							</span>
 						</AccordionTrigger>
-						<AccordionContent className="space-y-2 pb-2 pt-1">
+						<AccordionContent className="chat-worked-accordion-content space-y-2 pb-2 pt-1">
 							{workedRuns.map(renderRun)}
 						</AccordionContent>
 					</AccordionItem>
