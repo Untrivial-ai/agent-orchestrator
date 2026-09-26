@@ -112,6 +112,14 @@ jobs:
       - name: Test Goose readiness and inventory
         run: go test -race -count=1 -timeout=10m -run '^Test(FindInstalledBinary|WarmReadinessAndFindInstalled|PresslyGoose|Refresh|Probe|ReadinessCoordinator)' ./internal/service/agent
 
+      # These packages already carry *_windows_test.go files (ComSpec batch-shim
+      # wrapping, hidden-console process groups, ConPTY spawn/close, PATH merging)
+      # that only build under GOOS=windows and so have never actually run in CI.
+      # Scoped by name for the same reason as the steps above: running these
+      # packages whole would pull in untriaged tests outside this issue's scope.
+      - name: Test Windows process spawning and batch shims
+        run: go test -race -run 'TestCommandContextWrapsBatchShimWithComSpec|TestMergeWindowsPathAddsRegistryEntriesWithoutDuplicates|TestConfigureProcessGroupHidesConsoleWindow|TestSpawnWindows|TestConPTYCloseIsIdempotent|TestPreviewCommandRunsWindowsBatchShim' ./internal/adapters/systemexec/... ./internal/adapters/chatdriver/acp/... ./internal/adapters/runtime/ptyexec/... ./internal/previewserver/...
+
   cloud-build-test:
     runs-on: ubuntu-latest
     defaults:
