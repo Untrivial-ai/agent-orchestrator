@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 import { installFakeAgent, installFakeBridge } from "./support/fake-bridge";
 
 // INS/DMN/BRD/SET RENDERER SMOKE (issue #2483, renderer slice).

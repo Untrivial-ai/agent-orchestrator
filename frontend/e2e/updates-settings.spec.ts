@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 import { installFakeBridge } from "./support/fake-bridge";
 
 test("downloaded update keeps the full version readable and actions aligned", async ({ page }) => {

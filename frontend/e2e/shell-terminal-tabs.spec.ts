@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 
 // Standalone shell terminals (#2822): shells the user opens by hand, with no
 // agent session behind them. They render as tabs beside the session's own pane.

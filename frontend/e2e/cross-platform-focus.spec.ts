@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "./support/test";
+import type { Page } from "@playwright/test";
 import { installFakeAgent } from "./support/fake-bridge";
 import { installFakeTerminalMux } from "./support/fake-terminal-mux";
 

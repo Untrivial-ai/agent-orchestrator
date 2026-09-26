@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "./support/test";
+import type { Page } from "@playwright/test";
 
 // Dragging a panel edge must clamp at the panel's minimum width — never
 // auto-collapse. Collapse belongs to the explicit controls only (⌘B / topbar

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 
 // #2483 TRM-001, RENDERER SLICE. Under dev:web there is no window.ao and no PTY,
 // so TerminalPane renders its deterministic browser-preview transcript (the

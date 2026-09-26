@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test";
 
 test("CI auto-injection policy is visible before a PR exists", async ({ page }) => {
 	await page.goto("/#/projects/ao-demo/sessions/demo-working");

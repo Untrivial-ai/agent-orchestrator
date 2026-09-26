@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "./support/test";
+import type { Page } from "@playwright/test";
 import { agentReadiness } from "../src/renderer/test/agent-readiness-fixtures";
 import { installFakeAgent } from "./support/fake-bridge";
 import { openSwitchAgentDialog } from "./support/open-switch-agent-menu";
