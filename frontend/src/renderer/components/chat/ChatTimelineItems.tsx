@@ -446,11 +446,9 @@ function shortenPaths(text: string): string {
 }
 
 function formatDuration(ms: number): string {
-	if (ms < 1000) return `${ms}ms`;
-	if (ms < 60_000) {
-		// Drop a trailing ".0" so whole seconds read as "3s", not "3.0s".
-		return `${(ms / 1000).toFixed(1).replace(/\.0$/, "")}s`;
-	}
+	// Status labels are intentionally discrete: start at one second and advance
+	// in whole seconds so the live and settled rows never show fractional time.
+	if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}s`;
 	return `${Math.round(ms / 60_000)}m`;
 }
 
