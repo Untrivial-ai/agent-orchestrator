@@ -7,13 +7,17 @@
 // and delivers prompted worker tasks after startup so dashboard terminal
 // attachments stay readable and Cline's startup command parser is bypassed.
 //
-// AO-managed sessions derive native session identity from Cline hooks
-// (the workspace-local `.clinerules/hooks/` executable scripts AO installs)
-// rather than transcript/cache scans.
+// AO-managed sessions prefer native session identity from Cline hooks (the
+// workspace-local `.clinerules/hooks/` executable scripts AO installs). Cline's
+// interactive hub currently omits that identity, so restore falls back to the
+// newest Cline history entry scoped to the session's unique worktree.
 package cline
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +26,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
 
 // Plugin is the Cline agent adapter. It is safe for concurrent use; the binary
@@ -120,21 +125,26 @@ func (p *Plugin) PromptReadinessHints(ctx context.Context, _ ports.LaunchConfig)
 
 // GetRestoreCommand rebuilds the argv that continues an existing Cline session:
 // `cline [approval flags] --id <agentSessionId>`. Resumes are interactive
-// because no prompt is supplied here. ok is false when the hook-derived native
-// session id has not landed yet, so callers can fall back to fresh launch
-// behavior.
+// because no prompt is supplied here. If hooks did not persist the native id,
+// the interactive-hub history is searched by this session's unique worktree.
 func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig) (cmd []string, ok bool, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
-	agentSessionID := strings.TrimSpace(cfg.Session.Metadata[ports.MetadataKeyAgentSessionID])
-	if agentSessionID == "" {
-		return nil, false, nil
-	}
-
 	binary, err := p.clineBinary(ctx)
 	if err != nil {
 		return nil, false, err
+	}
+
+	agentSessionID := strings.TrimSpace(cfg.Session.Metadata[ports.MetadataKeyAgentSessionID])
+	if agentSessionID == "" && strings.TrimSpace(cfg.Session.WorkspacePath) != "" {
+		agentSessionID, err = clineHistorySessionID(ctx, binary, cfg.Session.WorkspacePath)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	if agentSessionID == "" {
+		return nil, false, nil
 	}
 
 	cmd = make([]string, 0, 8)
@@ -146,6 +156,35 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	}
 	cmd = append(cmd, "--id", agentSessionID)
 	return cmd, true, nil
+}
+
+// clineHistorySessionID recovers the provider-assigned resumable id when an
+// interactive Cline hub hook omits sessionContext.rootSessionId. AO gives each
+// session its own worktree, so the newest history entry whose cwd exactly
+// matches that worktree belongs to this AO session.
+func clineHistorySessionID(ctx context.Context, binary, workspacePath string) (string, error) {
+	cmd := aoprocess.CommandContext(ctx, binary, "history", "--json", "--limit", "100") //nolint:gosec // binary is adapter-resolved; args are static
+	cmd.Dir = workspacePath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("cline: read session history: %w", err)
+	}
+
+	var history []struct {
+		SessionID string `json:"sessionId"`
+		CWD       string `json:"cwd"`
+	}
+	if err := json.Unmarshal(out, &history); err != nil {
+		return "", fmt.Errorf("cline: parse session history: %w", err)
+	}
+	want := filepath.Clean(workspacePath)
+	for _, entry := range history {
+		id := strings.TrimSpace(entry.SessionID)
+		if filepath.Clean(strings.TrimSpace(entry.CWD)) == want && id != "" && len(id) <= maxHookSessionIDLen {
+			return id, nil
+		}
+	}
+	return "", nil
 }
 
 // SessionInfo surfaces Cline hook-derived metadata. Metadata is intentionally
