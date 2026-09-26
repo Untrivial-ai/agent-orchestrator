@@ -82,7 +82,7 @@ import {
 	type KeybindingOverrides,
 } from "./shared/shortcuts";
 import { createTrayController, type TrayController } from "./main/tray";
-import { createTrayLifecycle, isTrayEnabled } from "./main/tray-lifecycle";
+import { createTrayLifecycle, isTrayEnabled, shouldQuitWhenAllWindowsClosed } from "./main/tray-lifecycle";
 import {
 	TRAY_RENDERER_READY_CHANNEL,
 	TRAY_SET_ATTENTION_STATE_CHANNEL,
@@ -2876,6 +2876,9 @@ app.whenReady().then(async () => {
 			focusWindow: focusMainWindow,
 			openSession: trayLifecycle.openSession,
 			locale: initialUiSettings.locale,
+			onUnavailable: (error) => {
+				console.warn("system tray unavailable; closing the last window will quit:", error);
+			},
 		});
 	}
 	await createWindow();
@@ -2975,7 +2978,7 @@ process.on("exit", () => {
 });
 
 app.on("window-all-closed", () => {
-	if (process.platform !== "darwin") {
+	if (shouldQuitWhenAllWindowsClosed(process.platform, trayController !== null)) {
 		app.quit();
 	}
 });
