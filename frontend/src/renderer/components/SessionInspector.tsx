@@ -1254,8 +1254,9 @@ function PRSummaryCard({ pr, sessionId }: { pr: SessionPRSummary; sessionId: str
 	) : null;
 	const discussionCommentCount = pr.discussionCommentCount ?? 0;
 	const discussionCount = discussionCommentCount > 0 ? (
-		<span className="inline-flex h-5 items-center text-xs leading-none text-settings-muted">
-			{discussionCommentCount} {t("pr.noun.comment", { count: discussionCommentCount })}
+		<span aria-label={`${discussionCommentCount} ${t("pr.noun.comment", { count: discussionCommentCount })}`} className="inline-flex h-5 items-center gap-1 text-xs leading-none text-settings-muted">
+			<MessageSquare aria-hidden="true" className="size-3.5 shrink-0" />
+			{discussionCommentCount}
 		</span>
 	) : null;
 	const reviewDetailsAction = discussionCount || commenterAvatars ? (

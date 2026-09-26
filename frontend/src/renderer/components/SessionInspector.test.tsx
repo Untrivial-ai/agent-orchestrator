@@ -915,7 +915,9 @@ describe("SessionInspector PR section", () => {
       },
     );
 
-    expect(prSection("Pull request").getByText("9 comments")).toBeInTheDocument();
+    const commentCount = prSection("Pull request").getByLabelText("9 comments");
+    expect(commentCount).toHaveTextContent("9");
+    expect(commentCount.querySelector("svg.lucide-message-square")).toBeInTheDocument();
     expect(prSection("Pull request").getByLabelText("Commented: alice, bob")).toBeInTheDocument();
     expect(prSection("Pull request").getAllByRole("link")).toHaveLength(1);
     expect(prSection("Pull request").getByText("No review required")).toBeInTheDocument();
