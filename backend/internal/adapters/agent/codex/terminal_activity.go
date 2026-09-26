@@ -8,14 +8,30 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// DetectTerminalActivity reports idle only when Codex's composer and footer are visible.
+// DetectTerminalActivity reports the work state Codex's TUI is rendering. An
+// approval picker is waiting_input even under a running turn (it is checked
+// before the working status line), and an unrecognized frame reports nothing
+// so a recorded state is never overwritten on weak evidence.
 func (p *Plugin) DetectTerminalActivity(output string) (domain.ActivityState, bool) {
-	observation := p.InspectTerminalSurface(output)
-	if observation.Work == ports.TerminalSurfaceWorkIdle {
+	switch p.InspectTerminalSurface(output).Work {
+	case ports.TerminalSurfaceWorkIdle:
 		return domain.ActivityIdle, true
+	case ports.TerminalSurfaceWorkActive:
+		return domain.ActivityActive, true
+	case ports.TerminalSurfaceWorkWaitingInput:
+		return domain.ActivityWaitingInput, true
+	default:
+		return "", false
 	}
-	return "", false
 }
+
+// ContinuouslyDetectTerminalActivityWhileWaiting opts Codex into terminal
+// reconciliation after a waiting_input state is recorded. Codex's
+// PermissionRequest hook sets waiting_input and Codex installs no
+// post-tool-use hook, so once an approval resolves mid-turn nothing else can
+// clear it before Stop; without this the session reads as needs_input for the
+// rest of an actively running turn.
+func (p *Plugin) ContinuouslyDetectTerminalActivityWhileWaiting() bool { return true }
 
 // InspectTerminalSurface reports Codex work and composer facts separately.
 // A visible prompt can contain a draft, and Codex can render that prompt while

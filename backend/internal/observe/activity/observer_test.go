@@ -190,6 +190,75 @@ func TestPollReconcilesWaitingCrushAfterUserResponds(t *testing.T) {
 	}
 }
 
+// Real codex-cli 0.146.0 frames (openai/codex tag rust-v0.146.0 TUI snapshots
+// image_generation_begin_restores_working_status and
+// status_widget_and_approval_modal), trailing padding trimmed.
+const (
+	codexRunningFrame = "\n• Working (0s • esc to interrupt)\n\n\n" +
+		"› Ask Codex to do anything\n\n  gpt-5.6-sol default · /tmp/project\n"
+	codexExecApprovalFrame = "\n\n  Would you like to run the following command?\n\n" +
+		"  Reason: this is a test reason such as one that would be produced by the model\n\n" +
+		"  $ echo 'hello world'\n\n" +
+		"› 1. Yes, proceed (y)\n" +
+		"  2. Yes, and don't ask again for commands that start with `echo 'hello world'` (p)\n" +
+		"  3. No, and tell Codex what to do differently (esc)\n\n" +
+		"  Press enter to confirm or esc to cancel\n"
+	codexComposerFrame = "\n› Ask Codex to do anything\n\n  gpt-5.6-sol default · /tmp/project\n"
+)
+
+// Issue #5876: Codex's PermissionRequest hook records waiting_input and no hook
+// clears it mid-turn. Once the approval is resolved the pane shows the turn
+// running again, and the observer must recover — while a live picker must keep
+// the session waiting.
+func TestPollReconcilesWaitingCodexOnceTurnResumes(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		output string
+		want   domain.ActivityState
+		signal bool
+	}{
+		{name: "approved turn running", output: codexRunningFrame, want: domain.ActivityActive, signal: true},
+		{name: "turn finished at composer", output: codexComposerFrame, want: domain.ActivityIdle, signal: true},
+		{name: "approval still pending", output: codexExecApprovalFrame},
+		{name: "stale working line above live picker", output: "• Working (6m 13s • esc to interrupt)\n" + codexExecApprovalFrame},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Unix(500, 0).UTC()
+			session := activeSession(now, domain.HarnessCodex)
+			session.Activity = domain.Activity{State: domain.ActivityWaitingInput, LastActivityAt: now.Add(-time.Second)}
+			session.UpdatedAt = now.Add(-time.Second)
+			sink := &fakeSink{}
+			runtime := &fakeRuntime{output: tt.output}
+			observer := New(
+				fakeSessions{rows: []domain.SessionRecord{session}},
+				sink,
+				runtime,
+				fakeAgents{domain.HarnessCodex: codex.New()},
+				Config{Clock: func() time.Time { return now }, Logger: testLogger()},
+			)
+
+			if err := observer.Poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if runtime.calls != 1 {
+				t.Fatalf("waiting codex session was not sampled: output calls=%d", runtime.calls)
+			}
+			if !tt.signal {
+				if len(sink.signals) != 0 {
+					t.Fatalf("live approval picker left waiting_input: %+v", sink.signals)
+				}
+				return
+			}
+			if len(sink.signals) != 1 || sink.signals[0].State != tt.want {
+				t.Fatalf("signals = %+v, want one %q", sink.signals, tt.want)
+			}
+			if got := sink.signals[0].ExpectedRevision; got == nil || *got != session.Revision {
+				t.Fatalf("reconciliation not fenced on revision: %+v", sink.signals[0])
+			}
+		})
+	}
+}
+
 func TestPollPreservesClaudeWaitingInputWithoutContinuousCapability(t *testing.T) {
 	now := time.Unix(500, 0).UTC()
 	session := activeSession(now, domain.HarnessClaudeCode)
