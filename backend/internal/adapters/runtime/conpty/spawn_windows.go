@@ -98,6 +98,11 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 	if err := cmd.Start(); err != nil {
 		return "", 0, fmt.Errorf("conpty spawn: start: %w", err)
 	}
+	hostPID := cmd.Process.Pid
+	// A detached process still needs Wait so os/exec can close the stderr-copy
+	// pipe and release its process handle when pty-host eventually exits. Waiting
+	// asynchronously preserves the host's independence from the daemon lifetime.
+	go func() { _ = cmd.Wait() }()
 
 	// Read READY line with a timeout.
 	readyC := make(chan struct {
@@ -139,19 +144,18 @@ func defaultSpawnHost(ctx context.Context, sessionID, cwd string, argv []string,
 	select {
 	case r := <-readyC:
 		if r.err != nil {
-			pid, err := cleanupStartedHostFailure(cmd.Process.Pid, r.err, cmd.Process.Kill)
+			pid, err := cleanupStartedHostFailure(hostPID, r.err, cmd.Process.Kill)
 			return "", pid, err
 		}
-		// Unref: detach stdout so the child is not blocked, then release reference
-		// so our process can exit while the child keeps running.
-		stdout.Close()
-		cmd.Process.Release() // nolint: errcheck - best-effort detach
-		return r.addr, cmd.Process.Pid, nil
+		// The waiter owns process-handle cleanup. Close the READY pipe now that its
+		// one startup message has been consumed; the detached host keeps running.
+		_ = stdout.Close()
+		return r.addr, hostPID, nil
 	case <-timer.C:
-		pid, err := cleanupStartedHostFailure(cmd.Process.Pid, fmt.Errorf("conpty spawn: pty-host startup timeout (%s)", spawnReadyTimeout), cmd.Process.Kill)
+		pid, err := cleanupStartedHostFailure(hostPID, fmt.Errorf("conpty spawn: pty-host startup timeout (%s)", spawnReadyTimeout), cmd.Process.Kill)
 		return "", pid, err
 	case <-ctx.Done():
-		pid, err := cleanupStartedHostFailure(cmd.Process.Pid, ctx.Err(), cmd.Process.Kill)
+		pid, err := cleanupStartedHostFailure(hostPID, ctx.Err(), cmd.Process.Kill)
 		return "", pid, err
 	}
 }
