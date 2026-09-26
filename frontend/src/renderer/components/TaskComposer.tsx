@@ -1,6 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-	ExecutionContextView,
 	TaskComposerView,
 	type TaskComposerAgentControl,
 	type TaskComposerEffortControl,
@@ -32,7 +31,6 @@ import {
 	isReadyAgent,
 } from "../lib/agent-select-options";
 import { useSandboxProviderStore } from "../stores/sandbox-provider-store";
-import { executionContextLabels, projectRepositories } from "../lib/execution-context";
 import { cloudSessionsQueryKey, useCloudProjectsQuery } from "../hooks/useWorkspaceQuery";
 import {
 	agentModelsQueryKey,
@@ -333,16 +331,6 @@ export function TaskComposer({
 				agentConfig?: { model?: string; mode?: string; effort?: string };
 		  }
 		| undefined;
-	// A cloud project's execution context should list every repo it spans (the
-	// primary plus the coder dev-kit extra repos), not just the primary — so
-	// multi-repo projects read as multi-repo. Narrows the untyped config safely.
-	const cloudRepositories = (() => {
-		if (!cloudProject) return [] as string[];
-		const coder = (cloudProject.config as { coder?: { extraRepos?: Array<{ url?: string }> } } | undefined)?.coder;
-		const declared = Array.isArray(coder?.extraRepos) ? coder?.extraRepos ?? [] : [];
-		const extras = declared.map((repo) => repo?.url).filter((url): url is string => Boolean(url));
-		return [...new Set([cloudProject.repositoryUrl, ...extras].filter(Boolean))];
-	})();
 	const projectWorkerAgent = projectConfig?.worker?.agent ?? "";
 	const globalDefaultAgent = projectQuery.data?.agent ?? "";
 	const configuredProjectAgent = projectWorkerAgent || globalDefaultAgent;
@@ -524,23 +512,6 @@ export function TaskComposer({
 	useEffect(() => () => onSubmittingChange?.(false), [onSubmittingChange]);
 	useEffect(() => () => clearAttachments(), [clearAttachments]);
 
-	const executionContext = projectId ? (
-		<ExecutionContextView
-			activeAgent={selectedAgentLabel || undefined}
-			activeRole="worker"
-			baseBranch={projectQuery.data?.defaultBranch ?? cloudProject?.defaultBranch}
-			error={!isCloudProject && !isStandalone && projectQuery.isError ? (projectQuery.error instanceof Error ? projectQuery.error.message : t("newTask.configUnavailable")) : undefined}
-			labels={executionContextLabels(t)}
-			loading={!isCloudProject && !isStandalone && projectQuery.isPending}
-			orchestratorAgent={projectQuery.data?.config?.orchestrator?.agent ? selectedAgentLabelFor(projectQuery.data.config.orchestrator.agent, agentCatalog?.agents) : undefined}
-			path={projectQuery.data?.path}
-			projectName={projectQuery.data?.name ?? cloudProject?.displayName ?? projectId}
-			repositories={projectQuery.data ? projectRepositories(projectQuery.data) : cloudRepositories}
-			variant="compact"
-			workerAgent={projectWorkerAgent ? selectedAgentLabelFor(projectWorkerAgent, agentCatalog?.agents) : undefined}
-		/>
-	) : undefined;
-
 	const submitTask = async (
 		brief: string,
 		interfaceMode?: "chat" | "tui",
@@ -617,7 +588,6 @@ export function TaskComposer({
 		<TaskComposerView
 			autoFocusPrompt={autoFocusTitle}
 			canSubmit={canSubmit}
-			context={executionContext}
 			onPromptChange={handlePromptChange}
 			labels={{
 				addFile: t("newTask.addFile"),
@@ -721,10 +691,6 @@ export function TaskComposer({
 			showEffort={!requiresTuiFallback && effortOptions.length > 0}
 		/>
 	);
-}
-
-function selectedAgentLabelFor(agent: string, catalog?: Array<{ id: string; label: string }>): string {
-	return catalog?.find((item) => item.id === agent)?.label ?? agent;
 }
 
 function TaskEffortPicker({ disabled, label, onChange, options, value, defaultEffort }: TaskComposerEffortControl & { defaultEffort?: string }) {

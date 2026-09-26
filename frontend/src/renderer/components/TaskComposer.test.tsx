@@ -569,7 +569,7 @@ describe("TaskComposer", () => {
 		);
 
 		expect(startTask()).toBeDisabled();
-		expect(screen.getByRole("status", { name: "loading project context…" })).toBeInTheDocument();
+		expect(screen.queryByTestId("execution-context")).not.toBeInTheDocument();
 		fireEvent.change(task(), { target: { value: "should wait" } });
 		fireEvent.keyDown(task(), { key: "Enter", shiftKey: false, altKey: false });
 		expect(h.post).not.toHaveBeenCalled();

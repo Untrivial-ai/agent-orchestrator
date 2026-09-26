@@ -137,14 +137,7 @@ describe("NewTaskDialog", () => {
 		expect(screen.queryByRole("button", { name: "Close new task dialog" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Agent" })).toHaveTextContent("Claude Code");
-		expect(screen.getByTestId("execution-context")).toHaveTextContent("careerops");
-		expect(screen.getByTestId("execution-context")).toHaveTextContent("main");
-		expect(screen.getByTestId("execution-context")).toHaveTextContent("/work/careerops");
-		expect(screen.getByTestId("execution-context")).not.toHaveAttribute("open");
-		expect(screen.getByTestId("execution-context-toggle")).toHaveTextContent("careerops");
-		expect(screen.getByTestId("execution-context-toggle")).toHaveTextContent("main");
-		await userEvent.click(screen.getByTestId("execution-context-toggle"));
-		expect(screen.getByTestId("execution-context")).toHaveAttribute("open");
+		expect(screen.queryByTestId("execution-context")).not.toBeInTheDocument();
 		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Model not reported");
 		expect(screen.getByRole("button", { name: "Add file" })).toBeInTheDocument();
 		expect(screen.getByLabelText("Task").getAttribute("placeholder")).toBeTruthy();
