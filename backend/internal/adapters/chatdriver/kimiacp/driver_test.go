@@ -107,6 +107,20 @@ func TestConfigureRejectsUnsupportedPermissionModes(t *testing.T) {
 	}
 }
 
+func TestDriverRejectsUnsupportedPermissionModesDuringPreflight(t *testing.T) {
+	driver := New(fakePlugin{binary: "/user/bin/kimi", status: ports.AgentAuthStatusAuthorized}, nil)
+	validator, ok := driver.(ports.ChatLaunchValidator)
+	if !ok {
+		t.Fatal("Kimi driver does not expose launch-time settings validation")
+	}
+	if err := validator.ValidateLaunch(ports.PermissionModeDefault); err != nil {
+		t.Fatalf("default permissions: %v", err)
+	}
+	if err := validator.ValidateLaunch(ports.PermissionModeAuto); !errors.Is(err, ports.ErrChatPermissionModeUnsupported) {
+		t.Fatalf("auto permissions error = %v, want ErrChatPermissionModeUnsupported", err)
+	}
+}
+
 func TestSessionOptionsMapModelsButDoNotInventPermissionModes(t *testing.T) {
 	tests := []struct {
 		name     string

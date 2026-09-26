@@ -189,6 +189,16 @@ func (d *Driver) Probe(ctx context.Context) (ports.ChatCapabilities, error) {
 	return cloneCapabilities(d.cfg.Capabilities), nil
 }
 
+// ValidateLaunch applies provider-specific settings validation at admission
+// time, before the session manager creates durable state. The same validator is
+// retained for live turn changes below.
+func (d *Driver) ValidateLaunch(permissions ports.PermissionMode) error {
+	if d.cfg.ValidateTurnSettings == nil {
+		return nil
+	}
+	return d.cfg.ValidateTurnSettings(permissions, ports.ChatTurnSettings{Approval: permissions})
+}
+
 // Start creates a new ACP session in the AO worktree.
 func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
 	totalStarted := time.Now()

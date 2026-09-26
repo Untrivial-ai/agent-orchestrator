@@ -1012,6 +1012,7 @@ func TestDefaultChatSpawnFallsBackToTUIWhenUnavailable(t *testing.T) {
 		{name: "driver unavailable", preflightErr: ports.ErrChatDriverUnavailable},
 		{name: "driver incompatible", preflightErr: ports.ErrChatDriverIncompatible},
 		{name: "authentication required", preflightErr: ports.ErrChatAuthRequired},
+		{name: "permission mode unsupported", preflightErr: ports.ErrChatPermissionModeUnsupported},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1041,6 +1042,30 @@ func TestDefaultChatSpawnFallsBackToTUIWhenUnavailable(t *testing.T) {
 				t.Fatalf("fallback started %d Chat controllers, want 0", len(launcher.started))
 			}
 		})
+	}
+}
+
+func TestExplicitChatSpawnDoesNotFallBackForUnsupportedPermissionMode(t *testing.T) {
+	mgr, store, runtime := newChatManager(&recordingLauncher{preflightErr: ports.ErrChatPermissionModeUnsupported})
+
+	_, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID:     chatTestProject,
+		Kind:          domain.KindWorker,
+		Harness:       domain.HarnessKimi,
+		RequestedMode: domain.SessionModeChat,
+	})
+	if !errors.Is(err, ports.ErrChatPermissionModeUnsupported) {
+		t.Fatalf("err = %v, want ErrChatPermissionModeUnsupported", err)
+	}
+	if runtime.created != 0 {
+		t.Fatalf("explicit Chat request created %d terminal runtimes, want 0", runtime.created)
+	}
+	sessions, listErr := store.ListAllSessions(context.Background())
+	if listErr != nil {
+		t.Fatalf("list sessions: %v", listErr)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("explicit Chat request left %d session rows, want 0", len(sessions))
 	}
 }
 

@@ -960,7 +960,8 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			fallbackAllowed := errors.Is(err, ports.ErrChatUnsupported) ||
 				errors.Is(err, ports.ErrChatDriverUnavailable) ||
 				errors.Is(err, ports.ErrChatDriverIncompatible) ||
-				errors.Is(err, ports.ErrChatAuthRequired)
+				errors.Is(err, ports.ErrChatAuthRequired) ||
+				errors.Is(err, ports.ErrChatPermissionModeUnsupported)
 			if modeExplicitlyRequested || !fallbackAllowed ||
 				errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w", err)

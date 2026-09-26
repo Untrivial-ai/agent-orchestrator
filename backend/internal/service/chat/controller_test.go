@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/kimiacp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/lifecycle"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -373,6 +374,16 @@ type fakeDriver struct {
 	resume    func(ports.ChatResumeConfig) (ports.ChatConversation, error)
 }
 
+type kimiPreflightPlugin struct{}
+
+func (kimiPreflightPlugin) ResolveBinary(context.Context) (string, error) {
+	return "/user/bin/kimi", nil
+}
+
+func (kimiPreflightPlugin) AuthStatus(context.Context) (ports.AgentAuthStatus, error) {
+	return ports.AgentAuthStatusAuthorized, nil
+}
+
 type sequenceDriver struct {
 	mu            sync.Mutex
 	conversations []ports.ChatConversation
@@ -571,6 +582,19 @@ func TestCapabilityCacheEvaluatesEveryRequestedPermissionMode(t *testing.T) {
 	}
 	if probes != 1 {
 		t.Fatalf("Probe calls = %d, want one raw capability probe reused across permission modes", probes)
+	}
+}
+
+func TestKimiPreflightRejectsUnsupportedLaunchPermissions(t *testing.T) {
+	driver := kimiacp.New(kimiPreflightPlugin{}, nil)
+	svc := chatsvc.New(chatsvc.Options{Drivers: fakeRegistry{driver: driver}})
+
+	if err := svc.PreflightChat(context.Background(), domain.HarnessKimi, ports.PermissionModeDefault); err != nil {
+		t.Fatalf("default permissions preflight: %v", err)
+	}
+	err := svc.PreflightChat(context.Background(), domain.HarnessKimi, ports.PermissionModeAuto)
+	if !errors.Is(err, ports.ErrChatPermissionModeUnsupported) {
+		t.Fatalf("auto permissions preflight error = %v, want ErrChatPermissionModeUnsupported", err)
 	}
 }
 

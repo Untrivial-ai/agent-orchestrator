@@ -1035,6 +1035,14 @@ type ChatDriver interface {
 	Resume(ctx context.Context, cfg ChatResumeConfig) (ChatConversation, error)
 }
 
+// ChatLaunchValidator is optionally implemented by drivers whose launch-time
+// settings have provider-specific constraints that capabilities alone cannot
+// express. Validation runs during spawn preflight, before AO creates durable
+// session or workspace state.
+type ChatLaunchValidator interface {
+	ValidateLaunch(permissions PermissionMode) error
+}
+
 // ChatConversation is one live controller. Exactly one exists per Chat session,
 // and it is the only writer to its provider conversation.
 type ChatConversation interface {
