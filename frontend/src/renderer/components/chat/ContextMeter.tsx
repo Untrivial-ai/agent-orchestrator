@@ -1,7 +1,7 @@
 /**
  * How full the conversation is, and whether the account is near a quota wall.
  *
- * This replaces a bare token total in the chat header. A total on its own is a
+ * This replaces a bare token total in the chat composer. A total on its own is a
  * number with no scale: it cannot answer either question a user actually has,
  * which is "when will this conversation stop working" and "why did that turn fail
  * for a reason unrelated to what I asked". Both failures are otherwise
@@ -15,6 +15,7 @@
 
 import { AlertTriangle } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { formatTokenCount } from "../../lib/format-token-count";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import type { ConversationRateLimits, ConversationUsage } from "../../types/conversation";
 
@@ -60,42 +61,11 @@ function quotaSeverity(percent: number): Severity {
  * logo blue. Warning and critical retain the established status colours: amber
  * means "a human should look", and red means the next turn is at risk.
  */
-const FILL: Record<Severity, string> = {
-	normal: "bg-logo-accent",
-	warn: "bg-status-needs-you",
-	critical: "bg-status-exited",
-};
-
-const TEXT: Record<Severity, string> = {
-	normal: "text-muted-foreground",
+const RING: Record<Severity, string> = {
+	normal: "text-logo-accent",
 	warn: "text-status-needs-you",
 	critical: "text-status-exited",
 };
-
-/** Compact token counts. 18055 reads as 18.1k; the exact figure is in the tooltip. */
-function formatTokens(tokens: number): string {
-	if (tokens < 1000) return String(tokens);
-	if (tokens < 1_000_000) {
-		const thousands = tokens / 1000;
-		// Keep one decimal below 100k, where the difference between 18.1k and 18k is
-		// still a meaningful fraction of the window.
-		return `${thousands < 100 ? thousands.toFixed(1) : Math.round(thousands)}k`;
-	}
-	return `${(tokens / 1_000_000).toFixed(1)}M`;
-}
-
-function formatCost(amount: number, currency = "USD"): string {
-	try {
-		return new Intl.NumberFormat(undefined, {
-			style: "currency",
-			currency,
-			minimumFractionDigits: amount < 1 ? 3 : 2,
-			maximumFractionDigits: amount < 1 ? 4 : 2,
-		}).format(amount);
-	} catch {
-		return `${amount.toFixed(3)} ${currency}`;
-	}
-}
 
 /**
  * A remaining duration as the largest useful unit. The provider's windows are
@@ -138,11 +108,12 @@ export function ContextMeter({
 	className?: string;
 }) {
 	const quota = rateLimits ? worstWindow(rateLimits) : undefined;
+	const hasContext = usage !== undefined && (usage.contextUsed > 0 || usage.contextWindow > 0);
 	// Only surfaced once it is actionable. A quota readout that is always on screen
 	// becomes furniture, and this one has to be noticed on the day it matters.
 	const showQuota = quota !== undefined && quota.percent >= QUOTA_WARN;
 
-	if (!usage && !showQuota) return null;
+	if (!hasContext && !showQuota) return null;
 
 	return (
 		// Scoped provider, as IntakeFields does: this component is rendered in surfaces
@@ -150,7 +121,7 @@ export function ContextMeter({
 		// throws rather than degrading.
 		<TooltipProvider>
 			<div className={cn("flex shrink-0 items-center gap-2", className)}>
-				{usage ? <ContextReadout usage={usage} /> : null}
+				{usage && hasContext ? <ContextReadout usage={usage} /> : null}
 				{showQuota && quota ? <QuotaWarning quota={quota} limits={rateLimits} /> : null}
 			</div>
 		</TooltipProvider>
@@ -159,22 +130,35 @@ export function ContextMeter({
 
 function ContextReadout({ usage }: { usage: ConversationUsage }) {
 	const { contextUsed, contextWindow } = usage;
+	// A border separates the tooltip without the layered shadow's hover halos.
+	const tooltipSurface = "border border-border shadow-none";
 
-	// No window means no honest fullness to draw. The tokens are still worth
-	// showing -- they are what the header showed before -- but without a bar
-	// implying a scale the provider never gave.
-	if (!contextWindow || contextWindow <= 0) {
+	// Failed turns can report 0 used with a valid model limit. Until there is a
+	// positive reading, drawing 0% would claim headroom we have not measured.
+	if (contextUsed <= 0 || contextWindow <= 0) {
+		const used = contextUsed > 0 ? contextUsed.toLocaleString() : "unknown";
+		const total = contextWindow > 0 ? contextWindow.toLocaleString() : "unknown";
+		const compactUsed = contextUsed > 0 ? formatTokenCount(contextUsed).replace(/ tok$/, "") : "unknown";
+		const compactTotal = contextWindow > 0 ? formatTokenCount(contextWindow).replace(/ tok$/, "") : "unknown";
 		return (
 			<Tooltip>
 				<TooltipTrigger asChild>
-					<span className="tabular-nums text-[11px] text-muted-foreground">
-						{formatTokens(contextUsed || usage.totalTokens)} tokens
+					<span
+						role="img"
+						aria-label={`Context ${used} / ${total}`}
+						className="relative inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+						data-context-meter=""
+						tabIndex={0}
+					>
+						<svg aria-hidden="true" className="size-5" viewBox="0 0 24 24">
+							<circle cx="12" cy="12" fill="none" r="9" stroke="currentColor" strokeWidth="3" />
+						</svg>
+						<span aria-hidden="true" className="absolute text-[10px]">?</span>
 					</span>
 				</TooltipTrigger>
-				<TooltipContent>
-					<p>This model does not report a context window, so how full the conversation is
-					is unknown.</p>
-					{usage.cost != null ? <p className="mt-1 tabular-nums">Provider-reported cost: {formatCost(usage.cost, usage.currency)}</p> : null}
+				<TooltipContent className={tooltipSurface}>
+					<p className="font-medium">Context {compactUsed} / {compactTotal}</p>
+					<p>{contextUsed <= 0 ? "The provider has not reported current context used." : "The provider has not reported a context window."} Conversation fullness is unknown.</p>
 				</TooltipContent>
 			</Tooltip>
 		);
@@ -185,50 +169,45 @@ function ContextReadout({ usage }: { usage: ConversationUsage }) {
 	const fraction = Math.min(1, Math.max(0, contextUsed / contextWindow));
 	const percent = Math.round(fraction * 100);
 	const severity = contextSeverity(fraction);
+	const exactUsage = `${contextUsed.toLocaleString()} / ${contextWindow.toLocaleString()}`;
+	const compactUsage = `${formatTokenCount(contextUsed).replace(/ tok$/, "")} / ${formatTokenCount(contextWindow).replace(/ tok$/, "")}`;
 
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
 				<div
-					className="flex items-center gap-1.5"
+					className={cn("inline-flex size-7 shrink-0 items-center justify-center rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring", RING[severity])}
+					data-context-meter=""
 					// A progressbar rather than a bare span: the fill is the primary
 					// encoding, so a screen reader has to get the same value sighted
 					// users get from its length.
 					role="progressbar"
+					tabIndex={0}
 					aria-valuemin={0}
 					aria-valuemax={100}
 					aria-valuenow={percent}
 					aria-label="Context window used"
+					aria-valuetext={`${exactUsage} tokens (${percent}%)`}
 				>
-					<div className="h-1.5 w-16 overflow-hidden rounded-full bg-border">
-						<div
-							className={cn("h-full rounded-full transition-[width] duration-300", FILL[severity])}
-							style={{ width: `${Math.max(fraction * 100, 2)}%` }}
+					<svg aria-hidden="true" className="size-5 -rotate-90" viewBox="0 0 24 24">
+						<circle cx="12" cy="12" fill="none" r="9" stroke="currentColor" strokeWidth="3" className="text-border" />
+						<circle
+							cx="12" cy="12" fill="none" r="9" stroke="currentColor" strokeWidth="3"
+							strokeLinecap="round" pathLength="100"
+							strokeDasharray={`${Math.max(fraction * 100, 8)} 100`}
+							className="transition-[stroke-dasharray] duration-300"
 						/>
-					</div>
-					<span className={cn("tabular-nums text-[11px]", TEXT[severity])}>{percent}%</span>
+					</svg>
 				</div>
 			</TooltipTrigger>
-			<TooltipContent>
-				<p className="tabular-nums">
-					{contextUsed.toLocaleString()} of {contextWindow.toLocaleString()} tokens of context
-					used
-				</p>
+			<TooltipContent className={tooltipSurface}>
+				<p className="font-medium">Context window</p>
+				<p className="tabular-nums">{compactUsage} tokens ({percent}%)</p>
 				{severity !== "normal" ? (
 					<p className="mt-1">
 						{severity === "critical"
 							? "The next turn may not fit. Compacting or starting a new conversation will reclaim room."
 							: "Room is running low. A long task may not fit."}
-					</p>
-				) : null}
-				{usage.totalTokens > 0 ? (
-					<p className="mt-1 tabular-nums text-muted-foreground">
-						{usage.totalTokens.toLocaleString()} tokens spent in total
-					</p>
-				) : null}
-				{usage.cost != null ? (
-					<p className="mt-1 tabular-nums text-muted-foreground">
-						Provider-reported cost: {formatCost(usage.cost, usage.currency)}
 					</p>
 				) : null}
 			</TooltipContent>

@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	createWorkDirectory,
 	npmInvocation,
+	patchClaudeContextUsage,
 	patchClaudeRetryDetails,
 	pruneNodeDistribution,
 	runtimeSourceFiles,
@@ -106,6 +107,74 @@ describe("patchClaudeRetryDetails", () => {
 		expect(patched).toContain("message.retry_delay_ms / 1000");
 		expect(patched).toContain("Trying again in ${retryDelay}.");
 		expect(patched).toContain("details: retryDetails");
+	});
+});
+
+describe("patchClaudeContextUsage", () => {
+	it("publishes the SDK context snapshot through ACP after a result", async () => {
+		const adapterPath = join(temporaryDirectory(), "acp-agent.js");
+		writeFileSync(adapterPath, `
+                            // Send usage_update notification
+                            if (lastAssistantTotalUsage !== null) {
+                                await sendUpdate({
+                                    update: {
+                                        used: lastAssistantTotalUsage,
+                                        size: session.contextWindowSize,
+                                    },
+                                });
+                            }
+                            if (session.cancelled) {
+`);
+
+		expect(patchClaudeContextUsage(adapterPath)).toBe(true);
+		expect(patchClaudeContextUsage(adapterPath)).toBe(false);
+		const patched = readFileSync(adapterPath, "utf8");
+		expect(patched).toContain("session.query.getContextUsage()");
+		expect(patched).toContain("lastAssistantTotalUsage = contextUsage.totalTokens");
+		expect(patched).toContain("session.contextWindowSize = contextUsage.rawMaxTokens");
+
+		const start = patched.indexOf("// AO: use the SDK's context snapshot.");
+		const end = patched.indexOf("if (session.cancelled) {", start);
+		const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+		const run = new AsyncFunction("session", "sendUpdate", `
+			let lastAssistantTotalUsage = 9;
+			${patched.slice(start, end)}
+		`);
+		const updates = [];
+		const session = {
+			contextWindowSize: 100,
+			contextWindowAuthoritative: false,
+			query: { getContextUsage: async () => ({ totalTokens: 17, rawMaxTokens: 200 }) },
+		};
+		await run.call({ logger: { error: () => {} } }, session, (notification) => {
+			updates.push(notification.update);
+		});
+		expect(updates.map(({ used, size }) => [used, size])).toEqual([[17, 200]]);
+		expect(session.contextWindowAuthoritative).toBe(true);
+
+		const fallback = {
+			contextWindowSize: 100,
+			contextWindowAuthoritative: false,
+			query: { getContextUsage: async () => { throw new Error("unavailable"); } },
+		};
+		const fallbackUpdates = [];
+		await run.call({ logger: { error: () => {} } }, fallback, (notification) => {
+			fallbackUpdates.push(notification.update);
+		});
+		expect(fallbackUpdates.map(({ used, size }) => [used, size])).toEqual([[9, 100]]);
+		expect(fallback.contextWindowAuthoritative).toBe(false);
+
+		const zero = {
+			contextWindowSize: 100,
+			contextWindowAuthoritative: false,
+			query: { getContextUsage: async () => ({ totalTokens: 0, rawMaxTokens: 200 }) },
+		};
+		const zeroUpdates = [];
+		await run.call({ logger: { error: () => {} } }, zero, (notification) => {
+			zeroUpdates.push(notification.update);
+		});
+		expect(zeroUpdates.map(({ used, size }) => [used, size])).toEqual([[9, 100]]);
+		expect(zero.contextWindowAuthoritative).toBe(false);
 	});
 });
 

@@ -6,18 +6,37 @@ export function contextReadout(usage?: ConversationUsage): {
 	percent?: number;
 	fillPercent?: number;
 	severity: Severity;
-	tokens: number;
 } | undefined {
 	if (!usage) return undefined;
-	const tokens = usage.contextUsed || usage.totalTokens;
-	if (usage.contextWindow <= 0) return { severity: "normal", tokens };
+	if (usage.contextWindow <= 0 || usage.contextUsed <= 0) return { severity: "normal" };
 	const fraction = Math.min(1, Math.max(0, usage.contextUsed / usage.contextWindow));
 	return {
 		percent: Math.round(fraction * 100),
 		fillPercent: Math.max(2, fraction * 100),
 		severity: fraction >= 0.9 ? "critical" : fraction >= 0.7 ? "warn" : "normal",
-		tokens,
 	};
+}
+
+export function contextUsageLabel(usage?: ConversationUsage): string {
+	return usage && usage.contextWindow > 0 && usage.contextUsed > 0
+		? `${usage.contextUsed.toLocaleString()} / ${usage.contextWindow.toLocaleString()} context tokens`
+		: "Context unavailable";
+}
+
+export function compactContextUsageLabel(usage?: ConversationUsage): string {
+	if (!usage || usage.contextWindow <= 0 || usage.contextUsed <= 0) return "Context unavailable";
+	return `${compactTokenCount(usage.contextUsed)} / ${compactTokenCount(usage.contextWindow)} context tokens`;
+}
+
+export function compactTokenCount(tokens: number): string {
+	if (tokens < 1_000) return String(tokens);
+	let unit = tokens >= 1_000_000_000 ? 1_000_000_000 : tokens >= 1_000_000 ? 1_000_000 : 1_000;
+	let rounded = Number((tokens / unit).toFixed(1));
+	if (rounded >= 1_000 && unit < 1_000_000_000) {
+		unit *= 1_000;
+		rounded = Number((tokens / unit).toFixed(1));
+	}
+	return `${rounded}${unit === 1_000_000_000 ? "B" : unit === 1_000_000 ? "M" : "K"}`;
 }
 
 export function quotaWarning(limits?: ConversationRateLimits): {

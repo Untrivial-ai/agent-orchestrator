@@ -211,7 +211,7 @@ describe("Android native compatibility boundaries", () => {
 		expect(actions).toMatch(/ListHeaderComponent=\{<SheetHeader[\s\S]*?\/>}/);
 		expect(actions).not.toContain("<ScrollView");
 		expect(registry).toContain("sessionTitle: string");
-		expect(actions).toContain('title={entry.snapshot.title || "Untitled conversation"}');
+		expect(actions).toContain('title={snapshot.title || "Untitled conversation"}');
 		expect(actions).toContain('subtitle={`Session · ${entry.sessionTitle}`}');
 		expect(actions).toContain("backgroundColor: t.bgBase");
 		expect(actions).toContain("backgroundColor: t.bgElevated");

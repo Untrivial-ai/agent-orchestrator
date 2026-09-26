@@ -37,7 +37,7 @@ import { ChatComposer } from "./ChatComposer";
 import { ChatLinkProvider } from "./ChatMarkdown";
 import { ChatTimeline } from "./ChatTimeline";
 import { ConversationTitle } from "./ConversationTitle";
-import { chatSheetRoute } from "./chatSheetRegistry";
+import { chatSheetRoute, type ConversationActionsEntry } from "./chatSheetRegistry";
 import { quotaWarning } from "./conversationChrome";
 import { controllerStoppedBanner, errorBanner, mcpBanner, quotaBanner, reauthBanner, rolledBackBanner, threadBanner, type BannerCopy } from "./conversationBanners";
 import { conversationActionError, conversationActionUnsupported } from "./conversationErrors";
@@ -84,6 +84,8 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	);
 	const { config, projects, refresh: refreshBoard, setActiveProject, setWorkerPinned, renameWorker, kill } = useApp();
 	const conversation = useMobileConversation(config, session.id);
+	const actionsEntryRef = useRef<ConversationActionsEntry | undefined>(undefined);
+	const actionsListeners = useRef(new Set<(entry: ConversationActionsEntry) => void>());
 	const interfaceSwitch = useInterfaceTransition(config, session.id, refreshBoard);
 	const [menuOpen, setMenuOpen] = useState(false);
 	const [jumpToSequence, setJumpToSequence] = useState<number>();
@@ -113,6 +115,26 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		? undefined
 		: session.provisionError || "The session did not finish starting.";
 	const interfaceTransitionActive = mobileInterfaceTransitionIsActive(interfaceSwitch.transition);
+	useLayoutEffect(() => {
+		const entry = actionsEntryRef.current;
+		const snapshot = conversation.snapshot;
+		if (!entry || entry.sessionId !== session.id || !snapshot) return;
+		const liveEntry = {
+			...entry,
+			snapshot,
+			openingShell,
+			compacting: conversation.pendingActions.includes("compact"),
+			mcpReloading: conversation.pendingActions.includes("mcp"),
+			refreshing: conversation.refreshing,
+			compactSupported: can(snapshot, "compaction") && !conversationActionUnsupported("compact", conversation.actionCodes.compact),
+			mcpReloadSupported: can(snapshot, "mcp_reload") && !conversationActionUnsupported("mcp", conversation.actionCodes.mcp),
+			interfaceSupported: Boolean(interfaceSwitch.status?.supported),
+			interfaceReason: interfaceSwitch.status?.reason || interfaceSwitch.error,
+			interfaceSwitching: interfaceTransitionActive || interfaceSwitch.starting,
+		};
+		actionsEntryRef.current = liveEntry;
+		actionsListeners.current.forEach((listener) => listener(liveEntry));
+	}, [conversation.snapshot, conversation.pendingActions, conversation.refreshing, conversation.actionCodes, openingShell, interfaceSwitch.status, interfaceSwitch.error, interfaceSwitch.starting, interfaceTransitionActive, session.id]);
 	const interfaceTransitionNotice =
 		!interfaceTransitionActive &&
 		!interfaceSwitch.transition?.noticeAcknowledgedAt &&
@@ -320,9 +342,15 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		const current = conversation.snapshot;
 		if (!menuOpen || !current) return;
 		setMenuOpen(false);
-		void dismissKeyboardBeforeSheet(keyboardVisible).then(() => router.push(chatSheetRoute({
+		const entry: ConversationActionsEntry = {
 			kind: "conversation-actions",
+			sessionId: session.id,
 			snapshot: current,
+			subscribeEntry: (listener) => {
+				actionsListeners.current.add(listener);
+				listener(actionsEntryRef.current ?? entry);
+				return () => { actionsListeners.current.delete(listener); };
+			},
 			sessionTitle: sessionName,
 			openingShell,
 			compacting: conversation.pendingActions.includes("compact"),
@@ -337,7 +365,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 			canDelete: !("projectName" in session),
 			canPin: !("projectName" in session),
 			pinned: "projectName" in session ? false : Boolean(session.isPinned),
-			onMap: () => router.push(chatSheetRoute({ kind: "conversation-map", markers: conversationMarkers(current), onSelect: setJumpToSequence })),
+			onMap: () => router.push(chatSheetRoute({ kind: "conversation-map", markers: conversationMarkers(actionsEntryRef.current?.snapshot ?? current), onSelect: setJumpToSequence })),
 			onOpenShell: () => void openShell(),
 			onPreview: () => router.push({ pathname: "/preview/[id]", params: { id: session.id, title, previewUrl: "previewUrl" in session ? session.previewUrl ?? undefined : undefined } }),
 			onPullRequests: () => { setActiveProject(session.projectId); router.push("/(tabs)/prs"); },
@@ -368,7 +396,9 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 					],
 				);
 			},
-		})));
+		};
+		actionsEntryRef.current = entry;
+		void dismissKeyboardBeforeSheet(keyboardVisible).then(() => router.push(chatSheetRoute(actionsEntryRef.current ?? entry)));
 	}, [conversation, interfaceSwitch, interfaceTransitionActive, keyboardVisible, menuOpen, openShell, openTurnSettings, openingShell, requestInterfaceSwitch, router, session, sessionName, setActiveProject, setWorkerPinned, title]);
 
 	// The poll keeps retrying on its own at up to 8s; this is for the user who can

@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { ConversationActionsSheet } from "../../lib/chat/ConversationActionsSheet";
 import { readChatSheet, releaseChatSheet } from "../../lib/chat/chatSheetRegistry";
 import { useSheetEntryPresent } from "../../lib/chat/useSheetEntryPresent";
@@ -9,6 +9,8 @@ export default function ConversationActionsRoute() {
 	const router = useRouter();
 	const { sheetKey } = useLocalSearchParams<{ sheetKey?: string }>();
 	const entry = readChatSheet(sheetKey);
+	const [liveEntry, setLiveEntry] = useState(entry?.kind === "conversation-actions" ? entry : undefined);
+	useEffect(() => entry?.kind === "conversation-actions" ? entry.subscribeEntry(setLiveEntry) : undefined, [entry]);
 	useEffect(() => () => releaseChatSheet(sheetKey), [sheetKey]);
 	// Dismiss rather than draw an empty sheet when the hand-off is gone.
 	useSheetEntryPresent(entry?.kind === "conversation-actions");
@@ -17,7 +19,8 @@ export default function ConversationActionsRoute() {
 		backOr(router);
 		setTimeout(action, 220);
 	};
-	return <ConversationActionsSheet entry={entry} onAction={closeThen} />;
+	const current = liveEntry ?? entry;
+	return <ConversationActionsSheet entry={current} snapshot={current.snapshot} onAction={closeThen} />;
 }
 
 export { SheetErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";

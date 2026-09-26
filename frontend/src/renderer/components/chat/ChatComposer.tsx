@@ -1433,9 +1433,10 @@ export const ChatComposer = memo(function ChatComposer({
 				data-attached-top={attachedTop && !queuedDock && !elicitation ? true : undefined}
 				onClick={(e) => {
 					if (controlsDisabled) return;
+					// The focusable context tooltip must keep its focus on click.
 					if (
 						e.target === e.currentTarget ||
-						!(e.target as HTMLElement).closest("button, a, [role='option'], ul")
+						!(e.target as HTMLElement).closest("button, a, [role='option'], [data-context-meter], ul")
 					) {
 						editor.current?.focus();
 					}
