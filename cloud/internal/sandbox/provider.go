@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
@@ -15,6 +16,25 @@ var ErrNotFound = errors.New("sandbox environment not found")
 
 // ErrAtCapacity indicates that a provider has no capacity for a new sandbox.
 var ErrAtCapacity = errors.New("sandbox provider at capacity")
+
+// ErrCreateRejected proves this attempt cannot produce a new environment.
+// Transport failures, conflicts and errors after creation must not carry it.
+var ErrCreateRejected = errors.New("sandbox creation rejected")
+
+// CreateResponseError classifies only explicit rejection of the create request.
+func CreateResponseError(err error, status int) error {
+	if err == nil {
+		return nil
+	}
+	switch status {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+		http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusGone,
+		http.StatusUnprocessableEntity, http.StatusTooManyRequests:
+		return errors.Join(ErrCreateRejected, err)
+	default:
+		return err
+	}
+}
 
 // ID uniquely identifies a provider sandbox.
 type ID string
@@ -84,6 +104,11 @@ type Bootstrapper interface {
 // Recreator re-establishes compute with a fresh worker launch.
 type Recreator interface {
 	Recreate(context.Context, ID, Spec) (Environment, error)
+}
+
+// SessionCleaner removes owned storage left after confirmed compute absence.
+type SessionCleaner interface {
+	CleanupSession(context.Context, string, string) error
 }
 
 // Provider manages the lifecycle of cloud sandbox environments.

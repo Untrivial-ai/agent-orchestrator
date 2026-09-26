@@ -30,6 +30,7 @@ type FakeMux = {
 	disposed: boolean;
 	emitData(id: string, text: string): void;
 	emitOpened(id: string): void;
+	emitReplayComplete(id: string, hadOutput: boolean): void;
 	emitExit(id: string): void;
 	emitError(id: string, message: string): void;
 	emitConnection(state: MuxConnectionState): void;
@@ -46,6 +47,7 @@ function createFakeMux(): FakeMux {
 	const data = new Map<string, Set<(bytes: Uint8Array) => void>>();
 	const exit = new Map<string, Set<() => void>>();
 	const opened = new Map<string, Set<() => void>>();
+	const replayComplete = new Map<string, Set<(hadOutput: boolean) => void>>();
 	const error = new Map<string, Set<(message: string) => void>>();
 	const connection = new Set<(state: MuxConnectionState) => void>();
 
@@ -67,6 +69,7 @@ function createFakeMux(): FakeMux {
 			onData: (id, listener) => subscribe(data, id, listener),
 			onExit: (id, listener) => subscribe(exit, id, listener),
 			onOpened: (id, listener) => subscribe(opened, id, listener),
+			onReplayComplete: (id, listener) => subscribe(replayComplete, id, listener),
 			onError: (id, listener) => subscribe(error, id, listener),
 			onConnectionChange: (listener) => {
 				connection.add(listener);
@@ -79,6 +82,7 @@ function createFakeMux(): FakeMux {
 		},
 		emitData: (id, text) => data.get(id)?.forEach((listener) => listener(new TextEncoder().encode(text))),
 		emitOpened: (id) => opened.get(id)?.forEach((listener) => listener()),
+		emitReplayComplete: (id, hadOutput) => replayComplete.get(id)?.forEach((listener) => listener(hadOutput)),
 		emitExit: (id) => exit.get(id)?.forEach((listener) => listener()),
 		emitError: (id, message) => error.get(id)?.forEach((listener) => listener(message)),
 		emitConnection: (state) => connection.forEach((listener) => listener(state)),
@@ -417,10 +421,38 @@ describe("useTerminalSession", () => {
 		it("keeps a cloud-style startup covered until terminal output arrives", () => {
 			const { view, muxes } = setup({ waitForInitialOutput: true });
 			act(() => muxes[0].emitOpened("handle-1"));
+			act(() => muxes[0].emitReplayComplete("handle-1", false));
 			act(() => void vi.advanceTimersByTime(1_000));
 			expect(view.result.current.replaySettled).toBe(false);
 			act(() => muxes[0].emitData("handle-1", "Codex is ready\\r\\n"));
 			act(() => void vi.advanceTimersByTime(60 + 180));
+			expect(view.result.current.replaySettled).toBe(true);
+		});
+
+		it("settles a non-empty replay on the explicit protocol boundary", () => {
+			const { view, terminal, muxes } = setup({ waitForInitialOutput: true });
+			act(() => muxes[0].emitOpened("handle-1"));
+			act(() => muxes[0].emitData("handle-1", "agent is ready\r\n"));
+			expect(view.result.current.replaySettled).toBe(false);
+			expect(terminal.lines).toEqual([]);
+
+			act(() => muxes[0].emitReplayComplete("handle-1", true));
+			expect(terminal.lines).toEqual(["agent is ready\r\n"]);
+			expect(view.result.current.replaySettled).toBe(true);
+		});
+
+		it("keeps a reset-only protocol replay covered until live output arrives", () => {
+			const { view, terminal, muxes } = setup({ waitForInitialOutput: true });
+			act(() => muxes[0].emitOpened("handle-1"));
+			act(() => muxes[0].emitData("handle-1", "\x1b[3J\x1b[H\x1b[2J"));
+			act(() => muxes[0].emitReplayComplete("handle-1", false));
+			act(() => void vi.advanceTimersByTime(1_000));
+			expect(view.result.current.replaySettled).toBe(false);
+			expect(terminal.lines).toEqual([]);
+
+			act(() => muxes[0].emitData("handle-1", "first live output"));
+			act(() => void vi.advanceTimersByTime(60 + 180));
+			expect(terminal.lines.join("")).toContain("first live output");
 			expect(view.result.current.replaySettled).toBe(true);
 		});
 

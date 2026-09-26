@@ -68,7 +68,13 @@ func (ExecGitRunner) Run(ctx context.Context, dir string, env map[string]string,
 
 // PrepareCheckout clones once, then validates and fetches the persistent
 // workspace. The token exists only in the network command's askpass environment.
-func PrepareCheckout(ctx context.Context, runner GitRunner, workspace string, grant CheckoutGrantResponse) error {
+func PrepareCheckout(
+	ctx context.Context,
+	runner GitRunner,
+	workspace string,
+	grant CheckoutGrantResponse,
+	defaultBranch string,
+) error {
 	if runner == nil {
 		return errors.New("git runner is required")
 	}
@@ -83,18 +89,16 @@ func PrepareCheckout(ctx context.Context, runner GitRunner, workspace string, gr
 	if grant.Token != "" && !grant.ExpiresAt.After(time.Now().Add(30*time.Second)) {
 		return errors.New("checkout grant is expired")
 	}
+	defaultBranch = strings.TrimSpace(defaultBranch)
+	if defaultBranch == "" {
+		return errors.New("default branch is required")
+	}
 	info, statErr := os.Stat(workspace)
 	if statErr == nil {
 		if !info.IsDir() {
 			return errors.New("workspace path is not a directory")
 		}
-		entries, err := os.ReadDir(workspace)
-		if err != nil {
-			return fmt.Errorf("inspect workspace contents: %w", err)
-		}
-		if len(entries) == 0 {
-			statErr = os.ErrNotExist
-		} else if _, gitErr := os.Stat(filepath.Join(workspace, ".git")); gitErr == nil {
+		if _, gitErr := os.Stat(filepath.Join(workspace, ".git")); gitErr == nil {
 			if err := validateOrigin(ctx, runner, workspace, expected); err != nil {
 				return err
 			}
@@ -102,30 +106,16 @@ func PrepareCheckout(ctx context.Context, runner GitRunner, workspace string, gr
 				_, err := runner.Run(ctx, workspace, env, "fetch", "--prune", "--", "origin")
 				return err
 			})
-		} else {
-			// The workspace is non-empty but not a Git checkout. This happens
-			// when the coding agent starts first and writes files (for example
-			// .claude) into the workspace before the checkout runs. Clone into a
-			// staging directory and merge the result in, so a bare git clone into
-			// a non-empty directory does not fail and checkout no longer depends
-			// on agent-vs-checkout startup ordering.
-			return cloneIntoNonEmptyWorkspace(ctx, runner, workspace, grant, expected)
 		}
+		return cloneIntoWorkspace(ctx, runner, workspace, grant, expected, defaultBranch)
 	}
 	if !errors.Is(statErr, os.ErrNotExist) {
 		return fmt.Errorf("inspect workspace: %w", statErr)
 	}
-	if err := os.MkdirAll(filepath.Dir(workspace), 0o700); err != nil {
-		return fmt.Errorf("create workspace parent: %w", err)
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		return fmt.Errorf("create workspace: %w", err)
 	}
-	if err := withGitCredential(grant.Token, func(env map[string]string) error {
-		_, err := runner.Run(ctx, filepath.Dir(workspace), env,
-			"clone", "--origin", "origin", "--no-tags", "--", grant.CloneURL, workspace)
-		return err
-	}); err != nil {
-		return err
-	}
-	return validateOrigin(ctx, runner, workspace, expected)
+	return cloneIntoWorkspace(ctx, runner, workspace, grant, expected, defaultBranch)
 }
 
 // EnsureWorkspaceReviewBase records the checkout's comparison baseline once.
@@ -197,13 +187,16 @@ func EnsureWorkspaceReviewBase(ctx context.Context, runner GitRunner, workspace,
 	return nil
 }
 
-// cloneIntoNonEmptyWorkspace clones the authorized repository into a staging
-// directory and merges the result into a workspace that already contains files
-// the coding agent wrote (for example .claude) before the checkout ran. Files
-// the clone did not produce are preserved; the clone's .git directory and
-// tracked files are moved in. This removes the ordering dependency between
-// agent startup and repository checkout.
-func cloneIntoNonEmptyWorkspace(ctx context.Context, runner GitRunner, workspace string, grant CheckoutGrantResponse, expected string) error {
+// cloneIntoWorkspace keeps the stable workspace directory in place while the
+// repository is downloaded into a staging directory. Files created by the
+// harness during checkout are preserved when the staged checkout is merged.
+func cloneIntoWorkspace(
+	ctx context.Context,
+	runner GitRunner,
+	workspace string,
+	grant CheckoutGrantResponse,
+	expected, defaultBranch string,
+) error {
 	// Stage inside the workspace itself, not its parent. The parent is the
 	// provider's durable root (e.g. Coder's /home/coder), which is owned by the
 	// provider's own user and is not writable by the AO worker user, so a
@@ -218,11 +211,7 @@ func cloneIntoNonEmptyWorkspace(ctx context.Context, runner GitRunner, workspace
 	}
 	defer os.RemoveAll(staging)
 	clone := filepath.Join(staging, "repository")
-	if err := withGitCredential(grant.Token, func(env map[string]string) error {
-		_, err := runner.Run(ctx, staging, env,
-			"clone", "--origin", "origin", "--no-tags", "--", grant.CloneURL, clone)
-		return err
-	}); err != nil {
+	if err := cloneSingleBranch(ctx, runner, staging, clone, grant, defaultBranch); err != nil {
 		return err
 	}
 	if err := validateOrigin(ctx, runner, clone, expected); err != nil {
@@ -247,20 +236,70 @@ func cloneIntoNonEmptyWorkspace(ctx context.Context, runner GitRunner, workspace
 	return nil
 }
 
+func cloneSingleBranch(
+	ctx context.Context,
+	runner GitRunner,
+	directory, destination string,
+	grant CheckoutGrantResponse,
+	defaultBranch string,
+) error {
+	clone := func(env map[string]string, branch string) error {
+		_, err := runner.Run(ctx, directory, env,
+			"clone", "--origin", "origin", "--no-tags", "--single-branch",
+			"--filter=blob:none", "--branch", branch, "--", grant.CloneURL, destination)
+		return err
+	}
+	return withGitCredential(grant.Token, func(env map[string]string) error {
+		initialErr := clone(env, defaultBranch)
+		if initialErr == nil {
+			return nil
+		}
+		output, err := runner.Run(
+			ctx, directory, env,
+			"ls-remote", "--symref", "--exit-code", grant.CloneURL, "HEAD",
+		)
+		if err != nil {
+			return initialErr
+		}
+		remoteBranch := parseRemoteDefaultBranch(output)
+		if remoteBranch == "" || remoteBranch == defaultBranch {
+			return initialErr
+		}
+		if err := os.RemoveAll(destination); err != nil {
+			return fmt.Errorf("clear incomplete checkout: %w", err)
+		}
+		return clone(env, remoteBranch)
+	})
+}
+
+func parseRemoteDefaultBranch(output string) string {
+	for line := range strings.SplitSeq(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[0] != "ref:" || fields[2] != "HEAD" {
+			continue
+		}
+		const prefix = "refs/heads/"
+		if strings.HasPrefix(fields[1], prefix) {
+			return strings.TrimPrefix(fields[1], prefix)
+		}
+	}
+	return ""
+}
+
 // ConfigureWorkerGit prepares the assigned branch and a repo-local credential
 // helper that brokers a fresh scoped token for each GitHub network operation.
 // The helper stores only the rotating worker-token path, never a GitHub token.
 func ConfigureWorkerGit(
 	ctx context.Context,
 	runner GitRunner,
-	workspace, dataDir, publicURL, sessionID, branch string,
+	workspace, dataDir, publicURL, sessionID, branch, defaultBranch string,
 ) error {
 	if runner == nil {
 		return errors.New("git runner is required")
 	}
 	for label, value := range map[string]string{
 		"workspace": workspace, "data directory": dataDir, "public URL": publicURL,
-		"session ID": sessionID, "branch": branch,
+		"session ID": sessionID, "branch": branch, "default branch": defaultBranch,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s is required", label)
@@ -338,13 +377,17 @@ GH_TOKEN="$github_token" exec "$real_gh" "$@"
 	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(githubWrapper), 0o700); err != nil {
 		return fmt.Errorf("write worker GitHub CLI wrapper: %w", err)
 	}
+	checkout := []string{"checkout", "-B", branch}
+	if _, err := runner.Run(ctx, workspace, nil, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
+		checkout = append(checkout, "refs/remotes/origin/"+defaultBranch)
+	}
 	commands := [][]string{
 		{"config", "--local", "--replace-all", "credential.helper", ""},
 		{"config", "--local", "--add", "credential.helper", helperPath},
 		{"config", "--local", "--replace-all", "credential.useHttpPath", "true"},
 		{"config", "--local", "--replace-all", "user.name", cloudGitAuthorName},
 		{"config", "--local", "--replace-all", "user.email", cloudGitAuthorEmail},
-		{"checkout", "-B", branch},
+		checkout,
 	}
 	for _, command := range commands {
 		if _, err := runner.Run(ctx, workspace, nil, command...); err != nil {

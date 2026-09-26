@@ -43,11 +43,19 @@ export function GlobalNewTaskDialog() {
 			params: { projectId, sessionId },
 		});
 	};
+	const handlePending = (routeSessionId: string) => {
+		if (!projectId || projectId === STANDALONE_WORKSPACE_ID) return;
+		void navigate({
+			to: "/projects/$projectId/sessions/$sessionId",
+			params: { projectId, sessionId: routeSessionId },
+		});
+	};
 
 	return (
 		<NewTaskDialog
 			open={open}
 			projectId={projectId}
+			onPending={handlePending}
 			onCreated={(sessionId) => void handleCreated(sessionId)}
 			onOpenChange={setOpen}
 		/>

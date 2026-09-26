@@ -135,6 +135,49 @@ func TestCreateProjectRejectsAnUnreachableRepositoryBeforeCreating(t *testing.T)
 	}
 }
 
+func TestProbeRepositoryAccessFindsPublicRepositoryOutsideTokenScope(t *testing.T) {
+	requests := 0
+	srv, _ := newRepositoryProbeTestServer(t, &mockRoundTripper{
+		handler: func(req *http.Request) *http.Response {
+			requests++
+			if requests == 1 {
+				if got := req.Header.Get("Authorization"); got != "Bearer token" {
+					t.Fatalf("authenticated probe Authorization = %q, want Bearer token", got)
+				}
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Body:       io.NopCloser(bytes.NewBufferString(`{"message":"Not Found"}`)),
+					Header:     make(http.Header),
+				}
+			}
+			if got := req.Header.Get("Authorization"); got != "" {
+				t.Fatalf("public probe Authorization = %q, want empty", got)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"permissions":{"push":false}}`)),
+				Header:     make(http.Header),
+			}
+		},
+	})
+
+	reachable, writeAccess, err := srv.probeRepositoryAccess(
+		context.Background(), "https://github.com/octo/widgets.git", "token",
+	)
+	if err != nil {
+		t.Fatalf("probeRepositoryAccess: %v", err)
+	}
+	if !reachable {
+		t.Fatal("probeRepositoryAccess reachable = false, want true")
+	}
+	if writeAccess {
+		t.Fatal("probeRepositoryAccess writeAccess = true, want false")
+	}
+	if requests != 2 {
+		t.Fatalf("probe requests = %d, want 2", requests)
+	}
+}
+
 func TestCreateProjectRejectsNonGitHubURLs(t *testing.T) {
 	srv, store := newRepositoryProbeTestServer(t, githubAPIMock(true)) // Even if API would work, it shouldn't be called
 

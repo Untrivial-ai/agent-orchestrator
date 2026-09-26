@@ -90,6 +90,11 @@ const cloudMocks = vi.hoisted(() => ({
 	signIn: vi.fn(),
 }));
 
+const localAuthMocks = vi.hoisted(() => ({
+	available: false,
+	openDialog: vi.fn(),
+}));
+
 vi.mock("../hooks/useCloudSandboxProviders", () => ({
 	useCloudSandboxProviders: () => ({ available: cloudMocks.coderAvailable ? ["coder"] : [], default: "", ready: true, isLoading: false }),
 }));
@@ -110,6 +115,20 @@ vi.mock("../lib/cloud-session", () => ({
 		signIn: cloudMocks.signIn,
 		signOut: async () => undefined,
 	}),
+}));
+
+vi.mock("../hooks/useCloudLocalAuth", () => ({
+	useCloudLocalAuth: () => ({
+		available: localAuthMocks.available,
+		cpUrl: localAuthMocks.available ? "http://127.0.0.1:8081" : "https://cp.example.com",
+		login: vi.fn(),
+		register: vi.fn(),
+	}),
+}));
+
+vi.mock("../stores/local-signin-dialog-store", () => ({
+	useLocalSignInDialogStore: (selector: (state: { openDialog: () => void }) => unknown) =>
+		selector({ openDialog: localAuthMocks.openDialog }),
 }));
 
 vi.mock("../hooks/useCloudCp", () => ({
@@ -348,6 +367,8 @@ beforeEach(() => {
 	githubDaemonMocks.listGitHubRepos.mockReset().mockResolvedValue({ repos: [] });
 	githubDaemonMocks.saveGitHubPAT.mockReset().mockResolvedValue(undefined);
 	cloudMocks.signIn.mockReset();
+	localAuthMocks.available = false;
+	localAuthMocks.openDialog.mockReset();
 	window.localStorage.clear();
 	useUiStore.setState({ globalToast: null, globalToasts: [] });
 });
@@ -1598,6 +1619,19 @@ describe("CreateProjectFlow project import validation", () => {
 		expect(cloudMocks.signIn).toHaveBeenCalledOnce();
 	});
 
+	it("opens local Docker sign-in from the Cloud project source when loopback auth is available", async () => {
+		cloudMocks.cloudEnabled = true;
+		localAuthMocks.available = true;
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+		await user.click(screen.getByRole("button", { name: "Use local Docker" }));
+
+		expect(localAuthMocks.openDialog).toHaveBeenCalledOnce();
+		expect(cloudMocks.signIn).not.toHaveBeenCalled();
+	});
+
 	it("shows Cloud in a separate card above the local project sources", () => {
 		cloudMocks.cloudEnabled = true;
 		cloudMocks.sessionStatus = "authenticated";
@@ -2117,7 +2151,7 @@ describe("CreateProjectFlow project import validation", () => {
 		cloudMocks.sessionStatus = "authenticated";
 		cloudMocks.createProject
 			.mockRejectedValueOnce(
-				new CloudCpError("Can't reach this repository — it may be private, or the URL may be wrong.", {
+				new CloudCpError("The saved GitHub token cannot access this repository. Check the URL or update the token's repository access.", {
 					status: 422,
 					code: "repository_unreachable",
 				}),
@@ -2144,13 +2178,14 @@ describe("CreateProjectFlow project import validation", () => {
 
 		// The failure shows in both CloudAgentSetupStep and the unreachable banner
 		const alerts = screen.getAllByRole("alert");
-		expect(alerts.some(a => /can't reach this repository/i.test(a.textContent ?? ""))).toBe(true);
+		expect(alerts.some(a => /saved GitHub token cannot access this repository/i.test(a.textContent ?? ""))).toBe(true);
 	});
 
-	it("blocks project creation if the token is read-only", async () => {
+	it("creates the project after explicitly continuing with a read-only token", async () => {
 		cloudMocks.cloudEnabled = true;
 		cloudMocks.sessionStatus = "authenticated";
 		cloudMocks.validateSavedRepositoryAccess.mockResolvedValue({ writeAccess: false });
+		cloudMocks.createProject.mockResolvedValue({ project: { id: "cp-read-only" } });
 		const user = userEvent.setup();
 		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
 
@@ -2175,6 +2210,21 @@ describe("CreateProjectFlow project import validation", () => {
 			expect(alerts.some(a => /does not have push access/i.test(a.textContent ?? ""))).toBe(true);
 		});
 		expect(screen.getByRole("button", { name: "Update Token" })).toBeInTheDocument();
+		expect(cloudMocks.createProject).not.toHaveBeenCalled();
+
+		await user.click(screen.getByRole("button", { name: "Continue anyway" }));
+
+		await waitFor(() =>
+			expect(cloudMocks.createProject).toHaveBeenCalledWith(
+				"org-1",
+				expect.objectContaining({
+					displayName: "read-only-repo",
+					repositoryUrl: "https://github.com/acme/read-only-repo",
+					defaultBranch: "main",
+				}),
+			),
+		);
+		expect(cloudMocks.validateSavedRepositoryAccess).toHaveBeenCalledTimes(1);
 	});
 
 	it("shows a retry button when GitHub is temporarily unavailable", async () => {

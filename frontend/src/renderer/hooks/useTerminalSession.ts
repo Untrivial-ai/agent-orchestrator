@@ -419,6 +419,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		let replayBatchTimer: ReturnType<typeof setTimeout> | null = null;
 		let replayBatchDone: (() => void) | null = null;
 		let replayWritesPreserved = false;
+		let replayBoundaryPending = optionsRef.current.waitForInitialOutput && mux.onReplayComplete !== undefined;
 		// Only a newly created handle can have live initial output. Component
 		// mounts, including the first mount after app startup, can replay history.
 		const initialWriteSource: TerminalWriteSource = consumeFreshTerminalHandle(handle) ? "live" : "replay";
@@ -612,6 +613,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 						flushReplay(true);
 						return;
 					}
+					if (replayBoundaryPending) return;
 					// Each frame restarts the quiet window: the burst is over only
 					// once the stream actually goes idle.
 					if (r.replayQuietTimer) clearTimeout(r.replayQuietTimer);
@@ -666,6 +668,11 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 					}, REPLAY_FIRST_BYTE_MS);
 				}
 			}),
+			mux.onReplayComplete?.(handle, (hadOutput) => {
+				if (!isCurrentAttachment(generation, handle, mux)) return;
+				replayBoundaryPending = false;
+				if (hadOutput && r.replayBuffering && r.replayChunks.length > 0) flushReplay();
+			}) ?? (() => undefined),
 			mux.onExit(handle, () => {
 				if (!isCurrentAttachment(generation, handle, mux)) return;
 				clearOpenTimer(generation);

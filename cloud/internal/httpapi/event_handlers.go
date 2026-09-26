@@ -20,7 +20,8 @@ const (
 )
 
 type sendMessageRequest struct {
-	Text string `json:"text"`
+	Text           string          `json:"text"`
+	ClientSequence json.RawMessage `json:"clientSequence"`
 }
 
 type clientEventResponse struct {
@@ -52,6 +53,17 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "Message text must be between 1 and 65536 bytes.")
 		return
 	}
+	var clientSequence int64
+	if len(request.ClientSequence) > 0 {
+		if err := json.Unmarshal(request.ClientSequence, &clientSequence); err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "The request body is invalid.")
+			return
+		}
+		if clientSequence <= 0 || clientSequence > maxEventSequence {
+			writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "clientSequence must be a positive safe integer.")
+			return
+		}
+	}
 	event, err := s.store.SendMessage(
 		r.Context(),
 		principalFrom(r),
@@ -59,6 +71,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		sessionID,
 		key,
 		request.Text,
+		clientSequence,
 	)
 	if err != nil {
 		s.writeStoreError(w, r, err)

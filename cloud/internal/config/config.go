@@ -110,6 +110,7 @@ type Config struct {
 	DockerWorkerImage    string
 	DockerNetwork        string
 	DockerNamespace      string
+	DockerExtraLabels    map[string]string
 	DockerWorkerTokenTTL time.Duration
 
 	CoderURL            string
@@ -177,6 +178,12 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid AO_CLOUD_CODER_PARAMETERS_JSON: %w", err)
 		}
 	}
+	dockerExtraLabelsEnv := map[string]string{}
+	if raw := strings.TrimSpace(os.Getenv("AO_CLOUD_DOCKER_EXTRA_LABELS_JSON")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &dockerExtraLabelsEnv); err != nil {
+			return Config{}, fmt.Errorf("invalid AO_CLOUD_DOCKER_EXTRA_LABELS_JSON: %w", err)
+		}
+	}
 
 	cfg := Config{
 		Environment:            environment,
@@ -239,6 +246,7 @@ func Load() (Config, error) {
 		DockerWorkerImage: envOrDefault("AO_CLOUD_DOCKER_WORKER_IMAGE", "ao-cloud-worker:local"),
 		DockerNetwork:     strings.TrimSpace(os.Getenv("AO_CLOUD_DOCKER_NETWORK")),
 		DockerNamespace:   envOrDefault("AO_CLOUD_DOCKER_NAMESPACE", "ao-cloud-local"),
+		DockerExtraLabels: dockerExtraLabelsEnv,
 		DockerWorkerTokenTTL: durationEnv(
 			"AO_CLOUD_DOCKER_WORKER_TOKEN_TTL", sandbox.DefaultWorkerTokenTTL,
 		),

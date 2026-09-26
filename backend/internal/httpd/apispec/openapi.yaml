@@ -10152,6 +10152,9 @@ components:
           type:
           - "null"
           - string
+        idempotencyKey:
+          maxLength: 128
+          type: string
         mode:
           enum:
           - tui

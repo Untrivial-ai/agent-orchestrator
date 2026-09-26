@@ -51,7 +51,13 @@ test("renderer: narrow card status truncates without overlapping metadata @BRD",
 		route.fulfill({
 			contentType: "application/json",
 			body: JSON.stringify({
-				sessions: [{ sessionId: "review", totalTokens: 24_600_000, incomplete: false }],
+				sessions: [{
+					estimatedCost: null,
+					incomplete: false,
+					processedTokens: 24_600_000,
+					sessionId: "review",
+					totalTokens: 24_600_000,
+				}],
 			}),
 		}),
 	);
@@ -59,7 +65,7 @@ test("renderer: narrow card status truncates without overlapping metadata @BRD",
 
 	const card = page.locator(columnCard("validating", "review"));
 	const status = card.getByText("Review pending", { exact: true });
-	const usage = card.getByText("24.6M tok", { exact: true });
+	const usage = card.getByText("24.6M", { exact: true });
 	await expect(usage).toBeVisible();
 
 	// Reproduce the effective card width reached at enlarged browser zoom.

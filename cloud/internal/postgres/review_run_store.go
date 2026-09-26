@@ -81,6 +81,9 @@ func (s *Store) OpenReviewTerminal(
 		); err != nil {
 			return err
 		}
+		if err := notifySandboxReconcile(ctx, tx); err != nil {
+			return err
+		}
 		openPayload, err := json.Marshal(worker.TerminalCommand{TerminalID: terminalID, Kind: "agent"})
 		if err != nil {
 			return err

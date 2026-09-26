@@ -32,6 +32,7 @@ import { AdditionalRepositoriesPicker, CoderTemplatePicker } from "./CoderTempla
 import { SearchablePicker } from "./SearchablePicker";
 import { buildCoderRequestOptions, useCoderSessionOptionsStore } from "../stores/coder-session-options-store";
 import { useCloudGate } from "../hooks/useCloudGate";
+import { useCloudLocalAuth } from "../hooks/useCloudLocalAuth";
 import { useCloudOrg } from "../hooks/useCloudOrg";
 import { usePreparedClone } from "../hooks/usePreparedClone";
 import { useProviderConnections } from "../hooks/useProviderConnections";
@@ -44,6 +45,7 @@ import type { CloudCpGitHubAppRepository } from "../lib/cloud-cp/types";
 import { getGitHubStatus, isGitHubAuthInvalidError, listGitHubRepos, saveGitHubPAT } from "../lib/github-daemon";
 import { useCloudSession } from "../lib/cloud-session";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
+import { useLocalSignInDialogStore } from "../stores/local-signin-dialog-store";
 import { useUiStore } from "../stores/ui-store";
 import {
 	onboardingAlertErrorClass,
@@ -1201,6 +1203,9 @@ function CloudSignInPanel({
 	onSignIn: () => void;
 }) {
 	const { t } = useTranslation();
+	const { available: localAuthAvailable } = useCloudLocalAuth();
+	const openLocalSignIn = useLocalSignInDialogStore((state) => state.openDialog);
+	const handleSignIn = () => (localAuthAvailable ? openLocalSignIn() : onSignIn());
 	return (
 		<div className={cn(onboardingPanelClass, "flex flex-col items-center gap-4 px-4 py-6 text-center")}>
 			<Button type="button" variant="outline" size="icon" className="absolute left-3 top-3" aria-label={t("createProject.backToSource")} onClick={onBack}>
@@ -1208,8 +1213,8 @@ function CloudSignInPanel({
 			</Button>
 			<Cloud className="size-6 text-foreground" aria-hidden="true" />
 			<p className="text-[13px] leading-5 text-muted-foreground">{t("createProject.cloudSignInPrompt")}</p>
-			<Button disabled={disabled} onClick={onSignIn} type="button" variant="primary">
-				{t("shell.signInToAOCloud")}
+			<Button disabled={disabled} onClick={handleSignIn} type="button" variant="primary">
+				{localAuthAvailable ? t("cloudLocalAuth.useLocalDocker") : t("shell.signInToAOCloud")}
 			</Button>
 		</div>
 	);
@@ -1395,6 +1400,7 @@ function CloudProjectCard({
 	const [submitIsUnreachable, setSubmitIsUnreachable] = useState(false);
 	const [submitIsUnavailable, setSubmitIsUnavailable] = useState(false);
 	const [readOnlyWarning, setReadOnlyWarning] = useState(false);
+	const [pendingReadOnlySelection, setPendingReadOnlySelection] = useState<{ workerAgent: string; orchestratorAgent: string } | null>(null);
 	const [isCreating, setIsCreating] = useState(false);
 	// The GitHub App path selects a repository by its numeric id (create goes
 	// through POST /github/projects). The manual PAT path keeps using the repo URL.
@@ -1670,7 +1676,7 @@ function CloudProjectCard({
 		setGithubOAuthBusy(false);
 	};
 
-	const createProject = async (selection: { workerAgent: string; orchestratorAgent: string }) => {
+	const createProject = async (selection: { workerAgent: string; orchestratorAgent: string }, allowReadOnly = false) => {
 		if (isCreating || org === undefined) return;
 		setProjectSubmitted(true);
 		setNameSubmitted(true);
@@ -1684,6 +1690,7 @@ function CloudProjectCard({
 		setSubmitIsUnreachable(false);
 		setSubmitIsUnavailable(false);
 		setReadOnlyWarning(false);
+		setPendingReadOnlySelection(null);
 		setIsCreating(true);
 		try {
 			const coder = buildCoderRequestOptions(useCoderSessionOptionsStore.getState());
@@ -1701,14 +1708,17 @@ function CloudProjectCard({
 					},
 				});
 			} else {
-				const result = await client.validateSavedRepositoryAccess({
-					repositoryUrl: repositoryUrl.trim(),
-				});
-				if (!result.writeAccess) {
-					setSubmitError(t("createProject.githubToken.readOnlyToken", { defaultValue: "Your token does not have push access to this repository. Please provide a token with push permissions." }));
-					setReadOnlyWarning(true);
-					setIsCreating(false);
-					return;
+				if (!allowReadOnly) {
+					const result = await client.validateSavedRepositoryAccess({
+						repositoryUrl: repositoryUrl.trim(),
+					});
+					if (!result.writeAccess) {
+						setSubmitError(t("createProject.githubToken.readOnlyToken", { defaultValue: "Your token does not have push access to this repository. Please provide a token with push permissions." }));
+						setReadOnlyWarning(true);
+						setPendingReadOnlySelection(selection);
+						setIsCreating(false);
+						return;
+					}
 				}
 				await client.createProject(org.id, {
 					displayName: projectName.trim(),
@@ -2096,7 +2106,15 @@ function CloudProjectCard({
 							<Button type="button" variant="outline" size="sm" onClick={() => setUseManualPat(true)}>
 								{t("createProject.githubToken.updateToken", { defaultValue: "Update Token" })}
 							</Button>
-							<Button type="button" variant="secondary" size="sm" onClick={() => { setReadOnlyWarning(false); }}>
+							<Button
+								type="button"
+								variant="secondary"
+								size="sm"
+								disabled={isCreating || pendingReadOnlySelection === null}
+								onClick={() => {
+									if (pendingReadOnlySelection) void createProject(pendingReadOnlySelection, true);
+								}}
+							>
 								{t("createProject.continueAnyway", { defaultValue: "Continue anyway" })}
 							</Button>
 						</div>

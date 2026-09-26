@@ -685,6 +685,17 @@ type ShellTerminal struct {
 	Transient  bool
 }
 
+type TaskDelegation struct {
+	IdempotencyKey     string
+	RequestFingerprint string
+	WorkerID           *domain.SessionID
+	State              string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	Recoverable        int64
+	StartupState       string
+}
+
 type TelemetryEvent struct {
 	ID          string
 	OccurredAt  time.Time

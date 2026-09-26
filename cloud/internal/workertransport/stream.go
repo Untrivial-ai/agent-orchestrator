@@ -81,7 +81,7 @@ func (s *Supervisor) runTerminalStream(
 		backoff = streamRedialFloor
 		stream := &terminalStream{conn: conn, ctx: ctx}
 		terminal.stream.Store(stream)
-		permanent := s.readTerminalStream(ctx, conn, terminal)
+		permanent := s.readTerminalStream(ctx, conn, terminalID)
 		terminal.stream.CompareAndSwap(stream, nil)
 		_ = conn.CloseNow()
 		if permanent {
@@ -95,7 +95,7 @@ func (s *Supervisor) runTerminalStream(
 func (s *Supervisor) readTerminalStream(
 	ctx context.Context,
 	conn *websocket.Conn,
-	terminal *terminalProcess,
+	terminalID string,
 ) bool {
 	for {
 		_, message, err := conn.Read(ctx)
@@ -111,7 +111,10 @@ func (s *Supervisor) readTerminalStream(
 			if len(frame.Data) == 0 || len(frame.Data) > maxStreamInputBytes {
 				continue
 			}
-			if _, err := terminal.pty.Write(frame.Data); err != nil {
+			if err := s.writeTerminal(worker.TerminalCommand{
+				TerminalID: terminalID,
+				Data:       frame.Data,
+			}); err != nil {
 				return false
 			}
 		case "ack":

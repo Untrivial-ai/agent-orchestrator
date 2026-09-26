@@ -23,9 +23,13 @@ import (
 
 // Store is the durable state the reconciler converges.
 type Store interface {
+	BeginSandboxCreation(context.Context, string, domain.Sandbox, string) error
+	RecordSandboxCreationResult(context.Context, string, string, string, string) error
+	ListSandboxCreations(context.Context, string, string) ([]domain.SandboxCreation, error)
+	ResolveSandboxCreation(context.Context, string, string, string, string) error
 	ClaimSandboxes(ctx context.Context, owner string, limit int, lease time.Duration) ([]domain.Sandbox, error)
-	RenewSandboxClaim(ctx context.Context, owner, orgID, sessionID string, lease time.Duration) error
-	UpdateSandboxObservation(ctx context.Context, owner, orgID, sessionID, providerEnvironmentID, observedState, lastError string, reconcileAfter time.Time) error
+	RenewSandboxClaim(ctx context.Context, owner, orgID, sessionID string, generation int64, lease time.Duration) error
+	UpdateSandboxObservation(ctx context.Context, owner, orgID, sessionID string, generation int64, providerEnvironmentID, observedState, lastError string, reconcileAfter time.Time) error
 	AcceptSandboxProviderPause(ctx context.Context, owner, orgID, sessionID, providerEnvironmentID string, reconcileAfter time.Time) (bool, error)
 	RecordSandboxFailure(ctx context.Context, owner, orgID, sessionID, providerEnvironmentID, lastError string) error
 	ReleaseSandboxClaim(ctx context.Context, owner, orgID, sessionID string, reconcileAfter time.Time) error
@@ -149,6 +153,7 @@ type Reconciler struct {
 	owner     string
 	lease     time.Duration
 	log       *slog.Logger
+	wake      chan struct{}
 	// workerBinarySHA256 and workerHelperBinarySHA256 are advertised to each
 	// worker in its environment so a stale baked copy can self-update to this
 	// exact build instead of the control plane uploading it on every provision.
@@ -221,8 +226,18 @@ func New(store Store, providers Resolver, options Options) *Reconciler {
 		owner:                    uuid.NewString(),
 		lease:                    options.LeaseDuration,
 		log:                      options.Logger,
+		wake:                     make(chan struct{}, 1),
 		workerBinarySHA256:       sha256HexOf(options.WorkerBinary),
 		workerHelperBinarySHA256: sha256HexOf(options.WorkerHelperBinary),
+	}
+}
+
+// Wake schedules an immediate reconciliation pass. The durable sandbox rows
+// remain authoritative, and duplicate signals collapse into one pending pass.
+func (r *Reconciler) Wake() {
+	select {
+	case r.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -238,9 +253,10 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if err := r.ReconcileOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				r.log.Error("sandbox reconciliation failed", "err", err)
-			}
+		case <-r.wake:
+		}
+		if err := r.ReconcileOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			r.log.Error("sandbox reconciliation failed", "err", err)
 		}
 	}
 }
@@ -311,6 +327,7 @@ func (r *Reconciler) reconcileQueuedClaim(
 					r.owner,
 					record.OrgID,
 					record.SessionID,
+					record.PreparationGeneration,
 					r.lease,
 				); err != nil {
 					renewalErr <- err
@@ -422,6 +439,7 @@ func (r *Reconciler) reconcileClaim(ctx context.Context, record domain.Sandbox) 
 		r.owner,
 		record.OrgID,
 		record.SessionID,
+		record.PreparationGeneration,
 		r.lease,
 	); err != nil {
 		return err
@@ -447,6 +465,7 @@ func (r *Reconciler) reconcileClaim(ctx context.Context, record domain.Sandbox) 
 					r.owner,
 					record.OrgID,
 					record.SessionID,
+					record.PreparationGeneration,
 					r.lease,
 				)
 				if err != nil {
@@ -477,6 +496,10 @@ func (r *Reconciler) reconcileSandbox(ctx context.Context, record domain.Sandbox
 	provider, err := r.providers.Resolve(ctx, record)
 	if err != nil {
 		return r.fail(ctx, record, err)
+	}
+
+	if handled, err := r.reconcileCreations(ctx, record, provider); handled || err != nil {
+		return err
 	}
 
 	if record.DesiredState == domain.SandboxDesiredDeleted {
@@ -705,7 +728,7 @@ func (r *Reconciler) reconcileDeletion(
 			return r.fail(ctx, record, err)
 		}
 		if !found {
-			return r.store.CompleteSandboxDeletion(ctx, r.owner, record.OrgID, record.SessionID)
+			return r.completeSandboxDeletion(ctx, record, provider)
 		}
 		record.ProviderEnvironmentID = string(environment.ID)
 	}
@@ -713,11 +736,11 @@ func (r *Reconciler) reconcileDeletion(
 	environment, err := provider.Get(ctx, sandbox.ID(record.ProviderEnvironmentID))
 	switch {
 	case errors.Is(err, sandbox.ErrNotFound):
-		return r.store.CompleteSandboxDeletion(ctx, r.owner, record.OrgID, record.SessionID)
+		return r.completeSandboxDeletion(ctx, record, provider)
 	case err != nil:
 		return r.fail(ctx, record, err)
 	case environment.State == sandbox.StateDeleted:
-		return r.store.CompleteSandboxDeletion(ctx, r.owner, record.OrgID, record.SessionID)
+		return r.completeSandboxDeletion(ctx, record, provider)
 	}
 
 	// The box has not converged to gone. Bound the attempt: some providers cannot
@@ -1029,16 +1052,37 @@ func (r *Reconciler) provision(
 	}
 
 	r.log.Info("provisioning sandbox", "session_id", record.SessionID, "provider", record.Provider)
+	creationID := uuid.NewString()
+	if err := r.store.BeginSandboxCreation(ctx, r.owner, record, creationID); err != nil {
+		return err
+	}
 	startedAt := time.Now()
 	environment, err := provider.Create(ctx, spec)
+	resultCtx, resultCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer resultCancel()
+	if environment.ID != "" {
+		if persistErr := r.store.RecordSandboxCreationResult(resultCtx, record.OrgID, record.SessionID, creationID, string(environment.ID)); persistErr != nil {
+			return fmt.Errorf("persist sandbox creation result: %w", persistErr)
+		}
+	}
+
 	if err != nil {
-		if errors.Is(err, sandbox.ErrAtCapacity) {
+		if environment.ID == "" && (errors.Is(err, sandbox.ErrAtCapacity) || errors.Is(err, sandbox.ErrCreateRejected)) {
+			if resolveErr := r.store.ResolveSandboxCreation(resultCtx, record.OrgID, record.SessionID, creationID, "deleted"); resolveErr != nil {
+				return errors.Join(err, resolveErr)
+			}
+		}
+		if errors.Is(err, sandbox.ErrAtCapacity) && environment.ID == "" {
 			r.log.Info("provider at capacity; will retry",
 				"session_id", record.SessionID, "provider", record.Provider)
 			return r.observe(ctx, record, record.ProviderEnvironmentID,
 				domain.SandboxObservedProvisioning, "waiting for provider capacity", capacityRetryBackoff)
 		}
 		return r.fail(ctx, record, err)
+	}
+	if err := r.store.RenewSandboxClaim(ctx, r.owner, record.OrgID, record.SessionID,
+		record.PreparationGeneration, r.lease); err != nil {
+		return err
 	}
 	r.log.Info("sandbox provisioned",
 		"session_id", record.SessionID,
@@ -1237,9 +1281,11 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 		Environment:      workerEnvironment,
 		DurableRoot:      layout.root,
 		Labels: map[string]string{
-			"ao.session_id": record.SessionID,
-			"ao.org_id":     record.OrgID,
-			"ao.managed":    "true",
+			"ao.session_id":             record.SessionID,
+			"ao.org_id":                 record.OrgID,
+			"ao.managed":                "true",
+			"ao.preparation_generation": fmt.Sprintf("%d", record.PreparationGeneration),
+			"ao.provider_operation_id":  fmt.Sprintf("%s:%d:create", record.SessionID, record.PreparationGeneration),
 		},
 		AutoDeleteMinutes: 7 * 24 * 60,
 	}, nil
@@ -1286,6 +1332,7 @@ func (r *Reconciler) observe(
 		r.owner,
 		record.OrgID,
 		record.SessionID,
+		record.PreparationGeneration,
 		providerID,
 		state,
 		lastError,

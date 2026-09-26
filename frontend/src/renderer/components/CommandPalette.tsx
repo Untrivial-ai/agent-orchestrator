@@ -497,6 +497,13 @@ export function CommandPalette() {
 		},
 		[queryClient, closePalette, navigateToTarget, sessionRoute],
 	);
+	const handleTaskPending = useCallback(
+		(projectId: string, routeSessionId: string) => {
+			closePalette();
+			navigateToTarget(sessionRoute(projectId, routeSessionId));
+		},
+		[closePalette, navigateToTarget, sessionRoute],
+	);
 
 	useEffect(() => {
 		if (!enabled) return;
@@ -609,6 +616,7 @@ export function CommandPalette() {
 							autoFocusTitle
 							onDirtyChange={onComposerDirtyChange}
 							onSubmittingChange={onComposerSubmittingChange}
+							onPending={(routeSessionId) => handleTaskPending(view.projectId, routeSessionId)}
 							onCreated={(sessionId) => void handleTaskCreated(view.projectId, sessionId)}
 						/>
 					</div>

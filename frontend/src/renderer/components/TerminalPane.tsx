@@ -39,6 +39,9 @@ import { useShellTerminals } from "../hooks/useShellTerminals";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { terminalResetNonce, useTerminalResetStore } from "../stores/terminal-reset-store";
 import { createCloudTerminalMux } from "../lib/cloud-terminal-mux";
+import { completeCloudStartupAttempt } from "../lib/cloud-startup-timing";
+import { markCloudPendingSessionReady } from "../lib/cloud-pending-session";
+import { captureRendererEvent } from "../lib/telemetry";
 import { XtermTerminal } from "./XtermTerminal";
 import { RestoreUnavailableDialog } from "./RestoreUnavailableDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -1062,6 +1065,41 @@ function AttachedTerminal({
 			current = false;
 		};
 	}, [replayPaintPending, replaySettled, terminal]);
+	const firstFrameReportedRef = useRef(false);
+	useEffect(() => {
+		if (
+			firstFrameReportedRef.current ||
+			replayPaintPending ||
+			!replaySettled ||
+			!isVisible ||
+			inputDisabled ||
+			state !== "attached" ||
+			!session?.cloud ||
+			(terminalTarget !== undefined && terminalTarget.kind !== "worker")
+		) {
+			return;
+		}
+		firstFrameReportedRef.current = true;
+		markCloudPendingSessionReady(session.id);
+		const measurement = completeCloudStartupAttempt(session.id);
+		if (!measurement) return;
+		const parsedEpoch = Number(session.terminalGeneration);
+		void captureRendererEvent("ao.renderer.cloud_terminal_first_frame", {
+			startup_attempt_id: measurement.attemptId,
+			elapsed_ms: measurement.elapsedMs,
+			sandbox_provider: session.cloud.sandboxProvider ?? "unknown",
+			session_kind: session.kind ?? "worker",
+			worker_epoch: Number.isSafeInteger(parsedEpoch) && parsedEpoch >= 0 ? parsedEpoch : undefined,
+		});
+	}, [
+		inputDisabled,
+		isVisible,
+		replayPaintPending,
+		replaySettled,
+		session,
+		state,
+		terminalTarget,
+	]);
 	const handleId = shellTerminalHandleId ?? attachSession?.terminalHandleId;
 	const handleRetry = useCallback(() => {
 		// Re-attach from scratch: resets the connect-failure counter and starts a

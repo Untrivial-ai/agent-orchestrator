@@ -86,6 +86,7 @@ export function muxUrlFromApiBase(apiBaseUrl: string): string {
 type DataListener = (bytes: Uint8Array) => void;
 type ExitListener = () => void;
 type OpenedListener = () => void;
+type ReplayCompleteListener = (hadOutput: boolean) => void;
 type ErrorListener = (message: string) => void;
 
 // "waiting" is a cloud-only state: the control plane answered the terminal
@@ -108,6 +109,8 @@ export type TerminalMux = {
 	onExit: (id: string, listener: ExitListener) => () => void;
 	/** Server ack that the pane is attached; the output replay follows it. */
 	onOpened: (id: string, listener: OpenedListener) => () => void;
+	/** Cloud protocol marker for the initial replay and whether it contained output. */
+	onReplayComplete?: (id: string, listener: ReplayCompleteListener) => () => void;
 	/**
 	 * Server `error` frames. A frame carrying a pane id reaches that pane's
 	 * listeners; an id-less frame is connection-scoped and reaches every error
@@ -363,6 +366,9 @@ export function createTerminalMuxPool(createMux: () => TerminalMux): TerminalMux
 			onData: (id, listener) => subscribe(() => connection.mux.onData(id, listener)),
 			onExit: (id, listener) => subscribe(() => connection.mux.onExit(id, listener)),
 			onOpened: (id, listener) => subscribe(() => connection.mux.onOpened(id, listener)),
+			onReplayComplete: connection.mux.onReplayComplete
+				? (id, listener) => subscribe(() => connection.mux.onReplayComplete!(id, listener))
+				: undefined,
 			onError: (id, listener) => subscribe(() => connection.mux.onError(id, listener)),
 			onConnectionChange: (listener) => subscribe(() => connection.mux.onConnectionChange(listener)),
 			dispose,

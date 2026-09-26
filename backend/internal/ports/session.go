@@ -16,8 +16,10 @@ var ErrActivityProjectionContention = errors.New("activity projection contention
 // SpawnConfig is the request to start a new session: which project/issue, which
 // agent harness, and the branch/prompt the agent launches with.
 type SpawnConfig struct {
-	ProjectID domain.ProjectID
-	IssueID   domain.IssueID
+	TaskDelegationKey         string
+	TaskDelegationFingerprint domain.TaskDelegationRequestFingerprint
+	ProjectID                 domain.ProjectID
+	IssueID                   domain.IssueID
 	// ParentSessionID identifies the AO orchestrator that requested this worker
 	// through `ao spawn`. The daemon validates this reference and derives any
 	// inherited settings itself; callers never supply an inherited policy.

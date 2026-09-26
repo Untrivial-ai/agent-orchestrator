@@ -396,6 +396,29 @@ paths:
                     $ref: "#/components/schemas/Session"
         default:
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/session-preparations:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+    post:
+      operationId: prepareSession
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrepareSessionInput"
+      responses:
+        "201":
+          description: Compatible hidden session preparation created or reused.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrepareSessionResponse"
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}:
     parameters:
       - $ref: "#/components/parameters/OrgId"
@@ -426,6 +449,85 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeleteSessionResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/commit-preparation:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: commitSessionPreparation
+      tags: [Sessions]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommitSessionPreparationInput"
+      responses:
+        "200":
+          description: Prepared session committed and first task queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties:
+                  session:
+                    $ref: "#/components/schemas/Session"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/renew-preparation:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: renewSessionPreparation
+      tags: [Sessions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenewSessionPreparationInput"
+      responses:
+        "200":
+          description: Preparation lease renewed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenewSessionPreparationResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/preparation-attachments/{clientInstanceId}:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+      - name: clientInstanceId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: generation
+        in: query
+        required: true
+        schema:
+          type: integer
+          format: int64
+          minimum: 1
+    delete:
+      operationId: detachSessionPreparation
+      tags: [Sessions]
+      responses:
+        "200":
+          description: Composer attachment detached and preparation grace renewed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenewSessionPreparationResponse"
         default:
           $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/children:
@@ -497,13 +599,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [text]
-              properties:
-                text:
-                  type: string
-                  minLength: 1
-                  maxLength: 65536
+              $ref: "#/components/schemas/UserSendMessageInput"
       responses:
         "202":
           description: Message accepted and durably appended.
@@ -2479,6 +2575,19 @@ components:
           type: string
           minLength: 1
           maxLength: 65536
+    UserSendMessageInput:
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 65536
+        clientSequence:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
     WorkerWorkspaceListPayload:
       type: object
       additionalProperties: false
@@ -2961,6 +3070,101 @@ components:
         sandboxProviderConnectionId:
           type: string
           format: uuid
+        provider:
+          type: string
+    PrepareSessionInput:
+      type: object
+      additionalProperties: false
+      required: [projectId, harness, clientInstanceId]
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        harness:
+          type: string
+          minLength: 1
+          maxLength: 120
+        clientInstanceId:
+          type: string
+          format: uuid
+        sandboxProviderConnectionId:
+          type: string
+          format: uuid
+        provider:
+          type: string
+    SessionPreparationLease:
+      type: object
+      additionalProperties: false
+      required: [expiresAt, attachmentExpiresAt, leaseSeconds, generation]
+      properties:
+        expiresAt:
+          type: string
+          format: date-time
+        attachmentExpiresAt:
+          type: string
+          format: date-time
+        leaseSeconds:
+          type: integer
+          format: int64
+          minimum: 1
+        generation:
+          type: integer
+          format: int64
+          minimum: 1
+    PrepareSessionResponse:
+      type: object
+      additionalProperties: false
+      required: [claimId, disposition, session, preparation]
+      properties:
+        claimId:
+          type: string
+          format: uuid
+        disposition:
+          type: string
+          enum: [created, reused]
+        session:
+          $ref: "#/components/schemas/Session"
+        preparation:
+          $ref: "#/components/schemas/SessionPreparationLease"
+    RenewSessionPreparationResponse:
+      type: object
+      additionalProperties: false
+      required: [preparation]
+      properties:
+        preparation:
+          $ref: "#/components/schemas/SessionPreparationLease"
+    RenewSessionPreparationInput:
+      type: object
+      additionalProperties: false
+      required: [clientInstanceId, generation]
+      properties:
+        clientInstanceId:
+          type: string
+          format: uuid
+        generation:
+          type: integer
+          format: int64
+          minimum: 1
+    CommitSessionPreparationInput:
+      type: object
+      additionalProperties: false
+      required: [displayName, prompt, clientInstanceId, generation]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 80
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 65536
+        clientInstanceId:
+          type: string
+          format: uuid
+        generation:
+          type: integer
+          format: int64
+          minimum: 1
     SessionPage:
       type: object
       additionalProperties: false

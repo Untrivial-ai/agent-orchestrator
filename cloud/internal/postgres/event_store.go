@@ -13,9 +13,16 @@ import (
 var clientEventTypes = []string{
 	"agent.activity",
 	"agent.ready",
+	"agent.launch_started",
 	"worker.connected",
 	"worker.ready",
 	"sandbox.provisioning",
+	"checkout.started",
+	"checkout.completed",
+	"restore.started",
+	"restore.completed",
+	"workspace.ready",
+	"startup.failed",
 	"workspace.changed",
 	"pull_request.created",
 	"pull_request.claimed",
@@ -36,6 +43,7 @@ func (s *Store) SendMessage(
 	sessionID string,
 	idempotencyKey string,
 	text string,
+	clientSequence int64,
 ) (domain.ClientEvent, error) {
 	var event domain.ClientEvent
 	err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, access sessionAccess) error {
@@ -44,7 +52,7 @@ func (s *Store) SendMessage(
 		}
 		var err error
 		event, err = sendMessageTx(
-			ctx, tx, orgID, sessionID, idempotencyKey, text, principal.UserID, "",
+			ctx, tx, orgID, sessionID, idempotencyKey, text, clientSequence, principal.UserID, "",
 			access.ModeCap, access.DeniedCommands,
 		)
 		return err
@@ -55,11 +63,17 @@ func (s *Store) SendMessage(
 func sendMessageTx(
 	ctx context.Context,
 	tx pgx.Tx,
-	orgID, sessionID, idempotencyKey, text, actorUserID, actorSessionID string,
+	orgID, sessionID, idempotencyKey, text string,
+	clientSequence int64,
+	actorUserID, actorSessionID string,
 	modeCap string,
 	deniedCommands []string,
 ) (domain.ClientEvent, error) {
-	payload, err := json.Marshal(map[string]string{"text": text})
+	commandPayload := map[string]any{"text": text}
+	if clientSequence > 0 {
+		commandPayload["clientSequence"] = clientSequence
+	}
+	payload, err := json.Marshal(commandPayload)
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -83,7 +97,9 @@ func sendMessageTx(
 	if err != nil {
 		return domain.ClientEvent{}, normalizeConstraintError(err)
 	}
-	event, err := appendUserMessage(ctx, tx, orgID, sessionID, text, modeCap, deniedCommands)
+	event, err := appendUserMessage(
+		ctx, tx, orgID, sessionID, text, clientSequence, modeCap, deniedCommands,
+	)
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -137,8 +153,13 @@ func sendMessageTx(
 		)`
 		auditArgs = []any{orgID, sessionID, event.Sequence, actorSessionID}
 	}
-	_, err = tx.Exec(ctx, auditSQL, auditArgs...)
-	return event, err
+	if _, err = tx.Exec(ctx, auditSQL, auditArgs...); err != nil {
+		return domain.ClientEvent{}, err
+	}
+	if err := notifySandboxReconcile(ctx, tx); err != nil {
+		return domain.ClientEvent{}, err
+	}
+	return event, nil
 }
 
 func loadIdempotentMessage(
@@ -249,10 +270,11 @@ func appendUserMessage(
 	orgID string,
 	sessionID string,
 	text string,
+	clientSequence int64,
 	modeCap string,
 	deniedCommands []string,
 ) (domain.ClientEvent, error) {
-	event, err := appendUserMessageEvent(ctx, tx, orgID, sessionID, text)
+	event, err := appendUserMessageEvent(ctx, tx, orgID, sessionID, text, clientSequence)
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -273,6 +295,20 @@ func appendUserMessage(
 		WHERE terminal.org_id = $1 AND terminal.session_id = $2 AND terminal.kind = 'agent'
 		  AND terminal.state = 'open' AND terminal.expires_at > now()
 		  AND session.activity_state <> 'active'
+		  AND EXISTS (
+			SELECT 1 FROM ao_worker_connections connection
+			JOIN ao_events ready ON ready.org_id = connection.org_id
+			  AND ready.session_id = connection.session_id AND ready.type = 'agent.ready'
+			  AND ready.payload->>'epoch' = connection.epoch::text
+			  AND ready.payload->>'workerId' = connection.worker_id
+			WHERE connection.org_id = terminal.org_id AND connection.session_id = terminal.session_id
+			  AND connection.epoch = terminal.worker_epoch AND connection.disconnected_at IS NULL
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM ao_turns pending
+			WHERE pending.org_id = terminal.org_id AND pending.session_id = terminal.session_id
+			  AND pending.state IN ('queued', 'provisioning', 'running', 'cancel_requested')
+		  )
 		ORDER BY terminal.created_at DESC
 		LIMIT 1`,
 		orgID, sessionID,
@@ -348,6 +384,7 @@ func appendUserMessageEvent(
 	orgID string,
 	sessionID string,
 	text string,
+	clientSequence int64,
 ) (domain.ClientEvent, error) {
 	var sequence int64
 	err := tx.QueryRow(
@@ -381,7 +418,11 @@ func appendUserMessageEvent(
 		return domain.ClientEvent{}, err
 	}
 
-	payload, err := json.Marshal(map[string]string{"text": text})
+	eventPayload := map[string]any{"text": text}
+	if clientSequence > 0 {
+		eventPayload["clientSequence"] = clientSequence
+	}
+	payload, err := json.Marshal(eventPayload)
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}

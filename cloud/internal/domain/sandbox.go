@@ -64,6 +64,7 @@ type Sandbox struct {
 	ObservedState         string
 	ResourceProfile       json.RawMessage
 	BootstrapContext      json.RawMessage
+	PreparationGeneration int64
 	// WorkerLastSeenAt is nil until a worker has checked in at least once,
 	// which is what distinguishes "never started" from "went silent" and
 	// selects the startup deadline over the heartbeat deadline.
@@ -138,4 +139,11 @@ type WorkerLaunch struct {
 	DeniedCommands  []string
 	RepositoryURL   string
 	DefaultBranch   string
+}
+
+// SandboxCreation retains an unresolved provider operation across lease loss.
+type SandboxCreation struct {
+	ID            string
+	Generation    int64
+	EnvironmentID string
 }

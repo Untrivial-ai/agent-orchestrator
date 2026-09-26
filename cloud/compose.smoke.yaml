@@ -1,0 +1,33 @@
+services:
+  postgres:
+    volumes:
+      - ao-cloud-smoke-postgres:/var/lib/postgresql/data
+
+  migrate:
+    build:
+      dockerfile: "${AO_CLOUD_SMOKE_DOCKERFILE}"
+      args:
+        BUILDPLATFORM: "${AO_CLOUD_SMOKE_BUILD_PLATFORM}"
+        TARGETOS: linux
+        TARGETARCH: "${AO_CLOUD_SMOKE_TARGET_ARCH}"
+
+  control-plane:
+    build:
+      dockerfile: "${AO_CLOUD_SMOKE_DOCKERFILE}"
+      args:
+        BUILDPLATFORM: "${AO_CLOUD_SMOKE_BUILD_PLATFORM}"
+        TARGETOS: linux
+        TARGETARCH: "${AO_CLOUD_SMOKE_TARGET_ARCH}"
+
+  worker-image:
+    build:
+      dockerfile: "${AO_CLOUD_SMOKE_DOCKERFILE}"
+      args:
+        BUILDPLATFORM: "${AO_CLOUD_SMOKE_BUILD_PLATFORM}"
+        TARGETOS: linux
+        TARGETARCH: "${AO_CLOUD_SMOKE_TARGET_ARCH}"
+
+volumes:
+  ao-cloud-smoke-postgres:
+    labels:
+      ao.session: "${AO_SESSION_ID:-local}"

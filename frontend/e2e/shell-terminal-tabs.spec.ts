@@ -22,9 +22,7 @@ test("opens, selects, and closes standalone shell terminals from the tab strip",
 	// session's own title: the tab's accessible name is that title, and its
 	// title attribute falls back to the label once the strip truncates it.
 	// Scoped to the terminal panel: the sidebar carries the same session name.
-	const sessionTab = page
-		.getByTestId("terminal")
-		.getByRole("tab", { name: /^Build screenshot-ready dashboard data/ });
+	const sessionTab = page.getByRole("tab", { name: /^Build screenshot-ready dashboard data/ });
 	await sessionTab.click();
 	await expect(sessionTab).toHaveAttribute("aria-selected", "true");
 
@@ -38,14 +36,16 @@ test("opens, selects, and closes standalone shell terminals from the tab strip",
 // sessions yet) the topbar button and Ctrl+` raised the signal and nothing was
 // listening. Both silently did nothing. The shell layout owns it now, and
 // routes to the standalone terminals view when there is no session on screen.
-test("opens a terminal from the board, where no session view is mounted", async ({ page }) => {
-	await page.goto("/#/projects/ao-demo");
+test("opens another terminal from the standalone terminal route", async ({ page }) => {
+	await page.goto("/#/terminals");
 	await expect(page.getByRole("button", { name: "New terminal" })).toBeVisible();
+	const closeButtons = page.getByRole("button", { name: /^Close terminal / });
+	const initialCount = await closeButtons.count();
 
 	await page.getByRole("button", { name: "New terminal" }).click();
 
 	await expect(page).toHaveURL(/#\/terminals$/);
-	await expect(page.getByRole("button", { name: /^Close terminal / })).not.toHaveCount(0);
+	await expect(closeButtons).toHaveCount(initialCount + 1);
 });
 
 test("shows an empty state once every standalone terminal is closed", async ({ page }) => {

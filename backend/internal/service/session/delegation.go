@@ -2,6 +2,9 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,6 +21,8 @@ const (
 	delegatedTaskTitleLimit             = maxDisplayNameLen
 	delegatedTaskUntitledName           = "Untitled task"
 	delegatedTaskTitleRefinementTimeout = time.Minute
+	delegatedTaskCommitTimeout          = 5 * time.Second
+	delegatedTaskIdempotencyKeyLimit    = 128
 	// ponytail: cosmetic work is dropped at the daemon-wide cap; add a queue only if skipped titles become a product problem.
 	delegatedTaskTitleConcurrency  = 4
 	delegatedTaskTitleSystemPrompt = "Return only a concise task title of at most 100 characters. Do not use tools, change files, or explain the answer."
@@ -29,6 +34,7 @@ const (
 type DelegateTaskInput struct {
 	ProjectID      domain.ProjectID
 	Brief          string
+	IdempotencyKey string
 	RequestedAgent domain.AgentHarness
 	Model          string
 	Effort         *string
@@ -44,6 +50,11 @@ type DelegateTaskOutcome struct {
 	WorkerID       domain.SessionID
 }
 
+type taskDelegationStore interface {
+	ReserveTaskDelegation(context.Context, domain.TaskDelegation) (domain.TaskDelegation, bool, error)
+	CompleteTaskDelegation(context.Context, string, domain.TaskDelegationRequestFingerprint, domain.SessionID, time.Time) (domain.TaskDelegation, error)
+}
+
 // DelegateTask spawns the worker directly, matching `ao spawn`, with a
 // provisional display name derived from the task brief. AO then best-effort
 // refines that title through a short-lived call to the worker's resolved harness.
@@ -57,18 +68,102 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 	if in.RequestedMode != "" && !in.RequestedMode.Valid() {
 		return DelegateTaskOutcome{}, apierr.Invalid("INVALID_SESSION_MODE", "mode must be chat or tui", nil)
 	}
+	in.IdempotencyKey = strings.TrimSpace(in.IdempotencyKey)
+	if len(in.IdempotencyKey) > delegatedTaskIdempotencyKeyLimit {
+		return DelegateTaskOutcome{}, apierr.Invalid("IDEMPOTENCY_KEY_TOO_LONG", "idempotencyKey is too long", nil)
+	}
+	if in.IdempotencyKey == "" {
+		return s.spawnDelegatedTask(ctx, in)
+	}
+
+	fingerprint := delegatedTaskRequestFingerprint(in)
+	result, err, _ := s.delegateTaskGroup.Do(in.IdempotencyKey+"\x00"+string(fingerprint), func() (any, error) {
+		return s.delegateTaskIdempotently(ctx, in, fingerprint)
+	})
+	if err != nil {
+		return DelegateTaskOutcome{}, err
+	}
+	out, ok := result.(DelegateTaskOutcome)
+	if !ok {
+		return DelegateTaskOutcome{}, apierr.Internal("TASK_DELEGATION_INTERNAL", "Task delegation returned an invalid result")
+	}
+	return out, nil
+}
+
+func (s *Service) delegateTaskIdempotently(
+	ctx context.Context,
+	in DelegateTaskInput,
+	fingerprint domain.TaskDelegationRequestFingerprint,
+) (DelegateTaskOutcome, error) {
+	st, ok := s.store.(taskDelegationStore)
+	if !ok {
+		return DelegateTaskOutcome{}, apierr.Internal("TASK_DELEGATION_IDEMPOTENCY_UNAVAILABLE", "Task delegation idempotency is unavailable")
+	}
+	now := s.now()
+	record, _, err := st.ReserveTaskDelegation(ctx, domain.TaskDelegation{
+		IdempotencyKey:     in.IdempotencyKey,
+		RequestFingerprint: fingerprint,
+		State:              domain.TaskDelegationPending,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	})
+	if errors.Is(err, domain.ErrTaskDelegationRecoveryRequired) {
+		return DelegateTaskOutcome{}, apierr.Conflict("TASK_DELEGATION_RECOVERY_REQUIRED", "An earlier task attempt needs session recovery before it can be retried", nil)
+	}
+	if errors.Is(err, domain.ErrTaskDelegationIdempotencyConflict) {
+		return DelegateTaskOutcome{}, apierr.Conflict("TASK_DELEGATION_IDEMPOTENCY_CONFLICT", "idempotencyKey was already used for a different task", nil)
+	}
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("reserve task delegation", "projectID", in.ProjectID, "error", err)
+		}
+		return DelegateTaskOutcome{}, apierr.Unavailable("TASK_DELEGATION_RESERVATION_FAILED", "Task delegation could not be reserved")
+	}
+	if record.Ready() {
+		return DelegateTaskOutcome{WorkerID: record.WorkerID}, nil
+	}
+	if record.StartupState == domain.TaskDelegationStartupStarting {
+		return DelegateTaskOutcome{}, apierr.Conflict("TASK_DELEGATION_RECOVERY_REQUIRED", "Task startup has an uncertain outcome; inspect the existing session before retrying", map[string]any{"workerId": record.WorkerID})
+	}
+
+	out, err := s.spawnDelegatedTask(ctx, in)
+	if err != nil {
+		return DelegateTaskOutcome{}, err
+	}
+	commitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), delegatedTaskCommitTimeout)
+	defer cancel()
+	completed, err := st.CompleteTaskDelegation(commitCtx, in.IdempotencyKey, fingerprint, out.WorkerID, s.now())
+	if err != nil || !completed.Ready() || completed.WorkerID != out.WorkerID {
+		if err == nil {
+			err = fmt.Errorf("unexpected completed task delegation: state=%s worker=%s", completed.State, completed.WorkerID)
+		}
+		if s.logger != nil {
+			s.logger.Error("complete task delegation", "projectID", in.ProjectID, "workerID", out.WorkerID, "error", err)
+		}
+		return DelegateTaskOutcome{}, apierr.Unavailable("TASK_DELEGATION_COMMIT_FAILED", "The worker started, but its task request could not be finalized")
+	}
+	return out, nil
+}
+
+func (s *Service) spawnDelegatedTask(ctx context.Context, in DelegateTaskInput) (DelegateTaskOutcome, error) {
 	prompt := in.Brief
 	if strings.TrimSpace(prompt) == "" {
 		prompt = ""
 	}
 
+	var fingerprint domain.TaskDelegationRequestFingerprint
+	if in.IdempotencyKey != "" {
+		fingerprint = delegatedTaskRequestFingerprint(in)
+	}
 	effort, effortOverride := optionalTuningValue(in.Effort)
 	worker, _, _, err := s.manager.Spawn(ctx, ports.SpawnConfig{
-		ProjectID:   in.ProjectID,
-		Kind:        domain.KindWorker,
-		Harness:     in.RequestedAgent,
-		Prompt:      prompt,
-		DisplayName: delegatedTaskDisplayName(in.Brief),
+		TaskDelegationKey:         in.IdempotencyKey,
+		TaskDelegationFingerprint: fingerprint,
+		ProjectID:                 in.ProjectID,
+		Kind:                      domain.KindWorker,
+		Harness:                   in.RequestedAgent,
+		Prompt:                    prompt,
+		DisplayName:               delegatedTaskDisplayName(in.Brief),
 		AgentConfig: ports.AgentConfig{
 			Model:       strings.TrimSpace(in.Model),
 			Effort:      effort,
@@ -79,6 +174,9 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 		Attachments:    in.Attachments,
 	})
 	if err != nil {
+		if errors.Is(err, domain.ErrTaskDelegationRecoveryRequired) {
+			return DelegateTaskOutcome{}, apierr.Conflict("TASK_DELEGATION_RECOVERY_REQUIRED", "Task startup needs recovery before it can be retried", nil)
+		}
 		return DelegateTaskOutcome{}, toSpawnAPIError(err)
 	}
 
@@ -89,6 +187,49 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 		s.refineDelegatedTaskTitleInBackground(worker.ID, in)
 	}
 	return DelegateTaskOutcome{WorkerID: worker.ID}, nil
+}
+
+func delegatedTaskRequestFingerprint(in DelegateTaskInput) domain.TaskDelegationRequestFingerprint {
+	type attachmentIdentity struct {
+		Ext    string `json:"ext"`
+		Digest string `json:"digest"`
+	}
+	type requestIdentity struct {
+		ProjectID      domain.ProjectID      `json:"projectId"`
+		Brief          string                `json:"brief"`
+		RequestedAgent domain.AgentHarness   `json:"agent"`
+		Model          string                `json:"model"`
+		Effort         string                `json:"effort"`
+		EffortOverride bool                  `json:"effortOverride"`
+		ApprovalMode   domain.PermissionMode `json:"approvalMode"`
+		RequestedMode  domain.SessionMode    `json:"mode"`
+		Attachments    []attachmentIdentity  `json:"attachments"`
+	}
+	prompt := in.Brief
+	if strings.TrimSpace(prompt) == "" {
+		prompt = ""
+	}
+	effort, effortOverride := optionalTuningValue(in.Effort)
+	attachments := make([]attachmentIdentity, 0, len(in.Attachments))
+	for _, attachment := range in.Attachments {
+		sum := sha256.Sum256(attachment.Data)
+		attachments = append(attachments, attachmentIdentity{
+			Ext:    attachment.Ext,
+			Digest: hex.EncodeToString(sum[:]),
+		})
+	}
+	payload, _ := json.Marshal(requestIdentity{
+		ProjectID:      in.ProjectID,
+		Brief:          prompt,
+		RequestedAgent: in.RequestedAgent,
+		Model:          strings.TrimSpace(in.Model),
+		Effort:         effort,
+		EffortOverride: effortOverride,
+		ApprovalMode:   in.ApprovalMode,
+		RequestedMode:  in.RequestedMode,
+		Attachments:    attachments,
+	})
+	return domain.NewTaskDelegationRequestFingerprint(payload)
 }
 
 func optionalTuningValue(value *string) (string, bool) {
