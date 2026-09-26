@@ -2844,6 +2844,7 @@ export function TurnDuration({ durationMs, inline = false }: { durationMs: numbe
 		<span
 			className={cn(
 				"shrink-0 font-sans text-sm leading-none tabular-nums text-muted-foreground",
+				inline && "group-hover/row:text-foreground",
 				!inline && "px-1",
 			)}
 			aria-label={`Time spent: ${formatDuration(durationMs)}`}
