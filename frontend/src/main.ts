@@ -44,6 +44,7 @@ import { readKeybindingOverrides, writeKeybindingOverrides } from "./main/keybin
 import { readEditorSettings, writeEditorPreference } from "./main/editor-settings";
 import { createEditorHandoff } from "./main/editor-handoff";
 import { launchCommand } from "./main/launch-command";
+import { closeDaemonLog, openDaemonLog, writeDaemonLog } from "./main/daemon-log";
 import {
 	decideRelocation,
 	inspectInstalledBundle,
@@ -60,15 +61,12 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
 	closeSync,
-	createWriteStream,
 	existsSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
 	renameSync,
-	statSync,
 	writeFileSync,
-	type WriteStream,
 } from "node:fs";
 import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -501,67 +499,13 @@ function appendDaemonOutput(text: string): void {
 	if (nextStatus !== daemonStatus) setDaemonStatus(nextStatus);
 }
 
-// Durable daemon log for the desktop-owned launch (issue #2689). Without it the
-// daemon's stderr — including a panic stack — lives only in the Electron console
-// and dies with the app, so a crash leaves nothing to correlate with the request
-// ID the API handed out. Keep-daemon mode redirects stdio to this same file at
-// spawn time instead, so this writer is only for the piped path. The log is
-// written in packaged builds too — a crash in the installed app is exactly the
-// case with nothing else to look at; dev runs keep theirs under ~/.ao/dev/ so
-// the two states don't mix.
-const DAEMON_LOG_MAX_BYTES = 8 * 1024 * 1024;
-let daemonLogStream: WriteStream | undefined;
-let daemonLogBytes = 0;
+// Durable daemon log writer lives in ./main/daemon-log; this file only decides
+// where the log goes (dev keeps its own under ~/.ao/dev/) and which child owns
+// the current generation.
+let daemonLogChild: ChildProcess | undefined;
 
 function daemonLogPath(): string {
 	return path.join(os.homedir(), ".ao", ...(isDev ? [DEV_STATE_SUBDIR] : []), "daemon.log");
-}
-
-function openDaemonLog(): void {
-	closeDaemonLog();
-	const logPath = daemonLogPath();
-	try {
-		mkdirSync(path.dirname(logPath), { recursive: true });
-		// Rotate before appending so one long-lived install cannot grow the log
-		// without bound; one generation back is enough to survive a crash loop.
-		let size = 0;
-		try {
-			size = statSync(logPath).size;
-		} catch {
-			size = 0; // absent on first run
-		}
-		if (size >= DAEMON_LOG_MAX_BYTES) {
-			try {
-				renameSync(logPath, `${logPath}.1`);
-				size = 0;
-			} catch {
-				// Rotation is best-effort; appending to an oversized log still beats
-				// losing the crash output entirely.
-			}
-		}
-		daemonLogBytes = size;
-		daemonLogStream = createWriteStream(logPath, { flags: "a" });
-		daemonLogStream.on("error", () => {
-			// A failed log write must never take the app down with it.
-			daemonLogStream = undefined;
-		});
-	} catch {
-		console.warn(`AO: daemon log unavailable: ${logPath}`);
-		daemonLogStream = undefined;
-	}
-}
-
-function closeDaemonLog(): void {
-	daemonLogStream?.end();
-	daemonLogStream = undefined;
-	daemonLogBytes = 0;
-}
-
-function writeDaemonLog(text: string): void {
-	if (!daemonLogStream) return;
-	daemonLogStream.write(text);
-	daemonLogBytes += Buffer.byteLength(text);
-	if (daemonLogBytes >= DAEMON_LOG_MAX_BYTES) openDaemonLog();
 }
 
 // Menu installed on Windows where the native menu bar is hidden. The bar stays
@@ -1808,7 +1752,8 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		const scanStderr = createListenPortScanner(reportBoundPort);
 		// Mirror the pipes to disk: the scanners still need them, so the log is a
 		// tee rather than the stdio redirect keep-daemon mode uses.
-		openDaemonLog();
+		openDaemonLog(daemonLogPath());
+		daemonLogChild = child;
 
 		child.stdout?.on("data", (chunk: Buffer) => {
 			const text = chunk.toString("utf8");
@@ -1878,17 +1823,19 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		stopDiscovery();
 		// Stale-exit guard before any log work: after a spawn failure Node emits
 		// both 'error' and 'exit' for the same child, and 'error' may already have
-		// cleared daemonProcess before a restart opened a fresh log. The stamp and
-		// close below act on the module-level shared stream, so they must run only
+		// cleared daemonProcess before a restart opened a fresh log. The exit
+		// stamp below acts on the module-level shared stream, so it must run only
 		// while this child is still the current one — otherwise a stale 'exit'
-		// closes the new child's active log and silently drops its output.
+		// stamps the new child's active log.
 		if (daemonProcess !== child) return;
-		// Stamp the exit before closing: a bare stack with no terminator reads as
-		// a truncated log, while "exited with SIGSEGV" names the failure outright.
+		// Stamp the exit now: a bare stack with no terminator reads as a
+		// truncated log, while "exited with SIGSEGV" names the failure outright.
+		// The close itself waits for 'close' (below): 'exit' can fire while
+		// stdout/stderr still hold buffered output, and closing here drops the
+		// final crash lines this log exists to capture (PR #3892 review).
 		writeDaemonLog(
 			`\n[ao] daemon exited ${signal ? `with ${signal}` : `with code ${code ?? "unknown"}`} at ${new Date().toISOString()}\n`,
 		);
-		closeDaemonLog();
 		daemonProcess = null;
 		// An explicit stopDaemon() already set a clean `{ state: "stopped" }`.
 		// daemon-telemetry reports any status carrying a `code` as
@@ -1913,6 +1860,16 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 			exitCode: code,
 			signal,
 		});
+	});
+
+	child.once("close", () => {
+		// 'close' fires once the stdio pipes have flushed, so whatever the daemon
+		// printed last is already teed into the log before it ends. Ownership
+		// guard: a respawned daemon owns the log by then, and the old child's
+		// late 'close' must not end the new child's active stream.
+		if (daemonLogChild !== child) return;
+		daemonLogChild = undefined;
+		void closeDaemonLog();
 	});
 
 	return daemonStatus;
