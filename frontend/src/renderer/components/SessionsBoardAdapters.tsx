@@ -13,7 +13,7 @@ import {
 	type BoardUsagePresentation,
 	type ProductUITranslator,
 } from "@aoagents/product-ui";
-import { Check, Copy, GitBranch, LoaderCircle, RotateCcw, Trash2 } from "lucide-react";
+import { Archive, Check, Copy, GitBranch, LoaderCircle, RotateCcw } from "lucide-react";
 import type { MessageKey } from "../i18n";
 import { aoBridge } from "../lib/bridge";
 import { formatTimeCompact } from "../lib/format-time";
@@ -36,7 +36,7 @@ import {
 import { cn } from "../lib/utils";
 import { AgentAvatar } from "./AgentAvatar";
 import { ProductExternalLink } from "./ProductExternalLink";
-import { SessionTerminationPopover } from "./SessionTerminationPopover";
+import { SessionArchiveDialog } from "./SessionArchiveDialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 export function toBoardSessionPresentation(
@@ -175,7 +175,7 @@ function DesktopSessionCard({
 		<Tooltip>
 			<TooltipTrigger asChild>
 				<span className="inline-flex">
-					<SessionTerminationPopover
+					<SessionArchiveDialog
 						onConfirm={() => {
 							setConfirmOpen(false);
 							onTerminate();
@@ -187,11 +187,11 @@ function DesktopSessionCard({
 							<button
 								aria-label={
 									termination.isPending
-										? t("shell.killingNamedAria", { title: session.title })
-										: t("shell.terminateNamed", { title: session.title })
+										? t("shell.archivingNamedAria", { title: session.title })
+										: t("shell.archiveNamed", { title: session.title })
 								}
 								className={cn(
-									"inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-[color,background-color,opacity] hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+									"inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-[color,background-color,opacity] hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
 									keepTerminateVisible || termination.isPending
 										? "opacity-100"
 										: "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
@@ -199,8 +199,7 @@ function DesktopSessionCard({
 								onClick={(event) => {
 									event.stopPropagation();
 									clearTerminateSessionState(queryClient, session.id);
-									// Force the confirm open instead of toggling it, so repeated
-									// trash taps keep the dialog up rather than dismissing it.
+									// Always open the confirm; the modal owns its own dismissal.
 									setConfirmOpen(true);
 								}}
 								disabled={termination.isPending}
@@ -209,7 +208,7 @@ function DesktopSessionCard({
 								{termination.isPending ? (
 									<LoaderCircle className="size-icon-sm animate-spin" aria-hidden="true" />
 								) : (
-									<Trash2 className="size-icon-sm" aria-hidden="true" />
+									<Archive className="size-icon-sm" aria-hidden="true" />
 								)}
 							</button>
 						}
@@ -217,7 +216,7 @@ function DesktopSessionCard({
 				</span>
 			</TooltipTrigger>
 			<TooltipContent side="bottom">
-				{termination.isPending ? t("shell.killingSession") : t("shell.terminateSession")}
+				{termination.isPending ? t("shell.archivingSession") : t("shell.archiveSession")}
 			</TooltipContent>
 		</Tooltip>
 	) : undefined;

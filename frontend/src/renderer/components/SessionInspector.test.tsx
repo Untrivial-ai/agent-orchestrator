@@ -1252,14 +1252,14 @@ describe("SessionInspector completion controls", () => {
       }),
     ).not.toBeInTheDocument();
     await userEvent.click(
-      screen.getByRole("button", { name: "Terminate session" }),
+      screen.getByRole("button", { name: "Archive session" }),
     );
     expect(
-      screen.getByRole("dialog", { name: "Terminate do the thing?" }),
+      screen.getByRole("dialog", { name: "Are you sure you want to archive do the thing?" }),
     ).toBeInTheDocument();
     await userEvent.click(
       within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Yes, terminate session",
+        name: "Confirm, archive session",
       }),
     );
 
@@ -1298,11 +1298,11 @@ describe("SessionInspector completion controls", () => {
     ).not.toBeInTheDocument();
 
     await userEvent.click(
-      screen.getByRole("button", { name: "Terminate session" }),
+      screen.getByRole("button", { name: "Archive session" }),
     );
     await userEvent.click(
       within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Yes, terminate session",
+        name: "Confirm, archive session",
       }),
     );
 
@@ -1324,11 +1324,11 @@ describe("SessionInspector completion controls", () => {
     );
 
     await userEvent.click(
-      screen.getByRole("button", { name: "Terminate session" }),
+      screen.getByRole("button", { name: "Archive session" }),
     );
     await userEvent.click(
       within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Yes, terminate session",
+        name: "Confirm, archive session",
       }),
     );
 
@@ -1352,7 +1352,7 @@ describe("SessionInspector completion controls", () => {
 
     expect(screen.queryByText("Completion")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Terminate session" }),
+      screen.queryByRole("button", { name: "Archive session" }),
     ).not.toBeInTheDocument();
   });
 

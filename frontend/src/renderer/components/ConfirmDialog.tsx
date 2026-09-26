@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
@@ -7,6 +8,7 @@ import {
 	DialogClose,
 	DialogContent,
 	DialogDescription,
+	DialogOverlay,
 	DialogTitle,
 	settingsDialogBodyClass,
 	settingsDialogContentClass,
@@ -19,6 +21,10 @@ type ConfirmDialogProps = {
 	title: string;
 	description: React.ReactNode;
 	confirmLabel: string;
+	/** Screen-reader name for the confirm button when "Confirm" alone is vague. */
+	confirmAriaLabel?: string;
+	/** Defaults to "Cancel"; reversible actions can soften it to "No". */
+	cancelLabel?: string;
 	destructive?: boolean;
 	busy?: boolean;
 	error?: string | null;
@@ -35,6 +41,8 @@ export function ConfirmDialog({
 	title,
 	description,
 	confirmLabel,
+	confirmAriaLabel,
+	cancelLabel,
 	destructive,
 	busy,
 	error,
@@ -42,6 +50,15 @@ export function ConfirmDialog({
 	onOpenChange,
 }: ConfirmDialogProps) {
 	const { t } = useTranslation();
+	// Radix aims its close-time focus at a DialogTrigger, but these confirms are
+	// opened programmatically, so that ref is null and the keyboard user is
+	// dropped on <body> — several tab stops away from the control they came
+	// from. Remember whatever had focus when the dialog opened and put it back.
+	const returnFocusRef = useRef<HTMLElement | null>(null);
+	useEffect(() => {
+		if (open) returnFocusRef.current = document.activeElement as HTMLElement | null;
+	}, [open]);
+
 	// Sized for a two-line prompt, not a settings form: the shared settings
 	// frame (575px, 38px footer pills) reads oversized around one question, so
 	// the confirm narrows the dialog and compacts the buttons while keeping the
@@ -52,6 +69,21 @@ export function ConfirmDialog({
 			<DialogContent
 				showCloseButton={false}
 				className={cn(settingsDialogContentClass, "w-[min(420px,calc(100vw-24px))]")}
+				// React portals re-dispatch synthetic events up the React tree, not the
+				// DOM tree, so a confirm rendered from inside a clickable row or card
+				// would otherwise also trigger that ancestor's onClick (opening the very
+				// session being confirmed). The modal — dimmed backdrop included — owns
+				// its own clicks. Radix still dismisses on the native pointerdown.
+				onClick={(event) => event.stopPropagation()}
+				onCloseAutoFocus={(event) => {
+					const target = returnFocusRef.current;
+					// A confirmed action often removes its own trigger (the archived row
+					// disappears); fall back to Radix's handling when it is gone.
+					if (!target?.isConnected) return;
+					event.preventDefault();
+					target.focus();
+				}}
+				overlay={<DialogOverlay onClick={(event) => event.stopPropagation()} />}
 			>
 				<DialogClose asChild>
 					<button
@@ -83,10 +115,11 @@ export function ConfirmDialog({
 				<div className={cn(settingsDialogFooterClass, "gap-2 p-4")}>
 					<DialogClose asChild>
 						<Button type="button" variant="footer" className={compactButtonClass} disabled={busy}>
-							{t("confirm.cancel")}
+							{cancelLabel ?? t("confirm.cancel")}
 						</Button>
 					</DialogClose>
 					<Button
+						aria-label={confirmAriaLabel}
 						type="button"
 						variant="footer-primary"
 						className={cn(compactButtonClass, destructive && "bg-danger-strong hover:bg-danger-strong")}

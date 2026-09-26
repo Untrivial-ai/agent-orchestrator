@@ -100,7 +100,7 @@ function renderBoardWithClient(queryClient: QueryClient, projectId?: string) {
 
 /** Archive cards mount on the next frame via startTransition — wait for the list. */
 async function expandArchive() {
-	await userEvent.click(screen.getByRole("button", { name: /archive/i }));
+	await userEvent.click(screen.getByRole("button", { name: /^Archive, \d+ sessions?$/ }));
 	return screen.findByRole("list", { name: "Archived sessions" });
 }
 
@@ -159,7 +159,7 @@ describe("SessionsBoard", () => {
 
 		try {
 			renderBoard("p1");
-			expect(screen.getByRole("button", { name: "终止 localized worker" })).toBeInTheDocument();
+			expect(screen.getByRole("button", { name: "归档 localized worker" })).toBeInTheDocument();
 			expect(screen.getByRole("link", { name: "PR #42 已打开" })).toHaveAttribute(
 				"href",
 				"https://github.com/acme/repo/pull/42",
@@ -310,9 +310,9 @@ describe("SessionsBoard", () => {
 			.getByText("brand-font-pipeline")
 			.closest('[data-testid="board-session-card"]') as HTMLElement;
 		expect(within(idleCard).getByText("Idle")).toBeInTheDocument();
-		const terminateButton = within(idleCard).getByRole("button", { name: "Terminate brand-font-pipeline" });
+		const terminateButton = within(idleCard).getByRole("button", { name: "Archive brand-font-pipeline" });
 		expect(terminateButton).toHaveClass("opacity-0", "group-hover:opacity-100", "group-focus-within:opacity-100");
-		expect(terminateButton.querySelector("svg")).toHaveClass("lucide-trash-2");
+		expect(terminateButton.querySelector("svg")).toHaveClass("lucide-archive");
 		expect(within(idleCard).getByText("Idle").parentElement?.parentElement).toHaveClass("flex");
 		expect(within(idleCard).getByText("brand-font-pipeline")).toHaveClass("font-semibold", "line-clamp-2");
 	});
@@ -457,7 +457,7 @@ describe("SessionsBoard", () => {
 
 		within(card).getByRole("button", { name: "keyboard worker" }).focus();
 		await userEvent.tab();
-		expect(within(card).getByRole("button", { name: "Terminate keyboard worker" })).toHaveFocus();
+		expect(within(card).getByRole("button", { name: "Archive keyboard worker" })).toHaveFocus();
 
 		await userEvent.hover(usage);
 		expect(await screen.findByRole("tooltip")).toHaveTextContent("$1.24 · 12,400 tokens");
@@ -896,7 +896,7 @@ describe("SessionsBoard", () => {
 
 		renderBoard("p1");
 
-		const archiveButton = screen.getByRole("button", { name: /archive/i });
+		const archiveButton = screen.getByRole("button", { name: /^Archive, \d+ sessions?$/ });
 		expect(archiveButton).toHaveClass(archiveToggleHeightClassName, "w-full", "py-0");
 		const archiveLabel = within(archiveButton).getByText("Archive");
 		expect(archiveLabel).not.toHaveClass("font-mono", "uppercase");
@@ -973,7 +973,7 @@ describe("SessionsBoard", () => {
 		});
 		renderBoard("p1");
 
-		const archiveButton = screen.getByRole("button", { name: /archive/i });
+		const archiveButton = screen.getByRole("button", { name: /^Archive, \d+ sessions?$/ });
 		const archive = await expandArchive();
 		const card = within(archive).getByText("dead worker");
 
@@ -1246,7 +1246,7 @@ describe("SessionsBoard", () => {
 		const readyLane = screen.getByRole("region", { name: "Ready sessions" });
 		expect(within(readyLane).getByText("Ready")).toHaveClass("text-status-ready");
 		expect(within(readyLane).getByText("merged worker")).toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: /archive/i })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /^Archive, \d+ sessions?$/ })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Restore merged worker" })).not.toBeInTheDocument();
 
 		await userEvent.click(screen.getByText("merged worker"));
@@ -1467,7 +1467,7 @@ describe("SessionsBoard", () => {
 			within(archivedMergedCard!).queryByRole("button", { name: "Open archived merged worker" }),
 		).not.toBeInTheDocument();
 		expect(
-			within(archivedMergedCard!).queryByRole("button", { name: "Terminate archived merged worker" }),
+			within(archivedMergedCard!).queryByRole("button", { name: "Archive archived merged worker" }),
 		).not.toBeInTheDocument();
 		expect(within(archivedMergedCard!).getByText("Merged").parentElement).toHaveAttribute(
 			"data-kanban-column",
@@ -1484,10 +1484,30 @@ describe("SessionsBoard", () => {
 		});
 		renderBoard("p1");
 
-		await userEvent.click(screen.getByRole("button", { name: "Terminate idle worker" }));
+		await userEvent.click(screen.getByRole("button", { name: "Archive idle worker" }));
 
 		expect(navigateMock).not.toHaveBeenCalled();
-		expect(screen.getByRole("dialog", { name: "Terminate idle worker?" })).toBeInTheDocument();
+		expect(screen.getByRole("dialog", { name: "Are you sure you want to archive idle worker?" })).toBeInTheDocument();
+	});
+
+	it("returns focus to the archive control after backing out of the confirm", async () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([boardSession({ id: "s-merged", title: "merged worker", status: "merged" })])],
+			isError: false,
+			isSuccess: true,
+		});
+		renderBoard("p1");
+
+		await userEvent.click(screen.getByRole("button", { name: "Archive merged worker" }));
+		await screen.findByRole("dialog");
+		await userEvent.click(screen.getByRole("button", { name: "No" }));
+		await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+		// Radix aims close-time focus at a DialogTrigger; these confirms open
+		// programmatically, so without an explicit restore the keyboard user is
+		// stranded on <body> instead of the control they came from.
+		expect(screen.getByRole("button", { name: "Archive merged worker" })).toHaveFocus();
+		expect(postMock).not.toHaveBeenCalled();
 	});
 
 	it("terminates a live merged session from its card without opening the session", async () => {
@@ -1498,13 +1518,13 @@ describe("SessionsBoard", () => {
 		});
 		renderBoard("p1");
 
-		const terminateButton = screen.getByRole("button", { name: "Terminate merged worker" });
+		const terminateButton = screen.getByRole("button", { name: "Archive merged worker" });
 		expect(terminateButton).toHaveClass("opacity-100");
 		expect(terminateButton).not.toHaveClass("opacity-0");
 		await userEvent.click(terminateButton);
 		expect(navigateMock).not.toHaveBeenCalled();
-		const dialog = screen.getByRole("dialog", { name: "Terminate merged worker?" });
-		await userEvent.click(within(dialog).getByRole("button", { name: "Yes, terminate session" }));
+		const dialog = screen.getByRole("dialog", { name: "Are you sure you want to archive merged worker?" });
+		await userEvent.click(within(dialog).getByRole("button", { name: "Confirm, archive session" }));
 
 		await waitFor(() =>
 			expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/kill", {
@@ -1534,18 +1554,18 @@ describe("SessionsBoard", () => {
 		});
 		renderBoard("p1");
 
-		await userEvent.click(screen.getByRole("button", { name: "Terminate worker one" }));
+		await userEvent.click(screen.getByRole("button", { name: "Archive worker one" }));
 		await userEvent.click(
-			within(screen.getByRole("dialog")).getByRole("button", { name: "Yes, terminate session" }),
+			within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm, archive session" }),
 		);
 
-		expect(screen.getByRole("button", { name: "Killing worker one" })).toBeDisabled();
-		expect(screen.getByRole("button", { name: "Killing worker one" })).toHaveClass("opacity-100");
-		expect(screen.getByRole("button", { name: "Terminate worker two" })).toBeEnabled();
+		expect(screen.getByRole("button", { name: "Archiving worker one" })).toBeDisabled();
+		expect(screen.getByRole("button", { name: "Archiving worker one" })).toHaveClass("opacity-100");
+		expect(screen.getByRole("button", { name: "Archive worker two" })).toBeEnabled();
 		expect(postMock).toHaveBeenCalledTimes(1);
 
 		finishKill({ data: { ok: true, sessionId: "s-one" }, error: undefined });
-		await waitFor(() => expect(screen.getByRole("button", { name: "Terminate worker one" })).toBeEnabled());
+		await waitFor(() => expect(screen.getByRole("button", { name: "Archive worker one" })).toBeEnabled());
 	});
 
 	it("keeps the merged-card confirmation dismissed and surfaces termination failures", async () => {
@@ -1557,15 +1577,15 @@ describe("SessionsBoard", () => {
 		});
 		renderBoard("p1");
 
-		await userEvent.click(screen.getByRole("button", { name: "Terminate merged worker" }));
+		await userEvent.click(screen.getByRole("button", { name: "Archive merged worker" }));
 		await userEvent.click(
-			within(screen.getByRole("dialog")).getByRole("button", { name: "Yes, terminate session" }),
+			within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm, archive session" }),
 		);
 
 		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 		expect(await screen.findByRole("alert")).toHaveTextContent("Failed to terminate session (500)");
-		expect(screen.getByRole("button", { name: "Terminate merged worker" })).toBeEnabled();
+		expect(screen.getByRole("button", { name: "Archive merged worker" })).toBeEnabled();
 	});
 
 	it("shows a folder-missing banner when the project root no longer exists on disk", () => {

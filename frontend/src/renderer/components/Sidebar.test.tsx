@@ -197,6 +197,13 @@ const session: WorkspaceSession = {
 	prs: [],
 };
 
+// The row archive is confirmed, not instant: open the shared modal and accept.
+async function confirmArchiveFromRow(row: HTMLElement) {
+	fireEvent.click(within(row).getByLabelText("Archive session"));
+	const dialog = await screen.findByRole("dialog");
+	fireEvent.click(within(dialog).getByRole("button", { name: "Confirm, archive session" }));
+}
+
 const exitedOrchestrator: WorkspaceSession = {
 	...session,
 	id: "proj-1-orch",
@@ -1005,7 +1012,7 @@ describe("Sidebar", () => {
 		expect(screen.getByLabelText("Project actions for Project One")).toHaveProperty("tabIndex", 0);
 		expect(screen.getByLabelText("Pin session")).toHaveProperty("tabIndex", 0);
 		expect(screen.queryByRole("button", { name: "Rename fix login" })).not.toBeInTheDocument();
-		expect(screen.getByLabelText("Kill session")).toHaveProperty("tabIndex", 0);
+		expect(screen.getByLabelText("Archive session")).toHaveProperty("tabIndex", 0);
 	});
 
 	it("fades the message age out in favor of the overlaid hover actions", () => {
@@ -2517,6 +2524,34 @@ describe("Sidebar", () => {
 		expect(screen.queryByLabelText("Open merged terminated task")).not.toBeInTheDocument();
 	});
 
+	it("confirms before archiving a session and names the action archive, not delete", async () => {
+		renderSidebar({ workspaces: [{ ...workspace, sessions: [session] }] });
+
+		const row = screen.getByLabelText("Open fix login").closest<HTMLElement>("[data-session-row]")!;
+		const archiveButton = within(row).getByLabelText("Archive session");
+		expect(archiveButton.querySelector("svg")).toHaveClass("lucide-archive");
+
+		fireEvent.click(archiveButton);
+		expect(postMock).not.toHaveBeenCalled();
+
+		const dialog = await screen.findByRole("dialog", {
+			name: "Are you sure you want to archive fix login?",
+		});
+		expect(dialog).toHaveTextContent("You can always restore fix login from the Archive section later.");
+		fireEvent.click(within(dialog).getByRole("button", { name: "No" }));
+		await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+		expect(postMock).not.toHaveBeenCalled();
+
+		await confirmArchiveFromRow(row);
+
+		await waitFor(() =>
+			expect(postMock).toHaveBeenCalledWith(
+				"/api/v1/sessions/{sessionId}/kill",
+				expect.objectContaining({ params: { path: { sessionId: "proj-1-1" } } }),
+			),
+		);
+	});
+
 	it("shifts to the adjacent session when deleting the active session", async () => {
 		mockParams.projectId = "proj-1";
 		mockParams.sessionId = "proj-1-2";
@@ -2533,7 +2568,7 @@ describe("Sidebar", () => {
 		});
 
 		const row = screen.getByLabelText("Open second task").closest<HTMLElement>("[data-session-row]")!;
-		fireEvent.click(within(row).getByLabelText("Kill session"));
+		await confirmArchiveFromRow(row);
 
 		await waitFor(() =>
 			expect(postMock).toHaveBeenCalledWith(
@@ -2571,7 +2606,7 @@ describe("Sidebar", () => {
 		});
 
 		const row = screen.getByLabelText("Open sole worker").closest<HTMLElement>("[data-session-row]")!;
-		fireEvent.click(within(row).getByLabelText("Kill session"));
+		await confirmArchiveFromRow(row);
 
 		await waitFor(() =>
 			expect(postMock).toHaveBeenCalledWith(
@@ -2601,7 +2636,7 @@ describe("Sidebar", () => {
 		});
 
 		const row = screen.getByLabelText("Open sole worker").closest<HTMLElement>("[data-session-row]")!;
-		fireEvent.click(within(row).getByLabelText("Kill session"));
+		await confirmArchiveFromRow(row);
 
 		await waitFor(() =>
 			expect(postMock).toHaveBeenCalledWith(
@@ -2634,7 +2669,7 @@ describe("Sidebar", () => {
 		});
 
 		const row = screen.getByLabelText("Open inactive task").closest<HTMLElement>("[data-session-row]")!;
-		fireEvent.click(within(row).getByLabelText("Kill session"));
+		await confirmArchiveFromRow(row);
 
 		await waitFor(() =>
 			expect(postMock).toHaveBeenCalledWith(
@@ -2662,7 +2697,7 @@ describe("Sidebar", () => {
 
 		const pinnedList = screen.getByTestId("pinned-session-list");
 		const row = within(pinnedList).getByLabelText("Open pinned task").closest<HTMLElement>("[data-session-row]")!;
-		fireEvent.click(within(row).getByLabelText("Kill session"));
+		await confirmArchiveFromRow(row);
 
 		await waitFor(() =>
 			expect(postMock).toHaveBeenCalledWith(
@@ -2696,7 +2731,7 @@ describe("Sidebar", () => {
 
 		const pinnedList = screen.getByTestId("pinned-session-list");
 		const row = within(pinnedList).getByLabelText("Open oldest pinned task").closest<HTMLElement>("[data-session-row]")!;
-		fireEvent.click(within(row).getByLabelText("Kill session"));
+		await confirmArchiveFromRow(row);
 
 		await waitFor(() =>
 			expect(postMock).toHaveBeenCalledWith(
@@ -2734,7 +2769,7 @@ describe("Sidebar", () => {
 		});
 
 		const row = screen.getByLabelText("Open first task").closest<HTMLElement>("[data-session-row]")!;
-		fireEvent.click(within(row).getByLabelText("Kill session"));
+		await confirmArchiveFromRow(row);
 
 		// Navigation occurs optimistically on click rather than waiting for daemon round-trip.
 		expect(navigateMock).toHaveBeenCalledWith({
