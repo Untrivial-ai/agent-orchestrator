@@ -20,6 +20,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
+import { DEFINITIVE_CHAT_SEND_REJECTIONS } from "../lib/chat-send-errors";
 import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
 import type {
@@ -27,11 +28,13 @@ import type {
 	ApprovalMode,
 	ActivityStatus,
 	ConversationActivity,
+	ConversationContentSummary,
 	ConversationItem,
 	ConversationMessage,
 	ConversationSnapshot,
 	ControllerState,
 	DecisionOption,
+	DeliveryState,
 	DiffStatus,
 	McpServer,
 	MessageOrigin,
@@ -120,6 +123,8 @@ export type ConversationLocalEcho = {
 	clientMessageId: string;
 	text: string;
 	createdAt: string;
+	content?: ConversationContentSummary[];
+	delivery?: DeliveryState;
 	/** Filled after the daemon accepts the send, then used for exact reconciliation. */
 	turnId?: string;
 };
@@ -132,7 +137,10 @@ function addConversationLocalEcho(
 ): void {
 	queryClient.setQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey, (current = {}) => ({
 		...current,
-		[targetSessionId]: [...(current[targetSessionId] ?? []), echo],
+		[targetSessionId]: [
+			...(current[targetSessionId] ?? []).filter((existing) => existing.clientMessageId !== echo.clientMessageId),
+			echo,
+		],
 	}));
 }
 
@@ -141,15 +149,35 @@ function acceptConversationLocalEcho(
 	targetSessionId: string,
 	clientMessageId: string,
 	turnId: string,
+	delivery: DeliveryState,
 ): void {
 	queryClient.setQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey, (current = {}) => {
 		const echoes = current[targetSessionId];
 		if (!echoes) return current;
 		let changed = false;
 		const nextEchoes = echoes.map((echo) => {
-			if (echo.clientMessageId !== clientMessageId || echo.turnId === turnId) return echo;
+			if (echo.clientMessageId !== clientMessageId || (echo.turnId === turnId && echo.delivery === delivery)) return echo;
 			changed = true;
-			return { ...echo, turnId };
+			return { ...echo, turnId, delivery };
+		});
+		return changed ? { ...current, [targetSessionId]: nextEchoes } : current;
+	});
+}
+
+function updateConversationLocalEchoDelivery(
+	queryClient: QueryClient,
+	targetSessionId: string,
+	clientMessageId: string,
+	delivery: DeliveryState,
+): void {
+	queryClient.setQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey, (current = {}) => {
+		const echoes = current[targetSessionId];
+		if (!echoes) return current;
+		let changed = false;
+		const nextEchoes = echoes.map((echo) => {
+			if (echo.clientMessageId !== clientMessageId || echo.delivery === delivery) return echo;
+			changed = true;
+			return { ...echo, delivery };
 		});
 		return changed ? { ...current, [targetSessionId]: nextEchoes } : current;
 	});
@@ -417,6 +445,19 @@ export function useConversationCommands(sessionId: string | undefined) {
 				clientMessageId: variables.clientMessageId,
 				text: variables.input.text,
 				createdAt: new Date().toISOString(),
+				content: [
+					...(variables.input.attachments ?? []).map((attachment) => ({
+						type: "image",
+						mimeType: attachment.mimeType,
+					})),
+					...(variables.input.resources ?? []).map((resource) => ({
+						type: "resource",
+						mimeType: resource.mimeType,
+						uri: resource.uri,
+						name: resource.name,
+					})),
+				],
+				delivery: "sending",
 			});
 			queryClient.setQueryData<ConversationDispatchTrackingBySession>(
 				conversationDispatchTrackingQueryKey,
@@ -455,11 +496,13 @@ export function useConversationCommands(sessionId: string | undefined) {
 		onSuccess: (data, variables) => {
 			const acceptedTurnId = data?.turnId;
 			if (acceptedTurnId) {
+				const delivery: DeliveryState = data.state === "queued" ? "queued" : "accepted";
 				acceptConversationLocalEcho(
 					queryClient,
 					variables.targetSessionId,
 					variables.clientMessageId,
 					acceptedTurnId,
+					delivery,
 				);
 				if (data.state === "queued") {
 					// A queued row is already durable and did not start a new provider turn,
@@ -483,17 +526,19 @@ export function useConversationCommands(sessionId: string | undefined) {
 				}
 			} else {
 				// A duplicate response intentionally has no turn id: the daemon already
-				// delivered this idempotency key, so there is no exact new row this
-				// renderer can wait to observe. Release only this request's sentinel.
+				// delivered this idempotency key. Keep the optimistic row until the next
+				// snapshot acknowledges this exact client ID; dropping it here makes a
+				// successful retry visibly disappear during a slow refetch.
 				releaseConversationDispatch(
 					queryClient,
 					variables.targetSessionId,
 					variables.clientMessageId,
 				);
-				releaseConversationLocalEcho(
+				updateConversationLocalEchoDelivery(
 					queryClient,
 					variables.targetSessionId,
 					variables.clientMessageId,
+					"accepted",
 				);
 			}
 			// Delivery is already authoritative at this point. Refresh in the
@@ -502,17 +547,30 @@ export function useConversationCommands(sessionId: string | undefined) {
 			// accepted the message.
 			void refreshSessionInBackground(variables.targetSessionId);
 		},
-		onError: (_error, variables) => {
+		onError: (error, variables) => {
 			releaseConversationDispatch(
 				queryClient,
 				variables.targetSessionId,
 				variables.clientMessageId,
 			);
-			releaseConversationLocalEcho(
-				queryClient,
-				variables.targetSessionId,
-				variables.clientMessageId,
-			);
+			if (DEFINITIVE_CHAT_SEND_REJECTIONS.has(apiErrorCode(error) ?? "")) {
+				releaseConversationLocalEcho(
+					queryClient,
+					variables.targetSessionId,
+					variables.clientMessageId,
+				);
+			} else {
+				// A lost response can follow durable provider acceptance. Preserve the
+				// same visible row, state the uncertainty, and reconcile in the background
+				// rather than making the prompt vanish and later reappear.
+				updateConversationLocalEchoDelivery(
+					queryClient,
+					variables.targetSessionId,
+					variables.clientMessageId,
+					"uncertain",
+				);
+				void refreshSessionInBackground(variables.targetSessionId);
+			}
 		},
 	});
 

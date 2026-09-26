@@ -120,10 +120,27 @@ const STREAM_BASE_CHARACTERS_PER_SECOND = 58;
 const STREAM_TARGET_BACKLOG_CHARACTERS = 72;
 const STREAM_MAX_CHARACTERS_PER_SECOND = 720;
 const STREAM_MAX_FRAME_DELTA_MS = 100;
+const STREAM_MIN_UPDATE_INTERVAL_MS = 32;
 const STREAM_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 function streamGraphemes(text: string): string[] {
 	return Array.from(STREAM_GRAPHEME_SEGMENTER.segment(text), ({ segment }) => segment);
+}
+
+function appendStreamGraphemes(
+	previous: { id: string; text: string; graphemes: string[] } | undefined,
+	id: string,
+	text: string,
+): { id: string; text: string; graphemes: string[] } {
+	if (previous?.id === id && text.startsWith(previous.text) && previous.graphemes.length > 0) {
+		// Re-segment only the previous trailing grapheme plus the new suffix. A
+		// provider delta can extend a combining sequence/ZWJ emoji, so that tail is
+		// the smallest safe incremental seam.
+		const stable = previous.graphemes.slice(0, -1);
+		const tail = previous.graphemes.at(-1)! + text.slice(previous.text.length);
+		return { id, text, graphemes: [...stable, ...streamGraphemes(tail)] };
+	}
+	return { id, text, graphemes: streamGraphemes(text) };
 }
 
 function reconciledStreamPrefix(visibleText: string, targetGraphemes: string[]) {
@@ -148,12 +165,18 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 	// text. Keep that first durable burst visible; only later deltas need smoothing.
 	const [visibleText, setVisibleText] = useState(() => message.text);
 	const visibleRef = useRef(visibleText);
-	const targetGraphemes = useMemo(() => streamGraphemes(message.text), [message.text]);
+	const targetStateRef = useRef<{ id: string; text: string; graphemes: string[] }>();
+	const targetGraphemes = useMemo(() => {
+		const next = appendStreamGraphemes(targetStateRef.current, message.id, message.text);
+		targetStateRef.current = next;
+		return next.graphemes;
+	}, [message.id, message.text]);
 	const visibleGraphemeCountRef = useRef(targetGraphemes.length);
 	const targetGraphemesRef = useRef(targetGraphemes);
 	const messageIdRef = useRef(message.id);
 	const frameRef = useRef<number | undefined>(undefined);
 	const lastFrameAtRef = useRef<number | undefined>(undefined);
+	const lastPublishedAtRef = useRef<number | undefined>(undefined);
 	const fractionalCharactersRef = useRef(0);
 	const [reducedMotion, setReducedMotion] = useState(
 		() => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -172,11 +195,13 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 			frameRef.current = undefined;
 		}
 		lastFrameAtRef.current = undefined;
+		lastPublishedAtRef.current = undefined;
 		fractionalCharactersRef.current = 0;
 	}, []);
 
 	const scheduleDrain = useCallback(() => {
 		if (frameRef.current !== undefined) return;
+		if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
 
 		const tick = (now: number) => {
 			frameRef.current = undefined;
@@ -187,15 +212,12 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 				fractionalCharactersRef.current = 0;
 				return;
 			}
-			// A throttled/hidden tab can deliver one very late frame. In that case,
-			// render the current target once instead of replaying stale animation time.
+			// Do not turn a background-tab RAF pause into a full-response flush. Resume
+			// from the displayed grapheme boundary and let the ordinary drain catch up.
 			const elapsedSincePrevious = now - previousFrameAt;
 			if (elapsedSincePrevious > STREAM_MAX_FRAME_DELTA_MS) {
-				const latest = targetGraphemesRef.current.join("");
-				visibleRef.current = latest;
-				visibleGraphemeCountRef.current = targetGraphemesRef.current.length;
-				setVisibleText(latest);
-				cancelDrain();
+				fractionalCharactersRef.current = 0;
+				frameRef.current = window.requestAnimationFrame(tick);
 				return;
 			}
 
@@ -208,12 +230,17 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 			);
 			const elapsedMs = Math.min(STREAM_MAX_FRAME_DELTA_MS, Math.max(0, now - previousFrameAt));
 			fractionalCharactersRef.current += charactersPerSecond * elapsedMs / 1000;
+			if (now - (lastPublishedAtRef.current ?? now) < STREAM_MIN_UPDATE_INTERVAL_MS) {
+				frameRef.current = window.requestAnimationFrame(tick);
+				return;
+			}
 			const count = Math.floor(fractionalCharactersRef.current);
 			if (count < 1) {
 				frameRef.current = window.requestAnimationFrame(tick);
 				return;
 			}
 			fractionalCharactersRef.current -= count;
+			lastPublishedAtRef.current = now;
 			const currentCount = visibleGraphemeCountRef.current;
 			const target = targetGraphemesRef.current;
 			const nextCount = Math.min(target.length, currentCount + count);
@@ -227,9 +254,24 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 		};
 
 		lastFrameAtRef.current = performance.now();
+		lastPublishedAtRef.current = lastFrameAtRef.current;
 		fractionalCharactersRef.current = 0;
 		frameRef.current = window.requestAnimationFrame(tick);
 	}, [cancelDrain]);
+
+	useEffect(() => {
+		const resumeVisibleStream = () => {
+			if (document.visibilityState === "hidden") {
+				cancelDrain();
+				return;
+			}
+			if (message.streaming && visibleGraphemeCountRef.current < targetGraphemesRef.current.length) {
+				scheduleDrain();
+			}
+		};
+		document.addEventListener("visibilitychange", resumeVisibleStream);
+		return () => document.removeEventListener("visibilitychange", resumeVisibleStream);
+	}, [cancelDrain, message.streaming, scheduleDrain]);
 
 	useEffect(() => {
 		if (message.id !== messageIdRef.current) {
@@ -440,6 +482,24 @@ function StagedAttachmentItems({
 	);
 }
 
+function MessageContentSummaryItems({ content }: { content: ConversationMessage["content"] }) {
+	if (!content?.length) return null;
+	return (
+		<ul aria-label="Attached content" className="flex max-w-full flex-wrap gap-2">
+			{content.map((item, index) => (
+				<li
+					key={`${item.type}:${item.uri ?? item.name ?? index}`}
+					title={item.uri}
+					className="flex max-w-full items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground"
+				>
+					<FileIcon aria-hidden="true" className="size-3.5 shrink-0" />
+					<span className="truncate">{item.name ?? (item.type === "image" ? "Image attachment" : item.mimeType ?? "Attached content")}</span>
+				</li>
+			))}
+		</ul>
+	);
+}
+
 /** Collapse the home directory so a long absolute path does not eat the row. */
 function shortenPaths(text: string): string {
 	return text.replace(/\/(?:Users|home)\/[^/\s]+/g, "~");
@@ -448,8 +508,8 @@ function shortenPaths(text: string): string {
 function formatDuration(ms: number): string {
 	// Status labels are intentionally discrete: start at one second and advance
 	// in whole seconds so the live and settled rows never show fractional time.
-	if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}s`;
-	return `${Math.round(ms / 60_000)}m`;
+	if (ms < 60_000) return `${Math.max(1, Math.floor(ms / 1000))}s`;
+	return `${Math.max(1, Math.floor(ms / 60_000))}m`;
 }
 
 export function ResponseSpinner() {
@@ -576,6 +636,9 @@ export function HumanMessage({
 }) {
 	const visibleMessageText = humanVisibleText(message.text);
 	const { body, attachments } = stagedAttachmentParts(visibleMessageText);
+	const contentWithoutPathImages = message.content?.filter(
+		(item) => item.type !== "image" || attachments.length === 0,
+	);
 	return (
 		<div className="group/message flex flex-col items-end gap-1">
 			{/* A queued message reads as not-yet-sent rather than as sent-and-ignored:
@@ -620,6 +683,9 @@ export function HumanMessage({
 						ariaLabel="Attached files"
 						className={cn(body && "mt-2")}
 					/>
+					{contentWithoutPathImages?.length ? (
+						<MessageContentSummaryItems content={contentWithoutPathImages} />
+					) : null}
 				</div>
 			)}
 			{editing ? null : (
@@ -668,7 +734,8 @@ export function HumanMessage({
 					<span>Queued · sends when the agent finishes</span>
 				</div>
 			) : null}
-			{message.delivery && message.delivery !== "accepted" && message.delivery !== "sending" ? (
+			{message.delivery && message.delivery !== "accepted" && message.delivery !== "sending" &&
+				!(queued && message.delivery === "queued") ? (
 				<DeliveryNote state={message.delivery} />
 			) : null}
 		</div>
@@ -803,7 +870,7 @@ export function AssistantMessage({
 	const showLiveStatus = liveStatus && (live || (renderingStreaming && (showCopy || Boolean(onRollback))));
 	const showActions = !live && !renderingStreaming && (showCopy || Boolean(onRollback) || hasDuration);
 	return (
-		<div className="group/message relative">
+		<div className="group/message relative" data-chat-streaming-output={renderingStreaming ? "" : undefined}>
 			<ChatMarkdown text={visibleText} streaming={renderingStreaming} />
 			{showLiveStatus ? <LiveResponseStatus /> : null}
 			{showActions ? (

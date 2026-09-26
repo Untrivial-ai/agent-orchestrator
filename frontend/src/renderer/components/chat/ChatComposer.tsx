@@ -96,23 +96,7 @@ import {
 } from "../../lib/chat-drafts";
 import { attachmentURL, IMAGE_ATTACHMENT_PATH } from "./messageAttachments";
 import { setChatDraftBoundary } from "../../lib/chat-draft-boundary";
-
-// These responses precede AppendUserMessage. Provider/transport errors can
-// follow durable acceptance and must keep the original delivery ID for recovery.
-const DEFINITIVE_SEND_REJECTIONS = new Set([
-	"INVALID_BODY",
-	"CHAT_MESSAGE_EMPTY",
-	"INVALID_RESOURCE",
-	"UNSUPPORTED_ATTACHMENT_TYPE",
-	"INVALID_ATTACHMENT_DATA",
-	"ATTACHMENT_TOO_LARGE",
-	"TOO_MANY_ATTACHMENTS",
-	"ATTACHMENTS_TOO_LARGE",
-	"SESSION_NOT_FOUND",
-	"SESSION_MODE_MISMATCH",
-	"CHAT_CONTROLLER_NOT_READY",
-	"CHAT_INTERFACE_TRANSITION",
-]);
+import { DEFINITIVE_CHAT_SEND_REJECTIONS } from "../../lib/chat-send-errors";
 
 // Native image blocks are persisted with the chat turn and sent to the provider.
 // Larger attachments still reach the agent through their staged workspace paths.
@@ -1238,7 +1222,7 @@ export const ChatComposer = memo(function ChatComposer({
 			// was lost. Only an initial, definitively unaccepted send can be edited.
 			if (
 				delivery.kind === "send" && !prepared.recovered &&
-				DEFINITIVE_SEND_REJECTIONS.has(apiErrorCode(error) ?? "")
+				DEFINITIVE_CHAT_SEND_REJECTIONS.has(apiErrorCode(error) ?? "")
 			) {
 				const cleared = clearRejectedChatComposerDelivery(
 					draftScope, delivery.clientMessageId, delivery.revision,

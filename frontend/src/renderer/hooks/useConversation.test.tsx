@@ -305,9 +305,26 @@ describe("accepted conversation sends", () => {
 			expect(result.current.pendingAcceptedTurnId).toBeUndefined();
 			expect(result.current.busy).toBe(false);
 		});
+		expect(result.current.localEchos).toMatchObject([
+			{ text: "this will fail", delivery: "uncertain" },
+		]);
 	});
 
-	it("clears an in-flight sentinel when the daemon confirms a duplicate without a turn id", async () => {
+	it("removes the optimistic row only for a definitive pre-delivery rejection", async () => {
+		postMock.mockResolvedValue({ data: undefined, error: { code: "CHAT_CONTROLLER_NOT_READY" } });
+		apiErrorCodeMock.mockReturnValue("CHAT_CONTROLLER_NOT_READY");
+		const { result } = renderHook(() => useConversationCommands("ao-definitive-send-rejection"), {
+			wrapper,
+		});
+
+		await act(async () => {
+			await result.current.send("rejected before delivery").catch(() => {});
+		});
+
+		expect(result.current.localEchos).toEqual([]);
+	});
+
+	it("keeps a duplicate send visible until the durable snapshot acknowledges its client ID", async () => {
 		postMock.mockResolvedValue({
 			data: { duplicate: true },
 			error: undefined,
@@ -323,7 +340,7 @@ describe("accepted conversation sends", () => {
 		});
 
 		await act(async () => {
-			await firstMount.result.current.send("idempotent retry");
+			await firstMount.result.current.send({ text: "idempotent retry", clientMessageId: "duplicate-client-id" });
 		});
 		firstMount.unmount();
 		const secondMount = renderHook(() => useConversationCommands("ao-duplicate-send"), {
@@ -332,6 +349,69 @@ describe("accepted conversation sends", () => {
 
 		expect(secondMount.result.current.pendingAcceptedTurnId).toBeUndefined();
 		expect(secondMount.result.current.busy).toBe(false);
+		expect(secondMount.result.current.localEchos).toMatchObject([
+			{ text: "idempotent retry", clientMessageId: "duplicate-client-id", delivery: "accepted" },
+		]);
+		act(() => secondMount.result.current.acknowledgeLocalEcho("duplicate-client-id"));
+		await waitFor(() => expect(secondMount.result.current.localEchos).toEqual([]));
+	});
+
+	it("keeps an ambiguous send visible as uncertain and refreshes for reconciliation", async () => {
+		postMock.mockResolvedValue({ data: undefined, error: { code: "CHAT_SEND_FAILED" } });
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+		const HookWrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useConversationCommands("ao-send-uncertain"), {
+			wrapper: HookWrapper,
+		});
+
+		await act(async () => {
+			await result.current.send({ text: "keep this visible", clientMessageId: "uncertain-send" }).catch(() => {});
+		});
+
+		expect(result.current.localEchos).toMatchObject([
+			{ clientMessageId: "uncertain-send", delivery: "uncertain" },
+		]);
+		expect(invalidate).toHaveBeenCalled();
+	});
+
+	it("retains content summaries and queued state on the optimistic echo", async () => {
+		const response = deferred<{ data: { turnId: string; state: "queued" }; error: undefined }>();
+		postMock.mockReturnValue(response.promise);
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+		});
+		const HookWrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { result } = renderHook(() => useConversationCommands("ao-queued-echo"), {
+			wrapper: HookWrapper,
+		});
+
+		let send!: Promise<unknown>;
+		act(() => {
+			send = result.current.send({
+				text: "inspect these",
+				clientMessageId: "queued-client-id",
+				attachments: [{ mimeType: "image/png", data: "aGVsbG8=" }],
+				resources: [{ name: "notes.txt", uri: "file:///notes.txt", mimeType: "text/plain" }],
+			});
+		});
+		await waitFor(() => expect(result.current.localEchos).toHaveLength(1));
+		expect(result.current.localEchos[0]?.content).toEqual([
+			{ type: "image", mimeType: "image/png" },
+			{ type: "resource", mimeType: "text/plain", uri: "file:///notes.txt", name: "notes.txt" },
+		]);
+
+		response.resolve({ data: { turnId: "queued-real-turn", state: "queued" }, error: undefined });
+		await act(async () => { await send; });
+		expect(result.current.localEchos).toMatchObject([
+			{ turnId: "queued-real-turn", delivery: "queued" },
+		]);
 	});
 
 	it("retains an accepted turn when its follow-up conversation refresh fails", async () => {
