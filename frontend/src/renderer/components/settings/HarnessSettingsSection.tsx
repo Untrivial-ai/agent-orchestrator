@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Download, LoaderCircle, LogIn, Search, TriangleAlert, X } from "lucide-react";
+import { Check, Copy, Download, Info, LoaderCircle, LogIn, Search, TriangleAlert, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../../api/schema";
@@ -14,6 +14,11 @@ import { agentModelsQueryPrefix } from "../../hooks/useAgentModelsQuery";
 import { closeShellTerminal, shellTerminalsQueryKey } from "../../hooks/useShellTerminals";
 import type { TerminalSessionState } from "../../hooks/useTerminalSession";
 import { agentLabel, AGENT_OPTIONS, type AgentId } from "../../lib/agent-options";
+import { CLOUD_AGENT_PROVIDERS } from "../../lib/cloud-agents";
+import { useCloudOrg } from "../../hooks/useCloudOrg";
+import { useCloudCp } from "../../hooks/useCloudCp";
+import { providerConnectionsQueryKey, useProviderConnections } from "../../hooks/useProviderConnections";
+import { useCredentialDialogStore } from "../../stores/credential-dialog-store";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../../lib/api-client";
 import { aoBridge } from "../../lib/bridge";
 import { cn } from "../../lib/utils";
@@ -122,6 +127,17 @@ export function HarnessSettingsSection({
 	const jobs = useQuery({ queryKey: installJobsQueryKey, queryFn: fetchInstallJobs, retry: false });
 	const authPlans = useAgentAuthPlans();
 	const startAgentAuth = useStartAgentAuth();
+	// Cloud provider connections: surface each cloud-capable harness's cloud
+	// auth state right here so a developer authorizes once, in one place, for
+	// both local and cloud. Gated on being signed into a cloud org.
+	const { org: cloudOrg } = useCloudOrg();
+	const { baseUrl: cloudBaseUrl } = useCloudCp();
+	const openCloudCredentialDialog = useCredentialDialogStore((state) => state.setOpen);
+	const cloudConnections = useProviderConnections(cloudOrg?.id);
+	const cloudConnByProvider = useMemo(
+		() => new Map((cloudConnections.data ?? []).map((connection) => [connection.provider, connection])),
+		[cloudConnections.data],
+	);
 	const [search, setSearch] = useState("");
 	const [authStates, setAuthStates] = useState<AgentAuthStates>({});
 	const [actionErrors, setActionErrors] = useState<Partial<Record<AgentId, string>>>({});
@@ -366,6 +382,44 @@ export function HarnessSettingsSection({
 		}
 	};
 
+	// Unified login: one action authorizes the harness for BOTH local and cloud
+	// sessions. When signed into a cloud org, capture a portable credential once,
+	// persist it locally (claude setup-token) and push it to the caller's personal
+	// cloud connection (/me, no admin). Otherwise fall back to local-only login.
+	const startUnifiedAuth = async (agentId: AgentId) => {
+		const cloudCapable = Boolean(cloudOrg?.id) && (CLOUD_AGENT_PROVIDERS as readonly string[]).includes(agentId);
+		if (!cloudCapable) {
+			await startAuth(agentId);
+			return;
+		}
+		// cursor and opencode have no browser capture (cursor's session and
+		// opencode's sqlite login are not portable), so their cloud credential is a
+		// pasted provider API key -- handled by the cloud credential dialog.
+		if (agentId === "cursor" || agentId === "opencode") {
+			openCloudCredentialDialog(true, agentId);
+			return;
+		}
+		if (authStartPendingRef.current) return;
+		authStartPendingRef.current = true;
+		updateAuthState(agentId, { pending: true, error: null });
+		try {
+			await aoBridge.cloud.connectProviderAuth({
+				baseUrl: cloudBaseUrl,
+				orgId: cloudOrg!.id,
+				provider: agentId,
+				pushTarget: "me",
+				persistLocalClaudeToken: agentId === "claude-code",
+			});
+			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey(cloudOrg!.id) });
+			void checkAuth(agentId, { fresh: true });
+		} catch (error) {
+			updateAuthState(agentId, { error: error instanceof Error ? error.message : t("settings.harness.authFailed") });
+		} finally {
+			authStartPendingRef.current = false;
+			updateAuthState(agentId, { pending: false });
+		}
+	};
+
 	const checkAuth = useCallback(async (
 		agentId: AgentId,
 		{ fresh = false }: { fresh?: boolean } = {},
@@ -502,6 +556,15 @@ export function HarnessSettingsSection({
 						const showInstallationStatus = authStatus === "authorized"
 							|| authStatus === "not_applicable"
 							|| (!authPlans.isPending && (!authPlan || authPlan.action === "instructions"));
+						// Cloud-capable harnesses show paired Local/Cloud status pills. Real gate:
+						// cloudOrg?.id && CLOUD_AGENT_PROVIDERS.includes(agentId). PREVIEW: force the
+						// three cloud harnesses so the design is visible without a live cloud org.
+						const isCloudCapable = Boolean(cloudOrg?.id) && (CLOUD_AGENT_PROVIDERS as readonly string[]).includes(agentId);
+						const isCloudHarness = agentId === "claude-code" || agentId === "codex" || agentId === "cursor" || agentId === "opencode" || isCloudCapable;
+						// One login covers BOTH local and cloud sessions: authorized when the
+						// local harness is authenticated OR the cloud connection is valid.
+						const unifiedAuthorized = authStatus === "authorized"
+							|| cloudConnByProvider.get(agentId)?.validationState === "valid";
 						const rowHasError = failed || Boolean(authState?.error);
 						const rowAuthWorkflow = authWorkflow?.agentId === agentId ? authWorkflow : null;
 						const hasDiagnostics = Boolean(
@@ -563,20 +626,57 @@ export function HarnessSettingsSection({
 								</p>
 							</div>
 
-			{active ? (
+			{isCloudHarness ? (
+								<div className="flex shrink-0 items-center gap-2">
+									{unifiedAuthorized ? (
+										<Button
+											type="button"
+											size="none"
+											variant="ghost"
+											className={cn(MENU_TRIGGER_CHROME, "h-8! min-h-8! shrink-0 rounded-md! border-0! bg-[var(--color-bg-settings-trigger)] px-3! text-xs leading-4")}
+											aria-label={t("settings.harness.authorized")}
+											disabled
+										>
+											{t("settings.harness.authorized")}
+										</Button>
+									) : (
+										<Button data-harness-primary-action="" size="sm" disabled={authState?.pending} onClick={() => void startUnifiedAuth(agentId)}>
+											{authState?.pending ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : null}
+											{authState?.pending ? t("settings.harness.loggingIn") : t("settings.harness.login")}
+										</Button>
+									)}
+									<span
+										className="inline-flex size-6 shrink-0 cursor-help items-center justify-center rounded-full text-settings-muted transition hover:bg-interactive-hover hover:text-settings-label"
+										role="img"
+										tabIndex={0}
+										aria-label={t("settings.harness.unifiedAuthHint", { defaultValue: "One login for both local and cloud sessions. Your credentials are used on this machine and securely copied to your cloud sandboxes." })}
+										title={t("settings.harness.unifiedAuthHint", { defaultValue: "One login for both local and cloud sessions. Your credentials are used on this machine and securely copied to your cloud sandboxes." })}
+									>
+										<Info className="size-4" aria-hidden="true" />
+									</span>
+								</div>
+							) : active ? (
 				<span className="inline-flex items-center gap-1.5 text-xs text-settings-muted" role="status"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" />{job?.status === "installing" ? t("settings.harness.installing") : t("settings.harness.verifying")}</span>
 							) : isInstalled ? (
 								<div className="flex shrink-0 items-center gap-2">
-								{showInstallationStatus ? <Button
-					type="button"
-					size="none"
-					variant="ghost"
-					className={cn(MENU_TRIGGER_CHROME, "h-8! min-h-8! shrink-0 rounded-md! border-0! bg-[var(--color-bg-settings-trigger)] px-3! text-xs leading-4")}
-					aria-label={installationStatusLabel}
-					disabled
-								>
-									{installationStatusLabel}
-								</Button> : null}
+								{showInstallationStatus ? (
+									isCloudHarness && authStatus === "authorized" ? (
+										<span className="inline-flex h-8 shrink-0 items-center rounded-md border border-[color:var(--color-success)] bg-transparent px-3 text-xs font-medium leading-4 text-[color:var(--color-success)]">
+											{`Local: ${installationStatusLabel}`}
+										</span>
+									) : (
+										<Button
+											type="button"
+											size="none"
+											variant="ghost"
+											className={cn(MENU_TRIGGER_CHROME, "h-8! min-h-8! shrink-0 rounded-md! border-0! bg-[var(--color-bg-settings-trigger)] px-3! text-xs leading-4")}
+											aria-label={installationStatusLabel}
+											disabled
+										>
+											{isCloudHarness ? `Local: ${installationStatusLabel}` : installationStatusLabel}
+										</Button>
+									)
+								) : null}
 								{authControls}
 								</div>
 							) : failed ? (

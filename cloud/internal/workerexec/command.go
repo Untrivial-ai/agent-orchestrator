@@ -140,7 +140,16 @@ func (b HarnessBuilder) BuildInteractive(
 		agentruntime.SessionMode(launch.Mode),
 	)
 	var argv []string
-	if identity := b.interactiveRestoreIdentity(launch); identity != "" {
+	identity := b.interactiveRestoreIdentity(launch)
+	if launch.Harness == "opencode" {
+		// opencode's launch logic lives in the cloud module (self-contained), so
+		// the worker builds its argv directly rather than through agentruntime.
+		if identity != "" {
+			argv = openCodeRestoreArgs(binary, launch.SessionID, providerArgs, permission, launch.Prompt, identity)
+		} else {
+			argv = openCodeLaunchArgs(binary, launch.SessionID, providerArgs, permission, launch.Prompt)
+		}
+	} else if identity != "" {
 		var ok bool
 		argv, ok, err = agentruntime.BuildRestoreCommand(agentruntime.RestoreConfig{
 			Harness:          harness,
@@ -198,6 +207,21 @@ func (b HarnessBuilder) BuildInteractive(
 				command.Cleanup()
 			}
 			return Command{}, err
+		}
+	}
+	if launch.Harness == "opencode" {
+		// opencode has no system-prompt flag; the argv (built above) selects the AO
+		// agent name, and the matching OPENCODE_CONFIG document carries the prompt.
+		// Write it beside the prompt file and export the env var.
+		configPath, err := writeOpenCodeConfig(systemPromptFile, permission, launch.SessionID)
+		if err != nil {
+			if command.Cleanup != nil {
+				command.Cleanup()
+			}
+			return Command{}, err
+		}
+		if configPath != "" {
+			command.Env["OPENCODE_CONFIG"] = configPath
 		}
 	}
 	return command, nil
@@ -294,53 +318,28 @@ func (b HarnessBuilder) Build(
 	return command, nil
 }
 
+// configureCredential injects a resolved credential into the launch command by
+// dispatching to the harness's own business logic (see harness_credentials.go).
 func (b HarnessBuilder) configureCredential(
 	command *Command,
 	harness string,
 	credential worker.CredentialResponse,
 ) error {
-	switch harness {
-	case "claude-code":
-		switch credential.CredentialType {
-		case "api_key":
-			command.Env["ANTHROPIC_API_KEY"] = credential.Secret
-		case "oauth_token":
-			command.Env["CLAUDE_CODE_OAUTH_TOKEN"] = credential.Secret
-		default:
-			return errors.New("unsupported Claude Code credential type")
-		}
-	case "codex":
-		switch credential.CredentialType {
-		case "api_key", "access_token", "auth_json":
-			return b.configureCodexCredential(command, credential)
-		default:
-			return errors.New("unsupported Codex credential type")
-		}
-	case "cursor":
-		if credential.CredentialType != "api_key" {
-			return errors.New("unsupported Cursor credential type")
-		}
-		command.Env["CURSOR_API_KEY"] = credential.Secret
-	default:
+	h, ok := harnessCredentialFor(harness)
+	if !ok {
 		return fmt.Errorf("unsupported coding-agent harness %q", harness)
 	}
-	return nil
+	return h.configure(b, command, credential)
 }
 
 func (b HarnessBuilder) binary(harness string) string {
 	if binary := strings.TrimSpace(b.Binaries[harness]); binary != "" {
 		return binary
 	}
-	switch harness {
-	case "claude-code":
-		return "claude"
-	case "codex":
-		return "codex"
-	case "cursor":
-		return "cursor-agent"
-	default:
-		return harness
+	if h, ok := harnessCredentialFor(harness); ok {
+		return h.defaultBinary()
 	}
+	return harness
 }
 
 func (b HarnessBuilder) prepareClaudeCloudExperience(command *Command, workspace string) error {

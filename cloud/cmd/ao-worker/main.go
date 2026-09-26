@@ -675,15 +675,12 @@ func anonymousCheckoutEnabled() bool {
 }
 
 func verifyHarnessAvailable(harness string) error {
-	var binary string
-	switch harness {
-	case "claude-code":
-		binary = "claude"
-	case "codex":
-		binary = "codex"
-	case "cursor":
-		binary = "cursor-agent"
-	default:
+	// Derive the expected binary from the harness registry (the same source
+	// BuildInteractive launches from) so every registered harness is gated
+	// consistently. A hardcoded switch here silently skipped opencode, leaving its
+	// sessions with no agent terminal (no TUI).
+	binary, ok := workerexec.SupportedHarness(harness)
+	if !ok {
 		return fmt.Errorf("unsupported coding-agent harness %q", harness)
 	}
 	if _, err := exec.LookPath(binary); err != nil {

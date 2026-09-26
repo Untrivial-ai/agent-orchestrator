@@ -101,7 +101,14 @@ var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[[:alpha:]]`)
 
 var commandSpecs = map[string]commandSpec{
 	"aider":       {args: []string{"--no-check-update", "--no-git", "--no-gitignore", "--no-analytics", "--list-models", "."}, parser: parseIDLines},
-	"opencode":    {args: []string{"--pure", "models"}, parser: parseIDLines},
+	// `models` alone, never `--pure models`: `--pure` (skip external plugins) is
+	// a global flag whose acceptance varies across opencode builds — a binary that
+	// does not take it globally aborts with "Unrecognized flag: --pure in command
+	// opencode" and empties the picker. The `models` subcommand is the stable
+	// contract every opencode ships; dropping the flag lists an identical catalog
+	// (and still honors the provider-presence env used for cloud scoping) without
+	// betting on a flag that can be rejected.
+	"opencode":    {args: []string{"models"}, parser: parseIDLines},
 	"grok":        {args: []string{"models"}, parser: parseGrokModels},
 	"cursor":      {args: []string{"models"}, parser: parseCursorModels},
 	"agy":         {args: []string{"models"}, parser: parseAgyModels},
@@ -232,7 +239,45 @@ func (d Discoverer) Discover(ctx context.Context, request ports.AgentModelDiscov
 		// Older Cline releases may not expose ACP config options. Fall back to
 		// the configured provider selections already stored by Cline.
 	}
+	if request.AgentID == "opencode" && request.CredentialType != "" {
+		return Discover(ctx, request.AgentID, request.Binary, request.WorkingDir,
+			withOpenCodeCredentialPresence(request.Env, request.CredentialType))
+	}
 	return Discover(ctx, request.AgentID, request.Binary, request.WorkingDir, request.Env)
+}
+
+// opencodeCredentialEnv maps an opencode cloud credential type to the env var
+// whose presence makes `opencode models` include that provider's catalog.
+// opencode lists a provider's models when the variable is SET, without
+// validating it, so a placeholder surfaces exactly what a cloud session holding
+// the real credential can run — without the secret ever leaving the control
+// plane.
+var opencodeCredentialEnv = map[string]string{
+	"opencode_api_key":   "OPENCODE_API_KEY",
+	"anthropic_api_key":  "ANTHROPIC_API_KEY",
+	"openai_api_key":     "OPENAI_API_KEY",
+	"openrouter_api_key": "OPENROUTER_API_KEY",
+}
+
+// modelDiscoveryPresenceValue is a non-secret placeholder written to a provider
+// key solely so opencode includes that provider when listing models. It is never
+// a real credential and never leaves the local, read-only `opencode models` run.
+const modelDiscoveryPresenceValue = "ao-model-discovery-presence"
+
+// withOpenCodeCredentialPresence returns env with the credential type's provider
+// key marked present, copied so the caller's map is left untouched. An unknown
+// credential type is a no-op.
+func withOpenCodeCredentialPresence(env map[string]string, credentialType string) map[string]string {
+	envVar, ok := opencodeCredentialEnv[credentialType]
+	if !ok {
+		return env
+	}
+	next := make(map[string]string, len(env)+1)
+	for key, value := range env {
+		next[key] = value
+	}
+	next[envVar] = modelDiscoveryPresenceValue
+	return next
 }
 
 // claudeCodeModels is the static Claude Code model catalog. It mirrors the
@@ -402,7 +447,7 @@ func Discover(ctx context.Context, agentID, binary, workingDir string, env map[s
 	cmd := modelCommand(runCtx, binary, spec.args, workingDir, env)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return base, modelDiscoveryError(runCtx, agentID, err)
+		return base, modelDiscoveryError(runCtx, agentID, err, output)
 	}
 	models, err := spec.parser(output)
 	if err != nil {
@@ -636,14 +681,41 @@ func mergedEnvironment(base []string, overrides map[string]string) []string {
 	return out
 }
 
-func modelDiscoveryError(runCtx context.Context, agentID string, commandErr error) error {
+func modelDiscoveryError(runCtx context.Context, agentID string, commandErr error, output []byte) error {
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("%s model discovery timed out after %s", agentID, commandTimeout)
 	}
 	if errors.Is(runCtx.Err(), context.Canceled) {
 		return fmt.Errorf("%s model discovery canceled: %w", agentID, context.Canceled)
 	}
+	// A CLI's own stderr is the only place it explains a non-zero exit (a bad
+	// config, a missing provider, a parse failure). Discarding it turns every
+	// failure into an opaque "exit status 1"; surfacing a bounded tail makes the
+	// cause visible in the cached RefreshError and the logs.
+	if detail := discoveryErrorDetail(output); detail != "" {
+		return fmt.Errorf("%s model discovery: %w: %s", agentID, commandErr, detail)
+	}
 	return fmt.Errorf("%s model discovery: %w", agentID, commandErr)
+}
+
+// discoveryErrorDetailMax bounds how much command output a discovery error
+// carries — enough to show the CLI's explanation without letting a chatty tool
+// flood the error string or the logs.
+const discoveryErrorDetailMax = 500
+
+// discoveryErrorDetail returns a bounded, single-line, ANSI-stripped tail of a
+// failed model command's combined output. The tail is where a CLI's error
+// summary lands after any progress noise; whitespace is collapsed so the result
+// is a single log-friendly line.
+func discoveryErrorDetail(output []byte) string {
+	cleaned := strings.Join(strings.Fields(ansiPattern.ReplaceAllString(string(output), "")), " ")
+	if cleaned == "" {
+		return ""
+	}
+	if runes := []rune(cleaned); len(runes) > discoveryErrorDetailMax {
+		cleaned = "…" + string(runes[len(runes)-discoveryErrorDetailMax:])
+	}
+	return cleaned
 }
 
 // BinaryVersion returns a short non-sensitive executable-metadata fingerprint

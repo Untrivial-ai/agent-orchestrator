@@ -398,7 +398,29 @@ func (s *Service) modelCatalogInputsChanged(ctx context.Context, agentID, projec
 	return s.discoverer.CatalogFingerprint(ctx, request) != cachedFingerprint
 }
 
+// credentialScopePrefix marks a model-catalog scope that is not a project but a
+// cloud credential kind. A cloud session has no local project, yet its picker
+// must show the models the pushed credential can run; encoding the credential
+// type into the scope caches each provider's catalog separately with no schema
+// change. '@' and ':' cannot appear in a real project ID (projectIDPattern), so
+// the project and credential namespaces never collide.
+const credentialScopePrefix = "@cred:"
+
+// credentialTypeFromScope returns the credential type a scope carries, if any.
+func credentialTypeFromScope(scope string) (string, bool) {
+	rest, ok := strings.CutPrefix(scope, credentialScopePrefix)
+	if !ok || strings.TrimSpace(rest) == "" {
+		return "", false
+	}
+	return rest, true
+}
+
 func (s *Service) modelCatalogScope(ctx context.Context, projectID string) (string, error) {
+	// A credential scope has no backing project; keep it verbatim so its catalog
+	// caches under its own key instead of collapsing to the device-global scope.
+	if _, ok := credentialTypeFromScope(projectID); ok {
+		return projectID, nil
+	}
 	if strings.TrimSpace(projectID) == "" || s.projects == nil {
 		return "", nil
 	}
@@ -414,6 +436,13 @@ func (s *Service) modelCatalogScope(ctx context.Context, projectID string) (stri
 
 func (s *Service) modelDiscoveryRequest(ctx context.Context, agentID, projectID, binary string) (ports.AgentModelDiscoveryRequest, error) {
 	request := ports.AgentModelDiscoveryRequest{AgentID: agentID, Binary: binary}
+	// Credential-scoped discovery reflects a cloud session's pushed credential,
+	// not a local project: leave WorkingDir/Env empty and let the adapter unlock
+	// that provider's models from the credential type alone.
+	if credentialType, ok := credentialTypeFromScope(projectID); ok {
+		request.CredentialType = credentialType
+		return request, nil
+	}
 	if strings.TrimSpace(projectID) == "" || s.projects == nil {
 		return request, nil
 	}

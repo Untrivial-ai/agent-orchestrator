@@ -56,9 +56,61 @@ func TestCommandDiscoveryTimeoutAllowsSlowModelRegistries(t *testing.T) {
 func TestModelDiscoveryErrorExplainsTimeout(t *testing.T) {
 	deadlineCtx, deadlineCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer deadlineCancel()
-	err := modelDiscoveryError(deadlineCtx, "kilocode", errors.New("signal: killed"))
+	err := modelDiscoveryError(deadlineCtx, "kilocode", errors.New("signal: killed"), nil)
 	if !strings.Contains(err.Error(), "kilocode model discovery timed out after 20s") {
 		t.Fatalf("error = %q, want clear timeout", err)
+	}
+}
+
+func TestModelDiscoveryErrorSurfacesCommandOutput(t *testing.T) {
+	// A live-exit failure must carry the CLI's own stderr so an "exit status 1"
+	// is diagnosable; ANSI is stripped and whitespace collapsed to one line.
+	err := modelDiscoveryError(context.Background(), "opencode", errors.New("exit status 1"),
+		[]byte("\x1b[31mError:\x1b[0m Configuration is invalid at\n  /x/opencode.json: bad file reference\n"))
+	msg := err.Error()
+	if !strings.Contains(msg, "opencode model discovery: exit status 1") {
+		t.Fatalf("error = %q, want wrapped exit status", err)
+	}
+	if !strings.Contains(msg, "Configuration is invalid at /x/opencode.json: bad file reference") {
+		t.Fatalf("error = %q, want single-line command output", err)
+	}
+	if strings.Contains(msg, "\x1b[") {
+		t.Fatalf("error = %q, want ANSI stripped", err)
+	}
+}
+
+func TestOpenCodeCredentialPresenceUnlocksProvider(t *testing.T) {
+	base := map[string]string{"EXISTING": "1"}
+	got := withOpenCodeCredentialPresence(base, "anthropic_api_key")
+	if got["ANTHROPIC_API_KEY"] != modelDiscoveryPresenceValue {
+		t.Fatalf("ANTHROPIC_API_KEY = %q, want presence placeholder", got["ANTHROPIC_API_KEY"])
+	}
+	if got["EXISTING"] != "1" {
+		t.Fatalf("existing env not preserved: %v", got)
+	}
+	// The caller's map must not be mutated (it may be reused/cached).
+	if _, leaked := base["ANTHROPIC_API_KEY"]; leaked {
+		t.Fatalf("input env was mutated: %v", base)
+	}
+}
+
+func TestOpenCodeCredentialPresenceUnknownTypeIsNoop(t *testing.T) {
+	base := map[string]string{"EXISTING": "1"}
+	got := withOpenCodeCredentialPresence(base, "not_a_provider")
+	if len(got) != 1 || got["EXISTING"] != "1" {
+		t.Fatalf("unknown credential type must be a no-op, got %v", got)
+	}
+}
+
+func TestModelDiscoveryErrorTailBounded(t *testing.T) {
+	err := modelDiscoveryError(context.Background(), "opencode", errors.New("exit status 1"),
+		[]byte(strings.Repeat("x", discoveryErrorDetailMax*3)))
+	// The detail is the wrapped error plus a bounded, ellipsis-prefixed tail.
+	if detail := discoveryErrorDetail([]byte(strings.Repeat("x", discoveryErrorDetailMax*3))); len([]rune(detail)) != discoveryErrorDetailMax+1 {
+		t.Fatalf("detail rune length = %d, want %d", len([]rune(detail)), discoveryErrorDetailMax+1)
+	}
+	if !strings.Contains(err.Error(), "…") {
+		t.Fatalf("error = %q, want truncation ellipsis", err)
 	}
 }
 
@@ -165,10 +217,13 @@ func TestDiscoveryWithoutASignInCheckNeverProbes(t *testing.T) {
 	}
 }
 
-func TestOpenCodeDiscoveryUsesPureMode(t *testing.T) {
+func TestOpenCodeDiscoveryUsesStableModelsCommand(t *testing.T) {
+	// Must be the bare `models` subcommand. `--pure` is a global flag some
+	// opencode builds reject ("Unrecognized flag: --pure"), which would empty the
+	// picker; the stable contract is `opencode models` with no rejectable flag.
 	spec := commandSpecs["opencode"]
-	if len(spec.args) != 2 || spec.args[0] != "--pure" || spec.args[1] != "models" {
-		t.Fatalf("opencode discovery args = %q, want [--pure models]", spec.args)
+	if len(spec.args) != 1 || spec.args[0] != "models" {
+		t.Fatalf("opencode discovery args = %q, want [models]", spec.args)
 	}
 }
 
