@@ -3453,7 +3453,7 @@ const TurnGroup = memo(function TurnGroup({
 				<Accordion type="single" collapsible className="-mx-1 border-b border-border" defaultValue="">
 					<AccordionItem value="worked" className="border-0">
 						<AccordionTrigger
-							className="gap-2 px-1 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+							className="gap-2 px-0 py-1 text-sm font-medium text-muted-foreground hover:text-foreground"
 							trailing={null}
 						>
 							<span className="inline-flex w-fit items-center gap-1">
@@ -3469,7 +3469,7 @@ const TurnGroup = memo(function TurnGroup({
 				</Accordion>
 			) : null}
 			{group.outcome && !hasWorkedActivity ? (
-				<div className="flex min-h-7 items-center border-b border-border px-1 py-1 text-xs font-medium text-muted-foreground">
+				<div className="flex min-h-7 items-center border-b border-border px-0 py-1 text-sm font-medium text-muted-foreground">
 					<span className="inline-flex w-fit items-center gap-1">
 						Worked for
 						{group.outcome.durationMs !== undefined ? <TurnDuration durationMs={group.outcome.durationMs} inline /> : null}
