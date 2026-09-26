@@ -223,7 +223,7 @@ func TestReviewRunCDC_EmitsOnInsertAndLifecycleUpdates(t *testing.T) {
 	}
 
 	insertRun("run-complete", "sha-1", domain.ReviewTriggerAuto)
-	if ok, err := s.UpdateReviewRunResult(ctx, "run-complete", domain.ReviewRunComplete, domain.VerdictApproved, "done", "gh-review-1", true); err != nil || !ok {
+	if ok, err := s.UpdateReviewRunResult(ctx, "run-complete", domain.ReviewRunComplete, domain.VerdictApproved, "done", "[]", "gh-review-1", true); err != nil || !ok {
 		t.Fatalf("complete update ok=%v err=%v", ok, err)
 	}
 	if ok, err := s.MarkReviewRunDelivered(ctx, "run-complete", now.Add(time.Minute)); err != nil || !ok {

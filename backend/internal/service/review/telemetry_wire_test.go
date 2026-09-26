@@ -115,10 +115,12 @@ func TestReviewFunnelReachesTheWireWithItsProperties(t *testing.T) {
 			Harness: "claude-code", TriggerSource: domain.ReviewTriggerAuto, CreatedAt: created,
 			PRURL: "https://github.com/acme/secret-repo/pull/7", TargetSHA: "deadbeefcafe",
 		},
+		prs: []domain.PullRequest{{URL: "https://github.com/acme/secret-repo/pull/7", Provider: "github", Host: "github.com", Repo: "acme/secret-repo", Number: 7, HeadSHA: "deadbeefcafe"}},
 	}
 	svc := New(nil, store,
 		WithTelemetry(sink),
 		WithClock(func() time.Time { return created.Add(90 * time.Second) }),
+		WithReviewPublisher(&fakePublisher{}),
 	)
 	svc.engineTrigger = func(
 		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
@@ -134,7 +136,7 @@ func TestReviewFunnelReachesTheWireWithItsProperties(t *testing.T) {
 	}
 	reviewBody := "rename the credential loader in src/config/prod.ts"
 	if _, err := svc.Submit(context.Background(), "worker-1", "run-1",
-		domain.VerdictChangesRequested, reviewBody, "gh-review-42"); err != nil {
+		domain.VerdictChangesRequested, reviewBody, nil); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 	closeSink()

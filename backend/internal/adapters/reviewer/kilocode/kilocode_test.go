@@ -94,7 +94,7 @@ func TestReviewCommandPreservesAgentAndAppliesReadOnlyPolicy(t *testing.T) {
 		t.Fatalf("permission policy = %+v", config.Permission)
 	}
 	if config.Permission.Bash["*"] != "deny" ||
-		config.Permission.Bash["gh api *"] != "allow" ||
+		config.Permission.Bash["gh api *"] != "" ||
 		config.Permission.Bash["ao review submit *"] != "allow" ||
 		config.Permission.Bash["printf *"] != "allow" {
 		t.Fatalf("bash policy = %#v", config.Permission.Bash)
@@ -156,17 +156,10 @@ func TestBashPolicyAllowsEveryParsedReportingPipelineStage(t *testing.T) {
 		stages []string
 	}{
 		{
-			name: "GitHub review",
+			name: "AO submission",
 			stages: []string{
-				`printf '%s' '{ "event": "COMMENT", "body": "ready" }'`,
-				`gh api --method POST repos/o/r/pulls/1/reviews --input - --jq '.id'`,
-			},
-		},
-		{
-			name: "AO bookkeeping",
-			stages: []string{
-				`printf '%s' '{ "reviews": [] }'`,
-				`ao review submit --session sess-1 --reviews -`,
+				`printf '%s' 'Review body with details'`,
+				`ao review submit --session sess-1 --run run-1 --verdict approved --body -`,
 			},
 		},
 	}

@@ -82,7 +82,7 @@ func (f *fakeReviewService) TriggerAuto(context.Context, domain.SessionID, domai
 	return reviewcore.TriggerResult{}, nil
 }
 
-func (f *fakeReviewService) Submit(context.Context, domain.SessionID, string, domain.ReviewVerdict, string, string) (domain.ReviewRun, error) {
+func (f *fakeReviewService) Submit(_ context.Context, _ domain.SessionID, _ string, _ domain.ReviewVerdict, _ string, _ []domain.ReviewFinding) (domain.ReviewRun, error) {
 	return domain.ReviewRun{}, nil
 }
 
@@ -135,7 +135,7 @@ func (f *fakeReviewService) SubmitMany(_ context.Context, _ domain.SessionID, re
 	f.submitted = append([]reviewsvc.SubmittedReview(nil), reviews...)
 	runs := make([]domain.ReviewRun, 0, len(reviews))
 	for _, review := range reviews {
-		runs = append(runs, domain.ReviewRun{ID: review.RunID, Verdict: review.Verdict, Body: review.Body, GithubReviewID: review.GithubReviewID})
+		runs = append(runs, domain.ReviewRun{ID: review.RunID, Verdict: review.Verdict, Body: review.Body, Findings: review.Findings})
 	}
 	return runs, nil
 }
@@ -401,21 +401,34 @@ func TestReviewsSwitchReturnsAuthoritativeReviewState(t *testing.T) {
 	}
 }
 
-func TestReviewsSubmitAcceptsBatchedReviews(t *testing.T) {
+func TestReviewsSubmitCarriesFindingsAndRejectsObsoleteInputs(t *testing.T) {
 	svc := &fakeReviewService{}
 	srv := newReviewTestServer(t, svc)
 
-	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/submit", `{"reviews":[{"runId":"run-1","verdict":"changes_requested","body":"fix auth","githubReviewId":"101"},{"runId":"run-2","verdict":"approved"}]}`)
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/submit", `{"runId":"run-1","verdict":"changes_requested","body":"fix auth","comments":[{"path":"src/auth.go","line":42,"body":"Missing authorization check."}]}`)
 	assertJSON(t, headers)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d body=%s", status, body)
 	}
-	if len(svc.submitted) != 2 || svc.submitted[0].RunID != "run-1" || svc.submitted[1].Verdict != domain.VerdictApproved {
+	if len(svc.submitted) != 1 || svc.submitted[0].RunID != "run-1" || len(svc.submitted[0].Findings) != 1 || svc.submitted[0].Findings[0].Path != "src/auth.go" || svc.submitted[0].Findings[0].Line != 42 {
 		t.Fatalf("submitted = %+v", svc.submitted)
 	}
-	for _, want := range []string{`"reviews"`, `"run-1"`, `"run-2"`} {
-		if !strings.Contains(string(body), want) {
-			t.Fatalf("body missing %s: %s", want, body)
+	if !strings.Contains(string(body), `"run-1"`) {
+		t.Fatalf("body missing run id: %s", body)
+	}
+
+	// Caller-supplied GitHub review ids and batched results are obsolete
+	// inputs: they must fail clearly, never silently succeed.
+	for name, payload := range map[string]string{
+		"githubReviewId": `{"runId":"run-1","verdict":"approved","body":"ok","githubReviewId":"101"}`,
+		"batched":        `{"reviews":[{"runId":"run-1","verdict":"changes_requested","body":"fix auth"},{"runId":"run-2","verdict":"approved"}]}`,
+	} {
+		body, status, _ = doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/submit", payload)
+		if status != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: status = %d body=%s, want 422", name, status, body)
+		}
+		if !strings.Contains(string(body), "REVIEW_INPUT_OBSOLETE") {
+			t.Fatalf("%s: body missing obsolete code: %s", name, body)
 		}
 	}
 }

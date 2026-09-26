@@ -68,6 +68,8 @@ func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation
 // AO-owned task prompts outside the worker checkout. The exception is scoped
 // to the stable reviewer prompt root so a long-lived process can read future
 // request-scoped tasks; every other external path remains denied.
+// Publication is daemon-owned since #5701: only AO submission is allowed, no
+// `gh api` writes.
 func buildReviewerConfig(taskPromptRoot string) (string, error) {
 	permission := map[string]any{
 		"*":    "deny",
@@ -76,13 +78,14 @@ func buildReviewerConfig(taskPromptRoot string) (string, error) {
 		"grep": "allow",
 		"bash": map[string]string{
 			"*":                             "deny",
-			"gh api *":                      "allow",
+			"gh pr view *":                  "allow",
+			"gh pr diff *":                  "allow",
+			"gh pr checks *":                "allow",
 			"git diff*":                     "allow",
 			"git log*":                      "allow",
 			"git show*":                     "allow",
 			"git status*":                   "allow",
 			"ao review submit *":            "allow",
-			"printf * | gh api *":           "allow",
 			"printf * | ao review submit *": "allow",
 		},
 	}

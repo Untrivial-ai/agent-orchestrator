@@ -213,7 +213,7 @@ func (f *fakeStore) UpdateReviewAgentSessionID(_ context.Context, id, agentSessi
 	return true, nil
 }
 
-func (f *fakeStore) UpdateReviewRunResult(_ context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, githubReviewID string, autoInjectReview bool) (bool, error) {
+func (f *fakeStore) UpdateReviewRunResult(_ context.Context, id string, status domain.ReviewRunStatus, verdict domain.ReviewVerdict, body, findingsJSON, githubReviewID string, autoInjectReview bool) (bool, error) {
 	for i := range f.runs {
 		if f.runs[i].ID == id {
 			if f.runs[i].Status != domain.ReviewRunRunning {
@@ -224,6 +224,20 @@ func (f *fakeStore) UpdateReviewRunResult(_ context.Context, id string, status d
 			f.runs[i].Body = body
 			f.runs[i].GithubReviewID = githubReviewID
 			f.runs[i].AutoInjectReview = autoInjectReview
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeStore) UpdateReviewRunPublication(_ context.Context, id string, state domain.ReviewRunPublishState, githubReviewID, publishError string) (bool, error) {
+	for i := range f.runs {
+		if f.runs[i].ID == id {
+			f.runs[i].PublishState = state
+			f.runs[i].PublishError = publishError
+			if githubReviewID != "" {
+				f.runs[i].GithubReviewID = githubReviewID
+			}
 			return true, nil
 		}
 	}

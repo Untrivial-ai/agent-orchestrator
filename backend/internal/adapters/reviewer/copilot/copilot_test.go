@@ -161,12 +161,17 @@ func TestReviewPolicyAllowsReviewCommandsAndDeniesWritesAndGitMutations(t *testi
 		"shell(git show:*)",
 		"shell(git status:*)",
 		"shell(printf:*)",
-		"shell(gh api:*)",
+		"shell(gh pr view:*)",
+		"shell(gh pr diff:*)",
+		"shell(gh pr checks:*)",
 		"shell(ao review submit:*)",
 	} {
 		if !slices.Contains(allowedTools, want) {
 			t.Errorf("allowed policy missing %q: %#v", want, allowedTools)
 		}
+	}
+	if slices.Contains(allowedTools, "shell(gh api:*)") {
+		t.Errorf("publication is daemon-owned since #5701; gh api must not be allowed: %#v", allowedTools)
 	}
 	for _, want := range []string{
 		"write",

@@ -74,21 +74,21 @@ type KillReviewResponse struct {
 	Runs             []domain.ReviewRun         `json:"runs"`
 }
 
-// SubmitReviewItem is one review result in a batched submit request.
-type SubmitReviewItem struct {
-	RunID          string `json:"runId" description:"Review run id being completed."`
-	Verdict        string `json:"verdict" description:"Review verdict: approved or changes_requested."`
-	Body           string `json:"body,omitempty" description:"Review body recorded by AO. Required for changes_requested."`
-	GithubReviewID string `json:"githubReviewId,omitempty" description:"Id of the GitHub PR review the reviewer posted, if any."`
+// SubmitReviewComment is one inline finding of a submit request.
+type SubmitReviewComment struct {
+	Path string `json:"path" description:"Repository path the finding anchors to."`
+	Line int    `json:"line" description:"Line in the file's diff the finding anchors to."`
+	Body string `json:"body" description:"Single-line finding body. Multi-line prose belongs in the review body."`
 }
 
 // SubmitReviewInput is the body of POST /api/v1/sessions/{sessionId}/reviews/submit.
+// AO publishes the provider review itself, so GitHub review ids are outputs of
+// this call, never inputs.
 type SubmitReviewInput struct {
-	RunID          string             `json:"runId,omitempty" description:"Review run id being completed."`
-	Verdict        string             `json:"verdict,omitempty" description:"Review verdict: approved or changes_requested."`
-	Body           string             `json:"body,omitempty" description:"Review body recorded by AO. Required for changes_requested."`
-	GithubReviewID string             `json:"githubReviewId,omitempty" description:"Id of the GitHub PR review the reviewer posted, if any."`
-	Reviews        []SubmitReviewItem `json:"reviews,omitempty" description:"Batched review results recorded by one reviewer CLI command."`
+	RunID    string                `json:"runId,omitempty" description:"Review run id being completed."`
+	Verdict  string                `json:"verdict,omitempty" description:"Review verdict: approved or changes_requested."`
+	Body     string                `json:"body,omitempty" description:"Review body recorded by AO and published to the provider. Required for changes_requested."`
+	Comments []SubmitReviewComment `json:"comments,omitempty" description:"Inline findings published as the review's anchored comments."`
 }
 
 // ReviewsController owns the session-scoped /reviews routes. A nil Svc returns 501.
@@ -376,30 +376,34 @@ func (c *ReviewsController) submit(w http.ResponseWriter, r *http.Request) {
 		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/reviews/submit")
 		return
 	}
-	var in SubmitReviewInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	// The old contract let callers pass a batched "reviews" array and a
+	// caller-posted "githubReviewId". Both are obsolete: one submission
+	// carries one run, and GitHub review ids are daemon-produced outputs.
+	// Reject them with a clear message instead of silently ignoring.
+	var raw struct {
+		SubmitReviewInput
+		GithubReviewID string                `json:"githubReviewId"`
+		Reviews        []SubmitReviewComment `json:"reviews"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_BODY", "Invalid request body", nil)
 		return
 	}
-	reviews := make([]reviewsvc.SubmittedReview, 0, len(in.Reviews))
-	if len(in.Reviews) > 0 {
-		for _, item := range in.Reviews {
-			reviews = append(reviews, reviewsvc.SubmittedReview{
-				RunID:          item.RunID,
-				Verdict:        domain.ReviewVerdict(item.Verdict),
-				Body:           item.Body,
-				GithubReviewID: item.GithubReviewID,
-			})
-		}
-	} else {
-		reviews = append(reviews, reviewsvc.SubmittedReview{
-			RunID:          in.RunID,
-			Verdict:        domain.ReviewVerdict(in.Verdict),
-			Body:           in.Body,
-			GithubReviewID: in.GithubReviewID,
-		})
+	if raw.GithubReviewID != "" {
+		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "REVIEW_INPUT_OBSOLETE", "githubReviewId is no longer accepted: AO publishes the review and records its id", nil)
+		return
 	}
-	runs, err := c.Svc.SubmitMany(r.Context(), sessionID(r), reviews)
+	if len(raw.Reviews) > 0 {
+		envelope.WriteAPIError(w, r, http.StatusUnprocessableEntity, "unprocessable", "REVIEW_INPUT_OBSOLETE", "batched reviews are no longer accepted: submit one review per run with runId, verdict, body, and comments", nil)
+		return
+	}
+	in := raw.SubmitReviewInput
+	runs, err := c.Svc.SubmitMany(r.Context(), sessionID(r), []reviewsvc.SubmittedReview{{
+		RunID:    in.RunID,
+		Verdict:  domain.ReviewVerdict(in.Verdict),
+		Body:     in.Body,
+		Findings: findingsFromInput(in.Comments),
+	}})
 	if err != nil {
 		writeReviewError(w, r, err)
 		return
@@ -409,6 +413,17 @@ func (c *ReviewsController) submit(w http.ResponseWriter, r *http.Request) {
 		first = runs[0]
 	}
 	envelope.WriteJSON(w, http.StatusOK, ReviewRunResponse{Review: first, Reviews: runs})
+}
+
+func findingsFromInput(comments []SubmitReviewComment) []domain.ReviewFinding {
+	if len(comments) == 0 {
+		return nil
+	}
+	findings := make([]domain.ReviewFinding, 0, len(comments))
+	for _, comment := range comments {
+		findings = append(findings, domain.ReviewFinding{Path: comment.Path, Line: comment.Line, Body: comment.Body})
+	}
+	return findings
 }
 
 func writeReviewError(w http.ResponseWriter, r *http.Request, err error) {

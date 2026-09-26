@@ -217,6 +217,18 @@ PR actions are available through `ao pr merge` and
 `ao review trigger` (also `execute` and `restart`), `ao review cancel` (also
 `stop`), and `ao review submit`.
 
+`ao review submit` takes the full review markdown on stdin (`--body -`) plus a
+verdict, and submits it to the daemon, which records the result and publishes a
+single GitHub COMMENT review on the PR — reviewers never post to GitHub
+themselves. Inline findings are passed by repeating the `--comment-path`,
+`--comment-line`, and `--comment-body` flags together, one trio per finding;
+every occurrence of the three flags forms one finding and the bodies must stay
+on one line. The command reports the publication outcome: on failure the same
+command can be rerun verbatim to retry publication; when the outcome is unknown
+(e.g. the daemon restarted mid-publish), check the pull request before
+resubmitting. The legacy batched `--reviews` input, file-path `--body`, and
+caller-supplied `--review-id` are no longer accepted.
+
 ## Configuration
 
 The CLI and daemon share the same environment-driven config:

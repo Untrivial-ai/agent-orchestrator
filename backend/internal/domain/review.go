@@ -83,18 +83,59 @@ type ReviewRun struct {
 	// Body is the review text the reviewer submitted. It is recorded for AO's
 	// own tracking; the reviewer also posts the review to the PR itself.
 	Body string `json:"body"`
-	// GithubReviewID is the id of the GitHub PR review the reviewer posted for
-	// this pass (the `gh api .../pulls/{n}/reviews` object id), recorded at
-	// submit time. It is empty when the reviewer could not post to the provider.
-	// When the pass requests changes, AO includes it in the message to the
-	// worker so the worker knows exactly which review to address and reply to.
-	GithubReviewID string     `json:"githubReviewId"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	DeliveredAt    *time.Time `json:"deliveredAt,omitempty"`
+	// GithubReviewID is the id of the GitHub PR review the daemon published for
+	// this pass (the POST .../pulls/{n}/reviews object id). It is an output of
+	// publication, never a caller-supplied input. When the pass requests
+	// changes, AO includes it in the message to the worker so the worker knows
+	// exactly which review to address and reply to.
+	GithubReviewID string `json:"githubReviewId"`
+	// Findings are the run's inline review comments, recorded at submit time
+	// and published to the provider by the daemon.
+	Findings []ReviewFinding `json:"findings,omitempty"`
+	// PublishState tracks the daemon-side GitHub publication attempt:
+	// pending → publishing → published | failed, with uncertain marking an
+	// attempt whose outcome could not be confirmed (for example a daemon
+	// restart mid-publish). It exists so retries and restarts can neither lose
+	// a recorded result nor silently duplicate a published review.
+	PublishState ReviewRunPublishState `json:"publishState"`
+	// PublishError carries the last publication failure, for the CLI and UI.
+	PublishError string     `json:"publishError,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	DeliveredAt  *time.Time `json:"deliveredAt,omitempty"`
 	// AutoInjectReview snapshots the session policy when this result is first
 	// recorded. Later toggle changes must not rewrite or deliver this run.
 	AutoInjectReview bool `json:"autoInjectReview"`
 }
+
+// ReviewFinding is one inline review comment: a file, the (diff) line in that
+// file, and a single-line finding body.
+type ReviewFinding struct {
+	Path string `json:"path"`
+	Line int    `json:"line"`
+	Body string `json:"body"`
+}
+
+// ReviewRunPublishState is the state of a run's daemon-side provider publication.
+type ReviewRunPublishState string
+
+// Review run publication states.
+const (
+	// ReviewPublishPending means publication has not been attempted yet.
+	ReviewPublishPending ReviewRunPublishState = "pending"
+	// ReviewPublishPublishing marks a persisted publication attempt. It is
+	// written before the provider call so an interrupted attempt is visible.
+	ReviewPublishPublishing ReviewRunPublishState = "publishing"
+	// ReviewPublishPublished means the provider accepted the review and its id
+	// was recorded.
+	ReviewPublishPublished ReviewRunPublishState = "published"
+	// ReviewPublishFailed means the provider definitively rejected the
+	// publication. A repeated submission retries it.
+	ReviewPublishFailed ReviewRunPublishState = "failed"
+	// ReviewPublishUncertain means an attempt's outcome is unknown: it must be
+	// reported, never blindly reposted, because the provider may already hold
+	// the review.
+	ReviewPublishUncertain ReviewRunPublishState = "uncertain"
+)
 
 // ReviewTriggerSource identifies who initiated a review pass.
 type ReviewTriggerSource string

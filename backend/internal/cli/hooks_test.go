@@ -1882,18 +1882,20 @@ func TestHooks_ReviewerPermissionRequestAnswersInsteadOfBlocking(t *testing.T) {
 	// else is denied, and no blocked activity is reported either way.
 	// The shell literal, JSON-escaped for the hook payload; `it'\''s` is the
 	// prompt's shell-escaped single quote.
-	const submitJSON = `'{ \"reviews\": [ { \"runId\": \"run-1\", \"verdict\": \"approved\", \"body\": \"it'\\''s fine\" } ] }'`
+	const submitMarkdown = `'<review markdown with it'\\''s fine>'`
+	const findingBody = `'<single-line finding it'\\''s fine>'`
 	cases := []struct {
 		name    string
 		payload string
 		want    string
 	}{
-		{"ao review submit pipe", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' ` + submitJSON + ` | ao review submit --session worker-7 --reviews -"}}`, "allow"},
-		{"gh api review post", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' '{ \"event\": \"COMMENT\", \"body\": \"ok\" }' | gh api --method POST repos/acme/app/pulls/12/reviews --input - --jq '.id'"}}`, "allow"},
-		{"other worker session", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' '{}' | ao review submit --session worker-9 --reviews -"}}`, "deny"},
-		{"unset worker session id", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' '{}' | ao review submit --session worker-7 --reviews -"}}`, "deny"},
-		{"command substitution in operand", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' '{}'$(id) | ao review submit --session worker-7 --reviews -"}}`, "deny"},
-		{"heredoc submit", `{"tool_name":"Bash","tool_input":{"command":"cat > /tmp/r.json <<'EOF'\n{}\nEOF\nao review submit --session worker-7 --reviews - < /tmp/r.json"}}`, "deny"},
+		{"ao review submit pipe", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' ` + submitMarkdown + ` | ao review submit --session worker-7 --run run-1 --verdict approved --body -"}}`, "allow"},
+		{"submit with inline findings", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' ` + submitMarkdown + ` | ao review submit --session worker-7 --run run-1 --verdict changes_requested --body - --comment-path src/auth.go --comment-line 42 --comment-body ` + findingBody + ` --comment-path src/x.go --comment-line 7 --comment-body 'second finding'"}}`, "allow"},
+		{"gh api review post is no longer allowed", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' '{ \"event\": \"COMMENT\", \"body\": \"ok\" }' | gh api --method POST repos/acme/app/pulls/12/reviews --input - --jq '.id'"}}`, "deny"},
+		{"other worker session", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' '{}' | ao review submit --session worker-9 --run run-1 --verdict approved --body -"}}`, "deny"},
+		{"unset worker session id", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' '{}' | ao review submit --session worker-7 --run run-1 --verdict approved --body -"}}`, "deny"},
+		{"command substitution in operand", `{"tool_name":"Bash","tool_input":{"command":"printf '%s' '{}'$(id) | ao review submit --session worker-7 --run run-1 --verdict approved --body -"}}`, "deny"},
+		{"heredoc submit", `{"tool_name":"Bash","tool_input":{"command":"cat > /tmp/r.md <<'EOF'\n{}\nEOF\nao review submit --session worker-7 --run run-1 --verdict approved --body - < /tmp/r.md"}}`, "deny"},
 		{"env inspection", `{"tool_name":"Bash","tool_input":{"command":"pip3 show pkg | sed -n 1p; cat \"$(pip3 show pkg)\" || python3 -c \"print(1)\""}}`, "deny"},
 		{"non-bash tool", `{"tool_name":"Read","tool_input":{"file_path":"/etc/passwd"}}`, "deny"},
 	}
