@@ -225,6 +225,11 @@ surface (`npm run sqlc`, `npm run api`).
 
 ## In flight / not yet a runtime feature
 
+- **OneDev SCM contribution**: the provider observes PRs, reviews and CI;
+  incomplete listings fail without advancing discovery, and bounded CI windows
+  remain partial. Automatic merging is unsupported. Follow review and CI at
+  <https://github.com/Untrivial-ai/agent-orchestrator/pull/4654>.
+
 - **Browser automation acceptance**: the runtime implementation is complete.
   AO packages one
   checksum-pinned Vercel `agent-browser` Rust binary and routes a deliberately

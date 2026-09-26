@@ -394,6 +394,7 @@ func TestDoctorJSONOutputIsDecodable(t *testing.T) {
 	setConfigEnv(t)
 	clearDoctorGitHubEnv(t)
 	clearDoctorGitLabEnv(t)
+	clearDoctorOneDevEnv(t)
 	out, errOut, err := executeCLI(t, Deps{
 		LookPath: func(name string) (string, error) {
 			switch name {
@@ -431,6 +432,7 @@ func TestDoctorTextOutputIsGrouped(t *testing.T) {
 	setConfigEnv(t)
 	clearDoctorGitHubEnv(t)
 	clearDoctorGitLabEnv(t)
+	clearDoctorOneDevEnv(t)
 	out, errOut, err := executeCLI(t, Deps{
 		LookPath: func(name string) (string, error) {
 			switch name {
@@ -468,6 +470,7 @@ func TestDoctorTextOutputIsGrouped(t *testing.T) {
 		"WARN prime-agent:",
 		"GitHub:\nWARN github-token:",
 		"GitLab:\nWARN gitlab-token:",
+		"OneDev:\nWARN onedev-hosts:",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("doctor output missing %q:\n%s", want, out)
@@ -568,6 +571,14 @@ func clearDoctorGitLabEnv(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "")
 }
 
+func clearDoctorOneDevEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("AO_ONEDEV_ALLOWED_HOSTS", "")
+	t.Setenv("AO_ONEDEV_HOST_TOKENS", "")
+	t.Setenv("AO_ONEDEV_TOKEN", "")
+	t.Setenv("ONEDEV_TOKEN", "")
+}
+
 // TestDoctorChecksAOBinaryIdentity covers the `ao-binary` check: workspace
 // hooks invoke a bare `ao hooks <agent> <event>`, so doctor must surface when
 // the `ao` on PATH is not the running binary (e.g. a legacy CLI without the
@@ -649,6 +660,7 @@ func doctorContext(t *testing.T, paths map[string]string, commandOutput func(con
 	t.Setenv("AO_TMUX_BINARY", "")
 	clearDoctorGitHubEnv(t)
 	clearDoctorGitLabEnv(t)
+	clearDoctorOneDevEnv(t)
 	deps := Deps{
 		LookPath: func(name string) (string, error) {
 			path, ok := paths[name]
@@ -804,4 +816,143 @@ func writeHooksLogLines(t *testing.T, dataDir string, lines ...string) {
 	if err := os.WriteFile(filepath.Join(dataDir, hooksLogName), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestDoctorWarnsWhenOneDevUnconfigured: OneDev has no public instance, so a
+// deployment that does not use it never sets AO_ONEDEV_ALLOWED_HOSTS. That is
+// the common case and must read as "off", not as a failure.
+func TestDoctorWarnsWhenOneDevUnconfigured(t *testing.T) {
+	setConfigEnv(t)
+	c := doctorContext(t, map[string]string{"git": "/bin/git"}, gitVersionOnly)
+
+	check := findDoctorCheck(t, c.runDoctor(context.Background()), "onedev-hosts")
+	if check.Level != doctorWarn || !strings.Contains(check.Message, "AO_ONEDEV_ALLOWED_HOSTS") {
+		t.Fatalf("onedev-hosts check = %+v, want WARN naming the env var", check)
+	}
+	if check.Section != doctorSectionOneDev {
+		t.Fatalf("onedev-hosts section = %q, want %q", check.Section, doctorSectionOneDev)
+	}
+}
+
+// TestDoctorChecksOneDevToken covers the happy path end to end: hosts
+// configured, credential resolved, credential accepted by the instance.
+func TestDoctorChecksOneDevToken(t *testing.T) {
+	setConfigEnv(t)
+	srv := onedevDoctorServer(t, http.StatusOK, `{"id":4,"name":"johnkattenhorn"}`)
+	c := doctorContext(t, map[string]string{"git": "/bin/git"}, gitVersionOnly)
+	t.Setenv("AO_ONEDEV_ALLOWED_HOSTS", srv.URL)
+	t.Setenv("AO_ONEDEV_TOKEN", "od-token")
+	c.deps.HTTPClient = srv.Client()
+
+	checks := c.runDoctor(context.Background())
+	if hosts := findDoctorCheck(t, checks, "onedev-hosts"); hosts.Level != doctorPass || !strings.Contains(hosts.Message, srv.URL) {
+		t.Fatalf("onedev-hosts check = %+v, want PASS naming the instance", hosts)
+	}
+	if token := findDoctorCheck(t, checks, "onedev-token"); token.Level != doctorPass {
+		t.Fatalf("onedev-token check = %+v, want PASS", token)
+	}
+	api := findDoctorCheck(t, checks, "onedev-api:"+srv.URL)
+	if api.Level != doctorPass || !strings.Contains(api.Message, "johnkattenhorn") {
+		t.Fatalf("onedev-api check = %+v, want PASS naming the authenticated account", api)
+	}
+}
+
+// TestDoctorWarnsWhenOneDevTokenMissing: a configured instance with no
+// credential is reported before any request is attempted, so it does not read
+// as an unreachable instance.
+func TestDoctorWarnsWhenOneDevTokenMissing(t *testing.T) {
+	setConfigEnv(t)
+	c := doctorContext(t, map[string]string{"git": "/bin/git"}, gitVersionOnly)
+	t.Setenv("AO_ONEDEV_ALLOWED_HOSTS", "http://onedev.test:6610")
+
+	checks := c.runDoctor(context.Background())
+	if hosts := findDoctorCheck(t, checks, "onedev-hosts"); hosts.Level != doctorPass {
+		t.Fatalf("onedev-hosts check = %+v, want PASS", hosts)
+	}
+	token := findDoctorCheck(t, checks, "onedev-token")
+	if token.Level != doctorWarn || !strings.Contains(token.Message, "AO_ONEDEV_TOKEN") {
+		t.Fatalf("onedev-token check = %+v, want WARN naming the env var", token)
+	}
+	for _, check := range checks {
+		if strings.HasPrefix(check.Name, "onedev-api") {
+			t.Fatalf("probed the instance without a credential: %+v", check)
+		}
+	}
+}
+
+// TestDoctorReadsOneDevPerHostToken: a deployment may configure only
+// AO_ONEDEV_HOST_TOKENS, with no default token. That must still authenticate.
+func TestDoctorReadsOneDevPerHostToken(t *testing.T) {
+	setConfigEnv(t)
+	srv := onedevDoctorServer(t, http.StatusOK, `{"id":4,"name":"per-host-user"}`)
+	c := doctorContext(t, map[string]string{"git": "/bin/git"}, gitVersionOnly)
+	t.Setenv("AO_ONEDEV_ALLOWED_HOSTS", srv.URL)
+	t.Setenv("AO_ONEDEV_HOST_TOKENS", srv.URL+"=host-token")
+	c.deps.HTTPClient = srv.Client()
+
+	api := findDoctorCheck(t, c.runDoctor(context.Background()), "onedev-api:"+srv.URL)
+	if api.Level != doctorPass || !strings.Contains(api.Message, "per-host-user") {
+		t.Fatalf("onedev-api check = %+v, want PASS from the per-host token", api)
+	}
+}
+
+// TestDoctorFailsRejectedOneDevToken: a credential the instance refuses is
+// always an AO misconfiguration, so it is a FAIL rather than a WARN.
+func TestDoctorFailsRejectedOneDevToken(t *testing.T) {
+	setConfigEnv(t)
+	srv := onedevDoctorServer(t, http.StatusUnauthorized, "Invalid account or incorrect credentials")
+	c := doctorContext(t, map[string]string{"git": "/bin/git"}, gitVersionOnly)
+	t.Setenv("AO_ONEDEV_ALLOWED_HOSTS", srv.URL)
+	t.Setenv("AO_ONEDEV_TOKEN", "expired-token")
+	c.deps.HTTPClient = srv.Client()
+
+	api := findDoctorCheck(t, c.runDoctor(context.Background()), "onedev-api:"+srv.URL)
+	if api.Level != doctorFail || !strings.Contains(api.Message, "rejected") {
+		t.Fatalf("onedev-api check = %+v, want FAIL for a rejected credential", api)
+	}
+}
+
+// TestDoctorWarnsWhenOneDevUnreachable: a self-hosted instance is commonly on
+// a private network, so running doctor off that network says nothing about
+// whether AO is configured correctly. That must not fail the whole report.
+func TestDoctorWarnsWhenOneDevUnreachable(t *testing.T) {
+	setConfigEnv(t)
+	srv := onedevDoctorServer(t, http.StatusOK, `{"id":4,"name":"unused"}`)
+	client := srv.Client()
+	srv.Close() // nothing is listening now
+
+	c := doctorContext(t, map[string]string{"git": "/bin/git"}, gitVersionOnly)
+	t.Setenv("AO_ONEDEV_ALLOWED_HOSTS", srv.URL)
+	t.Setenv("AO_ONEDEV_TOKEN", "od-token")
+	c.deps.HTTPClient = client
+
+	api := findDoctorCheck(t, c.runDoctor(context.Background()), "onedev-api:"+srv.URL)
+	if api.Level != doctorWarn {
+		t.Fatalf("onedev-api check = %+v, want WARN for an unreachable instance", api)
+	}
+}
+
+func onedevDoctorServer(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// OneDev's REST root is "/~api", and "who am I" is /users/me — the
+		// other user routes need an id the doctor does not have.
+		if r.Method != http.MethodGet || r.URL.Path != "/~api/users/me" {
+			t.Errorf("unexpected onedev probe: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if got := r.Header.Get("Authorization"); !strings.HasPrefix(got, "Bearer ") {
+			t.Errorf("missing bearer auth header: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func gitVersionOnly(context.Context, string, ...string) ([]byte, error) {
+	return []byte("git version 2.43.0\n"), nil
 }

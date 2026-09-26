@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
+	scmonedev "github.com/aoagents/agent-orchestrator/backend/internal/adapters/scm/onedev"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
 )
@@ -51,9 +53,11 @@ const (
 	doctorSectionAgents         = "Agent harnesses"
 	doctorSectionGitHub         = "GitHub"
 	doctorSectionGitLab         = "GitLab"
+	doctorSectionOneDev         = "OneDev"
 	minGitVersion               = "2.25.0"
 	githubDoctorUserAgent       = "ao-agent-orchestrator/doctor"
 	gitlabDoctorUserAgent       = "ao-agent-orchestrator/doctor"
+	onedevDoctorUserAgent       = "ao-agent-orchestrator/doctor"
 	defaultDoctorGitHubRESTBase = "https://api.github.com"
 	defaultDoctorGitLabRESTBase = "https://gitlab.com/api/v4"
 )
@@ -217,6 +221,7 @@ func (c *commandContext) runDoctor(ctx context.Context) []doctorCheck {
 		}))
 	}
 	checks = append(checks, c.checkCodexLaunchFlags(ctx), c.checkGitHubToken(ctx), c.checkGitLabToken(ctx))
+	checks = append(checks, c.checkOneDev(ctx, cfg.OneDev)...)
 	return checks
 }
 
@@ -626,6 +631,120 @@ func (c *commandContext) gitlabToken(ctx context.Context) (token, source string,
 		return "", "", errors.New("glab is installed but returned no auth token")
 	}
 	return token, "glab", nil
+}
+
+// checkOneDev reports OneDev provider health as three checks: an instance
+// allowlist is configured, a credential resolves for it, and that credential
+// authenticates against each configured instance.
+//
+// Unlike the GitHub and GitLab probes there is no fixed REST base to point at:
+// OneDev is always self-hosted, so the instances come from configuration. The
+// check therefore builds the real adapter and asks it, rather than
+// re-implementing host parsing, credential resolution and API-base
+// construction in the CLI — a doctor that probes differently from the daemon
+// can pass while the daemon fails.
+func (c *commandContext) checkOneDev(ctx context.Context, cfg config.OneDevConfig) []doctorCheck {
+	if len(cfg.AllowedHosts) == 0 {
+		// The common case: OneDev has no public instance, so a deployment that
+		// does not use OneDev never sets the allowlist. That is not a failure.
+		return []doctorCheck{{
+			Level: doctorWarn, Section: doctorSectionOneDev, Name: "onedev-hosts",
+			Message: "no OneDev hosts configured (set AO_ONEDEV_ALLOWED_HOSTS); OneDev observation is off",
+		}}
+	}
+
+	provider, err := c.onedevProvider(cfg)
+	if err != nil {
+		return []doctorCheck{{
+			Level: doctorFail, Section: doctorSectionOneDev, Name: "onedev-hosts", Message: err.Error(),
+		}}
+	}
+	hosts := provider.AllowedHosts()
+	checks := []doctorCheck{{
+		Level: doctorPass, Section: doctorSectionOneDev, Name: "onedev-hosts",
+		Message: fmt.Sprintf("%d host(s) allowed: %s", len(hosts), strings.Join(hosts, ", ")),
+	}}
+
+	// Credential resolution is local — no instance is contacted — so it is
+	// reported separately from the authenticated probe below. That way a
+	// missing token and a rejected token do not read the same.
+	credCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	available, err := provider.SCMCredentialsAvailable(credCtx)
+	cancel()
+	switch {
+	case err != nil:
+		return append(checks, doctorCheck{
+			Level: doctorFail, Section: doctorSectionOneDev, Name: "onedev-token",
+			Message: fmt.Sprintf("credential lookup failed: %v", err),
+		})
+	case !available:
+		return append(checks, doctorCheck{
+			Level: doctorWarn, Section: doctorSectionOneDev, Name: "onedev-token",
+			Message: "no OneDev credential found (set AO_ONEDEV_TOKEN, AO_ONEDEV_HOST_TOKENS or ONEDEV_TOKEN)",
+		})
+	}
+	checks = append(checks, doctorCheck{
+		Level: doctorPass, Section: doctorSectionOneDev, Name: "onedev-token",
+		Message: "credential resolved",
+	})
+
+	for _, host := range hosts {
+		checks = append(checks, c.checkOneDevHost(ctx, provider, host))
+	}
+	return checks
+}
+
+// checkOneDevHost performs the authenticated round-trip against one instance,
+// reporting the account the credential belongs to.
+//
+// A rejected credential is a FAIL — that is always an AO misconfiguration. An
+// instance that cannot be reached is only a WARN: a self-hosted OneDev
+// commonly lives on a private network, so running `ao doctor` off that network
+// says nothing about whether the daemon is configured correctly.
+func (c *commandContext) checkOneDevHost(ctx context.Context, provider *scmonedev.Provider, host string) doctorCheck {
+	name := "onedev-api:" + host
+	reqCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	identity, err := provider.AuthenticatedIdentityForHost(reqCtx, host)
+	if err != nil {
+		if errors.Is(err, scmonedev.ErrAuthFailed) {
+			return doctorCheck{Level: doctorFail, Section: doctorSectionOneDev, Name: name, Message: fmt.Sprintf("credential rejected by OneDev: %v", err)}
+		}
+		return doctorCheck{Level: doctorWarn, Section: doctorSectionOneDev, Name: name, Message: fmt.Sprintf("probe failed: %v", err)}
+	}
+	return doctorCheck{Level: doctorPass, Section: doctorSectionOneDev, Name: name, Message: fmt.Sprintf("credential valid for %s", identity.Login)}
+}
+
+// onedevProvider builds the OneDev adapter exactly as the daemon does (see
+// newOneDevSCMProvider in internal/daemon/scm_wiring.go), so doctor exercises
+// the same host resolution and credential chain the daemon will.
+//
+// SkipTokenPreflight is set for the same reason as in the daemon and one more:
+// a missing credential must surface as its own check rather than as a
+// construction error that would also hide the allowlist result.
+//
+// The provider's logger is discarded because its only startup warning (a
+// per-host token naming no configured host) would otherwise interleave a raw
+// slog line into the doctor report; the daemon logs it at boot.
+func (c *commandContext) onedevProvider(cfg config.OneDevConfig) (*scmonedev.Provider, error) {
+	tokens := scmonedev.FallbackTokenSource{
+		scmonedev.StaticTokenSource(cfg.Token),
+		scmonedev.EnvTokenSource{EnvVars: []string{"AO_ONEDEV_TOKEN"}},
+	}
+	hostTokens := make(map[string]scmonedev.TokenSource, len(cfg.HostTokens))
+	for host, token := range cfg.HostTokens {
+		hostTokens[host] = scmonedev.StaticTokenSource(token)
+	}
+	return scmonedev.NewProvider(scmonedev.ProviderOptions{
+		HTTPClient:         c.deps.HTTPClient,
+		Token:              tokens,
+		SkipTokenPreflight: true,
+		UserAgent:          onedevDoctorUserAgent,
+		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		AllowedHosts:       cfg.AllowedHosts,
+		HostTokens:         hostTokens,
+	})
 }
 
 // parseGLabTokenLine extracts the token value from `glab auth status --show-token`

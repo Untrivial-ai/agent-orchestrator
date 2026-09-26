@@ -103,6 +103,30 @@ type GitLabConfig struct {
 	HostTokens map[string]string
 }
 
+// OneDevConfig carries the OneDev host allowlist, the default access token,
+// and per-host token overrides. Like GitLabConfig it is loaded once at daemon
+// boot from environment variables (no hot-reload).
+//
+// Unlike GitHub and GitLab there is no public OneDev instance, so there is no
+// implicitly-allowed host: AllowedHosts is required configuration, and the
+// OneDev provider fails construction when it is empty rather than defaulting
+// to some public endpoint.
+type OneDevConfig struct {
+	// Token is the default OneDev access token (AO_ONEDEV_TOKEN), applied to
+	// any allowed host without an entry in HostTokens. Empty means the
+	// adapter falls back to its own credential resolution (ONEDEV_TOKEN, then
+	// any configured credential helper).
+	Token string
+	// AllowedHosts is the list of OneDev instances the provider may talk to.
+	// Each entry is "host", "host:port", or a scheme-qualified
+	// "http://host:port" — plain HTTP must be written explicitly, because a
+	// self-hosted OneDev is commonly reached over HTTP on a private network.
+	AllowedHosts []string
+	// HostTokens maps an allowed host to an access-token override. Hosts
+	// without an explicit entry fall back to Token.
+	HostTokens map[string]string
+}
+
 // DefaultAllowedOrigins are the browser origins the daemon's CORS boundary
 // trusts. General routes additionally admit loopback-served content, while
 // credential-management routes accept only this exact list (plus native
@@ -172,6 +196,9 @@ type Config struct {
 	// (AO_CLOUD_CONTROL_PLANE_URL). When set it must be an http(s) URL; empty
 	// means no control plane is configured, which keeps the cloud offering off.
 	CloudControlPlaneURL string
+	// OneDev carries the OneDev host allowlist, default token, and per-host
+	// token overrides, loaded once at boot from environment variables.
+	OneDev OneDevConfig
 }
 
 // Addr returns the host:port the HTTP server binds. It uses net.JoinHostPort so
@@ -206,6 +233,9 @@ func (c Config) Addr() string {
 //	AO_CLOUD_OFFERING          cloud offering flag off|on (default off)
 //	AO_LOCAL_OFFERING          local offering off|on (default on)
 //	AO_CLOUD_CONTROL_PLANE_URL cloud control plane base URL (trimmed, must be http(s))
+//	AO_ONEDEV_TOKEN            default OneDev access token
+//	AO_ONEDEV_ALLOWED_HOSTS    comma-separated OneDev hosts (host[:port] or http://host:port)
+//	AO_ONEDEV_HOST_TOKENS      host=token,host=token per-host token overrides
 //
 // The bind host is not configurable: the daemon is loopback-only by design.
 func Load() (Config, error) {
@@ -321,15 +351,7 @@ func Load() (Config, error) {
 	}
 
 	if raw, ok := os.LookupEnv("AO_GITLAB_ALLOWED_HOSTS"); ok && raw != "" {
-		hosts := make([]string, 0, 4)
-		for _, h := range strings.Split(raw, ",") {
-			h = strings.TrimSpace(h)
-			if h == "" {
-				continue
-			}
-			hosts = append(hosts, h)
-		}
-		cfg.GitLab.AllowedHosts = hosts
+		cfg.GitLab.AllowedHosts = parseHostList(raw)
 	}
 
 	if raw, ok := os.LookupEnv("AO_GITLAB_HOST_TOKENS"); ok && raw != "" {
@@ -368,6 +390,21 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 		cfg.CloudControlPlaneURL = u
+	}
+	if raw, ok := os.LookupEnv("AO_ONEDEV_TOKEN"); ok {
+		cfg.OneDev.Token = strings.TrimSpace(raw)
+	}
+
+	if raw, ok := os.LookupEnv("AO_ONEDEV_ALLOWED_HOSTS"); ok && raw != "" {
+		cfg.OneDev.AllowedHosts = parseHostList(raw)
+	}
+
+	if raw, ok := os.LookupEnv("AO_ONEDEV_HOST_TOKENS"); ok && raw != "" {
+		tokens, err := parseHostTokenMap("AO_ONEDEV_HOST_TOKENS", raw)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.OneDev.HostTokens = tokens
 	}
 
 	runFile, err := resolveRunFilePath()
@@ -425,6 +462,22 @@ func parseTelemetryDisabledEvents(raw string) []string {
 		}
 	}
 	return names
+}
+
+// parseHostList parses a comma-separated host list, trimming whitespace and
+// dropping empty entries. It returns nil when no entry survives, so an
+// all-whitespace value reads the same as an unset one.
+func parseHostList(raw string) []string {
+	hosts := make([]string, 0, 4)
+	for _, h := range strings.Split(raw, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			hosts = append(hosts, h)
+		}
+	}
+	if len(hosts) == 0 {
+		return nil
+	}
+	return hosts
 }
 
 // parseHostTokenMap parses a host=token,host=token map. Whitespace around
