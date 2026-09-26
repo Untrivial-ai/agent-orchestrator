@@ -13,6 +13,7 @@ import { OnboardingProjectSetup } from "./OnboardingProjectSetup";
 import { OnboardingCloudStep } from "./OnboardingCloudStep";
 import { OnboardingGitHubStep } from "./OnboardingGitHubStep";
 import { AuthTerminalPanel } from "./AuthTerminalPanel";
+import { RequiredAgentField } from "./CreateProjectAgentSheet";
 import { agentsQueryKey, refreshAgentsIfStale, useAgentsQuery } from "../hooks/useAgentsQuery";
 import { useHarnessSetup } from "../hooks/useHarnessSetup";
 import { useDaemonStatus } from "../hooks/useDaemonStatus";
@@ -22,7 +23,7 @@ import { markOnboardingComplete } from "../lib/onboarding-finish";
 import { aoBridge } from "../lib/bridge";
 import { AGENT_OPTIONS, agentLabel } from "../lib/agent-options";
 import type { MessageKey } from "../i18n";
-import { buildRankedAgentOptions, DEFAULT_AGENT_PRIORITY_RANK, unknownAgentReadiness } from "../lib/agent-select-options";
+import { buildRankedAgentOptions, DEFAULT_AGENT_PRIORITY_RANK, isReadyAgent, type AgentInfo, unknownAgentReadiness } from "../lib/agent-select-options";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
 import type { PreparedProjectInput } from "./CreateProjectFlow";
@@ -32,7 +33,7 @@ import codexLogo from "../assets/agents/codex.svg";
 import cursorLogo from "../assets/agents/cursor.svg";
 import opencodeLogo from "../assets/agents/opencode.svg";
 
-type Step = "welcome" | "feedback" | "github" | "cloud" | "project" | "orchestrator" | "workers" | "guide";
+type Step = "welcome" | "feedback" | "github" | "cloud" | "project" | "agents" | "guide";
 
 type StepDetails = {
 	title: MessageKey;
@@ -40,18 +41,16 @@ type StepDetails = {
 	nextLabel: MessageKey;
 };
 
-const STEPS: Step[] = ["welcome", "feedback", "github", "cloud", "project", "orchestrator", "workers", "guide"];
+const STEPS: Step[] = ["welcome", "feedback", "github", "cloud", "project", "agents", "guide"];
 
-/** Project setup is one stage of the flow but three screens: you pick a
- *  project, then its orchestrator, then its workers. The counter counts
- *  stages, so those three read as a single position and the flow shows six
- *  dots rather than eight. */
+/** Project setup is one stage of the flow: pick a project, then configure
+ * both agent roles together. */
 const STAGES: Step[][] = [
 	["welcome"],
 	["feedback"],
 	["github"],
 	["cloud"],
-	["project", "orchestrator", "workers"],
+	["project", "agents"],
 	["guide"],
 ];
 
@@ -81,15 +80,10 @@ const STEP_DETAILS: Record<Step, StepDetails> = {
 		subtitle: "onboarding.step.project.subtitle",
 		nextLabel: "onboarding.step.project.next",
 	},
-	orchestrator: {
-		title: "onboarding.step.orchestrator.title",
-		subtitle: "onboarding.step.orchestrator.subtitle",
-		nextLabel: "onboarding.step.orchestrator.next",
-	},
-	workers: {
-		title: "onboarding.step.workers.title",
-		subtitle: "onboarding.step.workers.subtitle",
-		nextLabel: "onboarding.step.workers.next",
+	agents: {
+		title: "onboarding.step.agents.title",
+		subtitle: "onboarding.step.agents.subtitle",
+		nextLabel: "onboarding.step.agents.next",
 	},
 	guide: {
 		title: "onboarding.step.guide.title",
@@ -140,8 +134,6 @@ export function OnboardingPage() {
 	const githubSetup = useGitHubSetup({ poll: step === "github" });
 	const [orchestratorAgent, setOrchestratorAgent] = useState<string | null>(null);
 	const [workerAgent, setWorkerAgent] = useState<string | null>(null);
-	const [hoveredOrchestrator, setHoveredOrchestrator] = useState<string | null>(null);
-	const [hoveredWorker, setHoveredWorker] = useState<string | null>(null);
 	const [preparedProject, setPreparedProject] = useState<PreparedProjectInput | null>(null);
 	const [agentCheckIndicatorTimedOut, setAgentCheckIndicatorTimedOut] = useState(false);
 	const stepIndex = STEPS.indexOf(step);
@@ -151,10 +143,9 @@ export function OnboardingPage() {
 	);
 	const details = STEP_DETAILS[step];
 	const agentCatalog = agentsQuery.data;
-	const agents = useMemo(() => {
+	const agentOptions = useMemo<AgentInfo[]>(() => {
 		const fallbackAgents = AGENT_OPTIONS.map((id) => unknownAgentReadiness(id, agentLabel(id)));
 		const isCatalogKnown = Boolean(agentCatalog);
-		const isCheckingCatalog = !isCatalogKnown && (agentsQuery.isLoading || agentsQuery.isFetching) && !agentCheckIndicatorTimedOut;
 		const installedIds = new Set(agentCatalog?.installed.map((agent) => agent.id));
 		const authorizedIds = new Set(agentCatalog?.authorized.map((agent) => agent.id));
 		const catalogAgents = (agentCatalog?.supported ?? []).map((agent) => ({
@@ -174,30 +165,17 @@ export function OnboardingPage() {
 			agents: isCatalogKnown ? catalogAgents : undefined,
 			priorityRank: DEFAULT_AGENT_PRIORITY_RANK,
 			fallbackAgents,
-		}).map((agent) => {
-			const indicator: OnboardingAgent["indicator"] = isCheckingCatalog
-				? "checking"
-				: isCatalogKnown && agent.status
-					? "auth"
-					: "none";
-			return {
-				id: agent.id,
-				// Until probing completes, do not claim a harness is absent. Let the
-				// user continue with a pick and update to Install only after a real
-				// catalog confirms it is missing.
-				installed: !isCatalogKnown || installedIds.has(agent.id),
-				name: agent.label,
-				indicator,
-			};
 		});
-	}, [agentCatalog, agentCheckIndicatorTimedOut, agentsQuery.isFetching, agentsQuery.isLoading]);
+	}, [agentCatalog]);
 
 	// One working harness is the floor for leaving the first agent step. Picking
 	// an agent that is missing or signed out would hand a first-run user an
 	// orchestrator that cannot start, so the step holds until one is ready. A
 	// catalog that never resolved leaves every row without an indicator, and an
 	// unresponsive probe should not trap anyone here.
-	const hasReadyAgent = agents.some((agent) => agent.installed && agent.indicator === "none");
+	const hasReadyAgent = agentCatalog
+		? agentOptions.some(isReadyAgent)
+		: agentCheckIndicatorTimedOut || (!agentsQuery.isLoading && !agentsQuery.isFetching);
 
 	useEffect(() => {
 		if (agentCatalog || (!agentsQuery.isLoading && !agentsQuery.isFetching)) {
@@ -267,17 +245,6 @@ export function OnboardingPage() {
 		goToStep(stepIndex + 1);
 	}, [goToStep, navigate, orchestratorAgent, preparedProject, requestOnboardingFinish, step, stepIndex, workerAgent]);
 
-	// Installing or signing in happens here rather than in Settings. Sending a
-	// first-run user out of onboarding lost their place, and it made the one
-	// thing they came to fix the one thing this screen could not do.
-	const handleInstallAgent = useCallback((agentId: string) => {
-		void harnessSetup.startInstall(agentId);
-	}, [harnessSetup]);
-
-	const handleSignInAgent = useCallback((agentId: string) => {
-		void harnessSetup.startAuth(agentId);
-	}, [harnessSetup]);
-
 	// A cloud project is created by the flow that owns it, so onboarding just
 	// records completion and hands off to the app.
 	const handleCloudProjectCreated = useCallback(() => {
@@ -286,8 +253,7 @@ export function OnboardingPage() {
 	}, [navigate]);
 
 	const isProjectStep = step === "project";
-	const isOrchestratorStep = step === "orchestrator";
-	const isAgentStep = isOrchestratorStep || step === "workers";
+	const isAgentStep = step === "agents";
 	const isGuideStep = step === "guide";
 	const isSetupStep = step === "github" || step === "cloud";
 	const isListStep = isProjectStep || isSetupStep;
@@ -368,19 +334,24 @@ export function OnboardingPage() {
 						</div>
 						<div className={cn("min-h-0 pt-2", isListStep && "flex justify-center")}>
 							{isAgentStep && (
-								<div className="w-full max-w-[440px] text-left">
-									<AgentRolePicker
-										label={isOrchestratorStep ? t("onboarding.pickerOrchestratorLabel") : t("onboarding.pickerWorkersLabel")}
-										agents={agents}
-										harnessSetup={harnessSetup}
-										value={isOrchestratorStep ? orchestratorAgent : workerAgent}
-										hovered={isOrchestratorStep ? hoveredOrchestrator : hoveredWorker}
-										onHover={isOrchestratorStep ? setHoveredOrchestrator : setHoveredWorker}
-										onSelect={isOrchestratorStep ? setOrchestratorAgent : setWorkerAgent}
-										onInstall={handleInstallAgent}
-										onSignIn={handleSignInAgent}
+								<div className="w-full max-w-[440px] space-y-4 text-left">
+									<RequiredAgentField
+										id="onboardingOrchestratorAgent"
+										label={t("onboarding.pickerOrchestratorLabel")}
+										placeholder={t("createProject.selectOrchestrator")}
+										agents={agentCatalog ? agentOptions : undefined}
+										value={orchestratorAgent ?? ""}
+										onChange={setOrchestratorAgent}
 									/>
-									{isOrchestratorStep && !hasReadyAgent ? (
+									<RequiredAgentField
+										id="onboardingWorkerAgent"
+										label={t("onboarding.pickerWorkersLabel")}
+										placeholder={t("createProject.selectWorker")}
+										agents={agentCatalog ? agentOptions : undefined}
+										value={workerAgent ?? ""}
+										onChange={setWorkerAgent}
+									/>
+									{!hasReadyAgent ? (
 										<p className="mt-3 text-caption leading-snug text-muted-foreground" role="status">
 											{t("onboarding.needsAgentSetup")}
 										</p>
@@ -396,7 +367,7 @@ export function OnboardingPage() {
 									<OnboardingProjectSetup
 										onPrepared={(project) => {
 										setPreparedProject(project);
-										if (project) setStep("orchestrator");
+										if (project) setStep("agents");
 									}}
 									onCloudProjectCreated={handleCloudProjectCreated}
 									/>
@@ -455,8 +426,6 @@ export function OnboardingPage() {
 							<AgentTopologyPreview
 								orchestratorAgent={orchestratorAgent}
 								workerAgent={workerAgent}
-								hoveredOrchestrator={hoveredOrchestrator}
-								hoveredWorker={hoveredWorker}
 							/>
 						)
 					) : step === "welcome" || step === "feedback" ? <PreviewStage step={step} /> : null}
@@ -476,8 +445,7 @@ export function OnboardingPage() {
 						onClick={next}
 					disabled={
 						(step === "project" && !preparedProject) ||
-						(isOrchestratorStep && (!orchestratorAgent || !hasReadyAgent)) ||
-						(step === "workers" && !workerAgent) ||
+						(isAgentStep && (!orchestratorAgent || !workerAgent || !hasReadyAgent)) ||
 						// GitHub is the one prerequisite the flow will not let you skip:
 						// agents cannot open pull requests or read issues without it.
 						(step === "github" && !githubSetup.authSatisfied)
@@ -524,7 +492,7 @@ function OnboardingGuide() {
 	);
 }
 
-function AgentRolePicker({
+export function AgentRolePicker({
 	label,
 	agents,
 	harnessSetup,
@@ -686,21 +654,16 @@ function InstallableAgentRow({ agent, hovered, onHover, onInstall, setup }: {
 function AgentTopologyPreview({
 	orchestratorAgent,
 	workerAgent,
-	hoveredOrchestrator,
-	hoveredWorker,
 }: {
 	orchestratorAgent: string | null;
 	workerAgent: string | null;
-	hoveredOrchestrator: string | null;
-	hoveredWorker: string | null;
 }) {
 	const { t } = useTranslation();
 	const reduceMotion = useReducedMotion();
 	const signals = useTopologySignals(Boolean(reduceMotion));
-	// Before a choice is made the illustration previews the hovered option. Once
-	// selected, the committed choice is the source of truth and remains still.
-	const orchestratorPreview = orchestratorAgent ?? hoveredOrchestrator;
-	const workerPreview = workerAgent ?? hoveredWorker;
+	// The illustration mirrors the two role selections from the combined step.
+	const orchestratorPreview = orchestratorAgent;
+	const workerPreview = workerAgent;
 	const orchestratorSrc = (orchestratorPreview && agentIcon(orchestratorPreview)) || aoLogo;
 	const workerSrc = workerPreview ? agentIcon(workerPreview) : undefined;
 	const orchestratorName = t("onboarding.topologyOrchestrator");
