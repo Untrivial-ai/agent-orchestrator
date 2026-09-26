@@ -462,6 +462,33 @@ func TestGetLaunchCommandOmitsBlankConfiguredModel(t *testing.T) {
 	}
 }
 
+func TestGetLaunchCommandRoutesCodexThroughAccountsManagerWithoutEmbeddingToken(t *testing.T) {
+	plugin := &Plugin{resolvedBinary: "codex"}
+	cmd, err := plugin.GetLaunchCommand(context.Background(), ports.LaunchConfig{
+		ProviderRoute: ports.AgentProviderRoute{
+			BaseURL:      "http://127.0.0.1:43123/",
+			ProviderName: "ao_accounts_manager",
+			Token:        "secret-route-token",
+			TokenEnv:     "AO_CODEX_PROXY_TOKEN",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSubsequence(cmd, []string{
+		"-c", "model_provider=ao_accounts_manager",
+		"-c", "model_providers.ao_accounts_manager.name=AO Accounts Manager",
+		"-c", "model_providers.ao_accounts_manager.base_url=" + codexTOMLConfigString("http://127.0.0.1:43123/v1"),
+		"-c", "model_providers.ao_accounts_manager.env_key=AO_CODEX_PROXY_TOKEN",
+		"-c", "model_providers.ao_accounts_manager.wire_api=responses",
+	}) {
+		t.Fatalf("command %#v missing Accounts Manager provider configuration", cmd)
+	}
+	if contains(cmd, "secret-route-token") {
+		t.Fatalf("command %#v embedded the route token", cmd)
+	}
+}
+
 func TestResolveCodexBinaryFindsNVMInstallWhenPathIsSparse(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("NVM install discovery is Unix-specific")

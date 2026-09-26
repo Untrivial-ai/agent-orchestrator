@@ -12,6 +12,7 @@ export type CodexAccountLoginOperation = components["schemas"]["CodexAccountLogi
 export type CodexAccountLoginTerminalStart = components["schemas"]["OpenCodexAccountLoginTerminalResponse"];
 export type CodexActiveLogin = components["schemas"]["CodexActiveLoginResponse"];
 export type CodexAccountSwitch = components["schemas"]["CodexAccountSwitchResponse"];
+export type CodexSessionAccountSwitch = components["schemas"]["SwitchCodexSessionAccountResponse"];
 
 export async function fetchCodexAccounts(): Promise<CodexAccountsResponse> {
 	const { data, error } = await apiClient.GET("/api/v1/agents/codex/accounts");
@@ -100,6 +101,16 @@ export async function fetchCodexAccountSwitch(switchId: string): Promise<CodexAc
 	});
 	if (error) throw new Error(apiErrorMessage(error));
 	return data as CodexAccountSwitch;
+}
+
+/** Pin subsequent requests from an existing Codex session to one account. */
+export async function switchCodexSessionAccount(sessionId: string, accountId: string): Promise<CodexSessionAccountSwitch> {
+	const { data, error } = await apiClient.POST("/api/v1/agents/codex/sessions/{sessionId}/account", {
+		params: { path: { sessionId } },
+		body: { accountId },
+	});
+	if (error) throw new Error(apiErrorMessage(error));
+	return data as CodexSessionAccountSwitch;
 }
 
 export const codexAccountsQueryOptions = {

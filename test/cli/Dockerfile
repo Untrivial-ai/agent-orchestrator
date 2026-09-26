@@ -9,6 +9,7 @@
 # path. --init keeps process accounting clean for any short-lived child.
 
 # ---- stage 1: build the binary (the "release" a user would download) ----
+
 FROM golang:1.27.1-bookworm AS build
 WORKDIR /src
 

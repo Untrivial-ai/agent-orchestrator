@@ -35,8 +35,18 @@ type CodexAccountService interface {
 	GetCodexAccountSwitch(context.Context, string) (domain.CodexAccountSwitch, error)
 }
 
+// CodexSessionAccountService changes the account pin used by one running Codex
+// session's proxy route. The device-global account switch is wired separately
+// through the agent service and changes the default for future routes.
+type CodexSessionAccountService interface {
+	SwitchSessionAccount(context.Context, string, string) (string, error)
+}
+
 // CodexAccountsController exposes cached accounts, login, switching, and events.
-type CodexAccountsController struct{ Svc CodexAccountService }
+type CodexAccountsController struct {
+	Svc           CodexAccountService
+	SessionRoutes CodexSessionAccountService
+}
 
 // Register adds request-timeout-bound Codex account routes.
 func (c *CodexAccountsController) Register(r chi.Router) {
@@ -51,6 +61,44 @@ func (c *CodexAccountsController) Register(r chi.Router) {
 	r.Post("/agents/codex/accounts/login-operations/{operationId}/cancel", c.cancelLogin)
 	r.Post("/agents/codex/account-switches", c.startSwitch)
 	r.Get("/agents/codex/account-switches/{switchId}", c.getSwitch)
+	r.Post("/agents/codex/sessions/{sessionId}/account", c.switchSessionAccount)
+}
+
+func (c *CodexAccountsController) switchSessionAccount(w http.ResponseWriter, r *http.Request) {
+	if c.SessionRoutes == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/agents/codex/sessions/{sessionId}/account")
+		return
+	}
+	var request SwitchCodexSessionAccountRequest
+	if err := decodeJSONStrict(r, &request); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+		return
+	}
+	sessionID := strings.TrimSpace(chi.URLParam(r, "sessionId"))
+	accountID := strings.TrimSpace(request.AccountID)
+	if sessionID == "" || accountID == "" {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "ACCOUNT_ID_REQUIRED", "A Codex account id is required", nil)
+		return
+	}
+	selected, err := c.SessionRoutes.SwitchSessionAccount(r.Context(), sessionID, accountID)
+	if err != nil {
+		writeCodexSessionAccountError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, SwitchCodexSessionAccountResponse{SessionID: sessionID, AccountID: selected})
+}
+
+func writeCodexSessionAccountError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, ports.ErrCodexProxyNoAccounts):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_PROXY_NO_ACCOUNTS", "No logged-in Codex accounts are available", nil)
+	case errors.Is(err, ports.ErrCodexProxyAccountUnavailable):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CODEX_PROXY_ACCOUNT_UNAVAILABLE", "The selected Codex account is unavailable", nil)
+	case errors.Is(err, ports.ErrCodexProxyUnavailable):
+		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "CODEX_PROXY_UNAVAILABLE", "The Codex accounts manager is unavailable", nil)
+	default:
+		envelope.WriteError(w, r, err)
+	}
 }
 
 func (c *CodexAccountsController) getSwitch(w http.ResponseWriter, r *http.Request) {
