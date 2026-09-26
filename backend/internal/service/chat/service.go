@@ -1028,6 +1028,28 @@ func (s *Service) PreservesProviderOnRestart(sessionID domain.SessionID) bool {
 	return ok && preserver.PreservesProviderOnClose()
 }
 
+// ContextPressureFor reports a live Chat session's context fullness, or nil
+// when unknown: no controller, a stopped controller, or no stated window.
+func (s *Service) ContextPressureFor(sessionID domain.SessionID) *domain.ContextPressure {
+	controller, err := s.Controller(sessionID)
+	if err != nil || controller.State() == ports.ChatControllerStopped {
+		return nil
+	}
+	used, window, observedAt, ok := controller.ContextUsage()
+	if !ok {
+		return nil
+	}
+	percent := int(used * 100 / window)
+	if percent > 100 {
+		percent = 100
+	}
+	return &domain.ContextPressure{
+		ContextUsedPercent: percent,
+		Source:             "chat-controller",
+		ObservedAt:         observedAt,
+	}
+}
+
 // requireChatSession reads the persisted mode and refuses anything that is not a
 // Chat session. Dispatch is decided by durable state, never by the caller.
 func (s *Service) requireChatSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, error) {

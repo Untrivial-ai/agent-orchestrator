@@ -255,7 +255,8 @@ type Controller struct {
 	// cumulative accounting across separate events. Writing either half as a full
 	// replacement erases the other half and turns a percentage meter into a bare
 	// token count.
-	usage domain.ConversationUsage
+	usage           domain.ConversationUsage
+	usageObservedAt time.Time
 	// mcpServers is keyed by name; mcpServerOrder preserves first-seen order so the
 	// list a client renders does not reshuffle on every turn.
 	mcpServers     map[string]domain.ConversationMCPServer
@@ -1631,6 +1632,7 @@ func (c *Controller) mergeUsage(update ports.ChatUsage) domain.ConversationUsage
 	if contextKnown {
 		c.usage.ContextUsed = update.ContextUsed
 		c.usage.ContextWindow = update.ContextWindow
+		c.usageObservedAt = c.now()
 	}
 	if totalsKnown {
 		c.usage.InputTokens = update.InputTokens
@@ -1644,6 +1646,17 @@ func (c *Controller) mergeUsage(update ports.ChatUsage) domain.ConversationUsage
 		c.usage.Currency = update.Currency
 	}
 	return c.usage
+}
+
+// ContextUsage returns the current in-memory context reading, or ok=false when
+// the provider has not stated a context window yet.
+func (c *Controller) ContextUsage() (used, window int64, observedAt time.Time, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.usage.ContextWindow <= 0 || c.usage.ContextUsed < 0 {
+		return 0, 0, time.Time{}, false
+	}
+	return c.usage.ContextUsed, c.usage.ContextWindow, c.usageObservedAt, true
 }
 
 // busy reports whether a provider turn is in flight.

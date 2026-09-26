@@ -9287,6 +9287,8 @@ components:
           type: string
         chatProviderPreserved:
           type: boolean
+        contextPressure:
+          $ref: '#/components/schemas/DomainContextPressure'
         createdAt:
           format: date-time
           type: string
@@ -10337,6 +10339,20 @@ components:
       required:
       - state
       - lastActivityAt
+      type: object
+    DomainContextPressure:
+      properties:
+        contextUsedPercent:
+          type: integer
+        observedAt:
+          format: date-time
+          type: string
+        source:
+          type: string
+      required:
+      - contextUsedPercent
+      - source
+      - observedAt
       type: object
     DomainReviewerConfig:
       properties:

@@ -200,6 +200,7 @@ type Service struct {
 	// normal, not a broken pipeline. nil means "unknown": never downgrade.
 	signalCapable         func(domain.AgentHarness) bool
 	chatProviderPreserved func(domain.SessionID) bool
+	contextPressure       func(domain.SessionID) *domain.ContextPressure
 	// githubIdentity optionally resolves the operator's authenticated GitHub
 	// account so the handle rides along with product telemetry. Nil disables it
 	// and the emitter degrades to anonymous.
@@ -213,6 +214,12 @@ type Service struct {
 // services have been constructed. It performs no provider or filesystem probes.
 func (s *Service) SetChatProviderPreserver(preserves func(domain.SessionID) bool) {
 	s.chatProviderPreserved = preserves
+}
+
+// SetContextPressureSource wires the best-effort live context-pressure lookup.
+// A nil source, or a nil result, leaves the field absent (unknown).
+func (s *Service) SetContextPressureSource(source func(domain.SessionID) *domain.ContextPressure) {
+	s.contextPressure = source
 }
 
 // New wires a controller-facing session service over an internal session Manager.
@@ -1122,11 +1129,16 @@ func (s *Service) toSessionWithFacts(rec domain.SessionRecord, prs []domain.PRFa
 	}); ok {
 		readiness = recovery.SessionStatusReadiness(rec)
 	}
+	var pressure *domain.ContextPressure
+	if s.contextPressure != nil && !rec.IsTerminated {
+		pressure = s.contextPressure(rec.ID)
+	}
 	return domain.Session{
 		SessionRecord:   rec,
 		StatusReadiness: readiness,
 		ChatProviderPreserved: rec.Mode == domain.SessionModeChat && !rec.IsTerminated &&
 			s.chatProviderPreserved != nil && s.chatProviderPreserved(rec.ID),
+		ContextPressure:  pressure,
 		Status:           deriveStatus(rec, prs, now, s.harnessSignals(rec.Harness)),
 		SCMStatus:        deriveSCMStatus(prs),
 		KanbanColumn:     presentation.Column,

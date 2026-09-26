@@ -3224,6 +3224,7 @@ export interface components {
             autoReviewEnabled: boolean;
             branch?: string;
             chatProviderPreserved: boolean;
+            contextPressure?: components["schemas"]["DomainContextPressure"];
             /** Format: date-time */
             createdAt: string;
             displayName?: string;
@@ -3588,6 +3589,12 @@ export interface components {
             /** Format: date-time */
             lastActivityAt: string;
             state: string;
+        };
+        DomainContextPressure: {
+            contextUsedPercent: number;
+            /** Format: date-time */
+            observedAt: string;
+            source: string;
         };
         DomainReviewerConfig: {
             agentConfig?: components["schemas"]["AgentConfig"];
