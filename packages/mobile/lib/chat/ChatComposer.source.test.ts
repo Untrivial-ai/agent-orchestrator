@@ -63,8 +63,14 @@ describe("chat composer pill", () => {
 		// A controlled TextInput can retain its last native content size after its
 		// value is cleared; the empty placeholder must not inherit that height.
 		expect(composer).toContain('setText("");\n\t\t\tsetFieldHeight(COMPOSER_FIELD_HEIGHT);');
-		expect(composer).toContain('if (!text) {\n\t\t\t\t\t\t\tsetFieldHeight(COMPOSER_FIELD_HEIGHT);');
+		expect(composer).toContain('if (!latestText.current) {\n\t\t\t\t\t\t\tsetFieldHeight(COMPOSER_FIELD_HEIGHT);');
 		expect(composer).toContain("height: text ? fieldHeight : COMPOSER_FIELD_HEIGHT");
+	});
+
+	it("uses the latest native text when a pasted draft grows before React renders", () => {
+		expect(composer).toContain("onChangeText={(value) => { latestText.current = value; setText(value); }}");
+		expect(composer).toContain("if (!latestText.current) {");
+		expect(composer).toContain('latestText.current = "";\n\t\t\tsetText("");');
 	});
 
 	// Two discs side by side have no hierarchy; the send button is the only shape

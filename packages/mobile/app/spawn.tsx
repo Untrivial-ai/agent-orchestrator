@@ -25,7 +25,6 @@ import { modelOverride, resolveSpawnAgent, resolveSpawnModel, spawnModelSourceCh
 import { appendSpawnAttachments, readSpawnAttachments, type SpawnAttachment } from "../lib/spawn-attachments";
 import { SpawnComposerControls } from "../lib/spawn-composer-controls";
 import { SpawnPromptInput } from "../lib/spawn-prompt-input";
-import { availablePromptHeight } from "../lib/spawnPromptLayout";
 import { useApp } from "../lib/store";
 import { useVoiceInput } from "../lib/voice/useVoiceInput";
 import type { Theme } from "../lib/theme";
@@ -71,15 +70,11 @@ export default function SpawnModal() {
 	// appended, so dictation can extend what was typed rather than replace it.
 	const voice = useVoiceInput({ onTranscript: useCallback((spoken: string) => setPrompt((old) => old ? `${old} ${spoken}` : spoken), []) });
 	const listening = voice.state === "starting" || voice.state === "recording";
-	// iOS: the prompt is the sheet's whole empty area, not a 112pt strip above a
-	// spacer. The controls ride the keyboard by translation (see below), which
-	// doesn't reflow this view, so the part they and the keyboard cover is taken
-	// back out here — otherwise the last lines would type in behind them.
+	// iOS: the prompt fills the room above the controls. The controls translate
+	// with the keyboard, which does not reflow their siblings; a spacer below
+	// the attachments and messages makes that entire region reflow instead.
 	const [promptRoom, setPromptRoom] = useState<number>();
 	const keyboardHeight = useKeyboardState((state) => state.height);
-	const promptHeight = promptRoom === undefined
-		? undefined
-		: availablePromptHeight(promptRoom, keyboardHeight);
 
 
 
@@ -301,7 +296,7 @@ export default function SpawnModal() {
 					style={[styles.promptHost, Platform.OS === "ios" && styles.promptHostFill]}
 					onLayout={Platform.OS === "ios" ? (event) => setPromptRoom(Math.floor(event.nativeEvent.layout.height)) : undefined}
 				>
-					<SpawnPromptInput value={prompt} onChangeText={setPrompt} height={Platform.OS === "ios" ? promptHeight : undefined} />
+					<SpawnPromptInput value={prompt} onChangeText={setPrompt} height={Platform.OS === "ios" ? promptRoom : undefined} />
 				</View>
 
 				{attachments.length ? (
@@ -335,6 +330,13 @@ export default function SpawnModal() {
 					{error ? <Text style={styles.error}>{error}</Text> : null}
 					{offerTUI ? <Button title="Create as Terminal UI instead" variant="ghost" icon="terminal" onPress={() => { selectMode("tui"); setOfferTUI(false); setError(null); }} /> : null}
 				</View> : null}
+
+				{/* The sticky controls move visually but keep their original layout
+				    position. Reserve that movement before them so chips and messages
+				    remain visible above the keyboard, not behind the controls. */}
+				{Platform.OS === "ios" && keyboardHeight > 0 ? (
+					<View pointerEvents="none" style={{ height: keyboardHeight, marginTop: -space.sm }} />
+				) : null}
 
 				{/* The controls ride the keyboard on the UI thread.
 				    iOS does not lift this form sheet for the IME, and every
@@ -392,6 +394,9 @@ export default function SpawnModal() {
 // connection password".
 function spawnErrorCopy(e: unknown): string {
 	if (isChatPreflightError(e)) return chatErrorCopy(e);
+	if (e instanceof ApiError && e.code === "PROMPT_TOO_LONG") {
+		return "Task prompt is too long. Keep it to 16 KiB or fewer (emoji and other non-English characters use more than one byte). Shorten it and try again.";
+	}
 	const status = e instanceof ApiError ? e.status : undefined;
 	const { title, message } = describeConnectionFailure(classifyConnectionFailure(status), {
 		host: "",
@@ -420,7 +425,7 @@ const makeStyles = (t: Theme) =>
 		voice: { flexDirection: "row", alignItems: "center", gap: space.xs, backgroundColor: t.tintRed, borderRadius: 8, paddingHorizontal: space.sm, paddingVertical: space.xs },
 		voiceText: { fontFamily: "Geist_400Regular", flex: 1, color: t.textSecondary, fontSize: type.caption2.fontSize },
 		promptHost: { width: "100%", height: PROMPT_MIN_HEIGHT },
-		promptHostFill: { height: undefined, flex: 1, minHeight: PROMPT_MIN_HEIGHT },
+		promptHostFill: { height: undefined, flex: 1, minHeight: 0 },
 		attachments: { gap: space.sm },
 		attachment: { maxWidth: 190, height: 36, flexDirection: "row", alignItems: "center", gap: space.xs, paddingHorizontal: space.sm, borderRadius: 12, borderCurve: "continuous", backgroundColor: t.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderSubtle },
 		attachmentName: { fontFamily: "Geist_400Regular", flexShrink: 1, color: t.textSecondary, fontSize: type.caption1.fontSize },

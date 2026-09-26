@@ -207,6 +207,7 @@ export function ChatComposer({
 			const route = composerDeliveryRoute(intent, steerEligible);
 			if (route === "steer") await onSteer(trimmed);
 			else await onSend(trimmed, images.length ? images : undefined, resources.length ? resources : undefined);
+			latestText.current = "";
 			setText("");
 			setFieldHeight(COMPOSER_FIELD_HEIGHT);
 			setAttachments([]);
@@ -395,10 +396,10 @@ export function ChatComposer({
 					accessibilityLabel="Message the agent"
 					editable={!stopped}
 					value={text}
-					onChangeText={setText}
+					onChangeText={(value) => { latestText.current = value; setText(value); }}
 					onSelectionChange={(event) => setCursor(event.nativeEvent.selection.start)}
 					onContentSizeChange={(event) => {
-						if (!text) {
+						if (!latestText.current) {
 							setFieldHeight(COMPOSER_FIELD_HEIGHT);
 							return;
 						}
