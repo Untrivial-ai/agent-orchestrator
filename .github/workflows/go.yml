@@ -33,12 +33,9 @@ jobs:
           # Read the version from go.mod so CI can't drift from the module
           # (it previously pinned 1.22 while go.mod declared 1.25).
           go-version-file: backend/go.mod
-          # Restore the module and build caches. `go test -race ./...` rebuilds
-          # every dependency with race instrumentation, and modernc.org/sqlite
-          # alone is minutes of that on a 4-vCPU runner: the SQLite package did
-          # not start until ~5 minutes into a 20-minute Test step. The cache is
-          # keyed on go.sum, so a dependency bump still gets a cold, correct
-          # build.
+          # `go test -race` rebuilds every dependency with race
+          # instrumentation; modernc.org/sqlite alone delayed the SQLite
+          # package to ~296s into the step. Keyed on go.sum.
           cache-dependency-path: backend/go.sum
 
       - name: Check formatting
@@ -85,7 +82,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
-          cache-dependency-path: backend/go.sum
+          cache: false
 
       # Scoped to teardown and kill by name rather than running these packages
       # whole: running them on Windows for the first time surfaced ten
@@ -93,18 +90,18 @@ jobs:
       # and branch namespacing) that have nothing to do with worktree teardown.
       # Widening this is worth doing, but as its own change with its own fixes.
       - name: Test SQLite filesystem path identity
-        run: go test -race -count=1 -run 'Test(OpenPreservesDataDirectoryCharacters|FragmentPathsKeepDatabasesIsolated|OpenRefusesToHideLegacyDatabase|OpenPrefersExistingIntendedDatabase|DatabaseURIPreservesWindowsPaths)$' ./internal/storage/sqlite
+        run: go test -race -run 'Test(OpenPreservesDataDirectoryCharacters|FragmentPathsKeepDatabasesIsolated|OpenRefusesToHideLegacyDatabase|OpenPrefersExistingIntendedDatabase|DatabaseURIPreservesWindowsPaths)$' ./internal/storage/sqlite
 
       - name: Test workspace teardown and session kill
-        run: go test -race -count=1 -v -run 'Destroy|Discard|Sweep|Kill' ./internal/adapters/workspace/... ./internal/session_manager/
+        run: go test -race -v -run 'Destroy|Discard|Sweep|Kill' ./internal/adapters/workspace/... ./internal/session_manager/
 
       - name: Test Windows Chat environment precedence
-        run: go test -race -count=1 ./internal/adapters/chatdriver/processenv/ ./internal/agentlaunch/
+        run: go test -race ./internal/adapters/chatdriver/processenv/ ./internal/agentlaunch/
 
       - name: Test Windows background agent commands have no console
-        run: go test -race -count=1 -run '^TestBackgroundCommandHasNoConsole$' ./internal/adapters/agent/pi ./internal/adapters/agent/omp ./internal/adapters/agent/primeagent
+        run: go test -race -run '^TestBackgroundCommandHasNoConsole$' ./internal/adapters/agent/pi ./internal/adapters/agent/omp ./internal/adapters/agent/primeagent
       - name: Test Windows mobile tunnel subprocesses
-        run: go test -race -count=1 -run 'Cloudflared|Tunnel|Command' ./internal/mobilebridge/ ./internal/process/
+        run: go test -race -run 'Cloudflared|Tunnel|Command' ./internal/mobilebridge/ ./internal/process/
 
       - name: Test native Goose identity
         run: go test -race -count=1 -timeout=10m ./internal/adapters/agent/binaryutil ./internal/adapters/agent/goose
@@ -123,7 +120,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: cloud/go.mod
-          cache-dependency-path: cloud/go.sum
+          cache: false
 
       - name: Check formatting
         run: |
@@ -141,9 +138,7 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        # -count=1 for the same reason as build-test: the restored build cache
-        # would otherwise replay test results from an earlier run.
-        run: go test -race -count=1 ./...
+        run: go test -race ./...
 
   lint:
     runs-on: ubuntu-latest

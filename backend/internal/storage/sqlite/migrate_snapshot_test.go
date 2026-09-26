@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 )
 
@@ -14,38 +13,29 @@ import (
 // from scratch, so the package spent ~15 minutes replaying migrations. Images
 // are built once, in ascending order, one migration at a time: the package now
 // pays for one replay no matter how many versions the tests ask for.
-var migrationSnapshots struct {
-	sync.Mutex
+var migrationSnapshots = struct {
 	images  map[int64][]byte
 	highest int64
-}
+}{images: map[int64][]byte{}}
 
 // snapshotDSN keeps the checkpoint databases in rollback-journal mode so ao.db
 // is complete on disk after every commit. WAL would leave committed frames in a
 // sidecar file that a plain file read silently misses.
 const snapshotDSN = "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)"
 
-// noForeignKeysDSN is for tests that seed rows whose parents do not exist yet.
-const noForeignKeysDSN = "?_pragma=busy_timeout(5000)"
-
 // migratedDatabaseSnapshot returns a copy of a database migrated to exactly
 // version. Versions below the highest one built are served from the cache, so
 // requests may arrive in any order.
 func migratedDatabaseSnapshot(t *testing.T, version int64) []byte {
 	t.Helper()
-	migrationSnapshots.Lock()
-	defer migrationSnapshots.Unlock()
-	if snapshot, ok := migrationSnapshots.images[version]; ok {
-		return append([]byte(nil), snapshot...)
+	if migrationSnapshots.highest < version {
+		buildMigrationSnapshots(t, version)
 	}
-	return append([]byte(nil), buildMigrationSnapshots(t, version)...)
+	return append([]byte(nil), migrationSnapshots.images[version]...)
 }
 
-func buildMigrationSnapshots(t *testing.T, version int64) []byte {
+func buildMigrationSnapshots(t *testing.T, version int64) {
 	t.Helper()
-	if migrationSnapshots.images == nil {
-		migrationSnapshots.images = map[int64][]byte{}
-	}
 	databasePath := filepath.Join(t.TempDir(), "ao.db")
 	if migrationSnapshots.highest > 0 {
 		if err := os.WriteFile(databasePath, migrationSnapshots.images[migrationSnapshots.highest], 0o600); err != nil {
@@ -66,7 +56,6 @@ func buildMigrationSnapshots(t *testing.T, version int64) []byte {
 		migrationSnapshots.images[next] = snapshot
 		migrationSnapshots.highest = next
 	}
-	return migrationSnapshots.images[version]
 }
 
 // openMigratedDatabaseCopy returns an isolated database migrated to exactly
@@ -81,7 +70,7 @@ func openMigratedDatabaseCopy(t *testing.T, version int64) *sql.DB {
 // parents do not exist yet.
 func openMigratedDatabaseCopyNoForeignKeys(t *testing.T, version int64) *sql.DB {
 	t.Helper()
-	return openMigratedDatabaseCopyAt(t, t.TempDir(), version, noForeignKeysDSN)
+	return openMigratedDatabaseCopyAt(t, t.TempDir(), version, "?_pragma=busy_timeout(5000)")
 }
 
 // openMigratedDatabaseCopyAt clones the snapshot for version into dataDir. Use
