@@ -101,7 +101,14 @@ var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[[:alpha:]]`)
 
 var commandSpecs = map[string]commandSpec{
 	"aider":       {args: []string{"--no-check-update", "--no-git", "--no-gitignore", "--no-analytics", "--list-models", "."}, parser: parseIDLines},
-	"opencode":    {args: []string{"--pure", "models"}, parser: parseIDLines},
+	// `models` alone, never `--pure models`: `--pure` (skip external plugins) is
+	// a global flag whose acceptance varies across opencode builds — a binary that
+	// does not take it globally aborts with "Unrecognized flag: --pure in command
+	// opencode" and empties the picker. The `models` subcommand is the stable
+	// contract every opencode ships; dropping the flag lists an identical catalog
+	// (and still honors the provider-presence env used for cloud scoping) without
+	// betting on a flag that can be rejected.
+	"opencode":    {args: []string{"models"}, parser: parseIDLines},
 	"grok":        {args: []string{"models"}, parser: parseGrokModels},
 	"cursor":      {args: []string{"models"}, parser: parseCursorModels},
 	"agy":         {args: []string{"models"}, parser: parseAgyModels},
