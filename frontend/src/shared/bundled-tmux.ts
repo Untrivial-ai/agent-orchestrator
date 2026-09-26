@@ -1,5 +1,71 @@
+import { createHash, randomUUID } from "node:crypto";
+import { chmod, copyFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
+import path from "node:path";
+
 function joinPath(...segments: string[]): string {
 	return segments.map((segment) => segment.replace(/[/\\]+$/, "")).join("/");
+}
+
+interface BundledTmuxStagingDependencies {
+	copyFile: (source: string, destination: string) => Promise<void>;
+	rename: (source: string, destination: string) => Promise<void>;
+}
+
+const defaultStagingDependencies: BundledTmuxStagingDependencies = {
+	copyFile: (source, destination) => copyFile(source, destination),
+	rename: (source, destination) => rename(source, destination),
+};
+
+function isNotFound(error: unknown): boolean {
+	return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+async function fileSha256(file: string): Promise<string> {
+	return createHash("sha256").update(await readFile(file)).digest("hex");
+}
+
+async function filesMatch(source: string, destination: string): Promise<boolean> {
+	const sourceStats = await stat(source);
+	let destinationStats;
+	try {
+		destinationStats = await stat(destination);
+	} catch (error) {
+		if (isNotFound(error)) return false;
+		throw error;
+	}
+	if (sourceStats.size !== destinationStats.size) return false;
+	try {
+		const [sourceHash, destinationHash] = await Promise.all([
+			fileSha256(source),
+			fileSha256(destination),
+		]);
+		return sourceHash === destinationHash;
+	} catch (error) {
+		// Another app launch may have replaced or removed the staged file after
+		// stat. Treat that like a mismatch and let the atomic staging path repair it.
+		if (isNotFound(error)) return false;
+		throw error;
+	}
+}
+
+export async function stageBundledTmuxBinary(
+	source: string,
+	destination: string,
+	dependencyOverrides: Partial<BundledTmuxStagingDependencies> = {},
+): Promise<boolean> {
+	if (await filesMatch(source, destination)) return false;
+
+	const dependencies = { ...defaultStagingDependencies, ...dependencyOverrides };
+	await mkdir(path.dirname(destination), { recursive: true, mode: 0o750 });
+	const temporary = `${destination}.tmp-${process.pid}-${randomUUID()}`;
+	try {
+		await dependencies.copyFile(source, temporary);
+		await chmod(temporary, 0o755);
+		await dependencies.rename(temporary, destination);
+		return true;
+	} finally {
+		await rm(temporary, { force: true });
+	}
 }
 
 // Packaged Unix builds always point the daemon at AO's own tmux. Returning a
