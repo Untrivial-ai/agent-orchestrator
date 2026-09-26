@@ -61,7 +61,7 @@ import { cn } from "../../lib/utils";
 import { caretNotation, stripAnsi } from "../../lib/ansi";
 import { getApiBaseUrl } from "../../lib/api-client";
 import { isWebLink, openLinkInSystemBrowser } from "../../lib/external-link-policy";
-import { ActivityTitle, ChatMarkdown } from "./ChatMarkdown";
+import { ActivityTitle, ChatMarkdown, SessionLinkedText } from "./ChatMarkdown";
 import { HighlightedCode } from "./HighlightedCode";
 import { CopyButton } from "./CopyButton";
 import { HumanMessageEditor } from "./HumanMessageEditor";
@@ -574,7 +574,11 @@ export function HumanMessage({
 							: "bg-raised text-foreground",
 					)}
 				>
-					{body ? <p className="break-words whitespace-pre-wrap text-pretty">{body}</p> : null}
+					{body ? (
+						<p className="break-words whitespace-pre-wrap text-pretty">
+							<SessionLinkedText text={body} />
+						</p>
+					) : null}
 					<StagedAttachmentItems
 						paths={attachments}
 						sessionId={sessionId}
@@ -665,8 +669,8 @@ export function OriginMessage({ message }: { message: ConversationMessage }) {
 			{longReport && expanded ? (
 				<ChatMarkdown text={message.text} muted />
 			) : (
-				<p className={cn("text-sm leading-relaxed text-muted-foreground", longReport && "line-clamp-3")}>
-					{preview}
+				<p className={cn("whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground", longReport && "line-clamp-3")}>
+					<SessionLinkedText text={preview} />
 				</p>
 			)}
 			{longReport ? (

@@ -2,6 +2,35 @@
 
 Manage agent sessions: list, inspect, rename, kill, restore, clean up, and claim PRs.
 
+## In-app session links
+
+When referring a user or another agent to a session in AO Chat or the AO
+terminal, emit this canonical link:
+
+```text
+ao://sessions/{project-id}/{session-id}
+```
+
+- Use stable IDs returned by `ao project ls` and `ao session ls`, or the current
+  session's `AO_PROJECT_ID` and `AO_SESSION_ID`. Never use display names as
+  identity; renaming a session must not change its link.
+- Treat the project ID and session ID as separate URL path segments. Encode
+  either ID with URL percent encoding if it contains characters that are not
+  safe in one segment.
+- Emit only the navigation route above. Do not append query strings, fragments,
+  action names, credentials, authorities, or extra path segments.
+- The link is handled only inside a currently running AO desktop app. It is not
+  an operating-system protocol link and must not be described as supporting
+  cold launch or navigation from external applications.
+- A session link navigates; it never sends a message, executes a command, or
+  performs another action.
+
+Example for project `mercury` and session `mer-3`:
+
+```text
+ao://sessions/mercury/mer-3
+```
+
 ## Syntax
 
 ```
