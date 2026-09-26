@@ -275,6 +275,14 @@ func (m *Manager) leaveTerminal(id string, c *connState) {
 	delete(s.members, c)
 	if len(s.members) == 0 {
 		delete(m.shared, id)
+		// Last viewer gone: prune the per-terminal input bookkeeping so a daemon
+		// that churns through many terminal ids does not accumulate one lastInputAt
+		// entry per id for its whole lifetime. Only lastInputAt is dropped here;
+		// inputBlocked is owned by the drain refcount (BeginInputDrain/release) and
+		// must not be cleared out from under an in-flight drain.
+		m.inputMu.Lock()
+		delete(m.lastInputAt, id)
+		m.inputMu.Unlock()
 		return
 	}
 	m.reconcileLocked(id, s, false)
