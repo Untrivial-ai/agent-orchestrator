@@ -46,6 +46,7 @@ import { readKeybindingOverrides, writeKeybindingOverrides } from "./main/keybin
 import { readEditorSettings, writeEditorPreference } from "./main/editor-settings";
 import { createEditorHandoff } from "./main/editor-handoff";
 import { launchCommand } from "./main/launch-command";
+import { closeDaemonLog, openDaemonLog, writeDaemonLog } from "./main/daemon-log";
 import {
 	decideRelocation,
 	inspectInstalledBundle,
@@ -60,7 +61,15 @@ import {
 } from "./main/ui-settings";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
+} from "node:fs";
 import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -516,6 +525,15 @@ function appendDaemonOutput(text: string): void {
 	daemonOutput = (daemonOutput + text).slice(-MAX_DAEMON_OUTPUT_CHARS);
 	const nextStatus = refreshSlowDaemonStartupDetails(daemonStatus, daemonOutput);
 	if (nextStatus !== daemonStatus) setDaemonStatus(nextStatus);
+}
+
+// Durable daemon log writer lives in ./main/daemon-log; this file only decides
+// where the log goes (dev keeps its own under ~/.ao/dev/) and which child owns
+// the current generation.
+let daemonLogChild: ChildProcess | undefined;
+
+function daemonLogPath(): string {
+	return path.join(os.homedir(), ".ao", ...(isDev ? [DEV_STATE_SUBDIR] : []), "daemon.log");
 }
 
 // Menu installed on Windows where the native menu bar is hidden. The bar stays
@@ -1787,10 +1805,15 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 	if (!keep) {
 		const scanStdout = createListenPortScanner(reportBoundPort);
 		const scanStderr = createListenPortScanner(reportBoundPort);
+		// Mirror the pipes to disk: the scanners still need them, so the log is a
+		// tee rather than the stdio redirect keep-daemon mode uses.
+		openDaemonLog(daemonLogPath());
+		daemonLogChild = child;
 
 		child.stdout?.on("data", (chunk: Buffer) => {
 			const text = chunk.toString("utf8");
 			appendDaemonOutput(text);
+			writeDaemonLog(text);
 			console.log(text.trimEnd());
 			scanStdout(text);
 		});
@@ -1798,6 +1821,7 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 		child.stderr?.on("data", (chunk: Buffer) => {
 			const text = chunk.toString("utf8");
 			appendDaemonOutput(text);
+			writeDaemonLog(text);
 			console.error(text.trimEnd());
 			scanStderr(text);
 		});
@@ -1852,7 +1876,21 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 
 	child.once("exit", (code, signal) => {
 		stopDiscovery();
+		// Stale-exit guard before any log work: after a spawn failure Node emits
+		// both 'error' and 'exit' for the same child, and 'error' may already have
+		// cleared daemonProcess before a restart opened a fresh log. The exit
+		// stamp below acts on the module-level shared stream, so it must run only
+		// while this child is still the current one — otherwise a stale 'exit'
+		// stamps the new child's active log.
 		if (daemonProcess !== child) return;
+		// Stamp the exit now: a bare stack with no terminator reads as a
+		// truncated log, while "exited with SIGSEGV" names the failure outright.
+		// The close itself waits for 'close' (below): 'exit' can fire while
+		// stdout/stderr still hold buffered output, and closing here drops the
+		// final crash lines this log exists to capture (PR #3892 review).
+		writeDaemonLog(
+			`\n[ao] daemon exited ${signal ? `with ${signal}` : `with code ${code ?? "unknown"}`} at ${new Date().toISOString()}\n`,
+		);
 		daemonProcess = null;
 		// An explicit stopDaemon() already set a clean `{ state: "stopped" }`.
 		// daemon-telemetry reports any status carrying a `code` as
@@ -1877,6 +1915,16 @@ async function startDaemonInner(startEpoch: number): Promise<DaemonStatus> {
 			exitCode: code,
 			signal,
 		});
+	});
+
+	child.once("close", () => {
+		// 'close' fires once the stdio pipes have flushed, so whatever the daemon
+		// printed last is already teed into the log before it ends. Ownership
+		// guard: a respawned daemon owns the log by then, and the old child's
+		// late 'close' must not end the new child's active stream.
+		if (daemonLogChild !== child) return;
+		daemonLogChild = undefined;
+		void closeDaemonLog();
 	});
 
 	return daemonStatus;
