@@ -1,13 +1,17 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionFileExplorer } from "./SessionFileExplorer";
 import { TooltipProvider } from "./ui/tooltip";
 import { useUiStore } from "../stores/ui-store";
+import type { SessionArtifact } from "../types/workspace";
 
 const { getMock, postMock } = vi.hoisted(() => ({ getMock: vi.fn(), postMock: vi.fn() }));
+
+type MockTreeFile = { path: string; type: "file" };
+type MockTreeNode = MockTreeFile | { children?: MockTreeNode[]; path: string; type: "directory" };
 
 vi.mock("../lib/api-client", () => ({
 	apiClient: { GET: getMock, POST: postMock },
@@ -23,26 +27,38 @@ vi.mock("../lib/api-client", () => ({
 vi.mock("./FileTree", () => ({
 	FileTree: ({
 		changedOnly,
+		changedOnlyData,
 		forceChangedOnly = false,
 		filterText,
 		onSelectPath,
 	}: {
 		changedOnly: boolean;
+		changedOnlyData?: MockTreeNode[];
 		forceChangedOnly?: boolean;
 		filterText: string;
 		onSelectPath: (node: { path: string; type: "file" }) => void;
 	}) => {
 		const [expanded, setExpanded] = useState(false);
+		const collectFiles = (nodes: MockTreeNode[]): MockTreeFile[] =>
+			nodes.flatMap((node) => (node.type === "file" ? [node] : collectFiles(node.children ?? [])));
+		const flattenedFiles = collectFiles(changedOnlyData ?? []);
+		const selectablePath = flattenedFiles[0]?.path ?? "src/App.tsx";
 		return <div>
 			<span data-testid="tree-changed-only">{String(changedOnly || forceChangedOnly)}</span>
 			<span data-testid="tree-filter">{filterText}</span>
 			<button onClick={() => setExpanded((current) => !current)} type="button">expand src</button>
 			{expanded ? <span>src directory expanded</span> : null}
-			<button onClick={() => onSelectPath({ path: "src/App.tsx", type: "file" })} type="button">
-				select src/App.tsx
+			<button onClick={() => onSelectPath({ path: selectablePath, type: "file" })} type="button">
+				select {selectablePath}
 			</button>
 		</div>;
 	},
+}));
+
+vi.mock("./ArtifactFileView", () => ({
+	ArtifactFileView: ({ artifactName, path }: { artifactName: string; path: string }) => (
+		<div data-testid="artifact-view">{`${artifactName}:${path}`}</div>
+	),
 }));
 
 vi.mock("./FileContentPane", () => ({
@@ -75,6 +91,11 @@ function renderWithQuery(children: ReactNode) {
 }
 
 describe("SessionFileExplorer", () => {
+	const artifacts: SessionArtifact[] = [
+		{ kind: "markdown", name: "notes.md", path: "notes.md", size: 12, updatedAt: "2026-09-22T00:00:00Z" },
+		{ kind: "file", name: "plan.md", path: "reports/plan.md", size: 20, updatedAt: "2026-09-22T00:00:00Z" },
+	];
+
 	beforeEach(() => {
 		window.localStorage.clear();
 		useUiStore.setState({ inspectorSessions: {} });
@@ -165,6 +186,74 @@ describe("SessionFileExplorer", () => {
 		expect(panels[0]).toHaveStyle({ flexGrow: "26" });
 		expect(panels[1]).toHaveStyle({ flexGrow: "74" });
 		widthSpy.mockRestore();
+	});
+
+	it("does not offer artifacts as a Files source in the workspace dropdown", async () => {
+		renderWithQuery(<SessionFileExplorer artifacts={artifacts} sessionId="sess-artifacts" />);
+
+		await userEvent.click(screen.getByRole("combobox", { name: "File source" }));
+
+		expect(screen.queryByRole("option", { name: "Artifacts (2)" })).not.toBeInTheDocument();
+	});
+
+	it("keeps artifact and workspace views available through the source switcher", async () => {
+		const sessionId = "sess-artifact-switch";
+		useUiStore.getState().setFilesChangedOnly(sessionId, false);
+		renderWithQuery(<SessionFileExplorer artifacts={artifacts} isMaximized sessionId={sessionId} />);
+
+		await userEvent.click(screen.getByRole("button", { name: "select src/App.tsx" }));
+		expect(screen.getByTestId("content-pane")).toHaveTextContent("src/App.tsx");
+
+		act(() => {
+			useUiStore.getState().setFilesSource(sessionId, { kind: "artifact" });
+		});
+		await userEvent.click(screen.getByRole("button", { name: "select reports/plan.md" }));
+		expect(screen.getByTestId("artifact-view")).toHaveTextContent("plan.md:reports/plan.md");
+
+		act(() => {
+			useUiStore.getState().setFilesSource(sessionId, { kind: "workspace" });
+		});
+		expect(screen.queryByTestId("artifact-view")).not.toBeInTheDocument();
+		expect(screen.getByTestId("content-pane")).toHaveTextContent("src/App.tsx");
+
+		act(() => {
+			useUiStore.getState().setFilesSource(sessionId, { kind: "artifact" });
+		});
+		expect(screen.getByTestId("artifact-view")).toHaveTextContent("plan.md:reports/plan.md");
+	});
+
+	it("opens an externally requested artifact inside the Artifacts source", async () => {
+		renderWithQuery(
+			<SessionFileExplorer
+				artifacts={artifacts}
+				isMaximized
+				revealRequest={{ path: "reports/plan.md", key: 1, source: "artifact" }}
+				sessionId="sess-artifact-reveal"
+			/>,
+		);
+
+		expect(await screen.findByTestId("artifact-view")).toHaveTextContent("plan.md:reports/plan.md");
+		expect(useUiStore.getState().inspectorSessions["sess-artifact-reveal"]?.filesSource).toEqual({ kind: "artifact" });
+	});
+
+	it("switches back to Workspace when a workspace file is revealed after viewing artifacts", async () => {
+		const sessionId = "sess-workspace-reveal";
+		useUiStore.getState().setFilesSource(sessionId, { kind: "artifact" });
+		const onOpenFile = vi.fn();
+		renderWithQuery(
+			<SessionFileExplorer
+				artifacts={artifacts}
+				onOpenFile={onOpenFile}
+				revealRequest={{ path: "src/App.tsx", key: 1 }}
+				sessionId={sessionId}
+			/>,
+		);
+
+		await waitFor(() => {
+			expect(useUiStore.getState().inspectorSessions[sessionId]?.filesSource).toEqual({ kind: "workspace" });
+		});
+		expect(screen.queryByTestId("artifact-view")).not.toBeInTheDocument();
+		expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx", { mode: "file" });
 	});
 
 	it("defaults to the continuous changes review and can switch to the full file tree", async () => {

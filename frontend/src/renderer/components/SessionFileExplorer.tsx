@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
+	ChevronLeft,
 	Columns2,
 	Maximize2,
 	Minimize2,
@@ -16,9 +17,10 @@ import {
 } from "../hooks/useSessionWorkspaceFiles";
 import { useSessionScmSummary } from "../hooks/useSessionScmSummary";
 import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
-import { buildChangedOnlyTree, type TreeNode } from "../hooks/useSessionWorkspaceTree";
+import { buildChangedOnlyTree, buildWorkspaceFileTree, type TreeNode } from "../hooks/useSessionWorkspaceTree";
 import { useFileAnnotation } from "../hooks/useFileAnnotation";
 import { useUiStore } from "../stores/ui-store";
+import type { SessionArtifact } from "../types/workspace";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
@@ -28,23 +30,30 @@ import { FileTree } from "./FileTree";
 import { FileContentPane, type FileOpenOptions } from "./FileContentPane";
 import { PanelMessage, RetryButton } from "./WorkspaceDiffView";
 import { WorkspaceReviewPane } from "./diffs/WorkspaceReviewPane";
+import { ArtifactFileView } from "./ArtifactFileView";
 
 const WORKSPACE_SOURCE: FilesSource = { kind: "workspace" };
+const ARTIFACT_SOURCE: FilesSource = { kind: "artifact" };
+const ARTIFACT_SOURCE_VALUE = "__artifacts__";
 
 type SessionFileExplorerProps = {
+	artifacts?: SessionArtifact[];
 	sessionId: string;
 	isMaximized?: boolean;
 	onOpenFile?: (path: string, options?: FileOpenOptions) => void;
+	onRevealRequestConsumed?: (key: number) => void;
 	onSplitChange?: (split: boolean) => void;
 	onToggleMaximized?: (next: boolean) => void;
-	revealRequest?: { path: string; key: number } | null;
+	revealRequest?: { feedback?: boolean; path: string; key: number; source?: "artifact" } | null;
 	split?: boolean;
 };
 
 export function SessionFileExplorer({
+	artifacts = [],
 	sessionId,
 	isMaximized = false,
 	onOpenFile,
+	onRevealRequestConsumed,
 	onSplitChange,
 	onToggleMaximized,
 	revealRequest,
@@ -55,6 +64,7 @@ export function SessionFileExplorer({
 	const [internalSplit, setInternalSplit] = useState(() => window.localStorage.getItem("ao.files.diffStyle") === "split");
 	const split = controlledSplit ?? internalSplit;
 	const [selectedPath, setSelectedPath] = useState<string | null>(null);
+	const [selectedArtifactPath, setSelectedArtifactPath] = useState<string | null>(null);
 	const [sourceNotice, setSourceNotice] = useState("");
 	const scmQuery = useSessionScmSummary(sessionId);
 	const queryClient = useQueryClient();
@@ -64,15 +74,27 @@ export function SessionFileExplorer({
 	const source = useUiStore((state) => state.inspectorSessions[sessionId]?.filesSource ?? WORKSPACE_SOURCE);
 	const setFilesChangedOnly = useUiStore((state) => state.setFilesChangedOnly);
 	const setFilesSource = useUiStore((state) => state.setFilesSource);
-	const annotation = useFileAnnotation(sessionId, { source: source.kind === "workspace" ? "Workspace" : `${source.label} (${source.url})` });
+	const annotation = useFileAnnotation(sessionId, {
+		source: source.kind === "pull_request" ? `${source.label} (${source.url})` : "Workspace",
+	});
 	const snapshot = source.kind === "pull_request" ? scmQuery.data?.find((pr) => pr.url === source.url)?.headSha ?? "" : "";
 	const querySource = useMemo<FilesSource>(
 		() => source.kind === "pull_request" ? { ...source, snapshot } : source,
 		[source, snapshot],
 	);
+	const artifactTree = useMemo(
+		() => buildWorkspaceFileTree(artifacts.map((artifact) => ({ binary: false, path: artifact.path, status: "unmodified" as const }))),
+		[artifacts],
+	);
+	const selectedArtifact = artifacts.find((artifact) => artifact.path === selectedArtifactPath);
+	const artifactFeedbackRequestKey =
+		revealRequest?.source === "artifact" && revealRequest.feedback && revealRequest.path === selectedArtifact?.path
+			? revealRequest.key
+			: undefined;
 
 	const filesQuery = useQuery({
 		...sessionSourceFilesQueryOptions(sessionId, querySource, t("files.error.loadWorkspace")),
+		enabled: source.kind !== "artifact",
 		refetchInterval: (query) => workspaceFilesRefetchInterval(connectionState, Boolean(query.state.data?.degraded)),
 	});
 	const changedOnlyData = useMemo(
@@ -86,6 +108,7 @@ export function SessionFileExplorer({
 
 	useEffect(() => {
 		setSelectedPath(null);
+		setSelectedArtifactPath(null);
 		setFilter("");
 		setSourceNotice("");
 	}, [sessionId]);
@@ -103,14 +126,23 @@ export function SessionFileExplorer({
 	}, [split]);
 	useEffect(() => {
 		if (!revealRequest) return;
+		if (revealRequest.source === "artifact") {
+			setFilesSource(sessionId, ARTIFACT_SOURCE);
+			setSelectedArtifactPath(revealRequest.path);
+			return;
+		}
+		setFilesSource(sessionId, WORKSPACE_SOURCE);
 		setFilesChangedOnly(sessionId, false);
 		setSelectedPath(revealRequest.path);
 		if (!isMaximized) onOpenFile?.(revealRequest.path, { mode: "file" });
-	}, [isMaximized, onOpenFile, revealRequest, sessionId, setFilesChangedOnly]);
+	}, [isMaximized, onOpenFile, revealRequest, sessionId, setFilesChangedOnly, setFilesSource]);
 
 	const handleSelectPath = (node: TreeNode) => {
 		setSelectedPath(node.path);
 		if (!isMaximized && source.kind === "workspace") onOpenFile?.(node.path, { mode: "file" });
+	};
+	const handleSelectArtifact = (node: TreeNode) => {
+		setSelectedArtifactPath(node.path);
 	};
 	const handleViewChange = (next: boolean) => {
 		setSelectedPath(null);
@@ -118,12 +150,15 @@ export function SessionFileExplorer({
 	};
 	const treeSelectedPath = selectedPath;
 	const selectedPreviousPath = filesQuery.data?.files.find((file) => file.path === selectedPath)?.previousPath;
-	const sourceValue = source.kind === "workspace" ? "workspace" : source.url;
+	const sourceValue = source.kind === "pull_request" ? source.url : source.kind === "artifact" ? ARTIFACT_SOURCE_VALUE : "workspace";
 	const selectSource = (value: string) => {
 		setSourceNotice("");
-		setSelectedPath(null);
 		if (value === "workspace") {
 			setFilesSource(sessionId, WORKSPACE_SOURCE);
+			return;
+		}
+		if (value === ARTIFACT_SOURCE_VALUE) {
+			setFilesSource(sessionId, ARTIFACT_SOURCE);
 			return;
 		}
 		const pr = scmQuery.data?.find((candidate) => candidate.url === value);
@@ -233,10 +268,29 @@ export function SessionFileExplorer({
 				) : null}
 			</header>
 			<div className="shrink-0 border-b border-border px-3 py-1 text-2xs text-muted-foreground">
-				{source.kind === "workspace" ? t("files.explorer.workspaceSource") : source.label}
+				{source.kind === "pull_request"
+					? source.label
+					: source.kind === "artifact"
+						? artifacts.length > 1
+							? t("inspector.artifacts", { count: artifacts.length })
+							: t("inspector.artifact")
+						: t("files.explorer.workspaceSource")}
 				{sourceNotice ? ` — ${sourceNotice}` : ""}
 			</div>
-			{showChanges ? (
+			{source.kind === "artifact" ? (
+				<ArtifactFilesPanel
+					artifact={selectedArtifact}
+					artifactTree={artifactTree}
+					feedbackRequestKey={artifactFeedbackRequestKey}
+					filter={filter}
+					isMaximized={isMaximized}
+					onBack={() => setSelectedArtifactPath(null)}
+					onFeedbackRequestConsumed={onRevealRequestConsumed}
+					onSelect={handleSelectArtifact}
+					selectedPath={selectedArtifactPath}
+					sessionId={sessionId}
+				/>
+			) : showChanges ? (
 				filesQuery.isPending ? (
 					<PanelMessage>{t("files.loading")}</PanelMessage>
 				) : filesQuery.isError ? (
@@ -288,6 +342,97 @@ export function SessionFileExplorer({
 				/>
 			)}
 		</section>
+	);
+}
+
+function ArtifactFilesPanel({
+	artifact,
+	artifactTree,
+	feedbackRequestKey,
+	filter,
+	isMaximized,
+	onBack,
+	onFeedbackRequestConsumed,
+	onSelect,
+	selectedPath,
+	sessionId,
+}: {
+	artifact?: SessionArtifact;
+	artifactTree: TreeNode[];
+	feedbackRequestKey?: number;
+	filter: string;
+	isMaximized: boolean;
+	onBack: () => void;
+	onFeedbackRequestConsumed?: (key: number) => void;
+	onSelect: (node: TreeNode) => void;
+	selectedPath: string | null;
+	sessionId: string;
+}) {
+	const { t } = useTranslation();
+	if (isMaximized) {
+		return (
+			<ResizablePanelGroup className="min-h-0 flex-1">
+				<ResizablePanel defaultSize="26%" minSize="18%" maxSize="50%">
+					<FileTree
+						changedOnly
+						changedOnlyData={artifactTree}
+						filterText={filter}
+						onSelectPath={onSelect}
+						selectedPath={selectedPath}
+						sessionId={sessionId}
+					/>
+				</ResizablePanel>
+				<ResizableHandle />
+				<ResizablePanel defaultSize="74%" minSize="40%">
+					{artifact ? (
+						<ArtifactFileView
+							artifactName={artifact.name}
+							feedbackRequestKey={feedbackRequestKey}
+							onFeedbackRequestConsumed={onFeedbackRequestConsumed}
+							path={artifact.path}
+							sessionId={sessionId}
+						/>
+					) : (
+						<PanelMessage>{t("files.explorer.selectFile")}</PanelMessage>
+					)}
+				</ResizablePanel>
+			</ResizablePanelGroup>
+		);
+	}
+	if (artifact) {
+		return (
+			<div className="flex min-h-0 flex-1 flex-col">
+				<div className="flex h-8 shrink-0 items-center gap-1 border-b border-border bg-surface px-1">
+					<Button
+						aria-label={t("files.explorer.backToTree")}
+						onClick={onBack}
+						size="icon-sm"
+						type="button"
+						variant="ghost"
+					>
+						<ChevronLeft className="size-icon-sm" aria-hidden="true" />
+					</Button>
+					<span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">{artifact.path}</span>
+				</div>
+				<ArtifactFileView
+					artifactName={artifact.name}
+					feedbackRequestKey={feedbackRequestKey}
+					onFeedbackRequestConsumed={onFeedbackRequestConsumed}
+					path={artifact.path}
+					sessionId={sessionId}
+				/>
+			</div>
+		);
+	}
+	return (
+		<FileTree
+			changedOnly
+			changedOnlyData={artifactTree}
+			filterText={filter}
+			onSelectPath={onSelect}
+			selectedPath={selectedPath}
+			sessionId={sessionId}
+		/>
 	);
 }
 

@@ -5936,6 +5936,14 @@ paths:
         schema:
           description: Session identifier, e.g. project-1.
           type: string
+      - description: When true, serve Markdown files as raw source instead of rendering
+          them to HTML for Browser preview.
+        in: query
+        name: raw
+        schema:
+          description: When true, serve Markdown files as raw source instead of rendering
+            them to HTML for Browser preview.
+          type: boolean
       responses:
         "200":
           content:
@@ -9277,6 +9285,10 @@ components:
           $ref: '#/components/schemas/AgentSwitch'
         activity:
           $ref: '#/components/schemas/DomainActivity'
+        artifactFiles:
+          items:
+            $ref: '#/components/schemas/SessionArtifact'
+          type: array
         autoInjectCI:
           type: boolean
         autoInjectReview:
@@ -9348,6 +9360,13 @@ components:
           - tui
           type: string
         model:
+          type: string
+        outputType:
+          enum:
+          - none
+          - pr
+          - artifact
+          - pr_artifact
           type: string
         pinnedAt:
           format: date-time
@@ -9452,6 +9471,7 @@ components:
       - terminateOnPrMerge
       - autoInjectReview
       - autoInjectCI
+      - outputType
       - createdAt
       - updatedAt
       - isPinned
@@ -12157,6 +12177,33 @@ components:
       - ok
       - sessionId
       - message
+      type: object
+    SessionArtifact:
+      properties:
+        kind:
+          enum:
+          - html
+          - markdown
+          - file
+          type: string
+        name:
+          type: string
+        path:
+          type: string
+        previewUrl:
+          type: string
+        size:
+          format: int64
+          type: integer
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - path
+      - name
+      - kind
+      - size
+      - updatedAt
       type: object
     SessionInterfaceTransition:
       properties:

@@ -4335,6 +4335,152 @@ func TestClaimPRAllowsDraftPR(t *testing.T) {
 	}
 }
 
+type fakeOutputTypeReconciler struct {
+	reconciled []domain.SessionID
+	err        error
+}
+
+func (f *fakeOutputTypeReconciler) ReconcileSessionOutputType(_ context.Context, id domain.SessionID) error {
+	f.reconciled = append(f.reconciled, id)
+	return f.err
+}
+
+// A session that already produced artifacts must flip to pr OutputType as
+// soon as a PR is claimed, not on the next artifact-output poll tick — the
+// same immediacy claiming a PR always had before OutputType was persisted.
+func TestClaimPRReconcilesOutputTypeImmediately(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Metadata:   domain.SessionMetadata{WorkspacePath: "/ws"},
+		OutputType: domain.SessionOutputArtifact,
+	}
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", RepoOriginURL: "https://github.com/acme/repo"}
+	st.pr["mer-1"] = domain.PRFacts{URL: "https://github.com/acme/repo/pull/7", Number: 7, CI: domain.CIPending}
+
+	reconciler := &fakeOutputTypeReconciler{}
+	svc := NewWithDeps(Deps{
+		Store:     st,
+		PRClaimer: &fakePRClaimer{out: errorFreeClaimOutcome{ports.ClaimOutcome{}}},
+		SCM: fakeSCM{obs: ports.SCMObservation{
+			Fetched: true, Provider: "github", Host: "github.com", Repo: "acme/repo",
+			PR: ports.SCMPRObservation{URL: "https://github.com/acme/repo/pull/7", Number: 7},
+		}},
+		OutputTypeReconciler: reconciler,
+	})
+
+	if _, err := svc.ClaimPR(context.Background(), "mer-1", "7", ClaimPROptions{}); err != nil {
+		t.Fatalf("claim PR: %v", err)
+	}
+	if len(reconciler.reconciled) != 1 || reconciler.reconciled[0] != "mer-1" {
+		t.Fatalf("reconciled = %v, want [mer-1]", reconciler.reconciled)
+	}
+}
+
+// TestGetBackfillsEmptyArtifactDirOnRead covers the review-flagged gap: a
+// session row created before artifact_dir existed carries it as ” (the
+// migration's default), even though session_manager always prompts the
+// agent to write into the deterministic dataDir/artifacts/<id> path. Get
+// must fall back to that derived path immediately, rather than showing no
+// artifacts (and a broken preview root) until the artifact poller's next
+// tick persists the backfill.
+func TestGetBackfillsEmptyArtifactDirOnRead(t *testing.T) {
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "report.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		Metadata: domain.SessionMetadata{WorkspacePath: "/ws", ArtifactDir: ""},
+	}
+
+	got, err := (&Service{store: st, dataDir: dataDir}).Get(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata.ArtifactDir != artifactDir {
+		t.Fatalf("ArtifactDir = %q, want backfilled %q", got.Metadata.ArtifactDir, artifactDir)
+	}
+	if len(got.ArtifactFiles) != 1 || got.ArtifactFiles[0].Name != "report.html" {
+		t.Fatalf("ArtifactFiles = %+v, want [report.html]", got.ArtifactFiles)
+	}
+	if got.OutputType != domain.SessionOutputArtifact {
+		t.Fatalf("OutputType = %q, want %q reflected in this same response, not just a future one", got.OutputType, domain.SessionOutputArtifact)
+	}
+}
+
+// TestGetBackfillsArtifactDirAndReconcilesEvenForTerminatedSessions is the
+// review regression for a gap in the read-triggered backfill above: the
+// artifact-output poller (observe/artifacts.Observer) explicitly skips
+// terminated sessions, so a terminated legacy row (ArtifactDir == "" from
+// before that column existed) could never get its durable OutputType
+// repaired through the poller alone, leaving its real artifact files hidden
+// from anything that filters on OutputType. Get must trigger the durable
+// reconcile unconditionally of IsTerminated.
+func TestGetBackfillsArtifactDirAndReconcilesEvenForTerminatedSessions(t *testing.T) {
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "report.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+		IsTerminated: true,
+		Metadata:     domain.SessionMetadata{WorkspacePath: "/ws", ArtifactDir: ""},
+	}
+
+	reconciler := &fakeOutputTypeReconciler{}
+	svc := NewWithDeps(Deps{Store: st, DataDir: dataDir, OutputTypeReconciler: reconciler})
+
+	got, err := svc.Get(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata.ArtifactDir != artifactDir {
+		t.Fatalf("ArtifactDir = %q, want backfilled %q even though the session is terminated", got.Metadata.ArtifactDir, artifactDir)
+	}
+	if got.OutputType != domain.SessionOutputArtifact {
+		t.Fatalf("OutputType = %q, want %q", got.OutputType, domain.SessionOutputArtifact)
+	}
+	if len(reconciler.reconciled) != 1 || reconciler.reconciled[0] != "mer-1" {
+		t.Fatalf("reconciled = %v, want the durable reconcile triggered for the terminated session too", reconciler.reconciled)
+	}
+}
+
+// A reconcile failure must not fail an otherwise-successful claim: the
+// artifact-output poller still corrects OutputType on its next tick.
+func TestClaimPRSucceedsWhenOutputTypeReconcileFails(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, Metadata: domain.SessionMetadata{WorkspacePath: "/ws"}}
+	st.projects["mer"] = domain.ProjectRecord{ID: "mer", RepoOriginURL: "https://github.com/acme/repo"}
+	st.pr["mer-1"] = domain.PRFacts{URL: "https://github.com/acme/repo/pull/7", Number: 7, CI: domain.CIPending}
+
+	svc := NewWithDeps(Deps{
+		Store:     st,
+		PRClaimer: &fakePRClaimer{out: errorFreeClaimOutcome{ports.ClaimOutcome{}}},
+		SCM: fakeSCM{obs: ports.SCMObservation{
+			Fetched: true, Provider: "github", Host: "github.com", Repo: "acme/repo",
+			PR: ports.SCMPRObservation{URL: "https://github.com/acme/repo/pull/7", Number: 7},
+		}},
+		OutputTypeReconciler: &fakeOutputTypeReconciler{err: errors.New("boom")},
+	})
+
+	if _, err := svc.ClaimPR(context.Background(), "mer-1", "7", ClaimPROptions{}); err != nil {
+		t.Fatalf("claim PR should succeed despite reconcile failure: %v", err)
+	}
+}
+
 func TestClaimPRGitLabMR(t *testing.T) {
 	st := newFakeStore()
 	st.sessions["gl-1"] = domain.SessionRecord{ID: "gl-1", ProjectID: "gl", Kind: domain.KindWorker, Metadata: domain.SessionMetadata{WorkspacePath: "/ws"}}
@@ -5202,7 +5348,7 @@ func TestToSessionWithFactsRemapsTransferredAliasReviewRuns(t *testing.T) {
 		CreatedAt: rec.UpdatedAt,
 	}}
 
-	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
+	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(context.Background(), rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5260,7 +5406,7 @@ func TestToSessionWithFactsCanonicalAliasRunSupersedesOlderAliasRun(t *testing.T
 		},
 	}
 
-	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
+	sess, err := (&Service{store: st, clock: func() time.Time { return rec.UpdatedAt.Add(2 * time.Minute) }}).toSessionWithFacts(context.Background(), rec, st.prFacts[rec.ID], st.reviewRuns[rec.ID])
 	if err != nil {
 		t.Fatal(err)
 	}

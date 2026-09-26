@@ -627,6 +627,8 @@ type Session struct {
 	ProvisionState                   domain.SessionProvisionState
 	ProvisionError                   string
 	IsTaskPreparation                bool
+	ArtifactDir                      string
+	SessionOutputType                string
 }
 
 type SessionCleanupFact struct {

@@ -1425,6 +1425,267 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_GetExposesArtifactFilesAndServesHTMLArtifact(t *testing.T) {
+	artifactDir := t.TempDir()
+	artifactPath := filepath.Join(artifactDir, "site", "index.html")
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o755); err != nil {
+		t.Fatalf("mkdir artifact dir: %v", err)
+	}
+	if err := os.WriteFile(artifactPath, []byte("<html><body>artifact preview</body></html>"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+
+	// A real workspace file at the same literal path the legacy
+	// __ao_artifacts__/ marker scheme would have used. The advertised
+	// previewUrl must still resolve to the artifact's own content: it now
+	// carries scope in its host, not in a path prefix a workspace file could
+	// also contain, so this collision cannot affect it.
+	workspace := t.TempDir()
+	collidingPath := filepath.Join(workspace, "__ao_artifacts__", "site", "index.html")
+	if err := os.MkdirAll(filepath.Dir(collidingPath), 0o755); err != nil {
+		t.Fatalf("mkdir workspace collision dir: %v", err)
+	}
+	if err := os.WriteFile(collidingPath, []byte("workspace collision content"), 0o644); err != nil {
+		t.Fatalf("write colliding workspace file: %v", err)
+	}
+
+	svc := newFakeSessionService()
+	s := svc.sessions["ao-1"]
+	s.OutputType = domain.SessionOutputArtifact
+	s.Metadata.ArtifactDir = artifactDir
+	s.Metadata.WorkspacePath = workspace
+	s.ArtifactFiles = []domain.SessionArtifactFile{
+		{
+			Path:      "site/index.html",
+			Name:      "index.html",
+			Kind:      domain.SessionArtifactHTML,
+			Size:      42,
+			UpdatedAt: time.Now().UTC().Truncate(time.Second),
+		},
+		{
+			Path:      "notes/readme.md",
+			Name:      "readme.md",
+			Kind:      domain.SessionArtifactMarkdown,
+			Size:      12,
+			UpdatedAt: time.Now().UTC().Truncate(time.Second),
+		},
+	}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET session = %d, want 200; body=%s", status, body)
+	}
+	var resp struct {
+		Session struct {
+			ID            string `json:"id"`
+			OutputType    string `json:"outputType"`
+			ArtifactFiles []struct {
+				Path       string `json:"path"`
+				Kind       string `json:"kind"`
+				PreviewURL string `json:"previewUrl"`
+			} `json:"artifactFiles"`
+		} `json:"session"`
+	}
+	mustJSON(t, body, &resp)
+	if resp.Session.OutputType != string(domain.SessionOutputArtifact) {
+		t.Fatalf("outputType = %q, want %q", resp.Session.OutputType, domain.SessionOutputArtifact)
+	}
+	if len(resp.Session.ArtifactFiles) != 2 {
+		t.Fatalf("artifactFiles = %+v, want 2", resp.Session.ArtifactFiles)
+	}
+	if resp.Session.ArtifactFiles[0].Path != "site/index.html" || resp.Session.ArtifactFiles[0].Kind != "html" {
+		t.Fatalf("html artifact = %+v", resp.Session.ArtifactFiles[0])
+	}
+	if !strings.Contains(resp.Session.ArtifactFiles[0].PreviewURL, "ao-preview-artifact.") ||
+		!strings.HasSuffix(resp.Session.ArtifactFiles[0].PreviewURL, "/site/index.html") {
+		t.Fatalf("html previewUrl = %q, want an ao-preview-artifact origin with no path marker", resp.Session.ArtifactFiles[0].PreviewURL)
+	}
+	if resp.Session.ArtifactFiles[1].PreviewURL != "" {
+		t.Fatalf("markdown previewUrl = %q, want empty", resp.Session.ArtifactFiles[1].PreviewURL)
+	}
+
+	directPreviewPath, err := url.Parse(resp.Session.ArtifactFiles[0].PreviewURL)
+	if err != nil {
+		t.Fatalf("parse html artifact previewUrl: %v", err)
+	}
+	directBody, directStatus, _ := doPreviewOriginRequest(t, srv, resp.Session.ArtifactFiles[0].PreviewURL, directPreviewPath.EscapedPath())
+	if directStatus != http.StatusOK {
+		t.Fatalf("GET direct artifact preview path = %d, want 200; body=%s", directStatus, directBody)
+	}
+	if !bytes.Contains(directBody, []byte("artifact preview")) {
+		t.Fatalf("direct artifact body = %q, want html artifact content, not the colliding workspace file's", directBody)
+	}
+
+	// The colliding workspace file, addressed on the ordinary (non-artifact)
+	// preview origin at its own literal path, is unaffected and still opens
+	// its own real content.
+	workspacePreviewURL, err := previewutil.FileURL(srv.URL, "ao-1", "__ao_artifacts__/site/index.html")
+	if err != nil {
+		t.Fatalf("build workspace preview URL: %v", err)
+	}
+	collisionBody, collisionStatus, _ := doPreviewOriginRequest(t, srv, workspacePreviewURL, "/__ao_artifacts__/site/index.html")
+	if collisionStatus != http.StatusOK {
+		t.Fatalf("GET colliding workspace file = %d, want 200; body=%s", collisionStatus, collisionBody)
+	}
+	if !bytes.Contains(collisionBody, []byte("workspace collision content")) {
+		t.Fatalf("colliding workspace body = %q, want the workspace file's own content", collisionBody)
+	}
+}
+
+// TestSessionsAPI_PreviewFileWorkspaceFileWinsOverArtifactNamespaceCollision
+// covers the legacy /preview/files/* route directly: __ao_artifacts__/ is a
+// reserved marker AO prepends itself, but it was a valid workspace-relative
+// path before artifact previews existed. A real workspace file at that exact
+// literal path must still be served, not silently swapped for the artifact
+// directory's unrelated content.
+func TestSessionsAPI_PreviewFileWorkspaceFileWinsOverArtifactNamespaceCollision(t *testing.T) {
+	workspace := t.TempDir()
+	collidingPath := filepath.Join(workspace, "__ao_artifacts__", "index.html")
+	if err := os.MkdirAll(filepath.Dir(collidingPath), 0o755); err != nil {
+		t.Fatalf("mkdir workspace collision dir: %v", err)
+	}
+	if err := os.WriteFile(collidingPath, []byte("workspace content"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+
+	artifactDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(artifactDir, "index.html"), []byte("artifact content"), 0o644); err != nil {
+		t.Fatalf("write artifact file: %v", err)
+	}
+
+	svc := newFakeSessionService()
+	s := svc.sessions["ao-1"]
+	s.Metadata.WorkspacePath = workspace
+	s.Metadata.ArtifactDir = artifactDir
+	svc.sessions["ao-1"] = s
+
+	// A second session with no colliding workspace file at that literal path,
+	// to positively confirm the artifact directory still serves normally when
+	// there is nothing to collide with.
+	noCollisionArtifactDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(noCollisionArtifactDir, "index.html"), []byte("artifact content"), 0o644); err != nil {
+		t.Fatalf("write artifact file: %v", err)
+	}
+	s2 := s
+	s2.ID = "ao-2"
+	s2.Metadata.WorkspacePath = t.TempDir()
+	s2.Metadata.ArtifactDir = noCollisionArtifactDir
+	svc.sessions["ao-2"] = s2
+
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/preview/files/__ao_artifacts__/index.html", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET preview file = %d, want 200; body=%s", status, body)
+	}
+	if !bytes.Contains(body, []byte("workspace content")) {
+		t.Fatalf("served body = %q, want the colliding workspace file's content, not the artifact directory's", body)
+	}
+
+	noCollisionBody, noCollisionStatus, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-2/preview/files/__ao_artifacts__/index.html", "")
+	if noCollisionStatus != http.StatusOK {
+		t.Fatalf("GET non-colliding artifact preview = %d, want 200; body=%s", noCollisionStatus, noCollisionBody)
+	}
+	if !bytes.Contains(noCollisionBody, []byte("artifact content")) {
+		t.Fatalf("served body = %q, want artifact directory content", noCollisionBody)
+	}
+}
+
+// TestSessionsAPI_PreviewOriginWorkspaceFileWinsOverArtifactNamespaceCollision
+// covers the same __ao_artifacts__/ namespace collision as the legacy-route
+// test above, but on the isolated-origin PreviewOrigin route — the primary
+// Browser route the desktop app actually uses. A stored preview URL pointing
+// at that literal path must resolve to the real workspace file that existed
+// there before artifact previews did, not to the unrelated artifact
+// directory content.
+func TestSessionsAPI_PreviewOriginWorkspaceFileWinsOverArtifactNamespaceCollision(t *testing.T) {
+	workspace := t.TempDir()
+	collidingPath := filepath.Join(workspace, "__ao_artifacts__", "index.html")
+	if err := os.MkdirAll(filepath.Dir(collidingPath), 0o755); err != nil {
+		t.Fatalf("mkdir workspace collision dir: %v", err)
+	}
+	if err := os.WriteFile(collidingPath, []byte("workspace content"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+
+	artifactDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(artifactDir, "index.html"), []byte("artifact content"), 0o644); err != nil {
+		t.Fatalf("write artifact file: %v", err)
+	}
+
+	svc := newFakeSessionService()
+	s := svc.sessions["ao-1"]
+	s.Metadata.WorkspacePath = workspace
+	s.Metadata.ArtifactDir = artifactDir
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	previewURL, err := previewutil.FileURL(srv.URL, "ao-1", "__ao_artifacts__/index.html")
+	if err != nil {
+		t.Fatalf("build preview URL: %v", err)
+	}
+	s = svc.sessions["ao-1"]
+	s.Metadata.PreviewURL = previewURL
+	svc.sessions["ao-1"] = s
+
+	body, status, _ := doPreviewOriginRequest(t, srv, previewURL, "/")
+	if status != http.StatusOK {
+		t.Fatalf("GET preview origin = %d, want 200; body=%s", status, body)
+	}
+	if !bytes.Contains(body, []byte("workspace content")) {
+		t.Fatalf("served body = %q, want the colliding workspace file's content, not the artifact directory's", body)
+	}
+}
+
+// TestSessionsAPI_PreviewOriginArtifactLinkRequestPathWorkspaceFileWins covers
+// the fast path in previewOriginEntry that decodes __ao_artifacts__/ directly
+// from the incoming request path (added for the Summary panel's artifact
+// links, which are built via previewutil.FileURL and navigated to directly —
+// independent of any stored session.Metadata.PreviewURL). The sibling test
+// above only exercises requestPath "/" against a stored PreviewURL and does
+// not reach this fast path at all, so it could not have caught this: a real
+// workspace file at the literal requested __ao_artifacts__/ path must still
+// win over the artifact directory here too.
+func TestSessionsAPI_PreviewOriginArtifactLinkRequestPathWorkspaceFileWins(t *testing.T) {
+	workspace := t.TempDir()
+	collidingPath := filepath.Join(workspace, "__ao_artifacts__", "index.html")
+	if err := os.MkdirAll(filepath.Dir(collidingPath), 0o755); err != nil {
+		t.Fatalf("mkdir workspace collision dir: %v", err)
+	}
+	if err := os.WriteFile(collidingPath, []byte("workspace content"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+
+	artifactDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(artifactDir, "index.html"), []byte("artifact content"), 0o644); err != nil {
+		t.Fatalf("write artifact file: %v", err)
+	}
+
+	svc := newFakeSessionService()
+	s := svc.sessions["ao-1"]
+	s.Metadata.WorkspacePath = workspace
+	s.Metadata.ArtifactDir = artifactDir
+	// No PreviewURL stored: an artifact-panel link navigates directly to the
+	// origin with the scope encoded in the request path itself.
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	linkURL, err := previewutil.FileURL(srv.URL, "ao-1", "__ao_artifacts__/index.html")
+	if err != nil {
+		t.Fatalf("build artifact link URL: %v", err)
+	}
+
+	body, status, _ := doPreviewOriginRequest(t, srv, linkURL, "/__ao_artifacts__/index.html")
+	if status != http.StatusOK {
+		t.Fatalf("GET artifact link = %d, want 200; body=%s", status, body)
+	}
+	if !bytes.Contains(body, []byte("workspace content")) {
+		t.Fatalf("served body = %q, want the colliding workspace file's content, not the artifact directory's", body)
+	}
+}
+
 func TestSessionsAPI_SetReviewerAllowsConfigWithoutHarness(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
@@ -1898,6 +2159,40 @@ func TestSessionsAPI_SetPreviewLocalRelativePathResolvesToPreviewOrigin(t *testi
 	fileBody, fileStatus, _ := doPreviewOriginRequest(t, srv, resp.Session.PreviewURL, "/")
 	if fileStatus != http.StatusOK {
 		t.Fatalf("serve local file = %d, want 200; body=%s", fileStatus, fileBody)
+	}
+}
+
+func TestSessionsAPI_PreviewFileRawMarkdownBypassesHTMLRendering(t *testing.T) {
+	svc := newFakeSessionService()
+	workspace := t.TempDir()
+	const markdown = "# Artifact notes\n\nhello\n"
+	if err := os.WriteFile(filepath.Join(workspace, "notes.md"), []byte(markdown), 0o644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+	s := svc.sessions["ao-1"]
+	s.Metadata = domain.SessionMetadata{WorkspacePath: workspace}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/preview/files/notes.md", "")
+	if status != http.StatusOK {
+		t.Fatalf("render markdown preview = %d, want 200; body=%s", status, body)
+	}
+	if !strings.Contains(headers.Get("Content-Type"), "text/html") || !bytes.Contains(body, []byte("<!doctype html>")) {
+		t.Fatalf("rendered markdown response content-type=%q body=%q, want HTML document", headers.Get("Content-Type"), body)
+	}
+
+	for _, raw := range []string{"1", "true"} {
+		body, status, headers = doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/preview/files/notes.md?raw="+raw, "")
+		if status != http.StatusOK {
+			t.Fatalf("raw=%s markdown preview = %d, want 200; body=%s", raw, status, body)
+		}
+		if got := string(body); got != markdown {
+			t.Fatalf("raw=%s markdown body = %q, want %q", raw, got, markdown)
+		}
+		if strings.Contains(headers.Get("Content-Type"), "text/html") {
+			t.Fatalf("raw=%s markdown content type = %q, want non-HTML", raw, headers.Get("Content-Type"))
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -27,7 +28,7 @@ func TestChatProviderPreservationIsDerivedFromLiveOwnership(t *testing.T) {
 			if tc.observed != nil {
 				svc.SetChatProviderPreserver(func(id domain.SessionID) bool { return id == "s" && *tc.observed })
 			}
-			session, err := svc.toSessionWithFacts(domain.SessionRecord{
+			session, err := svc.toSessionWithFacts(context.Background(), domain.SessionRecord{
 				ID: "s", Harness: domain.HarnessPi, Mode: tc.mode, IsTerminated: tc.terminated,
 			}, nil, nil)
 			if err != nil || session.ChatProviderPreserved != tc.want {

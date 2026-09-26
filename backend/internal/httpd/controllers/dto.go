@@ -203,6 +203,12 @@ type SessionIDParam struct {
 	SessionID string `path:"sessionId" description:"Session identifier, e.g. project-1."`
 }
 
+// PreviewFileQuery is the query string accepted by GET
+// /api/v1/sessions/{sessionId}/preview/files/*.
+type PreviewFileQuery struct {
+	Raw bool `query:"raw,omitempty" description:"When true, serve Markdown files as raw source instead of rendering them to HTML for Browser preview."`
+}
+
 // PRNumberParam is the associated pull-request number in Files routes.
 type PRNumberParam struct {
 	PRNumber int `path:"prNumber" description:"Associated pull request number." minimum:"1"`
@@ -355,9 +361,20 @@ type SessionView struct {
 	Model string `json:"model,omitempty"`
 	// LastUserMessageAt is the latest real user-authored task direction time.
 	// Lifecycle and internal automation updates do not advance it.
-	LastUserMessageAt *time.Time       `json:"lastUserMessageAt,omitempty"`
-	PRs               []SessionPRFacts `json:"prs"`
-	ActiveAgentSwitch *AgentSwitchView `json:"activeAgentSwitch,omitempty"`
+	LastUserMessageAt *time.Time            `json:"lastUserMessageAt,omitempty"`
+	PRs               []SessionPRFacts      `json:"prs"`
+	ArtifactFiles     []SessionArtifactView `json:"artifactFiles,omitempty"`
+	ActiveAgentSwitch *AgentSwitchView      `json:"activeAgentSwitch,omitempty"`
+}
+
+// SessionArtifactView is one inferred file artifact for a session.
+type SessionArtifactView struct {
+	Path       string                     `json:"path"`
+	Name       string                     `json:"name"`
+	Kind       domain.SessionArtifactKind `json:"kind" enum:"html,markdown,file"`
+	Size       int64                      `json:"size"`
+	UpdatedAt  time.Time                  `json:"updatedAt"`
+	PreviewURL string                     `json:"previewUrl,omitempty"`
 }
 
 // ListSessionsResponse is the body of GET /api/v1/sessions.
