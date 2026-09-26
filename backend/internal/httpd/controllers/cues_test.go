@@ -285,18 +285,21 @@ func TestCuesAPI_InvokeReturnsCommandTerminal(t *testing.T) {
 		Title: "Run Tests", WorkingDir: `C:\worktrees\sess-123`,
 	}
 	svc := &fakeCueService{invoked: cuesvc.InvokeResult{
-		Kind: domain.CueTypeCommand, Terminal: &terminal, InitialState: "starting",
+		Kind: domain.CueTypeCommand, Terminal: &terminal,
 	}}
 	srv := newCueTestServer(t, svc)
 
-	body, status, _ := doRequest(t, srv, "POST", "/api/v1/cues/cue-def456/invoke", `{"sessionId":"sess-123","shell":"cmd"}`)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/cues/cue-def456/invoke", `{"sessionId":"sess-123","shell":"cmd","preferredTerminalHandleId":"shellterm-selected"}`)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", status, body)
 	}
 	var resp controllers.InvokeCueResponse
 	mustJSON(t, body, &resp)
-	if resp.Kind != "command" || resp.SessionID != "" || resp.State != "starting" || resp.ShellTerminal == nil || resp.ShellTerminal.HandleID != "shellterm-cue" {
+	if resp.Kind != "command" || resp.SessionID != "" || resp.ShellTerminal == nil || resp.ShellTerminal.HandleID != "shellterm-cue" {
 		t.Fatalf("response = %+v", resp)
+	}
+	if svc.gotInvoke.PreferredTerminalHandleID != "shellterm-selected" {
+		t.Fatalf("preferred terminal = %q", svc.gotInvoke.PreferredTerminalHandleID)
 	}
 }
 

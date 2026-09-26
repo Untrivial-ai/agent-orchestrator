@@ -65,15 +65,15 @@ type OpenCommandTerminalInput struct {
 	InitialInputReadyStates []InitialInputReadyState
 }
 
-// OpenCueCommandTerminalInput is the trusted, project-scoped command request
-// used by the Cue service. Command remains one shell argument so the selected
-// shell owns pipes, quoting, and expansion.
-type OpenCueCommandTerminalInput struct {
-	ProjectID domain.ProjectID
-	SessionID domain.SessionID
-	Shell     string
-	Command   string
-	Title     string
+// RunCueCommandInput is the trusted, project-scoped command request
+// used by the Cue service. A preferred handle is used only when it belongs to
+// the exact target; otherwise the newest usable shell in scope is selected.
+type RunCueCommandInput struct {
+	ProjectID         domain.ProjectID
+	SessionID         domain.SessionID
+	Shell             string
+	Command           string
+	PreferredHandleID string
 }
 
 // CueCommandSessionTarget contains the session facts needed to prove that a
@@ -83,11 +83,4 @@ type CueCommandSessionTarget struct {
 	WorkspacePath string
 	Activity      domain.ActivityState
 	IsTerminated  bool
-}
-
-// CueCommandTerminalStatus is the derived state of a command Cue terminal.
-type CueCommandTerminalStatus struct {
-	HandleID string
-	State    string
-	Output   string
 }

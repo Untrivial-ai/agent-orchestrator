@@ -20,15 +20,15 @@ type Input struct {
 
 // InvokeInput identifies the optional session target and local shell selection.
 type InvokeInput struct {
-	SessionID          domain.SessionID
-	Shell              string
-	AllowDirectCommand bool
+	SessionID                 domain.SessionID
+	Shell                     string
+	PreferredTerminalHandleID string
+	AllowDirectCommand        bool
 }
 
 // InvokeResult describes either the agent destination or opened command terminal.
 type InvokeResult struct {
-	Kind         domain.CueType
-	SessionID    domain.SessionID
-	Terminal     *shellterm.ShellTerminal
-	InitialState string
+	Kind      domain.CueType
+	SessionID domain.SessionID
+	Terminal  *shellterm.ShellTerminal
 }

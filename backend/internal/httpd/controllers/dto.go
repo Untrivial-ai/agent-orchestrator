@@ -1758,13 +1758,6 @@ type ShellTerminalEnvelope struct {
 	ShellTerminal ShellTerminalResponse `json:"shellTerminal"`
 }
 
-// CueCommandTerminalStatusResponse is the derived lifecycle state of a command Cue terminal.
-type CueCommandTerminalStatusResponse struct {
-	HandleID string `json:"handleId"`
-	State    string `json:"state" enum:"running,exited,stopped"`
-	Output   string `json:"output" description:"Current bounded terminal output snapshot, retained after command exit."`
-}
-
 // CueIDParam is the {cueId} path parameter of the /cues/{cueId} routes.
 type CueIDParam struct {
 	CueID string `path:"cueId" description:"Cue identifier."`
@@ -1781,7 +1774,7 @@ type CueProjectIDParam struct {
 type CueDefinitionRequest struct {
 	Name        string `json:"name" maxLength:"64" description:"Short cue name, unique within the project. Trimmed; must be non-empty and at most 64 bytes."`
 	Description string `json:"description,omitempty" maxLength:"240" description:"Optional human note about the cue, at most 240 bytes."`
-	Type        string `json:"type" description:"Cue kind: command runs directly in a transient terminal; agent sends an authored prompt. Definition body limit: 128 KiB."`
+	Type        string `json:"type" description:"Cue kind: command sends to a project- or session-scoped shell terminal; agent sends an authored prompt. Definition body limit: 128 KiB."`
 	Command     string `json:"command,omitempty" maxLength:"4096" description:"Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues."`
 	Prompt      string `json:"prompt,omitempty" maxLength:"16384" description:"Agent instruction for an agent cue. At most 16384 bytes; cleared when saving command cues."`
 }
@@ -1806,16 +1799,16 @@ type ListCuesResponse struct {
 
 // InvokeCueRequest is the optional body of POST /api/v1/cues/{cueId}/invoke.
 type InvokeCueRequest struct {
-	SessionID string `json:"sessionId,omitempty" description:"Optional exact session target. Agent cues message it; command cues use its worktree. Omit it to spawn an agent worker or run a command in the project root. A supplied id must be non-blank and compatible, and never falls back to a replacement worker. Invocation body limit: 4 KiB."`
-	Shell     string `json:"shell,omitempty" description:"Desktop shell selection used only for command cues."`
+	SessionID                 string `json:"sessionId,omitempty" description:"Optional exact session target. Agent cues message it; command cues use its worktree. Omit it to spawn an agent worker or run a command in the project root. A supplied id must be non-blank and compatible, and never falls back to a replacement worker. Invocation body limit: 4 KiB."`
+	Shell                     string `json:"shell,omitempty" description:"Desktop shell selection used only for command cues."`
+	PreferredTerminalHandleID string `json:"preferredTerminalHandleId,omitempty" description:"Selected terminal to reuse if it is live and belongs to the exact project and session target. Otherwise the newest terminal in scope is used, or a new shell is opened."`
 }
 
 // InvokeCueResponse is the body of POST /api/v1/cues/{cueId}/invoke.
 type InvokeCueResponse struct {
 	Kind          string                 `json:"kind" enum:"agent,command" description:"Invocation kind."`
 	SessionID     string                 `json:"sessionId,omitempty" description:"For agent cues, the session that received the prompt or newly spawned worker."`
-	ShellTerminal *ShellTerminalResponse `json:"shellTerminal,omitempty" description:"For command cues, the transient terminal running the command."`
-	State         string                 `json:"state,omitempty" enum:"starting" description:"Initial command-terminal state."`
+	ShellTerminal *ShellTerminalResponse `json:"shellTerminal,omitempty" description:"For command cues, the normal shell terminal that received the command."`
 }
 
 // CueEnvelope is the { cue } response body for cue reads and mutations.

@@ -163,7 +163,6 @@ function setup({
 	attachedSession = session as WorkspaceSession | undefined,
 	isVisible = true,
 	inputDisabled = false,
-	blockInterruptInput = false,
 } = {}) {
 	const muxes: FakeMux[] = [];
 	const createMux = () => {
@@ -176,21 +175,19 @@ function setup({
 	const wrapper = ({ children }: { children: ReactNode }) => (
 		<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
 	);
-	const initialProps: { daemonReady: boolean; isVisible?: boolean; inputDisabled?: boolean; blockInterruptInput?: boolean } = {
+	const initialProps: { daemonReady: boolean; isVisible?: boolean; inputDisabled?: boolean } = {
 		daemonReady,
 		isVisible,
 		inputDisabled,
-		blockInterruptInput,
 	};
 	const view = renderHook(
-		({ daemonReady: ready, isVisible: visible = true, inputDisabled: blocked = false, blockInterruptInput: protectInterrupt = false }: { daemonReady: boolean; isVisible?: boolean; inputDisabled?: boolean; blockInterruptInput?: boolean }) =>
+		({ daemonReady: ready, isVisible: visible = true, inputDisabled: blocked = false }: { daemonReady: boolean; isVisible?: boolean; inputDisabled?: boolean }) =>
 			useTerminalSession(attachedSession, {
 				coverInitialReplay,
 				waitForInitialOutput,
 				daemonReady: ready,
 				createMux,
 				inputDisabled: blocked,
-				blockInterruptInput: protectInterrupt,
 				isVisible: visible,
 			}),
 		{ initialProps, wrapper },
@@ -264,21 +261,6 @@ describe("useTerminalSession", () => {
 			["handle-1", "é"],
 			["handle-1", "\x1b[1;5D"],
 			["handle-1", "\x1b[<64;1;1M"],
-		]);
-	});
-
-	it("blocks Ctrl+C from user input while preserving other interactive input", () => {
-		const { terminal, muxes } = setup({ blockInterruptInput: true });
-		act(() => muxes[0].emitOpened("handle-1"));
-
-		terminal.typeKeys("answer\r");
-		terminal.shortcut("\x03");
-		terminal.paste("prefix\x03suffix");
-		terminal.protocol("\x03");
-
-		expect(muxes[0].inputs).toEqual([
-			["handle-1", "answer\r"],
-			["handle-1", "\x03"],
 		]);
 	});
 

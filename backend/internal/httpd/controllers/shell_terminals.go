@@ -13,7 +13,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apispec"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
-	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
 	shelltermsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 )
 
@@ -24,8 +23,6 @@ type ShellTerminalService interface {
 	ListShellTerminalsForCurrentAppRun(ctx context.Context) ([]shelltermsvc.ShellTerminal, error)
 	RenameShellTerminal(ctx context.Context, handleID, title string) (shelltermsvc.ShellTerminal, error)
 	CloseShellTerminal(ctx context.Context, handleID string) error
-	CueCommandTerminalStatus(ctx context.Context, handleID string) (shelltermsvc.CueCommandTerminalStatus, error)
-	StopCueCommandTerminal(ctx context.Context, handleID string) (shelltermsvc.CueCommandTerminalStatus, error)
 }
 
 // ShellTerminalsController owns the /shell-terminals routes: standalone shells
@@ -40,52 +37,6 @@ func (c *ShellTerminalsController) Register(r chi.Router) {
 	r.Post("/shell-terminals", c.open)
 	r.Patch("/shell-terminals/{handleId}", c.rename)
 	r.Delete("/shell-terminals/{handleId}", c.close)
-	r.Get("/shell-terminals/{handleId}/command-status", c.commandStatus)
-	r.Post("/shell-terminals/{handleId}/stop-command", c.stopCommand)
-}
-
-func (c *ShellTerminalsController) commandStatus(w http.ResponseWriter, r *http.Request) {
-	c.commandAction(w, r, false)
-}
-
-func (c *ShellTerminalsController) stopCommand(w http.ResponseWriter, r *http.Request) {
-	if requestscope.IsLAN(r.Context()) {
-		envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "CUE_COMMAND_LOOPBACK_REQUIRED", "Command Cues can only be controlled through the local daemon", nil)
-		return
-	}
-	c.commandAction(w, r, true)
-}
-
-func (c *ShellTerminalsController) commandAction(w http.ResponseWriter, r *http.Request, stop bool) {
-	if requestscope.IsLAN(r.Context()) {
-		envelope.WriteAPIError(w, r, http.StatusForbidden, "forbidden", "CUE_COMMAND_LOOPBACK_REQUIRED", "Command Cues can only be controlled through the local daemon", nil)
-		return
-	}
-	if c.Svc == nil {
-		method := http.MethodGet
-		path := "/api/v1/shell-terminals/{handleId}/command-status"
-		if stop {
-			method, path = http.MethodPost, "/api/v1/shell-terminals/{handleId}/stop-command"
-		}
-		apispec.NotImplemented(w, r, method, path)
-		return
-	}
-	handleID, err := url.PathUnescape(chi.URLParam(r, "handleId"))
-	if err != nil {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "SHELL_TERMINAL_ID_INVALID", "Invalid shell terminal id", nil)
-		return
-	}
-	var status shelltermsvc.CueCommandTerminalStatus
-	if stop {
-		status, err = c.Svc.StopCueCommandTerminal(r.Context(), handleID)
-	} else {
-		status, err = c.Svc.CueCommandTerminalStatus(r.Context(), handleID)
-	}
-	if err != nil {
-		envelope.WriteError(w, r, err)
-		return
-	}
-	envelope.WriteJSON(w, http.StatusOK, CueCommandTerminalStatusResponse{HandleID: status.HandleID, State: status.State, Output: status.Output})
 }
 
 func (c *ShellTerminalsController) list(w http.ResponseWriter, r *http.Request) {

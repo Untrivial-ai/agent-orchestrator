@@ -13,7 +13,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
-	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
 	shelltermsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 )
 
@@ -22,8 +21,6 @@ type fakeShellTerminalService struct {
 	gotCloseID     string
 	gotRenameID    string
 	gotRenameTitle string
-	gotStatusID    string
-	gotStopID      string
 	opened         shelltermsvc.ShellTerminal
 	renamed        shelltermsvc.ShellTerminal
 	listed         []shelltermsvc.ShellTerminal
@@ -48,16 +45,6 @@ func (f *fakeShellTerminalService) RenameShellTerminal(_ context.Context, handle
 func (f *fakeShellTerminalService) CloseShellTerminal(_ context.Context, handleID string) error {
 	f.gotCloseID = handleID
 	return f.err
-}
-
-func (f *fakeShellTerminalService) CueCommandTerminalStatus(_ context.Context, handleID string) (shelltermsvc.CueCommandTerminalStatus, error) {
-	f.gotStatusID = handleID
-	return shelltermsvc.CueCommandTerminalStatus{HandleID: handleID, State: "running", Output: "héllo\n"}, f.err
-}
-
-func (f *fakeShellTerminalService) StopCueCommandTerminal(_ context.Context, handleID string) (shelltermsvc.CueCommandTerminalStatus, error) {
-	f.gotStopID = handleID
-	return shelltermsvc.CueCommandTerminalStatus{HandleID: handleID, State: "stopped"}, f.err
 }
 
 func newShellTerminalTestServer(t *testing.T, svc controllers.ShellTerminalService) *httptest.Server {
@@ -254,57 +241,6 @@ func TestShellTerminalsAPI_RenameRejectsMalformedBody(t *testing.T) {
 	}
 }
 
-func TestShellTerminalsAPI_CommandStatusAndStop(t *testing.T) {
-	svc := &fakeShellTerminalService{}
-	srv := newShellTerminalTestServer(t, svc)
-
-	body, status, _ := doRequest(t, srv, "GET", "/api/v1/shell-terminals/ptyhost-v1%3Ashellterm-abc123/command-status", "")
-	if status != http.StatusOK || svc.gotStatusID != "ptyhost-v1:shellterm-abc123" {
-		t.Fatalf("status response = %d, id=%q, body=%s", status, svc.gotStatusID, body)
-	}
-	var running struct {
-		HandleID string `json:"handleId"`
-		State    string `json:"state"`
-		Output   string `json:"output"`
-	}
-	mustJSON(t, body, &running)
-	if running.State != "running" || running.HandleID != "ptyhost-v1:shellterm-abc123" || running.Output != "héllo\n" {
-		t.Fatalf("status response = %+v", running)
-	}
-
-	body, status, _ = doRequest(t, srv, "POST", "/api/v1/shell-terminals/ptyhost-v1%3Ashellterm-abc123/stop-command", "")
-	if status != http.StatusOK || svc.gotStopID != "ptyhost-v1:shellterm-abc123" {
-		t.Fatalf("stop response = %d, id=%q, body=%s", status, svc.gotStopID, body)
-	}
-}
-
-func TestShellTerminalsAPI_CommandStatusPreservesErrorEnvelope(t *testing.T) {
-	svc := &fakeShellTerminalService{err: apierr.NotFound("CUE_COMMAND_TERMINAL_NOT_FOUND", "No such command Cue terminal")}
-	srv := newShellTerminalTestServer(t, svc)
-
-	body, status, _ := doRequest(t, srv, "GET", "/api/v1/shell-terminals/missing/command-status", "")
-	if status != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404; body=%s", status, body)
-	}
-}
-
-func TestShellTerminalsAPI_LANCannotReadOrStopCommand(t *testing.T) {
-	svc := &fakeShellTerminalService{}
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	router := httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{ShellTerminals: svc}, httpd.ControlDeps{})
-	for _, tc := range []struct{ method, path string }{
-		{http.MethodGet, "/api/v1/shell-terminals/shellterm-abc123/command-status"},
-		{http.MethodPost, "/api/v1/shell-terminals/shellterm-abc123/stop-command"},
-	} {
-		req := httptest.NewRequest(tc.method, tc.path, nil)
-		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, req.WithContext(requestscope.WithLAN(req.Context())))
-		if recorder.Code != http.StatusForbidden || svc.gotStatusID != "" || svc.gotStopID != "" {
-			t.Fatalf("%s status = %d, status id = %q, stop id = %q, body=%s", tc.method, recorder.Code, svc.gotStatusID, svc.gotStopID, recorder.Body.String())
-		}
-	}
-}
-
 // A daemon built without the service must answer the locked 501 envelope, not
 // panic on a nil interface.
 func TestShellTerminalsAPI_NotImplementedWithoutService(t *testing.T) {
@@ -315,8 +251,6 @@ func TestShellTerminalsAPI_NotImplementedWithoutService(t *testing.T) {
 		{"POST", "/api/v1/shell-terminals"},
 		{"PATCH", "/api/v1/shell-terminals/shellterm-abc123"},
 		{"DELETE", "/api/v1/shell-terminals/shellterm-abc123"},
-		{"GET", "/api/v1/shell-terminals/shellterm-abc123/command-status"},
-		{"POST", "/api/v1/shell-terminals/shellterm-abc123/stop-command"},
 	} {
 		body, status, _ := doRequest(t, srv, tc.method, tc.path, "")
 		if status != http.StatusNotImplemented {

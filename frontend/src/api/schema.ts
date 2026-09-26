@@ -491,7 +491,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Dispatch an agent cue to a session or run a command cue in a transient desktop terminal */
+        /** Dispatch an agent cue to a session or send a command cue to a scoped shell terminal */
         post: operations["invokeCue"];
         delete?: never;
         options?: never;
@@ -2647,40 +2647,6 @@ export interface paths {
         patch: operations["renameShellTerminal"];
         trace?: never;
     };
-    "/api/v1/shell-terminals/{handleId}/command-status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read the derived state of a command Cue terminal */
-        get: operations["getCueCommandTerminalStatus"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/shell-terminals/{handleId}/stop-command": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Stop a command Cue while retaining its terminal output */
-        post: operations["stopCueCommandTerminal"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/system/github-auth": {
         parameters: {
             query?: never;
@@ -3580,13 +3546,6 @@ export interface components {
         CreateReportResponse: {
             id: string;
         };
-        CueCommandTerminalStatusResponse: {
-            handleId: string;
-            /** @description Current bounded terminal output snapshot, retained after command exit. */
-            output: string;
-            /** @enum {string} */
-            state: "running" | "exited" | "stopped";
-        };
         CueDefinitionRequest: {
             /** @description Shell command for a command cue. At most 4096 bytes; cleared when saving agent cues. */
             command?: string;
@@ -3596,7 +3555,7 @@ export interface components {
             name: string;
             /** @description Agent instruction for an agent cue. At most 16384 bytes; cleared when saving command cues. */
             prompt?: string;
-            /** @description Cue kind: command runs directly in a transient terminal; agent sends an authored prompt. Definition body limit: 128 KiB. */
+            /** @description Cue kind: command sends to a project- or session-scoped shell terminal; agent sends an authored prompt. Definition body limit: 128 KiB. */
             type: string;
         };
         CueEnvelope: {
@@ -3863,6 +3822,8 @@ export interface components {
             updatedAt?: null | string;
         };
         InvokeCueRequest: {
+            /** @description Selected terminal to reuse if it is live and belongs to the exact project and session target. Otherwise the newest terminal in scope is used, or a new shell is opened. */
+            preferredTerminalHandleId?: string;
             /** @description Optional exact session target. Agent cues message it; command cues use its worktree. Omit it to spawn an agent worker or run a command in the project root. A supplied id must be non-blank and compatible, and never falls back to a replacement worker. Invocation body limit: 4 KiB. */
             sessionId?: string;
             /** @description Desktop shell selection used only for command cues. */
@@ -3876,13 +3837,8 @@ export interface components {
             kind: "agent" | "command";
             /** @description For agent cues, the session that received the prompt or newly spawned worker. */
             sessionId?: string;
-            /** @description For command cues, the transient terminal running the command. */
+            /** @description For command cues, the normal shell terminal that received the command. */
             shellTerminal?: components["schemas"]["ShellTerminalResponse"];
-            /**
-             * @description Initial command-terminal state.
-             * @enum {string}
-             */
-            state?: "starting";
         };
         KillReviewResponse: {
             reviewerHandleId: string;
@@ -14993,115 +14949,6 @@ export interface operations {
             };
             /** @description Bad Request */
             400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Not Implemented */
-            501: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-        };
-    };
-    getCueCommandTerminalStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Shell terminal runtime handle identifier. */
-                handleId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CueCommandTerminalStatusResponse"];
-                };
-            };
-            /** @description Not Found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Internal Server Error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-            /** @description Not Implemented */
-            501: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["APIError"];
-                };
-            };
-        };
-    };
-    stopCueCommandTerminal: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Shell terminal runtime handle identifier. */
-                handleId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CueCommandTerminalStatusResponse"];
-                };
-            };
-            /** @description Forbidden */
-            403: {
                 headers: {
                     [name: string]: unknown;
                 };

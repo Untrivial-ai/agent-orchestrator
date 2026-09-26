@@ -40,7 +40,6 @@ import {
 	useOpenShellTerminal,
 	useRenameShellTerminal,
 } from "./useShellTerminals";
-import { resetCommandCueStore, useCommandCueStore } from "../stores/command-cue-store";
 
 const shells: ShellTerminal[] = [
 	{
@@ -212,16 +211,6 @@ describe("useRenameShellTerminal", () => {
 });
 
 describe("useCloseShellTerminal", () => {
-	it("marks a command Cue terminal closed after the daemon confirms closure", async () => {
-		deleteMock.mockResolvedValue({});
-		resetCommandCueStore();
-		useCommandCueStore.getState().register({ projectId: "project", sessionId: "session", handleId: shells[0].handleId, name: "Build", command: "npm run build", state: "exited", output: "done" });
-		const queryClient = queryClientWithShells();
-		const { result } = renderHook(() => useCloseShellTerminal(), { wrapper: wrapper(queryClient) });
-		await act(async () => result.current.mutateAsync(shells[0].handleId));
-		expect(useCommandCueStore.getState().cards[shells[0].handleId]).toMatchObject({ state: "closed", output: "done" });
-		resetCommandCueStore();
-	});
 	it("removes the terminal tab before an in-flight list request finishes cancelling", async () => {
 		let finishCancel!: () => void;
 		let finishDelete!: (result: { error?: unknown }) => void;

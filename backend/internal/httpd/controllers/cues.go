@@ -35,8 +35,9 @@ type CuesController struct {
 }
 
 type invokeCueRequestBody struct {
-	SessionID json.RawMessage `json:"sessionId"`
-	Shell     string          `json:"shell,omitempty"`
+	SessionID                 json.RawMessage `json:"sessionId"`
+	Shell                     string          `json:"shell,omitempty"`
+	PreferredTerminalHandleID string          `json:"preferredTerminalHandleId,omitempty"`
 }
 
 func (b *invokeCueRequestBody) UnmarshalJSON(data []byte) error {
@@ -142,6 +143,7 @@ func (c *CuesController) invoke(w http.ResponseWriter, r *http.Request) {
 	}
 	var req InvokeCueRequest
 	req.Shell = payload.Shell
+	req.PreferredTerminalHandleID = payload.PreferredTerminalHandleID
 	if payload.SessionID != nil {
 		if err := json.Unmarshal(payload.SessionID, &req.SessionID); err != nil || strings.TrimSpace(req.SessionID) == "" {
 			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_SESSION_ID", "Session id must not be blank when supplied", nil)
@@ -154,15 +156,16 @@ func (c *CuesController) invoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := c.Svc.Invoke(r.Context(), domain.CueID(cueID), cuesvc.InvokeInput{
-		SessionID:          domain.SessionID(req.SessionID),
-		Shell:              req.Shell,
-		AllowDirectCommand: !requestscope.IsLAN(r.Context()),
+		SessionID:                 domain.SessionID(req.SessionID),
+		Shell:                     req.Shell,
+		PreferredTerminalHandleID: req.PreferredTerminalHandleID,
+		AllowDirectCommand:        !requestscope.IsLAN(r.Context()),
 	})
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	response := InvokeCueResponse{Kind: string(result.Kind), SessionID: string(result.SessionID), State: result.InitialState}
+	response := InvokeCueResponse{Kind: string(result.Kind), SessionID: string(result.SessionID)}
 	if result.Terminal != nil {
 		terminal := shellTerminalResponse(*result.Terminal)
 		response.ShellTerminal = &terminal

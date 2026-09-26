@@ -10,7 +10,6 @@ import { isMacPlatform } from "../lib/platform";
 import { cn } from "../lib/utils";
 import { handleTerminalTabListKeyDown } from "../lib/terminal-tabs";
 import { useResolvedTheme, useUiStore } from "../stores/ui-store";
-import { useCommandCueStore } from "../stores/command-cue-store";
 import { ShellTerminalTab } from "./ShellTerminalTab";
 import { TerminalPane } from "./TerminalPane";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -37,10 +36,6 @@ export function ShellTerminalsView() {
 	const requestNewShellTerminal = useUiStore((state) => state.requestNewShellTerminal);
 	const activeHandleId = useUiStore((state) => state.activeShellTerminalHandleId);
 	const setActiveShellTerminal = useUiStore((state) => state.setActiveShellTerminal);
-	const commandCue = useCommandCueStore((state) =>
-		activeHandleId ? state.cards[activeHandleId] : undefined,
-	);
-	const enableCommandCueInput = useCommandCueStore((state) => state.enableInput);
 
 	// Keep the selection pointed at a shell that still exists: closing the active
 	// tab (or a daemon-side exit pruning it) would otherwise leave the pane bound
@@ -168,32 +163,20 @@ export function ShellTerminalsView() {
 					<TooltipContent side="bottom">{t("terminal.newWithShortcut", { shortcut: newTerminalShortcutLabel })}</TooltipContent>
 				</Tooltip>
 			</div>
-			<div className="relative min-h-0 flex-1">
+			<div className="min-h-0 flex-1">
 				{active ? (
-					<>
-						{commandCue && !commandCue.inputEnabled ? (
-							<div className="absolute right-3 top-3 z-overlay rounded-md border border-border bg-surface px-3 py-2 text-xs shadow-lg">
-								<span className="mr-3 text-muted-foreground">{t("cues.inputLocked")}</span>
-								<button className="font-medium text-accent hover:underline" onClick={() => enableCommandCueInput(commandCue.handleId)} type="button">
-									{t("cues.enableInput")}
-								</button>
-							</div>
-						) : null}
-						<TerminalPane
-							blockInterruptInput={commandCue?.inputEnabled === true}
-							daemonReady={daemonStatus.state === "ready"}
-							fontSize={12}
-							inputDisabled={commandCue?.inputEnabled === false}
-							terminalTarget={{
-								generation: active.createdAt,
-								kind: "shell",
-								handleId: active.handleId,
-								sessionId: active.sessionId,
-								title: active.title,
-							}}
-							theme={theme}
-						/>
-					</>
+					<TerminalPane
+						daemonReady={daemonStatus.state === "ready"}
+						fontSize={12}
+						terminalTarget={{
+							generation: active.createdAt,
+							kind: "shell",
+							handleId: active.handleId,
+							sessionId: active.sessionId,
+							title: active.title,
+						}}
+						theme={theme}
+					/>
 				) : (
 					<div className="grid h-full place-items-center bg-terminal font-mono text-control">
 						<div className="text-center">

@@ -19,14 +19,14 @@ type Sessions interface {
 	Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error)
 }
 
-// CommandTerminals opens trusted command-cue terminals without an agent.
+// CommandTerminals dispatches trusted command cues to shells without an agent.
 type CommandTerminals interface {
-	OpenCueCommandTerminal(context.Context, shellterm.OpenCueCommandTerminalInput) (shellterm.ShellTerminal, error)
+	RunCueCommand(context.Context, shellterm.RunCueCommandInput) (shellterm.ShellTerminal, error)
 }
 
 // Invoke runs one cue. Agent cues are delivered to the selected session, or
 // spawn a worker when invoked from the project board. Command cues open a
-// transient terminal in the selected session worktree or project root and
+// normal terminal in the selected session worktree or project root and
 // never create or message an agent.
 func (s *Service) Invoke(ctx context.Context, cueID domain.CueID, input InvokeInput) (InvokeResult, error) {
 	if err := ctx.Err(); err != nil {
@@ -52,14 +52,14 @@ func (s *Service) Invoke(ctx context.Context, cueID domain.CueID, input InvokeIn
 		if s.terminals == nil {
 			return InvokeResult{}, fmt.Errorf("cue: command terminals are required")
 		}
-		terminal, err := s.terminals.OpenCueCommandTerminal(ctx, shellterm.OpenCueCommandTerminalInput{
+		terminal, err := s.terminals.RunCueCommand(ctx, shellterm.RunCueCommandInput{
 			ProjectID: cue.ProjectID, SessionID: input.SessionID, Shell: input.Shell,
-			Command: cue.Command, Title: cue.Name,
+			Command: cue.Command, PreferredHandleID: input.PreferredTerminalHandleID,
 		})
 		if err != nil {
 			return InvokeResult{}, err
 		}
-		return InvokeResult{Kind: domain.CueTypeCommand, Terminal: &terminal, InitialState: "starting"}, nil
+		return InvokeResult{Kind: domain.CueTypeCommand, Terminal: &terminal}, nil
 	}
 	if s.sessions == nil {
 		return InvokeResult{}, fmt.Errorf("cue: sessions are required")

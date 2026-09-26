@@ -52,7 +52,12 @@ export function useDeleteCueMutation(projectId: string) {
 
 export function useInvokeCueMutation() {
 	return useMutation({
-		mutationFn: ({ cueId, sessionId, shell }: { cueId: string; sessionId?: string; shell?: string }) => invokeCue(cueId, sessionId, shell),
+		mutationFn: ({ cueId, sessionId, shell, preferredTerminalHandleId }: {
+			cueId: string;
+			sessionId?: string;
+			shell?: string;
+			preferredTerminalHandleId?: string;
+		}) => invokeCue(cueId, sessionId, shell, preferredTerminalHandleId),
 		retry: false,
 	});
 }

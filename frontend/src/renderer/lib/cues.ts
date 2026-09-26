@@ -47,10 +47,16 @@ export async function deleteCue(cueId: string): Promise<void> {
 	if (error) throw new Error(apiErrorMessage(error, "Could not delete cue"));
 }
 
-export async function invokeCue(cueId: string, sessionId?: string, shell?: string): Promise<CueInvokeResult> {
+export async function invokeCue(
+	cueId: string,
+	sessionId?: string,
+	shell?: string,
+	preferredTerminalHandleId?: string,
+): Promise<CueInvokeResult> {
 	const body: components["schemas"]["InvokeCueRequest"] = {};
 	if (sessionId !== undefined) body.sessionId = sessionId;
 	if (shell !== undefined) body.shell = shell;
+	if (preferredTerminalHandleId !== undefined) body.preferredTerminalHandleId = preferredTerminalHandleId;
 	const { data, error } = await apiClient.POST("/api/v1/cues/{cueId}/invoke", {
 		params: { path: { cueId } },
 		body,

@@ -295,12 +295,12 @@ type fakeSessions struct {
 }
 
 type fakeCommandTerminals struct {
-	opened []shellterm.OpenCueCommandTerminalInput
+	opened []shellterm.RunCueCommandInput
 	result shellterm.ShellTerminal
 	err    error
 }
 
-func (f *fakeCommandTerminals) OpenCueCommandTerminal(_ context.Context, input shellterm.OpenCueCommandTerminalInput) (shellterm.ShellTerminal, error) {
+func (f *fakeCommandTerminals) RunCueCommand(_ context.Context, input shellterm.RunCueCommandInput) (shellterm.ShellTerminal, error) {
 	f.opened = append(f.opened, input)
 	return f.result, f.err
 }
@@ -385,14 +385,14 @@ func TestInvokeCommandCueOpensTerminalWithoutTouchingAgent(t *testing.T) {
 	terminals := &fakeCommandTerminals{result: shellterm.ShellTerminal{HandleID: "shellterm-cue", ProjectID: "mer", SessionID: "sess-1", WorkingDir: "/worktrees/sess-1"}}
 	svc := cue.New(cue.Deps{Store: store, Sessions: sessions, Terminals: terminals})
 
-	got, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{SessionID: "sess-1", Shell: "pwsh", AllowDirectCommand: true})
+	got, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{SessionID: "sess-1", Shell: "pwsh", PreferredTerminalHandleID: "shellterm-selected", AllowDirectCommand: true})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
-	if len(terminals.opened) != 1 || terminals.opened[0].ProjectID != "mer" || terminals.opened[0].SessionID != "sess-1" || terminals.opened[0].Command != "pnpm lint" || terminals.opened[0].Shell != "pwsh" {
+	if len(terminals.opened) != 1 || terminals.opened[0].ProjectID != "mer" || terminals.opened[0].SessionID != "sess-1" || terminals.opened[0].Command != "pnpm lint" || terminals.opened[0].Shell != "pwsh" || terminals.opened[0].PreferredHandleID != "shellterm-selected" {
 		t.Fatalf("opened = %+v", terminals.opened)
 	}
-	if got.Kind != domain.CueTypeCommand || got.Terminal == nil || got.Terminal.HandleID != "shellterm-cue" || got.InitialState != "starting" {
+	if got.Kind != domain.CueTypeCommand || got.Terminal == nil || got.Terminal.HandleID != "shellterm-cue" {
 		t.Fatalf("result = %+v", got)
 	}
 	if len(sessions.sent) != 0 || len(sessions.spawned) != 0 {

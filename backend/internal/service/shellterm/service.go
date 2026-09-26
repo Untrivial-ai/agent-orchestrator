@@ -9,13 +9,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	stdruntime "runtime"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
-
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -53,8 +50,8 @@ type SessionWorkspaceLocator interface {
 
 // Service opens, lists, and closes standalone shell terminals.
 //
-// User shells survive desktop and daemon restarts. appRunID scopes only trusted
-// command terminals, whose owning authentication flow ends with the app launch.
+// User shells survive desktop and daemon restarts. appRunID scopes trusted
+// auth terminals, whose owning authentication flow ends with the app launch.
 type Service struct {
 	runtime  ShellRuntime
 	store    Store
@@ -78,9 +75,10 @@ type Service struct {
 	// validates a session id BEFORE calling sessionGateFor, so an invalid id
 	// never allocates an entry here — only real sessions do, bounding growth to
 	// the shape AO's single-user daemon actually runs.
-	gates      map[domain.SessionID]*sessionGate
-	cueMu      sync.RWMutex
-	cueHandles map[string]bool
+	gates map[domain.SessionID]*sessionGate
+	// Serialize selection, creation, and command writes so concurrent Cue runs
+	// neither open duplicate shells nor interleave text in a shared shell.
+	cueDispatchMu sync.Mutex
 
 	// onSessionGateWait, when set, is called the instant a session-scoped
 	// OpenShellTerminal or CloseShellTerminal is about to attempt gate.mu.Lock()
@@ -179,7 +177,6 @@ func NewService(runtime ShellRuntime, store Store, projects ProjectRootLocator, 
 		newHandleID: newShellTerminalHandleID,
 		executable:  os.Executable,
 		gates:       map[domain.SessionID]*sessionGate{},
-		cueHandles:  map[string]bool{},
 	}
 }
 
@@ -320,142 +317,88 @@ func (s *Service) OpenCommandTerminal(ctx context.Context, in OpenCommandTermina
 	return terminal, nil
 }
 
-// OpenCueCommandTerminal launches one trusted Cue command without creating or
-// messaging an agent session. A session target is strict: it must belong to the
-// requested project, remain usable, and retain its exact worktree.
-func (s *Service) OpenCueCommandTerminal(ctx context.Context, in OpenCueCommandTerminalInput) (ShellTerminal, error) {
+// RunCueCommand sends a trusted command to a normal shell terminal,
+// opening one when no usable terminal exists in the exact project/session scope.
+// It never creates or messages an agent session.
+func (s *Service) RunCueCommand(ctx context.Context, in RunCueCommandInput) (ShellTerminal, error) {
+	if err := ctx.Err(); err != nil {
+		return ShellTerminal{}, err
+	}
 	if in.ProjectID == "" {
 		return ShellTerminal{}, apierr.Invalid("CUE_COMMAND_PROJECT_REQUIRED", "A project is required to run a command Cue", nil)
 	}
 	if strings.TrimSpace(in.Command) == "" {
 		return ShellTerminal{}, apierr.Invalid("CUE_COMMAND_REQUIRED", "A command is required to run a command Cue", nil)
 	}
-	if strings.TrimSpace(in.Title) == "" {
-		return ShellTerminal{}, apierr.Invalid("SHELL_TERMINAL_TITLE_REQUIRED", "A shell terminal title is required", nil)
-	}
-	if err := validateOpenCommandTerminalInput(OpenCommandTerminalInput{Argv: []string{"cue-command"}, Title: in.Title}); err != nil {
-		return ShellTerminal{}, err
-	}
-
 	workingDir, projectID, err := s.resolveCueCommandWorkingDir(ctx, in.ProjectID, in.SessionID)
 	if err != nil {
 		return ShellTerminal{}, err
 	}
-	shellArgv, usedFallback := resolveUserLoginShell(in.Shell)
-	if usedFallback {
-		return ShellTerminal{}, apierr.Invalid("SHELL_TERMINAL_SHELL_UNAVAILABLE",
-			fmt.Sprintf("The selected shell is unavailable: %s. Choose another shell in Settings.", in.Shell), nil)
-	}
-	argv, err := buildCueCommandArgv(shellArgv, in.Command, stdruntime.GOOS)
-	if err != nil {
-		return ShellTerminal{}, err
-	}
-
 	if in.SessionID != "" {
 		release, acquireErr := s.acquireSessionGate(ctx, in.SessionID)
 		if acquireErr != nil {
 			return ShellTerminal{}, acquireErr
 		}
 		defer release()
-		// Resolve again inside the teardown gate so the worktree cannot disappear
-		// between validation and runtime creation.
+		// Recheck inside the teardown gate before selecting or opening a shell.
 		workingDir, projectID, err = s.resolveCueCommandWorkingDir(ctx, in.ProjectID, in.SessionID)
 		if err != nil {
 			return ShellTerminal{}, err
 		}
 	}
+	s.cueDispatchMu.Lock()
+	defer s.cueDispatchMu.Unlock()
 
-	terminal, err := s.openTerminal(ctx, openTerminalConfig{
-		argv:       argv,
-		env:        s.pinnedEnv(),
-		projectID:  projectID,
-		sessionID:  in.SessionID,
-		workingDir: workingDir,
-		title:      in.Title,
-		transient:  true,
-	})
+	records, err := s.store.SelectRestorableShellTerminals(ctx, s.appRunID)
 	if err != nil {
+		return ShellTerminal{}, fmt.Errorf("run cue command: list terminals: %w", err)
+	}
+	var chosen *ShellTerminalRecord
+	for i := range records {
+		rec := &records[i]
+		if rec.Transient || rec.ProjectID != projectID || rec.SessionID != in.SessionID || filepath.Clean(rec.WorkingDir) != workingDir {
+			continue
+		}
+		alive, probeErr := s.runtime.IsChildAlive(ctx, ports.RuntimeHandle{ID: rec.HandleID})
+		if probeErr != nil {
+			return ShellTerminal{}, fmt.Errorf("run cue command: probe terminal %s: %w", rec.HandleID, probeErr)
+		}
+		if !alive {
+			continue
+		}
+		if rec.HandleID == in.PreferredHandleID {
+			chosen = rec
+			break
+		}
+		if chosen == nil || rec.CreatedAt.After(chosen.CreatedAt) {
+			chosen = rec
+		}
+	}
+	var terminal ShellTerminal
+	if chosen != nil {
+		terminal = shellTerminalFromRecord(*chosen)
+	} else {
+		argv, usedFallback := resolveUserLoginShell(in.Shell)
+		if usedFallback {
+			return ShellTerminal{}, apierr.Invalid("SHELL_TERMINAL_SHELL_UNAVAILABLE",
+				fmt.Sprintf("The selected shell is unavailable: %s. Choose another shell in Settings.", in.Shell), nil)
+		}
+		if len(argv) == 0 {
+			return ShellTerminal{}, apierr.Internal("SHELL_TERMINAL_NO_SHELL", "Could not determine a shell to launch. Set SHELL (macOS/Linux) or ComSpec (Windows).")
+		}
+		terminal, err = s.openTerminal(ctx, openTerminalConfig{argv: argv, env: s.pinnedEnv(), projectID: projectID,
+			sessionID: in.SessionID, workingDir: workingDir, title: nextShellTerminalTitle(records)})
+		if err != nil {
+			return ShellTerminal{}, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
 		return ShellTerminal{}, err
 	}
-	s.cueMu.Lock()
-	s.cueHandles[terminal.HandleID] = false
-	s.cueMu.Unlock()
+	if err := s.runtime.SendMessage(ctx, ports.RuntimeHandle{ID: terminal.HandleID}, in.Command); err != nil {
+		return ShellTerminal{}, fmt.Errorf("run cue command: send to terminal %s: %w", terminal.HandleID, err)
+	}
 	return terminal, nil
-}
-
-type shellRuntimeInterrupter interface {
-	Interrupt(context.Context, ports.RuntimeHandle) error
-}
-
-const cueCommandOutputLines = 200
-const cueCommandOutputBytes = 32 << 10
-
-// CueCommandTerminalStatus derives command state from child liveness while
-// retaining the terminal host and its scrollback after exit.
-func (s *Service) CueCommandTerminalStatus(ctx context.Context, handleID string) (CueCommandTerminalStatus, error) {
-	handleID = strings.TrimSpace(handleID)
-	s.cueMu.RLock()
-	stopped, ok := s.cueHandles[handleID]
-	s.cueMu.RUnlock()
-	if !ok {
-		return CueCommandTerminalStatus{}, apierr.NotFound("CUE_COMMAND_TERMINAL_NOT_FOUND", "No such command Cue terminal: "+handleID)
-	}
-	handle := ports.RuntimeHandle{ID: handleID}
-	// Raw PTY history contains carriage returns, backspaces, and cursor moves.
-	// Removing their escape bytes turns overwritten progress into duplicate or
-	// stray text. Read the rendered pane when the runtime supports it.
-	var output string
-	var err error
-	if rendered, ok := s.runtime.(ports.StyledTerminalOutputReader); ok {
-		output, err = rendered.GetStyledOutput(ctx, handle, cueCommandOutputLines)
-		if errors.Is(err, ports.ErrStyledTerminalOutputUnavailable) {
-			output, err = s.runtime.GetOutput(ctx, handle, cueCommandOutputLines)
-		}
-	} else {
-		output, err = s.runtime.GetOutput(ctx, handle, cueCommandOutputLines)
-	}
-	if err != nil {
-		return CueCommandTerminalStatus{}, fmt.Errorf("command Cue terminal output %s: %w", handleID, err)
-	}
-	output = strings.TrimSpace(domain.SanitizeControlChars(strings.ReplaceAll(strings.ReplaceAll(ansi.Strip(output), "\r\n", "\n"), "\r", "\n")))
-	if len(output) > cueCommandOutputBytes {
-		output = strings.ToValidUTF8(output[len(output)-cueCommandOutputBytes:], "")
-	}
-	if stopped {
-		return CueCommandTerminalStatus{HandleID: handleID, State: "stopped", Output: output}, nil
-	}
-	alive, err := s.runtime.IsChildAlive(ctx, ports.RuntimeHandle{ID: handleID})
-	if err != nil {
-		return CueCommandTerminalStatus{}, fmt.Errorf("command Cue terminal status %s: %w", handleID, err)
-	}
-	state := "exited"
-	if alive {
-		state = "running"
-	}
-	return CueCommandTerminalStatus{HandleID: handleID, State: state, Output: output}, nil
-}
-
-// StopCueCommandTerminal deliberately interrupts a live command without
-// destroying its terminal host, preserving output and scrollback for review.
-func (s *Service) StopCueCommandTerminal(ctx context.Context, handleID string) (CueCommandTerminalStatus, error) {
-	status, err := s.CueCommandTerminalStatus(ctx, handleID)
-	if err != nil {
-		return CueCommandTerminalStatus{}, err
-	}
-	if status.State != "running" {
-		return status, nil
-	}
-	interrupter, ok := s.runtime.(shellRuntimeInterrupter)
-	if !ok {
-		return CueCommandTerminalStatus{}, apierr.Internal("CUE_COMMAND_STOP_UNAVAILABLE", "This terminal runtime cannot stop commands")
-	}
-	if err := interrupter.Interrupt(ctx, ports.RuntimeHandle{ID: handleID}); err != nil {
-		return CueCommandTerminalStatus{}, fmt.Errorf("stop command Cue terminal %s: %w", handleID, err)
-	}
-	s.cueMu.Lock()
-	s.cueHandles[handleID] = true
-	s.cueMu.Unlock()
-	return s.CueCommandTerminalStatus(ctx, handleID)
 }
 
 func (s *Service) resolveCueCommandWorkingDir(ctx context.Context, projectID domain.ProjectID, sessionID domain.SessionID) (string, domain.ProjectID, error) {
@@ -478,7 +421,7 @@ func (s *Service) resolveCueCommandWorkingDir(ctx context.Context, projectID dom
 	}
 	target, err := s.sessions.CueCommandSessionTarget(ctx, sessionID)
 	if err != nil {
-		return "", "", fmt.Errorf("open cue command terminal: resolve session %s: %w", sessionID, err)
+		return "", "", fmt.Errorf("run cue command: resolve session %s: %w", sessionID, err)
 	}
 	if target.ProjectID != projectID {
 		return "", "", apierr.Conflict("CUE_TARGET_CONFLICT", "The selected session belongs to another project", nil)
@@ -727,7 +670,7 @@ func (s *Service) CloseShellTerminal(ctx context.Context, handleID string) error
 }
 
 // ListShellTerminalsForCurrentAppRun returns durable shells from every launch
-// plus the current launch's trusted command terminals,
+// plus the current launch's trusted auth terminals,
 // closing any whose child exited (the user typed `exit`, or the machine
 // rebooted out from under a persisted row). Retained hosts are destroyed before
 // their rows are removed; failed cleanup keeps the row available for retry.
@@ -750,13 +693,6 @@ func (s *Service) ListShellTerminalsForCurrentAppRun(ctx context.Context) ([]She
 			continue
 		}
 		if !alive {
-			s.cueMu.RLock()
-			_, isCueCommand := s.cueHandles[rec.HandleID]
-			s.cueMu.RUnlock()
-			if rec.Transient && rec.AppRunID == s.appRunID && isCueCommand {
-				out = append(out, shellTerminalFromRecord(rec))
-				continue
-			}
 			// Native hosts retain scrollback after child exit. Tear down that
 			// host before forgetting its row; preserve failures for retry.
 			if stillAlive, destroyErr := s.destroyConfirmed(ctx, rec); stillAlive {
@@ -771,7 +707,7 @@ func (s *Service) ListShellTerminalsForCurrentAppRun(ctx context.Context) ([]She
 }
 
 // ReapShellTerminalsFromPreviousAppRuns prunes confirmed-dead user shells and
-// destroys abandoned trusted command terminals. Live or unknown user runtimes
+// destroys abandoned trusted auth terminals. Live or unknown user runtimes
 // are preserved with their original associations and attach handles.
 func (s *Service) ReapShellTerminalsFromPreviousAppRuns(ctx context.Context) (int64, error) {
 	orphans, err := s.store.SelectShellTerminalsFromPreviousAppRuns(ctx, s.appRunID)

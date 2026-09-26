@@ -11,7 +11,6 @@ import { mockShellTerminals } from "../lib/mock-data";
 import { isWindowsPlatform } from "../lib/platform";
 import { terminalShellRequestValue, useTerminalShellStore } from "../stores/terminal-shell-store";
 import { useCloudCp } from "./useCloudCp";
-import { useCommandCueStore } from "../stores/command-cue-store";
 
 export type ShellTerminal = {
 	/** Runtime handle the terminal mux attaches to, exactly like a session pane's. */
@@ -88,22 +87,6 @@ export const shellTerminalsQueryOptions = {
 
 export function useShellTerminals() {
 	return useQuery(shellTerminalsQueryOptions);
-}
-
-export async function getCommandCueTerminalStatus(handleId: string) {
-	const { data, error } = await apiClient.GET("/api/v1/shell-terminals/{handleId}/command-status", {
-		params: { path: { handleId } },
-	});
-	if (error) throw error;
-	return data;
-}
-
-export async function stopCommandCueTerminal(handleId: string) {
-	const { data, error } = await apiClient.POST("/api/v1/shell-terminals/{handleId}/stop-command", {
-		params: { path: { handleId } },
-	});
-	if (error) throw error;
-	return data;
 }
 
 export type OpenShellTerminalInput = {
@@ -323,7 +306,6 @@ export function useCloseShellTerminal() {
 		onSettled: (_data, _error, _handleId, context) => {
 			if (!context?.isCloud) void queryClient.invalidateQueries({ queryKey: shellTerminalsQueryKey });
 		},
-		onSuccess: (_data, handleId) => useCommandCueStore.getState().close(handleId),
 	});
 }
 

@@ -1246,8 +1246,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
-      summary: Dispatch an agent cue to a session or run a command cue in a transient
-        desktop terminal
+      summary: Dispatch an agent cue to a session or send a command cue to a scoped
+        shell terminal
       tags:
       - cues
   /api/v1/desktop/sessions/{sessionId}/workspace:
@@ -7929,90 +7929,6 @@ paths:
       summary: Rename a standalone shell terminal tab
       tags:
       - shellTerminals
-  /api/v1/shell-terminals/{handleId}/command-status:
-    get:
-      operationId: getCueCommandTerminalStatus
-      parameters:
-      - description: Shell terminal runtime handle identifier.
-        in: path
-        name: handleId
-        required: true
-        schema:
-          description: Shell terminal runtime handle identifier.
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CueCommandTerminalStatusResponse'
-          description: OK
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Read the derived state of a command Cue terminal
-      tags:
-      - shellTerminals
-  /api/v1/shell-terminals/{handleId}/stop-command:
-    post:
-      operationId: stopCueCommandTerminal
-      parameters:
-      - description: Shell terminal runtime handle identifier.
-        in: path
-        name: handleId
-        required: true
-        schema:
-          description: Shell terminal runtime handle identifier.
-          type: string
-      responses:
-        "200":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CueCommandTerminalStatusResponse'
-          description: OK
-        "403":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Forbidden
-        "404":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Found
-        "500":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Internal Server Error
-        "501":
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/APIError'
-          description: Not Implemented
-      summary: Stop a command Cue while retaining its terminal output
-      tags:
-      - shellTerminals
   /api/v1/system/github-auth:
     get:
       operationId: getGitHubAuthRequirement
@@ -10427,25 +10343,6 @@ components:
       required:
       - id
       type: object
-    CueCommandTerminalStatusResponse:
-      properties:
-        handleId:
-          type: string
-        output:
-          description: Current bounded terminal output snapshot, retained after command
-            exit.
-          type: string
-        state:
-          enum:
-          - running
-          - exited
-          - stopped
-          type: string
-      required:
-      - handleId
-      - state
-      - output
-      type: object
     CueDefinitionRequest:
       properties:
         command:
@@ -10468,8 +10365,8 @@ components:
           maxLength: 16384
           type: string
         type:
-          description: 'Cue kind: command runs directly in a transient terminal; agent
-            sends an authored prompt. Definition body limit: 128 KiB.'
+          description: 'Cue kind: command sends to a project- or session-scoped shell
+            terminal; agent sends an authored prompt. Definition body limit: 128 KiB.'
           type: string
       required:
       - name
@@ -11205,6 +11102,11 @@ components:
       type: object
     InvokeCueRequest:
       properties:
+        preferredTerminalHandleId:
+          description: Selected terminal to reuse if it is live and belongs to the
+            exact project and session target. Otherwise the newest terminal in scope
+            is used, or a new shell is opened.
+          type: string
         sessionId:
           description: 'Optional exact session target. Agent cues message it; command
             cues use its worktree. Omit it to spawn an agent worker or run a command
@@ -11229,12 +11131,8 @@ components:
           type: string
         shellTerminal:
           $ref: '#/components/schemas/ShellTerminalResponse'
-          description: For command cues, the transient terminal running the command.
-        state:
-          description: Initial command-terminal state.
-          enum:
-          - starting
-          type: string
+          description: For command cues, the normal shell terminal that received the
+            command.
       required:
       - kind
       type: object
