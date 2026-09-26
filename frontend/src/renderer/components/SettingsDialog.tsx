@@ -1,4 +1,4 @@
-import { Bot, GitBranch, Inbox, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
+import { Bot, Loader2, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useRef, useState } from "react";
@@ -7,20 +7,10 @@ import { useCloudGate } from "../hooks/useCloudGate";
 import { ensureCodexAccounts } from "../hooks/useCodexAccountsQuery";
 import { writeCodexAccounts } from "../hooks/codex-accounts-state";
 import { GlobalSettingsForm } from "./GlobalSettingsForm";
-import {
-	ProjectSettingsForm,
-	type ProjectSettingsSaveState,
-	type ProjectSettingsSection,
-} from "./ProjectSettingsForm";
-import {
-	DialogHeader,
-	settingsDialogBodyClass,
-	settingsDialogContentClass,
-	settingsDialogHeaderClass,
-} from "./ui/dialog";
+import { ProjectSettingsForm, type ProjectSettingsSaveState, type ProjectSettingsSection } from "./ProjectSettingsForm";
+import { DialogHeader, settingsDialogBodyClass, settingsDialogContentClass, settingsDialogHeaderClass } from "./ui/dialog";
 import { type GlobalSettingsSection, type SettingsModal, useUiStore } from "../stores/ui-store";
 import { cn } from "../lib/utils";
-import { Button } from "./ui/button";
 import { globalSettingsItem, visibleGlobalSettings } from "./settings/settingsCatalog";
 
 function initialProjectSaveState(): ProjectSettingsSaveState {
@@ -49,21 +39,30 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	// The selected page includes several store/query subscribers. Mount it one
 	// frame after the lightweight dialog chrome so the opening interaction can
 	// paint first.
-	const [bodySettings, setBodySettings] = useState<SettingsModal | null>(null);
+	const deferSettingsBody = settingsModal.scope === "global";
+	const [bodySettings, setBodySettings] = useState<SettingsModal | null>(() =>
+		deferSettingsBody ? null : settingsModal,
+	);
 	useEffect(() => {
 		if (settingsModal === null) return;
+		if (!deferSettingsBody) {
+			setBodySettings(settingsModal);
+			return;
+		}
 		const frame = requestAnimationFrame(() => setBodySettings(settingsModal));
 		return () => cancelAnimationFrame(frame);
-	}, [settingsModal]);
+	}, [deferSettingsBody, settingsModal]);
 	const isBodyReady = bodySettings === displaySettings;
 
 	const globalSections = visibleGlobalSettings({ cloudEnabled });
 
-	const projectSections: Array<{ id: ProjectSettingsSection; label: string; icon: LucideIcon }> = [
-		{ id: "general", label: t("settings.project.identity"), icon: MonitorCog },
+	const projectSections: Array<{
+		id: ProjectSettingsSection;
+		label: string;
+		icon: LucideIcon;
+	}> = [
+		{ id: "general", label: t("settings.project.general"), icon: MonitorCog },
 		{ id: "agents", label: t("settings.project.agents"), icon: Bot },
-		{ id: "workflow", label: t("settings.project.workflow"), icon: GitBranch },
-		{ id: "intake", label: t("settings.project.intake"), icon: Inbox },
 	];
 
 	const isProjectSettings = displaySettings?.scope === "project";
@@ -71,16 +70,25 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	const [focusAgentId, setFocusAgentId] = useState<string>();
 	const [activeProjectSection, setActiveProjectSection] = useState<ProjectSettingsSection>("general");
 	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>(initialProjectSaveState);
+	const closeWhenSavedRef = useRef(false);
 	const globalSettingsWasOpen = useRef(false);
 
 	const activeLabel = isProjectSettings
-		? (projectSections.find((s) => s.id === activeProjectSection)?.label ?? t("settings.project.identity"))
+		? (projectSections.find((s) => s.id === activeProjectSection)?.label ?? t("settings.project.general"))
 		: globalSettingsItem(activeSection, { cloudEnabled }).label(t);
 
 	const closeSettingsDialog = () => {
-		if (isProjectSettings && (projectSaveState.phase === "pending" || projectSaveState.phase === "saving")) return;
+		if (isProjectSettings && (projectSaveState.phase === "pending" || projectSaveState.phase === "saving")) {
+			closeWhenSavedRef.current = true;
+			return;
+		}
 		closeSettings();
 	};
+	useEffect(() => {
+		if (!closeWhenSavedRef.current || (projectSaveState.phase !== "saved" && projectSaveState.phase !== "idle")) return;
+		closeWhenSavedRef.current = false;
+		closeSettings();
+	}, [closeSettings, projectSaveState.phase]);
 	const closeButtonRef = useRef<HTMLButtonElement>(null);
 	const contentRef = useRef<HTMLDivElement>(null);
 	const returnFocusRef = useRef(document.activeElement as HTMLElement | null);
@@ -135,27 +143,31 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	}, [queryClient, settingsModal?.scope]);
 
 	return (
-		<Dialog.Root open onOpenChange={(open) => { if (!open) closeSettingsDialog(); }}>
+		<Dialog.Root
+			open
+			onOpenChange={(open) => {
+				if (!open) closeSettingsDialog();
+			}}
+		>
 			<Dialog.Portal>
-			<Dialog.Overlay
-				className="dialog-overlay animate-overlay-in motion-reduce:animate-none"
-				data-testid="settings-dialog-overlay"
-				onWheel={(event) => event.preventDefault()}
-			/>
+				<Dialog.Overlay
+					className="dialog-overlay animate-overlay-in motion-reduce:animate-none"
+					data-testid="settings-dialog-overlay"
+					onWheel={(event) => event.preventDefault()}
+				/>
 				<Dialog.Content
 					aria-modal="true"
 					className={cn(
 						settingsDialogContentClass,
 						"fixed left-1/2 top-1/2 h-(--size-settings-dialog-height) w-(--size-settings-dialog-wide) max-h-none -translate-x-1/2 -translate-y-1/2 origin-center overflow-hidden p-0 animate-modal-in motion-reduce:animate-none sm:rounded-lg",
+						isProjectSettings && "h-[min(40rem,calc(100vh-3rem))]",
 					)}
 					onOpenAutoFocus={(event) => event.preventDefault()}
 					onEscapeKeyDown={(event) => {
 						if (contentRef.current?.contains(event.target as Node)) return;
 						const target = event.target instanceof Element ? event.target : null;
 						const activeElement = document.activeElement instanceof Element ? document.activeElement : null;
-						const nestedPopup = [target, activeElement].some((element) =>
-							element?.closest('[role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]'),
-						);
+						const nestedPopup = [target, activeElement].some((element) => element?.closest('[role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]'));
 						if (nestedPopup) event.preventDefault();
 					}}
 					onCloseAutoFocus={(event) => {
@@ -169,145 +181,92 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 				>
 					<div className="flex h-full min-h-0">
 						<aside className="flex w-48 shrink-0 flex-col border-r border-(--color-border-settings-dialog-header) bg-card">
-						<p className="px-3 pb-1 pt-3 text-2xs font-semibold tracking-wider text-muted-foreground/60">{t("settings.title")}</p>
-						<nav aria-label={t("settings.navSectionsAria")} className="flex flex-col gap-0.5 p-2 pt-0">
-							{isProjectSettings
-								? projectSections.map(({ id, label, icon }) => (
-										<SettingsNavItem
-											active={activeProjectSection === id}
-											icon={icon}
-											key={id}
-											label={label}
-											onClick={() => setActiveProjectSection(id)}
-										/>
-									))
-								: globalSections.map(({ id, label, icon }) => (
-										<SettingsNavItem
-											active={activeSection === id}
-											icon={icon}
-											key={id}
-											label={label(t)}
-											onClick={() => {
-												setActiveSection(id);
-												setFocusAgentId(undefined);
-											}}
-										/>
-									))}
-						</nav>
-						{isProjectSettings && (
-							<div className="mt-auto flex flex-col gap-2 border-t border-(--color-border-settings-dialog-header) p-3">
-								<Button
-									type="submit"
-									form="project-settings-form"
-									variant="footer-primary"
-									className={cn(
-										"w-full rounded-md",
-										projectSaveState.phase === "failed" &&
-											"border-error bg-error/15 text-error hover:bg-error/20",
-									)}
-									disabled={projectSaveState.phase === "pending" || projectSaveState.phase === "saving"}
-									aria-live="polite"
-									title={
-										projectSaveState.error ??
-										(projectSaveState.replacementError
-											? t("settings.project.restartFailed", { error: projectSaveState.replacementError })
-											: undefined)
-									}
-								>
-									{projectSaveState.phase === "saving" ? (
-										t("settings.project.saving")
-									) : projectSaveState.phase === "saved" ? (
-										t("settings.project.saved")
-									) : projectSaveState.phase === "failed" ? (
-										<>
-											<TriangleAlert className="size-4" aria-hidden="true" />
-											{t("settings.project.saveFailed")}
-										</>
+							<p className="px-3 pb-1 pt-3 text-2xs font-semibold tracking-wider text-muted-foreground/60">{t("settings.title")}</p>
+							<nav aria-label={t("settings.navSectionsAria")} className="flex flex-col gap-0.5 p-2 pt-0">
+								{isProjectSettings
+									? projectSections.map(({ id, label, icon }) => (
+											<SettingsNavItem active={activeProjectSection === id} icon={icon} key={id} label={label} onClick={() => setActiveProjectSection(id)} />
+										))
+									: globalSections.map(({ id, label, icon }) => (
+											<SettingsNavItem
+												active={activeSection === id}
+												icon={icon}
+												key={id}
+												label={label(t)}
+												onClick={() => {
+													setActiveSection(id);
+													setFocusAgentId(undefined);
+												}}
+											/>
+										))}
+							</nav>
+							{isProjectSettings &&
+								(projectSaveState.phase === "failed" ||
+									projectSaveState.phase === "pending" ||
+									projectSaveState.phase === "saving") && (
+								<div className="mt-auto border-t border-(--color-border-settings-dialog-header) px-4 py-3 text-xs" role="status" aria-live="polite">
+									{projectSaveState.phase === "failed" ? (
+										<div className="space-y-2 text-error">
+											<p className="flex items-start gap-2" role="alert"><TriangleAlert className="size-4 shrink-0" aria-hidden="true" />{projectSaveState.error ?? t("settings.project.saveFailed")}</p>
+											<button className="text-settings-label underline underline-offset-2" onClick={() => (document.getElementById("project-settings-form") as HTMLFormElement | null)?.requestSubmit()} type="button">{t("settings.models.retry")}</button>
+										</div>
 									) : (
-										t("settings.project.saveChanges")
+										<p className="flex items-center gap-2 text-settings-muted">
+											<Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
+											{t("settings.project.saving")}
+										</p>
 									)}
-								</Button>
-								{projectSaveState.phase === "failed" && projectSaveState.error && (
-									<p className="mt-1.5 px-0.5 text-xs text-destructive leading-tight" role="alert">
-										{projectSaveState.error}
-									</p>
-								)}
-								<span className="sr-only" role="status" aria-live="polite">
-									{projectSaveState.phase === "saved" ? t("settings.project.saved") : ""}
-								</span>
-							</div>
-						)}
-					</aside>
-
-					{/* Main area — same bg as the app page */}
-					<div className="flex min-w-0 flex-1 flex-col bg-card">
-						<DialogHeader className={cn(settingsDialogHeaderClass, "flex h-auto shrink-0 flex-row items-center justify-between border-b-0 pb-3")}>
-							<Dialog.Title className="text-2xl font-bold text-foreground">{activeLabel}</Dialog.Title>
-							<Dialog.Description className="sr-only">
-								{isProjectSettings ? t("settings.project.dialogDescription") : t("settings.dialogDescription", { section: activeLabel.toLowerCase() })}
-							</Dialog.Description>
-							<button
-								aria-label={t("settings.close")}
-								className="settings-close-button"
-								disabled={isProjectSettings && (projectSaveState.phase === "pending" || projectSaveState.phase === "saving")}
-								onClick={closeSettingsDialog}
-								ref={closeButtonRef}
-								type="button"
-							>
-								<X aria-hidden="true" className="size-4" />
-							</button>
-						</DialogHeader>
-						<div
-							aria-busy={!isBodyReady}
-							className={cn(settingsDialogBodyClass, "settings-dialog-body flex-1 px-(--size-modal-padding) pt-0")}
-						>
-							{isBodyReady ? (
-								displaySettings?.scope === "project" ? (
-									<ProjectSettingsForm
-										projectId={displaySettings.projectId}
-										section={activeProjectSection}
-										onSaveState={setProjectSaveState}
-									/>
-								) : (
-									<GlobalSettingsForm
-										cloudEnabled={cloudEnabled}
-										focusAgentId={focusAgentId}
-										section={activeSection}
-									/>
-								)
-							) : (
-								<div aria-hidden="true" className="h-full" data-testid="settings-dialog-body-pending" />
+								</div>
 							)}
+						</aside>
+
+						{/* Main area — same bg as the app page */}
+						<div className="flex min-w-0 flex-1 flex-col bg-card">
+							<DialogHeader className={cn(settingsDialogHeaderClass, "flex h-auto shrink-0 flex-row items-center justify-between border-b-0 pb-3")}>
+								<Dialog.Title className="text-2xl font-bold text-foreground">{activeLabel}</Dialog.Title>
+								<Dialog.Description className="sr-only">
+									{isProjectSettings
+										? t("settings.project.dialogDescription")
+										: t("settings.dialogDescription", {
+												section: activeLabel.toLowerCase(),
+											})}
+								</Dialog.Description>
+								<button
+									aria-label={t("settings.close")}
+									className="settings-close-button"
+									onClick={closeSettingsDialog}
+									ref={closeButtonRef}
+									type="button"
+								>
+									<X aria-hidden="true" className="size-4" />
+								</button>
+							</DialogHeader>
+							<div aria-busy={!isBodyReady} className={cn(settingsDialogBodyClass, "settings-dialog-body flex-1 px-(--size-modal-padding) pt-0")}>
+								{isBodyReady ? (
+									displaySettings?.scope === "project" ? (
+										<ProjectSettingsForm projectId={displaySettings.projectId} section={activeProjectSection} onSaveState={setProjectSaveState} />
+									) : (
+										<GlobalSettingsForm cloudEnabled={cloudEnabled} focusAgentId={focusAgentId} section={activeSection} />
+									)
+								) : (
+									<div aria-hidden="true" className="h-full" data-testid="settings-dialog-body-pending" />
+								)}
+							</div>
 						</div>
 					</div>
-				</div>
 				</Dialog.Content>
 			</Dialog.Portal>
 		</Dialog.Root>
 	);
 }
 
-function SettingsNavItem({
-	active,
-	disabled,
-	icon: Icon,
-	label,
-	onClick,
-}: {
-	active: boolean;
-	disabled?: boolean;
-	icon: LucideIcon;
-	label: string;
-	onClick: () => void;
-}) {
+function SettingsNavItem({ active, disabled, icon: Icon, label, onClick }: { active: boolean; disabled?: boolean; icon: LucideIcon; label: string; onClick: () => void }) {
 	return (
 		<button
 			aria-current={active ? "page" : undefined}
 			className={cn(
 				"flex h-9 w-full items-center gap-2 rounded-md px-2.5 text-left text-sm font-medium transition-[background-color,color,transform] duration-fast ease-out active:scale-press focus:outline-none focus-visible:outline-none focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted-foreground",
-				active
-					? "bg-interactive-active text-foreground"
-					: "text-muted-foreground hover:bg-interactive-hover hover:text-foreground",
+				active ? "bg-interactive-active text-foreground" : "text-muted-foreground hover:bg-interactive-hover hover:text-foreground",
 			)}
 			disabled={disabled}
 			onClick={onClick}

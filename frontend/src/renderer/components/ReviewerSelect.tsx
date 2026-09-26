@@ -58,6 +58,7 @@ export function ReviewerSelect({
 	triggerClassName,
 	ariaLabel,
 	defaultHarness,
+	harnessOnly = false,
 	contentAlign = "start",
 	disabled = false,
 	agents,
@@ -72,6 +73,7 @@ export function ReviewerSelect({
 	triggerClassName?: string;
 	ariaLabel?: string;
 	defaultHarness: string;
+	harnessOnly?: boolean;
 	contentAlign?: "start" | "end";
 	disabled?: boolean;
 	agents?: components["schemas"]["AgentReadinessSnapshot"][];
@@ -121,7 +123,7 @@ export function ReviewerSelect({
 		}
 	}, [defaultHarness, menuOpen, menuProjectID, queryClient, selectableOptions]);
 	const selectedModelLabel = modelOrModeLabel(triggerCatalog.data, model, mode, t("settings.models.modelNotReported"));
-	const triggerLabel = [value ? agentLabel(value) : defaultHarnessLabel, selectedModelLabel]
+	const triggerLabel = [value ? agentLabel(value) : defaultHarnessLabel, harnessOnly ? null : selectedModelLabel]
 		.filter(Boolean)
 		.join(" · ");
 
@@ -155,6 +157,7 @@ export function ReviewerSelect({
 						onConfigChange?.(nextHarness, nextConfig);
 					}}
 					projectId={menuProjectID}
+					harnessOnly={harnessOnly}
 					resolvedHarness={defaultHarness}
 					persistHarness=""
 					closeMenu={() => setMenuOpen(false)}
@@ -172,6 +175,7 @@ export function ReviewerSelect({
 							onConfigChange?.(nextHarness, nextConfig);
 						}}
 						projectId={menuProjectID}
+						harnessOnly={harnessOnly}
 						resolvedHarness={agent.id}
 						persistHarness={agent.id}
 						closeMenu={() => setMenuOpen(false)}
@@ -190,6 +194,7 @@ function ReviewerHarnessOption({
 	currentMode,
 	onSelect,
 	projectId,
+	harnessOnly,
 	resolvedHarness,
 	persistHarness,
 	closeMenu,
@@ -200,6 +205,7 @@ function ReviewerHarnessOption({
 	currentMode: string;
 	onSelect: (harness: string, config: ReviewerAgentConfig) => void;
 	projectId: string;
+	harnessOnly: boolean;
 	resolvedHarness: string;
 	persistHarness: string;
 	closeMenu: () => void;
@@ -220,7 +226,7 @@ function ReviewerHarnessOption({
 	const defaultModel = catalog?.models?.find((item) => item.isDefault && isConcreteModelID(item.id))?.id;
 	const selectDefault = () => onSelect(persistHarness, {});
 
-	if (catalogKnown && options.length === 0) {
+	if (harnessOnly || (catalogKnown && options.length === 0)) {
 		return (
 			<>
 				<OptionMenuItem

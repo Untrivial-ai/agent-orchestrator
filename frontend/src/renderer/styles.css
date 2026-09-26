@@ -778,6 +778,31 @@ button.settings-row-bar {
 	padding-inline: 0;
 }
 
+/* Match the open row layout used by the main Settings pages. */
+.project-settings-form > section {
+	gap: var(--space-2);
+}
+
+.project-settings-form > section > h2 {
+	padding-inline: 0;
+	font-size: var(--font-size-xs);
+	font-weight: 500;
+	color: var(--color-text-settings-muted);
+}
+
+.project-settings-form > section > .settings-grouped-rows {
+	background: transparent;
+}
+
+.project-settings-form > section > .settings-grouped-rows .settings-row-bar {
+	min-height: 3.5rem;
+	padding-inline: 0;
+}
+
+.project-settings-form > section > .settings-grouped-rows > .settings-row-bar + .settings-row-bar {
+	border-top: 0;
+}
+
 /* The update summary is a content row, not a compact control row. */
 .settings-grouped-rows .update-status-row {
 	padding-block: var(--space-4);
