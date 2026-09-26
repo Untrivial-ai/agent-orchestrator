@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { useState, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionFileExplorer } from "./SessionFileExplorer";
+import { FilesTopbarHostContext } from "./files-topbar-host";
 import { TooltipProvider } from "./ui/tooltip";
 import { useUiStore } from "../stores/ui-store";
 
@@ -46,18 +47,18 @@ vi.mock("./FileTree", () => ({
 }));
 
 vi.mock("./FileContentPane", () => ({
-	FileContentPane: ({ initialEditing, initialMode, path, previousPath }: { initialEditing?: boolean; initialMode?: string; path: string | null; previousPath?: string }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode ?? "default"} data-previous-path={previousPath} data-testid="content-pane">{path ?? "none"}</div>,
+	FileContentPane: ({ initialEditing, initialMode, path, previousPath, split }: { initialEditing?: boolean; initialMode?: string; path: string | null; previousPath?: string; split?: boolean }) => <div data-editing={String(Boolean(initialEditing))} data-mode={initialMode ?? "default"} data-previous-path={previousPath} data-split={String(Boolean(split))} data-testid="content-pane">{path ?? "none"}</div>,
 }));
 
 vi.mock("./diffs/WorkspaceReviewPane", () => ({
-	WorkspaceReviewPane: ({ filter, onBrowseAll, onOpenFile }: { filter: string; onBrowseAll: () => void; onOpenFile?: (path: string, options?: { editing?: boolean; mode?: "diff" | "file" | "rendered" }) => void }) => (
+	WorkspaceReviewPane: ({ canOpenInCenter = true, filter, onBrowseAll, onOpenFile }: { canOpenInCenter?: boolean; filter: string; onBrowseAll: () => void; onOpenFile?: (path: string, options?: { editing?: boolean; mode?: "diff" | "file" | "rendered" }) => void }) => (
 		<div data-testid="review-pane">
 			<span data-testid="review-filter">{filter}</span>
 			<button onClick={onBrowseAll} type="button">Browse all files</button>
 			<button onClick={() => onOpenFile?.("src/App.tsx", { mode: "file" })} type="button">Open full file</button>
 			<button onClick={() => onOpenFile?.("README.md", { mode: "rendered" })} type="button">Render README.md</button>
 			<button onClick={() => onOpenFile?.("src/App.tsx", { editing: true, mode: "file" })} type="button">Edit src/App.tsx</button>
-			<button onClick={() => onOpenFile?.("src/App.tsx", { mode: "diff" })} type="button">Open diff in center</button>
+			{canOpenInCenter ? <button onClick={() => onOpenFile?.("src/App.tsx", { mode: "diff" })} type="button">Open diff in center</button> : null}
 		</div>
 	),
 }));
@@ -160,11 +161,48 @@ describe("SessionFileExplorer", () => {
 		expect(screen.getByTestId("content-pane")).toHaveTextContent("src/App.tsx");
 		expect(screen.getByTestId("tree-changed-only")).toBeInTheDocument();
 
+		// Preview first, tree on the right.
 		const panels = container.querySelectorAll('[data-slot="resizable-panel"]');
 		expect(panels).toHaveLength(2);
-		expect(panels[0]).toHaveStyle({ flexGrow: "26" });
-		expect(panels[1]).toHaveStyle({ flexGrow: "74" });
+		expect(panels[0]).toHaveStyle({ flexGrow: "74" });
+		expect(panels[1]).toHaveStyle({ flexGrow: "26" });
+
+		// With the view tabs showing, the active Files tab doubles as the tree toggle.
+		await userEvent.click(screen.getByRole("tab", { name: "Hide file tree" }));
+		expect(screen.queryByTestId("tree-changed-only")).not.toBeInTheDocument();
+		expect(screen.getByTestId("content-pane")).toHaveTextContent("src/App.tsx");
+		await userEvent.click(screen.getByRole("tab", { name: "Show file tree" }));
+		expect(screen.getByTestId("tree-changed-only")).toBeInTheDocument();
 		widthSpy.mockRestore();
+	});
+
+	it("keeps the header in place when switching between the Changes and Files views", async () => {
+		renderWithQuery(<SessionFileExplorer isMaximized onToggleMaximized={vi.fn()} sessionId="sess-explorer-steady" />);
+
+		expect(await screen.findByTestId("review-pane")).toBeInTheDocument();
+		const header = screen.getByRole("tab", { name: "Changes" }).closest("header");
+		const changesHeaderClass = header?.className;
+		await userEvent.click(screen.getByRole("tab", { name: "Files" }));
+
+		// The split's divider is drawn on the content, not by growing the header.
+		expect(screen.getByTestId("content-pane")).toBeInTheDocument();
+		expect(header?.className).toBe(changesHeaderClass);
+		expect(header?.nextElementSibling).toHaveClass("border-t");
+	});
+
+	it("renders the maximized filter into the overlay titlebar it is given", () => {
+		const titlebar = document.createElement("div");
+		document.body.append(titlebar);
+		renderWithQuery(
+			<FilesTopbarHostContext.Provider value={titlebar}>
+				<SessionFileExplorer isMaximized onToggleMaximized={vi.fn()} sessionId="sess-explorer-titlebar" />
+			</FilesTopbarHostContext.Provider>,
+		);
+
+		const filter = screen.getByRole("textbox", { name: "Filter files" });
+		expect(titlebar).toContainElement(filter);
+		expect(screen.getByRole("button", { name: "Minimize files" }).closest("header")).not.toContainElement(filter);
+		titlebar.remove();
 	});
 
 	it("defaults to the continuous changes review and can switch to the full file tree", async () => {
@@ -197,6 +235,8 @@ describe("SessionFileExplorer", () => {
 		expect(screen.queryByRole("tab", { name: "Changes" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("tab", { name: "Files" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Split diff view" })).not.toBeInTheDocument();
+		// Nothing to review and no PR: the picker's only entry would be Workspace.
+		expect(screen.queryByRole("button", { name: "File source" })).not.toBeInTheDocument();
 	});
 
 	it("switches to an associated PR without changing the workspace", async () => {
@@ -213,12 +253,22 @@ describe("SessionFileExplorer", () => {
 			};
 		});
 		renderWithQuery(<SessionFileExplorer sessionId="sess-pr" />);
+		expect(await screen.findByRole("tablist", { name: "File view" })).toBeInTheDocument();
 
-		await userEvent.click(screen.getByRole("combobox", { name: "File source" }));
-		await userEvent.click(await screen.findByRole("option", { name: "PR #42 · feature/files" }));
+		await userEvent.click(screen.getByRole("button", { name: "File source" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Branch" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "PR #42 · feature/files" }));
 
-		expect(screen.getByText("PR #42 · feature/files", { selector: "div" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "File source" })).toHaveTextContent("PR #42 · feature/files");
+		// The Changes view is workspace-only, so a PR source hides the switch.
+		expect(screen.queryByRole("tablist", { name: "File view" })).not.toBeInTheDocument();
 		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("true");
+		// The preview beside the tree gets the same unified/split switch as Changes,
+		// and follows it at any width.
+		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-split", "false");
+		await userEvent.click(screen.getByRole("button", { name: "Split diff view" }));
+		expect(screen.getByRole("button", { name: "Unified diff view" })).toHaveAttribute("aria-pressed", "true");
+		expect(screen.getByTestId("content-pane")).toHaveAttribute("data-split", "true");
 		expect(getMock).toHaveBeenCalledWith(
 			"/api/v1/sessions/{sessionId}/pr/{prNumber}/files",
 			expect.objectContaining({
@@ -275,8 +325,10 @@ describe("SessionFileExplorer", () => {
 		});
 		const first = renderWithQuery(<SessionFileExplorer sessionId="sess-duplicate-pr" />);
 
-		await userEvent.click(screen.getByRole("combobox", { name: "File source" }));
-		await userEvent.click(await screen.findByRole("option", { name: "PR #42 · canonical" }));
+		// The picker appears once the PR list gives it something to switch to.
+		await userEvent.click(await screen.findByRole("button", { name: "File source" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "Branch" }));
+		await userEvent.click(await screen.findByRole("menuitem", { name: "PR #42 · canonical" }));
 		await waitFor(() => expect(getMock).toHaveBeenCalledWith(
 			"/api/v1/sessions/{sessionId}/pr/{prNumber}/files",
 			expect.objectContaining({ params: { path: { sessionId: "sess-duplicate-pr", prNumber: 42 }, query: { sourceUrl: "https://gitlab.example/acme/app/-/merge_requests/42" } } }),
@@ -326,6 +378,35 @@ describe("SessionFileExplorer", () => {
 		await userEvent.click(await screen.findByRole("button", { name: "Render README.md" }));
 		expect(screen.getByTestId("review-pane")).toBeInTheDocument();
 		expect(onOpenFile).toHaveBeenCalledWith("README.md", { mode: "rendered" });
+	});
+
+	it("edits a review file in place when maximized instead of the hidden center", async () => {
+		const onOpenFile = vi.fn();
+		renderWithQuery(<SessionFileExplorer isMaximized onOpenFile={onOpenFile} sessionId="sess-review-edit-maximized" />);
+
+		await userEvent.click(await screen.findByRole("button", { name: "Edit src/App.tsx" }));
+		const pane = await screen.findByTestId("content-pane");
+		expect(pane).toHaveTextContent("src/App.tsx");
+		expect(pane).toHaveAttribute("data-editing", "true");
+		expect(pane).toHaveAttribute("data-mode", "file");
+		expect(onOpenFile).not.toHaveBeenCalled();
+	});
+
+	it("hides open-in-center when maximized, since the overlay covers the center pane", async () => {
+		renderWithQuery(<SessionFileExplorer isMaximized onOpenFile={vi.fn()} sessionId="sess-review-center-maximized" />);
+
+		expect(await screen.findByRole("button", { name: "Edit src/App.tsx" })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Open diff in center" })).not.toBeInTheDocument();
+	});
+
+	it("opens the rich preview in place when maximized", async () => {
+		renderWithQuery(<SessionFileExplorer isMaximized sessionId="sess-review-rendered-maximized" />);
+
+		await userEvent.click(await screen.findByRole("button", { name: "Render README.md" }));
+		const pane = await screen.findByTestId("content-pane");
+		expect(pane).toHaveTextContent("README.md");
+		expect(pane).toHaveAttribute("data-mode", "rendered");
+		expect(pane).toHaveAttribute("data-editing", "false");
 	});
 
 	it("always wraps file content and does not expose a wrap toggle", async () => {
