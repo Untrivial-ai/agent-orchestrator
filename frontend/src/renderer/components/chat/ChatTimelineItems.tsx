@@ -2843,7 +2843,7 @@ export function TurnDuration({ durationMs, inline = false }: { durationMs: numbe
 	return (
 		<span
 			className={cn(
-				"shrink-0 font-sans text-[12px] leading-none tabular-nums text-muted-foreground",
+				"shrink-0 font-sans text-sm leading-none tabular-nums text-muted-foreground",
 				!inline && "px-1",
 			)}
 			aria-label={`Time spent: ${formatDuration(durationMs)}`}

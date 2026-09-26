@@ -2378,6 +2378,12 @@ html.sidebar-reordering * {
 	transform: none;
 }
 
+/* Worked is a disclosure row, not a tactile button: keep its geometry and
+   scale stable while the accordion opens. */
+.cursor-chat-surface .chat-worked-trigger:not(:disabled):active {
+	transform: none;
+}
+
 .activity-run-toggle {
 	border-bottom: 1px solid color-mix(in oklch, var(--color-border) 48%, transparent);
 	color: var(--color-text-muted);

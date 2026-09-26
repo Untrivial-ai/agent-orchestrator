@@ -3450,13 +3450,14 @@ const TurnGroup = memo(function TurnGroup({
 				<Accordion type="single" collapsible className="-mx-1 border-b border-border" defaultValue="">
 					<AccordionItem value="worked" className="border-0">
 						<AccordionTrigger
-							className="h-7 gap-2 px-0 py-0 text-sm font-medium text-muted-foreground hover:text-foreground"
+							className="chat-worked-trigger h-7 gap-1 px-0 py-0 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground active:transform-none"
+							headerClassName="hover:bg-transparent data-[state=open]:bg-transparent"
 							trailing={null}
 						>
 							<span className="inline-flex w-fit items-center gap-1">
 								Worked for
-								<ChevronDown aria-hidden="true" className="size-3.5 shrink-0 transition-transform duration-200 group-data-[state=open]/row:rotate-180" />
 								{group.outcome.durationMs !== undefined ? <TurnDuration durationMs={group.outcome.durationMs} inline /> : null}
+								<ChevronDown aria-hidden="true" className="size-3.5 shrink-0 transition-transform duration-200 group-data-[state=open]/row:rotate-180" />
 							</span>
 						</AccordionTrigger>
 						<AccordionContent className="space-y-2 pb-2 pt-1">
