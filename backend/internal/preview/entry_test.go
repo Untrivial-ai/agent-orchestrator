@@ -156,6 +156,47 @@ func TestFileURLUsesIsolatedLocalhostOrigin(t *testing.T) {
 	}
 }
 
+func TestArtifactFileURLUsesADistinctHostFromFileURL(t *testing.T) {
+	id := domain.SessionID("ao-1")
+	workspaceURL := mustFileURL(t, "http://127.0.0.1:3001", id, "__ao_artifacts__/site/index.html")
+	artifactURL, err := ArtifactFileURL("http://127.0.0.1:3001", id, "site/index.html")
+	if err != nil {
+		t.Fatalf("ArtifactFileURL: %v", err)
+	}
+	parsedWorkspace, err := url.Parse(workspaceURL)
+	if err != nil {
+		t.Fatalf("parse FileURL: %v", err)
+	}
+	parsedArtifact, err := url.Parse(artifactURL)
+	if err != nil {
+		t.Fatalf("parse ArtifactFileURL: %v", err)
+	}
+	// The artifact path carries no __ao_artifacts__ marker: scope lives in
+	// the host, so the path can never collide with a real workspace path.
+	if parsedArtifact.Path != "/site/index.html" {
+		t.Fatalf("ArtifactFileURL path = %q, want /site/index.html", parsedArtifact.Path)
+	}
+	if parsedArtifact.Hostname() == parsedWorkspace.Hostname() {
+		t.Fatalf("ArtifactFileURL host = %q, want distinct from FileURL host %q", parsedArtifact.Hostname(), parsedWorkspace.Hostname())
+	}
+	if !strings.HasPrefix(parsedArtifact.Hostname(), previewArtifactHostLabel+".") {
+		t.Fatalf("ArtifactFileURL host = %q, want %q label", parsedArtifact.Hostname(), previewArtifactHostLabel)
+	}
+
+	// Each host decodes only under its own function: an artifact host is not
+	// a workspace preview host and vice versa.
+	if decoded, ok := SessionIDFromHost(parsedArtifact.Host); ok {
+		t.Fatalf("SessionIDFromHost(artifact host) = %q, true; want false", decoded)
+	}
+	if decoded, ok := SessionIDFromArtifactHost(parsedWorkspace.Host); ok {
+		t.Fatalf("SessionIDFromArtifactHost(workspace host) = %q, true; want false", decoded)
+	}
+	decoded, ok := SessionIDFromArtifactHost(parsedArtifact.Host)
+	if !ok || decoded != id {
+		t.Fatalf("SessionIDFromArtifactHost(%q) = %q, %v; want %q, true", parsedArtifact.Host, decoded, ok, id)
+	}
+}
+
 func TestSessionIDFromHostSupportsLongUnicodeIDs(t *testing.T) {
 	id := domain.SessionID(strings.Repeat("worker-", 12) + "雪")
 	raw := mustFileURL(t, "http://localhost:4321", id, "index.html")
