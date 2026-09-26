@@ -54,7 +54,7 @@ func (s *Service) Invoke(ctx context.Context, cueID domain.CueID, input InvokeIn
 		}
 		terminal, err := s.terminals.RunCueCommand(ctx, shellterm.RunCueCommandInput{
 			ProjectID: cue.ProjectID, SessionID: input.SessionID, Shell: input.Shell,
-			Command: cue.Command, PreferredHandleID: input.PreferredTerminalHandleID,
+			Command: cue.Command,
 		})
 		if err != nil {
 			return InvokeResult{}, err

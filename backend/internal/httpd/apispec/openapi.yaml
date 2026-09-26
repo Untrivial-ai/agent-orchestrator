@@ -11180,11 +11180,6 @@ components:
       type: object
     InvokeCueRequest:
       properties:
-        preferredTerminalHandleId:
-          description: Selected terminal to reuse if it is live and belongs to the
-            exact project and session target. Otherwise the newest terminal in scope
-            is used, or a new shell is opened.
-          type: string
         sessionId:
           description: 'Optional exact session target. Agent cues message it; command
             cues use its worktree. Omit it to spawn an agent worker or run a command

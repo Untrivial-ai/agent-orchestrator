@@ -3860,8 +3860,6 @@ export interface components {
             updatedAt?: null | string;
         };
         InvokeCueRequest: {
-            /** @description Selected terminal to reuse if it is live and belongs to the exact project and session target. Otherwise the newest terminal in scope is used, or a new shell is opened. */
-            preferredTerminalHandleId?: string;
             /** @description Optional exact session target. Agent cues message it; command cues use its worktree. Omit it to spawn an agent worker or run a command in the project root. A supplied id must be non-blank and compatible, and never falls back to a replacement worker. Invocation body limit: 4 KiB. */
             sessionId?: string;
             /** @description Desktop shell selection used only for command cues. */

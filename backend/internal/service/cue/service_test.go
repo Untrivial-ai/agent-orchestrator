@@ -385,11 +385,11 @@ func TestInvokeCommandCueOpensTerminalWithoutTouchingAgent(t *testing.T) {
 	terminals := &fakeCommandTerminals{result: shellterm.ShellTerminal{HandleID: "shellterm-cue", ProjectID: "mer", SessionID: "sess-1", WorkingDir: "/worktrees/sess-1"}}
 	svc := cue.New(cue.Deps{Store: store, Sessions: sessions, Terminals: terminals})
 
-	got, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{SessionID: "sess-1", Shell: "pwsh", PreferredTerminalHandleID: "shellterm-selected", AllowDirectCommand: true})
+	got, err := svc.Invoke(context.Background(), "cue-a", cue.InvokeInput{SessionID: "sess-1", Shell: "pwsh", AllowDirectCommand: true})
 	if err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
-	if len(terminals.opened) != 1 || terminals.opened[0].ProjectID != "mer" || terminals.opened[0].SessionID != "sess-1" || terminals.opened[0].Command != "pnpm lint" || terminals.opened[0].Shell != "pwsh" || terminals.opened[0].PreferredHandleID != "shellterm-selected" {
+	if len(terminals.opened) != 1 || terminals.opened[0].ProjectID != "mer" || terminals.opened[0].SessionID != "sess-1" || terminals.opened[0].Command != "pnpm lint" || terminals.opened[0].Shell != "pwsh" {
 		t.Fatalf("opened = %+v", terminals.opened)
 	}
 	if got.Kind != domain.CueTypeCommand || got.Terminal == nil || got.Terminal.HandleID != "shellterm-cue" {

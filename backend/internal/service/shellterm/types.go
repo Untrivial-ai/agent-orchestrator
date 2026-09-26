@@ -66,14 +66,12 @@ type OpenCommandTerminalInput struct {
 }
 
 // RunCueCommandInput is the trusted, project-scoped command request
-// used by the Cue service. A preferred handle is used only when it belongs to
-// the exact target; otherwise the newest usable shell in scope is selected.
+// used by the Cue service. Each invocation opens a new normal shell.
 type RunCueCommandInput struct {
-	ProjectID         domain.ProjectID
-	SessionID         domain.SessionID
-	Shell             string
-	Command           string
-	PreferredHandleID string
+	ProjectID domain.ProjectID
+	SessionID domain.SessionID
+	Shell     string
+	Command   string
 }
 
 // CueCommandSessionTarget contains the session facts needed to prove that a

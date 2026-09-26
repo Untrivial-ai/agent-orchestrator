@@ -133,12 +133,11 @@ function CueRunMenuTrigger({
 		if (pending.current) return;
 		pending.current = true;
 		const origin = generation.current;
-		const preferredTerminalHandleId = useUiStore.getState().activeShellTerminalHandleId ?? undefined;
 		setInvokingId(cue.id);
 		try {
 			await useTerminalShellStore.getState().load();
 			const shell = terminalShellRequestValue(useTerminalShellStore.getState().preference);
-			const result = await invokeMutation.mutateAsync({ cueId: cue.id, sessionId, shell, preferredTerminalHandleId });
+			const result = await invokeMutation.mutateAsync({ cueId: cue.id, sessionId, shell });
 			if (result.kind === "command") {
 				if (!result.shellTerminal) throw new Error(t("cues.invokeFailed"));
 				const terminal = toShellTerminal(result.shellTerminal);

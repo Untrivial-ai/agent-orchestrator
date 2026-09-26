@@ -289,7 +289,7 @@ func TestCuesAPI_InvokeReturnsCommandTerminal(t *testing.T) {
 	}}
 	srv := newCueTestServer(t, svc)
 
-	body, status, _ := doRequest(t, srv, "POST", "/api/v1/cues/cue-def456/invoke", `{"sessionId":"sess-123","shell":"cmd","preferredTerminalHandleId":"shellterm-selected"}`)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/cues/cue-def456/invoke", `{"sessionId":"sess-123","shell":"cmd"}`)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", status, body)
 	}
@@ -298,8 +298,8 @@ func TestCuesAPI_InvokeReturnsCommandTerminal(t *testing.T) {
 	if resp.Kind != "command" || resp.SessionID != "" || resp.ShellTerminal == nil || resp.ShellTerminal.HandleID != "shellterm-cue" {
 		t.Fatalf("response = %+v", resp)
 	}
-	if svc.gotInvoke.PreferredTerminalHandleID != "shellterm-selected" {
-		t.Fatalf("preferred terminal = %q", svc.gotInvoke.PreferredTerminalHandleID)
+	if svc.gotInvoke.SessionID != "sess-123" || svc.gotInvoke.Shell != "cmd" {
+		t.Fatalf("invoke target = %+v", svc.gotInvoke)
 	}
 }
 

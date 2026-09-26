@@ -76,10 +76,6 @@ type Service struct {
 	// never allocates an entry here — only real sessions do, bounding growth to
 	// the shape AO's single-user daemon actually runs.
 	gates map[domain.SessionID]*sessionGate
-	// Serialize selection, creation, and command writes so concurrent Cue runs
-	// neither open duplicate shells nor interleave text in a shared shell.
-	cueDispatchMu sync.Mutex
-
 	// onSessionGateWait, when set, is called the instant a session-scoped
 	// OpenShellTerminal or CloseShellTerminal is about to attempt gate.mu.Lock()
 	// — before the (possibly blocking) call, so it fires whether or not the
@@ -317,8 +313,7 @@ func (s *Service) OpenCommandTerminal(ctx context.Context, in OpenCommandTermina
 	return terminal, nil
 }
 
-// RunCueCommand sends a trusted command to a normal shell terminal,
-// opening one when no usable terminal exists in the exact project/session scope.
+// RunCueCommand opens a new normal shell terminal for each trusted command.
 // It never creates or messages an agent session.
 func (s *Service) RunCueCommand(ctx context.Context, in RunCueCommandInput) (ShellTerminal, error) {
 	if err := ctx.Err(); err != nil {
@@ -340,57 +335,28 @@ func (s *Service) RunCueCommand(ctx context.Context, in RunCueCommandInput) (She
 			return ShellTerminal{}, acquireErr
 		}
 		defer release()
-		// Recheck inside the teardown gate before selecting or opening a shell.
+		// Recheck inside the teardown gate before opening a shell.
 		workingDir, projectID, err = s.resolveCueCommandWorkingDir(ctx, in.ProjectID, in.SessionID)
 		if err != nil {
 			return ShellTerminal{}, err
 		}
 	}
-	s.cueDispatchMu.Lock()
-	defer s.cueDispatchMu.Unlock()
-
 	records, err := s.store.SelectRestorableShellTerminals(ctx, s.appRunID)
 	if err != nil {
 		return ShellTerminal{}, fmt.Errorf("run cue command: list terminals: %w", err)
 	}
-	var chosen *ShellTerminalRecord
-	for i := range records {
-		rec := &records[i]
-		if rec.Transient || rec.ProjectID != projectID || rec.SessionID != in.SessionID || filepath.Clean(rec.WorkingDir) != workingDir {
-			continue
-		}
-		alive, probeErr := s.runtime.IsChildAlive(ctx, ports.RuntimeHandle{ID: rec.HandleID})
-		if probeErr != nil {
-			return ShellTerminal{}, fmt.Errorf("run cue command: probe terminal %s: %w", rec.HandleID, probeErr)
-		}
-		if !alive {
-			continue
-		}
-		if rec.HandleID == in.PreferredHandleID {
-			chosen = rec
-			break
-		}
-		if chosen == nil || rec.CreatedAt.After(chosen.CreatedAt) {
-			chosen = rec
-		}
+	argv, usedFallback := resolveUserLoginShell(in.Shell)
+	if usedFallback {
+		return ShellTerminal{}, apierr.Invalid("SHELL_TERMINAL_SHELL_UNAVAILABLE",
+			fmt.Sprintf("The selected shell is unavailable: %s. Choose another shell in Settings.", in.Shell), nil)
 	}
-	var terminal ShellTerminal
-	if chosen != nil {
-		terminal = shellTerminalFromRecord(*chosen)
-	} else {
-		argv, usedFallback := resolveUserLoginShell(in.Shell)
-		if usedFallback {
-			return ShellTerminal{}, apierr.Invalid("SHELL_TERMINAL_SHELL_UNAVAILABLE",
-				fmt.Sprintf("The selected shell is unavailable: %s. Choose another shell in Settings.", in.Shell), nil)
-		}
-		if len(argv) == 0 {
-			return ShellTerminal{}, apierr.Internal("SHELL_TERMINAL_NO_SHELL", "Could not determine a shell to launch. Set SHELL (macOS/Linux) or ComSpec (Windows).")
-		}
-		terminal, err = s.openTerminal(ctx, openTerminalConfig{argv: argv, env: s.pinnedEnv(), projectID: projectID,
-			sessionID: in.SessionID, workingDir: workingDir, title: nextShellTerminalTitle(records)})
-		if err != nil {
-			return ShellTerminal{}, err
-		}
+	if len(argv) == 0 {
+		return ShellTerminal{}, apierr.Internal("SHELL_TERMINAL_NO_SHELL", "Could not determine a shell to launch. Set SHELL (macOS/Linux) or ComSpec (Windows).")
+	}
+	terminal, err := s.openTerminal(ctx, openTerminalConfig{argv: argv, env: s.pinnedEnv(), projectID: projectID,
+		sessionID: in.SessionID, workingDir: workingDir, title: nextShellTerminalTitle(records)})
+	if err != nil {
+		return ShellTerminal{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return ShellTerminal{}, err

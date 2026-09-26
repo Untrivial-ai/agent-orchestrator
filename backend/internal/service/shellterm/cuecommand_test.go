@@ -21,7 +21,7 @@ func cueTestShell(t *testing.T) string {
 	return ""
 }
 
-func TestCueCommandOpensNormalProjectShellAndReusesIt(t *testing.T) {
+func TestCueCommandOpensNewNormalProjectShellForEveryInvocation(t *testing.T) {
 	root := t.TempDir()
 	rt := newFakeShellRuntime()
 	st := &fakeShellTerminalStore{}
@@ -42,15 +42,15 @@ func TestCueCommandOpensNormalProjectShellAndReusesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.HandleID != first.HandleID || len(rt.created) != 1 {
+	if second.HandleID == first.HandleID || second.Title == first.Title || len(rt.created) != 2 || len(st.records) != 2 || st.records[1].Transient {
 		t.Fatalf("second = %+v, creates = %+v", second, rt.created)
 	}
-	if sent := <-rt.sentCh; sent.handleID != first.HandleID || sent.input != input.Command {
+	if sent := <-rt.sentCh; sent.handleID != second.HandleID || sent.input != input.Command {
 		t.Fatalf("sent = %+v", sent)
 	}
 }
 
-func TestCueCommandPrefersSelectedTerminalThenNewestInExactScope(t *testing.T) {
+func TestCueCommandDoesNotSendToExistingTerminals(t *testing.T) {
 	root, workspace := t.TempDir(), t.TempDir()
 	rt := newFakeShellRuntime()
 	st := &fakeShellTerminalStore{}
@@ -65,33 +65,33 @@ func TestCueCommandPrefersSelectedTerminalThenNewestInExactScope(t *testing.T) {
 	add("new", "portfolio", "session", workspace, now)
 	add("board", "portfolio", "", root, now.Add(time.Hour))
 	add("other", "other", "session", workspace, now.Add(2*time.Hour))
-	input := RunCueCommandInput{ProjectID: "portfolio", SessionID: "session", Command: "pwd", PreferredHandleID: "old"}
+	rt.childProbeErr = errors.New("existing terminal probe failed")
+	input := RunCueCommandInput{ProjectID: "portfolio", SessionID: "session", Shell: cueTestShell(t), Command: "pwd"}
 	term, err := svc.RunCueCommand(context.Background(), input)
-	if err != nil || term.HandleID != "old" {
-		t.Fatalf("preferred terminal = %+v, err = %v", term, err)
+	if err != nil || term.HandleID == "old" || term.HandleID == "new" || term.WorkingDir != workspace || term.SessionID != "session" {
+		t.Fatalf("new session terminal = %+v, err = %v", term, err)
 	}
-	<-rt.sentCh
-	input.PreferredHandleID = "board"
+	if sent := <-rt.sentCh; sent.handleID != term.HandleID || sent.input != "pwd" {
+		t.Fatalf("session send = %+v", sent)
+	}
+	firstHandle := term.HandleID
 	term, err = svc.RunCueCommand(context.Background(), input)
-	if err != nil || term.HandleID != "new" {
-		t.Fatalf("fallback terminal = %+v, err = %v", term, err)
+	if err != nil || term.HandleID == firstHandle {
+		t.Fatalf("next session terminal = %+v, err = %v", term, err)
 	}
-	<-rt.sentCh
-	input.PreferredHandleID = "old"
-	rt.aliveByHandle["old"] = false
-	term, err = svc.RunCueCommand(context.Background(), input)
-	if err != nil || term.HandleID != "new" {
-		t.Fatalf("dead selected terminal fallback = %+v, err = %v", term, err)
+	if sent := <-rt.sentCh; sent.handleID != term.HandleID || sent.input != "pwd" {
+		t.Fatalf("next session send = %+v", sent)
 	}
-	<-rt.sentCh
 	input.SessionID = ""
 	term, err = svc.RunCueCommand(context.Background(), input)
-	if err != nil || term.HandleID != "board" {
-		t.Fatalf("board terminal = %+v, err = %v", term, err)
+	if err != nil || term.HandleID == "board" || term.SessionID != "" || term.WorkingDir != root {
+		t.Fatalf("new board terminal = %+v, err = %v", term, err)
 	}
-	<-rt.sentCh
-	if len(rt.created) != 0 {
-		t.Fatalf("unexpected creates: %+v", rt.created)
+	if sent := <-rt.sentCh; sent.handleID != term.HandleID || sent.input != "pwd" {
+		t.Fatalf("board send = %+v", sent)
+	}
+	if len(rt.created) != 3 {
+		t.Fatalf("creates = %+v, want one per invocation", rt.created)
 	}
 }
 
@@ -128,10 +128,11 @@ func TestCueCommandDoesNotRetryAmbiguousSendFailure(t *testing.T) {
 	root := t.TempDir()
 	rt := newFakeShellRuntime()
 	rt.sendErr = errors.New("send failed")
-	svc := newTestService(rt, &fakeShellTerminalStore{}, &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"portfolio": root}})
+	st := &fakeShellTerminalStore{}
+	svc := newTestService(rt, st, &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"portfolio": root}})
 	_, err := svc.RunCueCommand(context.Background(), RunCueCommandInput{ProjectID: "portfolio", Shell: cueTestShell(t), Command: "npm test"})
-	if !errors.Is(err, rt.sendErr) || len(rt.created) != 1 || len(rt.sentCh) != 1 {
-		t.Fatalf("err = %v, creates = %+v, sends = %d", err, rt.created, len(rt.sentCh))
+	if !errors.Is(err, rt.sendErr) || len(rt.created) != 1 || len(rt.sentCh) != 1 || len(st.records) != 1 || len(rt.destroyed) != 0 {
+		t.Fatalf("err = %v, creates = %+v, sends = %d, records = %+v, destroyed = %+v", err, rt.created, len(rt.sentCh), st.records, rt.destroyed)
 	}
 }
 

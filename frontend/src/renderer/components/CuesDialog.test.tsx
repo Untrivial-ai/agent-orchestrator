@@ -7,17 +7,16 @@ import { CueRunMenu } from "./chat/CueRunMenu";
 import { TooltipProvider } from "./ui/tooltip";
 import * as cues from "../lib/cues";
 
-const { toast, navigate, navigateTerminals, openProjectSettings, setActiveShellTerminal, loadShellPreference, selectedTerminal } = vi.hoisted(() => ({
+const { toast, navigate, navigateTerminals, openProjectSettings, setActiveShellTerminal, loadShellPreference } = vi.hoisted(() => ({
 	toast: vi.fn(),
 	navigate: vi.fn(),
 	navigateTerminals: vi.fn(),
 	openProjectSettings: vi.fn(),
 	setActiveShellTerminal: vi.fn(),
 	loadShellPreference: vi.fn().mockResolvedValue(undefined),
-	selectedTerminal: { handleId: null as string | null },
 }));
 vi.mock("../stores/ui-store", () => ({
-	useUiStore: Object.assign((select: (s: unknown) => unknown) => select({ showGlobalToast: toast, openProjectSettings, setActiveShellTerminal }), { getState: () => ({ activeShellTerminalHandleId: selectedTerminal.handleId }) }),
+	useUiStore: (select: (s: unknown) => unknown) => select({ showGlobalToast: toast, openProjectSettings, setActiveShellTerminal }),
 }));
 vi.mock("../lib/navigate-to-session", () => ({ useNavigateToSession: () => navigate, useNavigateToTerminals: () => navigateTerminals }));
 vi.mock("../stores/terminal-shell-store", () => ({
@@ -53,7 +52,6 @@ function setup(node: ReactNode) {
 }
 beforeEach(() => {
 	vi.resetAllMocks();
-	selectedTerminal.handleId = null;
 	vi.mocked(cues.fetchProjectCues).mockResolvedValue([cue]);
 	vi.mocked(cues.createCue).mockResolvedValue(cue);
 	vi.mocked(cues.updateCue).mockResolvedValue(cue);
@@ -150,7 +148,7 @@ test("project topbar command invocation opens the returned terminal once", async
 	openMenu();
 	const run = await screen.findByRole("menuitem", { name: "Tests" });
 	fireEvent.click(run); fireEvent.click(run);
-	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", undefined, "auto", undefined));
+	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", undefined, "auto"));
 	await act(async () => invocation.resolve(commandResult));
 	expect(navigateTerminals).toHaveBeenCalledOnce();
 	expect(setActiveShellTerminal).toHaveBeenCalledWith("shellterm-cue");
@@ -159,12 +157,12 @@ test("project topbar command invocation opens the returned terminal once", async
 	expect(toast).toHaveBeenCalledWith("Command sent", "Tests sent to terminal");
 });
 
-test("command invocation passes the terminal selected when clicked", async () => {
-	selectedTerminal.handleId = "shellterm-selected";
+test("session command invocation selects its newly opened terminal", async () => {
 	setup(<CueRunMenu projectId="project" sessionId="session" />);
 	openMenu();
 	fireEvent.click(await screen.findByRole("menuitem", { name: "Tests" }));
-	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", "session", "auto", "shellterm-selected"));
+	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", "session", "auto"));
+	await waitFor(() => expect(setActiveShellTerminal).toHaveBeenCalledWith("shellterm-cue"));
 });
 
 test("project topbar agent invocation preserves worker navigation", async () => {
@@ -278,7 +276,7 @@ test("clicking the trigger runs the primary cue and leaves the hover menu up", a
 
 	fireEvent.click(trigger, { detail: 1 });
 
-	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", "session", "auto", undefined));
+	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", "session", "auto"));
 	expect(screen.getByRole("menuitem", { name: "Tests" })).toBeInTheDocument();
 	expect(navigate).not.toHaveBeenCalled();
 });
@@ -310,7 +308,7 @@ test("session-targeted runner remains discoverable when empty and sees externall
 	openMenu();
 	const item = await screen.findByRole("menuitem", { name: "Tests" });
 	fireEvent.click(item);
-	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", "session", "auto", undefined));
+	await waitFor(() => expect(cues.invokeCue).toHaveBeenCalledExactlyOnceWith("cue-1", "session", "auto"));
 	expect(navigate).not.toHaveBeenCalled();
 });
 
