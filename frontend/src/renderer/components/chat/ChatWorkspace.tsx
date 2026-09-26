@@ -3324,6 +3324,7 @@ const TurnGroup = memo(function TurnGroup({
 			return item?.kind === "message" && item.role === "user";
 		})
 		: [];
+	const hasWorkedActivity = workedRuns.some((run) => run.kind === "activities");
 	const finalRun = finalAssistantRunIndex >= 0 ? runs[finalAssistantRunIndex] : undefined;
 	const renderRun = (run: TimelineRun) =>
 		run.kind === "activities" ? (
@@ -3435,7 +3436,7 @@ const TurnGroup = memo(function TurnGroup({
 				),
 			)}
 			{group.outcome ? humanRuns.map(renderRun) : null}
-			{group.outcome ? (
+			{group.outcome && hasWorkedActivity ? (
 				<Accordion type="single" collapsible className="-mx-1 border-b border-border" defaultValue="">
 					<AccordionItem value="worked" className="border-0">
 						<AccordionTrigger
@@ -3443,8 +3444,9 @@ const TurnGroup = memo(function TurnGroup({
 							trailing={null}
 						>
 							<span className="inline-flex w-fit items-center gap-1">
-								Worked for {group.outcome.durationMs !== undefined ? <TurnDuration durationMs={group.outcome.durationMs} inline /> : null}
+								Worked for
 								<ChevronDown aria-hidden="true" className="size-3.5 shrink-0 transition-transform duration-200 group-data-[state=open]/row:rotate-180" />
+								{group.outcome.durationMs !== undefined ? <TurnDuration durationMs={group.outcome.durationMs} inline /> : null}
 							</span>
 						</AccordionTrigger>
 						<AccordionContent className="space-y-2 pb-2 pt-1">
@@ -3452,6 +3454,14 @@ const TurnGroup = memo(function TurnGroup({
 						</AccordionContent>
 					</AccordionItem>
 				</Accordion>
+			) : null}
+			{group.outcome && !hasWorkedActivity ? (
+				<div className="flex min-h-7 items-center border-b border-border px-1 py-1 text-xs font-medium text-muted-foreground">
+					<span className="inline-flex w-fit items-center gap-1">
+						Worked for
+						{group.outcome.durationMs !== undefined ? <TurnDuration durationMs={group.outcome.durationMs} inline /> : null}
+					</span>
+				</div>
 			) : null}
 			{group.outcome ? (finalRun ? renderRun(finalRun) : null) : null}
 			{/* Both of these are current state of the turn rather than steps in it, which
