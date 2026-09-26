@@ -1,7 +1,7 @@
 import { Feather } from "./icons";
 import { Pressable, StyleSheet } from "react-native";
 import { useTheme } from "./ThemeProvider";
-import { iconSize, radius, type } from "./tokens";
+import { iconSize, radius } from "./tokens";
 
 export function SidebarSpawnButton({ onPress }: { onPress: () => void }) {
 	const t = useTheme();
@@ -14,10 +14,10 @@ export function SidebarSpawnButton({ onPress }: { onPress: () => void }) {
 			onPress={onPress}
 			style={({ pressed }) => [
 				styles.button,
-				{ backgroundColor: pressed ? t.accentTint : t.bgElevated, borderColor: t.borderDefault },
+				{ backgroundColor: pressed ? t.accentTint : t.bgElevatedHover, borderColor: t.borderStrong },
 			]}
 		>
-			<Feather name="plus" size={iconSize.xl} color={t.textSecondary} />
+			<Feather name="plus" size={iconSize.xl} color={t.textPrimary} />
 		</Pressable>
 	);
 }

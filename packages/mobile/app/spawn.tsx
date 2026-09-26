@@ -3,7 +3,7 @@ import { Feather } from "../lib/icons";
 import BottomSheet, { BottomSheetView } from "@expo/ui/community/bottom-sheet";
 import * as DocumentPicker from "expo-document-picker";
 import { File } from "expo-file-system";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	InteractionManager,
 	Platform,
@@ -13,7 +13,7 @@ import {
 	Text,
 	View,
 } from "react-native";
-import { KeyboardStickyView } from "react-native-keyboard-controller";
+import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import { agentErrorCopy } from "../lib/agentError";
 import { defaultAgent, rankAgents } from "../lib/agentPicker";
 import { ApiError, getAgentModels, getAgents, getProject, getSettings, type AgentCatalog, type AgentModelCatalog, type ProjectDetail, type SessionMode } from "../lib/api";
@@ -26,6 +26,7 @@ import { appendSpawnAttachments, readSpawnAttachments, type SpawnAttachment } fr
 import { SpawnComposerControls } from "../lib/spawn-composer-controls";
 import { SpawnPromptInput } from "../lib/spawn-prompt-input";
 import { useApp } from "../lib/store";
+import { useVoiceInput } from "../lib/voice/useVoiceInput";
 import type { Theme } from "../lib/theme";
 import { useTheme, useThemedStyles } from "../lib/ThemeProvider";
 import { Button } from "../lib/ui";
@@ -65,6 +66,15 @@ export default function SpawnModal() {
 	const [catalogError, setCatalogError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [offerTUI, setOfferTUI] = useState(false);
+	// Spoken text lands in the prompt the way it does in the chat composer:
+	// appended, so dictation can extend what was typed rather than replace it.
+	const voice = useVoiceInput({ onTranscript: useCallback((spoken: string) => setPrompt((old) => old ? `${old} ${spoken}` : spoken), []) });
+	const listening = voice.state === "starting" || voice.state === "recording";
+	// iOS: the prompt fills the room above the controls. The controls translate
+	// with the keyboard, which does not reflow their siblings; a spacer below
+	// the attachments and messages makes that entire region reflow instead.
+	const [promptRoom, setPromptRoom] = useState<number>();
+	const keyboardHeight = useKeyboardState((state) => state.height);
 
 
 
@@ -124,6 +134,8 @@ export default function SpawnModal() {
 		|| catalogError
 		|| modelError
 		|| attachmentError
+		|| (Platform.OS === "android" && listening)
+		|| voice.error
 		|| error
 		|| offerTUI,
 	);
@@ -197,6 +209,14 @@ export default function SpawnModal() {
 		setModel(nextModel);
 		setModelTouched(true);
 	};
+	const voiceFeedback = listening ? (
+		<View style={styles.voice}>
+			<Feather name="mic" size={iconSize.xs} color={t.red} />
+			<Text numberOfLines={2} style={styles.voiceText}>
+				{voice.partial || (voice.state === "starting" ? "Keep holding…" : "Listening…")}
+			</Text>
+		</View>
+	) : null;
 	const pickAttachments = async () => {
 		if (pickingAttachments.current) return;
 		pickingAttachments.current = true;
@@ -275,9 +295,16 @@ export default function SpawnModal() {
 	};
 
 	const content = (
-		<View style={[styles.content, Platform.OS === "android" && styles.androidContent]}>
-				<View style={styles.promptHost}>
-					<SpawnPromptInput value={prompt} onChangeText={setPrompt} />
+		<View style={[
+			styles.content,
+			Platform.OS === "ios" && styles.iosContent,
+			Platform.OS === "android" && styles.androidContent,
+		]}>
+				<View
+					style={[styles.promptHost, Platform.OS === "ios" && styles.promptHostFill]}
+					onLayout={Platform.OS === "ios" ? (event) => setPromptRoom(Math.floor(event.nativeEvent.layout.height)) : undefined}
+				>
+					<SpawnPromptInput value={prompt} onChangeText={setPrompt} height={Platform.OS === "ios" ? promptRoom : undefined} />
 				</View>
 
 				{attachments.length ? (
@@ -301,16 +328,23 @@ export default function SpawnModal() {
 					</ScrollView>
 				) : null}
 
-		{Platform.OS === "ios" ? <View style={styles.flexSpacer} /> : null}
-
 		{hasComposerMessage ? <View style={styles.messages}>
 					{mode === "chat" && !loading && agents.length === 0 ? <Text style={styles.warn}>No installed agent on this AO host currently supports Chat. Choose Terminal UI or install/authenticate a Chat-capable agent.</Text> : null}
 					{catalogError ? <Text style={styles.warn}>{catalogError}</Text> : null}
 					{modelError ? <Text style={styles.warn}>{modelError}</Text> : null}
 					{attachmentError ? <Text style={styles.warn}>{attachmentError}</Text> : null}
+					{Platform.OS === "android" ? voiceFeedback : null}
+					{voice.error ? <Text accessibilityRole="alert" style={styles.warn}>{voice.error}</Text> : null}
 					{error ? <Text style={styles.error}>{error}</Text> : null}
 					{offerTUI ? <Button title="Create as Terminal UI instead" variant="ghost" icon="terminal" onPress={() => { selectMode("tui"); setOfferTUI(false); setError(null); }} /> : null}
 				</View> : null}
+
+				{/* The sticky controls move visually but keep their original layout
+				    position. Reserve that movement before them so chips and messages
+				    remain visible above the keyboard, not behind the controls. */}
+				{Platform.OS === "ios" && keyboardHeight > 0 ? (
+					<View pointerEvents="none" style={{ height: keyboardHeight, marginTop: -space.sm }} />
+				) : null}
 
 				{/* The controls ride the keyboard on the UI thread.
 				    iOS does not lift this form sheet for the IME, and every
@@ -321,6 +355,7 @@ export default function SpawnModal() {
 				    the keyboard. A sticky view translates by the live offset, so
 				    the selectors and the button sit directly above it. */}
 				<KeyboardStickyView offset={{ closed: 0, opened: 0 }}>
+				{Platform.OS === "ios" ? voiceFeedback : null}
 				<SpawnComposerControls
 					projects={projects.map((item) => ({ id: item.id, label: item.name }))}
 					projectId={project?.id ?? null}
@@ -333,9 +368,10 @@ export default function SpawnModal() {
 					modelLabel={displayedModelLabel}
 					onSelectModel={selectModel}
 					onAttach={() => { void pickAttachments(); }}
+					voice={{ state: voice.state, mode: voice.mode, onPressIn: voice.pressIn, onPressOut: voice.pressOut }}
 					onSpawn={() => { void onSpawn(); }}
 					busy={busy}
-					disabled={!projectId || !harness || busy || modelLoading || loading}
+					disabled={!projectId || !harness || busy || modelLoading || loading || listening || voice.state === "transcribing"}
 				/>
 				</KeyboardStickyView>
 		</View>
@@ -367,6 +403,9 @@ export default function SpawnModal() {
 // connection password".
 function spawnErrorCopy(e: unknown): string {
 	if (isChatPreflightError(e)) return chatErrorCopy(e);
+	if (e instanceof ApiError && e.code === "PROMPT_TOO_LONG") {
+		return "Task prompt is too long. Keep it to 16 KiB or fewer (emoji and other non-English characters use more than one byte). Shorten it and try again.";
+	}
 	const status = e instanceof ApiError ? e.status : undefined;
 	const { title, message } = describeConnectionFailure(classifyConnectionFailure(status), {
 		host: "",
@@ -376,10 +415,14 @@ function spawnErrorCopy(e: unknown): string {
 	return `${title} ${message}`;
 }
 
+// Android's compact field height and the iOS host's minimum layout height.
+const PROMPT_MIN_HEIGHT = 112;
+
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgBase },
 		content: { flex: 1, paddingHorizontal: space.lg, paddingTop: space.lg, paddingBottom: space.sm, gap: space.sm },
+		iosContent: { paddingTop: space.xxxl },
 		androidModalRoot: { flex: 1, backgroundColor: "transparent" },
 		androidSheet: {
 			paddingTop: space.xs,
@@ -387,9 +430,11 @@ const makeStyles = (t: Theme) =>
 			backgroundColor: t.bgBase,
 		},
 		androidContent: { flex: 0, paddingTop: space.md, paddingBottom: space.none },
-		flexSpacer: { flex: 1 },
 		messages: { gap: space.xs },
-		promptHost: { width: "100%", height: 112 },
+		voice: { flexDirection: "row", alignItems: "center", gap: space.xs, backgroundColor: t.tintRed, borderRadius: 8, paddingHorizontal: space.sm, paddingVertical: space.xs },
+		voiceText: { fontFamily: "Geist_400Regular", flex: 1, color: t.textSecondary, fontSize: type.caption2.fontSize },
+		promptHost: { width: "100%", height: PROMPT_MIN_HEIGHT },
+		promptHostFill: { height: undefined, flex: 1, minHeight: 0 },
 		attachments: { gap: space.sm },
 		attachment: { maxWidth: 190, height: 36, flexDirection: "row", alignItems: "center", gap: space.xs, paddingHorizontal: space.sm, borderRadius: 12, borderCurve: "continuous", backgroundColor: t.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderSubtle },
 		attachmentName: { fontFamily: "Geist_400Regular", flexShrink: 1, color: t.textSecondary, fontSize: type.caption1.fontSize },
