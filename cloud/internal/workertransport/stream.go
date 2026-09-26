@@ -111,6 +111,15 @@ func (s *Supervisor) readTerminalStream(
 			if len(frame.Data) == 0 || len(frame.Data) > maxStreamInputBytes {
 				continue
 			}
+			s.mu.Lock()
+			if s.tuiHandoffClosing && terminal == s.terminals[s.AgentTerminalID] {
+				s.mu.Unlock()
+				return false
+			}
+			if terminal == s.terminals[s.AgentTerminalID] {
+				s.lastTUIInputAt = time.Now()
+			}
+			s.mu.Unlock()
 			if _, err := terminal.pty.Write(frame.Data); err != nil {
 				return false
 			}

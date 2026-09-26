@@ -25,6 +25,7 @@ import {
 	SessionChatSurface,
 	type ConversationWorkState,
 } from "./chat/SessionChatSurface";
+import { CloudSessionChatSurface } from "./chat/CloudSessionChatSurface";
 import { ReviewerChatSurface } from "./chat/ReviewerChatSurface";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { NotificationCenter } from "./NotificationCenter";
@@ -65,7 +66,14 @@ import {
 	useSessionInterfaceTransition,
 } from "../hooks/useSessionInterfaceTransition";
 import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
-import { useWorkspaceSession, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import {
+	toCloudWorkspaceSession,
+	useCloudSessionQuery,
+	useWorkspaceQuery,
+	useWorkspaceSession,
+	workspaceQueryKey,
+} from "../hooks/useWorkspaceQuery";
+import { useCloudGate } from "../hooks/useCloudGate";
 import { cloudLifecycleStage } from "../lib/cloud-lifecycle";
 import { useTerminalResetStore } from "../stores/terminal-reset-store";
 import { useCloudCp } from "../hooks/useCloudCp";
@@ -146,14 +154,6 @@ const shellTopbarHiddenByPlatform = hidesShellTopbar();
 const isMac = isMacPlatform();
 const noDragStyle = isMac ? ({ WebkitAppRegion: "no-drag" } as CSSProperties) : undefined;
 const newTerminalShortcutLabel = shortcutBindingLabel(defaultShortcutBindings("new-shell-terminal", isMac)[0], isMac);
-const sessionHeaderActions = (
-	<div
-		className="session-topbar-session-chrome flex shrink-0 items-center"
-		data-compact-session-chrome="false"
-	>
-		<ShellTopbar embedded />
-	</div>
-);
 
 type ReviewsResponse = components["schemas"]["ListReviewsResponse"];
 type SessionInterfaceTransition = components["schemas"]["SessionInterfaceTransition"];
@@ -292,6 +292,8 @@ function reviewerChatFromReviews(data?: ReviewsResponse): ReviewerChatTarget | u
 
 type SessionViewProps = {
 	sessionId: string;
+	cloudOrgId?: string;
+	projectId?: string;
 };
 
 // Mirrors the left sidebar: a Motion gap takes layout width while a sibling
@@ -483,7 +485,7 @@ function CloudPausedStatus() {
 	);
 }
 
-export function SessionView({ sessionId }: SessionViewProps) {
+export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewProps) {
 	const { t } = useTranslation();
 	const [confirmedDraftDiscard, setConfirmedDraftDiscard] = useState<{
 		sessionId: string;
@@ -568,14 +570,31 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[sessionId],
 	);
 	const queryClient = useQueryClient();
+	const { cloudEnabled } = useCloudGate();
 	const refreshWorkspaces = useCallback(
 		() => queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
 		[queryClient],
 	);
-	const workspaceQuery = useWorkspaceSession(sessionId);
+	const workspaceQuery = useWorkspaceQuery();
+	const workspaces = workspaceQuery.data ?? [];
+	const routedWorkspace = projectId ? workspaces.find((workspace) => workspace.id === projectId) : undefined;
+	const isCloudRoute = routedWorkspace?.kind === "cloud";
+	const listedSession = workspaces.flatMap((workspace) => workspace.sessions).find((s) => s.id === sessionId);
+	// Project-scoped navigation identifies Cloud routes immediately. The legacy
+	// cross-project route has no project id, so fall back to a direct CP lookup
+	// when the session is absent from the merged list. This keeps a fresh Cloud
+	// tab from ever being resolved through the local daemon during list-cache
+	// races or after restoring an old route.
+	const cloudRouteSession = useCloudSessionQuery(
+		cloudOrgId,
+		sessionId,
+		Boolean(cloudOrgId && (isCloudRoute || !listedSession)),
+	);
+	const localLookupEnabled = !cloudOrgId || Boolean(listedSession && !listedSession.cloud) || Boolean(!isCloudRoute && cloudRouteSession.isError);
+	const workspaceSessionQuery = useWorkspaceSession(sessionId, localLookupEnabled);
 	const { client: cloudCpClient } = useCloudCp();
 	const theme = useResolvedTheme();
-	const browserOnly = Boolean(workspaceQuery.data && isOrchestratorSession(workspaceQuery.data));
+	const browserOnly = Boolean(workspaceSessionQuery.data && isOrchestratorSession(workspaceSessionQuery.data));
 	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? !browserOnly);
 	const inspectorView = useUiStore((state) => browserOnly ? "browser" : state.inspectorSessions[sessionId]?.view ?? "summary");
 	const browserUnseen = useUiStore((state) => Boolean(state.inspectorSessions[sessionId]?.browserUnseen));
@@ -730,7 +749,33 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
 	useEffect(() => stopTerminalLiveResize, [stopTerminalLiveResize]);
 
-	const session = workspaceQuery.data;
+	// A newly-created Cloud session can be routed before the paginated session
+	// list refresh completes. Resolve that exact row from Cloud so terminal and
+	// interface operations retain {orgId, sessionId} instead of falling back to
+	// the local daemon and surfacing SESSION_NOT_FOUND.
+	const directCloudWorkspace = cloudRouteSession.data
+		? workspaces.find(
+				(workspace) =>
+					workspace.kind === "cloud" && workspace.id === cloudRouteSession.data?.projectId,
+			)
+		: undefined;
+	const cloudSessionWorkspace = directCloudWorkspace ?? routedWorkspace;
+	const session =
+		listedSession ??
+		workspaceSessionQuery.data ??
+		(cloudOrgId && cloudRouteSession.data
+			? toCloudWorkspaceSession(
+					cloudRouteSession.data,
+					{
+						// A session lookup remains authoritative even if the projects list
+						// is refetching. Do not turn a real Cloud row into "Session not
+						// found" merely because its parent list is temporarily absent.
+						id: cloudSessionWorkspace?.id ?? cloudRouteSession.data.projectId,
+						displayName: cloudSessionWorkspace?.name ?? "Cloud project",
+					},
+					cloudOrgId,
+				)
+			: undefined);
 	const cloudStage = cloudLifecycleStage(session);
 	const cloudReconnecting = useTerminalResetStore((state) => Boolean(state.reconnecting[sessionId]));
 	// Latch the session that has reached "connected" at least once (keyed on
@@ -783,7 +828,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			? "active"
 			: "history";
 	useAgentSwitchRouteVisibility(`session/${sessionId}`, routeVisibilityOperation);
-	const interfaceSwitch = useSessionInterfaceTransition(session?.id);
+	const interfaceContext = session
+		? (session.cloud ?? null)
+		: cloudOrgId
+			? { orgId: cloudOrgId }
+		: undefined;
+	const interfaceSwitch = useSessionInterfaceTransition(sessionId, interfaceContext);
 	useEffect(() => {
 		setConfirmedDraftDiscard(undefined);
 	}, [sessionId]);
@@ -892,7 +942,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const reviewerQuery = useQuery({
 		queryKey: ["session-reviews", sessionId],
 		enabled: Boolean(
-			window.ao && session && sessionIsActive(session) && !isOrchestratorSession(session) && session.prs.length > 0,
+			window.ao && session && !session.cloud && sessionIsActive(session) && !isOrchestratorSession(session) && session.prs.length > 0,
 		),
 		refetchInterval: (query) => {
 			const data = query.state.data as ReviewsResponse | undefined;
@@ -1370,6 +1420,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			session.activity?.state === "blocked"),
 	);
 	const chatToTerminal = session?.mode === "chat" && interfaceTarget === "tui";
+	const cloudTerminalNeedsExplicitStop = Boolean(
+		interfaceContext && session?.mode === "tui" && interfaceTarget === "chat" && interfaceBusy,
+	);
 	const beginInterfaceSwitch = useCallback(
 		async (
 			policy: "drain" | "interrupt",
@@ -1438,13 +1491,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	);
 	const requestInterfaceSwitch = useCallback(() => {
 		interfaceSwitch.resetStartError();
-		if (!interfaceBusy) {
+		if (!interfaceBusy && !cloudTerminalNeedsExplicitStop) {
 			void beginInterfaceSwitch("drain", interfaceTarget);
 			return;
 		}
 		if (!session) return;
 		setInterfaceSwitchDialogScope({ sessionId: session.id, targetMode: interfaceTarget });
-	}, [beginInterfaceSwitch, interfaceBusy, interfaceSwitch, interfaceTarget, session]);
+	}, [beginInterfaceSwitch, cloudTerminalNeedsExplicitStop, interfaceBusy, interfaceSwitch, interfaceTarget, session]);
 	const chooseInterfaceSwitchPolicy = useCallback(
 		(policy: "drain" | "interrupt") => {
 			if (
@@ -1470,16 +1523,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			const failed = interfaceSwitch.transition;
 			if (!session || !failed || failed.sessionId !== session.id || failed.targetMode !== interfaceTarget) return;
 			interfaceSwitch.resetStartError();
-			// A failed attempt's interrupt policy is stale consent. Re-evaluate the
-			// current Terminal state and either choose the safe drain default or ask
-			// again before cancelling newly started work.
-			if (!interfaceBusy) {
+			// A failed attempt's interrupt policy is stale consent. Ask again
+			// before stopping a Cloud Terminal, whose idle state cannot be verified.
+			if (!interfaceBusy && !cloudTerminalNeedsExplicitStop) {
 				void beginInterfaceSwitch("drain", failed.targetMode, undefined, historyPolicy);
 				return;
 			}
 			setInterfaceSwitchDialogScope({ sessionId: session.id, targetMode: failed.targetMode, historyPolicy });
 		},
-		[beginInterfaceSwitch, interfaceBusy, interfaceSwitch, interfaceTarget, session],
+		[beginInterfaceSwitch, cloudTerminalNeedsExplicitStop, interfaceBusy, interfaceSwitch, interfaceTarget, session],
 	);
 	// Adapters without a Chat driver cannot offer a switch into Chat UI; hide
 	// the switch entirely rather than showing a permanently disabled control.
@@ -1489,9 +1541,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// entirely) proves nothing, so the status decides then.
 	const { settings } = useSettings();
 	const chatHarnesses = settings?.chatHarnesses ?? [];
+	const isCloudSession = Boolean(interfaceContext);
 	const interfaceSwitchUnsupported =
 		interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED" ||
-		(interfaceTarget === "chat" &&
+		(!isCloudSession &&
+			interfaceTarget === "chat" &&
 			session !== undefined &&
 			chatHarnesses.length > 0 &&
 			!chatHarnesses.includes(session.provider));
@@ -1505,7 +1559,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				})
 			: undefined;
 	const showInterfaceSwitchAction = Boolean(
-		!interfaceSwitchUnsupported && (interfaceSwitch.status || interfaceSwitch.isLoading || interfaceSwitch.statusError),
+		!interfaceSwitchUnsupported && (
+			isCloudSession
+				? cloudEnabled && sessionId
+				: interfaceSwitch.status || interfaceSwitch.isLoading || interfaceSwitch.statusError
+		),
 	);
 	const newTerminalError = openShellTerminal.error ? apiErrorMessage(openShellTerminal.error) : undefined;
 	const newShellTerminalAction = useMemo(() =>
@@ -1526,7 +1584,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				</TooltipContent>
 			</Tooltip>
 		) : null,
-		[addShellTerminal, isOrchestrator, newTerminalError, session, t],
+		[addShellTerminal, isOrchestrator, newTerminalError, newTerminalShortcutLabel, session, t],
 	);
 	const sendCloudFileAnnotation = useCallback(async (message: string) => {
 		const orgId = session?.cloud?.orgId;
@@ -1642,11 +1700,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => {
 		if (handoffSwitchError) setHandoffDialogOpen(true);
 	}, [handoffSwitchError]);
+	// Keep the switch visible on the session tab, rather than only in the
+	// overflow menu. In particular, a Cloud tab can be selected before its
+	// row reaches the list cache; the visible control then makes its resolving
+	// state explicit instead of looking like the feature disappeared.
 	const interfaceSwitchInlineStatus = useMemo(() =>
-		session && showInterfaceSwitchAction && activeInterfaceTransition ? (
+		showInterfaceSwitchAction && (isCloudSession || (session && activeInterfaceTransition)) ? (
 			<SessionInterfaceSwitchButton
 				target={interfaceTarget}
-				supported={Boolean(interfaceSwitch.status?.supported) && !activeInterfaceTransition}
+				showLabel={isCloudSession}
+				supported={isCloudSession ? Boolean(interfaceSwitch.status?.supported) : true}
 				disabledReason={
 					interfaceSwitch.isLoading
 						? "Checking whether this agent can switch interfaces…"
@@ -1673,6 +1736,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			interfaceSwitch.transition,
 			interfaceSwitchBlockedReason,
 			interfaceTarget,
+			isCloudSession,
 			requestInterfaceSwitch,
 			session,
 			showInterfaceSwitchAction,
@@ -1682,7 +1746,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		session && showInterfaceSwitchAction && !activeInterfaceTransition ? (
 			<SessionInterfaceSwitchMenuItem
 				target={interfaceTarget}
-				supported={Boolean(interfaceSwitch.status?.supported) && !chatLeaveLocked}
+				supported={(isCloudSession ? Boolean(interfaceSwitch.status?.supported) : Boolean(interfaceSwitch.status?.supported) && !chatLeaveLocked)}
 				disabledReason={
 					interfaceSwitch.isLoading
 						? "Checking whether this agent can switch interfaces…"
@@ -1700,6 +1764,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			interfaceSwitch.statusError,
 			interfaceSwitchBlockedReason,
 			interfaceTarget,
+			isCloudSession,
 			requestInterfaceSwitch,
 			session,
 			showInterfaceSwitchAction,
@@ -1717,15 +1782,34 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			switchError={handoffSwitchError}
 		/>
 	) : null, [handoffAgentSwitch, handoffControlPresentation, handoffDialogOpen, handoffSwitchError, handleHandoffDialogOpenChange, session]);
-	// The ⋮ only holds the Chat/Terminal switch and Switch agent, and agent
-	// switching is limited to Claude Code and Codex, which both have Chat. A
-	// harness without Chat therefore gets no ⋮ instead of an empty menu.
+	// Cloud's Chat surface does not have an interactive terminal tab to hover.
+	// Keep the handoff control in the app chrome as a direct, always-visible
+	// button so users can reliably return from Chat UI to TUI.
+	// `session` is briefly undefined while a newly-created Cloud tab is being
+	// resolved from the control plane. The route still has its Cloud org
+	// context, however, so mount the control from that context rather than from
+	// the eventually-populated row. Otherwise the very list-cache race this
+	// surface is intended to handle makes the switch disappear entirely.
+	const cloudInterfaceSwitchAction = cloudEnabled && interfaceContext ? interfaceSwitchInlineStatus : null;
+	// Hide the empty actions menu for harnesses without Chat, including when
+	// local settings identify one before transition status becomes available.
 	const sessionTabActions = useMemo(() => interfaceSwitchUnsupported ? null : (
-		<SessionActionsMenu inlineStatus={interfaceSwitchInlineStatus}>
+		<SessionActionsMenu inlineStatus={isCloudSession ? undefined : interfaceSwitchInlineStatus}>
 			{interfaceSwitchMenuItem}
 			{handoffMenuItem}
 		</SessionActionsMenu>
-	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem, interfaceSwitchUnsupported]);
+	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem, interfaceSwitchUnsupported, isCloudSession]);
+	const sessionHeaderActions = (
+		<div
+			className="session-topbar-session-chrome flex shrink-0 items-center"
+			data-compact-session-chrome="false"
+		>
+			<ShellTopbar
+				embedded
+				sessionAction={cloudInterfaceSwitchAction}
+			/>
+		</div>
+	);
 	// Spinner replaces the ⋮ at the same size, so the tab title does not need a
 	// wider action slot while switching.
 	const sessionTabActionWide = false;
@@ -1976,7 +2060,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			inspectorMotionReadyRef.current = false;
 		};
 	}, [hasInspector]);
-	if (!session && !workspaceQuery.isLoading) {
+	// A Cloud tab may arrive before the paginated workspace cache contains its
+	// row. Keep the session surface (and its switch control) mounted while the
+	// direct control-plane lookup is in flight; only show "not found" after
+	// both sources have settled.
+	const cloudSessionResolving = Boolean(
+		cloudOrgId &&
+		(isCloudRoute || !listedSession) &&
+		cloudRouteSession.isLoading,
+	);
+	if (!session && !workspaceQuery.isLoading && !cloudSessionResolving) {
 		return (
 			<div className="grid h-full place-items-center p-6 text-center font-mono text-xs text-passive">
 				{t("session.notFound")}
@@ -2030,7 +2123,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								className={cn("h-full min-h-0", fileTabs.activePath && "invisible pointer-events-none")}
 								inert={fileTabs.activePath ? true : undefined}
 							>
-							{showChatSurface ? (
+							{showChatSurface && session?.cloud ? (
+								<CloudSessionChatSurface
+									controllerTransitioning={chatControllerTransitioning}
+									headerActions={sessionHeaderActions}
+									newWorkDisabled={chatNewWorkDisabled}
+									onConversationWorkChange={handleConversationWorkChange}
+									session={session}
+									sessionTabAction={sessionTabActions}
+								/>
+							) : showChatSurface ? (
 								<>
 								<SessionChatSurface
 									key={session.id}
@@ -2279,6 +2381,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			<SessionInterfaceSwitchDialog
 				open={interfaceSwitchDialogOpen}
 				target={interfaceSwitchDialogScope?.targetMode ?? interfaceTarget}
+				requireExplicitTerminalStop={cloudTerminalNeedsExplicitStop}
 				waitingForInput={interfaceWaitingForInput}
 				busy={interfaceSwitch.starting}
 				error={interfaceSwitch.startError}

@@ -5,12 +5,685 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/workerexec"
 )
+
+type supervisorControlStub struct {
+	claimTurnCalls          int
+	turn                    *worker.Turn
+	agentSessionID          string
+	agentTerminal           string
+	agentNextOutputSequence int64
+}
+
+type outputSequenceControl struct {
+	supervisorControlStub
+	output chan int64
+}
+
+func (s *outputSequenceControl) PublishTerminalOutput(_ context.Context, _ string, sequence int64, _ []byte) error {
+	s.output <- sequence
+	return nil
+}
+
+func TestStartAgentContinuesReopenedTerminalOutputAndAcceptsInput(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	terminalID := "00000000-0000-0000-0000-000000000040"
+	control := &outputSequenceControl{output: make(chan int64, 8)}
+	supervisor := &Supervisor{Control: control, Workspace: t.TempDir(), Shell: "/bin/sh", terminals: make(map[string]*terminalProcess)}
+	defer supervisor.closeAllTerminals()
+	command := workerexec.Command{Path: "/bin/sh", Args: []string{"-c", "printf ready; cat"}, Dir: supervisor.Workspace}
+	if err := supervisor.StartAgent(ctx, command, worker.AgentTerminalResponse{
+		TerminalID: terminalID, NextOutputSequence: 40,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case sequence := <-control.output:
+		if sequence != 40 {
+			t.Fatalf("first reopened output sequence = %d, want 40", sequence)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reopened terminal produced no output")
+	}
+	if err := supervisor.writeTerminal(worker.TerminalCommand{TerminalID: terminalID, Data: []byte("hello\n")}); err != nil {
+		t.Fatalf("reopened terminal rejected input: %v", err)
+	}
+	select {
+	case sequence := <-control.output:
+		if sequence <= 40 {
+			t.Fatalf("output after input sequence = %d, want after 40", sequence)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reopened terminal did not publish input echo")
+	}
+}
+
+type chatRunnerStub struct{ idle bool }
+
+func (s chatRunnerStub) Run(context.Context) error { return nil }
+func (s chatRunnerStub) Idle() bool                { return s.idle }
+
+type interruptibleChatRunner struct{ interrupted bool }
+
+func (s *interruptibleChatRunner) Run(context.Context) error { return nil }
+func (s *interruptibleChatRunner) Interrupt() bool           { s.interrupted = true; return true }
+
+type blockingChatRunner struct{ started chan struct{} }
+
+func (r blockingChatRunner) Run(ctx context.Context) error {
+	close(r.started)
+	<-ctx.Done()
+	return nil
+}
+
+type delayedStoppingChatRunner struct {
+	started chan struct{}
+	stopped chan struct{}
+	release chan struct{}
+}
+
+func (r delayedStoppingChatRunner) Run(ctx context.Context) error {
+	close(r.started)
+	<-ctx.Done()
+	close(r.stopped)
+	<-r.release
+	return nil
+}
+
+func (s *supervisorControlStub) ClaimTransport(context.Context) (*worker.TransportRequest, error) {
+	return nil, nil
+}
+
+func (s *supervisorControlStub) ClaimTurn(context.Context) (*worker.Turn, error) {
+	s.claimTurnCalls++
+	return s.turn, nil
+}
+func (s *supervisorControlStub) WaitForWork(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (s *supervisorControlStub) CompleteTurn(context.Context, string, int, bool) error { return nil }
+func (s *supervisorControlStub) FailTurn(context.Context, string, int, string) error   { return nil }
+func (s *supervisorControlStub) CompleteTransport(context.Context, string, int, any) error {
+	return nil
+}
+func (s *supervisorControlStub) FailTransport(context.Context, string, int, string, string) error {
+	return nil
+}
+func (s *supervisorControlStub) PublishTerminalOutput(context.Context, string, int64, []byte) error {
+	return nil
+}
+func (s *supervisorControlStub) PublishTerminalExit(context.Context, string, int, bool) error {
+	return nil
+}
+func (s *supervisorControlStub) AgentSessionID(context.Context) (string, error) {
+	return s.agentSessionID, nil
+}
+func (s *supervisorControlStub) EnsureAgentTerminal(context.Context) (worker.AgentTerminalResponse, error) {
+	return worker.AgentTerminalResponse{TerminalID: s.agentTerminal, NextOutputSequence: s.agentNextOutputSequence}, nil
+}
+
+func TestChatToTerminalContinuesReopenedTerminalOutputSequence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	terminalID := "00000000-0000-0000-0000-000000000041"
+	control := &outputSequenceControl{
+		supervisorControlStub: supervisorControlStub{agentTerminal: terminalID, agentNextOutputSequence: 41},
+		output:                make(chan int64, 8),
+	}
+	supervisor := &Supervisor{
+		Control: control, Workspace: t.TempDir(),
+		AgentCommand: workerexec.Command{Path: "/bin/sh", Args: []string{"-c", "printf resumed; cat"}},
+		terminals:    make(map[string]*terminalProcess),
+	}
+	defer supervisor.closeAllTerminals()
+	supervisor.iface.current = InterfaceChat
+	if err := supervisor.startInterface(ctx, interfacePayload{TargetInterface: InterfaceTUI}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case sequence := <-control.output:
+		if sequence != 41 {
+			t.Fatalf("first Chat-to-TUI output sequence = %d, want 41", sequence)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Chat-to-TUI produced no terminal output")
+	}
+	if err := supervisor.writeTerminal(worker.TerminalCommand{TerminalID: terminalID, Data: []byte("hello\n")}); err != nil {
+		t.Fatalf("Chat-to-TUI rejected input: %v", err)
+	}
+}
+
+func TestRefreshAgentCommandUsesLatestConversationID(t *testing.T) {
+	var gotID string
+	supervisor := &Supervisor{
+		AgentCommand: workerexec.Command{Path: "stale-codex"},
+		AgentCommandFactory: func(_ context.Context, nativeConversationID string) (workerexec.Command, error) {
+			gotID = nativeConversationID
+			return workerexec.Command{Path: "codex", Args: []string{"resume", nativeConversationID}}, nil
+		},
+	}
+	if err := supervisor.refreshAgentCommand(context.Background(), "native-chat"); err != nil {
+		t.Fatalf("refresh agent command: %v", err)
+	}
+	if gotID != "native-chat" {
+		t.Fatalf("factory native conversation id = %q, want native-chat", gotID)
+	}
+	if supervisor.AgentCommand.Path != "codex" {
+		t.Fatalf("refreshed command path = %q, want codex", supervisor.AgentCommand.Path)
+	}
+	if len(supervisor.AgentCommand.Args) != 2 || supervisor.AgentCommand.Args[1] != "native-chat" {
+		t.Fatalf("refreshed command args = %v, want resume native-chat", supervisor.AgentCommand.Args)
+	}
+}
+
+func TestStartInterfaceKeepsBootstrapCommandWithoutConversation(t *testing.T) {
+	workspace := t.TempDir()
+	called := false
+	supervisor := &Supervisor{
+		Control:   &supervisorControlStub{agentTerminal: "00000000-0000-0000-0000-000000000004"},
+		Workspace: workspace,
+		AgentCommand: workerexec.Command{
+			Path: "/bin/sh",
+			Args: []string{"-c", "sleep 30"},
+			Dir:  workspace,
+		},
+		AgentCommandFactory: func(context.Context, string) (workerexec.Command, error) {
+			called = true
+			return workerexec.Command{Path: "unexpected"}, nil
+		},
+		AgentTerminalID: "00000000-0000-0000-0000-000000000003",
+		terminals:       make(map[string]*terminalProcess),
+	}
+
+	if err := supervisor.startInterface(context.Background(), interfacePayload{
+		TargetInterface: InterfaceTUI,
+	}); err != nil {
+		t.Fatalf("start interface: %v", err)
+	}
+	if called {
+		t.Fatal("refreshed the agent command without a native conversation")
+	}
+	if supervisor.AgentTerminalID != "00000000-0000-0000-0000-000000000004" {
+		t.Fatalf("agent terminal id = %q, want replacement handle", supervisor.AgentTerminalID)
+	}
+	supervisor.closeAllTerminals()
+}
+
+func TestOpenAgentTerminalStartsWithoutDeadlocking(t *testing.T) {
+	workspace := t.TempDir()
+	supervisor := &Supervisor{
+		Control:   &supervisorControlStub{},
+		Workspace: workspace,
+		AgentCommand: workerexec.Command{
+			Path: "/bin/sh",
+			Args: []string{"-c", "sleep 30"},
+			Dir:  workspace,
+		},
+		terminals: make(map[string]*terminalProcess),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- supervisor.openTerminal(context.Background(), worker.TerminalCommand{
+			TerminalID: "00000000-0000-0000-0000-000000000001",
+			Kind:       "agent",
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("open agent terminal: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("open agent terminal deadlocked before starting the PTY")
+	}
+
+	supervisor.closeAllTerminals()
+}
+
+func TestStopInterfaceWaitsForInteractiveProcessExit(t *testing.T) {
+	workspace := t.TempDir()
+	supervisor := &Supervisor{
+		Control:   &supervisorControlStub{},
+		Workspace: workspace,
+		AgentCommand: workerexec.Command{
+			Path: "/bin/sh",
+			Args: []string{"-c", "sleep 30"},
+			Dir:  workspace,
+		},
+		AgentTerminalID: "00000000-0000-0000-0000-000000000002",
+		terminals:       make(map[string]*terminalProcess),
+	}
+	supervisor.iface.current = InterfaceTUI
+
+	if err := supervisor.openTerminal(context.Background(), worker.TerminalCommand{
+		TerminalID: supervisor.AgentTerminalID,
+		Kind:       "agent",
+	}); err != nil {
+		t.Fatalf("open agent terminal: %v", err)
+	}
+	supervisor.mu.Lock()
+	process := supervisor.terminals[supervisor.AgentTerminalID]
+	supervisor.mu.Unlock()
+	if process == nil {
+		t.Fatal("agent terminal was not registered")
+	}
+
+	if err := supervisor.stopInterface(context.Background(), "interrupt"); err != nil {
+		t.Fatalf("stop interface: %v", err)
+	}
+	select {
+	case <-process.done:
+	default:
+		t.Fatal("stop interface returned before the interactive process exited")
+	}
+}
+
+func TestStopInterfaceWaitsForChatProcessExit(t *testing.T) {
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	release := make(chan struct{})
+	supervisor := &Supervisor{
+		ChatRunner: delayedStoppingChatRunner{
+			started: started, stopped: stopped, release: release,
+		},
+	}
+	supervisor.iface.current = InterfaceChat
+	if err := supervisor.startChat(context.Background()); err != nil {
+		t.Fatalf("start chat: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("chat controller did not start")
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- supervisor.stopInterface(context.Background(), "drain") }()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("chat controller did not receive stop")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("stop interface returned before chat process exit: %v", err)
+	default:
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("stop interface: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stop interface did not wait for chat process exit")
+	}
+}
+
+func TestControllerReadyWaitsForChatWorkspaceAndRunner(t *testing.T) {
+	workspaceReady := make(chan struct{})
+	started := make(chan struct{})
+	supervisor := &Supervisor{
+		ChatRunner:         blockingChatRunner{started: started},
+		ChatWorkspaceReady: workspaceReady,
+	}
+
+	if err := supervisor.startChat(context.Background()); err != nil {
+		t.Fatalf("start chat: %v", err)
+	}
+	if got := supervisor.controllerReady(InterfaceChat); got.Ready {
+		t.Fatal("chat controller reported ready before workspace checkout")
+	}
+
+	close(workspaceReady)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("chat runner did not start after workspace became ready")
+	}
+	if got := supervisor.controllerReady(InterfaceChat); !got.Ready {
+		t.Fatalf("chat controller readiness = %+v, want ready", got)
+	}
+
+	if err := supervisor.stopInterface(context.Background(), "drain"); err != nil {
+		t.Fatalf("stop chat: %v", err)
+	}
+	if got := supervisor.controllerReady(InterfaceChat); got.Ready {
+		t.Fatal("stopped chat controller still reported ready")
+	}
+}
+
+func TestNativeConversationIDRefreshesFromControlPlane(t *testing.T) {
+	supervisor := &Supervisor{Control: &supervisorControlStub{agentSessionID: "native-chat"}}
+	got := supervisor.nativeConversationID(context.Background(), interfacePayload{})
+	if got != "native-chat" {
+		t.Fatalf("native conversation id = %q, want native-chat", got)
+	}
+}
+
+func TestNativeConversationIDPrefersRefreshedControlPlaneID(t *testing.T) {
+	supervisor := &Supervisor{
+		Control:        &supervisorControlStub{agentSessionID: "native-chat"},
+		AgentSessionID: "stale-bootstrap-id",
+	}
+	if got := supervisor.nativeConversationID(context.Background(), interfacePayload{}); got != "native-chat" {
+		t.Fatalf("native conversation id = %q, want refreshed control-plane id", got)
+	}
+}
+
+func TestForwardTurnLeavesQueueToChatController(t *testing.T) {
+	control := &supervisorControlStub{turn: &worker.Turn{ID: "turn-1", Attempt: 1}}
+	supervisor := &Supervisor{Control: control}
+	supervisor.iface.current = InterfaceChat
+
+	handled, err := supervisor.forwardTurn(context.Background())
+	if err != nil {
+		t.Fatalf("forward turn: %v", err)
+	}
+	if handled {
+		t.Fatal("expected transport supervisor not to handle turns in Chat mode")
+	}
+	if control.claimTurnCalls != 0 {
+		t.Fatalf("expected Chat controller to own the queue, got %d claims", control.claimTurnCalls)
+	}
+}
+
+func TestInspectInterfaceDrainsOnlyActiveChatWork(t *testing.T) {
+	tests := []struct {
+		name string
+		idle bool
+		want bool
+	}{
+		{name: "idle chat controller", idle: true, want: true},
+		{name: "running chat turn", idle: false, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			supervisor := &Supervisor{ChatRunner: chatRunnerStub{idle: test.idle}}
+			supervisor.iface.current = InterfaceChat
+
+			result, err := supervisor.inspectInterface()
+			if err != nil {
+				t.Fatalf("inspect interface: %v", err)
+			}
+			inspection := result.(interfaceInspectResult)
+			if inspection.Idle != test.want {
+				t.Fatalf("idle = %v, want %v", inspection.Idle, test.want)
+			}
+		})
+	}
+}
+
+func TestInspectInterfaceDoesNotTreatOpenTUIAsIdle(t *testing.T) {
+	supervisor := &Supervisor{AgentTerminalID: "agent", terminals: map[string]*terminalProcess{"agent": {}}}
+	supervisor.iface.current = InterfaceTUI
+	result, err := supervisor.inspectInterface()
+	if err != nil {
+		t.Fatalf("inspect interface: %v", err)
+	}
+	inspection := result.(interfaceInspectResult)
+	if inspection.Idle || !inspection.QuiescenceUnverified {
+		t.Fatalf("inspection = %+v, want active/unverified", inspection)
+	}
+}
+
+func TestInspectInterfaceAcceptsNativeStopOnlyAfterLatestTerminalInput(t *testing.T) {
+	dataDir := t.TempDir()
+	supervisor := &Supervisor{DataDir: dataDir, AgentTerminalID: "agent", terminals: map[string]*terminalProcess{"agent": {}}}
+	supervisor.iface.current = InterfaceTUI
+	supervisor.tuiStartedAt = time.Now()
+	supervisor.lastTUIInputAt = supervisor.tuiStartedAt.Add(time.Millisecond)
+	if err := worker.RecordTUIStop(dataDir, supervisor.lastTUIInputAt.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := supervisor.inspectInterface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection := result.(interfaceInspectResult)
+	if !inspection.Idle || inspection.QuiescenceUnverified {
+		t.Fatalf("native stop should verify idle: %+v", inspection)
+	}
+	supervisor.lastTUIInputAt = supervisor.lastTUIInputAt.Add(2 * time.Millisecond)
+	result, err = supervisor.inspectInterface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection = result.(interfaceInspectResult)
+	if inspection.Idle || !inspection.QuiescenceUnverified {
+		t.Fatalf("new input must invalidate stop: %+v", inspection)
+	}
+}
+
+func TestDrainStopRejectsInputAfterIdleInspection(t *testing.T) {
+	dataDir := t.TempDir()
+	supervisor := &Supervisor{DataDir: dataDir, AgentTerminalID: "agent", terminals: map[string]*terminalProcess{"agent": {}}}
+	supervisor.iface.current = InterfaceTUI
+	supervisor.tuiStartedAt = time.Now()
+	if err := worker.RecordTUIStop(dataDir, supervisor.tuiStartedAt.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	result, err := supervisor.inspectInterface()
+	if err != nil || !result.(interfaceInspectResult).Idle {
+		t.Fatalf("initial inspection = %+v, %v", result, err)
+	}
+	supervisor.lastTUIInputAt = supervisor.tuiStartedAt.Add(2 * time.Millisecond)
+	if err := supervisor.stopInterface(context.Background(), "drain"); err == nil {
+		t.Fatal("drain stopped a terminal after newer input")
+	}
+	if supervisor.tuiHandoffClosing {
+		t.Fatal("rejected drain left terminal input fenced")
+	}
+}
+
+func TestRollbackStopDoesNotCloseAlreadyRestoredTerminal(t *testing.T) {
+	supervisor := &Supervisor{AgentTerminalID: "agent", terminals: map[string]*terminalProcess{"agent": {}}}
+	supervisor.iface.current = InterfaceTUI
+	response, err := supervisor.handleInterface(context.Background(), interfacePayload{
+		SourceInterface: InterfaceChat, Policy: "interrupt", Rollback: true,
+	}, "interface.stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response == nil || supervisor.tuiHandoffClosing || supervisor.terminals["agent"] == nil {
+		t.Fatal("rollback retry stopped or fenced the restored terminal")
+	}
+}
+
+func TestInterruptInterfaceUsesActiveChatController(t *testing.T) {
+	runner := &interruptibleChatRunner{}
+	supervisor := &Supervisor{ChatRunner: runner}
+	supervisor.iface.current = InterfaceChat
+	if err := supervisor.interruptInterface(context.Background()); err != nil {
+		t.Fatalf("interrupt chat: %v", err)
+	}
+	if !runner.interrupted {
+		t.Fatal("chat runner was not interrupted")
+	}
+}
+
+func TestRunRestartsChatControllerForChatSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan error, 1)
+	runnerStarted := make(chan struct{})
+	supervisor := &Supervisor{
+		Control:          &supervisorControlStub{},
+		Workspace:        t.TempDir(),
+		Started:          started,
+		InitialInterface: InterfaceChat,
+		ChatRunner:       blockingChatRunner{started: runnerStarted},
+		PollInterval:     time.Millisecond,
+	}
+	done := make(chan error, 1)
+	go func() { done <- supervisor.Run(ctx) }()
+	if err := <-started; err != nil {
+		t.Fatalf("start chat worker: %v", err)
+	}
+	select {
+	case <-runnerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("chat controller was not started for a Chat session")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("transport supervisor did not stop")
+	}
+}
+
+func TestChatControllerWaitsForWorkspaceRestore(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan struct{})
+	runnerStarted := make(chan struct{})
+	started := make(chan error, 1)
+	supervisor := &Supervisor{
+		Control: &supervisorControlStub{}, Workspace: t.TempDir(),
+		InitialInterface: InterfaceChat, ChatWorkspaceReady: ready,
+		ChatRunner: blockingChatRunner{started: runnerStarted},
+		Started:    started,
+	}
+	done := make(chan error, 1)
+	go func() { done <- supervisor.Run(ctx) }()
+	if err := <-started; err != nil {
+		t.Fatalf("start transport: %v", err)
+	}
+	select {
+	case <-runnerStarted:
+		t.Fatal("chat controller started before workspace restore")
+	default:
+	}
+	close(ready)
+	select {
+	case <-runnerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("chat controller did not start after workspace restore")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("transport did not stop")
+	}
+}
+
+// A Chat -> TUI handoff must rebuild the interactive command from the shared
+// native conversation identity using each harness's own resume syntax, so the
+// reopened TUI continues the same provider thread the Chat controller used.
+func TestAgentCommandFactoryBuildsHarnessResumeCommands(t *testing.T) {
+	tests := []struct {
+		name           string
+		harness        string
+		mode           string
+		credentialType string
+		wantContains   []string
+	}{
+		{
+			name:           "codex",
+			harness:        "codex",
+			mode:           "trusted",
+			credentialType: "api_key",
+			wantContains:   []string{"resume", "native-thread-1"},
+		},
+		{
+			name:           "claude-code",
+			harness:        "claude-code",
+			mode:           "trusted",
+			credentialType: "api_key",
+			wantContains:   []string{"--resume", "native-claude-1"},
+		},
+		{
+			name:           "cursor",
+			harness:        "cursor",
+			mode:           "trusted",
+			credentialType: "api_key",
+			wantContains:   []string{"--resume", "native-cursor-1"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			builder := workerexec.HarnessBuilder{
+				DataDir:    dataDir,
+				CodexLogin: func(_, _, _, _ string) error { return nil },
+			}
+			nativeID := map[string]string{
+				"codex":       "native-thread-1",
+				"claude-code": "native-claude-1",
+				"cursor":      "native-cursor-1",
+			}[test.harness]
+			if test.harness == "claude-code" {
+				// Claude only resumes a conversation whose JSONL transcript
+				// exists under the worker's CLAUDE_CONFIG_DIR; a real handoff
+				// always has one because the Chat turn wrote it.
+				path := filepath.Join(
+					dataDir, "claude", "projects", "workspace", nativeID+".jsonl",
+				)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatalf("create claude project directory: %v", err)
+				}
+				if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+					t.Fatalf("write claude transcript: %v", err)
+				}
+			}
+			launch := worker.LaunchContext{
+				Harness:   test.harness,
+				SessionID: "session-1",
+				Mode:      test.mode,
+			}
+			credential := worker.CredentialResponse{
+				Provider:       test.harness,
+				CredentialType: test.credentialType,
+				Secret:         "test-secret",
+			}
+			command, err := builder.BuildInteractive(launch, credential, t.TempDir())
+			if err != nil {
+				t.Fatalf("build interactive command: %v", err)
+			}
+			// Simulate the factory's restore path: the same builder, but with a
+			// native conversation observed by the control plane.
+			launch.AgentSessionID = nativeID
+			restored, err := builder.BuildInteractive(launch, credential, t.TempDir())
+			if err != nil {
+				t.Fatalf("build restored command: %v", err)
+			}
+			argv := append([]string{restored.Path}, restored.Args...)
+			joined := strings.Join(argv, " ")
+			for _, want := range test.wantContains {
+				if !strings.Contains(joined, want) {
+					t.Fatalf("restored argv %q missing %q", joined, want)
+				}
+			}
+			// The fresh command must not carry a resume flag: a newly
+			// provisioned worker has no conversation to resume yet.
+			fresh := append([]string{command.Path}, command.Args...)
+			freshJoined := strings.Join(fresh, " ")
+			if strings.Contains(freshJoined, "--resume") || strings.Contains(freshJoined, "resume ") {
+				t.Fatalf("fresh interactive argv resumed a nonexistent conversation: %q", freshJoined)
+			}
+		})
+	}
+}
 
 func TestReservedAgentTerminalBuffersEarlyInputAndResize(t *testing.T) {
 	t.Parallel()

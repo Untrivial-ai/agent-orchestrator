@@ -177,7 +177,7 @@ func (s *Store) SendOrchestratorChildMessage(
 		}
 		event, err = sendMessageTx(
 			ctx, tx, orgID, childSessionID, idempotencyKey, text, "", orchestratorSessionID,
-			"", nil,
+			"", nil, domain.ChatTurnSettings{},
 		)
 		return err
 	})
@@ -220,7 +220,7 @@ func (s *Store) ReportToOrchestrator(
 		)
 		event, err = sendMessageTx(
 			ctx, tx, orgID, parentID, idempotencyKey, prefixed, "", childSessionID,
-			"", nil,
+			"", nil, domain.ChatTurnSettings{},
 		)
 		return err
 	})

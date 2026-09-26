@@ -121,6 +121,7 @@ func run(args []string) error {
 }
 
 func runHook(ctx context.Context, c *client, args []string, input io.Reader) error {
+	hookAt := time.Now()
 	if len(args) != 2 {
 		return nil
 	}
@@ -138,6 +139,18 @@ func runHook(ctx context.Context, c *client, args []string, input io.Reader) err
 	activity, ok := worker.ActivityEventFromHook(args[0], args[1], payload)
 	if !ok {
 		return nil
+	}
+	activity.SourceInterface = strings.TrimSpace(os.Getenv("AO_CLOUD_SOURCE_INTERFACE"))
+	if activity.SourceInterface == "tui" && activity.Event == "stop" && activity.State != "" {
+		// Keep the provider's native idle proof beside the worker. The durable
+		// control-plane projection can lag terminal input and is not a safe
+		// handoff fence on its own.
+		_ = worker.RecordTUIStop(strings.TrimSpace(os.Getenv("AO_DATA_DIR")), hookAt)
+	}
+	if activity.Harness == "codex" && activity.Event == "stop" && activity.LatestAssistantUpdate == "" {
+		activity.LatestAssistantUpdate = latestCodexAssistantMessage(
+			strings.TrimSpace(os.Getenv("CODEX_HOME")), activity.AgentSessionID,
+		)
 	}
 	hookCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()

@@ -60,6 +60,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 
 type CenterPaneProps = {
 	session?: WorkspaceSession;
+	terminalGeneration?: string;
 	theme: Theme;
 	daemonReady: boolean;
 	terminalTarget?: TerminalTarget;
@@ -152,6 +153,7 @@ function initialTerminalFontSize(): number {
 
 export function CenterPane({
 	session,
+	terminalGeneration,
 	theme,
 	daemonReady,
 	terminalTarget,
@@ -233,7 +235,7 @@ export function CenterPane({
 		showRightFade,
 	} = useTabScrollEdges([tabOverflowWatch]);
 	const previousTabCountRef = useRef(availableAuxiliaryKeys.length);
-	const agentSwitchesQuery = useAgentSwitches(session?.id ?? "");
+	const agentSwitchesQuery = useAgentSwitches(session?.id ?? "", !session?.cloud);
 	const agentSwitches = agentSwitchesQuery.data ?? [];
 	const switchMutation = useSwitchAgentState(session?.id ?? "");
 	const mountedSessionIdRef = useRef(session?.id);
@@ -765,6 +767,7 @@ export function CenterPane({
 							onChangeFontSize={updateFontSize}
 							onToggleFullscreen={toggleFullscreen}
 							session={session}
+							terminalGeneration={terminalGeneration}
 							terminalTarget={target}
 							theme={theme}
 						/>

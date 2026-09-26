@@ -50,6 +50,17 @@ export type Turn = Schemas["Turn"];
 export type CreateSessionInput = Schemas["CreateSessionInput"];
 export type DeleteSessionResponse = Schemas["DeleteSessionResponse"];
 export type SessionPage = Schemas["SessionPage"];
+export type SessionInterfaceMode = Schemas["SessionInterfaceMode"];
+export type SessionInterfaceTransitionPolicy =
+  Schemas["SessionInterfaceTransitionPolicy"];
+export type SessionInterfaceTransitionPhase =
+  Schemas["SessionInterfaceTransitionPhase"];
+export type SessionInterfaceTransition =
+  Schemas["SessionInterfaceTransition"];
+export type SessionInterfaceTransitionStatus =
+  Schemas["SessionInterfaceTransitionStatus"];
+export type StartSessionInterfaceTransitionInput =
+  Schemas["StartSessionInterfaceTransitionInput"];
 
 export type PullRequestState = Schemas["PullRequestState"];
 export type CIState = Schemas["CIState"];
@@ -133,6 +144,9 @@ export type WorkerCheckoutGrantResponse =
   Schemas["WorkerCheckoutGrantResponse"];
 export type CreateWorkerChildInput = Schemas["CreateWorkerChildInput"];
 export type SendMessageInput = Schemas["SendMessageInput"];
+export type ChatMessageInput = Schemas["ChatMessageInput"];
+export type ChatModel = Schemas["ChatModel"];
+export type ChatModelsResponse = Schemas["ChatModelsResponse"];
 export type WorkerWorkspaceListPayload =
   Schemas["WorkerWorkspaceListPayload"];
 export type WorkerWorkspaceReadPayload =

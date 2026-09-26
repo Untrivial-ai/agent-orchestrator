@@ -2,6 +2,8 @@ import type {
   AgentProfile,
   ClientEvent,
   ClientEventPage,
+  ChatMessageInput,
+  ChatModelsResponse,
   CreateWorkerChildInput,
   CreateGitHubProjectInput,
   CreateGitHubScratchProjectInput,
@@ -26,6 +28,9 @@ import type {
   RedactedProviderConnection,
   RequestOptions,
   Session,
+  SessionInterfaceTransition,
+  SessionInterfaceTransitionStatus,
+  StartSessionInterfaceTransitionInput,
   SessionPage,
   SessionPullRequests,
   SessionReviewState,
@@ -321,6 +326,64 @@ export class CloudClient {
     );
   }
 
+  getSessionInterfaceTransition(
+    orgId: string,
+    sessionId: string,
+    options: RequestOptions = {},
+  ): Promise<SessionInterfaceTransitionStatus> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/sessions/${encodeURIComponent(sessionId)}/interface-transition`,
+      ),
+      options,
+    );
+  }
+
+  startSessionInterfaceTransition(
+    orgId: string,
+    sessionId: string,
+    input: StartSessionInterfaceTransitionInput,
+    options: RequestOptions = {},
+  ): Promise<{ transition: SessionInterfaceTransition }> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/sessions/${encodeURIComponent(sessionId)}/interface-transition`,
+      ),
+      { method: "POST", body: input, signal: options.signal },
+    );
+  }
+
+  cancelSessionInterfaceTransition(
+    orgId: string,
+    sessionId: string,
+    options: RequestOptions = {},
+  ): Promise<WorkerOKResponse> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/sessions/${encodeURIComponent(sessionId)}/interface-transition`,
+      ),
+      { method: "DELETE", signal: options.signal },
+    );
+  }
+
+  acknowledgeSessionInterfaceTransitionNotice(
+    orgId: string,
+    sessionId: string,
+    transitionId: string,
+    options: RequestOptions = {},
+  ): Promise<WorkerOKResponse> {
+    return this.request(
+      this.orgPath(
+        orgId,
+        `/sessions/${encodeURIComponent(sessionId)}/interface-transition/${encodeURIComponent(transitionId)}/notice-acknowledgement`,
+      ),
+      { method: "PUT", signal: options.signal },
+    );
+  }
+
   createSession(
     orgId: string,
     input: CreateSessionInput,
@@ -376,7 +439,7 @@ export class CloudClient {
   sendMessage(
     orgId: string,
     sessionId: string,
-    text: string,
+    message: string | ChatMessageInput,
     options: IdempotentRequestOptions,
   ): Promise<{ event: UserMessageEvent }> {
     return this.request(
@@ -386,10 +449,21 @@ export class CloudClient {
       ),
       {
         method: "POST",
-        body: { text },
+        body: typeof message === "string" ? { text: message } : message,
         idempotencyKey: options.idempotencyKey,
         signal: options.signal,
       },
+    );
+  }
+
+  listChatModels(
+    orgId: string,
+    sessionId: string,
+    options: RequestOptions = {},
+  ): Promise<ChatModelsResponse> {
+    return this.request(
+      this.orgPath(orgId, `/sessions/${encodeURIComponent(sessionId)}/chat-models`),
+      options,
     );
   }
 

@@ -35,6 +35,25 @@ function transition(phase: SessionInterfaceTransition["phase"]): SessionInterfac
 }
 
 describe("SessionInterfaceSwitchButton", () => {
+	it("disables the action when Cloud reports a terminated session", () => {
+		const onClick = vi.fn();
+		render(
+			<TooltipProvider>
+				<SessionInterfaceSwitchButton
+					target="chat"
+					supported={false}
+					disabledReason="Terminated sessions must be restored before switching interfaces."
+					onClick={onClick}
+				/>
+			</TooltipProvider>,
+		);
+
+		const button = screen.getByRole("button", { name: "Switch to chat UI" });
+		expect(button).toBeDisabled();
+		fireEvent.click(button);
+		expect(onClick).not.toHaveBeenCalled();
+	});
+
 	it("uses the shared topbar spacing between adjacent session actions", () => {
 		render(
 			<SessionInterfaceActionGroup>
@@ -173,6 +192,27 @@ describe("SessionInterfaceSwitchButton", () => {
 });
 
 describe("SessionInterfaceSwitchDialog", () => {
+	it("requires an explicit Terminal stop for Cloud without claiming the agent is busy", () => {
+		const onChoose = vi.fn();
+		render(
+			<SessionInterfaceSwitchDialog
+				open
+				target="chat"
+				requireExplicitTerminalStop
+				onOpenChange={vi.fn()}
+				onChoose={onChoose}
+			/>,
+		);
+
+		const dialog = screen.getByRole("dialog", { name: "Switch to Chat UI?" });
+		expect(dialog).toHaveTextContent("AO cannot verify whether this Terminal is idle.");
+		expect(within(dialog).queryByRole("button", { name: /^Finish work, then switch/ })).not.toBeInTheDocument();
+		const action = within(dialog).getByRole("button", { name: /^Terminate and then switch/ });
+		expect(onChoose).not.toHaveBeenCalled();
+		fireEvent.click(action);
+		expect(onChoose).toHaveBeenCalledWith("interrupt");
+	});
+
 	it("focuses Finish work as the safe default", async () => {
 		render(<SessionInterfaceSwitchDialog open target="tui" onOpenChange={vi.fn()} onChoose={vi.fn()} />);
 
@@ -403,6 +443,28 @@ describe("SessionInterfaceTransitionNotice", () => {
 		const action = screen.getByRole("button", {
 			name: "Cancel request and switch",
 		});
+		fireEvent.click(action);
+		expect(onSwitchWithInterrupt).toHaveBeenCalledOnce();
+	});
+
+	it("offers termination only after Docker cannot verify an interactive source is idle", () => {
+		const onSwitchWithInterrupt = vi.fn();
+		render(
+			<SessionInterfaceTransitionNotice
+				transition={{
+					...transition("failed"),
+					errorCode: "SOURCE_DRAIN_FAILED",
+					errorDetail: "source controller activity cannot be verified; use stop now to interrupt it",
+				}}
+				onDismiss={vi.fn()}
+				onSwitchWithInterrupt={onSwitchWithInterrupt}
+			/>,
+		);
+
+		const alert = screen.getByRole("alert");
+		expect(alert).toHaveTextContent("AO cannot verify whether this Terminal is idle.");
+		const action = within(alert).getByRole("button", { name: "Terminate and then switch" });
+		expect(onSwitchWithInterrupt).not.toHaveBeenCalled();
 		fireEvent.click(action);
 		expect(onSwitchWithInterrupt).toHaveBeenCalledOnce();
 	});

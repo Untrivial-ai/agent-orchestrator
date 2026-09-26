@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,6 +21,14 @@ type ControlPlane interface {
 	FailTurn(context.Context, string, int, string) error
 }
 
+// conversationIdentityPublisher is optional so alternate worker controls can
+// keep the existing runner contract. The Cloud client implements it to make a
+// Chat-first session restorable in the native TUI after Codex announces its
+// thread id on stdout.
+type conversationIdentityPublisher interface {
+	PublishActivity(context.Context, worker.ActivityEvent) error
+}
+
 type Supervisor struct {
 	Control         ControlPlane
 	Builder         CommandBuilder
@@ -29,9 +38,42 @@ type Supervisor struct {
 	CancelInterval  time.Duration
 	CompletionRetry time.Duration
 	Logger          *slog.Logger
+
+	// busy is read by the transport supervisor while an interface handoff is
+	// draining Chat work. It belongs to the long-lived controller instance, not
+	// an individual turn, so a TUI handoff never mistakes a running headless
+	// provider process for an idle controller.
+	busy atomic.Bool
+
+	activeMu sync.Mutex
+	active   *activeExecution
 }
 
-func (s Supervisor) Run(ctx context.Context) error {
+type activeExecution struct {
+	cancel      context.CancelFunc
+	interrupted atomic.Bool
+}
+
+// Idle reports whether the Chat controller has no currently executing turn.
+func (s *Supervisor) Idle() bool {
+	return !s.busy.Load()
+}
+
+// Interrupt stops only the running Chat turn. It returns false when the
+// controller is between turns, which is still a successful stop-now boundary.
+func (s *Supervisor) Interrupt() bool {
+	s.activeMu.Lock()
+	active := s.active
+	s.activeMu.Unlock()
+	if active == nil {
+		return false
+	}
+	active.interrupted.Store(true)
+	active.cancel()
+	return true
+}
+
+func (s *Supervisor) Run(ctx context.Context) error {
 	if s.Control == nil || s.Builder == nil || s.Runner == nil {
 		return errors.New("worker supervisor dependencies are incomplete")
 	}
@@ -72,7 +114,10 @@ func (s Supervisor) Run(ctx context.Context) error {
 			}
 			continue
 		}
-		if err := s.execute(ctx, *turn); err != nil {
+		s.busy.Store(true)
+		err = s.execute(ctx, *turn)
+		s.busy.Store(false)
+		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -86,7 +131,7 @@ func (s Supervisor) Run(ctx context.Context) error {
 	}
 }
 
-func (s Supervisor) execute(ctx context.Context, turn worker.Turn) error {
+func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	if turn.CancelRequested {
 		return s.retryComplete(ctx, turn.ID, turn.Attempt, true)
 	}
@@ -102,9 +147,33 @@ func (s Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	if command.Cleanup != nil {
 		defer command.Cleanup()
 	}
-
 	executionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	active := &activeExecution{cancel: cancel}
+	s.activeMu.Lock()
+	s.active = active
+	s.activeMu.Unlock()
+	defer func() {
+		s.activeMu.Lock()
+		if s.active == active {
+			s.active = nil
+		}
+		s.activeMu.Unlock()
+	}()
+	projector := newChatOutputProjector(turn.Harness)
+	publish := func(output Output) error {
+		for _, projected := range projector.Project(output) {
+			if err := s.Control.PublishOutput(executionCtx, worker.OutputEvent{
+				TurnID:  turn.ID,
+				Attempt: turn.Attempt,
+				Stream:  projected.Stream,
+				Text:    projected.Text,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	done := make(chan struct{})
 	var cancellation atomic.Bool
 	go func() {
@@ -132,17 +201,41 @@ func (s Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 		}
 	}()
 
-	runErr := s.Runner.Run(executionCtx, command, func(output Output) error {
-		return s.Control.PublishOutput(executionCtx, worker.OutputEvent{
-			TurnID:  turn.ID,
-			Attempt: turn.Attempt,
-			Stream:  output.Stream,
-			Text:    output.Text,
-		})
-	})
+	runErr := s.Runner.Run(executionCtx, command, publish)
+	var flushed []Output
+	if runErr == nil {
+		// Codex normally terminates JSONL records with a newline, but flush the
+		// final partial record before reading the identity so a clean process
+		// exit cannot strand a thread.started event in the projector buffer.
+		flushed = projector.Flush()
+	}
+	if identity := projector.NativeConversationID(); identity != "" {
+		if publisher, ok := s.Control.(conversationIdentityPublisher); ok {
+			if err := publisher.PublishActivity(executionCtx, worker.ActivityEvent{
+				Harness:        turn.Harness,
+				Event:          "session-start",
+				AgentSessionID: identity,
+			}); err != nil && executionCtx.Err() == nil {
+				s.Logger.Warn("publish headless conversation identity", "error", err)
+			}
+		}
+	}
+	if runErr == nil {
+		for _, output := range flushed {
+			if err := s.Control.PublishOutput(executionCtx, worker.OutputEvent{
+				TurnID:  turn.ID,
+				Attempt: turn.Attempt,
+				Stream:  output.Stream,
+				Text:    output.Text,
+			}); err != nil {
+				runErr = err
+				break
+			}
+		}
+	}
 	close(done)
 
-	if cancellation.Load() {
+	if cancellation.Load() || active.interrupted.Load() {
 		return s.retryComplete(ctx, turn.ID, turn.Attempt, true)
 	}
 	if ctx.Err() != nil {
@@ -154,7 +247,7 @@ func (s Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	return s.retryComplete(ctx, turn.ID, turn.Attempt, false)
 }
 
-func (s Supervisor) retryComplete(
+func (s *Supervisor) retryComplete(
 	ctx context.Context,
 	turnID string,
 	attempt int,
@@ -171,7 +264,7 @@ func (s Supervisor) retryComplete(
 	}
 }
 
-func (s Supervisor) retryFailure(
+func (s *Supervisor) retryFailure(
 	ctx context.Context,
 	turnID string,
 	attempt int,

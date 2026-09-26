@@ -631,6 +631,60 @@ describe("CloudClient", () => {
     });
   });
 
+  it("sends the selected model and effort with a chat message", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        jsonResponse({
+          event: {
+            sessionId: "session",
+            sequence: 1,
+            type: "chat.user_message",
+            payload: { text: "Ship it" },
+            createdAt: "2026-08-09T00:00:00Z",
+          },
+        }),
+    );
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => "access-token",
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await client.sendMessage(
+      "tenant",
+      "session",
+      { text: "Ship it", model: "gpt-5.6-codex", reasoningEffort: "high" },
+      { idempotencyKey: "message-command-2" },
+    );
+
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(
+      JSON.stringify({ text: "Ship it", model: "gpt-5.6-codex", reasoningEffort: "high" }),
+    );
+  });
+
+  it("loads chat model choices for a session", async () => {
+    const catalog = {
+      models: [{
+        id: "gpt-5.6-codex",
+        displayName: "Codex",
+        default: true,
+        efforts: ["high"],
+        defaultEffort: "high",
+      }],
+    };
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(catalog));
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => "access-token",
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(client.listChatModels("tenant", "session")).resolves.toEqual(catalog);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://cloud.example.com/api/cloud/v1/orgs/tenant/sessions/session/chat-models",
+    );
+  });
+
   it("streams replayed SSE events from an explicit cursor", async () => {
     const abort = new AbortController();
     const encoder = new TextEncoder();

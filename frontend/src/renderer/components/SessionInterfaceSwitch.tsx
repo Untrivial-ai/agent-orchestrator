@@ -67,6 +67,7 @@ export function SessionInterfaceSwitchButton({
 	cancelError,
 	onClick,
 	onCancel,
+	showLabel = false,
 	className,
 }: {
 	target: SessionInterfaceMode;
@@ -78,6 +79,8 @@ export function SessionInterfaceSwitchButton({
 	cancelError?: string;
 	onClick: () => void;
 	onCancel?: () => void;
+	/** Cloud uses a text label so the return-to-TUI action is discoverable. */
+	showLabel?: boolean;
 	className?: string;
 }) {
 	if (transition && interfaceTransitionIsActive(transition)) {
@@ -143,7 +146,11 @@ export function SessionInterfaceSwitchButton({
 				<span className="inline-flex">
 					<TopbarButton
 						aria-label={label}
-						className={cn(!supported && "opacity-50", className)}
+						className={cn(
+							!supported && "opacity-50",
+							showLabel && "topbar-control--labeled !inline-flex !h-control-lg !w-auto !min-w-0 gap-1.5 px-2 text-xs",
+							className,
+						)}
 						disabled={!supported || pending}
 						onClick={onClick}
 						type="button"
@@ -154,6 +161,7 @@ export function SessionInterfaceSwitchButton({
 						) : (
 							<TargetIcon aria-hidden="true" className="size-icon-md" />
 						)}
+						{showLabel ? <span data-compact-label>{target === "tui" ? "Terminal UI" : "Chat UI"}</span> : null}
 					</TopbarButton>
 				</span>
 			</TooltipTrigger>
@@ -165,6 +173,7 @@ export function SessionInterfaceSwitchButton({
 export function SessionInterfaceSwitchDialog({
 	open,
 	target,
+	requireExplicitTerminalStop,
 	waitingForInput,
 	busy,
 	error,
@@ -173,6 +182,7 @@ export function SessionInterfaceSwitchDialog({
 }: {
 	open: boolean;
 	target: SessionInterfaceMode;
+	requireExplicitTerminalStop?: boolean;
 	waitingForInput?: boolean;
 	busy?: boolean;
 	error?: string;
@@ -195,32 +205,42 @@ export function SessionInterfaceSwitchDialog({
 				</DialogHeader>
 
 				<div className="grid gap-2 px-5 py-4">
-					<button
-						type="button"
-						className="rounded-lg border border-border bg-background px-3.5 py-3 text-left transition-colors hover:border-border-strong hover:bg-muted disabled:opacity-50"
-						disabled={busy}
-						onClick={() => onChoose("drain")}
-					>
-						<strong className="block text-sm font-medium text-foreground">Finish work, then switch</strong>
-						<span className="mt-1 block text-xs leading-5 text-muted-foreground">
-							Wait for the running turn and anything already queued to finish. New AO messages wait safely
-							for {targetName}.
-						</span>
-					</button>
+					{requireExplicitTerminalStop ? (
+						<p className="text-xs leading-5 text-muted-foreground">
+							AO cannot verify whether this Terminal is idle. Nothing will stop until you confirm.
+							If work is underway, switching will interrupt it.
+						</p>
+					) : (
+						<button
+							type="button"
+							className="rounded-lg border border-border bg-background px-3.5 py-3 text-left transition-colors hover:border-border-strong hover:bg-muted disabled:opacity-50"
+							disabled={busy}
+							onClick={() => onChoose("drain")}
+						>
+							<strong className="block text-sm font-medium text-foreground">Finish work, then switch</strong>
+							<span className="mt-1 block text-xs leading-5 text-muted-foreground">
+								Wait for the running turn and anything already queued to finish. New AO messages wait safely
+								for {targetName}.
+							</span>
+						</button>
+					)}
 					<button
 						type="button"
 						className="rounded-lg border border-border bg-background px-3.5 py-3 text-left transition-colors hover:border-warning/60 hover:bg-muted disabled:opacity-50"
 						disabled={busy}
 						onClick={() => onChoose("interrupt")}
 					>
-						<strong className="block text-sm font-medium text-foreground">Stop now and switch</strong>
+						<strong className="block text-sm font-medium text-foreground">
+							{requireExplicitTerminalStop ? "Terminate and then switch" : "Stop now and switch"}
+						</strong>
 						<span className="mt-1 block text-xs leading-5 text-muted-foreground">
-							Cancel the running turn before switching. Files already changed remain in the worktree, but
-							unfinished output and queued Chat turns are cancelled.
+							{requireExplicitTerminalStop
+								? "Stop the Terminal controller before switching. Any work still running will be interrupted. Files already changed remain in the worktree."
+								: "Cancel the running turn before switching. Files already changed remain in the worktree, but unfinished output and queued Chat turns are cancelled."}
 							{target === "chat" ? " Any unsent Terminal UI draft is discarded." : null}
 						</span>
 					</button>
-					{waitingForInput ? (
+					{waitingForInput && !requireExplicitTerminalStop ? (
 						<p className="text-[11px] leading-4 text-warning">
 							This turn is waiting for your input. “Finish work” will wait until you answer it; use “Stop
 							now” to switch immediately.
@@ -300,6 +320,12 @@ export function SessionInterfaceTransitionNotice({
 	const recovered =
 		transition.phase === "recovery_required" && transition.errorCode === "DAEMON_RESTARTED";
 	const historyRecoveryPolicy = interfaceTransitionHistoryRecoveryPolicy(transition);
+	const interactiveSourceUnverified =
+		transition.phase === "failed" &&
+		transition.sourceMode === "tui" &&
+		transition.targetMode === "chat" &&
+		transition.errorCode === "SOURCE_DRAIN_FAILED" &&
+		transition.errorDetail?.startsWith("source controller activity cannot be verified;");
 	return (
 		<div
 			role={recovered ? "status" : "alert"}
@@ -324,7 +350,9 @@ export function SessionInterfaceTransitionNotice({
 							: phaseCopy[transition.phase]}
 				</strong>
 				<p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-					{transition.errorDetail ||
+					{(interactiveSourceUnverified
+						? "AO cannot verify whether this Terminal is idle. It was left running; terminate it to switch interfaces."
+						: transition.errorDetail) ||
 						(needsRestart
 							? targetStopUnconfirmedDetail
 							: recovered
@@ -334,7 +362,8 @@ export function SessionInterfaceTransitionNotice({
 									: "The original interface remains available. You can retry the switch.")}
 				</p>
 				{transition.phase === "failed" &&
-				(transition.errorCode === "DRAIN_DRAFT_PRESENT" ||
+				(interactiveSourceUnverified ||
+					transition.errorCode === "DRAIN_DRAFT_PRESENT" ||
 					transition.errorCode === "DRAIN_DECISION_PENDING") &&
 				onSwitchWithInterrupt ? (
 					<Button
@@ -346,7 +375,9 @@ export function SessionInterfaceTransitionNotice({
 						onClick={onSwitchWithInterrupt}
 					>
 						{interrupting ? <Loader2 aria-hidden="true" className="size-3 animate-spin" /> : null}
-						{transition.errorCode === "DRAIN_DRAFT_PRESENT"
+						{interactiveSourceUnverified
+							? "Terminate and then switch"
+							: transition.errorCode === "DRAIN_DRAFT_PRESENT"
 							? "Discard draft and switch"
 							: "Cancel request and switch"}
 					</Button>

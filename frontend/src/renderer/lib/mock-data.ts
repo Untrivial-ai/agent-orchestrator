@@ -613,6 +613,7 @@ const demoChild = (
 	displayName,
 	branch: `ao/${id.slice(0, 8)}`,
 	mode: "trusted",
+	interfaceMode: "tui",
 	deniedCommands: [],
 	activityState,
 	status,

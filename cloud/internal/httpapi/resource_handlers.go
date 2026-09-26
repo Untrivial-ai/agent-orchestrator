@@ -102,6 +102,7 @@ type sessionResponse struct {
 	Branch           string   `json:"branch"`
 	Mode             string   `json:"mode"`
 	DeniedCommands   []string `json:"deniedCommands"`
+	InterfaceMode    string   `json:"interfaceMode"`
 	ActivityState    string   `json:"activityState"`
 	Status           string   `json:"status"`
 	RuntimeConnected bool     `json:"runtimeConnected"`
@@ -994,6 +995,7 @@ func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionRe
 		Branch:           session.Branch,
 		Mode:             session.Mode,
 		DeniedCommands:   nonNilStrings(session.DeniedCommands),
+		InterfaceMode:    string(session.Interface.Normalized()),
 		ActivityState:    string(session.ActivityState),
 		Status:           string(session.Status(time.Now().UTC(), prs)),
 		RuntimeConnected: session.RuntimeConnected,

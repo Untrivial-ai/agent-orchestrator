@@ -32,7 +32,18 @@ export function useCloudSession(): UseCloudSessionResult {
 
   useEffect(() => {
     let active = true;
-    aoBridge.cloud.getSession().then((s) => {
+    // Component tests and browser preview can provide only the local bridge.
+    // Treat a missing Cloud preload surface as signed out rather than throwing
+    // from every consumer that mounts useCloudCp.
+    const cloud = aoBridge.cloud;
+    if (!cloud) {
+      setSession(null);
+      setStatus("unauthenticated");
+      return () => {
+        active = false;
+      };
+    }
+    cloud.getSession().then((s) => {
       if (!active) return;
       setSession(s);
       setStatus(s ? "authenticated" : "unauthenticated");
@@ -42,7 +53,7 @@ export function useCloudSession(): UseCloudSessionResult {
       setStatus("unauthenticated");
     });
 
-    const unsub = aoBridge.cloud.onSessionChanged((s) => {
+    const unsub = cloud.onSessionChanged((s) => {
       setSession(s);
       setStatus(s ? "authenticated" : "unauthenticated");
     });

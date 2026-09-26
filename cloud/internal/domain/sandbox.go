@@ -130,6 +130,7 @@ type WorkerLaunch struct {
 	Branch         string
 	Prompt         string
 	AgentSessionID string
+	Interface      SessionInterface
 	// ParentSessionID is the orchestrator that spawned this session, empty for
 	// top-level sessions. It gates the worker:report scope and the report
 	// guidance in the worker prompt.
