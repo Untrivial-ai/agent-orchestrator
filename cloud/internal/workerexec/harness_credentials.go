@@ -35,6 +35,19 @@ func harnessCredentialFor(harness string) (harnessCredential, bool) {
 	return h, ok
 }
 
+// SupportedHarness reports whether harness is a registered cloud harness and, if
+// so, the default executable it launches. It is the single source the worker's
+// launch guard uses to gate harness availability, so a newly registered harness
+// is covered without editing a second switch (a missing case there silently
+// skips launching the agent, leaving a session with no terminal/TUI).
+func SupportedHarness(harness string) (binary string, ok bool) {
+	h, ok := harnessCredentialFor(harness)
+	if !ok {
+		return "", false
+	}
+	return h.defaultBinary(), true
+}
+
 type claudeCredential struct{}
 
 func (claudeCredential) defaultBinary() string { return "claude" }
