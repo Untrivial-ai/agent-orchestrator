@@ -1177,6 +1177,11 @@ export const ChatComposer = memo(function ChatComposer({
 		synchronouslyClearedDeliveryRevision.current = undefined;
 		setDeliveryUncertain(false);
 		composerRevision.current = prepared.draft.composer.revision;
+		// The delivery journal protects retries, but it must not turn the submitted
+		// prompt into a grey, stuck-looking editor while a fresh Cursor host starts.
+		// Clear the first-send view now; the local echo from onSend owns the prompt in
+		// the timeline and the journal still retains the exact recovery payload.
+		if (delivery.kind === "send" && !prepared.recovered) clearEditorView();
 		setDurableDelivery(delivery);
 		setTextDraftPersistenceError(null);
 		setDeliveryRecoveryNotice(
