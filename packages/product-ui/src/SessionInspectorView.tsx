@@ -318,7 +318,7 @@ export function InspectorPullRequestCardView({
 		</span>
 	);
 	return (
-		<article className="min-w-0 w-full rounded-lg border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3 py-2">
+		<article className="min-w-0 w-full rounded-lg border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3 py-3">
 			<div className="flex min-w-0 items-baseline justify-between gap-2">
 				<span className="min-w-0 flex-1 text-sm font-semibold leading-snug tracking-tight text-settings-label">{pr.title || `PR #${pr.number}`}</span>
 				<div className="flex shrink-0 items-baseline gap-1.5">
@@ -326,9 +326,9 @@ export function InspectorPullRequestCardView({
 					<span className="font-mono text-xs font-medium tabular-nums text-settings-label">#{pr.number}</span>
 				</div>
 			</div>
-			{branchRange ? <p className="mt-0.5 min-w-0 truncate font-mono text-2xs text-settings-muted" title={branchRange}>{branchRange}</p> : null}
-			{pr.reviewDetailsAction ? <div className="mt-1 flex min-h-5 items-center text-xs text-settings-muted">{pr.reviewDetailsAction}</div> : null}
-			<div className="mt-1.5 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
+			{branchRange ? <p className="mt-1 min-w-0 truncate font-mono text-2xs text-settings-muted" title={branchRange}>{branchRange}</p> : null}
+			{pr.reviewDetailsAction ? <div className="mt-2 flex min-h-5 items-center text-xs text-settings-muted">{pr.reviewDetailsAction}</div> : null}
+			<div className="mt-2.5 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
 				{pr.state !== "merged" ? (
 					<PRCardStatusSummary externalLink={ExternalLink} presentation={pr.card} />
 				) : (
