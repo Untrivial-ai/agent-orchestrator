@@ -50,6 +50,7 @@ import { TopbarButton } from "./TopbarButton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { MultiStepLoader } from "./ui/multi-step-loader";
 import { useBrowserView } from "../hooks/useBrowserView";
+import { useCloudBrowserView } from "../hooks/useCloudBrowserView";
 import { useFileAnnotation } from "../hooks/useFileAnnotation";
 import { useResizable } from "../hooks/useResizable";
 import {
@@ -1561,14 +1562,22 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			(browserPoppedOut || (inspectorPanelVisible && inspectorView === "browser")),
 	);
 	const terminated = session ? !sessionIsActive(session) : false;
-	const browserView = useBrowserView({
+	const cloudSession = Boolean(session?.cloud);
+	const localBrowserView = useBrowserView({
 		sessionId,
-		active: browserSlotVisible,
+		disabled: !session || cloudSession,
+		active: browserSlotVisible && !cloudSession,
 		poppedOut: browserPoppedOut,
 		terminated,
 		previewUrl,
 		previewRevision,
 	});
+	const cloudBrowserView = useCloudBrowserView({
+		orgId: session?.cloud?.orgId,
+		sessionId,
+		active: browserSlotVisible && cloudSession,
+	});
+	const browserView = cloudSession ? cloudBrowserView : localBrowserView;
 	const browserAnnotationQueue = useBrowserAnnotationQueue({
 		sessionId: session?.id,
 		navUrl: browserView.navState.url,

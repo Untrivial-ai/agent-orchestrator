@@ -271,6 +271,7 @@ register_task_definition() {
 			--set-environment "AO_CLOUD_PUBLIC_URL=${AO_CLOUD_PUBLIC_URL:-https://staging-api.aoagents.dev}"
 			--set-environment AO_CLOUD_TERMINAL_STREAM=1
 			--set-environment AO_CLOUD_TERMINAL_RELAY=1
+			--set-environment AO_CLOUD_BROWSER_VIEWER=1
 			--set-environment AO_CLOUD_REPOSITORY_BROKER_URL=https://api.aoagents.dev
 			--set-environment AO_CLOUD_ALLOW_ANONYMOUS_GITHUB_CHECKOUT=true
 			--set-secret "AO_CLOUD_PROVIDER_SECRET_KEY=${provider_secret_arn}"

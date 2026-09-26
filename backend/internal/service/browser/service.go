@@ -9,17 +9,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/browserruntime"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/browsercontract"
 )
-
-var actions = map[string]struct{}{
-	"open": {}, "snapshot": {}, "act": {}, "click": {}, "dblclick": {}, "focus": {}, "fill": {}, "type": {}, "press": {},
-	"hover": {}, "highlight": {}, "unhighlight": {}, "scrollintoview": {}, "drag": {}, "tabs": {}, "tab-new": {},
-	"tab-select": {}, "tab-close": {}, "scroll": {}, "select": {}, "check": {},
-	"uncheck": {}, "get": {}, "wait": {}, "screenshot": {}, "network-start": {},
-	"network-status": {}, "network-list": {}, "network-stop": {}, "network-clear": {},
-	"console": {}, "errors": {}, "frame": {}, "dialog": {},
-	"devtools-open": {}, "devtools-close": {},
-}
 
 type sessionReader interface {
 	Get(ctx context.Context, id domain.SessionID) (domain.Session, error)
@@ -63,7 +54,7 @@ func (s *Service) Execute(
 	if err := s.authorize(ctx, sessionID, capability); err != nil {
 		return browserruntime.Result{}, action, err
 	}
-	if _, ok := actions[action]; !ok {
+	if !browsercontract.Supported(action) {
 		return browserruntime.Result{}, action, apierr.Invalid(
 			"BROWSER_ACTION_UNSUPPORTED",
 			"Unsupported browser action",

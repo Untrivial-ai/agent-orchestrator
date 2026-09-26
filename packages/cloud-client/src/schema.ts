@@ -442,6 +442,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/browser-view-ticket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createBrowserViewerTicket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/browser-view/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        /** Upgrade to the live shared browser stream using a single-use ticket. */
+        get: operations["connectBrowserViewer"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cloud/v1/terminal": {
         parameters: {
             query?: never;
@@ -1857,6 +1896,14 @@ export interface components {
             expiresIn: number;
             scopes: components["schemas"]["TerminalScope"][];
         };
+        BrowserViewerTicket: {
+            ticket: string;
+            /** @description Lifetime in seconds. */
+            expiresIn: number;
+            /** @enum {integer} */
+            protocolVersion: 1;
+            canOperate: boolean;
+        };
         WorkspaceEntry: {
             name: string;
             path: string;
@@ -2834,6 +2881,54 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["TerminalTicket"];
                 };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createBrowserViewerTicket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Short-lived, single-use browser viewer ticket. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrowserViewerTicket"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    connectBrowserViewer: {
+        parameters: {
+            query: {
+                ticket: string;
+            };
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description WebSocket protocol upgrade accepted. */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             default: components["responses"]["Error"];
         };

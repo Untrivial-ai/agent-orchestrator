@@ -11,6 +11,32 @@ import {
 } from "../src/index.js";
 
 describe("CloudClient", () => {
+	it("mints a browser ticket and builds its one-use stream URL", async () => {
+		const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+			jsonResponse({ ticket: "one-use", expiresIn: 300, protocolVersion: 1, canOperate: true }, 201),
+		);
+		const client = createCloudClient({
+			baseUrl: "https://cloud.example.com",
+			getAccessToken: () => "access-token",
+			fetch: fetchMock as typeof fetch,
+		});
+
+		await expect(client.createBrowserViewerTicket("org one", "session/one")).resolves.toMatchObject({
+			ticket: "one-use",
+			protocolVersion: 1,
+		});
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"https://cloud.example.com/api/cloud/v1/orgs/org%20one/sessions/session%2Fone/browser-view-ticket",
+		);
+		expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+		const stream = new URL(client.browserViewerUrl("org one", "session/one", "one-use"));
+		expect(stream.protocol).toBe("wss:");
+		expect(stream.pathname).toBe(
+			"/api/cloud/v1/orgs/org%20one/sessions/session%2Fone/browser-view/stream",
+		);
+		expect(stream.searchParams.get("ticket")).toBe("one-use");
+	});
+
   it("loads the authenticated account and organization memberships", async () => {
     const account = {
       user: {

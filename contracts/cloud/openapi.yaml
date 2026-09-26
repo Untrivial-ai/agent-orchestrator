@@ -601,6 +601,42 @@ paths:
                 $ref: "#/components/schemas/TerminalTicket"
         default:
           $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/browser-view-ticket:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: createBrowserViewerTicket
+      tags: [Browser]
+      responses:
+        "201":
+          description: Short-lived, single-use browser viewer ticket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserViewerTicket"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/sessions/{sessionId}/browser-view/stream:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      operationId: connectBrowserViewer
+      tags: [Browser]
+      summary: Upgrade to the live shared browser stream using a single-use ticket.
+      security: []
+      parameters:
+        - name: ticket
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "101":
+          description: WebSocket protocol upgrade accepted.
+        default:
+          $ref: "#/components/responses/Error"
   /api/cloud/v1/terminal:
     get:
       operationId: connectTerminal
@@ -3572,6 +3608,22 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/TerminalScope"
+    BrowserViewerTicket:
+      type: object
+      additionalProperties: false
+      required: [ticket, expiresIn, protocolVersion, canOperate]
+      properties:
+        ticket:
+          type: string
+        expiresIn:
+          type: integer
+          minimum: 1
+          description: Lifetime in seconds.
+        protocolVersion:
+          type: integer
+          enum: [1]
+        canOperate:
+          type: boolean
     WorkspaceEntry:
       type: object
       additionalProperties: false

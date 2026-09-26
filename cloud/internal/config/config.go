@@ -91,6 +91,12 @@ type Config struct {
 	// directly from the worker stream, before the same frame is mirrored to
 	// durable replay storage.
 	TerminalRelayEnabled bool
+	// BrowserViewerEnabled turns on the live shared Chromium viewer data plane.
+	BrowserViewerEnabled bool
+	// BrowserViewerOrigins are additional renderer origins allowed to redeem a
+	// browser viewer ticket over WebSocket. Packaged desktop file origins are
+	// allowed separately by the handler.
+	BrowserViewerOrigins []string
 
 	NodeOpsBaseURL       string
 	NodeOpsAPIKey        string
@@ -110,6 +116,7 @@ type Config struct {
 	DockerWorkerImage    string
 	DockerNetwork        string
 	DockerNamespace      string
+	DockerExtraLabels    map[string]string
 	DockerWorkerTokenTTL time.Duration
 
 	CoderURL            string
@@ -177,6 +184,12 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("invalid AO_CLOUD_CODER_PARAMETERS_JSON: %w", err)
 		}
 	}
+	dockerExtraLabelsEnv := map[string]string{}
+	if raw := strings.TrimSpace(os.Getenv("AO_CLOUD_DOCKER_EXTRA_LABELS_JSON")); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &dockerExtraLabelsEnv); err != nil {
+			return Config{}, fmt.Errorf("invalid AO_CLOUD_DOCKER_EXTRA_LABELS_JSON: %w", err)
+		}
+	}
 
 	cfg := Config{
 		Environment:            environment,
@@ -194,6 +207,8 @@ func Load() (Config, error) {
 		AllowAnonymousCheckout: boolEnv("AO_CLOUD_ALLOW_ANONYMOUS_GITHUB_CHECKOUT", false),
 		TerminalStreamEnabled:  boolEnv("AO_CLOUD_TERMINAL_STREAM", false),
 		TerminalRelayEnabled:   boolEnv("AO_CLOUD_TERMINAL_RELAY", false),
+		BrowserViewerEnabled:   boolEnv("AO_CLOUD_BROWSER_VIEWER", false),
+		BrowserViewerOrigins:   lowerCSVList(os.Getenv("AO_CLOUD_BROWSER_VIEWER_ORIGINS")),
 		SandboxProvider: strings.ToLower(
 			envOrDefault("AO_CLOUD_SANDBOX_PROVIDER", defaultSandboxProvider(hosted)),
 		),
@@ -239,6 +254,7 @@ func Load() (Config, error) {
 		DockerWorkerImage: envOrDefault("AO_CLOUD_DOCKER_WORKER_IMAGE", "ao-cloud-worker:local"),
 		DockerNetwork:     strings.TrimSpace(os.Getenv("AO_CLOUD_DOCKER_NETWORK")),
 		DockerNamespace:   envOrDefault("AO_CLOUD_DOCKER_NAMESPACE", "ao-cloud-local"),
+		DockerExtraLabels: dockerExtraLabelsEnv,
 		DockerWorkerTokenTTL: durationEnv(
 			"AO_CLOUD_DOCKER_WORKER_TOKEN_TTL", sandbox.DefaultWorkerTokenTTL,
 		),

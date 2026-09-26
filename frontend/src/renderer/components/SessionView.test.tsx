@@ -514,10 +514,11 @@ vi.mock("./CloudWorkspaceDiff", () => ({
 		<button onClick={() => onOpenFile?.("src/cloud.ts")} type="button">open cloud file</button>
 	),
 }));
-const { browserDestroy, browserViewOptions, browserViewState } = vi.hoisted(() => ({
+const { browserDestroy, browserViewOptions, browserViewState, cloudBrowserViewOptions } = vi.hoisted(() => ({
 	browserDestroy: vi.fn(),
 	browserViewOptions: { current: undefined as { active: boolean; sessionId: string; terminated: boolean } | undefined },
 	browserViewState: { url: "", agentBrowserActive: false },
+	cloudBrowserViewOptions: { current: undefined as { active: boolean; orgId?: string; sessionId: string } | undefined },
 }));
 vi.mock("../hooks/useBrowserView", () => ({
 	useBrowserView: (options: { active: boolean; sessionId: string; terminated: boolean }) => {
@@ -547,6 +548,37 @@ vi.mock("../hooks/useBrowserView", () => ({
 			annotationMode: false,
 			setAnnotationMode: vi.fn(),
 			destroy: browserDestroy,
+		};
+	},
+}));
+vi.mock("../hooks/useCloudBrowserView", () => ({
+	useCloudBrowserView: (options: { active: boolean; orgId?: string; sessionId: string }) => {
+		cloudBrowserViewOptions.current = options;
+		return {
+			viewId: `cloud-browser:${options.sessionId}`,
+			navState: {
+				viewId: `cloud-browser:${options.sessionId}`,
+				url: "",
+				title: "",
+				canGoBack: false,
+				canGoForward: false,
+				isLoading: false,
+			},
+			slotRef: vi.fn(),
+			navigate: vi.fn(),
+			goBack: vi.fn(),
+			goForward: vi.fn(),
+			reload: vi.fn(),
+			stop: vi.fn(),
+			tabs: [],
+			activeTabId: "",
+			tabNotice: "",
+			agentBrowserActive: false,
+			selectTab: vi.fn(),
+			closeTab: vi.fn(),
+			annotationMode: false,
+			setAnnotationMode: vi.fn(),
+			destroy: vi.fn(),
 		};
 	},
 }));
@@ -747,6 +779,7 @@ describe("SessionView", () => {
 		useTerminalResetStore.setState({ baselineEpoch: {}, nonces: {}, reconnecting: {} });
 		browserDestroy.mockReset();
 		browserViewOptions.current = undefined;
+		cloudBrowserViewOptions.current = undefined;
 		browserViewState.url = "";
 		browserViewState.agentBrowserActive = false;
 		shellTerminalsState.data = [];
@@ -2879,6 +2912,26 @@ describe("SessionView", () => {
 		render(<SessionView sessionId="sess-1" />);
 
 		expect(browserViewOptions.current).toMatchObject({ sessionId: "sess-1", terminated: true });
+	});
+
+	it("activates the cloud browser stream instead of the local browser view", () => {
+		const worker = workerSession("sess-1");
+		worker.cloud = {
+			orgId: "org-1",
+			sandboxProvider: "docker",
+			desiredState: "running",
+			observedState: "running",
+		};
+
+		render(<SessionView sessionId="sess-1" />);
+		fireEvent.click(screen.getByRole("tab", { name: "Browser" }));
+
+		expect(browserViewOptions.current).toMatchObject({ sessionId: "sess-1", active: false, disabled: true });
+		expect(cloudBrowserViewOptions.current).toEqual({
+			active: true,
+			orgId: "org-1",
+			sessionId: "sess-1",
+		});
 	});
 
 	it("mounts the inspector open by default", () => {

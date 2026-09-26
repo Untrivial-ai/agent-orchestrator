@@ -6,11 +6,12 @@ import {
 	BrowserPanel,
 	BrowserPanelView,
 	BrowserTopTabDragOverlay,
+	type BrowserAnnotationQueueModel,
 	restrictBrowserTopTabDragToTabStrip,
 	useBrowserAnnotationQueue,
 } from "./BrowserPanel";
 import { reorderBrowserTabs } from "../lib/browser-tab-order";
-import { useBrowserView, type BrowserNavState } from "../hooks/useBrowserView";
+import { useBrowserView, type BrowserNavState, type BrowserViewModel } from "../hooks/useBrowserView";
 import { useUiStore } from "../stores/ui-store";
 import type { WorkspaceSession } from "../types/workspace";
 import { TooltipProvider } from "./ui/tooltip";
@@ -214,6 +215,96 @@ function PersistentBrowserPanelView({
 		/>
 	);
 }
+
+function cloudBrowserView(): BrowserViewModel {
+	const tabs = [
+		{ id: "cloud-tab-1", url: "about:blank", title: "", active: true },
+		{ id: "cloud-tab-2", url: "https://example.test", title: "Example", active: false },
+	];
+	return {
+		viewId: "cloud-browser:session-1",
+		navState: {
+			viewId: "cloud-browser:session-1",
+			url: "about:blank",
+			title: "",
+			canGoBack: false,
+			canGoForward: false,
+			isLoading: false,
+		},
+		slotRef: vi.fn(),
+		navigate: vi.fn(async () => undefined),
+		goBack: vi.fn(async () => undefined),
+		goForward: vi.fn(async () => undefined),
+		reload: vi.fn(async () => undefined),
+		stop: vi.fn(async () => undefined),
+		tabs,
+		activeTabId: "cloud-tab-1",
+		tabNotice: "",
+		selectTab: vi.fn(async () => undefined),
+		closeTab: vi.fn(async () => undefined),
+		openTab: vi.fn(async () => undefined),
+		openLink: vi.fn(async () => undefined),
+		reorderTabs: vi.fn(),
+		closedTabs: [],
+		reopenClosedTab: vi.fn(async () => undefined),
+		devtoolsState: { viewId: "cloud-browser:session-1", open: false, activeTabId: "cloud-tab-1", placement: "undocked" },
+		profileState: { viewId: "cloud-browser:session-1", profileId: null, temporary: true },
+		openDevTools: vi.fn(async () => undefined),
+		closeDevTools: vi.fn(async () => undefined),
+		setDevToolsPlacement: vi.fn(async () => undefined),
+		agentBrowserActive: false,
+		agentBrowserActivity: null,
+		destroy: vi.fn(),
+		annotationMode: false,
+		annotationState: { count: 0, screenshotCount: 0, hasDraft: false },
+		setAnnotationMode: vi.fn(async () => undefined),
+		annotationAction: vi.fn(async () => undefined),
+		cloudSurface: {
+			snapshot: {
+				status: "waiting",
+				frameUrl: "",
+				frameWidth: 0,
+				frameHeight: 0,
+				frameSequence: 0,
+				streamEpoch: 1,
+				url: "about:blank",
+				title: "",
+				tabs,
+				activeTabId: "cloud-tab-1",
+				targetId: "cloud-tab-1",
+				devtoolsOpen: false,
+				devtoolsSupported: false,
+				owner: "idle",
+				canOperate: true,
+				canGoBack: false,
+				canGoForward: false,
+				isLoading: false,
+				dialogOpen: false,
+				dialogType: "",
+				dialogText: "",
+				dialogPrompt: "",
+				viewportPending: false,
+				error: "",
+				errorRequestId: "",
+			},
+			send: vi.fn(() => true),
+			setViewport: vi.fn(),
+			reportPaint: vi.fn(),
+			retry: vi.fn(),
+		},
+	};
+}
+
+const idleAnnotationQueue: BrowserAnnotationQueueModel = {
+	status: "idle",
+	error: "",
+	queuedCount: 0,
+	beginPicking: vi.fn(),
+	cancelPicking: vi.fn(),
+	enqueue: vi.fn(),
+	failPicking: vi.fn(),
+	retryQueued: vi.fn(),
+};
 
 describe("BrowserPanel", () => {
 	const annotationSubmitListeners = new Set<(payload: BrowserAnnotationSubmitPayload) => void>();
@@ -682,6 +773,51 @@ describe("BrowserPanel", () => {
 		await userEvent.click(screen.getByRole("menuitem", { name: "Device preset" }));
 		expect(screen.getByRole("menuitem", { name: /iPhone SE/ })).toBeInTheDocument();
 		expect(screen.getByRole("menuitem", { name: /iPhone SE/ }).parentElement).toHaveClass("board-scrollbar");
+	});
+
+	it("opens and closes supported Cloud DevTools without using the local inspector", async () => {
+		const browserView = cloudBrowserView();
+		Object.assign(browserView.cloudSurface!.snapshot, { status: "ready", devtoolsSupported: true });
+		const ui = () => <BrowserPanelView active annotationQueue={idleAnnotationQueue} browserView={browserView}
+			onTogglePopOut={() => undefined} poppedOut={false} session={{ ...session, cloud: { orgId: "cloud-org" } }} />;
+		const { rerender } = render(ui());
+		await userEvent.click(screen.getByRole("button", { name: "Browser controls" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "Open DevTools" }));
+		expect(browserView.openDevTools).toHaveBeenCalledOnce();
+		expect(hookState.openDevTools).not.toHaveBeenCalled();
+		browserView.devtoolsState.open = true;
+		rerender(<TooltipProvider>{ui()}</TooltipProvider>);
+		await userEvent.click(screen.getByRole("button", { name: "Close DevTools" }));
+		expect(browserView.closeDevTools).toHaveBeenCalledOnce();
+		browserView.cloudSurface!.snapshot.canOperate = false;
+		rerender(<TooltipProvider>{ui()}</TooltipProvider>);
+		expect(screen.getByRole("button", { name: "Close DevTools" })).toBeDisabled();
+	});
+
+	it("opens a Cloud-specific controls menu with only working actions", async () => {
+		const browserView = cloudBrowserView();
+		render(
+			<BrowserPanelView
+				active
+				annotationQueue={idleAnnotationQueue}
+				browserView={browserView}
+				onTogglePopOut={() => undefined}
+				poppedOut={false}
+				session={{ ...session, cloud: { orgId: "cloud-org" } }}
+			/>,
+		);
+
+		await userEvent.click(screen.getByRole("button", { name: "Browser controls" }));
+		expect(screen.getByRole("menuitem", { name: "Pop out" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Device preset" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: /Profile/ })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Open DevTools" })).toHaveAttribute("data-disabled");
+		expect(screen.queryByRole("menuitem", { name: "Take a screenshot" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: "Downloads" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /annotate/i })).not.toBeInTheDocument();
+
+		await userEvent.click(screen.getByRole("menuitem", { name: "Device preset" }));
+		expect(screen.getByRole("menuitem", { name: /iPhone SE/ })).toBeInTheDocument();
 	});
 
 	it("captures the active page from the controls menu and confirms the clipboard copy", async () => {

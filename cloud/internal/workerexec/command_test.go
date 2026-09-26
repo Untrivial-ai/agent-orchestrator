@@ -171,6 +171,8 @@ func TestBuildInteractiveOrchestratorPrompt(t *testing.T) {
 		"ao list",
 		"ao kill",
 		"using-ao/SKILL.md",
+		"ao browser status",
+		"commands/browser.md",
 		"coordination-only",
 		"Never guess file names",
 	} {
@@ -203,6 +205,8 @@ func TestBuildInteractiveWorkerPromptWithParent(t *testing.T) {
 		"$AO_SESSION_BRANCH",
 		"ao claim-pr",
 		"using-ao/SKILL.md",
+		"ao browser status",
+		"commands/browser.md",
 	} {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("worker prompt missing %q", needle)

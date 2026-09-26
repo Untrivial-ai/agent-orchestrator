@@ -567,6 +567,13 @@ export interface CloudCpTerminalTicketResponse {
 	scopes: string[];
 }
 
+export interface CloudCpBrowserViewerTicketResponse {
+	ticket: string;
+	expiresIn: number;
+	protocolVersion: 1;
+	canOperate: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Provider connections (`provider_handlers.go`)
 // ---------------------------------------------------------------------------

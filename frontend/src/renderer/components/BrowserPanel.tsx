@@ -61,6 +61,7 @@ import {
 } from "lucide-react";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { useBrowserView, type BrowserViewModel } from "../hooks/useBrowserView";
+import { useCloudBrowserView } from "../hooks/useCloudBrowserView";
 import { useTabScrollEdges } from "../hooks/useTabScrollEdges";
 import { formatBrowserAnnotationMessage, type BrowserAnnotationSubmitPayload } from "../../shared/browser-annotations";
 import type { BrowserProfile } from "../../shared/browser-profiles";
@@ -86,6 +87,7 @@ import { useBrowserDownloads } from "../hooks/useBrowserDownloads";
 import { BrowserDownloadsList } from "./BrowserDownloadsList";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
 import { aoBridge } from "../lib/bridge";
+import { CloudBrowserSurface } from "./CloudBrowserSurface";
 
 // One-click viewport width presets for responsive testing — height is shown
 // for reference but not enforced (only width drives CSS breakpoints, and
@@ -357,26 +359,56 @@ export function BrowserPanel({
 	onTogglePopOut,
 	topbarHost,
 }: BrowserPanelProps) {
+	return session.cloud ? (
+		<CloudSessionBrowserPanel
+			active={active}
+			onTogglePopOut={onTogglePopOut}
+			poppedOut={poppedOut}
+			session={session}
+			topbarHost={topbarHost}
+		/>
+	) : (
+		<LocalSessionBrowserPanel
+			active={active}
+			onTogglePopOut={onTogglePopOut}
+			poppedOut={poppedOut}
+			session={session}
+			topbarHost={topbarHost}
+		/>
+	);
+}
+
+function LocalSessionBrowserPanel(props: BrowserPanelProps) {
 	const browserView = useBrowserView({
-		sessionId: session.id,
-		active,
-		poppedOut,
-		previewUrl: session.previewUrl,
-		previewRevision: session.previewRevision,
+		sessionId: props.session.id,
+		active: props.active,
+		poppedOut: props.poppedOut,
+		previewUrl: props.session.previewUrl,
+		previewRevision: props.session.previewRevision,
 	});
+	return <ConnectedBrowserPanel {...props} browserView={browserView} />;
+}
+
+function CloudSessionBrowserPanel(props: BrowserPanelProps) {
+	const browserView = useCloudBrowserView({
+		orgId: props.session.cloud?.orgId,
+		sessionId: props.session.id,
+		active: props.active,
+	});
+	return <ConnectedBrowserPanel {...props} browserView={browserView} />;
+}
+
+function ConnectedBrowserPanel({ browserView, ...props }: BrowserPanelProps & { browserView: BrowserViewModel }) {
+	const { session } = props;
 	const annotationQueue = useBrowserAnnotationQueue({
 		sessionId: session.id,
 		navUrl: browserView.navState.url,
 	});
 	return (
 		<BrowserPanelView
-			active={active}
+			{...props}
 			annotationQueue={annotationQueue}
 			browserView={browserView}
-			onTogglePopOut={onTogglePopOut}
-			poppedOut={poppedOut}
-			session={session}
-			topbarHost={topbarHost}
 		/>
 	);
 }
@@ -419,6 +451,7 @@ export function BrowserPanelView({
 		annotationState = { count: 0, screenshotCount: 0, hasDraft: false },
 		setAnnotationMode,
 		annotationAction = async () => undefined,
+		cloudSurface,
 	} = browserView;
 	const [urlInput, setUrlInput] = useState(navState.url);
 	const [urlCopied, setUrlCopied] = useState(false);
@@ -428,9 +461,9 @@ export function BrowserPanelView({
 	const [urlEditing, setUrlEditing] = useState(false);
 	const { beginPicking, cancelPicking, enqueue, error, failPicking, queuedCount, retryQueued, status } =
 		annotationQueue;
-	const hasNativeBrowser = Boolean(window.ao?.browser);
-	const showStaticPreview = !hasNativeBrowser && navState.url !== "";
-	const canAnnotate = Boolean(window.ao?.browser && viewId && navState.url);
+	const hasNativeBrowser = !cloudSurface && Boolean(window.ao?.browser);
+	const showStaticPreview = !cloudSurface && !hasNativeBrowser && navState.url !== "";
+	const canAnnotate = !cloudSurface && Boolean(window.ao?.browser && viewId && navState.url);
 	const canRetryAnnotation = status === "error" && queuedCount > 0;
 	const [devicePreset, setDevicePreset] = useState<string | null>(null);
 	const [customDeviceWidth, setCustomDeviceWidth] = useState("390");
@@ -537,11 +570,11 @@ export function BrowserPanelView({
 	);
 
 	useEffect(() => {
-		if (!viewId) return;
+		if (!viewId || !hasNativeBrowser) return;
 		if (active) window.ao?.browser.notifyPanelUsed(viewId);
 		else window.ao?.browser.notifyPanelBlur(viewId);
 		return () => window.ao?.browser.notifyPanelBlur(viewId);
-	}, [active, viewId]);
+	}, [active, hasNativeBrowser, viewId]);
 
 	useEffect(
 		() =>
@@ -588,10 +621,11 @@ export function BrowserPanelView({
 		[reorderTabs, tabs],
 	);
 
-	// Docked DevTools belongs to the native page view, which is intentionally
-	// hidden while the active target is blank. Keep close available for any
-	// in-flight state update, but do not offer an open action with no page.
-	const canUseDevTools = hasNativeBrowser && Boolean(viewId) && Boolean(navState.url || devtoolsState.open);
+	// Keep close available during navigation, but gate remote changes on ownership.
+	const canUseDevTools = cloudSurface
+		? cloudSurface.snapshot.devtoolsSupported && cloudSurface.snapshot.canOperate && cloudSurface.snapshot.owner !== "agent" &&
+			(devtoolsState.open || (cloudSurface.snapshot.status === "ready" && !cloudSurface.snapshot.viewportPending))
+		: hasNativeBrowser && Boolean(viewId) && Boolean(navState.url || devtoolsState.open);
 	const canTakeScreenshot = hasNativeBrowser && Boolean(viewId) && Boolean(navState.url);
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const browserDownloads = useBrowserDownloads();
@@ -1142,7 +1176,7 @@ export function BrowserPanelView({
 			data-browser-native-page={navState.url ? "live" : "empty"}
 			data-testid="browser-panel"
 			onBlurCapture={(event: FocusEvent<HTMLDivElement>) => {
-				if (!viewId || event.currentTarget.contains(event.relatedTarget)) return;
+				if (!viewId || !hasNativeBrowser || event.currentTarget.contains(event.relatedTarget)) return;
 				// Focus moving into the portaled omnibox is still browser chrome — do
 				// not drop the shortcut target or ⌘T/⌘W will create/close terminals.
 				if (topbarHost && event.relatedTarget instanceof Node && topbarHost.contains(event.relatedTarget)) {
@@ -1162,10 +1196,10 @@ export function BrowserPanelView({
 				window.ao?.browser.notifyPanelBlur(viewId);
 			}}
 			onFocusCapture={() => {
-				if (viewId) window.ao?.browser.notifyPanelUsed(viewId);
+				if (viewId && hasNativeBrowser) window.ao?.browser.notifyPanelUsed(viewId);
 			}}
 			onPointerDownCapture={() => {
-				if (viewId) window.ao?.browser.notifyPanelUsed(viewId);
+				if (viewId && hasNativeBrowser) window.ao?.browser.notifyPanelUsed(viewId);
 			}}
 			role="tabpanel"
 		>
@@ -1236,10 +1270,11 @@ export function BrowserPanelView({
 						{tabNotice}
 					</span>
 				) : null}
-				<BrowserControlTooltip
-					label={annotationStatusLabel || agentStatusLabel || (canRetryAnnotation ? t("browser.retryAnnotation") : t("browser.annotate"))}
-				>
-					<span className="inline-flex">
+				{!cloudSurface ? (
+					<BrowserControlTooltip
+						label={annotationStatusLabel || agentStatusLabel || (canRetryAnnotation ? t("browser.retryAnnotation") : t("browser.annotate"))}
+					>
+						<span className="inline-flex">
 							<Button
 								aria-label={
 									canRetryAnnotation
@@ -1269,9 +1304,10 @@ export function BrowserPanelView({
 									<span aria-hidden="true" className="pointer-events-none absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-accent" />
 								) : null}
 							</Button>
-					</span>
-				</BrowserControlTooltip>
-				{browserDownloads.downloads.length > 0 ? (
+						</span>
+					</BrowserControlTooltip>
+				) : null}
+				{!cloudSurface && browserDownloads.downloads.length > 0 ? (
 					<DropdownMenu
 						onOpenChange={(open) => {
 							setDownloadsOpen(open);
@@ -1317,6 +1353,7 @@ export function BrowserPanelView({
 						setControlsOpen(open);
 						if (!open) setControlsView("root");
 					}}
+					open={controlsOpen}
 				>
 					<BrowserControlTooltip disabled={controlsOpen} label={t("browser.controls")}>
 						<DropdownMenuTrigger asChild>
@@ -1397,7 +1434,7 @@ export function BrowserPanelView({
 							/>
 						</label>
 							</>
-						) : controlsView === "profiles" ? (
+						) : controlsView === "profiles" && !cloudSurface ? (
 							<>
 								<DropdownMenuItem
 									className="gap-1.5"
@@ -1469,20 +1506,6 @@ export function BrowserPanelView({
 								</DropdownMenuItem>
 								<DropdownMenuItem
 									className="gap-2"
-									onSelect={(event) => {
-										event.preventDefault();
-										setControlsView("profiles");
-									}}
-								>
-									<UserRound aria-hidden="true" className="size-icon-base shrink-0" />
-									<span className="flex-1">{t("browser.profile.label")}</span>
-									<span className="max-w-20 truncate text-caption text-passive">
-										{profileState.profileName ?? t("browser.profile.temporary")}
-									</span>
-									<ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-passive" />
-								</DropdownMenuItem>
-								<DropdownMenuItem
-									className="gap-2"
 									disabled={!canUseDevTools}
 									onSelect={() => void (devtoolsState.open ? closeDevTools() : openDevTools())}
 								>
@@ -1490,19 +1513,37 @@ export function BrowserPanelView({
 									<span className="flex-1">{t(devtoolsState.open ? "browser.closeDevTools" : "browser.openDevTools")}</span>
 									{devtoolsState.open ? <Check aria-hidden="true" className="text-accent" /> : null}
 								</DropdownMenuItem>
-								<DropdownMenuItem className="gap-2" disabled={!canTakeScreenshot} onSelect={() => void takeScreenshot()}>
-									<Camera aria-hidden="true" className="size-icon-base shrink-0" />
-									<span className="flex-1">{t("browser.takeScreenshot")}</span>
-								</DropdownMenuItem>
-								<DropdownMenuItem className="gap-2" onSelect={() => openGlobalSettings("browserProfiles")}>
-									<Download aria-hidden="true" className="size-icon-base shrink-0" />
-									<span className="flex-1">{t("browser.downloads.title")}</span>
-								</DropdownMenuItem>
-								{closedTabs.length > 0 ? (
-									<DropdownMenuItem className="gap-2" onSelect={() => void reopenClosedTab()}>
-										<RotateCcw aria-hidden="true" className="size-icon-base shrink-0" />
-										<span className="flex-1">{t("browser.reopenClosedTab")}</span>
-									</DropdownMenuItem>
+								{!cloudSurface ? (
+									<>
+										<DropdownMenuItem
+											className="gap-2"
+											onSelect={(event) => {
+												event.preventDefault();
+												setControlsView("profiles");
+											}}
+										>
+											<UserRound aria-hidden="true" className="size-icon-base shrink-0" />
+											<span className="flex-1">{t("browser.profile.label")}</span>
+											<span className="max-w-20 truncate text-caption text-passive">
+												{profileState.profileName ?? t("browser.profile.temporary")}
+											</span>
+											<ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-passive" />
+										</DropdownMenuItem>
+										<DropdownMenuItem className="gap-2" disabled={!canTakeScreenshot} onSelect={() => void takeScreenshot()}>
+											<Camera aria-hidden="true" className="size-icon-base shrink-0" />
+											<span className="flex-1">{t("browser.takeScreenshot")}</span>
+										</DropdownMenuItem>
+										<DropdownMenuItem className="gap-2" onSelect={() => openGlobalSettings("browserProfiles")}>
+											<Download aria-hidden="true" className="size-icon-base shrink-0" />
+											<span className="flex-1">{t("browser.downloads.title")}</span>
+										</DropdownMenuItem>
+										{closedTabs.length > 0 ? (
+											<DropdownMenuItem className="gap-2" onSelect={() => void reopenClosedTab()}>
+												<RotateCcw aria-hidden="true" className="size-icon-base shrink-0" />
+												<span className="flex-1">{t("browser.reopenClosedTab")}</span>
+											</DropdownMenuItem>
+										) : null}
+									</>
 								) : null}
 							</>
 						)}
@@ -1543,7 +1584,7 @@ export function BrowserPanelView({
 					// cascade layer and can never override plain author CSS. Gate that CSS
 					// rule with this data attribute instead, so there's exactly one place
 					// deciding opacity.
-					data-placeholder={!hasNativeBrowser || navState.url === "" ? "true" : undefined}
+					data-placeholder={cloudSurface || !hasNativeBrowser || navState.url === "" ? "true" : undefined}
 					data-testid="browser-viewport"
 				>
 					{/* Only the native-view slot is width-constrained for a device
@@ -1558,10 +1599,24 @@ export function BrowserPanelView({
 							className="browser-panel__slot absolute inset-0 min-h-px min-w-px"
 							data-testid="browser-device-frame"
 							ref={slotRef}
-						/>
+						>
+							{cloudSurface ? (
+								<div className="flex h-full flex-col">
+									{devtoolsState.open ? (
+										<div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1 text-xs">
+											<span className="truncate" title={navState.url}>{navState.title || navState.url}</span>
+											<button type="button" disabled={!canUseDevTools} onClick={() => void closeDevTools()} className="text-accent disabled:opacity-50">
+												{t("browser.closeDevTools")}
+											</button>
+										</div>
+									) : null}
+									<div className="relative min-h-0 flex-1"><CloudBrowserSurface model={cloudSurface} /></div>
+								</div>
+							) : null}
+						</div>
 					</div>
 					{showStaticPreview ? <StaticPreview url={navState.url} /> : null}
-					{navState.url === "" ? (
+					{!cloudSurface && navState.url === "" ? (
 						<div className="pointer-events-none absolute inset-0 grid place-items-center p-5 text-center font-mono text-xs text-passive">
 							<p>{t("browser.emptyUrl")}</p>
 						</div>

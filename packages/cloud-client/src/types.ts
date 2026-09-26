@@ -91,6 +91,7 @@ export type InterruptRequestedEvent = Schemas["InterruptRequestedEvent"];
 export type TerminalKind = Schemas["TerminalKind"];
 export type TerminalScope = Schemas["TerminalScope"];
 export type TerminalTicket = Schemas["TerminalTicket"];
+export type BrowserViewerTicket = Schemas["BrowserViewerTicket"];
 
 export type WorkspaceEntry = Schemas["WorkspaceEntry"];
 export type WorkspaceEntryPage = Schemas["WorkspaceEntryPage"];

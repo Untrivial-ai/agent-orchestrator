@@ -12,6 +12,7 @@ import { createSseFrameParser } from "./sse";
 import type {
 	CloudCpAgentProvider,
 	CloudCpCancelTurnResponse,
+	CloudCpBrowserViewerTicketResponse,
 	CloudCpChatEventsQuery,
 	CloudCpChatEventsResponse,
 	CloudCpCoderTemplatesResponse,
@@ -225,6 +226,11 @@ export interface CloudCpClient {
 		body: CloudCpTerminalTicketRequest,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpTerminalTicketResponse>;
+	createBrowserViewerTicket(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpBrowserViewerTicketResponse>;
 
 	listProviderConnections(
 		orgId: string,
@@ -547,6 +553,10 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 		createTerminalTicket: (orgId, sessionId, body, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/terminal-ticket`, {
 				body,
+				signal: o?.signal,
+			}),
+		createBrowserViewerTicket: (orgId, sessionId, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/browser-view-ticket`, {
 				signal: o?.signal,
 			}),
 

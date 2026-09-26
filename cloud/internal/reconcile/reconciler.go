@@ -49,6 +49,9 @@ type Options struct {
 	// TerminalStreamEnabled tells provisioned workers to hold persistent
 	// terminal streams to the control plane.
 	TerminalStreamEnabled bool
+	// BrowserViewerEnabled tells provisioned workers to hold an idle browser
+	// relay connection without starting Chromium.
+	BrowserViewerEnabled bool
 	// WorkerBinary is uploaded into sandboxes whose provider supports it.
 	WorkerBinary []byte
 	// WorkerDestination is where that binary lands inside the sandbox.
@@ -1213,6 +1216,9 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 	}
 	if r.options.TerminalStreamEnabled {
 		workerEnvironment["AO_CLOUD_TERMINAL_STREAM"] = "1"
+	}
+	if r.options.BrowserViewerEnabled {
+		workerEnvironment["AO_CLOUD_BROWSER_VIEWER"] = "1"
 	}
 	// Advertise the exact binary hashes this control plane runs so a worker with
 	// a stale baked copy heals itself from /worker/binary/{sha} instead of the

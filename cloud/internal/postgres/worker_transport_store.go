@@ -599,6 +599,141 @@ func (s *Store) IssueTerminalTicket(
 	return token, scopes, nil
 }
 
+// IssueBrowserViewerTicket mints a single-use, epoch-bound grant for the live
+// browser data plane. Opening the viewer is explicit browser intent, so it also
+// wakes a paused sandbox and holds a short interactive lease while the client
+// connects.
+func (s *Store) IssueBrowserViewerTicket(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID, sessionID string,
+	ttl time.Duration,
+) (string, []string, error) {
+	if ttl <= 0 {
+		return "", nil, ErrInvalid
+	}
+	if err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, _ sessionAccess) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE ao_sandboxes
+			SET desired_state = CASE WHEN desired_state = 'paused' THEN 'running' ELSE desired_state END,
+				reconcile_after = CASE WHEN desired_state = 'paused' THEN now() ELSE reconcile_after END,
+				startup_started_at = CASE WHEN desired_state = 'paused' THEN now() ELSE startup_started_at END,
+				interactive_until = CASE
+					WHEN interactive_until IS NULL OR interactive_until < now() + $3::interval
+						THEN now() + $3::interval
+					ELSE interactive_until
+				END,
+				updated_at = now()
+			WHERE org_id = $1 AND session_id = $2`,
+			orgID, sessionID, intervalString(interactiveSessionLease),
+		)
+		return err
+	}); err != nil {
+		return "", nil, err
+	}
+
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", nil, fmt.Errorf("generate browser viewer ticket: %w", err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	hash := sha256.Sum256([]byte(token))
+	scopes := []string{"browser:view", "subject:" + principal.UserID}
+	err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, access sessionAccess) error {
+		var epoch int64
+		var mode string
+		var terminated bool
+		err := tx.QueryRow(ctx,
+			`SELECT worker.epoch, session.mode, session.is_terminated
+			FROM ao_sessions session
+			JOIN ao_sandboxes sandbox
+			  ON sandbox.org_id = session.org_id AND sandbox.session_id = session.id
+			JOIN ao_worker_connections worker
+			  ON worker.org_id = session.org_id AND worker.session_id = session.id
+			 AND worker.disconnected_at IS NULL
+			WHERE session.org_id = $1 AND session.id = $2
+			  AND sandbox.desired_state = 'running'`,
+			orgID, sessionID,
+		).Scan(&epoch, &mode, &terminated)
+		if errors.Is(err, pgx.ErrNoRows) || terminated {
+			return ErrWorkerUnavailable
+		}
+		if err != nil {
+			return err
+		}
+		if access.Role != "viewer" && effectiveMode(mode, access.ModeCap) != "read-only" {
+			scopes = append(scopes, "browser:operate")
+		}
+		_, err = tx.Exec(ctx,
+			`INSERT INTO ao_access_tickets (
+				org_id, session_id, purpose, scopes, token_hash, worker_epoch, expires_at
+			) VALUES ($1, $2, 'browser-view', $3, $4, $5, now() + $6::interval)`,
+			orgID, sessionID, scopes, hash[:], epoch, intervalString(ttl),
+		)
+		return err
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return token, scopes, nil
+}
+
+// OpenBrowserViewerTicket atomically consumes a viewer ticket, then verifies
+// that its worker epoch and principal still have access to the session.
+func (s *Store) OpenBrowserViewerTicket(ctx context.Context, token string) (domain.AccessTicket, error) {
+	hash := sha256.Sum256([]byte(token))
+	var ticket domain.AccessTicket
+	err := s.withService(ctx, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx,
+			`UPDATE ao_access_tickets
+			SET consumed_at = now()
+			WHERE token_hash = $1 AND purpose = 'browser-view'
+			  AND consumed_at IS NULL AND expires_at > now()
+			RETURNING id, org_id, session_id, purpose, scopes,
+				COALESCE(worker_epoch, 0), expires_at`,
+			hash[:],
+		).Scan(
+			&ticket.ID, &ticket.OrgID, &ticket.SessionID, &ticket.Purpose,
+			&ticket.Scopes, &ticket.WorkerEpoch, &ticket.ExpiresAt,
+		)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrInvalidTicket
+		}
+		return err
+	})
+	if err != nil {
+		return domain.AccessTicket{}, err
+	}
+	var subject string
+	var operate bool
+	for _, scope := range ticket.Scopes {
+		if value, ok := strings.CutPrefix(scope, "subject:"); ok {
+			subject = value
+		}
+		operate = operate || scope == "browser:operate"
+	}
+	if subject == "" {
+		return domain.AccessTicket{}, ErrInvalidTicket
+	}
+	if err := s.CheckBrowserViewerAccess(ctx, domain.Principal{UserID: subject}, ticket.OrgID, ticket.SessionID, operate); err != nil {
+		return domain.AccessTicket{}, err
+	}
+	err = s.withOrg(ctx, ticket.OrgID, func(tx pgx.Tx) error {
+		current, err := workerEpochCurrent(ctx, tx, ticket.OrgID, ticket.SessionID, ticket.WorkerEpoch)
+		if err != nil {
+			return err
+		}
+		if !current {
+			return ErrStaleWorker
+		}
+		return nil
+	})
+	if err != nil {
+		return domain.AccessTicket{}, err
+	}
+	return ticket, nil
+}
+
 // RefreshTerminalInteraction extends the short wake lease after actual user
 // input. Merely opening or retaining either terminal stream is not activity.
 func (s *Store) RefreshTerminalInteraction(

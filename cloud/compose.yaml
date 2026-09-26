@@ -3,6 +3,8 @@ name: ao-cloud-local
 services:
   postgres:
     image: postgres:17-bookworm
+    labels:
+      ao.session: "${AO_SESSION_ID:-local}"
     environment:
       POSTGRES_DB: ao_cloud
       POSTGRES_USER: ao_cloud_bootstrap
@@ -13,7 +15,8 @@ services:
       - "${AO_CLOUD_LOCAL_POSTGRES_DATA_DIR:-${AO_DATA_DIR:-${HOME}/.ao}/cloud/postgres}:/var/lib/postgresql/data"
       - ./dev/postgres/init.sql:/docker-entrypoint-initdb.d/10-runtime-role.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ao_cloud_owner -d ao_cloud"]
+      # The image uses a temporary postmaster during first-run initialization.
+      test: ["CMD-SHELL", "test \"$$(cat /proc/1/comm)\" = postgres && pg_isready -U ao_cloud_owner -d ao_cloud"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -24,6 +27,8 @@ services:
       context: .
       target: control-plane
     entrypoint: ["/ao-cloud-migrate"]
+    labels:
+      ao.session: "${AO_SESSION_ID:-local}"
     environment:
       AO_CLOUD_MIGRATION_DATABASE_URL: postgres://ao_cloud_owner:ao_cloud_local_owner@postgres:5432/ao_cloud?sslmode=disable
       AO_CLOUD_RUNTIME_DATABASE_USER: ao_cloud_app
@@ -50,6 +55,8 @@ services:
       # transport. Callers may still set either value explicitly when testing
       # the durable-only path.
       AO_CLOUD_TERMINAL_STREAM: "${AO_CLOUD_TERMINAL_STREAM:-1}"
+      AO_CLOUD_BROWSER_VIEWER: "${AO_CLOUD_BROWSER_VIEWER:-1}"
+      AO_CLOUD_BROWSER_VIEWER_ORIGINS: "${AO_CLOUD_BROWSER_VIEWER_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}"
       AO_CLOUD_TERMINAL_RELAY: "${AO_CLOUD_TERMINAL_RELAY:-1}"
       AO_CLOUD_PROVIDER_SECRET_KEY: "${AO_CLOUD_PROVIDER_SECRET_KEY:?AO_CLOUD_PROVIDER_SECRET_KEY is required}"
       AO_CLOUD_PUBLIC_URL: http://control-plane:8080
@@ -58,12 +65,15 @@ services:
       AO_CLOUD_DOCKER_WORKER_IMAGE: "${AO_CLOUD_DOCKER_WORKER_IMAGE:-ao-cloud-worker:local}"
       AO_CLOUD_DOCKER_NETWORK: "${COMPOSE_PROJECT_NAME:-ao-cloud-local}_default"
       AO_CLOUD_DOCKER_NAMESPACE: "${COMPOSE_PROJECT_NAME:-ao-cloud-local}"
+      AO_CLOUD_DOCKER_EXTRA_LABELS_JSON: '${AO_CLOUD_DOCKER_EXTRA_LABELS_JSON:-{}}'
       AO_CLOUD_DOCKER_WORKER_TOKEN_TTL: 15m
       AO_CLOUD_REPOSITORY_BROKER_URL: "${AO_CLOUD_REPOSITORY_BROKER_URL:-}"
       AO_CLOUD_REPOSITORY_BROKER_TOKEN: "${AO_CLOUD_REPOSITORY_BROKER_TOKEN:-}"
       AO_CLOUD_ENV_CONTROL_TOKEN: "${AO_CLOUD_ENV_CONTROL_TOKEN:-}"
     group_add:
       - "${AO_CLOUD_DOCKER_GID:-0}"
+    labels:
+      ao.session: "${AO_SESSION_ID:-local}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
