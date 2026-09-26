@@ -12,8 +12,8 @@
  * stuck.
  */
 
-import { memo } from "react";
-import { KeyRound, Plug, RefreshCw, TriangleAlert } from "lucide-react";
+import { memo, useEffect, useState } from "react";
+import { KeyRound, Plug, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import type { ConversationAccount, ConversationThreadState, McpServer } from "../../types/conversation";
@@ -173,7 +173,22 @@ export const McpServerBanner = memo(function McpServerBanner({
 	turnInFlight?: boolean;
 	error?: string;
 }) {
+	const serverListKey = servers
+		.map(
+			(server) =>
+				`${server.name}:${server.status}:${server.failureReason ?? ""}:${server.error ?? ""}`,
+		)
+		.sort()
+		.join("|");
+	const [dismissedServerListKey, setDismissedServerListKey] = useState<string | null>(null);
+
+	useEffect(() => {
+		setDismissedServerListKey(null);
+	}, [serverListKey]);
+
 	if (servers.length === 0) return null;
+
+	if (dismissedServerListKey === serverListKey) return null;
 
 	return (
 		<div
@@ -213,27 +228,46 @@ export const McpServerBanner = memo(function McpServerBanner({
 				</ul>
 				{error ? <span className="text-[11px] text-destructive">{error}</span> : null}
 			</div>
-			{onReload ? (
+			<div className="flex shrink-0 items-start gap-1.5">
+				{onReload ? (
+					<div className="flex flex-col items-end gap-1">
+						<Button
+							type="button"
+							size="sm"
+							variant="outline"
+							onClick={onReload}
+							disabled={reloading || turnInFlight}
+							title={
+								turnInFlight
+									? "Finish or stop the current turn before reloading tool servers"
+									: "Start the tool servers again"
+							}
+							className="shrink-0 gap-1.5"
+						>
+							<RefreshCw
+								aria-hidden="true"
+								className={cn("size-3", reloading && "animate-spin")}
+							/>
+							{reloading ? "Reloading…" : "Reload"}
+						</Button>
+						{turnInFlight ? (
+							<span className="max-w-40 text-right text-[10.5px] leading-snug text-muted-foreground">
+								Reload available after the current turn finishes.
+							</span>
+						) : null}
+					</div>
+				) : null}
 				<Button
 					type="button"
-					size="sm"
-					variant="outline"
-					onClick={onReload}
-					disabled={reloading || turnInFlight}
-					title={
-						turnInFlight
-							? "Finish or stop the current turn before reloading tool servers"
-							: "Start the tool servers again"
-					}
-					className="shrink-0 gap-1.5"
+					size="icon"
+					variant="ghost"
+					aria-label="Dismiss tool server warning"
+					onClick={() => setDismissedServerListKey(serverListKey)}
+					className="size-7 shrink-0 text-muted-foreground"
 				>
-					<RefreshCw
-						aria-hidden="true"
-						className={cn("size-3", reloading && "animate-spin")}
-					/>
-					{reloading ? "Reloading…" : "Reload"}
+					<X aria-hidden="true" className="size-3.5" />
 				</Button>
-			) : null}
+			</div>
 		</div>
 	);
 });

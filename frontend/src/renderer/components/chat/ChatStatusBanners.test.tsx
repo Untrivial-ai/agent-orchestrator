@@ -127,6 +127,29 @@ describe("McpServerBanner", () => {
 			"title",
 			expect.stringContaining("Finish or stop the current turn"),
 		);
+		expect(screen.getByText("Reload available after the current turn finishes.")).toBeInTheDocument();
+	});
+
+	it("can be dismissed even when reload is unavailable", async () => {
+		const user = userEvent.setup();
+		render(<McpServerBanner servers={broken} turnInFlight />);
+		await user.click(screen.getByRole("button", { name: "Dismiss tool server warning" }));
+		expect(screen.queryByText("A tool server did not start")).not.toBeInTheDocument();
+	});
+
+	it("shows again when the broken server list changes or clears and returns", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(<McpServerBanner servers={broken} />);
+		await user.click(screen.getByRole("button", { name: "Dismiss tool server warning" }));
+
+		const anotherFailure = [{ name: "figma", status: "failed" as const }];
+		rerender(<McpServerBanner servers={anotherFailure} />);
+		expect(screen.getByText("A tool server did not start")).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Dismiss tool server warning" }));
+
+		rerender(<McpServerBanner servers={[]} />);
+		rerender(<McpServerBanner servers={anotherFailure} />);
+		expect(screen.getByText("A tool server did not start")).toBeInTheDocument();
 	});
 
 	it("draws no control at all when the harness cannot reload", () => {
