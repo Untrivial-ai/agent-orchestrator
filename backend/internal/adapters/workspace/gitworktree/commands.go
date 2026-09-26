@@ -86,6 +86,12 @@ func addAllTempIndexArgs(worktree string) []string {
 	return []string{"-C", worktree, "add", "-A"}
 }
 
+// readTreeTempIndexArgs seeds a temporary index with the tracked entries from
+// HEAD. GIT_INDEX_FILE must be set in the command's environment.
+func readTreeTempIndexArgs(worktree, treeish string) []string {
+	return []string{"-C", worktree, "read-tree", treeish}
+}
+
 // writeTreeArgs flushes the temp index into a tree object and prints the SHA.
 // GIT_INDEX_FILE must be set in the command's environment.
 func writeTreeArgs(worktree string) []string {

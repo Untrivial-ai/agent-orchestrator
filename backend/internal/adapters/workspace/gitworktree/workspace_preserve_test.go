@@ -14,8 +14,8 @@ import (
 // TestWorkspaceIntegrationStashApplyRoundTrip is the primary correctness test
 // for the save-on-close / restore-on-open lifecycle:
 //
-//  1. Create a worktree with a tracked-file edit, a new non-ignored file,
-//     and a file covered by .gitignore.
+//  1. Create a worktree with an edit to a tracked-but-ignored file, a new
+//     non-ignored file, and an untracked file covered by .gitignore.
 //  2. StashUncommitted: assert the returned ref is non-empty.
 //  3. ForceDestroy: remove the worktree unconditionally.
 //  4. Re-add the worktree via Restore (simulating the re-open path).
@@ -39,8 +39,9 @@ func TestWorkspaceIntegrationStashApplyRoundTrip(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Stage 1: create a .gitignore that covers a secret file.
-	if err := os.WriteFile(filepath.Join(info.Path, ".gitignore"), []byte("secret.txt\n"), 0o644); err != nil {
+	// Stage 1: ignore both an untracked secret and README.md, which remains
+	// tracked because it already exists in HEAD.
+	if err := os.WriteFile(filepath.Join(info.Path, ".gitignore"), []byte("secret.txt\nREADME.md\n"), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
 	}
 	runGit(t, git, info.Path, "add", ".gitignore")

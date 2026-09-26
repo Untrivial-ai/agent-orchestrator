@@ -1104,6 +1104,20 @@ func (w *Workspace) StashUncommitted(ctx context.Context, info ports.WorkspaceIn
 	// Deferred remove is a best-effort cleanup in case git leaves the file.
 	defer func() { _ = os.Remove(tmpIdxPath) }()
 
+	// Resolve HEAD before staging. An unborn HEAD leaves the temporary index
+	// empty; otherwise seed it so git add still recognizes tracked files that
+	// also match a current .gitignore rule.
+	headOut, headErr := w.run(ctx, w.binary, revParseHeadArgs(path)...)
+	headSHA := ""
+	if headErr == nil {
+		headSHA = strings.TrimSpace(string(headOut))
+		readTreeCmd := aoprocess.CommandContext(ctx, w.binary, readTreeTempIndexArgs(path, headSHA)...)
+		readTreeCmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+tmpIdxPath)
+		if out, err := readTreeCmd.CombinedOutput(); err != nil {
+			return "", commandError{args: append([]string{w.binary}, readTreeTempIndexArgs(path, headSHA)...), output: string(out), err: err}
+		}
+	}
+
 	// Stage all tracked and non-ignored untracked files into the temp index.
 	// GIT_INDEX_FILE overrides the index so the real index is never touched.
 	addCmd := aoprocess.CommandContext(ctx, w.binary, addAllTempIndexArgs(path)...)
@@ -1120,15 +1134,6 @@ func (w *Workspace) StashUncommitted(ctx context.Context, info ports.WorkspaceIn
 		return "", commandError{args: append([]string{w.binary}, writeTreeArgs(path)...), output: string(treeOut), err: err}
 	}
 	treeSHA := strings.TrimSpace(string(treeOut))
-
-	// Resolve HEAD. An unborn HEAD (no commits yet) means we omit the -p flag
-	// from commit-tree so the preserve commit has no parent.
-	headOut, headErr := w.run(ctx, w.binary, revParseHeadArgs(path)...)
-	headSHA := ""
-	if headErr == nil {
-		headSHA = strings.TrimSpace(string(headOut))
-	}
-	// headErr != nil means unborn HEAD: headSHA stays empty, commit-tree gets no -p.
 
 	// If the preserve tree SHA equals HEAD's tree SHA the working tree is
 	// effectively clean from git's perspective (only ignored files differ).
