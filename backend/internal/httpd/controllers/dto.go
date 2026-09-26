@@ -20,6 +20,61 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
 )
 
+// CreateReportRequest is the local caller-to-daemon report submission contract.
+// SessionID attributes the report; like the rest of AO's unauthenticated
+// loopback API, it is not cryptographic proof of worker authorship. Reports do
+// not mutate or derive authoritative session status.
+type CreateReportRequest struct {
+	SessionID string                `json:"sessionId"`
+	State     string                `json:"state,omitempty" enum:"checkpoint,needs_input,stuck,done"`
+	Note      string                `json:"note,omitempty" maxLength:"1000"`
+	Message   string                `json:"message,omitempty" maxLength:"1000"`
+	Outputs   []ReportOutputRequest `json:"outputs,omitempty"`
+}
+
+// ReportOutputRequest is one ordered structured output reference.
+type ReportOutputRequest struct {
+	Kind      string `json:"kind" enum:"artifact,pr_created,pr_reviewed"`
+	Reference string `json:"reference" minLength:"1"`
+	Label     string `json:"label,omitempty"`
+}
+
+// CreateReportResponse returns only the durable identifier needed to correlate
+// a successful submission without echoing report contents.
+type CreateReportResponse struct {
+	ID string `json:"id"`
+}
+
+// ReportOutputResponse is one ordered output reference in the read projection.
+type ReportOutputResponse struct {
+	Kind      string `json:"kind"`
+	Reference string `json:"reference"`
+	Label     string `json:"label,omitempty"`
+}
+
+// ReportResponse is one persisted worker claim, independent of delivery state.
+type ReportResponse struct {
+	ID          string                 `json:"id"`
+	SessionID   string                 `json:"sessionId"`
+	ProjectID   string                 `json:"projectId"`
+	State       string                 `json:"state,omitempty"`
+	Note        string                 `json:"note,omitempty"`
+	Message     string                 `json:"message,omitempty"`
+	Outputs     []ReportOutputResponse `json:"outputs,omitempty"`
+	CreatedAt   time.Time              `json:"createdAt"`
+	RepeatCount int64                  `json:"repeatCount"`
+}
+
+// ListReportsResponse contains a project's ordered persisted reports.
+type ListReportsResponse struct {
+	Reports []ReportResponse `json:"reports"`
+}
+
+// ListReportsQuery selects reports by stable project identity.
+type ListReportsQuery struct {
+	ProjectID string `query:"projectId" required:"true" description:"Stable project identifier."`
+}
+
 // HTTP response envelopes for the projects surface — the SINGLE definition of
 // each wire shape. The handlers encode these (envelope.WriteJSON), and
 // apispec.Build reflects these same types into openapi.yaml, so the served
@@ -33,6 +88,11 @@ import (
 // as the path parameter.
 type ProjectIDParam struct {
 	ID string `path:"id" description:"Project identifier (registry key)."`
+}
+
+// TaskPreparationTokenParam identifies an unclaimed speculative task workspace.
+type TaskPreparationTokenParam struct {
+	Token string `path:"token" description:"Opaque speculative task-worktree token."`
 }
 
 // AgentIDParam is the {agent} path parameter for one-agent catalog probes.
@@ -143,6 +203,11 @@ type SessionIDParam struct {
 	SessionID string `path:"sessionId" description:"Session identifier, e.g. project-1."`
 }
 
+// PRNumberParam is the associated pull-request number in Files routes.
+type PRNumberParam struct {
+	PRNumber int `path:"prNumber" description:"Associated pull request number." minimum:"1"`
+}
+
 // AgentSwitchIDParam is the {switchId} path parameter for one durable switch saga.
 type AgentSwitchIDParam struct {
 	SwitchID string `path:"switchId" description:"Durable agent-switch identifier."`
@@ -205,6 +270,26 @@ type WorkspaceFileRevisionQuery struct {
 	WorkspaceVersion string `query:"workspaceVersion,omitempty" description:"Opaque workspace snapshot token used for consistency checks."`
 	ExpectedRevision string `query:"expectedRevision,omitempty" description:"Opaque revision token used for optimistic consistency checks."`
 	CommitSHA        string `query:"commitSha,omitempty" description:"Exact commit SHA for a committed-scope comparison."`
+}
+
+// PRFilesQuery selects the associated pull request when multiple providers or
+// repositories can have the same pull-request number.
+type PRFilesQuery struct {
+	SourceURL string `query:"sourceUrl,omitempty" description:"Stable URL of the selected associated pull request."`
+}
+
+// PRFileQuery identifies one file in an associated pull request.
+type PRFileQuery struct {
+	Path         string `query:"path" required:"true" description:"Repository-relative file path."`
+	PreviousPath string `query:"previousPath,omitempty" description:"Previous repository-relative path supplied by the selected PR file summary for rename detection."`
+	SourceURL    string `query:"sourceUrl,omitempty" description:"Stable URL of the selected associated pull request."`
+}
+
+// PRFileRevisionQuery selects one immutable side of a pull-request comparison.
+type PRFileRevisionQuery struct {
+	Path      string `query:"path" required:"true" description:"Repository-relative file path."`
+	Side      string `query:"side,omitempty" enum:"before,after" description:"Comparison side. Defaults to after."`
+	SourceURL string `query:"sourceUrl,omitempty" description:"Stable URL of the selected associated pull request."`
 }
 
 // WorkspaceSearchQuery is the query string accepted by the workspace path search.
@@ -290,7 +375,7 @@ type SpawnSessionRequest struct {
 	ParentSessionID domain.SessionID       `json:"parentSessionId,omitempty"`
 	TrackerProvider domain.TrackerProvider `json:"trackerProvider,omitempty" enum:"github,gitlab"`
 	Kind            domain.SessionKind     `json:"kind,omitempty" enum:"worker,orchestrator"`
-	Harness         domain.AgentHarness    `json:"harness,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,prime-agent,autohand"`
+	Harness         domain.AgentHarness    `json:"harness,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,prime-agent,autohand,unreal-agent"`
 	Branch          string                 `json:"branch,omitempty"`
 	// Mode picks the conversation controller: chat talks to the agent over a
 	// structured connection, tui opens the agent's native terminal interface.
@@ -299,17 +384,21 @@ type SpawnSessionRequest struct {
 	// never mutates existing sessions automatically; compatible sessions may later
 	// switch through the durable interface-transition endpoint. An unsupported
 	// explicit request fails rather than quietly producing the other kind of session.
-	Mode   domain.SessionMode `json:"mode,omitempty" enum:"chat,tui"`
-	Prompt string             `json:"prompt,omitempty" maxLength:"16384"`
+	Mode domain.SessionMode `json:"mode,omitempty" enum:"chat,tui"`
+	// ApprovalMode overrides the project/default policy for this spawn.
+	ApprovalMode domain.PermissionMode `json:"approvalMode,omitempty" enum:"default,accept-edits,auto,bypass-permissions"`
+	Prompt       string                `json:"prompt,omitempty" maxLength:"16384"`
 	// Model is an optional agent model override scoped to this single spawn. Empty
 	// keeps the resolved project/role default. The daemon validates that the
 	// selected harness can honor the model before launching.
 	Model string `json:"model,omitempty" maxLength:"256"`
+	// Effort is the optional reasoning level for the selected model.
+	Effort string `json:"effort,omitempty" maxLength:"32"`
 
-	// DisplayName is the sidebar label for the session, capped at 20 characters.
+	// DisplayName is the sidebar label for the session, capped at 100 characters.
 	// `ao spawn --name` always sets it; other clients (e.g. the desktop new-task
 	// dialog) may omit it and fall back to the session id in the read model.
-	DisplayName string `json:"displayName,omitempty" maxLength:"20"`
+	DisplayName string `json:"displayName,omitempty" maxLength:"100"`
 	// Attachments are files pasted or dropped into the task brief. Each carries
 	// its bytes as standard base64 (no data: URL prefix). The daemon writes them
 	// into the session worktree and appends path references to the prompt.
@@ -423,10 +512,22 @@ type ListWorkspaceFilesResponse struct {
 	// Commits are the commits between the compare base and HEAD, newest first.
 	Commits []WorkspaceCommitSummary `json:"commits"`
 	Summary WorkspaceSummary         `json:"summary"`
+	// Degraded indicates that the primary file list is available but optional
+	// Git-state enrichment failed and can be retried.
+	Degraded     bool   `json:"degraded"`
+	DegradedCode string `json:"degradedCode,omitempty"`
 	// Ahead and Behind are omitted when no push/pull data is available (no
 	// upstream, detached HEAD).
 	Ahead  *int `json:"ahead,omitempty"`
 	Behind *int `json:"behind,omitempty"`
+}
+
+// ListPRFilesResponse is the exact base...head changed-file set for one PR.
+type ListPRFilesResponse struct {
+	SessionID domain.SessionID       `json:"sessionId"`
+	Files     []WorkspaceFileSummary `json:"files"`
+	Truncated bool                   `json:"truncated"`
+	Summary   WorkspaceSummary       `json:"summary"`
 }
 
 // WorkspaceFileSections groups a session workspace's changed files by git
@@ -584,7 +685,7 @@ type SessionPreviewResponse struct {
 
 // RenameSessionRequest is the body of PATCH /api/v1/sessions/{sessionId}.
 type RenameSessionRequest struct {
-	DisplayName string `json:"displayName" minLength:"1"`
+	DisplayName string `json:"displayName" minLength:"1" maxLength:"100"`
 }
 
 // SetSessionReviewerRequest sets the durable reviewer preference for a session.
@@ -868,9 +969,11 @@ type SendSessionMessageResponse struct {
 type DelegateTaskRequest struct {
 	ProjectID domain.ProjectID    `json:"projectId"`
 	Brief     string              `json:"brief" maxLength:"16384"`
-	Agent     domain.AgentHarness `json:"agent,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,prime-agent,autohand,fake"`
+	Agent     domain.AgentHarness `json:"agent,omitempty" enum:"claude-code,codex,aider,opencode,grok,droid,amp,agy,crush,cursor,qwen,copilot,goose,auggie,continue,devin,cline,kimi,muse,kiro,kilocode,vibe,pi,kimchi,omp,prime-agent,autohand,unreal-agent,fake"`
 	Model     string              `json:"model,omitempty" maxLength:"256"`
-	Effort    *string             `json:"effort,omitempty" maxLength:"64"`
+	// Effort is an explicit, provider-advertised model tuning override. Nil
+	// inherits the project default; an empty string selects the provider default.
+	Effort *string `json:"effort,omitempty" maxLength:"64"`
 	// ApprovalMode is an optional per-session override. The UI uses the explicit
 	// bypass value only after the user accepts an approval-less Chat fallback.
 	ApprovalMode domain.PermissionMode `json:"approvalMode,omitempty" enum:"default,accept-edits,auto,bypass-permissions"`
@@ -882,6 +985,15 @@ type DelegateTaskRequest struct {
 	// daemon writes them into the spawned worker worktree and appends path
 	// references to the worker prompt.
 	Attachments []AttachmentInput `json:"attachments,omitempty"`
+	// TaskPreparation is the opaque worktree token returned while the New Task
+	// dialog is open. Missing or expired tokens fall back to normal creation.
+	TaskPreparation string `json:"taskPreparation,omitempty"`
+}
+
+// PrepareTaskResponse returns the opaque token for a speculative task workspace.
+type PrepareTaskResponse struct {
+	OK              bool   `json:"ok"`
+	TaskPreparation string `json:"taskPreparation,omitempty"`
 }
 
 // DelegateTaskResponse confirms which worker was spawned and, when available,
@@ -1133,6 +1245,7 @@ type SetActivityRequest struct {
 	LatestUserPrompt             string                              `json:"latestUserPrompt,omitempty" maxLength:"16384" description:"Latest real user prompt exposed by the provider hook."`
 	LatestAssistantUpdate        string                              `json:"latestAssistantUpdate,omitempty" maxLength:"16384" description:"Latest assistant update exposed by the provider hook."`
 	ConversationCheckpointOrigin domain.ConversationCheckpointOrigin `json:"conversationCheckpointOrigin,omitempty" enum:"human,coordination" description:"Whether the main-turn boundary came from a human or AO coordination."`
+	CoordinationID               string                              `json:"coordinationId,omitempty" description:"Opaque identity of an AO-authored semantic prompt accepted by the native agent."`
 	ProviderTurnID               string                              `json:"providerTurnId,omitempty" description:"Native main-turn identity reported by the hook, when supported."`
 	SubmissionID                 string                              `json:"submissionId,omitempty" maxLength:"36" description:"AO prompt-hook context correlation UUID, when supported."`
 	TranscriptPath               string                              `json:"transcriptPath,omitempty" maxLength:"4096" description:"Read-only provider-native transcript path exposed by the hook."`
@@ -1184,6 +1297,11 @@ type OrchestratorIDParam struct {
 // ReviewSessionIDParam is the {reviewSessionID} path parameter for reviewer-owned routes.
 type ReviewSessionIDParam struct {
 	ID string `path:"reviewSessionID" description:"Reviewer session identifier, currently the per-harness review row id."`
+}
+
+// ReviewIDParam identifies a durable reviewer-owned conversation.
+type ReviewIDParam struct {
+	ReviewID string `path:"reviewId" description:"Reviewer conversation identifier."`
 }
 
 // SpawnOrchestratorRequest is the body of POST /api/v1/orchestrators.
@@ -1689,6 +1807,26 @@ type ImportStatusResponse struct {
 // of the import run (counts + notes), reused verbatim from the import engine.
 type ImportRunResponse struct {
 	Report legacyimport.Report `json:"report"`
+}
+
+// ListDirsQuery is the query string accepted by GET /api/v1/fs/dirs.
+type ListDirsQuery struct {
+	Path string `query:"path,omitempty" description:"Absolute directory on the daemon host to list. When omitted, the daemon user's home directory."`
+}
+
+// FSEntry is one directory in a /api/v1/fs/dirs listing.
+type FSEntry struct {
+	Name    string `json:"name" description:"Directory name."`
+	Path    string `json:"path" description:"Absolute path of the directory on the daemon host."`
+	GitRepo bool   `json:"gitRepo" description:"True when the directory carries a .git entry (clone or worktree checkout)."`
+}
+
+// ListDirsResponse is the body of GET /api/v1/fs/dirs.
+type ListDirsResponse struct {
+	Path      string    `json:"path" description:"Absolute path that was listed."`
+	Parent    string    `json:"parent" description:"Absolute path of the listed directory's parent; equals path at the filesystem root."`
+	Entries   []FSEntry `json:"entries" description:"Subdirectories, excluding dotted names."`
+	Truncated bool      `json:"truncated,omitempty" description:"True when the listing hit the entry cap and more subdirectories exist."`
 }
 
 // DevImportProjectsRequest is the body of POST /api/v1/dev/import-projects.

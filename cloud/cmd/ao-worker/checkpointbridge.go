@@ -20,8 +20,7 @@ import (
 // change-detected, so a tick with no new work is a no-op — and is not the old
 // 15s polling model. A future change (see the tool-use event trigger discussion)
 // can drive capture off file-modifying tool events and drop or lengthen this.
-// A var (not const) so tests can shorten it.
-var checkpointSafetyNetInterval = 25 * time.Second
+const checkpointSafetyNetInterval = 25 * time.Second
 
 // runCheckpointBridge serves a local unix socket that the harness Stop hook pokes
 // on every turn completion (see runHook in ao-cloud-agent). Each poke runs one
@@ -38,6 +37,16 @@ func runCheckpointBridge(
 	socketPath string,
 	run func(context.Context),
 	logger *slog.Logger,
+) error {
+	return runCheckpointBridgeWithInterval(ctx, socketPath, run, logger, checkpointSafetyNetInterval)
+}
+
+func runCheckpointBridgeWithInterval(
+	ctx context.Context,
+	socketPath string,
+	run func(context.Context),
+	logger *slog.Logger,
+	safetyNetInterval time.Duration,
 ) error {
 	_ = os.Remove(socketPath)
 	listener, err := net.Listen("unix", socketPath)
@@ -72,11 +81,7 @@ func runCheckpointBridge(
 	}()
 
 	// Coarse periodic safety net (see checkpointSafetyNetInterval).
-	// Snapshot the configured interval before starting the goroutine. Tests shorten
-	// the package variable, and a bridge from a prior test can still be winding
-	// down while the next test changes it. Reading the mutable package variable
-	// inside the goroutine would race with that change.
-	safetyNetInterval := checkpointSafetyNetInterval
+	// The caller provides the interval for this bridge.
 	go func() {
 		ticker := time.NewTicker(safetyNetInterval)
 		defer ticker.Stop()

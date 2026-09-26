@@ -162,6 +162,82 @@ func (c *Client) ForSandbox(record domain.Sandbox) (sandbox.Provider, error) {
 	return &sessionClient, nil
 }
 
+// Template is a non-secret summary of a Coder template a client may pick from.
+type Template struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+	Description string `json:"description"`
+	Icon        string `json:"icon"`
+	// Parameters is the set of per-workspace coder_parameter names the template's
+	// active version declares (e.g. "size", "startup_script"). The picker uses it
+	// to offer only the controls a template can actually accept: sending a rich
+	// parameter a template does not declare makes Coder reject the build.
+	Parameters []string `json:"parameters"`
+}
+
+// ListTemplates returns the templates the configured Coder user can see, for a
+// client-facing template picker. It is read-only and does not affect the
+// deployment's default template (which still governs any session that does not
+// explicitly choose one). Each template is annotated with the parameter names
+// its active version declares; a template whose parameters cannot be read is
+// still returned, with an empty parameter set, so a transient read does not hide
+// it from the picker.
+func (c *Client) ListTemplates(ctx context.Context) ([]Template, error) {
+	var raw []struct {
+		ID              string `json:"id"`
+		Name            string `json:"name"`
+		DisplayName     string `json:"display_name"`
+		Description     string `json:"description"`
+		Icon            string `json:"icon"`
+		ActiveVersionID string `json:"active_version_id"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v2/templates", nil, &raw); err != nil {
+		return nil, fmt.Errorf("coder: list templates: %w", err)
+	}
+	templates := make([]Template, 0, len(raw))
+	for _, t := range raw {
+		params, err := c.templateVersionParameterNames(ctx, t.ActiveVersionID)
+		if err != nil {
+			// Best-effort: keep the template selectable even if its parameter
+			// list is momentarily unreadable. The picker degrades to hiding the
+			// size/startup controls for it, which is the safe default.
+			params = nil
+		}
+		templates = append(templates, Template{
+			ID:          t.ID,
+			Name:        t.Name,
+			DisplayName: t.DisplayName,
+			Description: t.Description,
+			Icon:        t.Icon,
+			Parameters:  params,
+		})
+	}
+	return templates, nil
+}
+
+// templateVersionParameterNames returns the coder_parameter names declared by a
+// template version. It is used to gate the client picker so it only offers
+// controls the chosen template can accept.
+func (c *Client) templateVersionParameterNames(ctx context.Context, versionID string) ([]string, error) {
+	if versionID == "" {
+		return nil, nil
+	}
+	var raw []struct {
+		Name string `json:"name"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v2/templateversions/"+url.PathEscape(versionID)+"/rich-parameters", nil, &raw); err != nil {
+		return nil, fmt.Errorf("coder: template version parameters: %w", err)
+	}
+	names := make([]string, 0, len(raw))
+	for _, p := range raw {
+		if p.Name != "" {
+			names = append(names, p.Name)
+		}
+	}
+	return names, nil
+}
+
 type workspace struct {
 	ID          string          `json:"id"`
 	Name        string          `json:"name"`
@@ -825,6 +901,22 @@ func bootstrapCommandForArchive(
 		"else\n" +
 		"  printf '%s\\n' " + shellQuote(strings.TrimSpace(bootstrap.DurableIdentity)) + " | sudo -n tee \"$identity_file\" >/dev/null\nfi\n" +
 		"sudo -n chown -R " + shellQuote(workerUser+":"+workerUser) + " " + shellQuote(layout.Repository) + " " + shellQuote(path.Dir(layout.WorkerData)) + "\n" +
+		// The dev-kit clones each extra repository as a sibling of the primary
+		// checkout (…/repository -> …/<name>), so the worker user must be able to
+		// create new entries directly in the durable root. Coder owns the root as
+		// the coder user and leaves it group-unwritable, which is why extra-repo
+		// clones failed with "could not create work tree dir: Permission denied".
+		// Grant the worker's group only write+traverse (g+wx, deliberately not
+		// read): a clone must create and enter <root>/<name>, never list the root.
+		// Applied to the root entry itself, non-recursively so Coder's own home
+		// entries keep their existing modes, and without transferring ownership so
+		// Coder (the owner) keeps full access. This widens the root from
+		// traversal-only to group-writable for the worker; see
+		// cloud/docs/coder-sandbox-provider.md. Note directory write inherently
+		// permits unlink/rename of the root's top-level entries (no sticky bit);
+		// isolating the worker to a dedicated sub-root would need a larger change.
+		"sudo -n chgrp " + shellQuote(workerUser) + " \"$durable_root\"\n" +
+		"sudo -n chmod g+wx \"$durable_root\"\n" +
 		binaryPreparation +
 		"sudo -n install -o " + shellQuote(workerUser) + " -g " + shellQuote(workerUser) + " -m 0600 \"$stage/worker.env\" " + shellQuote(workerEnvironment) + "\n" +
 		"sudo -n install -o " + shellQuote(workerUser) + " -g " + shellQuote(workerUser) + " -m 0700 \"$stage/launch.sh\" " + shellQuote(workerLauncher) + "\n" +
@@ -943,6 +1035,9 @@ func readBootstrapResult(ctx context.Context, output <-chan ptyOutput, timeout t
 			return result.String(), errors.New("coder: workspace PTY did not report the worker bootstrap result")
 		case value, ok := <-output:
 			if !ok {
+				if err := ctx.Err(); err != nil {
+					return result.String(), err
+				}
 				return result.String(), io.EOF
 			}
 			result.WriteString(value.data)
@@ -951,6 +1046,9 @@ func readBootstrapResult(ctx context.Context, output <-chan ptyOutput, timeout t
 				return text, nil
 			}
 			if value.err != nil {
+				if err := ctx.Err(); err != nil {
+					return text, err
+				}
 				return text, fmt.Errorf("coder: read workspace PTY: %w", value.err)
 			}
 		}

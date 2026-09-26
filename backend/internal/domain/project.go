@@ -80,6 +80,7 @@ type SessionWorktreeRecord struct {
 	Branch       string
 	BaseSHA      string
 	BaseRef      string
+	CreationSHA  string
 	WorktreePath string
 	PreservedRef string
 	// ponytail: State mirrors session_worktrees.state, an enum that is unused

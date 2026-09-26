@@ -64,7 +64,12 @@ surface (`npm run sqlc`, `npm run api`).
   archive/projection, controller-generation fencing, turns, messages,
   activities, approvals, structured input, usage, compaction, and rollback.
 - Chat drivers for the user's installed Codex (native app-server), Claude Code
-  (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, OMP, and Qwen.
+  (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, OMP, Qwen, and
+  the built-in Unreal Agent library. Unreal Agent Chat runs on macOS and Linux
+  behind AO's detached provider host, persists its native session plus an
+  acknowledged AO event journal, and currently requires an explicit
+  bypass-permissions session because the upstream harness has no interactive
+  approval channel.
   Qwen Chat uses native `qwen --acp` and requires Qwen Code 0.16.0 or newer.
   Qwen Code's ACP mode enforces approval modes over `session/request_permission`
   (verified live: a non-read-only shell under auto-edit asks), so AO maps its
@@ -74,7 +79,8 @@ surface (`npm run sqlc`, `npm run api`).
   approval modes, so AO admits Pi Chat only after the user explicitly chooses the
   per-session bypass-permissions fallback. The binding reuses the existing Pi config environment and auth
   probe and is never downloaded by AO. AO reuses each harness's existing
-  binary/auth/environment resolution and does not bundle provider CLIs. Cursor
+  binary/auth/environment resolution and does not bundle provider CLIs; Unreal
+  Agent is the library-backed exception. Cursor
   is Chat-only until its ACP and TUI conversation ids are proven to share identity.
 - Project CRUD plus per-project config (`PUT /projects/{id}/config`).
 - PR action engine wired into the API: `POST /prs/{id}/merge` and

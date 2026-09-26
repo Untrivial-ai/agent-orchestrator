@@ -1,10 +1,11 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { AgentLogo } from "./AgentLogo";
 import { useTheme } from "./ThemeProvider";
 import type { Theme } from "./theme";
 import type { SpawnComposerControlsProps, SpawnComposerOption } from "./spawn-composer-controls.types";
+import { type, space } from "./tokens";
 
 type OpenMenu = "project" | "harness" | "model" | null;
 
@@ -65,7 +66,7 @@ export function SpawnComposerControls({
 				<Pressable
 					accessibilityRole="button"
 					accessibilityLabel="Attach a file"
-					android_ripple={{ color: t.tintBlue, borderless: true, radius: 20 }}
+					android_ripple={{ color: t.accentTint, borderless: true, radius: 20 }}
 					onPress={onAttach}
 					style={styles.attach}
 				>
@@ -74,7 +75,7 @@ export function SpawnComposerControls({
 				<View style={styles.divider} />
 				<SelectorButton label={harnessLabel} icon="terminal" harness={harness} onPress={() => setOpenMenu("harness")} style={styles.railButton} />
 				<View style={styles.divider} />
-				<SelectorButton label={modelLabel} icon="cpu" onPress={() => setOpenMenu("model")} style={styles.railButton} />
+				<SelectorButton label={modelLabel} onPress={() => setOpenMenu("model")} style={styles.railButton} />
 			</View>
 
 			<Pressable
@@ -97,7 +98,7 @@ export function SpawnComposerControls({
 
 function SelectorButton({ label, icon, harness, onPress, style }: {
 	label: string;
-	icon: keyof typeof Feather.glyphMap;
+	icon?: keyof typeof Feather.glyphMap;
 	harness?: string;
 	onPress: () => void;
 	style?: object;
@@ -108,13 +109,13 @@ function SelectorButton({ label, icon, harness, onPress, style }: {
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={label}
-			android_ripple={{ color: t.tintBlue }}
+			android_ripple={{ color: t.accentTint }}
 			onPress={onPress}
 			style={[styles.selector, style]}
 		>
-			{harness ? <AgentLogo harness={harness} size={20} /> : <Feather name={icon} size={15} color={t.textSecondary} />}
+			{harness ? <AgentLogo harness={harness} size={20} /> : icon ? <Feather name={icon} size={15} color={t.textSecondary} /> : null}
 			<Text numberOfLines={1} style={styles.selectorLabel}>{label}</Text>
-			<Feather name="chevron-down" size={14} color={t.textTertiary} />
+			<Feather name="chevron-down" size={15} color={t.textTertiary} />
 		</Pressable>
 	);
 }
@@ -134,7 +135,7 @@ function OptionList({ title, options, selectedValue, showAgentLogos, onSelect, o
 			<Pressable
 				accessibilityRole="button"
 				accessibilityLabel="Back"
-				android_ripple={{ color: t.tintBlue }}
+				android_ripple={{ color: t.accentTint }}
 				onPress={onBack}
 				style={styles.optionHeader}
 			>
@@ -149,13 +150,13 @@ function OptionList({ title, options, selectedValue, showAgentLogos, onSelect, o
 							key={option.id}
 							accessibilityRole="button"
 							accessibilityState={{ selected }}
-							android_ripple={{ color: t.tintBlue }}
+							android_ripple={{ color: t.accentTint }}
 							onPress={() => onSelect(option.id)}
 							style={[styles.optionRow, index > 0 && styles.optionBorder, selected && styles.optionSelected]}
 						>
 							{showAgentLogos ? <AgentLogo harness={option.id} size={24} /> : null}
 							<Text numberOfLines={2} style={[styles.optionLabel, selected && styles.optionLabelSelected]}>{option.label}</Text>
-							{selected ? <Feather name="check" size={20} color={t.blue} /> : null}
+							{selected ? <Feather name="check" size={20} color={t.accent} /> : null}
 						</Pressable>
 					);
 				})}
@@ -165,33 +166,33 @@ function OptionList({ title, options, selectedValue, showAgentLogos, onSelect, o
 }
 
 const makeStyles = (t: Theme) => StyleSheet.create({
-	stack: { gap: 9 },
-	projectButton: { alignSelf: "flex-start", maxWidth: "72%", height: 36, paddingHorizontal: 10, backgroundColor: "transparent" },
+	stack: { gap: space.sm },
+	projectButton: { alignSelf: "flex-start", maxWidth: "72%", height: 36, paddingHorizontal: space.sm, backgroundColor: "transparent" },
 	rail: {
 		height: 52,
 		flexDirection: "row",
 		alignItems: "center",
-		paddingHorizontal: 5,
-		borderRadius: 18,
+		paddingHorizontal: space.xxs,
+		borderRadius: 16,
 		borderCurve: "continuous",
 		backgroundColor: t.bgElevated,
 		borderWidth: StyleSheet.hairlineWidth,
 		borderColor: t.borderDefault,
 		overflow: "hidden",
 	},
-	attach: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", overflow: "hidden" },
+	attach: { width: 42, height: 42, borderRadius: 20, alignItems: "center", justifyContent: "center", overflow: "hidden" },
 	divider: { width: StyleSheet.hairlineWidth, height: 24, backgroundColor: t.borderDefault },
-	selector: { minHeight: 36, flexDirection: "row", alignItems: "center", gap: 7, borderRadius: 12, overflow: "hidden" },
-	railButton: { flex: 1, minWidth: 0, height: 42, paddingHorizontal: 10 },
-	selectorLabel: { flexShrink: 1, color: t.textPrimary, fontSize: 14, lineHeight: 19, fontWeight: "600" },
-	spawn: { height: 44, flexDirection: "row", gap: 8, borderRadius: 16, borderCurve: "continuous", alignItems: "center", justifyContent: "center", overflow: "hidden", backgroundColor: t.blue },
-	spawnLabel: { color: t.onAccent, fontSize: 15, lineHeight: 20, fontWeight: "700" },
-	optionHeader: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 12, overflow: "hidden" },
-	optionTitle: { color: t.textPrimary, fontSize: 18, lineHeight: 24, fontWeight: "700" },
+	selector: { minHeight: 36, flexDirection: "row", alignItems: "center", gap: space.xs, borderRadius: 12, overflow: "hidden" },
+	railButton: { flex: 1, minWidth: 0, height: 42, paddingHorizontal: space.sm },
+	selectorLabel: { fontFamily: "Geist_600SemiBold", flexShrink: 1, color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
+	spawn: { height: 44, flexDirection: "row", gap: space.sm, borderRadius: 16, borderCurve: "continuous", alignItems: "center", justifyContent: "center", overflow: "hidden", backgroundColor: t.accent },
+	spawnLabel: { fontFamily: "Geist_600SemiBold", color: t.onAccent, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
+	optionHeader: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: space.xs, borderRadius: 12, overflow: "hidden" },
+	optionTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.body.fontSize, lineHeight: type.body.lineHeight, fontWeight: "600" },
 	optionList: { maxHeight: 340, borderRadius: 16, backgroundColor: t.bgElevated, overflow: "hidden" },
-	optionRow: { minHeight: 54, paddingHorizontal: 16, paddingVertical: 12, flexDirection: "row", alignItems: "center", gap: 12 },
+	optionRow: { minHeight: 54, paddingHorizontal: space.lg, paddingVertical: space.md, flexDirection: "row", alignItems: "center", gap: space.md },
 	optionBorder: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle },
-	optionSelected: { backgroundColor: t.tintBlue },
-	optionLabel: { flex: 1, color: t.textPrimary, fontSize: 16, lineHeight: 21 },
-	optionLabelSelected: { color: t.blue, fontWeight: "700" },
+	optionSelected: { backgroundColor: t.accentTint },
+	optionLabel: { fontFamily: "Geist_400Regular", flex: 1, color: t.textPrimary, fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight },
+	optionLabelSelected: { fontFamily: "Geist_600SemiBold", color: t.accent, fontWeight: "600" },
 });

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -336,6 +337,19 @@ func (transitionAgent) NativeConversationID(_ context.Context, session ports.Ses
 	}
 	id := session.Metadata[ports.MetadataKeyAgentSessionID]
 	return id, id != "", nil
+}
+
+type transitionLaunchAuthAgent struct {
+	transitionAgent
+	status     ports.AgentAuthStatus
+	workingDir string
+	env        map[string]string
+}
+
+func (a *transitionLaunchAuthAgent) ValidateLaunchAuth(_ context.Context, workingDir string, env map[string]string) (ports.AgentAuthStatus, error) {
+	a.workingDir = workingDir
+	a.env = maps.Clone(env)
+	return a.status, nil
 }
 
 type failingRestoreTransitionAgent struct {
@@ -2845,6 +2859,25 @@ func TestInterfaceTransitionChatToTUIRebuildUsesChatModel(t *testing.T) {
 	}
 }
 
+func TestInterfaceTransitionChatToTUIRejectsUnauthorizedLaunchContext(t *testing.T) {
+	manager, store, _, _, _ := newTransitionManager(t, domain.SessionModeChat)
+	project := store.projects["proj"]
+	project.Config.Env = map[string]string{"ANTHROPIC_BASE_URL": "https://gateway.example"}
+	store.projects["proj"] = project
+	agent := &transitionLaunchAuthAgent{status: ports.AgentAuthStatusUnauthorized}
+	manager.agents = singleAgent{agent: agent}
+	rec := store.sessions["session-1"]
+	err := manager.preflightInterfaceTarget(context.Background(), rec, domain.SessionInterfaceTransition{
+		TargetMode: domain.SessionModeTUI, NativeConversationID: "native-1",
+	})
+	if !errors.Is(err, ports.ErrAgentAuthRequired) {
+		t.Fatalf("preflight error = %v, want ErrAgentAuthRequired", err)
+	}
+	if agent.workingDir != "/ws/session-1" || agent.env["ANTHROPIC_BASE_URL"] != "https://gateway.example" {
+		t.Fatalf("launch auth context = cwd %q env %#v", agent.workingDir, agent.env)
+	}
+}
+
 func TestInterfaceTransitionChatToTUIArmsInterruptBeforeReturning(t *testing.T) {
 	manager, store, _, chat, _ := newTransitionManager(t, domain.SessionModeChat)
 	transition, err := manager.StartInterfaceTransition(
@@ -3418,4 +3451,12 @@ func TestInterfaceTransitionStatusReportsUnverifiedWhenInspectionFails(t *testin
 	); err == nil || !strings.Contains(err.Error(), "transcript root unreadable") {
 		t.Fatalf("StartInterfaceTransition error = %v, want inspection failure", err)
 	}
+}
+
+func (c *transitionChat) QueueChatPrompt(_ context.Context, _ domain.SessionID, _ string) (string, error) {
+	return "", nil
+}
+
+func (c *transitionChat) DrainChatQueue(_ context.Context, _ domain.SessionID) error {
+	return nil
 }

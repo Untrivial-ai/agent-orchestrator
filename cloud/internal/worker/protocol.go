@@ -31,9 +31,19 @@ type LaunchContext struct {
 	DeniedCommands  []string `json:"deniedCommands"`
 	RepositoryURL   string   `json:"repositoryUrl"`
 	DefaultBranch   string   `json:"defaultBranch"`
+	// ExtraRepos are additional repositories the worker clones alongside the
+	// primary repo (multi-repo dev kit). Empty for a single-repo session.
+	ExtraRepos []RepoRef `json:"extraRepos,omitempty"`
 	// SystemPrompt carries control-plane-authored project context and rules. It
 	// remains separate from Prompt, which is the user's visible task input.
 	SystemPrompt string `json:"systemPrompt"`
+}
+
+// RepoRef is one additional repository the worker clones beside the primary
+// repo, optionally at a specific branch.
+type RepoRef struct {
+	URL    string `json:"url"`
+	Branch string `json:"branch,omitempty"`
 }
 
 // BootstrapResponse is the control plane's answer to a valid bootstrap ticket.
@@ -218,6 +228,14 @@ type WorkspaceReadRequest struct {
 	Path string `json:"path"`
 }
 
+// WorkspaceDiffFileRequest asks the worker for one file's current text and
+// its bounded unified patch against HEAD. It is deliberately distinct from
+// WorkspaceReadRequest so providers that have not implemented diff-file
+// support never receive a request they could mistake for an ordinary read.
+type WorkspaceDiffFileRequest struct {
+	Path string `json:"path"`
+}
+
 type WorkspaceWriteRequest struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
@@ -284,6 +302,23 @@ type WorkspaceFile struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
 	Size    int64  `json:"size"`
+}
+
+// WorkspaceDiffFile is the Docker worker's per-file review model. It mirrors
+// the local daemon's useful file-review facts without exposing host paths or
+// provider implementation details.
+type WorkspaceDiffFile struct {
+	Path             string `json:"path"`
+	Status           string `json:"status"`
+	Additions        int    `json:"additions"`
+	Deletions        int    `json:"deletions"`
+	Size             int64  `json:"size"`
+	Binary           bool   `json:"binary"`
+	Deleted          bool   `json:"deleted"`
+	Content          string `json:"content"`
+	ContentTruncated bool   `json:"contentTruncated"`
+	Diff             string `json:"diff"`
+	DiffTruncated    bool   `json:"diffTruncated"`
 }
 
 type TerminalCommand struct {

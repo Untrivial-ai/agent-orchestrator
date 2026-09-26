@@ -576,6 +576,30 @@
 	background: linear-gradient(270deg, transparent 0%, var(--color-bg-primary) 82%);
 }
 
+/* Vertical section caps resolve against the actual sidebar space between chrome. */
+.sidebar-sections-container {
+	container-type: size;
+}
+
+/* Persistent edge fades show when a sidebar section has more content to scroll. */
+.sidebar-section-scroll-fade {
+	position: absolute;
+	inset-inline: 0;
+	z-index: 10;
+	height: var(--space-4);
+	pointer-events: none;
+}
+
+.sidebar-section-scroll-fade--top {
+	top: 0;
+	background: linear-gradient(180deg, var(--color-bg-sidebar) 0%, transparent 100%);
+}
+
+.sidebar-section-scroll-fade--bottom {
+	bottom: 0;
+	background: linear-gradient(0deg, var(--color-bg-sidebar) 0%, transparent 100%);
+}
+
 /* Session actions are portaled into the center pane. Make their responsive
  * labels follow that pane's width instead of the full window width. */
 .workspace-topbar-container {
@@ -1569,6 +1593,38 @@ textarea,
 	background-color: color-mix(in srgb, var(--color-scrollbar) 28%, transparent);
 }
 
+/* Repository pickers keep a visible scroll track so a long grant list is
+   discoverable even before the user starts scrolling. */
+.repository-picker-scrollbar {
+	scrollbar-width: auto;
+	scrollbar-color: var(--color-scrollbar) color-mix(in srgb, var(--color-scrollbar) 16%, transparent);
+	scrollbar-gutter: stable;
+}
+
+.repository-picker-scrollbar::-webkit-scrollbar {
+	width: 10px;
+}
+
+.repository-picker-scrollbar::-webkit-scrollbar-track {
+	background: color-mix(in srgb, var(--color-scrollbar) 16%, transparent);
+	border-radius: 999px;
+}
+
+.repository-picker-scrollbar::-webkit-scrollbar-thumb {
+	border-radius: 999px;
+	background: var(--color-scrollbar);
+	/* Keep the thumb grabbable and clearly visible even for a long list, so it
+	   is obvious there are more rows below the fold. */
+	min-height: 28px;
+	border: 2px solid transparent;
+	background-clip: padding-box;
+}
+
+.repository-picker-scrollbar::-webkit-scrollbar-thumb:hover {
+	background: color-mix(in srgb, var(--color-scrollbar) 80%, var(--color-foreground));
+	background-clip: padding-box;
+}
+
 /* Chromium uses the desktop theme's chunky native horizontal scrollbar on
    Linux. Keep the board scroller compact and rounded there without changing
    macOS overlay scrollbars or Windows behavior. */
@@ -1706,6 +1762,80 @@ textarea,
 .terminal-surface .xterm-screen,
 .terminal-surface .xterm-helpers {
 	background-color: var(--color-bg-terminal-opaque) !important;
+}
+
+.multi-step-loader__step {
+	/* `both`: hold the final keyframe (opacity 0) after the exit and pre-apply
+	   the 0% keyframe before the entry. Without it the element snaps back to its
+	   base style (opacity 1) at animation end, flashing the outgoing sentence
+	   fully opaque for a frame before the swap. */
+	animation: multi-step-loader-step var(--multi-step-loader-duration, 3500ms) ease-in-out both;
+}
+
+.multi-step-loader__dot {
+	animation: multi-step-loader-dot var(--multi-step-loader-duration, 3500ms) ease-in-out both;
+}
+
+.multi-step-loader__check {
+	animation: multi-step-loader-check var(--multi-step-loader-duration, 3500ms) ease-out both;
+}
+
+@keyframes multi-step-loader-step {
+	0% {
+		filter: blur(3px);
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	8%,
+	86% {
+		filter: blur(0);
+		opacity: 1;
+		transform: translateY(0);
+	}
+	94%,
+	100% {
+		filter: blur(2px);
+		opacity: 0;
+		transform: translateY(-2px);
+	}
+}
+
+@keyframes multi-step-loader-dot {
+	0%,
+	82% {
+		opacity: 1;
+		transform: scale(1);
+	}
+	90%,
+	100% {
+		opacity: 0;
+		transform: scale(0.72);
+	}
+}
+
+@keyframes multi-step-loader-check {
+	0%,
+	82% {
+		opacity: 0;
+		transform: scale(0.72);
+	}
+	90%,
+	100% {
+		opacity: 1;
+		transform: scale(1);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.multi-step-loader__step,
+	.multi-step-loader__dot,
+	.multi-step-loader__check {
+		animation: none;
+	}
+
+	.multi-step-loader__check {
+		display: none;
+	}
 }
 
 @keyframes status-pulse {

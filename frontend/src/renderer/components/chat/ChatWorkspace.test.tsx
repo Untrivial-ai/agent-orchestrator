@@ -202,6 +202,17 @@ const chatSession = {
 } satisfies WorkspaceSession;
 
 describe("HumanMessage attachments", () => {
+	it("hides appended worker report context from the human message", async () => {
+		const text =
+			"Please continue\n\n<ao-worker-reports>\nReports since your previous turn:\n\n[done] ao://sessions/project/worker\nFinished\n</ao-worker-reports>";
+		render(<HumanMessage message={humanMessage(text)} sessionId="ao-1" />);
+
+		expect(screen.getByText("Please continue")).toBeInTheDocument();
+		expect(screen.queryByText(/Reports since your previous turn/)).not.toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Copy user message" }));
+		expect(writeText).toHaveBeenCalledWith("Please continue");
+	});
+
 	function renderImageAttachment(header: string, name: string) {
 		render(
 			<HumanMessage
@@ -396,6 +407,29 @@ describe("ChatWorkspace timeline", () => {
 		render(<ChatWorkspace snapshot={durable} localEchos={localEchos} />);
 
 		expect(screen.getAllByText("Already durable")).toHaveLength(1);
+	});
+
+	it("resolves a relative image in agent prose against this session workspace", () => {
+		const snapshot = idleSnapshot(chatFixtureEmpty);
+		snapshot.items.push({
+			kind: "message",
+			id: "assistant-image",
+			turnId: "turn-image",
+			sequence: 1,
+			revision: 0,
+			role: "assistant",
+			origin: "provider",
+			text: "![screenshot](docs/screenshot.png)",
+			streaming: false,
+			createdAt: "2026-09-09T00:00:00Z",
+		});
+
+		render(<ChatWorkspace snapshot={snapshot} />);
+
+		const src = screen.getByRole("img", { name: "screenshot" }).getAttribute("src") ?? "";
+		const url = new URL(src, "http://127.0.0.1");
+		expect(url.pathname).toBe(`/api/v1/sessions/${encodeURIComponent(snapshot.sessionId)}/workspace/file/blob`);
+		expect(url.searchParams.get("path")).toBe("docs/screenshot.png");
 	});
 
 	it("makes composer and history controls inert while a durable agent switch owns input", () => {
@@ -1126,6 +1160,56 @@ describe("ChatWorkspace timeline", () => {
 		await user.click(screen.getByRole("button", { name: "Open shell" }));
 		expect(resume).toHaveBeenCalledOnce();
 		expect(openShell).toHaveBeenCalledOnce();
+	});
+
+	// An asynchronous spawn puts the session on screen before its agent exists.
+	// That is not a controller that stopped, and the composer has to stay open:
+	// what the user types while it starts is queued, not lost.
+	it("explains a session that is still starting and keeps it typeable", () => {
+		const snapshot = {
+			...chatFixtureSettled,
+			controller: { state: "connecting" as const },
+			turns: [
+				...chatFixtureSettled.turns,
+				{ id: "queued-start", state: "queued" as const, requestedAt: "2026-08-15T00:00:00Z" },
+			],
+		};
+		render(
+			<ChatWorkspace
+				snapshot={snapshot}
+				session={{ ...chatSession, provisionState: "provisioning" }}
+				onResumeAgent={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByRole("status")).toHaveTextContent("Starting Codex…");
+		expect(screen.queryByText(/^Working for /)).not.toBeInTheDocument();
+		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+		expect(screen.getByTestId("chat-conversation-panel")).not.toHaveAttribute("inert");
+	});
+
+	it("offers retry for a failed start without reporting a crash", async () => {
+		const user = userEvent.setup();
+		const resume = vi.fn();
+		render(
+			<ChatWorkspace
+				snapshot={{ ...chatFixtureSettled, controller: { state: "stopped" } }}
+				session={{
+					...chatSession,
+					provisionState: "failed",
+					provisionError: "spawn mer-1: create workspace: branch already checked out",
+				}}
+				onResumeAgent={resume}
+			/>,
+		);
+
+		const banner = screen.getByRole("alert");
+		expect(banner).toHaveTextContent("This session could not be started");
+		expect(banner).toHaveTextContent("branch already checked out");
+		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Retry start" }));
+		expect(resume).toHaveBeenCalledOnce();
 	});
 
 	it("shows connecting during the controller gap, then restores the composer when ready", () => {
@@ -3045,6 +3129,15 @@ describe("ChatWorkspace reviewer tabs", () => {
 
 		expect(screen.getByRole("tab", { name: "Reviewer" })).toHaveAttribute("aria-selected", "false");
 		expect(screen.getByRole("tab", { name: "README.md" })).toHaveAttribute("aria-selected", "true");
+	});
+
+	it("hides and inerts the worker conversation while a typed reviewer owns the body", () => {
+		render(<ChatWorkspace snapshot={idleSnapshot()} reviewerChatSelected session={chatSession} />);
+
+		const workerConversation = screen.getByTestId("chat-conversation-panel");
+		expect(workerConversation).toHaveAttribute("hidden");
+		expect(workerConversation).toHaveAttribute("aria-hidden", "true");
+		expect(workerConversation).toHaveAttribute("inert");
 	});
 
 	it("keeps the chat draft, attachments, edit, and scroll state mounted while Reviewer is selected", async () => {

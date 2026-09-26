@@ -377,14 +377,36 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// A read-only Coder client backs the template picker endpoint. Built only
+	// when the deployment offers coder; otherwise the picker just shows "Default".
+	var coderTemplates httpapi.CoderTemplateLister
+	for _, provider := range cfg.AvailableSandboxProviders {
+		if provider == sandbox.ProviderCoder {
+			templateClient, err := coderprovider.New(coderprovider.Config{
+				BaseURL:    cfg.CoderURL,
+				Token:      cfg.CoderAPIToken,
+				Owner:      cfg.CoderOwner,
+				TemplateID: cfg.CoderTemplateID,
+				AgentName:  cfg.CoderAgentName,
+				Parameters: cfg.CoderParameters,
+			})
+			if err != nil {
+				return fmt.Errorf("build coder template lister: %w", err)
+			}
+			coderTemplates = templateClient
+			break
+		}
+	}
 	apiOptions := httpapi.Options{
 		Store:                     store,
+		CoderTemplates:            coderTemplates,
 		Transcripts:               store.SessionTranscripts(),
 		WorkOS:                    workosVerifier,
 		LocalAuthEnabled:          cfg.LocalAuthEnabled,
 		LocalSessionTTL:           cfg.LocalSessionTTL,
 		SandboxProvider:           cfg.SandboxProvider,
 		AvailableSandboxProviders: cfg.AvailableSandboxProviders,
+		CapabilityGatedProviders:  cfg.CapabilityGatedProviders,
 		Provisioning:              provisioningDefaults(cfg),
 		WorkerTokens:              workerTokens,
 		WorkerTokenTTL:            cfg.WorkerTokenTTL(),

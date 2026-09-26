@@ -140,6 +140,10 @@ type SessionMetadata struct {
 	// Model is the agent model this session resolved to at spawn time, including
 	// any per-spawn --model override. Empty means the agent's default model.
 	Model string `json:"model,omitempty"`
+	// Effort is the reasoning level resolved with Model at spawn time. Empty
+	// means the provider default, including an explicit task-level reset. The
+	// resolved value is pinned so project-default changes cannot alter resume.
+	Effort string `json:"effort,omitempty"`
 	// BrowserCapabilityVerifier is a one-way verifier for the random browser
 	// capability held by this session's worker process. The bearer token itself
 	// is never persisted, so reading the database cannot grant access to another
@@ -194,6 +198,55 @@ type SessionRecord struct {
 	UpdatedAt         time.Time  `json:"updatedAt"`
 	IsPinned          bool       `json:"isPinned"`
 	PinnedAt          *time.Time `json:"pinnedAt,omitempty"`
+	// IsTaskPreparation marks a hidden row that only reserves identity and a
+	// speculative worktree for the New Task dialog. Claiming it clears the flag
+	// before the session becomes visible; cancellation and startup reconciliation
+	// delete it after reclaiming the worktree.
+	IsTaskPreparation bool `json:"-"`
+	// ProvisionState is how far a Chat spawn has got. A Chat spawn answers the
+	// API as soon as the row and its conversation exist, so a session can be
+	// visible — and receive queued messages — before its worktree and controller
+	// do. Sessions written before asynchronous spawn existed read back as
+	// SessionProvisionReady.
+	ProvisionState SessionProvisionState `json:"provisionState,omitempty" enum:"provisioning,ready,failed"`
+	// ProvisionError explains a failed start in the user's terms. It is kept on
+	// the row rather than discarded with it, because the user is already looking
+	// at the session by the time the start can fail.
+	ProvisionError string `json:"provisionError,omitempty"`
+}
+
+// SessionProvisionState is a session's start-up progress.
+type SessionProvisionState string
+
+// TaskPreparationToken identifies one speculative task workspace. It is opaque
+// outside the session manager even though the current implementation reserves a
+// session id as its value.
+type TaskPreparationToken string
+
+const (
+	// SessionProvisionProvisioning means the row and its conversation exist; the
+	// worktree, the agent controller, or both do not yet. Messages sent now are
+	// queued and dispatched by the controller when it arrives.
+	SessionProvisionProvisioning SessionProvisionState = "provisioning"
+	// SessionProvisionReady means the session owns everything a spawn creates. This is
+	// the zero value's meaning, so rows predating asynchronous spawn are ready.
+	SessionProvisionReady SessionProvisionState = "ready"
+	// SessionProvisionFailed means the start did not complete. The row, its
+	// conversation, and anything queued into it survive so the user can retry.
+	SessionProvisionFailed SessionProvisionState = "failed"
+)
+
+// WithDefault resolves the zero value to ready.
+func (s SessionProvisionState) WithDefault() SessionProvisionState {
+	if s == "" {
+		return SessionProvisionReady
+	}
+	return s
+}
+
+// IsProvisioning reports whether the session is still being built.
+func (s SessionProvisionState) IsProvisioning() bool {
+	return s == SessionProvisionProvisioning
 }
 
 // IsStandalone reports whether the session has no registered project owner.
@@ -249,7 +302,7 @@ type Session struct {
 	// important current fact about the session at the stage it sits in. It is
 	// derived after the column, from the facts that column reads, and ships in
 	// renderable form so clients print it without a mapping table of their own.
-	DisplayStatus     DisplayStatus `json:"displayStatus" enum:"Working,Blocked,Exited,No signal,Awaiting PR,Fixing CI failures,Addressing comments,Needs review,Review scheduled,Reviewing,Review pending,Draft,CI failing,Commented,Changes requested,Needs human review,Mergeable,Approved,Merged,Closed without merge,Terminated"`
+	DisplayStatus     DisplayStatus `json:"displayStatus" enum:"Working,Blocked,Exited,No signal,Awaiting PR,Fixing CI failures,Addressing comments,Needs review,Review scheduled,Reviewing,Review failed,Review pending,Draft,CI failing,Commented,Changes requested,Needs human review,Mergeable,Approved,Merged,Closed without merge,Terminated"`
 	TerminalHandleID  string        `json:"terminalHandleId,omitempty"`
 	ActiveAgentSwitch *AgentSwitch  `json:"-"`
 	// PRs are the session's attributed pull requests (one session can own many).

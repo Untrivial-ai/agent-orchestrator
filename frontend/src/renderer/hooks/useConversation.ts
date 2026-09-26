@@ -443,6 +443,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 				"/api/v1/sessions/{sessionId}/conversation/messages",
 				{
 					params: { path: { sessionId: targetSessionId } },
+					headers: input.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 					// A stable id per attempt makes a retry idempotent: the daemon
 					// answers `duplicate` instead of opening a second provider turn.
 					body: { ...input, clientMessageId },
@@ -672,6 +673,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 				"/api/v1/sessions/{sessionId}/conversation/steer",
 				{
 					params: { path: { sessionId: sessionId as string } },
+					headers: input.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 					body: { ...input, clientMessageId: input.clientMessageId ?? crypto.randomUUID() },
 				},
 			);
@@ -720,6 +722,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 					params: {
 						path: { sessionId: sessionId as string, turnId },
 					},
+					headers: options.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 					body: { text, ...options },
 				},
 			);
@@ -1402,7 +1405,7 @@ export function useStageAttachments(sessionId: string | undefined) {
  * reader sees one sequence — which is why sequence is conversation-scoped rather
  * than per-table.
  */
-function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
+export function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 	const items: ConversationItem[] = [
 		...(wire.messages ?? []).map(toMessage),
 		...(wire.activities ?? []).map(toActivity),
@@ -1572,7 +1575,7 @@ function applyQueuedTurnOrderToPages(
 }
 
 /** Merge the newest live page with any older pages loaded on demand. */
-function mergeConversationPages(pages: ConversationSnapshot[]): ConversationSnapshot | undefined {
+export function mergeConversationPages(pages: ConversationSnapshot[]): ConversationSnapshot | undefined {
 	const live = pages[0];
 	if (!live) return undefined;
 

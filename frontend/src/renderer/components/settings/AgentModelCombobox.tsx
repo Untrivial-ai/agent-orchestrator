@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Search } from "lucide-react";
+import { Check, ChevronDown, Loader2, RefreshCw, Search } from "lucide-react";
 import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AgentModelCatalog } from "../../hooks/useAgentModelsQuery";
@@ -16,7 +16,7 @@ import {
 } from "../ui/dropdown-menu";
 
 const MAX_VISIBLE_MODELS = 50;
-const MODEL_SEARCH_THRESHOLD = 10;
+const MODEL_SEARCH_THRESHOLD = 8;
 const MAX_RECENT_MODELS = 3;
 const RECENT_MODELS_STORAGE_KEY = "ao.recentModels.v1";
 const ignoreEffortChange = () => {};
@@ -62,6 +62,10 @@ export function AgentModelCombobox({
 	customModelEntry,
 	agentLabel,
 	onRefresh,
+	refreshing = false,
+	lastSuccessAt,
+	refreshError,
+	retryAt,
 	onChange,
 	onCustom,
 	emptyLabel,
@@ -82,6 +86,10 @@ export function AgentModelCombobox({
 	customModelEntry?: AgentModelCatalog["customModelEntry"];
 	agentLabel?: string;
 	onRefresh?: () => void | Promise<void>;
+	refreshing?: boolean;
+	lastSuccessAt?: string | null;
+	refreshError?: string;
+	retryAt?: string | null;
 	onChange: (value: string) => void;
 	onCustom: (value: string) => void;
 	/** Names what happens with no override, e.g. "Use codex's default". */
@@ -100,7 +108,7 @@ export function AgentModelCombobox({
 	 *  contexts where the menu should read like a simple choice, not a
 	 *  model-management surface. */
 	compact?: boolean;
-	/** Codex callers opt into a combined model and reasoning-effort menu. */
+	/** Callers opt into a combined model and reasoning-effort menu. */
 	tuning?: ModelEffortSelection;
 	disabled?: boolean;
 	"aria-label": string;
@@ -120,7 +128,10 @@ export function AgentModelCombobox({
 	const allowDirectCustom = entryMode === "direct";
 	const [search, setSearch] = useState("");
 	const [menuOpen, setMenuOpen] = useState(false);
+	const [effortMenuOpen, setEffortMenuOpen] = useState(false);
+	const [awaitingEffort, setAwaitingEffort] = useState(false);
 	const [refreshFailed, setRefreshFailed] = useState(false);
+	const [refreshingLocal, setRefreshingLocal] = useState(false);
 	const [sessionRecentModels, setSessionRecentModels] = useState<Record<string, string[]>>({});
 	const recentKey = recentScope ?? "";
 	const storedRecentModels = useMemo(() => readRecentModels(recentScope), [recentScope]);
@@ -164,6 +175,7 @@ export function AgentModelCombobox({
 	const noOverrideLabel = emptyLabel ?? t("settings.models.agentDefault");
 	const currentLabel = (triggerLabel ?? selected?.label ?? value) || noOverrideLabel;
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const effortTriggerRef = useRef<HTMLDivElement>(null);
 	const [canScrollDown, setCanScrollDown] = useState(false);
 	const updateScrollCue = useCallback(() => {
 		const element = scrollRef.current;
@@ -189,13 +201,37 @@ export function AgentModelCombobox({
 		}
 		onChange(modelID);
 	};
+	const selectCatalogModel = (event: Event, item: IndexedModel) => {
+		const openEffort = Boolean(tuning && item.model.efforts?.length);
+		if (openEffort) event.preventDefault();
+		selectModel(item.id);
+		setSearch("");
+		setEffortMenuOpen(openEffort);
+		setAwaitingEffort(openEffort);
+		if (!openEffort) setMenuOpen(false);
+	};
+	const refreshBusy = refreshing || refreshingLocal;
+	const showManualRefresh = Boolean(
+		onRefresh && (models.length === 0 || (normalizedSearch !== "" && rankedModels.length === 0)),
+	);
+	const runRefresh = () => {
+		if (!onRefresh || refreshBusy) return;
+		setRefreshFailed(false);
+		setRefreshingLocal(true);
+		void Promise.resolve(onRefresh()).catch(() => setRefreshFailed(true)).finally(() => setRefreshingLocal(false));
+	};
 
 	return (
 		<DropdownMenu
+			open={menuOpen}
 			onOpenChange={(open) => {
 				setMenuOpen(open);
-				if (!open) setSearch("");
-				if (!open) setRefreshFailed(false);
+				if (!open) {
+					setSearch("");
+					setRefreshFailed(false);
+					setEffortMenuOpen(false);
+					setAwaitingEffort(false);
+				}
 			}}
 		>
 			<DropdownMenuTrigger asChild disabled={disabled}>
@@ -226,24 +262,74 @@ export function AgentModelCombobox({
 				onCloseAutoFocus={onCloseAutoFocus}
 				className="settings-menu-surface max-h-select-menu-max! w-[min(22rem,calc(100vw-2rem))] overflow-hidden! rounded-(--radius-settings-panel) border-settings-menu bg-settings-menu"
 			>
-				{showSearch && (
-					<div className="relative shrink-0 p-1" onKeyDown={(event) => event.stopPropagation()}>
-						<Search
-							className="pointer-events-none absolute left-3.5 top-1/2 size-icon-sm -translate-y-1/2 text-settings-muted"
-							aria-hidden="true"
-						/>
-						<input
-							type="search"
-							aria-label={t("settings.models.searchAria", { label: ariaLabel.toLocaleLowerCase() })}
-							value={search}
-							onChange={(event) => setSearch(event.target.value)}
-							placeholder={t(
-								hasMultipleProviders
-									? "settings.models.searchModelsOrProvidersPlaceholder"
-									: "settings.models.searchPlaceholder",
-							)}
-							className="menu-search-input pl-8!"
-						/>
+				{(showSearch || showManualRefresh) && (
+					<div className="flex shrink-0 items-center gap-1 p-1" onKeyDown={(event) => event.stopPropagation()}>
+						{showSearch && (
+							<div className="relative min-w-0 flex-1">
+								<Search
+									className="pointer-events-none absolute left-3.5 top-1/2 size-icon-sm -translate-y-1/2 text-settings-muted"
+									aria-hidden="true"
+								/>
+								<input
+									type="search"
+									aria-label={t("settings.models.searchAria", { label: ariaLabel.toLocaleLowerCase() })}
+									value={search}
+									onChange={(event) => setSearch(event.target.value)}
+									placeholder={t(
+										hasMultipleProviders
+											? "settings.models.searchModelsOrProvidersPlaceholder"
+											: "settings.models.searchPlaceholder",
+									)}
+									className="menu-search-input pl-8!"
+								/>
+							</div>
+						)}
+						{showManualRefresh && (
+							<button
+								type="button"
+								className="flex size-8 shrink-0 items-center justify-center rounded-md text-settings-muted hover:bg-settings-menu-selected hover:text-settings-label disabled:cursor-not-allowed disabled:opacity-50"
+								aria-label={refreshBusy ? t("settings.models.refreshing") : t("settings.models.refresh")}
+								disabled={refreshBusy}
+								onClick={(event) => {
+									event.stopPropagation();
+									runRefresh();
+								}}
+							>
+								{refreshBusy ? (
+									<Loader2 className="size-icon-sm animate-spin" aria-hidden="true" />
+								) : (
+									<RefreshCw className="size-icon-sm" aria-hidden="true" />
+								)}
+							</button>
+						)}
+					</div>
+				)}
+				{(lastSuccessAt || refreshError || refreshFailed) && (
+					<div className="flex items-center gap-2 px-2 pb-1 text-xs text-settings-muted" aria-live="polite">
+						{lastSuccessAt && (
+							<span>
+								{t("settings.models.lastSuccess", {
+									time: new Date(lastSuccessAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+								})}
+							</span>
+						)}
+						{(refreshError || refreshFailed) && (
+							<button
+								type="button"
+								className="truncate text-warning underline underline-offset-2"
+								title={refreshError}
+								onClick={(event) => {
+									event.stopPropagation();
+									runRefresh();
+								}}
+								disabled={refreshBusy}
+							>
+								{t("settings.models.retry")}
+								{retryAt
+									? ` · ${new Date(retryAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+									: ""}
+							</button>
+						)}
 					</div>
 				)}
 
@@ -268,7 +354,7 @@ export function AgentModelCombobox({
 									compact ? (
 										<DropdownMenuItem
 											key={item.id}
-											onSelect={() => selectModel(item.id)}
+											onSelect={(event) => selectCatalogModel(event, item)}
 											className={modelItemClass(item.id === value)}
 											aria-current={tuning && item.id === value ? true : undefined}
 										>
@@ -278,7 +364,7 @@ export function AgentModelCombobox({
 									) : (
 										<DropdownMenuItem
 											key={item.id}
-											onSelect={() => selectModel(item.id)}
+											onSelect={(event) => selectCatalogModel(event, item)}
 											className={modelItemClass(item.id === value)}
 										>
 											<div className="flex min-w-0 flex-1 items-center gap-3">
@@ -325,20 +411,19 @@ export function AgentModelCombobox({
 												})
 											: t("settings.models.unavailable")}
 									</p>
-									{onRefresh && (
+									{onRefresh && !refreshError && !showManualRefresh && (
 										<button
 											type="button"
-											className="text-settings-label underline underline-offset-2"
+											className="text-settings-label underline underline-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
 											onClick={(event) => {
 												event.stopPropagation();
-												setRefreshFailed(false);
-												void Promise.resolve(onRefresh()).catch(() => setRefreshFailed(true));
+												runRefresh();
 											}}
+											disabled={refreshBusy}
 										>
-											{t("settings.models.refresh")}
+											{refreshBusy ? t("settings.models.refreshing") : t("settings.models.refresh")}
 										</button>
 									)}
-									{refreshFailed && <p className="text-warning">{t("settings.models.refreshFailed")}</p>}
 								</div>
 							</>
 						)}
@@ -362,12 +447,25 @@ export function AgentModelCombobox({
 				{showEffort && tuning && (
 					<div className="shrink-0">
 						<DropdownMenuSeparator />
-						<OptionMenuSub>
-							<OptionMenuSubTrigger label={t("settings.models.reasoningEffort", { defaultValue: "Reasoning effort" })} value={currentEffortLabel} />
-							<OptionMenuSubContent>
+						<OptionMenuSub open={effortMenuOpen} onOpenChange={(open) => {
+							if (open || !awaitingEffort) setEffortMenuOpen(open);
+						}}>
+							<OptionMenuSubTrigger ref={effortTriggerRef} label={t("settings.models.reasoningEffort", { defaultValue: "Reasoning effort" })} value={currentEffortLabel} />
+							<OptionMenuSubContent onEscapeKeyDown={(event) => {
+								event.preventDefault();
+								event.stopPropagation();
+								setAwaitingEffort(false);
+								setEffortMenuOpen(false);
+								effortTriggerRef.current?.focus();
+							}}>
 								{["", ...(effortModel?.efforts ?? [])].map((effort) => (
 									<OptionMenuItem key={effort} role="menuitemradio" aria-checked={effort === tuning.effort}
-										active={effort === tuning.effort} onSelect={() => tuning.onEffortChange(effort)} className="gap-3 text-xs">
+										active={effort === tuning.effort} onSelect={() => {
+											tuning.onEffortChange(effort);
+											setEffortMenuOpen(false);
+											setAwaitingEffort(false);
+											setMenuOpen(false);
+										}} className="gap-3 text-xs">
 										{effort ? effortLabel(effort) : t("settings.models.providerDefault")}
 										{effort === tuning.effort && <Check className="ml-auto size-icon-sm shrink-0" aria-hidden="true" />}
 									</OptionMenuItem>

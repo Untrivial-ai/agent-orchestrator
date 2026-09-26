@@ -13,6 +13,9 @@ var (
 	ErrUnsupportedEffort = errors.New("unsupported model effort")
 	// ErrModelCapabilitiesUnavailable reports tuning that cannot be validated safely.
 	ErrModelCapabilitiesUnavailable = errors.New("model capabilities unavailable")
+	// ErrAgentAuthRequired means a launch-fresh provider check rejected the
+	// credential selected by the session's cwd and environment.
+	ErrAgentAuthRequired = errors.New("agent requires authentication")
 )
 
 // ErrAgentBinaryNotFound is returned by agent adapters when neither PATH nor
@@ -28,6 +31,12 @@ var ErrAgentBinaryNotFound = errors.New("agent: binary not found on PATH")
 // callers must not present an unverified name-only match as installed.
 var ErrAgentBinaryIdentityUnknown = errors.New("agent: binary identity unknown")
 
+// ErrAgentModelDiscoverySignInRequired is returned by model discovery when the
+// agent's model-list command would start an interactive sign-in because the
+// CLI is not confirmed as signed in. It is not a discovery failure: callers
+// keep the last catalog and retry once the agent reports a login.
+var ErrAgentModelDiscoverySignInRequired = errors.New("agent: sign-in required to list models")
+
 // AgentAuthStatus describes the result of a short local auth probe for an
 // installed agent. It is advisory only: credentials, quota, selected model
 // availability, or CLI state can still fail at session spawn/model-call time.
@@ -42,6 +51,13 @@ const (
 	AgentAuthStatusUnauthorized AgentAuthStatus = "unauthorized"
 	// AgentAuthStatusUnknown means the daemon could not determine auth status.
 	AgentAuthStatusUnknown AgentAuthStatus = "unknown"
+	// AgentAuthStatusConfigured means a credential is present locally but no
+	// check has proven it valid. Presence is not validity: a key can be
+	// revoked, downgraded, or rate-limited with no change on disk, so only a
+	// provider round-trip may report AgentAuthStatusAuthorized. Local evidence
+	// (a config file, an env var, or a CLI that reports loggedIn) reports
+	// configured instead, and must never render as a ready state.
+	AgentAuthStatusConfigured AgentAuthStatus = "configured"
 )
 
 // Agent is the contract every CLI coding agent adapter (claude-code, codex, …)
@@ -76,6 +92,14 @@ type Agent interface {
 // a cheap local authentication status probe.
 type AgentAuthChecker interface {
 	AuthStatus(ctx context.Context) (AgentAuthStatus, error)
+}
+
+// AgentLaunchAuthValidator is the optional launch gate for adapters whose
+// credential source depends on the project cwd or environment. Implementations
+// must perform a fresh provider check instead of trusting display/readiness
+// caches; unknown or uncheckable credentials remain advisory.
+type AgentLaunchAuthValidator interface {
+	ValidateLaunchAuth(ctx context.Context, workingDir string, env map[string]string) (AgentAuthStatus, error)
 }
 
 // AgentBinaryResolver is the optional capability adapters expose when their
@@ -176,10 +200,15 @@ const (
 
 // AgentModelInfo is one model or mode that an adapter reports as selectable.
 type AgentModelInfo struct {
-	ID            string   `json:"id"`
-	Label         string   `json:"label"`
-	Provider      string   `json:"provider,omitempty"`
-	IsDefault     bool     `json:"isDefault,omitempty"`
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Provider  string `json:"provider,omitempty"`
+	IsDefault bool   `json:"isDefault,omitempty"`
+	// Efforts are the reasoning levels this specific model accepts, in the
+	// provider's own ascending order. Empty means the model takes no effort
+	// setting, which is a real answer rather than a missing one — Sonnet 4.5
+	// and Haiku 4.5 accept none while the 5 family accepts five — so a picker
+	// must render no effort control at all rather than an empty one.
 	Efforts       []string `json:"efforts,omitempty"`
 	DefaultEffort string   `json:"defaultEffort,omitempty"`
 }
@@ -193,11 +222,21 @@ type AgentModelCatalog struct {
 	// AllowCustom is retained for compatibility and is true only for direct entry.
 	AllowCustom bool   `json:"allowCustom"`
 	Source      string `json:"source"`
+	// Metadata describes the non-sensitive installed adapter inputs used for
+	// discovery (for example the resolved binary and adapter source kind).
+	Metadata map[string]string `json:"metadata,omitempty"`
+	// InputFingerprint changes whenever an upgrade, auth/config input, or
+	// project scope could produce a different catalog.
+	InputFingerprint string `json:"inputFingerprint,omitempty"`
 	// BinaryVersion is the legacy wire name for AO's non-sensitive executable
 	// and configuration metadata fingerprint.
-	BinaryVersion string    `json:"binaryVersion,omitempty"`
-	FetchedAt     time.Time `json:"fetchedAt"`
-	ValidatedAt   time.Time `json:"validatedAt,omitempty"`
+	BinaryVersion string     `json:"binaryVersion,omitempty"`
+	FetchedAt     time.Time  `json:"fetchedAt"`
+	ValidatedAt   time.Time  `json:"validatedAt,omitempty"`
+	LastSuccessAt *time.Time `json:"lastSuccessAt,omitempty"`
+	RefreshState  string     `json:"refreshState,omitempty" enum:"idle,queued,refreshing,error"`
+	RefreshError  string     `json:"refreshError,omitempty"`
+	RetryAt       *time.Time `json:"retryAt,omitempty"`
 	// RefreshRecommended tells cache-first clients to revalidate in the
 	// background while continuing to display the cached catalog.
 	RefreshRecommended bool   `json:"refreshRecommended,omitempty"`
@@ -208,20 +247,35 @@ type AgentModelCatalog struct {
 // CachedAgentModelCatalog is the persistence record used by the model-catalog
 // service. CatalogJSON contains a serialized AgentModelCatalog.
 type CachedAgentModelCatalog struct {
-	AgentID       string
-	ProjectID     string
-	BinaryVersion string // Legacy field name for the discovery-input metadata fingerprint.
-	CatalogJSON   string
-	Source        string
-	FetchedAt     time.Time
+	AgentID          string
+	ProjectID        string
+	BinaryVersion    string // Legacy field name for the discovery-input metadata fingerprint.
+	CatalogJSON      string
+	Source           string
+	FetchedAt        time.Time
+	MetadataJSON     string
+	InputFingerprint string
+	LastSuccessAt    time.Time
+	RefreshState     string
+	RefreshError     string
+	RetryCount       int64
+	RetryAt          time.Time
+	Generation       int64
 }
 
 // AgentModelCatalogCache persists normalized model catalogs across daemon
-// restarts. Implementations must treat agent+project as the logical key.
+// restarts. Global catalogs use the empty project scope; BinaryVersion tracks
+// the installed agent/config fingerprint used for invalidation.
 type AgentModelCatalogCache interface {
 	GetAgentModelCatalog(ctx context.Context, agentID, projectID string) (CachedAgentModelCatalog, bool, error)
 	ListAgentModelCatalogsByAgent(ctx context.Context, agentID string) ([]CachedAgentModelCatalog, error)
 	UpsertAgentModelCatalog(ctx context.Context, record CachedAgentModelCatalog) error
+}
+
+// AgentModelCatalogScopeCache supports daemon-wide startup prefetch while
+// keeping the smaller cache contract easy to fake at focused boundaries.
+type AgentModelCatalogScopeCache interface {
+	ListAgentModelCatalogs(ctx context.Context) ([]CachedAgentModelCatalog, error)
 }
 
 // AgentModelDiscoveryRequest describes one bounded, adapter-defined model
@@ -343,6 +397,13 @@ type AgentResolver interface {
 // nudge — see harnessNudgeSafe.
 type SubmitActivitySignaler interface {
 	EmitsSubmitActivity() bool
+}
+
+// SemanticMessageAcceptanceSignaler is implemented only by TUI adapters whose
+// native prompt hook returns the accepted prompt text to AO. It lets internal
+// durable senders correlate a specific message with provider acceptance.
+type SemanticMessageAcceptanceSignaler interface {
+	EmitsSemanticMessageAcceptance() bool
 }
 
 // BlockedActivitySignaler is an OPTIONAL capability an Agent adapter may

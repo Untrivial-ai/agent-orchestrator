@@ -1,6 +1,8 @@
 package claudecode
 
 import (
+	"strings"
+
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -18,6 +20,10 @@ import (
 // stay authoritative while they flow, and the composer draft state must never
 // promote or demote sticky states on its own.
 func (p *Plugin) DetectTerminalActivity(output string) (domain.ActivityState, bool) {
+	if strings.Contains(strings.ToLower(output), "login expired") &&
+		strings.Contains(strings.ToLower(output), "run /login") {
+		return domain.ActivityWaitingInput, true
+	}
 	if p.InspectTerminalSurface(output).Work == ports.TerminalSurfaceWorkIdle {
 		return domain.ActivityIdle, true
 	}

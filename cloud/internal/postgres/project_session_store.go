@@ -284,6 +284,34 @@ func (s *Store) ListProjects(
 	return projects, hasMore, nil
 }
 
+// GetProject returns one project by id (tenant-scoped). Used at session creation
+// to read the project's coder dev-kit config so each session inherits the
+// template/size/startup/extra-repos chosen at project setup.
+func (s *Store) GetProject(
+	ctx context.Context,
+	principal domain.Principal,
+	orgID string,
+	projectID string,
+) (domain.Project, error) {
+	var project domain.Project
+	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
+		scanErr := scanProject(tx.QueryRow(
+			ctx,
+			`SELECT id, org_id, display_name, repository_url, default_branch,
+				github_repository_id, config, created_at, updated_at
+			FROM ao_projects
+			WHERE org_id = $1 AND id = $2 AND archived_at IS NULL`,
+			orgID,
+			projectID,
+		), &project)
+		if errors.Is(scanErr, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return scanErr
+	})
+	return project, err
+}
+
 func (s *Store) CreateSession(
 	ctx context.Context,
 	principal domain.Principal,

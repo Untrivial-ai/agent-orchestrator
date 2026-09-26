@@ -11,7 +11,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func TestDelegateTaskSpawnsWorkerThenRequestsTitleFromNewestActiveOrchestrator(t *testing.T) {
+func TestDelegateTaskSpawnsWorkerAndRefinesTitleThroughBackgroundHarness(t *testing.T) {
 	tests := []struct {
 		name      string
 		agent     domain.AgentHarness
@@ -32,92 +32,100 @@ func TestDelegateTaskSpawnsWorkerThenRequestsTitleFromNewestActiveOrchestrator(t
 			}
 			st := newFakeStore()
 			st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
-			now := time.Now().UTC()
-			st.sessions["orch-old"] = domain.SessionRecord{ID: "orch-old", ProjectID: "ao", Kind: domain.KindOrchestrator, CreatedAt: now.Add(-time.Minute)}
-			st.sessions["orch-new"] = domain.SessionRecord{ID: "orch-new", ProjectID: "ao", Kind: domain.KindOrchestrator, CreatedAt: now}
-			st.sessions["orch-exited"] = domain.SessionRecord{ID: "orch-exited", ProjectID: "ao", Kind: domain.KindOrchestrator, Activity: domain.Activity{State: domain.ActivityExited}, CreatedAt: now.Add(time.Minute)}
-			st.sessions["orch-dead"] = domain.SessionRecord{ID: "orch-dead", ProjectID: "ao", Kind: domain.KindOrchestrator, IsTerminated: true, CreatedAt: now.Add(2 * time.Minute)}
-			st.sessions["worker"] = domain.SessionRecord{ID: "worker", ProjectID: "ao", Kind: domain.KindWorker, CreatedAt: now.Add(3 * time.Minute)}
-			cmd := &fakeCommander{}
+			cmd := &fakeCommander{backgroundResult: "Fix renderer"}
+			cmd.spawnFunc = func(cfg ports.SpawnConfig) domain.SessionRecord {
+				rec := domain.SessionRecord{
+					ID: "mer-9", ProjectID: cfg.ProjectID, Kind: cfg.Kind, Harness: cfg.Harness,
+					DisplayName: cfg.DisplayName,
+				}
+				st.sessions[rec.ID] = rec
+				return rec
+			}
 			svc := &Service{store: st, manager: cmd, runBackground: runInline}
-
 			brief := "  Fix the renderer\nwithout changing the API.  "
+
 			out, err := svc.DelegateTask(context.Background(), DelegateTaskInput{
-				ProjectID: "ao", Brief: brief, RequestedAgent: tt.agent, Model: tt.model, Effort: effort, RequestedMode: tt.mode,
+				ProjectID: "ao", Brief: brief, RequestedAgent: tt.agent, Model: tt.model,
+				Effort: effort, RequestedMode: tt.mode, TaskPreparation: "prep-token",
 			})
 			if err != nil {
 				t.Fatalf("DelegateTask: %v", err)
 			}
 			if out.WorkerID != "mer-9" || out.OrchestratorID != "" {
-				t.Fatalf("out = %#v, want worker mer-9 with asynchronous title handoff", out)
+				t.Fatalf("out = %#v, want worker mer-9 only", out)
 			}
-			if !cmd.spawned || cmd.spawnedCfg.ProjectID != "ao" || cmd.spawnedCfg.Kind != domain.KindWorker || cmd.spawnedCfg.Harness != tt.wantAgent || cmd.spawnedCfg.Prompt != brief || cmd.spawnedCfg.DisplayName != "Fix the renderer wit" {
+			if !cmd.spawned || cmd.spawnedCfg.ProjectID != "ao" || cmd.spawnedCfg.Kind != domain.KindWorker || cmd.spawnedCfg.Harness != tt.wantAgent || cmd.spawnedCfg.Prompt != brief || cmd.spawnedCfg.DisplayName != "Fix the renderer without changing the API." {
 				t.Fatalf("spawn cfg = %#v", cmd.spawnedCfg)
 			}
-			if cmd.spawnedCfg.AgentConfig.Model != strings.TrimSpace(tt.model) {
-				t.Fatalf("spawn model = %q, want %q", cmd.spawnedCfg.AgentConfig.Model, strings.TrimSpace(tt.model))
-			}
-			if cmd.spawnedCfg.AgentConfig.Effort != strings.TrimSpace(tt.effort) {
+			if cmd.spawnedCfg.AgentConfig.Model != strings.TrimSpace(tt.model) || cmd.spawnedCfg.AgentConfig.Effort != strings.TrimSpace(tt.effort) {
 				t.Fatalf("spawn tuning = %#v", cmd.spawnedCfg.AgentConfig)
 			}
-			if cmd.spawnedCfg.EffortOverride != (effort != nil) {
-				t.Fatalf("spawn tuning presence = %#v", cmd.spawnedCfg)
+			if cmd.spawnedCfg.EffortOverride != (effort != nil) || cmd.spawnedCfg.RequestedMode != tt.mode {
+				t.Fatalf("spawn tuning presence/mode = %#v/%q", cmd.spawnedCfg, cmd.spawnedCfg.RequestedMode)
 			}
-			if cmd.spawnedCfg.RequestedMode != tt.mode {
-				t.Fatalf("spawn mode = %q, want %q", cmd.spawnedCfg.RequestedMode, tt.mode)
+			if len(cmd.backgroundCalls) != 1 {
+				t.Fatalf("background calls = %#v, want one", cmd.backgroundCalls)
 			}
-			if len(cmd.sent) != 1 || cmd.sent[0] != "orch-new" {
-				t.Fatalf("sent = %#v; want orch-new", cmd.sent)
+			if cmd.spawnedCfg.TaskPreparation != "prep-token" {
+				t.Fatalf("task preparation = %q", cmd.spawnedCfg.TaskPreparation)
 			}
-			if len(cmd.ready) != 1 || cmd.ready[0] != "orch-new" {
-				t.Fatalf("readiness waits = %#v; want orch-new", cmd.ready)
+			call := cmd.backgroundCalls[0]
+			if call.id != "mer-9" || call.prompt != brief || call.systemPrompt != delegatedTaskTitleSystemPrompt {
+				t.Fatalf("background call = %#v", call)
 			}
-			for _, want := range []string{
-				"AO TASK TITLE UPDATE",
-				"Do not spawn another worker or orchestrator",
-				`ao session rename mer-9 "<title, max 20 chars>"`,
-				"Worker session id: mer-9",
-				brief,
-			} {
-				if !strings.Contains(cmd.sentMessages[0], want) {
-					t.Fatalf("title delegation missing %q:\n%s", want, cmd.sentMessages[0])
-				}
+			if len(cmd.sent) != 0 || len(cmd.resumed) != 0 || cmd.spawnCalls != 1 {
+				t.Fatalf("title refinement touched a session: sent=%#v resumed=%#v spawns=%d", cmd.sent, cmd.resumed, cmd.spawnCalls)
 			}
-			if tt.model != "" && !strings.Contains(cmd.sentMessages[0], "Requested model: sonnet-custom") {
-				t.Fatalf("title delegation missing requested model:\n%s", cmd.sentMessages[0])
+			if got := st.sessions["mer-9"].DisplayName; got != "Fix renderer" {
+				t.Fatalf("display name = %q, want generated title", got)
 			}
 		})
 	}
 }
 
-func TestDelegatedTaskDisplayName(t *testing.T) {
+func TestDelegatedTaskTitles(t *testing.T) {
 	for _, tt := range []struct {
-		name  string
-		brief string
-		want  string
+		name string
+		in   string
+		want string
 	}{
-		{name: "empty", brief: " \n\t ", want: "Untitled task"},
-		{name: "short", brief: "  tell me a joke  ", want: "tell me a joke"},
-		{name: "whitespace", brief: "Fix the renderer\nwithout changing the API", want: "Fix the renderer wit"},
-		{name: "unicode rune limit", brief: "一二三四五六七八九十一二三四五六七八九十一", want: "一二三四五六七八九十一二三四五六七八九十"},
+		{name: "empty provisional", in: " \n\t ", want: "Untitled task"},
+		{name: "short provisional", in: "  tell me a joke  ", want: "tell me a joke"},
+		{name: "provisional whitespace", in: "Fix the renderer\nwithout changing the API", want: "Fix the renderer without changing the API"},
+		{name: "provisional unicode limit", in: strings.Repeat("一", 101), want: strings.Repeat("一", 100)},
+		{name: "provisional byte truncation", in: strings.Repeat(" long", 21), want: strings.TrimSpace(strings.Repeat(" long", 21)[:100])},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := delegatedTaskDisplayName(tt.brief); got != tt.want {
-				t.Fatalf("delegatedTaskDisplayName(%q) = %q, want %q", tt.brief, got, tt.want)
+			if got := delegatedTaskDisplayName(tt.in); got != tt.want {
+				t.Fatalf("delegatedTaskDisplayName(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
+
+	for _, tt := range []struct {
+		in   string
+		want string
+	}{
+		{in: "## `Fix renderer.`\nExtra prose", want: "Fix renderer"},
+		{in: "Upgrade to C++", want: "Upgrade to C++"},
+		{in: "Move to F#", want: "Move to F#"},
+		{in: "Fix\x00 renderer", want: "Fix renderer"},
+		{in: strings.Repeat("界", 101), want: strings.Repeat("界", 100)},
+		{in: " -- ... ", want: ""},
+	} {
+		if got := generatedTaskTitle(tt.in); got != tt.want {
+			t.Errorf("generatedTaskTitle(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
 }
 
-func TestDelegateTaskStartsPromptlessWorkerWithoutRequestingTitle(t *testing.T) {
+func TestDelegateTaskStartsPromptlessWorkerWithoutGeneratingTitle(t *testing.T) {
 	st := newFakeStore()
 	st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
-	st.sessions["orch"] = domain.SessionRecord{ID: "orch", ProjectID: "ao", Kind: domain.KindOrchestrator}
 	cmd := &fakeCommander{}
 
 	out, err := (&Service{store: st, manager: cmd, runBackground: runInline}).DelegateTask(
-		context.Background(),
-		DelegateTaskInput{ProjectID: "ao", Brief: " \n\t "},
+		context.Background(), DelegateTaskInput{ProjectID: "ao", Brief: " \n\t "},
 	)
 	if err != nil {
 		t.Fatalf("DelegateTask: %v", err)
@@ -128,158 +136,126 @@ func TestDelegateTaskStartsPromptlessWorkerWithoutRequestingTitle(t *testing.T) 
 	if !cmd.spawned || cmd.spawnedCfg.Prompt != "" || cmd.spawnedCfg.DisplayName != "Untitled task" {
 		t.Fatalf("spawn cfg = %#v", cmd.spawnedCfg)
 	}
-	if len(cmd.ready) != 0 || len(cmd.sent) != 0 || len(cmd.resumed) != 0 {
-		t.Fatalf("promptless spawn contacted orchestrator: ready=%#v sent=%#v resumed=%#v", cmd.ready, cmd.sent, cmd.resumed)
+	if len(cmd.backgroundCalls) != 0 || len(cmd.sent) != 0 || len(cmd.resumed) != 0 {
+		t.Fatalf("promptless spawn ran title work: background=%#v sent=%#v resumed=%#v", cmd.backgroundCalls, cmd.sent, cmd.resumed)
 	}
 }
 
-func TestDelegateTaskResumesNewestExitedOrchestratorBeforeRequestingTitle(t *testing.T) {
+func TestGeneratedTaskTitleDoesNotOverwriteManualRename(t *testing.T) {
 	st := newFakeStore()
 	st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
-	now := time.Now().UTC()
-	st.sessions["orch-old"] = domain.SessionRecord{ID: "orch-old", ProjectID: "ao", Kind: domain.KindOrchestrator, Activity: domain.Activity{State: domain.ActivityExited}, CreatedAt: now.Add(-time.Minute)}
-	st.sessions["orch-new"] = domain.SessionRecord{ID: "orch-new", ProjectID: "ao", Kind: domain.KindOrchestrator, Activity: domain.Activity{State: domain.ActivityExited}, CreatedAt: now}
-	cmd := &fakeCommander{}
+	cmd := &fakeCommander{backgroundResult: "Generated title"}
+	cmd.spawnFunc = func(cfg ports.SpawnConfig) domain.SessionRecord {
+		rec := domain.SessionRecord{ID: "mer-9", ProjectID: cfg.ProjectID, Kind: cfg.Kind, DisplayName: "Mine now"}
+		st.sessions[rec.ID] = rec
+		return rec
+	}
 
-	out, err := (&Service{store: st, manager: cmd, runBackground: runInline}).DelegateTask(context.Background(), DelegateTaskInput{ProjectID: "ao", Brief: "Fix it"})
-	if err != nil {
+	if _, err := (&Service{store: st, manager: cmd, runBackground: runInline}).DelegateTask(
+		context.Background(), DelegateTaskInput{ProjectID: "ao", Brief: "Fix it"},
+	); err != nil {
 		t.Fatalf("DelegateTask: %v", err)
 	}
-	if out.WorkerID != "mer-9" || out.OrchestratorID != "" {
-		t.Fatalf("out = %#v, want worker mer-9 with asynchronous title handoff", out)
-	}
-	if len(cmd.resumed) != 1 || cmd.resumed[0] != "orch-new" {
-		t.Fatalf("resumed = %#v, want orch-new", cmd.resumed)
-	}
-	if len(cmd.ready) != 1 || cmd.ready[0] != "orch-new" {
-		t.Fatalf("readiness waits = %#v, want orch-new", cmd.ready)
-	}
-	if len(cmd.sent) != 1 || cmd.sent[0] != "orch-new" {
-		t.Fatalf("sent = %#v, want orch-new", cmd.sent)
+	if got := st.sessions["mer-9"].DisplayName; got != "Mine now" {
+		t.Fatalf("display name = %q, want manual rename preserved", got)
 	}
 }
 
-func TestDelegateTaskStartsMissingOrchestratorBeforeRequestingTitle(t *testing.T) {
+func TestDelegateTaskKeepsSpawnSuccessWhenBackgroundTitleFails(t *testing.T) {
 	st := newFakeStore()
 	st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
-	st.sessions["orch-dead"] = domain.SessionRecord{ID: "orch-dead", ProjectID: "ao", Kind: domain.KindOrchestrator, IsTerminated: true}
-	cmd := &fakeCommander{spawnFunc: func(cfg ports.SpawnConfig) domain.SessionRecord {
-		if cfg.Kind == domain.KindOrchestrator {
-			return domain.SessionRecord{ID: "orch-new", ProjectID: cfg.ProjectID, Kind: cfg.Kind}
-		}
-		return domain.SessionRecord{ID: "worker-new", ProjectID: cfg.ProjectID, Kind: cfg.Kind}
-	}}
+	cmd := &fakeCommander{backgroundErr: errors.New("provider unavailable")}
 
-	out, err := (&Service{store: st, manager: cmd, runBackground: runInline}).DelegateTask(context.Background(), DelegateTaskInput{ProjectID: "ao", Brief: "Fix it"})
-	if err != nil {
-		t.Fatalf("DelegateTask: %v", err)
-	}
-	if out.WorkerID != "worker-new" || out.OrchestratorID != "" {
-		t.Fatalf("out = %#v, want worker-new with asynchronous title handoff", out)
-	}
-	if cmd.spawnCalls != 2 {
-		t.Fatalf("spawn calls = %d, want worker plus orchestrator", cmd.spawnCalls)
-	}
-	if len(cmd.ready) != 1 || cmd.ready[0] != "orch-new" {
-		t.Fatalf("readiness waits = %#v, want orch-new", cmd.ready)
-	}
-	if len(cmd.sent) != 1 || cmd.sent[0] != "orch-new" {
-		t.Fatalf("sent = %#v, want orch-new", cmd.sent)
+	out, err := (&Service{store: st, manager: cmd, runBackground: runInline}).DelegateTask(
+		context.Background(), DelegateTaskInput{ProjectID: "ao", Brief: "Fix it"},
+	)
+	if err != nil || out.WorkerID != "mer-9" || !cmd.spawned {
+		t.Fatalf("DelegateTask = %#v, %v; want successful worker", out, err)
 	}
 }
 
-func TestDelegateTaskKeepsSpawnSuccessWhenTitleOrchestratorNeverBecomesReady(t *testing.T) {
+func TestDelegateTaskReturnsBeforeBackgroundTitleCompletes(t *testing.T) {
 	st := newFakeStore()
 	st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
-	st.sessions["orch"] = domain.SessionRecord{ID: "orch", ProjectID: "ao", Kind: domain.KindOrchestrator}
-	cmd := &fakeCommander{readyErr: errors.New("readiness timed out")}
-
-	out, err := (&Service{store: st, manager: cmd, runBackground: runInline}).DelegateTask(context.Background(), DelegateTaskInput{ProjectID: "ao", Brief: "Fix it"})
-	if err != nil {
-		t.Fatalf("DelegateTask: %v", err)
-	}
-	if out.WorkerID != "mer-9" || out.OrchestratorID != "" {
-		t.Fatalf("out = %#v, want spawned worker without title recipient", out)
-	}
-	if len(cmd.ready) != 1 || cmd.ready[0] != "orch" {
-		t.Fatalf("readiness waits = %#v, want orch", cmd.ready)
-	}
-	if len(cmd.sent) != 0 {
-		t.Fatalf("sent = %#v, want no title request before readiness", cmd.sent)
-	}
-}
-
-func TestDelegateTaskKeepsSpawnSuccessWhenTitleRequestFails(t *testing.T) {
-	st := newFakeStore()
-	st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
-	st.sessions["orch"] = domain.SessionRecord{ID: "orch", ProjectID: "ao", Kind: domain.KindOrchestrator}
-	cmd := &fakeCommander{sendErr: errors.New("orchestrator exited")}
-
-	out, err := (&Service{store: st, manager: cmd, runBackground: runInline}).DelegateTask(context.Background(), DelegateTaskInput{ProjectID: "ao", Brief: "Fix it"})
-	if err != nil {
-		t.Fatalf("DelegateTask: %v", err)
-	}
-	if out.WorkerID != "mer-9" || out.OrchestratorID != "" {
-		t.Fatalf("out = %#v, want spawned worker without title recipient", out)
-	}
-	if !cmd.spawned {
-		t.Fatal("worker was not spawned")
-	}
-}
-
-func TestDelegateTaskReturnsBeforeTitleRequestCompletes(t *testing.T) {
-	st := newFakeStore()
-	st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
-	st.sessions["orch"] = domain.SessionRecord{ID: "orch", ProjectID: "ao", Kind: domain.KindOrchestrator}
-	titleStarted := make(chan struct{})
-	releaseTitle := make(chan struct{})
-	titleFinished := make(chan struct{})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
 	t.Cleanup(func() {
 		select {
-		case <-releaseTitle:
+		case <-release:
 		default:
-			close(releaseTitle)
+			close(release)
 		}
 	})
-	cmd := &fakeCommander{sendFunc: func(domain.SessionID, string) error {
-		close(titleStarted)
-		<-releaseTitle
-		close(titleFinished)
-		return nil
+	cmd := &fakeCommander{backgroundFunc: func(backgroundTaskCall) (string, error) {
+		close(started)
+		<-release
+		close(finished)
+		return "Fix it", nil
 	}}
 	svc := &Service{store: st, manager: cmd}
 
-	type result struct {
-		out DelegateTaskOutcome
-		err error
-	}
-	resultCh := make(chan result, 1)
-	go func() {
-		out, err := svc.DelegateTask(context.Background(), DelegateTaskInput{ProjectID: "ao", Brief: "Fix it"})
-		resultCh <- result{out: out, err: err}
-	}()
-
-	select {
-	case got := <-resultCh:
-		if got.err != nil || got.out.WorkerID != "mer-9" {
-			t.Fatalf("DelegateTask = %#v, %v", got.out, got.err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("DelegateTask waited for background title request")
+	out, err := svc.DelegateTask(context.Background(), DelegateTaskInput{ProjectID: "ao", Brief: "Fix it"})
+	if err != nil || out.WorkerID != "mer-9" {
+		t.Fatalf("DelegateTask = %#v, %v", out, err)
 	}
 	select {
-	case <-titleStarted:
+	case <-started:
 	case <-time.After(2 * time.Second):
 		t.Fatal("background title request did not start")
 	}
-	close(releaseTitle)
+	close(release)
 	select {
-	case <-titleFinished:
+	case <-finished:
 	case <-time.After(2 * time.Second):
 		t.Fatal("background title request did not finish")
 	}
 }
 
-func runInline(work func()) {
-	work()
+func TestDelegateTaskSkipsTitleWhenCapacityIsFull(t *testing.T) {
+	st := newFakeStore()
+	st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
+	cmd := &fakeCommander{}
+	slots := make(chan struct{}, 1)
+	slots <- struct{}{}
+
+	out, err := (&Service{store: st, manager: cmd, titleRefinementSlots: slots}).DelegateTask(
+		context.Background(), DelegateTaskInput{ProjectID: "ao", Brief: "Fix it"},
+	)
+	if err != nil || out.WorkerID != "mer-9" || len(cmd.backgroundCalls) != 0 {
+		t.Fatalf("DelegateTask = %#v, %v; background=%#v", out, err, cmd.backgroundCalls)
+	}
 }
+
+func TestKillCancelsBackgroundTitle(t *testing.T) {
+	st := newFakeStore()
+	st.projects["ao"] = domain.ProjectRecord{ID: "ao"}
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	cmd := &fakeCommander{backgroundFunc: func(call backgroundTaskCall) (string, error) {
+		close(started)
+		<-call.ctx.Done()
+		close(finished)
+		return "", call.ctx.Err()
+	}}
+	svc := NewWithDeps(Deps{Manager: cmd, Store: st})
+
+	if _, err := svc.DelegateTask(context.Background(), DelegateTaskInput{ProjectID: "ao", Brief: "Fix it"}); err != nil {
+		t.Fatalf("DelegateTask: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background title request did not start")
+	}
+	if _, err := svc.Kill(context.Background(), "mer-9"); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background title request was not cancelled")
+	}
+}
+
+func runInline(work func()) { work() }

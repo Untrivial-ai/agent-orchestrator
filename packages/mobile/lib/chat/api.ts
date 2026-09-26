@@ -1,5 +1,5 @@
 import { fetch as expoFetch } from "expo/fetch";
-import { ApiError, apiRequest } from "../api";
+import { ApiError, ATTACHMENT_REQUEST_TIMEOUT_MS, apiRequest } from "../api";
 import { authHeaders, httpBase, type ServerConfig } from "../config";
 import type {
 	ActivityDetail,
@@ -142,8 +142,9 @@ export async function sendConversationMessage(
 ): Promise<SendMessageResult> {
 	const res = await apiRequest(cfg, conversationPath(sessionId, "/messages"), {
 		method: "POST",
+		headers: input.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 		body: JSON.stringify(input),
-	});
+	}, input.attachments?.length ? ATTACHMENT_REQUEST_TIMEOUT_MS : undefined);
 	return (await res.json()) as SendMessageResult;
 }
 
@@ -256,7 +257,7 @@ export async function stageConversationAttachments(
 	const res = await apiRequest(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/attachments`, {
 		method: "POST",
 		body: JSON.stringify({ attachments }),
-	}, 60_000);
+	}, ATTACHMENT_REQUEST_TIMEOUT_MS);
 	const body = (await res.json()) as { paths?: string[] };
 	return body.paths ?? [];
 }

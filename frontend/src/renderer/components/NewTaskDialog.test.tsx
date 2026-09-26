@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { NewTaskDialog } from "./NewTaskDialog";
 
-const { getMock, postMock, ensureAgentReadinessMock } = vi.hoisted(() => ({
+const { deleteMock, getMock, postMock, ensureAgentReadinessMock } = vi.hoisted(() => ({
+	deleteMock: vi.fn(),
 	getMock: vi.fn(),
 	postMock: vi.fn(),
 	ensureAgentReadinessMock: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
 
 vi.mock("../lib/api-client", () => ({
 	apiClient: {
+		DELETE: (...args: unknown[]) => deleteMock(...args),
 		GET: (...args: unknown[]) => getMock(...args),
 		POST: (...args: unknown[]) => postMock(...args),
 	},
@@ -38,12 +40,12 @@ vi.mock("../lib/api-client", () => ({
 function renderDialog() {
 	const onCreated = vi.fn();
 	const onOpenChange = vi.fn();
-	render(
+	const view = render(
 		<QueryClientProvider client={new QueryClient()}>
 			<NewTaskDialog open projectId="proj-1" onCreated={onCreated} onOpenChange={onOpenChange} />
 		</QueryClientProvider>,
 	);
-	return { onCreated, onOpenChange };
+	return { ...view, onCreated, onOpenChange };
 }
 
 function requestBody() {
@@ -81,7 +83,9 @@ async function waitForAgentCatalog() {
 }
 
 beforeEach(() => {
+	window.localStorage.removeItem("ao.taskComposer.preferences.v1");
 	ensureAgentReadinessMock.mockReset();
+	deleteMock.mockReset().mockResolvedValue({ data: undefined, error: undefined });
 	getMock.mockReset().mockImplementation(async (path: string) => {
 		if (path === "/api/v1/agents/readiness") {
 			return { data: agentInventory, error: undefined };
@@ -90,12 +94,26 @@ beforeEach(() => {
 			return { data: directModelCatalog, error: undefined };
 		}
 		return {
-			data: { status: "ok", project: { id: "proj-1", config: { worker: { agent: "claude-code" } } } },
+			data: {
+				status: "ok",
+				project: {
+					id: "proj-1",
+					name: "careerops",
+					repo: "github.com/team/careerops",
+					defaultBranch: "main",
+					path: "/work/careerops",
+					workspaceRepos: [{ name: "api", relativePath: "api", repo: "github.com/team/careerops-api" }],
+					config: { worker: { agent: "claude-code" }, orchestrator: { agent: "codex" } },
+				},
+			},
 			error: undefined,
 		};
 	});
 	postMock.mockReset().mockImplementation(async (path: string) => {
 		if (path === "/api/v1/agents/readiness/ensure") return { data: agentInventory, error: undefined };
+		if (path === "/api/v1/projects/{id}/tasks/prepare") {
+			return { data: { ok: true, taskPreparation: "prep-token" }, error: undefined };
+		}
 		return { data: { ok: true, workerId: "worker-1", orchestratorId: "orch-1" }, error: undefined };
 	});
 });
@@ -106,6 +124,11 @@ describe("NewTaskDialog", () => {
 	it("renders one continuous composer surface with a visible settings-style title", async () => {
 		renderDialog();
 		await waitForAgentCatalog();
+		await waitFor(() =>
+			expect(postMock).toHaveBeenCalledWith("/api/v1/projects/{id}/tasks/prepare", {
+				params: { path: { id: "proj-1" } },
+			}),
+		);
 
 		const dialog = screen.getByRole("dialog", { name: "Create a new task" });
 		expect(dialog.querySelector(".composer-prompt-surface")).not.toBeNull();
@@ -114,6 +137,14 @@ describe("NewTaskDialog", () => {
 		expect(screen.queryByRole("button", { name: "Close new task dialog" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Agent" })).toHaveTextContent("Claude Code");
+		expect(screen.getByTestId("execution-context")).toHaveTextContent("careerops");
+		expect(screen.getByTestId("execution-context")).toHaveTextContent("main");
+		expect(screen.getByTestId("execution-context")).toHaveTextContent("/work/careerops");
+		expect(screen.getByTestId("execution-context")).not.toHaveAttribute("open");
+		expect(screen.getByTestId("execution-context-toggle")).toHaveTextContent("careerops");
+		expect(screen.getByTestId("execution-context-toggle")).toHaveTextContent("main");
+		await userEvent.click(screen.getByTestId("execution-context-toggle"));
+		expect(screen.getByTestId("execution-context")).toHaveAttribute("open");
 		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Use Claude Code's default");
 		expect(screen.getByRole("button", { name: "Add file" })).toBeInTheDocument();
 		expect(screen.getByLabelText("Task").getAttribute("placeholder")).toBeTruthy();
@@ -130,12 +161,70 @@ describe("NewTaskDialog", () => {
 		expect(onOpenChange).toHaveBeenCalledWith(false);
 	});
 
+	it("cancels an unused prepared worktree when the composer closes", async () => {
+		const { unmount } = renderDialog();
+		await waitFor(() =>
+			expect(postMock).toHaveBeenCalledWith("/api/v1/projects/{id}/tasks/prepare", {
+				params: { path: { id: "proj-1" } },
+			}),
+		);
+		unmount();
+		expect(deleteMock).toHaveBeenCalledWith("/api/v1/task-preparations/{token}", {
+			params: { path: { token: "prep-token" } },
+		});
+	});
+
+	it("cancels a preparation that resolves while an unprepared task is submitting", async () => {
+		let resolvePreparation!: (value: unknown) => void;
+		let resolveDelegate!: (value: unknown) => void;
+		postMock.mockImplementation((path: string) => {
+			if (path === "/api/v1/projects/{id}/tasks/prepare") {
+				return new Promise((resolve) => {
+					resolvePreparation = resolve;
+				});
+			}
+			if (path === "/api/v1/orchestrators/delegate") {
+				return new Promise((resolve) => {
+					resolveDelegate = resolve;
+				});
+			}
+			return Promise.resolve({ data: agentInventory, error: undefined });
+		});
+		const { onCreated } = renderDialog();
+		const user = userEvent.setup();
+		await waitForAgentCatalog();
+		await user.type(screen.getByLabelText("Task"), "Fix the race");
+		await user.click(screen.getByRole("button", { name: "Start task" }));
+		await waitFor(() => expect(delegateCalls()).toHaveLength(1));
+		expect(requestBody()).not.toHaveProperty("taskPreparation");
+
+		await act(async () => {
+			resolvePreparation({
+				data: { ok: true, taskPreparation: "late-prep" },
+				error: undefined,
+			});
+		});
+		resolveDelegate({
+			data: { ok: true, workerId: "worker-1" },
+			error: undefined,
+		});
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("worker-1"));
+		expect(deleteMock).toHaveBeenCalledWith("/api/v1/task-preparations/{token}", {
+			params: { path: { token: "late-prep" } },
+		});
+	});
+
 	it("starts the original task naming the preselected project-default agent and optional model", async () => {
 		const { onCreated, onOpenChange } = renderDialog();
 		const user = userEvent.setup();
 		const brief = "  Restore the fallback renderer after WebGL init fails.  ";
 
 		await waitForAgentCatalog();
+		await waitFor(() =>
+			expect(postMock).toHaveBeenCalledWith("/api/v1/projects/{id}/tasks/prepare", {
+				params: { path: { id: "proj-1" } },
+			}),
+		);
 
 		await user.type(screen.getByLabelText("Task"), brief);
 		await user.click(await screen.findByRole("button", { name: "Model" }));
@@ -152,6 +241,7 @@ describe("NewTaskDialog", () => {
 				// call names it instead of relying on a server-side fallback.
 				agent: "claude-code",
 				model: "placeholder-model",
+				taskPreparation: "prep-token",
 			},
 		});
 		expect(requestBody()).not.toHaveProperty("issueId");
@@ -165,6 +255,9 @@ describe("NewTaskDialog", () => {
 		let delegateAttempts = 0;
 		postMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents/readiness/ensure") return { data: agentInventory, error: undefined };
+			if (path === "/api/v1/projects/{id}/tasks/prepare") {
+				return { data: { ok: true, taskPreparation: "prep-token" }, error: undefined };
+			}
 			delegateAttempts += 1;
 			if (delegateAttempts === 1) {
 				return {
@@ -315,7 +408,7 @@ describe("NewTaskDialog", () => {
 
 		// Plain Enter submits the task.
 		await user.keyboard("{Enter}");
-		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+		await waitFor(() => expect(delegateCalls()).toHaveLength(1));
 	});
 
 	it.each([
@@ -328,9 +421,17 @@ describe("NewTaskDialog", () => {
 			message: "task start failed",
 		},
 	])("displays daemon start errors for $code", async ({ code, message }) => {
-		postMock.mockResolvedValueOnce({
-			data: undefined,
-			error: { code, message },
+		postMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/projects/{id}/tasks/prepare") {
+				return { data: { ok: true, taskPreparation: "prep-token" }, error: undefined };
+			}
+			if (path === "/api/v1/agents/readiness/ensure") {
+				return { data: agentInventory, error: undefined };
+			}
+			return {
+				data: undefined,
+				error: { code, message },
+			};
 		});
 		renderDialog();
 		const user = userEvent.setup();

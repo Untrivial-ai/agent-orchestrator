@@ -239,6 +239,21 @@ func launchContextFrom(launch domain.WorkerLaunch) (worker.LaunchContext, error)
 	if err != nil {
 		return worker.LaunchContext{}, err
 	}
+	// Extra repos are project-level (chosen at project setup, stored on the
+	// project config), so every session of the project clones the same set.
+	// Decoded before the prompt is built so both the project context (which
+	// makes every role aware the project is multi-repo) and the worker's clone
+	// list draw from the same source.
+	var extraRepos []worker.RepoRef
+	var promptExtras []roleprompt.RepoRef
+	if coderCfg, ok := domain.DecodeProjectCoderConfig(launch.ProjectConfig); ok && len(coderCfg.ExtraRepos) > 0 {
+		extraRepos = make([]worker.RepoRef, 0, len(coderCfg.ExtraRepos))
+		promptExtras = make([]roleprompt.RepoRef, 0, len(coderCfg.ExtraRepos))
+		for _, repo := range coderCfg.ExtraRepos {
+			extraRepos = append(extraRepos, worker.RepoRef{URL: repo.URL, Branch: repo.Branch})
+			promptExtras = append(promptExtras, roleprompt.RepoRef{URL: repo.URL, Branch: repo.Branch})
+		}
+	}
 	systemPrompt := roleprompt.Build(roleprompt.Config{
 		Role:              launch.Kind,
 		ProjectID:         launch.ProjectID,
@@ -248,6 +263,7 @@ func launchContextFrom(launch domain.WorkerLaunch) (worker.LaunchContext, error)
 		WorkspacePath:     "/workspace/repository",
 		AgentRules:        agentRules,
 		OrchestratorRules: orchestratorRules,
+		ExtraRepos:        promptExtras,
 	})
 	return worker.LaunchContext{
 		SessionID:       launch.SessionID,
@@ -263,6 +279,7 @@ func launchContextFrom(launch domain.WorkerLaunch) (worker.LaunchContext, error)
 		DeniedCommands:  launch.DeniedCommands,
 		RepositoryURL:   launch.RepositoryURL,
 		DefaultBranch:   launch.DefaultBranch,
+		ExtraRepos:      extraRepos,
 		SystemPrompt:    systemPrompt,
 	}, nil
 }

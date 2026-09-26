@@ -80,6 +80,55 @@ func (s *Store) OpenNativeConversation(ctx context.Context, id string, scope dom
 	})
 }
 
+// CreateReviewConversation opens the durable narrative for one Chat reviewer.
+// Reviewer identity, rather than the parent worker session, is the conversation
+// owner; a worker can therefore retain its own Chat narrative at the same time.
+func (s *Store) CreateReviewConversation(ctx context.Context, id, reviewID string, project domain.ProjectID, session domain.SessionID, now time.Time) (domain.ConversationRecord, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	var conversation domain.ConversationRecord
+	rootBranchID := id + ":root"
+	if err := s.inTx(ctx, "insert reviewer conversation", func(q *gen.Queries) error {
+		review, err := q.GetReviewByID(ctx, reviewID)
+		if err != nil {
+			return fmt.Errorf("select reviewer %s: %w", reviewID, err)
+		}
+		if review.SessionID != session || review.ProjectID != project {
+			return fmt.Errorf("reviewer %s is not the current chat owner", reviewID)
+		}
+		mode := string(domain.ReviewerInterfaceChat)
+		if n, err := q.SetReviewInterfaceMode(ctx, gen.SetReviewInterfaceModeParams{InterfaceMode: mode, Column2: mode, Column3: mode, Column4: mode, UpdatedAt: now, ID: reviewID}); err != nil {
+			return err
+		} else if n != 1 {
+			return fmt.Errorf("reviewer %s is not the current chat owner", reviewID)
+		}
+		if existing, err := q.SelectConversationByReview(ctx, nullableString(reviewID)); err == nil {
+			conversation = conversationToDomain(existing)
+			return nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("select conversation for review %s: %w", reviewID, err)
+		}
+		if err := q.InsertReviewConversation(ctx, gen.InsertReviewConversationParams{
+			ID: id, ProjectID: optionalProjectID(project), ReviewID: nullableString(reviewID), CurrentReviewID: nullableString(reviewID),
+			ActiveBranchID: rootBranchID, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
+		if err := q.InsertReviewConversationBranch(ctx, gen.InsertReviewConversationBranchParams{
+			ID: rootBranchID, ConversationID: id, SessionID: nullableString(string(session)), ReviewID: nullableString(reviewID),
+			ProviderConversationID: review.ProviderConversationID, CreatedAt: now,
+		}); err != nil {
+			return err
+		}
+		conversation = domain.ConversationRecord{ID: id, Scope: domain.ConversationScopeReview, ProjectID: project, ReviewID: reviewID, SessionID: session, ActiveBranchID: rootBranchID, CreatedAt: now, UpdatedAt: now}
+		return nil
+	}); err != nil {
+		return domain.ConversationRecord{}, fmt.Errorf("insert reviewer conversation %s: %w", reviewID, err)
+	}
+	return conversation, nil
+}
+
 // CreateProjectConversationWithContextReset rebinds an existing project
 // conversation and records the fresh-context boundary in the same transaction.
 // The boundary is written before provider startup so paged readers never expose
@@ -811,6 +860,19 @@ func (s *Store) ConversationForSession(
 	return conversationToDomain(row), nil
 }
 
+// ConversationForReview looks up the durable conversation owned by a reviewer
+// row rather than by its parent worker session.
+func (s *Store) ConversationForReview(ctx context.Context, reviewID string) (domain.ConversationRecord, error) {
+	row, err := s.qr.SelectConversationByReview(ctx, nullableString(reviewID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ConversationRecord{}, ErrConversationNotFound
+	}
+	if err != nil {
+		return domain.ConversationRecord{}, fmt.Errorf("select conversation for review %s: %w", reviewID, err)
+	}
+	return conversationToDomain(row), nil
+}
+
 // HasConversationTurns includes hidden and settled turns: an empty visible
 // timeline is not proof that the provider conversation never started.
 func (s *Store) HasConversationTurns(ctx context.Context, conversationID string) (bool, error) {
@@ -835,7 +897,13 @@ func (s *Store) AppendUserMessage(
 	turnID string,
 	now time.Time,
 ) (created bool, err error) {
-	return s.appendUserMessage(ctx, conversationID, session, generation, msg, turnID, "", now)
+	return s.appendUserMessage(ctx, conversationID, session, "", generation, msg, turnID, "", now)
+}
+
+// AppendReviewUserMessage preserves the worker session needed for lifecycle
+// projection while recording the typed reviewer that owns the turn.
+func (s *Store) AppendReviewUserMessage(ctx context.Context, conversationID string, session domain.SessionID, reviewID, generation string, msg domain.ConversationMessage, turnID string, now time.Time) (bool, error) {
+	return s.appendUserMessage(ctx, conversationID, session, reviewID, generation, msg, turnID, "", now)
 }
 
 // AppendRetryUserMessage records a retry and its source as one transaction.
@@ -851,13 +919,19 @@ func (s *Store) AppendRetryUserMessage(
 	retryOfTurnID string,
 	now time.Time,
 ) (created bool, err error) {
-	return s.appendUserMessage(ctx, conversationID, session, generation, msg, turnID, retryOfTurnID, now)
+	return s.appendUserMessage(ctx, conversationID, session, "", generation, msg, turnID, retryOfTurnID, now)
+}
+
+// AppendReviewRetryUserMessage atomically persists a retry for a reviewer chat.
+func (s *Store) AppendReviewRetryUserMessage(ctx context.Context, conversationID string, session domain.SessionID, reviewID, generation string, msg domain.ConversationMessage, turnID, retryOfTurnID string, now time.Time) (bool, error) {
+	return s.appendUserMessage(ctx, conversationID, session, reviewID, generation, msg, turnID, retryOfTurnID, now)
 }
 
 func (s *Store) appendUserMessage(
 	ctx context.Context,
 	conversationID string,
 	session domain.SessionID,
+	reviewID string,
 	generation string,
 	msg domain.ConversationMessage,
 	turnID string,
@@ -866,6 +940,17 @@ func (s *Store) appendUserMessage(
 ) (created bool, err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if generation == "" && reviewID == "" {
+		// A Send may have read "provisioning" just before Kill or Ready.
+		// Session writes share writeMu, so this check and the append are atomic.
+		record, readErr := s.qw.GetSession(ctx, session)
+		if readErr != nil {
+			return false, fmt.Errorf("check queued session %s: %w", session, readErr)
+		}
+		if record.IsTerminated || !record.ProvisionState.IsProvisioning() {
+			return false, domain.ErrSessionNotProvisioning
+		}
+	}
 
 	if retryOfTurnID != "" {
 		_, lookupErr := s.qr.SelectConversationRetryTurnIDBySource(ctx,
@@ -903,16 +988,12 @@ func (s *Store) appendUserMessage(
 			return fmt.Errorf("allocate sequence: %w", err)
 		}
 
-		if err := q.InsertConversationTurn(ctx, gen.InsertConversationTurnParams{
-			ID:                   turnID,
-			ConversationID:       conversationID,
-			HandledBySessionID:   session,
-			ControllerGeneration: generation,
-			RetryOfTurnID:        nullableString(retryOfTurnID),
-			State:                domain.TurnStateQueued,
-			RequestedAt:          now,
-		}); err != nil {
-			return fmt.Errorf("insert turn: %w", err)
+		if reviewID == "" {
+			if err := q.InsertConversationTurn(ctx, gen.InsertConversationTurnParams{ID: turnID, ConversationID: conversationID, HandledBySessionID: session, ControllerGeneration: generation, RetryOfTurnID: nullableString(retryOfTurnID), State: domain.TurnStateQueued, RequestedAt: now}); err != nil {
+				return fmt.Errorf("insert turn: %w", err)
+			}
+		} else if err := q.InsertReviewConversationTurn(ctx, gen.InsertReviewConversationTurnParams{ID: turnID, ConversationID: conversationID, HandledBySessionID: session, HandledByReviewID: nullableString(reviewID), ControllerGeneration: generation, RetryOfTurnID: nullableString(retryOfTurnID), State: domain.TurnStateQueued, RequestedAt: now}); err != nil {
+			return fmt.Errorf("insert reviewer turn: %w", err)
 		}
 
 		if err := q.InsertConversationMessage(ctx, gen.InsertConversationMessageParams{
@@ -993,6 +1074,21 @@ func (s *Store) AdoptProviderTurn(
 		StartedAt:            sql.NullTime{Time: now, Valid: true},
 	}); err != nil {
 		return fmt.Errorf("adopt provider turn %s: %w", providerTurnID, err)
+	}
+	return nil
+}
+
+// AdoptReviewProviderTurn projects provider-initiated reviewer work with its
+// typed owner. The worker session remains present for the existing lifecycle
+// and CDC projection, but never substitutes for reviewer ownership.
+func (s *Store) AdoptReviewProviderTurn(ctx context.Context, conversationID string, session domain.SessionID, reviewID, generation, turnID, providerTurnID string, now time.Time) error {
+	q, unlock := s.conversationWriter(ctx)
+	defer unlock()
+	if err := q.AdoptReviewProviderConversationTurn(ctx, gen.AdoptReviewProviderConversationTurnParams{
+		ID: turnID, ConversationID: conversationID, HandledBySessionID: session, HandledByReviewID: nullableString(reviewID),
+		ProviderTurnID: providerTurnID, ControllerGeneration: generation, RequestedAt: now, StartedAt: sql.NullTime{Time: now, Valid: true},
+	}); err != nil {
+		return fmt.Errorf("adopt reviewer provider turn %s: %w", providerTurnID, err)
 	}
 	return nil
 }

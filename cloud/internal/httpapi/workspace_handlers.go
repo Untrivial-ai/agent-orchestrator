@@ -80,6 +80,41 @@ func (s *Server) readWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, file)
 }
 
+// readWorkspaceDiffFile exposes the worker's per-file review model.
+func (s *Server) readWorkspaceDiffFile(w http.ResponseWriter, r *http.Request) {
+	orgID, sessionID, ok := workspaceRoute(w, r)
+	if !ok {
+		return
+	}
+	path := r.URL.Query().Get("path")
+	if strings.TrimSpace(path) == "" || len(path) > maxWorkspacePath {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "A valid workspace-relative path is required.")
+		return
+	}
+	principal := principalFrom(r)
+	session, err := s.store.GetSession(r.Context(), principal, orgID, sessionID)
+	if err != nil {
+		s.logger.Warn("workspace diff-file request rejected", "org_id", orgID, "session_id", sessionID, "path", path, "error", err)
+		s.writeStoreError(w, r, err)
+		return
+	}
+	s.logger.Info("workspace diff-file request started", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)
+	payload, _ := json.Marshal(worker.WorkspaceDiffFileRequest{Path: path})
+	result, ok := s.runWorkspaceRequest(w, r, orgID, sessionID, "workspace.diff-file", payload)
+	if !ok {
+		s.logger.Warn("workspace diff-file request failed", "org_id", orgID, "session_id", sessionID, "path", path, "provider", session.SandboxProvider)
+		return
+	}
+	var file worker.WorkspaceDiffFile
+	if err := json.Unmarshal(result, &file); err != nil {
+		s.logger.Warn("workspace diff-file worker response invalid", "org_id", orgID, "session_id", sessionID, "path", path, "error", err)
+		writeError(w, r, http.StatusBadGateway, "INVALID_WORKER_RESPONSE", "The worker returned an invalid workspace diff file.")
+		return
+	}
+	s.logger.Info("workspace diff-file request completed", "org_id", orgID, "session_id", sessionID, "path", file.Path, "provider", session.SandboxProvider, "size", file.Size, "binary", file.Binary, "deleted", file.Deleted, "diff_truncated", file.DiffTruncated)
+	writeJSON(w, http.StatusOK, file)
+}
+
 func (s *Server) writeWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 	orgID, sessionID, ok := workspaceRoute(w, r)
 	if !ok {
@@ -120,17 +155,32 @@ func (s *Server) getWorkspaceDiff(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	principal := principalFrom(r)
+	session, err := s.store.GetSession(r.Context(), principal, orgID, sessionID)
+	if err != nil {
+		s.logger.Warn("workspace diff request rejected", "org_id", orgID, "session_id", sessionID, "error", err)
+		s.writeStoreError(w, r, err)
+		return
+	}
+	s.logger.Info("workspace diff request started", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
 	result, ok := s.runWorkspaceRequest(
 		w, r, orgID, sessionID, "workspace.diff", json.RawMessage(`{}`),
 	)
 	if !ok {
+		s.logger.Warn("workspace diff request failed", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
 		return
 	}
 	var value map[string]any
 	if json.Unmarshal(result, &value) != nil {
+		s.logger.Warn("workspace diff worker response invalid", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider)
 		writeError(w, r, http.StatusBadGateway, "INVALID_WORKER_RESPONSE", "The worker returned an invalid workspace diff.")
 		return
 	}
+	fileCount := 0
+	if files, ok := value["files"].([]any); ok {
+		fileCount = len(files)
+	}
+	s.logger.Info("workspace diff request completed", "org_id", orgID, "session_id", sessionID, "provider", session.SandboxProvider, "file_count", fileCount)
 	writeJSON(w, http.StatusOK, value)
 }
 
@@ -203,6 +253,8 @@ func (s *Server) runWorkerRequest(
 				status := http.StatusUnprocessableEntity
 				if current.ErrorCode == "TRANSPORT_TIMEOUT" {
 					status = http.StatusGatewayTimeout
+				} else if current.ErrorCode == "WORKSPACE_SNAPSHOT_STALE" || current.ErrorCode == "WORKSPACE_FILE_STALE" {
+					status = http.StatusConflict
 				}
 				writeError(w, r, status, current.ErrorCode, current.ErrorMessage)
 				return nil, false

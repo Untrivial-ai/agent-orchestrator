@@ -106,6 +106,7 @@ import {
 } from "./ChatTimelineItems";
 import { HumanMessageEditor } from "./HumanMessageEditor";
 import { ChatLinkProvider } from "./ChatMarkdown";
+import { ChatImageSourceProvider } from "./chat-image-source";
 import { ChatComposer, type StoredComposerAttachment } from "./ChatComposer";
 import { stagedAttachmentParts, attachmentName } from "./messageAttachments";
 import type { QueuedMessageEditOptions } from "../../types/conversation";
@@ -200,6 +201,7 @@ type ShellTerminalTarget = Extract<TerminalTarget, { kind: "shell" }>;
 type WorkspaceTab = { key: string; content: ReactNode; onSelect: () => void; onClose?: () => void };
 type ChatAuxiliaryTab =
 	| { key: string; kind: "reviewer"; terminal: { handleId: string; harness: string } }
+	| { key: string; kind: "reviewer-chat"; terminal: { reviewId: string; harness: string } }
 	| { key: string; kind: "shell"; terminal: ShellTerminal }
 	| { key: string; kind: "workspace"; tab: WorkspaceTab };
 
@@ -303,6 +305,12 @@ export interface ChatWorkspaceProps {
 	newWorkDisabled?: boolean;
 	reviewerTerminal?: { handleId: string; harness: string };
 	onOpenReviewerTerminal?: (target: { handleId: string; harness: string }) => void;
+	reviewerChat?: { reviewId: string; harness: string };
+	onOpenReviewerChat?: (target: { reviewId: string; harness: string }) => void;
+	/** A typed reviewer owns the body while this worker surface remains mounted. */
+	reviewerChatSelected?: boolean;
+	/** The parent surface owns the shared session tab strip. */
+	hideHeader?: boolean;
 	/** Older durable history is available but not loaded into the DOM yet. */
 	hasOlder?: boolean;
 	loadingOlder?: boolean;
@@ -541,6 +549,10 @@ function ChatWorkspaceContent({
 	newWorkDisabled = false,
 	reviewerTerminal,
 	onOpenReviewerTerminal,
+	reviewerChat,
+	onOpenReviewerChat,
+	reviewerChatSelected = false,
+	hideHeader = false,
 	session,
 	onSessionRenamed,
 	reviewerTarget,
@@ -665,17 +677,20 @@ function ChatWorkspaceContent({
 	// Selection is durable UI state; availability only controls whether the tab is
 	// offered. Keeping these separate preserves a selected reviewer while an active
 	// session temporarily becomes terminated and later returns.
-	const reviewerActive = Boolean(reviewerTarget && session);
+	const reviewerActive = reviewerChatSelected || Boolean(reviewerTarget && session);
 	const shellActive = Boolean(shellTarget && session);
 	const auxiliaryTabs = useMemo<ChatAuxiliaryTab[]>(
 		() => [
 			...(reviewerTerminal
 				? [{ key: `reviewer:${reviewerTerminal.handleId}`, kind: "reviewer" as const, terminal: reviewerTerminal }]
 				: []),
+			...(!reviewerTerminal && reviewerChat
+				? [{ key: `reviewer-chat:${reviewerChat.reviewId}`, kind: "reviewer-chat" as const, terminal: reviewerChat }]
+				: []),
 			...(shellTerminals ?? []).map((terminal) => ({ key: terminal.handleId, kind: "shell" as const, terminal })),
 			...(workspaceTabs ?? []).map((tab) => ({ key: tab.key, kind: "workspace" as const, tab })),
 		],
-		[reviewerTerminal, shellTerminals, workspaceTabs],
+		[reviewerChat, reviewerTerminal, shellTerminals, workspaceTabs],
 	);
 	const availableTabKeys = useMemo(() => auxiliaryTabs.map((tab) => tab.key), [auxiliaryTabs]);
 	const [tabOrderBySession, setTabOrderBySession] = useState<Record<string, string[]>>({});
@@ -1011,7 +1026,11 @@ function ChatWorkspaceContent({
 			const activeKey = workspaceActiveTabKey ?? (shellActive
 				? shellTarget?.handleId
 				: reviewerActive
-					? `reviewer:${reviewerTerminal?.handleId}`
+					? reviewerTerminal
+						? `reviewer:${reviewerTerminal.handleId}`
+						: reviewerChat
+							? `reviewer-chat:${reviewerChat.reviewId}`
+							: "chat"
 					: "chat");
 			const activeIndex = tabs.findIndex((tab) => tab.key === activeKey);
 			const currentIndex = activeIndex >= 0 ? activeIndex : 0;
@@ -1025,6 +1044,10 @@ function ChatWorkspaceContent({
 				onOpenReviewerTerminal?.(next.terminal);
 				return;
 			}
+			if (next.kind === "reviewer-chat") {
+				onOpenReviewerChat?.(next.terminal);
+				return;
+			}
 			if (next.kind === "shell") {
 				onSelectShellTerminal?.(next.terminal.handleId);
 				return;
@@ -1033,9 +1056,11 @@ function ChatWorkspaceContent({
 		},
 		[
 			onOpenReviewerTerminal,
+			onOpenReviewerChat,
 			onSelectChat,
 			onSelectShellTerminal,
 			reviewerActive,
+			reviewerChat,
 			reviewerTerminal,
 			orderedAuxiliaryTabs,
 			shellActive,
@@ -1288,11 +1313,12 @@ function ChatWorkspaceContent({
 				} as CSSProperties
 			}
 		>
-			<ChatHeader
+			{hideHeader ? null : <ChatHeader
 				snapshot={snapshot}
 				sessionTitle={sessionTitle}
 				sessionRole={sessionRole}
 				onOpenReviewerTerminal={onOpenReviewerTerminal}
+				onOpenReviewerChat={onOpenReviewerChat}
 				reviewerActive={reviewerActive}
 				onSelectChat={onSelectChat}
 				shellActiveHandleId={shellActive ? shellTarget?.handleId : undefined}
@@ -1312,7 +1338,7 @@ function ChatWorkspaceContent({
 				onReorderAuxiliaryTabs={reorderAuxiliaryTabs}
 				inline={isFullscreen}
 				topbarBounds={topbarBounds}
-			/>
+			/>}
 			<div className="relative flex min-h-0 flex-1 flex-col">
 				{reviewerTarget && session ? (
 					<div
@@ -1378,6 +1404,9 @@ function ChatWorkspaceContent({
 					) : null}
 					<ControllerBanner
 						controller={snapshot.controller}
+						agentName={agentLabel(snapshot.harness)}
+						provisionState={session?.provisionState}
+						provisionError={session?.provisionError}
 						transitioning={controllerTransitioning}
 						onResume={newWorkDisabled ? undefined : onResumeAgent}
 						resuming={resumingAgent}
@@ -1399,29 +1428,31 @@ function ChatWorkspaceContent({
 						data-composer-placement={conversationEmpty ? "center" : "dock"}
 					>
 						<ChatLinkProvider onLinkOpen={onLinkOpen} onFileOpen={onOpenFile} workspacePaths={filePaths}>
-							<Timeline
-								key={draftScopeKey}
-								snapshot={snapshot}
-								draftScope={draftScope}
-								hasOlder={hasOlder}
-								loadingOlder={loadingOlder}
-								onLoadOlder={onLoadOlder}
-								onDecide={onDecide}
-								busy={busy}
-								onRollback={rollbackTarget}
-								onOpenFiles={onOpenFiles}
-								onOpenFile={onOpenFile}
-								retryControl={retryControl}
-								onEditHumanMessage={editHumanMessage}
-								editPending={editMessagePending}
-								editBusy={Boolean(turn)}
-								editError={editMessageError}
-								onActivateBranch={onActivateBranch}
-								activateBranchPending={activateBranchPending}
-								activateBranchError={activateBranchError}
-								newWorkDisabled={newWorkDisabled}
-								localEchos={localEchos}
-							/>
+							<ChatImageSourceProvider sessionId={snapshot.sessionId}>
+								<Timeline
+									key={draftScopeKey}
+									snapshot={snapshot}
+									draftScope={draftScope}
+									hasOlder={hasOlder}
+									loadingOlder={loadingOlder}
+									onLoadOlder={onLoadOlder}
+									onDecide={onDecide}
+									busy={busy}
+									onRollback={rollbackTarget}
+									onOpenFiles={onOpenFiles}
+									onOpenFile={onOpenFile}
+									retryControl={retryControl}
+									onEditHumanMessage={editHumanMessage}
+									editPending={editMessagePending}
+									editBusy={Boolean(turn)}
+									editError={editMessageError}
+									onActivateBranch={onActivateBranch}
+									activateBranchPending={activateBranchPending}
+									activateBranchError={activateBranchError}
+									newWorkDisabled={newWorkDisabled}
+									localEchos={localEchos}
+								/>
+							</ChatImageSourceProvider>
 						</ChatLinkProvider>
 
 						<div ref={composerDockRef} className="cursor-chat-composer-dock shrink-0 px-4 pb-3">
@@ -1453,7 +1484,7 @@ function ChatWorkspaceContent({
 									commandError={queueDraftError ?? (queueEdit && !queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId) ? "chat.draft.queueMissing" : commandError)}
 									settings={composerSettings}
 									busy={busy}
-									willQueue={Boolean(turn)}
+									willQueue={Boolean(turn) || session?.provisionState === "provisioning"}
 									disabled={(snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}
 									// Switch/reconnect status is the topbar spinner beside ⋮ — not composer text.
 									disabledPlaceholder={
@@ -1632,6 +1663,7 @@ function ChatHeader({
 	sessionTitle,
 	sessionRole,
 	onOpenReviewerTerminal,
+	onOpenReviewerChat,
 	reviewerActive,
 	onSelectChat,
 	shellActiveHandleId,
@@ -1656,6 +1688,7 @@ function ChatHeader({
 	sessionTitle?: string;
 	sessionRole: SessionKind;
 	onOpenReviewerTerminal?: (target: { handleId: string; harness: string }) => void;
+	onOpenReviewerChat?: (target: { reviewId: string; harness: string }) => void;
 	/** The reviewer tab is selected; the chat tab is the clickable alternative. */
 	reviewerActive?: boolean;
 	/** Return the tab strip to the chat tab. */
@@ -1773,7 +1806,7 @@ function ChatHeader({
 								>
 									{orderedAuxiliaryTabs.map((tab) => (
 										<DraggableChatTab key={tab.key} value={tab.key}>
-											{tab.kind === "reviewer" ? (
+											{tab.kind === "reviewer" || tab.kind === "reviewer-chat" ? (
 												<button
 													aria-current={reviewerActive && !workspaceActiveTabKey ? true : undefined}
 													aria-label="Reviewer"
@@ -1784,7 +1817,7 @@ function ChatHeader({
 															? "bg-overlay text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-foreground/80"
 															: "text-muted-foreground hover:bg-raised hover:text-foreground",
 													)}
-													onClick={() => onOpenReviewerTerminal?.(tab.terminal)}
+													onClick={() => tab.kind === "reviewer" ? onOpenReviewerTerminal?.(tab.terminal) : onOpenReviewerChat?.(tab.terminal)}
 													role="tab"
 													tabIndex={reviewerActive && !workspaceActiveTabKey ? 0 : -1}
 													title={tab.terminal.harness}
@@ -1835,6 +1868,9 @@ function ChatHeader({
  */
 function ControllerBanner({
 	controller,
+	agentName,
+	provisionState,
+	provisionError,
 	transitioning,
 	onResume,
 	resuming,
@@ -1844,6 +1880,9 @@ function ControllerBanner({
 	shellError,
 }: {
 	controller: { state: ControllerState; error?: string };
+	agentName: string;
+	provisionState?: WorkspaceSession["provisionState"];
+	provisionError?: string;
 	transitioning?: boolean;
 	onResume?: () => void;
 	resuming?: boolean;
@@ -1852,11 +1891,15 @@ function ControllerBanner({
 	openingShell?: boolean;
 	shellError?: string;
 }) {
+	const provisioning = provisionState === "provisioning";
+	const failed = provisionState === "failed";
+	const starting = provisioning || failed;
+
 	// The transition coordinator intentionally stops one controller before it
 	// starts the other. The top-bar handoff state already explains that interval;
 	// presenting its intermediate snapshot as a crash produces a red false alarm.
-	if (transitioning && controller.state === "stopped") return null;
-	if (controller.state === "ready" || controller.state === "busy") return null;
+	if (!starting && transitioning && controller.state === "stopped") return null;
+	if (!starting && (controller.state === "ready" || controller.state === "busy")) return null;
 
 	const copy: Partial<Record<ControllerState, { title: string; tone: string }>> = {
 		connecting: {
@@ -1872,16 +1915,21 @@ function ControllerBanner({
 			tone: "text-destructive",
 		},
 	};
-	const shown = copy[controller.state];
+	const shown = provisioning
+		? { title: `Starting ${agentName}…`, tone: "text-muted-foreground" }
+		: failed
+			? { title: "This session could not be started", tone: "text-destructive" }
+			: copy[controller.state];
 	if (!shown) return null;
+	const loading = provisioning || (!failed && controller.state === "connecting");
 
 	return (
 		<div
-			role={controller.state === "stopped" ? "alert" : "status"}
+			role={failed || controller.state === "stopped" ? "alert" : "status"}
 			aria-atomic="true"
 			className="flex shrink-0 items-start gap-2.5 border-b border-border bg-surface px-4 py-2.5"
 		>
-			{controller.state === "connecting" ? (
+			{loading ? (
 				<Loader2
 					aria-hidden="true"
 					className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground"
@@ -1891,10 +1939,34 @@ function ControllerBanner({
 			)}
 			<div className="flex min-w-0 flex-1 flex-col gap-0.5">
 				<strong className={cn("text-xs font-medium", shown.tone)}>{shown.title}</strong>
-				{controller.error ? (
+				{provisioning ? (
+					<span className="text-[11px] leading-snug text-muted-foreground">
+						Setting up the worktree and the agent. Keep typing — your messages are
+						queued and sent in order as soon as it is ready.
+					</span>
+				) : failed ? (
+					<>
+						{provisionError ? (
+							<span className="text-[11px] leading-snug text-muted-foreground">
+								{provisionError}
+							</span>
+						) : null}
+						<span className="text-[11px] leading-snug text-muted-foreground">
+							Your messages are saved here and will be sent if you retry.
+						</span>
+						{resumeError ? (
+							<span className="text-[11px] leading-snug text-destructive">{resumeError}</span>
+						) : null}
+						{onResume ? (
+							<Button type="button" size="sm" variant="outline" onClick={onResume} disabled={resuming}>
+								{resuming ? "Retrying…" : "Retry start"}
+							</Button>
+						) : null}
+					</>
+				) : controller.error ? (
 					<span className="text-[11px] leading-snug text-muted-foreground">{controller.error}</span>
 				) : null}
-				{controller.state === "stopped" ? (
+				{!starting && controller.state === "stopped" ? (
 					<>
 						<span className="text-[11px] leading-snug text-muted-foreground">
 							History is kept. Resume the agent or open a shell in the same worktree.
@@ -2926,7 +2998,7 @@ function Timeline({
 							</div>
 						);
 					})}
-					{turn && !groups.some((group) => group.turnId === turn.id) ? (
+					{turn?.state === "running" && !groups.some((group) => group.turnId === turn.id) ? (
 						<TurnLiveStatus startedAt={turn.startedAt ?? turn.requestedAt} />
 					) : null}
 					{messageEdit && !editedMessageVisible ? (

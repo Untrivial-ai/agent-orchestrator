@@ -3,6 +3,7 @@ package controllers_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -48,6 +49,14 @@ type fakeConversationService struct {
 	approvalDecision  ports.ChatDecision
 	inputRequestID    string
 	inputResponse     ports.ChatInputResponse
+	reviewSnapshot    chatsvc.Snapshot
+	reviewErr         error
+	reviewID          string
+	reviewBefore      int64
+	reviewLimit       int64
+	reviewOwner       domain.ConversationOwner
+	reviewRequestID   string
+	reviewInterrupted bool
 }
 
 func (f *fakeConversationService) EditMessage(context.Context, domain.SessionID, string, ports.ChatUserMessage) (chatsvc.EditMessageResult, error) {
@@ -80,6 +89,31 @@ func (f *fakeConversationService) ResolveInput(_ context.Context, _ domain.Sessi
 }
 
 func (f *fakeConversationService) Interrupt(context.Context, domain.SessionID) error { return nil }
+
+func (f *fakeConversationService) SnapshotPageForReview(_ context.Context, reviewID string, before, limit int64) (chatsvc.Snapshot, error) {
+	f.reviewID, f.reviewBefore, f.reviewLimit = reviewID, before, limit
+	return f.reviewSnapshot, f.reviewErr
+}
+
+func (f *fakeConversationService) SendForOwner(_ context.Context, owner domain.ConversationOwner, message ports.ChatUserMessage) (domain.ConversationTurn, error) {
+	f.reviewOwner, f.sent = owner, message
+	return domain.ConversationTurn{ID: "review-turn", State: domain.TurnStateRunning}, f.reviewErr
+}
+
+func (f *fakeConversationService) ResolveForOwner(_ context.Context, owner domain.ConversationOwner, requestID string, decision ports.ChatDecision) error {
+	f.reviewOwner, f.reviewRequestID, f.approvalDecision = owner, requestID, decision
+	return f.reviewErr
+}
+
+func (f *fakeConversationService) ResolveInputForOwner(_ context.Context, owner domain.ConversationOwner, requestID string, response ports.ChatInputResponse) error {
+	f.reviewOwner, f.reviewRequestID, f.inputResponse = owner, requestID, response
+	return f.reviewErr
+}
+
+func (f *fakeConversationService) InterruptForOwner(_ context.Context, owner domain.ConversationOwner) error {
+	f.reviewOwner, f.reviewInterrupted = owner, true
+	return f.reviewErr
+}
 
 func (f *fakeConversationService) Models(context.Context, domain.SessionID) ([]ports.ChatModel, domain.ConversationSettings, error) {
 	return nil, domain.ConversationSettings{}, nil
@@ -303,6 +337,48 @@ func TestSendConversationPreservesNativeImageAndResourceContent(t *testing.T) {
 	}
 	if service.sent.Content[0].Type != "image" || service.sent.Content[1].Type != "resource_link" || service.sent.Content[2].Type != "resource" {
 		t.Fatalf("content = %#v", service.sent.Content)
+	}
+}
+
+func TestSendConversationNativeImageLimits(t *testing.T) {
+	tenMiB := base64.StdEncoding.EncodeToString(make([]byte, 10<<20))
+	tenMiBPlusOne := base64.StdEncoding.EncodeToString(make([]byte, (10<<20)+1))
+	fiveMiB := base64.StdEncoding.EncodeToString(make([]byte, 5<<20))
+	image := func(data string) map[string]string { return map[string]string{"mimeType": "image/png", "data": data} }
+	for _, tc := range []struct {
+		name        string
+		attachments []map[string]string
+		wantStatus  int
+		wantCode    string
+	}{
+		{"at per-file limit", []map[string]string{image(tenMiB)}, http.StatusAccepted, ""},
+		{"over per-file limit", []map[string]string{image(tenMiBPlusOne)}, http.StatusBadRequest, "ATTACHMENT_TOO_LARGE"},
+		{"at total limit", []map[string]string{image(tenMiB), image(tenMiB), image(fiveMiB)}, http.StatusAccepted, ""},
+		{"over total limit", []map[string]string{image(tenMiB), image(tenMiB), image(fiveMiB), image("AA==")}, http.StatusBadRequest, "ATTACHMENTS_TOO_LARGE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := &fakeConversationService{}
+			server := conversationTestServer(t, service)
+			body, err := json.Marshal(map[string]any{"text": "inspect", "attachments": tc.attachments})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := http.Post(server.URL+"/api/v1/sessions/p1-1/conversation/messages", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			responseBody, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != tc.wantStatus || (tc.wantCode != "" && !bytes.Contains(responseBody, []byte(`"code":"`+tc.wantCode+`"`))) {
+				t.Fatalf("status=%d body=%s, want status=%d code=%s", response.StatusCode, responseBody, tc.wantStatus, tc.wantCode)
+			}
+			if (service.sent.Text != "") != (tc.wantCode == "") {
+				t.Fatalf("sent = %#v, want service called = %v", service.sent, tc.wantCode == "")
+			}
+		})
 	}
 }
 
