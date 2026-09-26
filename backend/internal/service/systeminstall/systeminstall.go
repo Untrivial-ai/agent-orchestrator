@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -238,6 +239,8 @@ const defaultInstallTimeout = 15 * time.Minute
 // defaultPersistenceTimeout keeps best-effort worker state writes from
 // consuming the daemon's entire shutdown drain budget behind a blocked DB.
 const defaultPersistenceTimeout = 2 * time.Second
+
+var devinInstalledLine = regexp.MustCompile(`Installed devin v\S+ to [^\r\n]+/devin\.`)
 
 // Job is the tracked state of one install run for a Target.
 type Job struct {
@@ -792,7 +795,7 @@ func (s *Service) Verify(ctx context.Context, target Target) (Job, error) {
 	}
 	go func() { //nolint:gosec // bounded daemon-owned worker intentionally outlives the request.
 		defer s.workers.Done()
-		s.runAgentVerification(s.backgroundContext, job)
+		s.runAgentVerification(s.backgroundContext, job, "")
 	}()
 	return initial, nil
 }
@@ -931,7 +934,8 @@ func (s *Service) runAgentInstall(parent context.Context, plan Plan, job *Job) {
 		s.finishAgentJob(job, StatusInterrupted, out.String(), "daemon shutdown interrupted the install", "")
 		return
 	}
-	if runErr != nil {
+	signInRequired := runErr != nil && plan.Target == TargetDevin && plan.Method == "official-installer" && plan.Script != nil && devinInstallConfirmedBeforeLoginCanceled(out.String())
+	if runErr != nil && !signInRequired {
 		s.finishAgentJob(job, StatusFailed, out.String(), runErr.Error(), "")
 		return
 	}
@@ -940,10 +944,22 @@ func (s *Service) runAgentInstall(parent context.Context, plan Plan, job *Job) {
 		s.finishAgentJob(job, StatusFailed, "", fmt.Sprintf("persist verifying state: %v", err), "")
 		return
 	}
-	s.runAgentVerification(s.backgroundContext, job)
+	successNote := ""
+	if signInRequired {
+		successNote = "Installed — sign-in required. Run devin in a terminal to sign in."
+	}
+	s.runAgentVerification(s.backgroundContext, job, successNote)
 }
 
-func (s *Service) runAgentVerification(ctx context.Context, job *Job) {
+func devinInstallConfirmedBeforeLoginCanceled(output string) bool {
+	confirmation := devinInstalledLine.FindStringIndex(output)
+	if len(confirmation) != 2 {
+		return false
+	}
+	return strings.Contains(output[confirmation[1]:], "Error: Login canceled")
+}
+
+func (s *Service) runAgentVerification(ctx context.Context, job *Job, successNote string) {
 	if s.verifier == nil {
 		s.finishAgentJob(job, StatusFailed, "", "adapter-backed install verifier is not configured", "")
 		return
@@ -957,7 +973,7 @@ func (s *Service) runAgentVerification(ctx context.Context, job *Job) {
 		s.finishAgentJob(job, StatusFailed, result.Output, err.Error(), result.ResolvedPath)
 		return
 	}
-	s.finishAgentJob(job, StatusSucceeded, result.Output, "", result.ResolvedPath)
+	s.finishAgentJob(job, StatusSucceeded, combineOutput(result.Output, successNote), "", result.ResolvedPath)
 }
 
 func (s *Service) transitionAgentJob(job *Job, status Status, output, errorMessage, resolvedPath string) error {
