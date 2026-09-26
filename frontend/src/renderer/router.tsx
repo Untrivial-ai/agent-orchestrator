@@ -1,6 +1,7 @@
 import { createHashHistory, createRouter, useRouterState } from "@tanstack/react-router";
 import type { QueryClient } from "@tanstack/react-query";
 import { DaemonStartupLoader } from "./components/DaemonStartupLoader";
+import { startSessionOpen } from "./lib/journey-timing";
 import { routeTree } from "./routeTree.gen";
 
 export function AppPendingFallback() {
@@ -11,7 +12,7 @@ export function AppPendingFallback() {
 // Hash history is required for Electron's file:// renderer origin — browser
 // history would break on hard reload since there is no server to serve paths.
 export function createAppRouter(queryClient: QueryClient) {
-	return createRouter({
+	const router = createRouter({
 		history: createHashHistory(),
 		routeTree,
 		context: { queryClient },
@@ -28,4 +29,9 @@ export function createAppRouter(queryClient: QueryClient) {
 		defaultPreloadStaleTime: 0,
 		scrollRestoration: true,
 	});
+	router.subscribe("onBeforeNavigate", (event) => {
+		if (!event.fromLocation || !event.pathChanged) return;
+		startSessionOpen(/\/sessions\/([^/]+)\/?$/.exec(event.toLocation.pathname)?.[1]);
+	});
+	return router;
 }

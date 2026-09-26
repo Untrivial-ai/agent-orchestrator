@@ -25,6 +25,7 @@ import {
 } from "../hooks/useTerminalSession";
 import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { getApiBaseUrl } from "../lib/api-client";
+import { sessionUsable } from "../lib/journey-timing";
 import {
 	createTerminalMux,
 	createTerminalMuxPool,
@@ -1063,6 +1064,22 @@ function AttachedTerminal({
 		};
 	}, [replayPaintPending, replaySettled, terminal]);
 	const handleId = shellTerminalHandleId ?? attachSession?.terminalHandleId;
+	const isWorkerTerminalUsable = Boolean(
+		session && terminalTarget?.kind === "worker" && terminal && isVisible &&
+		state === "attached" && !inputDisabled && !initFailed && !isReconnecting &&
+		hasAttached && replaySettled && !replayPaintPending,
+	);
+	useEffect(() => {
+		if (!isWorkerTerminalUsable || !session) return;
+		let secondFrame = 0;
+		const firstFrame = requestAnimationFrame(() => {
+			secondFrame = requestAnimationFrame(() => sessionUsable(session.id, "tui"));
+		});
+		return () => {
+			cancelAnimationFrame(firstFrame);
+			cancelAnimationFrame(secondFrame);
+		};
+	}, [isWorkerTerminalUsable, session?.id]);
 	const handleRetry = useCallback(() => {
 		// Re-attach from scratch: resets the connect-failure counter and starts a
 		// fresh connection attempt once the user has fixed their network policy.

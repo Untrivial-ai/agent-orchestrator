@@ -32,6 +32,7 @@ import { useAgentSwitchProviderCatalogs } from "../../hooks/useAgentSwitchProvid
 import { useRememberProjectPermissions } from "../../hooks/useRememberProjectPermissions";
 import { useSessionBrowserLink } from "../../hooks/useSessionBrowserLink";
 import { isWebLink, isWorkspaceHtmlLink } from "../../lib/external-link-policy";
+import { sessionUsable } from "../../lib/journey-timing";
 import type { ShellTerminal } from "../../hooks/useShellTerminals";
 import {
 	deriveAgentSwitchPresentation,
@@ -421,6 +422,22 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 		(renderShellFallback
 			? unavailableConversationSnapshot(session)
 			: undefined);
+	const isChatUsable = Boolean(
+		snapshot && !isLoading && !unavailable && !error && !workspaceFileActive &&
+		!reviewerChatSelected && !shellTarget && !reviewerTarget &&
+		!handoffDialogOpen && !controllerTransitioning,
+	);
+	useEffect(() => {
+		if (!isChatUsable) return;
+		let secondFrame = 0;
+		const firstFrame = requestAnimationFrame(() => {
+			secondFrame = requestAnimationFrame(() => sessionUsable(session.id, "chat"));
+		});
+		return () => {
+			cancelAnimationFrame(firstFrame);
+			cancelAnimationFrame(secondFrame);
+		};
+	}, [isChatUsable, session.id]);
 	const visibilityPresentationKind = agentSwitchVisibilityPresentationKind(shownSwitchPresentation);
 	useAgentSwitchPresentationVisibility({
 		localRouteKey: `session/${session.id}`,

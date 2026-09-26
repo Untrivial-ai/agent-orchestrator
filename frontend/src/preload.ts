@@ -305,6 +305,7 @@ const api = {
 		},
 	},
 	window: {
+		startupElapsed: () => ipcRenderer.invoke("window:startupElapsed") as Promise<number | null>,
 		isMaximized: () => ipcRenderer.invoke("window:isMaximized") as Promise<boolean>,
 		onMaximized: (listener: (maximized: boolean) => void) => {
 			const wrapped = (_event: Electron.IpcRendererEvent, maximized: boolean) => listener(maximized);

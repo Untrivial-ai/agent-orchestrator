@@ -460,6 +460,22 @@ export async function sanitizeRendererProperties(
 				safe.surface = properties.surface;
 			}
 			break;
+		case "ao.renderer.startup_timing":
+		case "ao.renderer.session_open_timing":
+		case "ao.renderer.task_create_timing":
+			if (typeof properties?.duration_ms === "number" && Number.isFinite(properties.duration_ms)
+				&& properties.duration_ms >= 0 && properties.duration_ms <= 300_000) {
+				safe.duration_ms = properties.duration_ms;
+			}
+			if (properties?.outcome === "ready" || properties?.outcome === "failed"
+				|| properties?.outcome === "timeout" || properties?.outcome === "cancelled") {
+				safe.outcome = properties.outcome;
+			}
+			if (properties?.surface === "chat" || properties?.surface === "tui") safe.surface = properties.surface;
+			if (properties?.scope === "local" || properties?.scope === "standalone" || properties?.scope === "cloud") {
+				safe.scope = properties.scope;
+			}
+			break;
 		case "ao.renderer.project_add_requested":
 		case "ao.renderer.loaded":
 			break;

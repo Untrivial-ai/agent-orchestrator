@@ -42,6 +42,7 @@ import { agentLabel } from "../lib/agent-options";
 import { isLinuxPlatform, isMacPlatform } from "../lib/platform";
 import { aoBridge } from "../lib/bridge";
 import { handleTerminalTabListKeyDown } from "../lib/terminal-tabs";
+import { skipHiddenSession } from "../lib/journey-timing";
 import { cn } from "../lib/utils";
 import { sidebarOccupiesLayout, useUiStore, type Theme } from "../stores/ui-store";
 import type { TerminalTarget } from "../types/terminal";
@@ -194,6 +195,9 @@ export function CenterPane({
 	);
 	const isSidebarOpen = useUiStore(sidebarOccupiesLayout);
 	const sessionId = session?.id;
+	useEffect(() => {
+		if (workspaceFileActive && sessionId) skipHiddenSession(sessionId);
+	}, [sessionId, workspaceFileActive]);
 	const auxiliaryTabs = useMemo<AuxiliaryTab[]>(
 		() => [
 			...(reviewerTerminal

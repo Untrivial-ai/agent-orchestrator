@@ -76,6 +76,12 @@ describe("preload repository branch bridge", () => {
 	});
 });
 
+it("reads the native window startup clock through the preload bridge", async () => {
+	electronMocks.invoke.mockResolvedValueOnce(420);
+	await expect(exposedBridge().window.startupElapsed()).resolves.toBe(420);
+	expect(electronMocks.invoke).toHaveBeenCalledWith("window:startupElapsed");
+});
+
 describe("preload Developer Mode updater bridge", () => {
 	it("sends only the updater eligibility boolean to the main process", async () => {
 		await exposedBridge().updateSettings.setMacDifferentialUpdates(true);
