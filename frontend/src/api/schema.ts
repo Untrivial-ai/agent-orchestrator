@@ -3327,6 +3327,7 @@ export interface components {
             status: string;
         };
         ConversationMessageResponse: {
+            clientMessageId?: string;
             content?: components["schemas"]["ConversationContentSummaryResponse"][];
             createdAt: string;
             editAvailable: boolean;

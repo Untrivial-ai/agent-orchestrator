@@ -911,9 +911,9 @@ export function useConversationCommands(sessionId: string | undefined) {
 		[queryClient, sessionId],
 	);
 	const acknowledgeLocalEcho = useCallback(
-		(turnId: string) => {
+		(clientMessageId: string) => {
 			if (!sessionId) return;
-			releaseConversationLocalEcho(queryClient, sessionId, undefined, turnId);
+			releaseConversationLocalEcho(queryClient, sessionId, clientMessageId);
 		},
 		[queryClient, sessionId],
 	);
@@ -1616,6 +1616,7 @@ function toMessage(wire: WireMessage): ConversationMessage {
 		kind: "message",
 		id: wire.id,
 		turnId: wire.turnId,
+		clientMessageId: wire.clientMessageId || undefined,
 		sequence: wire.sequence,
 		revision: wire.revision,
 		role: wire.role as MessageRole,

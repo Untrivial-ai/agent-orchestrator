@@ -2318,16 +2318,17 @@ type ConversationDiffFileResponse struct {
 
 // ConversationMessageResponse is one readable block of text.
 type ConversationMessageResponse struct {
-	Kind          string                               `json:"kind" enum:"message"`
-	ID            string                               `json:"id"`
-	TurnID        string                               `json:"turnId,omitempty"`
-	Sequence      int64                                `json:"sequence"`
-	Revision      int64                                `json:"revision"`
-	Role          string                               `json:"role" enum:"user,assistant"`
-	Origin        string                               `json:"origin" enum:"human,automation,daemon,provider"`
-	Text          string                               `json:"text"`
-	Content       []ConversationContentSummaryResponse `json:"content,omitempty"`
-	EditAvailable bool                                 `json:"editAvailable"`
+	Kind            string                               `json:"kind" enum:"message"`
+	ID              string                               `json:"id"`
+	TurnID          string                               `json:"turnId,omitempty"`
+	ClientMessageID string                               `json:"clientMessageId,omitempty"`
+	Sequence        int64                                `json:"sequence"`
+	Revision        int64                                `json:"revision"`
+	Role            string                               `json:"role" enum:"user,assistant"`
+	Origin          string                               `json:"origin" enum:"human,automation,daemon,provider"`
+	Text            string                               `json:"text"`
+	Content         []ConversationContentSummaryResponse `json:"content,omitempty"`
+	EditAvailable   bool                                 `json:"editAvailable"`
 	// Streaming is true while more deltas are expected for this message.
 	Streaming bool   `json:"streaming"`
 	CreatedAt string `json:"createdAt"`

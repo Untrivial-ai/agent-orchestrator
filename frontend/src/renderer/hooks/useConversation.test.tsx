@@ -106,6 +106,34 @@ beforeEach(() => {
 	apiErrorMessageMock.mockReset().mockReturnValue("failed");
 });
 
+it("preserves the daemon's client send identity on durable messages", async () => {
+	getMock.mockResolvedValue({
+		data: {
+			...WIRE,
+			turns: [],
+			messages: [{
+				id: "durable-message",
+				clientMessageId: "client-local-echo",
+				sequence: 1,
+				revision: 0,
+				role: "user",
+				origin: "human",
+				text: "hello",
+				streaming: false,
+				createdAt: "2026-09-13T00:00:00Z",
+			}],
+		},
+		error: undefined,
+	});
+	const { result } = renderHook(() => useConversation("ao-1"), { wrapper });
+	await waitFor(() => {
+		expect(result.current.snapshot?.items[0]).toMatchObject({
+			kind: "message",
+			clientMessageId: "client-local-echo",
+		});
+	});
+});
+
 it("renders a retained-history boundary between exchanges from the daemon snapshot", async () => {
 	getMock.mockResolvedValue({ data: {
 		...WIRE, controller: "ready", turns: [], modelReroute: undefined, account: undefined,
@@ -132,7 +160,7 @@ it("renders a retained-history boundary between exchanges from the daemon snapsh
 });
 
 describe("accepted conversation sends", () => {
-	it("keeps a local echo through acceptance until its durable turn is observed", async () => {
+	it("keeps a local echo through acceptance until its client ID is acknowledged", async () => {
 		const response = deferred<{ data: { turnId: string }; error: undefined }>();
 		postMock.mockReturnValue(response.promise);
 		const queryClient = new QueryClient({
@@ -147,7 +175,10 @@ describe("accepted conversation sends", () => {
 
 		let sending!: Promise<unknown>;
 		act(() => {
-			sending = result.current.send("show my message first");
+			sending = result.current.send({
+				text: "show my message first",
+				clientMessageId: "client-local-echo",
+			});
 		});
 		await waitFor(() => {
 			expect(result.current.localEchos).toHaveLength(1);
@@ -165,7 +196,7 @@ describe("accepted conversation sends", () => {
 			]),
 		);
 
-		act(() => result.current.acknowledgeLocalEcho("turn-local-echo"));
+		act(() => result.current.acknowledgeLocalEcho("client-local-echo"));
 		await waitFor(() => expect(result.current.localEchos).toEqual([]));
 	});
 

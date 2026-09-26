@@ -350,6 +350,24 @@ describe("Chat message timestamps", () => {
 });
 
 describe("ChatWorkspace timeline", () => {
+	it("starts one smooth scroll for a newly optimistic send", () => {
+		const snapshot = idleSnapshot(chatFixtureEmpty);
+		const view = render(<ChatWorkspace snapshot={snapshot} />);
+		const log = screen.getByRole("log");
+		const scrollTo = vi.fn();
+		Object.defineProperty(log, "scrollTo", { configurable: true, value: scrollTo });
+		scrollTo.mockClear();
+
+		view.rerender(<ChatWorkspace snapshot={snapshot} localEchos={[{
+			clientMessageId: "new-send",
+			text: "Scroll once",
+			createdAt: "2026-09-09T00:00:00Z",
+		}]} />);
+
+		expect(scrollTo).toHaveBeenCalledTimes(1);
+		expect(scrollTo).toHaveBeenCalledWith({ top: log.scrollHeight, behavior: "smooth" });
+	});
+
 	it("shows a local human echo until the matching durable turn arrives", () => {
 		const snapshot = idleSnapshot(chatFixtureEmpty);
 		const localEchos = [
@@ -362,6 +380,7 @@ describe("ChatWorkspace timeline", () => {
 		];
 		const view = render(<ChatWorkspace snapshot={snapshot} localEchos={localEchos} />);
 		expect(screen.getByText("Visible before the server snapshot")).toBeInTheDocument();
+		const optimisticBubble = screen.getByText("Visible before the server snapshot").closest(".cursor-chat-human-message");
 
 		const durable = structuredClone(snapshot);
 		durable.turns.push({ id: "turn-local-send", state: "running", requestedAt: "2026-09-09T00:00:00Z" });
@@ -373,12 +392,14 @@ describe("ChatWorkspace timeline", () => {
 			revision: 0,
 			role: "user",
 			origin: "human",
+			clientMessageId: "local-send",
 			text: "Visible before the server snapshot",
 			streaming: false,
 			createdAt: "2026-09-09T00:00:00Z",
 		});
 		view.rerender(<ChatWorkspace snapshot={durable} localEchos={localEchos} />);
 		expect(screen.getAllByText("Visible before the server snapshot")).toHaveLength(1);
+		expect(screen.getByText("Visible before the server snapshot").closest(".cursor-chat-human-message")).toBe(optimisticBubble);
 	});
 
 	it("hides an unacknowledged local echo when its durable message arrives first", () => {

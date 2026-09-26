@@ -9639,6 +9639,8 @@ components:
       type: object
     ConversationMessageResponse:
       properties:
+        clientMessageId:
+          type: string
         content:
           items:
             $ref: '#/components/schemas/ConversationContentSummaryResponse'

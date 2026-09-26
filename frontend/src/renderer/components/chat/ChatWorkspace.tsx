@@ -2596,17 +2596,27 @@ function Timeline({
 	const seenHumanMessageIds = useRef<Set<string> | undefined>(undefined);
 	const lastSeenLatestSequence = useRef<number | undefined>(undefined);
 	const [newHumanMessageIds, setNewHumanMessageIds] = useState<ReadonlySet<string>>(new Set());
-	const previousLocalEchoCount = useRef(localEchos.length);
+	const previousLocalEchoIds = useRef(new Set(localEchos.map((echo) => echo.clientMessageId)));
 	const smoothScrollRequested = useRef(false);
 	const smoothScrollActive = useRef(false);
 	const smoothScrollTimer = useRef<number | null>(null);
 	const optimisticMessageKeys = useRef(new Set<string>());
+	const localEchoClientMessageIds = useMemo(
+		() => new Set(localEchos.map((echo) => echo.clientMessageId)),
+		[localEchos],
+	);
+	useEffect(() => () => {
+		if (smoothScrollTimer.current != null) window.clearTimeout(smoothScrollTimer.current);
+	}, []);
 	useEffect(() => {
-		if (localEchos.length > previousLocalEchoCount.current) smoothScrollRequested.current = true;
-		previousLocalEchoCount.current = localEchos.length;
-	}, [localEchos.length]);
+		if ([...localEchoClientMessageIds].some((id) => !previousLocalEchoIds.current.has(id))) {
+			smoothScrollRequested.current = true;
+		}
+		previousLocalEchoIds.current = localEchoClientMessageIds;
+	}, [localEchoClientMessageIds]);
 	useEffect(() => {
 		for (const echo of localEchos) {
+			optimisticMessageKeys.current.add(`id:send:${echo.clientMessageId}`);
 			optimisticMessageKeys.current.add(`text:${echo.text}`);
 			if (echo.turnId) optimisticMessageKeys.current.add(`turn:${echo.turnId}`);
 		}
@@ -2637,6 +2647,7 @@ function Timeline({
 							item.sequence > (lastSeenLatestSequence.current ?? -Infinity) &&
 							// The durable row replaces an optimistic local echo. It already
 							// animated on send, so do not animate reconciliation a second time.
+							!localEchoClientMessageIds.has(item.clientMessageId ?? "") &&
 							!optimisticMessageKeys.current.has(`text:${item.text}`) &&
 							!optimisticMessageKeys.current.has(`turn:${item.turnId}`),
 					)
@@ -2645,7 +2656,7 @@ function Timeline({
 		seenHumanMessageIds.current = humanMessageIds;
 		lastSeenLatestSequence.current = snapshot.latestSequence;
 		if (added.size > 0) setNewHumanMessageIds(added);
-	}, [items, localEchos, snapshot.latestSequence]);
+	}, [items, localEchoClientMessageIds, snapshot.latestSequence]);
 	const localItems = useMemo(() => {
 		return localEchos
 			.filter(
@@ -2655,14 +2666,16 @@ function Timeline({
 							item.kind === "message" &&
 							item.role === "user" &&
 							item.origin === "human" &&
-							((echo.turnId && item.turnId === echo.turnId) ||
+							((item.clientMessageId && item.clientMessageId === echo.clientMessageId) ||
+								(echo.turnId && item.turnId === echo.turnId) ||
 								(!echo.turnId && item.text === echo.text && item.createdAt >= echo.createdAt)),
 					),
 			)
 			.map((echo, index): ConversationMessage => ({
 				kind: "message",
-				id: `local:${echo.clientMessageId}`,
+				id: `send:${echo.clientMessageId}`,
 				turnId: `local:${echo.clientMessageId}`,
+				clientMessageId: echo.clientMessageId,
 				sequence: snapshot.latestSequence + index + 0.01,
 				revision: 0,
 				role: "user",
@@ -2673,7 +2686,18 @@ function Timeline({
 				createdAt: echo.createdAt,
 			}));
 	}, [items, localEchos, snapshot.latestSequence]);
-	const timelineItems = useStableList([...items, ...localItems], itemKey, sameContent);
+	// A server snapshot is the authoritative version of an optimistic prompt, but
+	// its database id and turn id differ from the temporary local record. Preserve
+	// the send key across that handoff so React updates the existing bubble in place.
+	const durableItems = useMemo(
+		() => items.map((item) =>
+			item.kind === "message" && item.role === "user" && item.origin === "human" && item.clientMessageId
+				? { ...item, id: `send:${item.clientMessageId}` }
+				: item,
+		),
+		[items],
+	);
+	const timelineItems = useStableList([...durableItems, ...localItems], itemKey, sameContent);
 	const hasEarlierHumanMessage = timelineItems.some(
 		(item) =>
 			item.kind === "message" &&
@@ -2796,17 +2820,21 @@ function Timeline({
 		syncPromptSpacer();
 		const node = scroller.current;
 		if (node && pinnedRef.current) {
-			const behavior = smoothScrollRequested.current || smoothScrollActive.current ? "smooth" : "auto";
-			smoothScrollRequested.current = false;
-			if (behavior === "smooth") {
+			if (smoothScrollRequested.current) {
+				smoothScrollRequested.current = false;
 				smoothScrollActive.current = true;
 				if (smoothScrollTimer.current != null) window.clearTimeout(smoothScrollTimer.current);
 				smoothScrollTimer.current = window.setTimeout(() => {
 					smoothScrollActive.current = false;
 					smoothScrollTimer.current = null;
 				}, 500);
+				node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
+			} else if (!smoothScrollActive.current) {
+				// Snapshot/layout effects can fire more than once for one send. Once the
+				// send's native smooth scroll is in flight, do not restart it; optimistic
+				// reconciliation keeps the prompt mounted in place.
+				node.scrollTo({ top: node.scrollHeight, behavior: "auto" });
 			}
-			node.scrollTo({ top: node.scrollHeight, behavior });
 		}
 		updateScrollbar();
 	}, [syncPromptSpacer, updateScrollbar]);
@@ -2842,13 +2870,12 @@ function Timeline({
 	}, []);
 
 	useEffect(() => {
-		syncScrollLayout();
 		if (typeof ResizeObserver === "undefined") return;
 		const observer = new ResizeObserver(syncScrollMetrics);
 		if (scroller.current) observer.observe(scroller.current);
 		if (scrollContent.current) observer.observe(scrollContent.current);
 		return () => observer.disconnect();
-	}, [groups.length, syncScrollMetrics]);
+	}, [syncScrollMetrics]);
 
 	function onScroll() {
 		const node = scroller.current;
@@ -3047,6 +3074,8 @@ function Timeline({
 									branchPoints={branchPoints}
 									editableTurns={editableTurns}
 									newHumanMessageIds={newHumanMessageIds}
+									localEchoClientMessageIds={localEchoClientMessageIds}
+									optimisticMessageKeys={optimisticMessageKeys.current}
 									onActivateBranch={canActivateBranch ? activateBranch : undefined}
 									activateBranchPending={activateBranchPending}
 									activateBranchError={activateBranchError}
@@ -3243,6 +3272,8 @@ const TurnGroup = memo(function TurnGroup({
 	busy,
 	queued,
 	newHumanMessageIds,
+	localEchoClientMessageIds,
+	optimisticMessageKeys,
 }: {
 	group: TimelineGroup;
 	sessionId: string;
@@ -3278,6 +3309,8 @@ const TurnGroup = memo(function TurnGroup({
 	/** This turn was recorded but not sent, so its message can say so. */
 	queued: boolean;
 	newHumanMessageIds: ReadonlySet<string>;
+	localEchoClientMessageIds: ReadonlySet<string>;
+	optimisticMessageKeys: ReadonlySet<string>;
 }) {
 	const hasTerminalFailure =
 		group.outcome?.state === "failed" && Boolean(group.outcome.error);
@@ -3370,6 +3403,8 @@ const TurnGroup = memo(function TurnGroup({
 				busy={busy}
 				queued={queued}
 				newHumanMessageIds={newHumanMessageIds}
+				localEchoClientMessageIds={localEchoClientMessageIds}
+				optimisticMessageKeys={optimisticMessageKeys}
 				showCopy={run.items[0]?.id === copyableMessageId}
 				live={group.live}
 				liveStatus={false}
@@ -3430,8 +3465,10 @@ const TurnGroup = memo(function TurnGroup({
 						activateBranchError={activateBranchError}
 						busy={busy}
 						queued={queued}
-									newHumanMessageIds={newHumanMessageIds}
-									showCopy={run.items[0]?.id === copyableMessageId}
+						newHumanMessageIds={newHumanMessageIds}
+						localEchoClientMessageIds={localEchoClientMessageIds}
+						optimisticMessageKeys={optimisticMessageKeys}
+						showCopy={run.items[0]?.id === copyableMessageId}
 									live={group.live}
 									liveStatus={false}
 									onRollback={
@@ -3589,6 +3626,8 @@ function TimelineItem({
 	busy,
 	queued,
 	newHumanMessageIds,
+	localEchoClientMessageIds,
+	optimisticMessageKeys,
 	showCopy,
 	live,
 	liveStatus,
@@ -3624,6 +3663,8 @@ function TimelineItem({
 	 */
 	queued?: boolean;
 	newHumanMessageIds: ReadonlySet<string>;
+	localEchoClientMessageIds: ReadonlySet<string>;
+	optimisticMessageKeys: ReadonlySet<string>;
 	/** This is the final assistant response of a turn that has finished. */
 	showCopy?: boolean;
 	live?: boolean;
@@ -3664,7 +3705,12 @@ function TimelineItem({
 					sessionId={sessionId}
 					apiBaseUrl={apiBaseUrl}
 					queued={queued}
-					animateIn={newHumanMessageIds.has(item.id) || item.delivery === "sending"}
+					animateIn={
+						newHumanMessageIds.has(item.id) ||
+						item.delivery === "sending" ||
+						localEchoClientMessageIds.has(item.clientMessageId ?? "") ||
+						optimisticMessageKeys.has(`id:${item.id}`)
+					}
 					onEdit={editAvailable ? (_turnID, text) => onSubmitMessageEdit(text) : undefined}
 					editing={editing}
 					editText={editing ? messageEdit?.text : undefined}
@@ -3941,6 +3987,12 @@ function groupByTurn(snapshot: ConversationSnapshot): TimelineGroup[] {
 	groups.sort((a, b) => a.anchor - b.anchor);
 
 	for (const group of groups) {
+		const humanPrompt = group.items.find(
+			(item) => item.kind === "message" && item.role === "user" && item.origin === "human",
+		);
+		if (humanPrompt?.kind === "message" && humanPrompt.clientMessageId) {
+			group.key = `send:${humanPrompt.clientMessageId}`;
+		}
 		if (!group.turnId) continue;
 		const turn = byTurn.get(group.turnId);
 		if (!turn) continue;
