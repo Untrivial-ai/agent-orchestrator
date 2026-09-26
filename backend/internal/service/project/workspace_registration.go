@@ -435,10 +435,11 @@ func workspaceReposFromRecords(parent string, records []domain.WorkspaceRepoReco
 			}
 		}
 		out = append(out, WorkspaceRepo{
-			Name:         rec.Name,
-			RelativePath: rec.RelativePath,
-			Repo:         rec.RepoOriginURL,
-			GitStatus:    string(rec.GitStatus),
+			Name:          rec.Name,
+			RelativePath:  rec.RelativePath,
+			Repo:          rec.RepoOriginURL,
+			DefaultBranch: rec.DefaultBranch,
+			GitStatus:     string(rec.GitStatus),
 		})
 	}
 	return out
