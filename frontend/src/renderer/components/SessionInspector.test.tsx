@@ -536,68 +536,46 @@ describe("SessionInspector PR section", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows the latest submitted reviewer avatars on the review row", () => {
+  it("shows only people who commented beside the review status", () => {
     renderWithQuery(
       <SessionInspector session={session([pr(7, "open")])} />,
       undefined,
       (client) => {
         client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
           prSummary(7, "open", {
+            discussionCommentCount: 2,
+            discussionCommenters: ["alice", "bob"],
             review: {
               decision: "approved",
-              hasUnresolvedHumanComments: false,
-              unresolvedBy: [
-                { reviewerId: "thread-commenter", count: 1, links: [] },
-              ],
-              reviews: [
-                {
-                  reviewerId: "grace-hopper",
-                  verdict: "approved",
-                  submittedAt: "2026-09-20T12:00:00Z",
-                  autoInjectReview: false,
-                },
-                {
-                  reviewerId: "ada-lovelace",
-                  verdict: "approved",
-                  submittedAt: "2026-09-22T12:00:00Z",
-                  autoInjectReview: false,
-                },
-                {
-                  reviewerId: "ronishrohan",
-                  verdict: "approved",
-                  submittedAt: "2026-09-23T12:00:00Z",
-                  autoInjectReview: false,
-                },
-                {
-                  reviewerId: "ada-lovelace",
-                  verdict: "approved",
-                  submittedAt: "2026-09-19T12:00:00Z",
-                  autoInjectReview: false,
-                },
-                {
-                  reviewerId: "linus-torvalds",
-                  verdict: "approved",
-                  submittedAt: "2026-09-21T12:00:00Z",
-                  autoInjectReview: false,
-                },
-              ],
+              hasUnresolvedHumanComments: true,
+              unresolvedBy: [{ reviewerId: "thread-commenter", count: 1, links: [] }],
+              reviews: [{
+                reviewerId: "verdict-only",
+                verdict: "approved",
+                submittedAt: "2026-09-20T12:00:00Z",
+                autoInjectReview: false,
+              }, {
+                reviewerId: "review-body-author",
+                verdict: "approved",
+                body: "I checked this change",
+                submittedAt: "2026-09-21T12:00:00Z",
+                autoInjectReview: false,
+              }],
             },
           }),
         ]);
       },
     );
 
-    const action = prSection("Pull request").getByRole("button", {
-      name: "View review details",
-    });
-    const avatars = Array.from(action.querySelectorAll("img"));
-    expect(avatars.map((avatar) => avatar.getAttribute("src"))).toEqual([
-      "https://avatars.githubusercontent.com/ronishrohan?size=64",
-      "https://avatars.githubusercontent.com/ada-lovelace?size=64",
-      "https://avatars.githubusercontent.com/linus-torvalds?size=64",
+    const commenterGroup = prSection("Pull request").getByLabelText("Commented: alice, bob, review-body-author, thread-commenter");
+    expect(Array.from(commenterGroup.querySelectorAll("img"), (avatar) => avatar.getAttribute("src"))).toEqual([
+      "https://avatars.githubusercontent.com/alice?size=64",
+      "https://avatars.githubusercontent.com/bob?size=64",
+      "https://avatars.githubusercontent.com/review-body-author?size=64",
+      "https://avatars.githubusercontent.com/thread-commenter?size=64",
     ]);
-    expect(action).toHaveTextContent("+2");
-    expect(action).not.toHaveTextContent("thread-commenter");
+    expect(commenterGroup).not.toHaveTextContent("+1");
+    expect(prSection("Pull request").queryByRole("button", { name: "View review details" })).not.toBeInTheDocument();
   });
 
   it("merges a ready pull request directly through the daemon", async () => {
@@ -923,12 +901,22 @@ describe("SessionInspector PR section", () => {
       undefined,
       (client) => {
         client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
-          prSummary(4383, "open", { discussionCommentCount: 9 }),
+          prSummary(4383, "open", {
+            discussionCommentCount: 9,
+            discussionCommenters: ["alice", "bob"],
+            review: {
+              decision: "none",
+              hasUnresolvedHumanComments: false,
+              unresolvedBy: [],
+              reviews: [{ reviewerId: "verdict-only", verdict: "approved", submittedAt: "2026-06-15T12:00:00Z", autoInjectReview: false }],
+            },
+          }),
         ]);
       },
     );
 
     expect(prSection("Pull request").getByText("9 comments")).toBeInTheDocument();
+    expect(prSection("Pull request").getByLabelText("Commented: alice, bob")).toBeInTheDocument();
     expect(prSection("Pull request").getAllByRole("link")).toHaveLength(1);
     expect(prSection("Pull request").getByText("No review required")).toBeInTheDocument();
     expect(prSection("Pull request").queryByRole("button", { name: "View review details" })).not.toBeInTheDocument();

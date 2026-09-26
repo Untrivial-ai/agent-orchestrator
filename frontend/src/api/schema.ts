@@ -4397,6 +4397,7 @@ export interface components {
             createdAt?: null | string;
             deletions: number;
             discussionCommentCount?: number;
+            discussionCommenters?: string[];
             headSha: string;
             htmlUrl?: string;
             mergeability: components["schemas"]["SessionPRMergeabilitySummary"];

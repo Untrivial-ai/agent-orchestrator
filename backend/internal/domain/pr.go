@@ -73,6 +73,7 @@ type PullRequest struct {
 	Author                 string
 	AuthorAvatarURL        string
 	DiscussionCommentCount int
+	DiscussionCommenters   []string
 	BaseSHA                string
 	MergeCommitSHA         string
 

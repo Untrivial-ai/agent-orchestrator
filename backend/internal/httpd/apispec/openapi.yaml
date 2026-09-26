@@ -12471,6 +12471,10 @@ components:
           type: integer
         discussionCommentCount:
           type: integer
+        discussionCommenters:
+          items:
+            type: string
+          type: array
         headSha:
           type: string
         htmlUrl:

@@ -2029,6 +2029,8 @@
 	"pr.merge.reasonComments": "Unresolved review comments must be resolved before this PR can merge.",
 	"pr.merge.reasonReady": "No merge conflict, checks are passing, and the review requirement is satisfied.",
 	"pr.review.requirementSatisfied": "PR approved",
+	"pr.commentBy": "Comentario de @{{name}}",
+	"pr.commenters": "Comentaron: {{names}}",
 	"pr.review.viewDetails": "View review details",
 	"inspector.usage.agent": "Agente",
 	"inspector.usage.inputTokens": "Entrada total",

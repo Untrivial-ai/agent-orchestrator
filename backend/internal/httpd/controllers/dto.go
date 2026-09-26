@@ -1030,6 +1030,7 @@ type SessionPRSummary struct {
 	Author                 string                       `json:"author"`
 	AuthorAvatarURL        string                       `json:"authorAvatarUrl,omitempty"`
 	DiscussionCommentCount int                          `json:"discussionCommentCount,omitempty"`
+	DiscussionCommenters   []string                     `json:"discussionCommenters,omitempty"`
 	SourceBranch           string                       `json:"sourceBranch"`
 	TargetBranch           string                       `json:"targetBranch"`
 	HeadSHA                string                       `json:"headSha"`
@@ -1136,6 +1137,7 @@ func NewSessionPRSummary(in sessionsvc.PRSummary) SessionPRSummary {
 		Author:                 in.Author,
 		AuthorAvatarURL:        in.AuthorAvatarURL,
 		DiscussionCommentCount: in.DiscussionCommentCount,
+		DiscussionCommenters:   in.DiscussionCommenters,
 		SourceBranch:           in.SourceBranch,
 		TargetBranch:           in.TargetBranch,
 		HeadSHA:                in.HeadSHA,

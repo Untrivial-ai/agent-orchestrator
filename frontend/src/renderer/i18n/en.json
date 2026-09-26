@@ -767,6 +767,8 @@
 	"pr.review.pending": "Review pending",
 	"pr.review.requiredNotSubmitted": "Required review not submitted",
 	"pr.review.requirementSatisfied": "PR approved",
+	"pr.commentBy": "Comment by @{{name}}",
+	"pr.commenters": "Commented: {{names}}",
 	"pr.review.viewDetails": "View review details",
 	"pr.section.ci": "CI",
 	"pr.section.merge": "Merge",

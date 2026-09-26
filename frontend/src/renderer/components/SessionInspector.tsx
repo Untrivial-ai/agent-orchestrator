@@ -224,7 +224,6 @@ export const SessionInspector = memo(function SessionInspector({
 		onViewChange?.(next);
 		if (next === "files") onOpenFiles?.();
 	}, [onOpenFiles, onViewChange]);
-	const openReviews = useCallback(() => setView("reviews"), [setView]);
 	// A persisted/controlled Reviews selection can outlive the last reviewable PR.
 	// Keep the shell on a real, visible tab instead of rendering an empty, unlabelled body.
 	const reviewsAvailable = reviewsTabVisible(session);
@@ -292,7 +291,7 @@ export const SessionInspector = memo(function SessionInspector({
 					session ? <ReviewsView onOpenReviewFile={onOpenReviewFile} onOpenReviewerTerminal={onOpenReviewerTerminal} onOpenReviewerChat={onOpenReviewerChat} onWorkerMessageSent={onWorkerMessageSent} session={session} /> : undefined
 				}
 				summaryView={
-					session ? <SummaryView canOpenReviews={reviewsAvailable} onOpenReviews={openReviews} session={session} /> : undefined
+					session ? <SummaryView session={session} /> : undefined
 				}
 				tabs={tabs}
 			/>
@@ -315,15 +314,7 @@ function normalizeReviewerId(value: string | undefined): string {
 	return value?.trim().replace(/^@+/, "").toLowerCase() ?? "";
 }
 
-const SummaryView = memo(function SummaryView({
-	canOpenReviews,
-	onOpenReviews,
-	session,
-}: {
-	canOpenReviews: boolean;
-	onOpenReviews: () => void;
-	session: WorkspaceSession;
-}) {
+const SummaryView = memo(function SummaryView({ session }: { session: WorkspaceSession }) {
 	const { t } = useTranslation();
 	const query = useSessionScmSummary(session.id);
 	const developerMode = useUiStore((state) => state.developerMode);
@@ -360,9 +351,7 @@ const SummaryView = memo(function SummaryView({
 					{hasPRs ? (
 						prSummaries.map((pr) => (
 							<PRSummaryCard
-								canOpenReviews={canOpenReviews}
 								key={pr.url || pr.htmlUrl || pr.number}
-								onOpenReviews={onOpenReviews}
 								pr={pr}
 								sessionId={session.id}
 							/>
@@ -1208,17 +1197,7 @@ function updateSessionMergePolicy(
 	}));
 }
 
-function PRSummaryCard({
-	canOpenReviews,
-	onOpenReviews,
-	pr,
-	sessionId,
-}: {
-	canOpenReviews: boolean;
-	onOpenReviews: () => void;
-	pr: SessionPRSummary;
-	sessionId: string;
-}) {
+function PRSummaryCard({ pr, sessionId }: { pr: SessionPRSummary; sessionId: string }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const presentation = prCardPresentation(pr);
@@ -1240,54 +1219,47 @@ function PRSummaryCard({
 		},
 	});
 	const mergeError = mergePr.error instanceof Error ? mergePr.error.message : null;
-	const reviewers = Array.from(
-		new Set(
-			[
-				...(pr.review.reviews ?? [])
-					.slice()
-					.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))
-					.map((review) => review.reviewerId),
-				...pr.review.unresolvedBy.map((reviewer) => reviewer.reviewerId),
-			]
-				.map((reviewer) => reviewer.trim())
-				.filter(Boolean),
-		),
-	);
-	const reviewerAction = canOpenReviews && reviewers.length > 0 ? (
-		<button
-			aria-label={t("pr.review.viewDetails")}
-			className="flex items-center pl-1 text-2xs text-settings-muted hover:text-settings-label focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-			onClick={onOpenReviews}
-			title={t("pr.review.viewDetails")}
-			type="button"
-		>
-			{reviewers.length > 0 ? (
-				<>
-					{reviewers.slice(0, 3).map((reviewer, index) => (
-						<UserAvatar
-							className={cn("size-5 border border-(--color-bg-settings-input)", index > 0 && "-ml-1.5")}
-							imageUrl={scmUserAvatarUrl(pr.provider, prBrowserUrl(pr), reviewer)}
-							key={reviewer}
-							name={reviewer}
-						/>
-					))}
-					{reviewers.length > 3 ? (
-						<span className="-ml-1.5 inline-flex size-5 items-center justify-center rounded-full border border-(--color-bg-settings-input) bg-muted text-micro text-muted-foreground">
-							+{reviewers.length - 3}
-						</span>
-					) : null}
-				</>
+	const commenters = Array.from(new Set([
+		...(pr.discussionCommenters ?? []),
+		...(pr.review.reviews ?? []).filter((review) => review.body?.trim()).map((review) => review.reviewerId),
+		...pr.review.unresolvedBy.filter((person) => person.count > 0).map((person) => person.reviewerId),
+		...(pr.review.resolvedBy ?? []).filter((person) => person.count > 0).map((person) => person.reviewerId),
+	].map((login) => login.trim()).filter(Boolean)));
+	const commenterAvatars = commenters.length > 0 ? (
+		<div className="flex shrink-0 items-center pl-1" aria-label={t("pr.commenters", { names: commenters.join(", ") })}>
+			{commenters.slice(0, 5).map((login, index) => (
+				<span
+					aria-label={t("pr.commentBy", { name: login })}
+					className={cn("group relative shrink-0 cursor-default outline-none hover:z-20 focus-visible:z-20", index > 0 && "-ml-0.5")}
+					key={login}
+					role="img"
+					tabIndex={0}
+				>
+					<UserAvatar
+						className="size-7 border border-(--color-bg-settings-input) shadow-sm transition-transform duration-200 ease-out group-hover:-translate-y-1 group-hover:scale-[1.65] group-focus-visible:-translate-y-1 group-focus-visible:scale-[1.65]"
+						imageUrl={scmUserAvatarUrl(pr.provider, prBrowserUrl(pr), login)}
+						name={login}
+					/>
+					<span className="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border-strong bg-popover px-2 py-1 text-2xs text-foreground opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100">
+						@{login}
+					</span>
+				</span>
+			))}
+			{commenters.length > 5 ? (
+				<span className="ml-1.5 text-2xs text-settings-muted">
+					+{commenters.length - 5}
+				</span>
 			) : null}
-		</button>
-	) : undefined;
+		</div>
+	) : null;
 	const discussionCommentCount = pr.discussionCommentCount ?? 0;
 	const discussionCount = discussionCommentCount > 0 ? (
 		<span className="text-xs text-settings-muted">
 			{discussionCommentCount} {t("pr.noun.comment", { count: discussionCommentCount })}
 		</span>
 	) : null;
-	const reviewDetailsAction = discussionCount || reviewerAction ? (
-		<div className="flex items-center gap-1.5">{discussionCount}{reviewerAction}</div>
+	const reviewDetailsAction = discussionCount || commenterAvatars ? (
+		<div className="flex items-center gap-1.5">{discussionCount}{commenterAvatars}</div>
 	) : undefined;
 	const viewModel: InspectorPullRequest = {
 		...pr,

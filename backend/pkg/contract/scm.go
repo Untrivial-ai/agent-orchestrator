@@ -152,6 +152,7 @@ type PullRequestSummary struct {
 	Author                 string                         `json:"author"`
 	AuthorAvatarURL        string                         `json:"authorAvatarUrl,omitempty"`
 	DiscussionCommentCount int                            `json:"discussionCommentCount,omitempty"`
+	DiscussionCommenters   []string                       `json:"discussionCommenters,omitempty"`
 	SourceBranch           string                         `json:"sourceBranch"`
 	TargetBranch           string                         `json:"targetBranch"`
 	HeadSHA                string                         `json:"headSha"`

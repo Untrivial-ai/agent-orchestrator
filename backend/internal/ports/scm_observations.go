@@ -157,6 +157,8 @@ type SCMPRObservation struct {
 	AuthorAvatarURL string
 	// DiscussionCommentCount counts top-level PR conversation comments.
 	DiscussionCommentCount int
+	// DiscussionCommenters contains distinct authors from the latest PR conversation comments.
+	DiscussionCommenters []string
 	// BaseSHA is the current base branch SHA when the provider supplies it.
 	BaseSHA string
 	// MergeCommitSHA is the merge commit SHA when the PR has one.

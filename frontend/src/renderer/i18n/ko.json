@@ -2000,6 +2000,8 @@
 	"pr.merge.reasonComments": "Unresolved review comments must be resolved before this PR can merge.",
 	"pr.merge.reasonReady": "No merge conflict, checks are passing, and the review requirement is satisfied.",
 	"pr.review.requirementSatisfied": "PR approved",
+	"pr.commentBy": "@{{name}}님의 댓글",
+	"pr.commenters": "댓글 작성자: {{names}}",
 	"pr.review.viewDetails": "View review details",
 	"inspector.usage.agent": "에이전트",
 	"inspector.usage.inputTokens": "총 입력",

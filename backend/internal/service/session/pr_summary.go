@@ -107,6 +107,7 @@ func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, review
 		Author:                 pr.Author,
 		AuthorAvatarURL:        pr.AuthorAvatarURL,
 		DiscussionCommentCount: pr.DiscussionCommentCount,
+		DiscussionCommenters:   pr.DiscussionCommenters,
 		SourceBranch:           pr.SourceBranch,
 		TargetBranch:           pr.TargetBranch,
 		HeadSHA:                pr.HeadSHA,
