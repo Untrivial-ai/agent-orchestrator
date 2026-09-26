@@ -79,9 +79,12 @@ type Config struct {
 	// IdlePauseThreshold is how long a session must be quiet, with no turn in
 	// flight, before the control plane pauses its sandbox.
 	IdlePauseThreshold time.Duration
-	// PRStatusPollInterval is how often the pull-request status scanner
-	// refreshes CI, review, and mergeability state from GitHub.
+	// PRStatusPollInterval is how often the control plane looks for targeted
+	// pull-request recovery work.
 	PRStatusPollInterval time.Duration
+	// PRWebhookSilenceGrace is how long a tracked PR may go without an
+	// authoritative observation before recovery polling is eligible.
+	PRWebhookSilenceGrace time.Duration
 	// TerminalStreamEnabled turns on the low-latency terminal path: workers
 	// hold a persistent stream to the control plane and Postgres NOTIFY
 	// replaces the input/output polling loops. Off means the polled
@@ -158,8 +161,11 @@ const defaultIdlePauseInterval = 30 * time.Second
 
 const defaultPRStatusPollInterval = 30 * time.Second
 
+const defaultPRWebhookSilenceGrace = 2 * time.Minute
+
 func Load() (Config, error) {
 	environment := strings.ToLower(strings.TrimSpace(os.Getenv("AO_CLOUD_ENV")))
+	githubLocalTest := boolEnv("AO_CLOUD_GITHUB_LOCAL_TEST", false)
 	hosted := environment == "staging" || environment == "production"
 	defaultHTTPAddress := ":8080"
 	if environment == "development" || environment == "test" {
@@ -220,6 +226,7 @@ func Load() (Config, error) {
 		IdlePauseInterval:      durationEnv("AO_CLOUD_IDLE_PAUSE_INTERVAL", defaultIdlePauseInterval),
 		IdlePauseThreshold:     durationEnv("AO_CLOUD_IDLE_PAUSE_THRESHOLD", defaultIdlePauseThreshold),
 		PRStatusPollInterval:   durationEnv("AO_CLOUD_PR_STATUS_POLL_INTERVAL", defaultPRStatusPollInterval),
+		PRWebhookSilenceGrace:  durationEnv("AO_CLOUD_PR_WEBHOOK_SILENCE_GRACE", defaultPRWebhookSilenceGrace),
 
 		NodeOpsBaseURL:         strings.TrimSpace(os.Getenv("AO_CLOUD_NODEOPS_BASE_URL")),
 		NodeOpsAPIKey:          strings.TrimSpace(os.Getenv("AO_CLOUD_NODEOPS_API_KEY")),
@@ -305,6 +312,9 @@ func Load() (Config, error) {
 	case "development", "test", "staging", "production":
 	default:
 		return Config{}, errors.New("AO_CLOUD_ENV must be development, test, staging, or production")
+	}
+	if githubLocalTest && cfg.Environment != "development" {
+		return Config{}, errors.New("AO_CLOUD_GITHUB_LOCAL_TEST may only be enabled in development")
 	}
 	workosValues := []string{cfg.WorkOSIssuer, cfg.WorkOSClientID, cfg.WorkOSAPIKey}
 	configuredWorkOSValues := 0
@@ -494,6 +504,9 @@ func Load() (Config, error) {
 	if cfg.PRStatusPollInterval <= 0 {
 		return Config{}, errors.New("AO_CLOUD_PR_STATUS_POLL_INTERVAL must be positive")
 	}
+	if cfg.PRWebhookSilenceGrace <= 0 {
+		return Config{}, errors.New("AO_CLOUD_PR_WEBHOOK_SILENCE_GRACE must be positive")
+	}
 	if cfg.MaxSandboxesPerOrg < 1 {
 		return Config{}, errors.New("AO_CLOUD_MAX_ACTIVE_SANDBOXES_PER_ORG must be at least 1")
 	}
@@ -531,7 +544,9 @@ func Load() (Config, error) {
 	if cfg.GitHub.Enabled() && cfg.GitHub.PublicURL == "" {
 		return Config{}, errors.New("AO_CLOUD_PUBLIC_URL is required when the GitHub App is configured")
 	}
-	if cfg.GitHub.Enabled() && cfg.Environment != "production" {
+	githubAllowed := cfg.Environment == "production" ||
+		(cfg.Environment == "development" && githubLocalTest)
+	if cfg.GitHub.Enabled() && !githubAllowed {
 		return Config{}, errors.New("GitHub App credentials may only be configured in production")
 	}
 	if cfg.GitHub.Enabled() {

@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -23,8 +25,10 @@ type pullRequestCISummaryResponse struct {
 
 type pullRequestReviewCommentLinkResponse struct {
 	URL              string `json:"url"`
+	ReviewID         string `json:"reviewId,omitempty"`
 	File             string `json:"file,omitempty"`
 	Line             int    `json:"line,omitempty"`
+	Body             string `json:"body,omitempty"`
 	AutoInjectReview bool   `json:"autoInjectReview"`
 }
 
@@ -50,6 +54,7 @@ type pullRequestReviewSummaryResponse struct {
 	Decision                   string                                  `json:"decision"`
 	HasUnresolvedHumanComments bool                                    `json:"hasUnresolvedHumanComments"`
 	UnresolvedBy               []pullRequestUnresolvedReviewerResponse `json:"unresolvedBy"`
+	ResolvedBy                 []pullRequestUnresolvedReviewerResponse `json:"resolvedBy"`
 	Reviews                    []pullRequestSubmittedReviewResponse    `json:"reviews"`
 }
 
@@ -74,6 +79,7 @@ type pullRequestSummaryResponse struct {
 	Provider         string                                 `json:"provider"`
 	Repository       string                                 `json:"repository"`
 	Author           string                                 `json:"author"`
+	AuthorAvatarURL  string                                 `json:"authorAvatarUrl,omitempty"`
 	SourceBranch     string                                 `json:"sourceBranch"`
 	TargetBranch     string                                 `json:"targetBranch"`
 	HeadSHA          string                                 `json:"headSha"`
@@ -91,35 +97,37 @@ type pullRequestSummaryResponse struct {
 	ReviewObservedAt time.Time                              `json:"reviewObservedAt"`
 }
 
-func toPullRequestSummaryResponse(pr domain.PullRequest) pullRequestSummaryResponse {
+func toPullRequestSummaryResponse(pr domain.PullRequest, snapshot domain.PullRequestSnapshot) pullRequestSummaryResponse {
 	createdAt := pr.CreatedAt
+	review := pullRequestReviewResponse(pr, snapshot)
+	reasons := []string{}
+	if review.HasUnresolvedHumanComments {
+		reasons = append(reasons, "unresolved_comments")
+	}
 	return pullRequestSummaryResponse{
-		URL:          pr.URL,
-		HTMLURL:      pr.URL,
-		Number:       pr.Number,
-		Title:        pr.Title,
-		State:        string(pr.State),
-		Provider:     pr.Provider,
-		Repository:   pr.Repository,
-		Author:       pr.Author,
-		SourceBranch: pr.SourceBranch,
-		TargetBranch: pr.TargetBranch,
-		HeadSHA:      pr.HeadSHA,
-		Additions:    pr.Additions,
-		Deletions:    pr.Deletions,
-		ChangedFiles: pr.ChangedFiles,
+		URL:             pr.URL,
+		HTMLURL:         pr.URL,
+		Number:          pr.Number,
+		Title:           pr.Title,
+		State:           string(pr.State),
+		Provider:        pr.Provider,
+		Repository:      pr.Repository,
+		Author:          pr.Author,
+		AuthorAvatarURL: pr.AuthorAvatarURL,
+		SourceBranch:    pr.SourceBranch,
+		TargetBranch:    pr.TargetBranch,
+		HeadSHA:         pr.HeadSHA,
+		Additions:       pr.Additions,
+		Deletions:       pr.Deletions,
+		ChangedFiles:    pr.ChangedFiles,
 		CI: pullRequestCISummaryResponse{
 			State:         string(pr.CIState),
-			FailingChecks: []pullRequestFailingCheckResponse{},
+			FailingChecks: pullRequestFailingChecks(pr.Checks),
 		},
-		Review: pullRequestReviewSummaryResponse{
-			Decision:     string(pr.ReviewState),
-			UnresolvedBy: []pullRequestUnresolvedReviewerResponse{},
-			Reviews:      []pullRequestSubmittedReviewResponse{},
-		},
+		Review: review,
 		Mergeability: pullRequestMergeabilitySummaryResponse{
 			State:          string(pr.Mergeability),
-			Reasons:        []string{},
+			Reasons:        reasons,
 			PullRequestURL: pr.URL,
 			ConflictFiles:  []pullRequestConflictFileResponse{},
 		},
@@ -129,6 +137,120 @@ func toPullRequestSummaryResponse(pr domain.PullRequest) pullRequestSummaryRespo
 		CIObservedAt:     pr.ObservedAt,
 		ReviewObservedAt: pr.ObservedAt,
 	}
+}
+
+func pullRequestReviewResponse(pr domain.PullRequest, snapshot domain.PullRequestSnapshot) pullRequestReviewSummaryResponse {
+	out := pullRequestReviewSummaryResponse{Decision: string(pr.ReviewState), UnresolvedBy: []pullRequestUnresolvedReviewerResponse{}, ResolvedBy: []pullRequestUnresolvedReviewerResponse{}, Reviews: []pullRequestSubmittedReviewResponse{}}
+	type group struct {
+		count int
+		links []pullRequestReviewCommentLinkResponse
+		bot   bool
+	}
+	unresolved := map[string]*group{}
+	resolved := map[string]*group{}
+	for _, comment := range snapshot.Comments {
+		if comment.IsBot {
+			continue
+		}
+		reviewer := comment.Author
+		if reviewer == "" {
+			reviewer = "unknown"
+		}
+		target := unresolved
+		if comment.Resolved || comment.Outdated {
+			target = resolved
+		}
+		entry := target[reviewer]
+		if entry == nil {
+			entry = &group{}
+			target[reviewer] = entry
+		}
+		entry.count++
+		entry.links = append(entry.links, pullRequestReviewCommentLinkResponse{URL: comment.URL, ReviewID: comment.ReviewProviderID, File: comment.Path, Line: comment.Line, Body: comment.Body, AutoInjectReview: comment.AutoInjectReview})
+	}
+	appendGroups := func(source map[string]*group) []pullRequestUnresolvedReviewerResponse {
+		keys := make([]string, 0, len(source))
+		for key := range source {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		result := make([]pullRequestUnresolvedReviewerResponse, 0, len(keys))
+		for _, key := range keys {
+			value := source[key]
+			result = append(result, pullRequestUnresolvedReviewerResponse{ReviewerID: key, Count: value.count, Links: value.links, IsBot: value.bot})
+		}
+		return result
+	}
+	out.UnresolvedBy = appendGroups(unresolved)
+	out.ResolvedBy = appendGroups(resolved)
+	out.HasUnresolvedHumanComments = len(out.UnresolvedBy) > 0
+	latest := map[string]domain.PullRequestReview{}
+	for _, review := range snapshot.Reviews {
+		reviewer := review.Author
+		if reviewer == "" {
+			reviewer = "unknown"
+		}
+		current, ok := latest[reviewer]
+		if !ok || reviewTimeAfter(review, current) {
+			latest[reviewer] = review
+		}
+	}
+	keys := make([]string, 0, len(latest))
+	for key := range latest {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		review := latest[key]
+		out.Reviews = append(out.Reviews, pullRequestSubmittedReviewResponse{ReviewerID: key, Verdict: string(review.State), Body: review.Body, ReviewURL: review.URL, SubmittedAt: review.SubmittedAt, IsBot: review.IsBot, AutoInjectReview: review.AutoInjectReview})
+	}
+	return out
+}
+
+func reviewTimeAfter(left, right domain.PullRequestReview) bool {
+	if left.SubmittedAt == nil {
+		return false
+	}
+	if right.SubmittedAt == nil {
+		return true
+	}
+	return left.SubmittedAt.After(*right.SubmittedAt)
+}
+
+func pullRequestFailingChecks(snapshot json.RawMessage) []pullRequestFailingCheckResponse {
+	var checks []struct {
+		Name       string `json:"name"`
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
+		HTMLURL    string `json:"html_url"`
+		URL        string `json:"url"`
+	}
+	if len(snapshot) == 0 || json.Unmarshal(snapshot, &checks) != nil {
+		return []pullRequestFailingCheckResponse{}
+	}
+	result := make([]pullRequestFailingCheckResponse, 0, len(checks))
+	for _, check := range checks {
+		switch check.Conclusion {
+		case "failure", "timed_out", "action_required", "startup_failure", "cancelled":
+			status := "failed"
+			if check.Conclusion == "cancelled" {
+				status = "cancelled"
+			}
+			result = append(result, pullRequestFailingCheckResponse{
+				Name: check.Name, Status: status, Conclusion: check.Conclusion, URL: firstNonEmptyString(check.HTMLURL, check.URL),
+			})
+		}
+	}
+	return result
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (s *Server) listSessionPullRequests(w http.ResponseWriter, r *http.Request) {
@@ -145,7 +267,12 @@ func (s *Server) listSessionPullRequests(w http.ResponseWriter, r *http.Request)
 	}
 	items := make([]pullRequestSummaryResponse, 0, len(pullRequests))
 	for _, pr := range pullRequests {
-		items = append(items, toPullRequestSummaryResponse(pr))
+		snapshot, err := s.store.PullRequestSnapshot(r.Context(), orgID, pr.ID)
+		if err != nil {
+			s.writeStoreError(w, r, err)
+			return
+		}
+		items = append(items, toPullRequestSummaryResponse(pr, snapshot))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessionId": sessionID, "pullRequests": items})
 }

@@ -29,6 +29,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/aoagents/agent-orchestrator/cloud/internal/notificationoutbox"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/workerexec"
@@ -60,6 +61,7 @@ var workerCapabilities = []string{
 	"workspace.files",
 	"terminal.workspace",
 	"terminal.agent",
+	"notification.events",
 }
 
 func main() {
@@ -142,10 +144,11 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("create workspace directory: %w", err)
 	}
 	for key, value := range map[string]string{
-		"AO_CLOUD_PUBLIC_URL": publicURL,
-		"AO_SESSION_ID":       bootstrap.SessionID,
-		"AO_SESSION_BRANCH":   bootstrap.Launch.Branch,
-		"AO_DATA_DIR":         dataDir,
+		"AO_CLOUD_PUBLIC_URL":   publicURL,
+		"AO_SESSION_ID":         bootstrap.SessionID,
+		"AO_SESSION_BRANCH":     bootstrap.Launch.Branch,
+		"AO_DATA_DIR":           dataDir,
+		"AO_CLOUD_WORKER_EPOCH": strconv.FormatInt(bootstrap.Epoch, 10),
 	} {
 		if err := os.Setenv(key, value); err != nil {
 			return fmt.Errorf("set worker tooling environment %s: %w", key, err)
@@ -189,7 +192,8 @@ func run(logger *slog.Logger) error {
 	// perceived connection path independent from clone latency without letting
 	// a prompt run in an empty workspace.
 	transportSupervisor.HoldAgentInputUntilWorkspaceReady()
-	results := make(chan error, 5)
+	results := make(chan error, 6)
+	backgroundWorkers := 5
 	go func() { results <- client.heartbeatLoop(runCtx, logger) }()
 	go func() { results <- transportSupervisor.Run(runCtx) }()
 	go func() {
@@ -201,13 +205,28 @@ func run(logger *slog.Logger) error {
 	go func() {
 		results <- runReviewBridge(runCtx, reviewSocketPath, client, logger)
 	}()
+	if outbox, err := notificationoutbox.Open(filepath.Join(dataDir, "notification-outbox.db")); err != nil {
+		logger.Warn("open notification outbox", "error", err)
+	} else {
+		backgroundWorkers++
+		go func() {
+			defer outbox.Close()
+			results <- (&notificationoutbox.Flusher{
+				Outbox: outbox, WorkerEpoch: bootstrap.Epoch, Logger: logger,
+				Deliver: func(deliveryCtx context.Context, event notificationoutbox.Event) error {
+					if err := transportSupervisor.DeliverNotification(deliveryCtx, event); err == nil {
+						return nil
+					}
+					return client.publishNotification(deliveryCtx, event)
+				},
+			}).Run(runCtx)
+		}()
+	}
 	if err := <-started; err != nil {
 		cancel()
-		<-results
-		<-results
-		<-results
-		<-results
-		<-results
+		for index := 0; index < backgroundWorkers; index++ {
+			<-results
+		}
 		return fmt.Errorf("start workspace transport: %w", err)
 	}
 	if err := client.publishEvent(ctx, "worker.ready", map[string]any{
@@ -259,10 +278,9 @@ func run(logger *slog.Logger) error {
 	}()
 	first := <-results
 	cancel()
-	<-results
-	<-results
-	<-results
-	<-results
+	for index := 1; index < backgroundWorkers; index++ {
+		<-results
+	}
 	if ctx.Err() != nil {
 		logger.Info("worker shutting down")
 		return nil
@@ -848,6 +866,19 @@ func (c *client) FailTurn(
 
 func (c *client) publishEvent(ctx context.Context, eventType string, payload any) error {
 	return c.do(ctx, "/worker/events", worker.EventRequest{Type: eventType, Payload: payload}, nil)
+}
+
+func (c *client) publishNotification(ctx context.Context, event notificationoutbox.Event) error {
+	var response worker.NotificationEventResponse
+	if err := c.do(ctx, "/worker/notification-events", worker.NotificationEventRequest{
+		EventID: event.EventID, Type: event.EventType, OccurredAt: event.OccurredAt, Payload: event.Payload,
+	}, &response); err != nil {
+		return err
+	}
+	if !response.Accepted || response.EventID != event.EventID {
+		return errors.New("control plane returned an invalid notification acknowledgement")
+	}
+	return nil
 }
 
 func (c *client) do(ctx context.Context, path string, body any, out any) error {

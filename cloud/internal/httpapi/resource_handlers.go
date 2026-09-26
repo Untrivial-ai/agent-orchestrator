@@ -93,24 +93,28 @@ type createSessionRepo struct {
 }
 
 type sessionResponse struct {
-	ID               string   `json:"id"`
-	OrgID            string   `json:"orgId"`
-	ProjectID        string   `json:"projectId"`
-	Kind             string   `json:"kind"`
-	Harness          string   `json:"harness"`
-	DisplayName      string   `json:"displayName"`
-	Branch           string   `json:"branch"`
-	Mode             string   `json:"mode"`
-	DeniedCommands   []string `json:"deniedCommands"`
-	ActivityState    string   `json:"activityState"`
-	Status           string   `json:"status"`
-	RuntimeConnected bool     `json:"runtimeConnected"`
-	SandboxProvider  string   `json:"sandboxProvider,omitempty"`
-	DesiredState     string   `json:"desiredState,omitempty"`
-	ObservedState    string   `json:"observedState,omitempty"`
-	RuntimeState     string   `json:"runtimeState,omitempty"`
-	RuntimeError     string   `json:"runtimeError,omitempty"`
-	IsTerminated     bool     `json:"isTerminated"`
+	ID                 string                   `json:"id"`
+	OrgID              string                   `json:"orgId"`
+	ProjectID          string                   `json:"projectId"`
+	Kind               string                   `json:"kind"`
+	Harness            string                   `json:"harness"`
+	DisplayName        string                   `json:"displayName"`
+	Branch             string                   `json:"branch"`
+	Mode               string                   `json:"mode"`
+	DeniedCommands     []string                 `json:"deniedCommands"`
+	ActivityState      string                   `json:"activityState"`
+	Status             string                   `json:"status"`
+	RuntimeConnected   bool                     `json:"runtimeConnected"`
+	SandboxProvider    string                   `json:"sandboxProvider,omitempty"`
+	DesiredState       string                   `json:"desiredState,omitempty"`
+	ObservedState      string                   `json:"observedState,omitempty"`
+	RuntimeState       string                   `json:"runtimeState,omitempty"`
+	RuntimeError       string                   `json:"runtimeError,omitempty"`
+	IsTerminated       bool                     `json:"isTerminated"`
+	AutoInjectCI       bool                     `json:"autoInjectCI"`
+	AutoInjectReview   bool                     `json:"autoInjectReview"`
+	TerminateOnPRMerge bool                     `json:"terminateOnPrMerge"`
+	PRs                []sessionPRFactsResponse `json:"prs"`
 	// WorkerEpoch advances on every fresh worker connection (resume, restore,
 	// re-provision). Clients key their terminal on it so a resumed session
 	// re-attaches to the live agent instead of the dead epoch's terminal.
@@ -128,12 +132,13 @@ type pageInfo struct {
 // children listing: enough for a human row (number, url, lifecycle) and for an
 // orchestrator to route CI/review feedback without a second lookup.
 type sessionPRFactsResponse struct {
-	URL          string `json:"url"`
-	Number       int    `json:"number"`
-	State        string `json:"state"`
-	CI           string `json:"ci"`
-	Review       string `json:"review"`
-	Mergeability string `json:"mergeability"`
+	URL           string                            `json:"url"`
+	Number        int                               `json:"number"`
+	State         string                            `json:"state"`
+	CI            string                            `json:"ci"`
+	Review        string                            `json:"review"`
+	Mergeability  string                            `json:"mergeability"`
+	FailingChecks []pullRequestFailingCheckResponse `json:"failingChecks,omitempty"`
 	// The control plane does not track unresolved review comments yet; the
 	// field exists so the renderer's shared PullRequestFacts shape maps 1:1.
 	ReviewComments bool      `json:"reviewComments"`
@@ -156,27 +161,9 @@ func toSessionChildResponse(
 	facts []contract.PRFacts,
 	prs []domain.PullRequest,
 ) sessionChildResponse {
-	rendered := make([]sessionPRFactsResponse, 0, len(prs))
-	for _, pr := range prs {
-		state := string(pr.State)
-		if pr.Draft && pr.State == contract.PRStateOpen {
-			state = "draft"
-		}
-		rendered = append(rendered, sessionPRFactsResponse{
-			URL:          pr.URL,
-			Number:       pr.Number,
-			State:        state,
-			CI:           string(pr.CIState),
-			Review:       string(pr.ReviewState),
-			Mergeability: string(pr.Mergeability),
-			SourceBranch: pr.SourceBranch,
-			TargetBranch: pr.TargetBranch,
-			UpdatedAt:    pr.UpdatedAt,
-		})
-	}
 	return sessionChildResponse{
 		sessionResponse: toSessionResponse(session, facts),
-		PRs:             rendered,
+		PRs:             toSessionPRFactsResponses(prs, facts),
 	}
 }
 
@@ -607,9 +594,16 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
+	pullRequests, err := s.store.PullRequestsBySessions(r.Context(), orgID, sessionIDs)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
 	items := make([]sessionResponse, 0, len(sessions))
 	for _, session := range sessions {
-		items = append(items, toSessionResponse(session, prFacts[session.ID]))
+		response := toSessionResponse(session, prFacts[session.ID])
+		response.PRs = toSessionPRFactsResponses(pullRequests[session.ID], prFacts[session.ID])
+		items = append(items, response)
 	}
 	page := pageInfo{HasMore: hasMore}
 	if hasMore && len(sessions) > 0 {
@@ -721,7 +715,97 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"session": toSessionResponse(session, prFacts[sessionID])})
+	pullRequests, err := s.store.PullRequestsBySessions(r.Context(), orgID, []string{sessionID})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	response := toSessionResponse(session, prFacts[sessionID])
+	response.PRs = toSessionPRFactsResponses(pullRequests[sessionID], prFacts[sessionID])
+	writeJSON(w, http.StatusOK, map[string]any{"session": response})
+}
+
+func (s *Server) setCloudSessionAutoInjectCI(w http.ResponseWriter, r *http.Request) {
+	orgID := chi.URLParam(r, "orgId")
+	sessionID := chi.URLParam(r, "sessionId")
+	if requireUUID(orgID, "orgId") != nil || requireUUID(sessionID, "sessionId") != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
+		return
+	}
+	var input struct {
+		AutoInjectCI *bool `json:"autoInjectCI"`
+	}
+	if err := decodeJSON(w, r, &input); err != nil || input.AutoInjectCI == nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "autoInjectCI must be a boolean.")
+		return
+	}
+	session, err := s.store.SetCloudSessionAutoInjectCI(r.Context(), principalFrom(r), orgID, sessionID, *input.AutoInjectCI)
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	prFacts, err := s.store.PRFactsBySession(r.Context(), orgID, []string{sessionID})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	pullRequests, err := s.store.PullRequestsBySessions(r.Context(), orgID, []string{sessionID})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	response := toSessionResponse(session, prFacts[sessionID])
+	response.PRs = toSessionPRFactsResponses(pullRequests[sessionID], prFacts[sessionID])
+	writeJSON(w, http.StatusOK, map[string]any{"session": response})
+}
+
+func (s *Server) setCloudSessionAutoInjectReview(w http.ResponseWriter, r *http.Request) {
+	s.setCloudSessionBooleanPolicy(w, r, "autoInjectReview", func(ctx context.Context, principal domain.Principal, orgID, sessionID string, enabled bool) (domain.Session, error) {
+		return s.store.SetCloudSessionAutoInjectReview(ctx, principal, orgID, sessionID, enabled)
+	})
+}
+
+func (s *Server) setCloudSessionMergePolicy(w http.ResponseWriter, r *http.Request) {
+	s.setCloudSessionBooleanPolicy(w, r, "terminateOnPrMerge", func(ctx context.Context, principal domain.Principal, orgID, sessionID string, enabled bool) (domain.Session, error) {
+		return s.store.SetCloudSessionTerminateOnPRMerge(ctx, principal, orgID, sessionID, enabled)
+	})
+}
+
+func (s *Server) setCloudSessionBooleanPolicy(
+	w http.ResponseWriter,
+	r *http.Request,
+	field string,
+	update func(context.Context, domain.Principal, string, string, bool) (domain.Session, error),
+) {
+	orgID := chi.URLParam(r, "orgId")
+	sessionID := chi.URLParam(r, "sessionId")
+	if requireUUID(orgID, "orgId") != nil || requireUUID(sessionID, "sessionId") != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "orgId and sessionId must be UUIDs.")
+		return
+	}
+	input := map[string]*bool{}
+	if err := decodeJSON(w, r, &input); err != nil || input[field] == nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", field+" must be a boolean.")
+		return
+	}
+	session, err := update(r.Context(), principalFrom(r), orgID, sessionID, *input[field])
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	prFacts, err := s.store.PRFactsBySession(r.Context(), orgID, []string{sessionID})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	pullRequests, err := s.store.PullRequestsBySessions(r.Context(), orgID, []string{sessionID})
+	if err != nil {
+		s.writeStoreError(w, r, err)
+		return
+	}
+	response := toSessionResponse(session, prFacts[sessionID])
+	response.PRs = toSessionPRFactsResponses(pullRequests[sessionID], prFacts[sessionID])
+	writeJSON(w, http.StatusOK, map[string]any{"session": response})
 }
 
 // deleteSession records the intent to tear a session's sandbox down. It does
@@ -985,28 +1069,54 @@ func toProjectResponse(project domain.Project) projectResponse {
 // pass nil only for a session that provably has none yet (just created).
 func toSessionResponse(session domain.Session, prs []contract.PRFacts) sessionResponse {
 	return sessionResponse{
-		ID:               session.ID,
-		OrgID:            session.OrgID,
-		ProjectID:        session.ProjectID,
-		Kind:             session.Kind,
-		Harness:          session.Harness,
-		DisplayName:      session.DisplayName,
-		Branch:           session.Branch,
-		Mode:             session.Mode,
-		DeniedCommands:   nonNilStrings(session.DeniedCommands),
-		ActivityState:    string(session.ActivityState),
-		Status:           string(session.Status(time.Now().UTC(), prs)),
-		RuntimeConnected: session.RuntimeConnected,
-		SandboxProvider:  session.SandboxProvider,
-		DesiredState:     session.DesiredState,
-		ObservedState:    session.ObservedState,
-		RuntimeState:     session.RuntimeState,
-		RuntimeError:     session.RuntimeError,
-		IsTerminated:     session.IsTerminated,
-		WorkerEpoch:      session.WorkerEpoch,
-		CreatedAt:        session.CreatedAt,
-		UpdatedAt:        session.UpdatedAt,
+		ID:                 session.ID,
+		OrgID:              session.OrgID,
+		ProjectID:          session.ProjectID,
+		Kind:               session.Kind,
+		Harness:            session.Harness,
+		DisplayName:        session.DisplayName,
+		Branch:             session.Branch,
+		Mode:               session.Mode,
+		DeniedCommands:     nonNilStrings(session.DeniedCommands),
+		ActivityState:      string(session.ActivityState),
+		Status:             string(session.Status(time.Now().UTC(), prs)),
+		RuntimeConnected:   session.RuntimeConnected,
+		SandboxProvider:    session.SandboxProvider,
+		DesiredState:       session.DesiredState,
+		ObservedState:      session.ObservedState,
+		RuntimeState:       session.RuntimeState,
+		RuntimeError:       session.RuntimeError,
+		IsTerminated:       session.IsTerminated,
+		AutoInjectCI:       session.AutoInjectCI,
+		AutoInjectReview:   session.AutoInjectReview,
+		TerminateOnPRMerge: session.TerminateOnPRMerge,
+		WorkerEpoch:        session.WorkerEpoch,
+		CreatedAt:          session.CreatedAt,
+		UpdatedAt:          session.UpdatedAt,
+		PRs:                []sessionPRFactsResponse{},
 	}
+}
+
+func toSessionPRFactsResponses(prs []domain.PullRequest, facts []contract.PRFacts) []sessionPRFactsResponse {
+	reviewCommentsByURL := make(map[string]bool, len(facts))
+	for _, fact := range facts {
+		reviewCommentsByURL[fact.URL] = fact.ReviewComments
+	}
+	items := make([]sessionPRFactsResponse, 0, len(prs))
+	for _, pr := range prs {
+		state := string(pr.State)
+		if pr.Draft && state == "open" {
+			state = "draft"
+		}
+		items = append(items, sessionPRFactsResponse{
+			URL: pr.URL, Number: pr.Number, State: state, CI: string(pr.CIState),
+			Review: string(pr.ReviewState), Mergeability: string(pr.Mergeability),
+			FailingChecks:  pullRequestFailingChecks(pr.Checks),
+			ReviewComments: reviewCommentsByURL[pr.URL],
+			SourceBranch:   pr.SourceBranch, TargetBranch: pr.TargetBranch, UpdatedAt: pr.UpdatedAt,
+		})
+	}
+	return items
 }
 
 func decimalID(id *int64) string {

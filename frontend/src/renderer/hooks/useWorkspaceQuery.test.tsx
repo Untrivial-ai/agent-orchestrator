@@ -589,6 +589,37 @@ describe("useWorkspaceQuery", () => {
 		expect(listProjectsMock).toHaveBeenCalledWith("org-1", { limit: 100 });
 	});
 
+	it("maps Cloud failing-check details into the shared PR facts", async () => {
+		cloudState.ready = true;
+		cloudState.org = { id: "org-1" };
+		listProjectsMock.mockResolvedValue({
+			items: [{ id: "cp-1", displayName: "cloud-app" }],
+			page: { hasMore: false },
+		});
+		listSessionsMock.mockResolvedValue({
+			items: [{
+				id: "cloud-session-1", projectId: "cp-1", displayName: "Fix CI",
+				harness: "codex", kind: "worker", status: "working", isTerminated: false,
+				createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-01T00:00:00Z",
+				prs: [{
+					url: "https://github.com/acme/cloud-app/pull/7", number: 7, state: "open",
+					ci: "failing", review: "none", mergeability: "blocked", reviewComments: false,
+					failingChecks: [{ name: "unit", status: "failed", conclusion: "failure", url: "https://ci/unit" }],
+					updatedAt: "2026-08-01T00:00:00Z",
+				}],
+			}],
+			page: { hasMore: false },
+		});
+		respondWith({ projects: { data: { projects: [] } }, sessions: { data: { sessions: [] } } });
+
+		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+		await waitFor(() => expect(result.current.data?.[0]?.sessions).toHaveLength(1));
+
+		expect(result.current.data?.[0]?.sessions[0]?.prs[0]?.failingChecks).toEqual([
+			{ name: "unit", status: "failed", conclusion: "failure", url: "https://ci/unit" },
+		]);
+	});
+
 	it("keeps local projects when the cloud fetch fails", async () => {
 		cloudState.ready = true;
 		cloudState.org = { id: "org-1" };

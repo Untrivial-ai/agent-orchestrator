@@ -25,6 +25,7 @@
 //             {type:"output",data:<base64>,sequence}
 
 import { base64ToBytes, type MuxConnectionState, type TerminalMux } from "./terminal-mux";
+import { publishCloudNotificationHint } from "./cloud-notification-hints";
 
 export interface CloudTerminalMuxOptions {
 	/** WebSocket base including the API mount, e.g. "wss://host/api/cloud/v1". */
@@ -107,7 +108,7 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 
 	const handleMessage = (event: MessageEvent) => {
 		if (typeof event.data !== "string") return;
-		let message: { type?: string; data?: string; sequence?: number };
+		let message: { type?: string; data?: string; sequence?: number; eventId?: string; eventType?: string; occurredAt?: string; payload?: unknown };
 		try {
 			message = JSON.parse(event.data);
 		} catch {
@@ -135,6 +136,12 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 				{
 					const clear = new TextEncoder().encode("\x1b[3J\x1b[H\x1b[2J");
 					dataListeners.forEach((listener) => listener(clear));
+				}
+				break;
+			case "notification_hint":
+				if (typeof message.eventId === "string" && typeof message.eventType === "string" &&
+					typeof message.occurredAt === "string" && message.payload !== null && typeof message.payload === "object" && !Array.isArray(message.payload)) {
+					publishCloudNotificationHint({ source: "cloud", eventId: message.eventId, type: message.eventType, occurredAt: message.occurredAt, payload: message.payload as Record<string, unknown> });
 				}
 				break;
 			// starting / replay_complete / input_ack carry no terminal output the

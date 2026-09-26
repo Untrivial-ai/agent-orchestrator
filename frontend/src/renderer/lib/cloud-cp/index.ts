@@ -8,6 +8,7 @@ export type {
 	CloudCpMutationOptions,
 	CloudCpRequestOptions,
 	CloudCpSessionEventsOptions,
+	CloudCpNotificationEventsOptions,
 } from "./client";
 export { CloudCpAuthError, CloudCpError } from "./errors";
 export type { CloudCpErrorOptions } from "./errors";

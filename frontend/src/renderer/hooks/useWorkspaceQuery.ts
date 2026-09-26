@@ -308,11 +308,24 @@ function toCloudWorkspaceSession(
 		branch: session.branch || undefined,
 		status: toSessionStatus(session.status, session.isTerminated),
 		isTerminated: session.isTerminated,
+		autoInjectCI: session.autoInjectCI ?? true,
+		autoInjectReview: session.autoInjectReview ?? true,
+		terminateOnPrMerge: session.terminateOnPrMerge ?? true,
 		runtimeConnected: session.runtimeConnected,
 		createdAt: session.createdAt,
 		updatedAt: session.updatedAt,
 		activity: toSessionActivity({ state: session.activityState }),
-		prs: [],
+		prs: (session.prs ?? []).map((pr) => ({
+			url: pr.url,
+			number: pr.number,
+			state: pr.state as PRState,
+			ci: pr.ci,
+			review: pr.review,
+			mergeability: pr.mergeability,
+			failingChecks: pr.failingChecks,
+			reviewComments: pr.reviewComments,
+			updatedAt: pr.updatedAt,
+		})),
 		// Marks this as a control-plane session so the terminal opens against the
 		// CP (ticket + sandbox WebSocket) instead of the local daemon mux.
 		cloud: {

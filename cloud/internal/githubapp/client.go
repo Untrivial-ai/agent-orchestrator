@@ -984,8 +984,10 @@ func (c *Client) GetPullRequest(
 
 // CheckRun is one GitHub Checks API run against a commit.
 type CheckRun struct {
+	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
+	HTMLURL    string `json:"html_url"`
 }
 
 // ListCheckRuns returns every check run GitHub has recorded against ref
@@ -1111,6 +1113,11 @@ func (c *Client) appJSON(ctx context.Context, method, path string, body, destina
 
 func (c *Client) userJSON(ctx context.Context, token, method, path string, body, destination any) error {
 	return c.jsonRequest(ctx, method, c.apiBaseURL+path, "Bearer "+token, body, destination)
+}
+
+func (c *Client) graphQL(ctx context.Context, token, query string, variables map[string]any, destination any) error {
+	return c.jsonRequest(ctx, http.MethodPost, c.apiBaseURL+"/graphql", "Bearer "+token,
+		map[string]any{"query": query, "variables": variables}, destination)
 }
 
 func (c *Client) jsonRequest(
