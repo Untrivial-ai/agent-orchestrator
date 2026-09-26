@@ -777,6 +777,7 @@ export function AssistantMessage({
 	message,
 	showCopy = false,
 	live = false,
+	liveStatus = true,
 	onRollback,
 	rollbackDisabled = false,
 	durationMs,
@@ -786,6 +787,8 @@ export function AssistantMessage({
 	showCopy?: boolean;
 	/** The enclosing turn is still active, even if its last text chunk has landed. */
 	live?: boolean;
+	/** When false, the enclosing turn owns the single live status row. */
+	liveStatus?: boolean;
 	/**
 	 * Discard this turn and everything after it. Lives next to copy so the finished
 	 * answer owns both "keep this" and "undo from here".
@@ -799,7 +802,7 @@ export function AssistantMessage({
 	const visibleText = useSmoothStreamingText(message);
 	const renderingStreaming = message.streaming || visibleText.length < message.text.length;
 	const hasDuration = durationMs !== undefined && durationMs > 0;
-	const showLiveStatus = live || (renderingStreaming && (showCopy || Boolean(onRollback)));
+	const showLiveStatus = liveStatus && (live || (renderingStreaming && (showCopy || Boolean(onRollback))));
 	const showActions = !live && !renderingStreaming && (showCopy || Boolean(onRollback) || hasDuration);
 	return (
 		<div className="group/message relative">

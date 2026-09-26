@@ -29,7 +29,7 @@ import {
 	type ReactNode,
 	type WheelEvent as ReactWheelEvent,
 } from "react";
-import { ArrowDown, Loader2, TriangleAlert, Undo2 } from "lucide-react";
+import { ArrowDown, ChevronDown, Loader2, TriangleAlert, Undo2 } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
@@ -87,6 +87,7 @@ import {
 import { AgentAvatar } from "../AgentAvatar";
 import { SessionPaneTab } from "../CenterPane";
 import { Button } from "../ui/button";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "../ui/accordion";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { SessionTopbarPortal } from "../SessionTopbarPortal";
 import { ShellTerminalTab } from "../ShellTerminalTab";
@@ -3292,9 +3293,81 @@ const TurnGroup = memo(function TurnGroup({
 				.reverse()
 				.find((item) => item.kind === "message" && item.role === "assistant")?.id
 		: undefined;
+	let finalAssistantRunIndex = -1;
+	if (group.outcome) {
+		for (let index = runs.length - 1; index >= 0; index -= 1) {
+			const item = runs[index]?.items[0];
+			if (item?.kind === "message" && item.role === "assistant") {
+				finalAssistantRunIndex = index;
+				break;
+			}
+		}
+	}
+	const workedRuns = group.outcome
+		? runs.filter((run, index) => {
+			const item = run.items[0];
+			return index !== finalAssistantRunIndex && !(item?.kind === "message" && item.role === "user");
+		})
+		: [];
+	const humanRuns = group.outcome
+		? runs.filter((run) => {
+			const item = run.items[0];
+			return item?.kind === "message" && item.role === "user";
+		})
+		: [];
+	const finalRun = finalAssistantRunIndex >= 0 ? runs[finalAssistantRunIndex] : undefined;
+	const renderRun = (run: TimelineRun) =>
+		run.kind === "activities" ? (
+			<ActivityRun
+				key={run.key}
+				activities={run.items.filter(
+					(item): item is ConversationActivity => item.kind === "activity",
+				)}
+			/>
+		) : (
+			<TimelineItem
+				key={run.key}
+				item={run.items[0]!}
+				sessionId={sessionId}
+				apiBaseUrl={apiBaseUrl}
+				onDecide={onDecide}
+				onEditHumanMessage={onEditHumanMessage}
+				messageEdit={messageEdit}
+				onStartMessageEdit={onStartMessageEdit}
+				onUpdateMessageEdit={onUpdateMessageEdit}
+				onCancelMessageEdit={onCancelMessageEdit}
+				onAbandonEditRecovery={onAbandonEditRecovery}
+				onSubmitMessageEdit={onSubmitMessageEdit}
+				editPending={editPending}
+				editSendBlocked={editSendBlocked}
+				editRecoveryLabel={editRecoveryLabel}
+				editBusy={editBusy}
+				editError={editError}
+				branchPoints={branchPoints}
+				editableTurns={editableTurns}
+				onActivateBranch={onActivateBranch}
+				activateBranchPending={activateBranchPending}
+				activateBranchError={activateBranchError}
+				busy={busy}
+				queued={queued}
+				newHumanMessageIds={newHumanMessageIds}
+				showCopy={run.items[0]?.id === copyableMessageId}
+				live={group.live}
+				liveStatus={false}
+				onRollback={
+					canRollback && run.items[0]?.id === copyableMessageId
+						? () => onRollback(group.turnId as string)
+						: undefined
+				}
+				rollbackDisabled={rollbackDisabled}
+				durationMs={
+					run.items[0]?.id === copyableMessageId ? group.outcome?.durationMs : undefined
+				}
+			/>
+		);
 	return (
 		<div className="flex min-w-0 flex-col gap-2.5">
-			{runs.map((run) =>
+			{!group.outcome && runs.map((run) =>
 				run.kind === "activities" ? (
 					<ActivityRun
 						key={run.key}
@@ -3331,6 +3404,7 @@ const TurnGroup = memo(function TurnGroup({
 									newHumanMessageIds={newHumanMessageIds}
 									showCopy={run.items[0]?.id === copyableMessageId}
 									live={group.live}
+									liveStatus={false}
 									onRollback={
 							canRollback && run.items[0]?.id === copyableMessageId
 								? () => onRollback(group.turnId as string)
@@ -3343,6 +3417,24 @@ const TurnGroup = memo(function TurnGroup({
 					/>
 				),
 			)}
+			{group.outcome ? humanRuns.map(renderRun) : null}
+			{group.live ? <LiveResponseStatus /> : null}
+			{group.outcome && workedRuns.length > 0 ? (
+				<Accordion type="single" collapsible className="-mx-1 border-b border-border" defaultValue="">
+					<AccordionItem value="worked" className="border-0">
+						<AccordionTrigger
+							className="gap-2 px-1 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+							trailing={<ChevronDown aria-hidden="true" className="size-3.5 shrink-0" />}
+						>
+							Worked
+						</AccordionTrigger>
+						<AccordionContent className="space-y-2 pb-2 pt-1">
+							{workedRuns.map(renderRun)}
+						</AccordionContent>
+					</AccordionItem>
+				</Accordion>
+			) : null}
+			{group.outcome ? (finalRun ? renderRun(finalRun) : null) : null}
 			{/* Both of these are current state of the turn rather than steps in it, which
 			    is why they sit at its end: a checklist that ticks itself off and a file
 			    list that grows both change while the reader watches, and at the end of a
@@ -3362,11 +3454,8 @@ const TurnGroup = memo(function TurnGroup({
 			{/* No assistant prose to hang the undo / duration on — still offer them
 			    before the outcome divider so a tool-only turn is not stuck without a
 			    way back or a record of how long it took. */}
-			{!copyableMessageId &&
-			(group.live || canRollback || (group.outcome?.durationMs !== undefined && group.outcome.durationMs > 0)) ? (
-				group.live ? (
-					<LiveResponseStatus />
-				) : (
+			{!copyableMessageId && !group.live &&
+			(canRollback || (group.outcome?.durationMs !== undefined && group.outcome.durationMs > 0)) ? (
 				<div className="flex h-7 items-center gap-0.5">
 					{canRollback ? (
 						<button
@@ -3384,7 +3473,6 @@ const TurnGroup = memo(function TurnGroup({
 						<TurnDuration durationMs={group.outcome.durationMs} />
 					) : null}
 				</div>
-				)
 			) : null}
 			{group.outcome && group.outcome.state !== "completed" ? (
 				<TurnOutcome
@@ -3467,6 +3555,7 @@ function TimelineItem({
 	newHumanMessageIds,
 	showCopy,
 	live,
+	liveStatus,
 	onRollback,
 	rollbackDisabled,
 	durationMs,
@@ -3502,6 +3591,7 @@ function TimelineItem({
 	/** This is the final assistant response of a turn that has finished. */
 	showCopy?: boolean;
 	live?: boolean;
+	liveStatus?: boolean;
 	/** Undo this finished turn from the answer that owns its copy action. */
 	onRollback?: () => void;
 	/** Keep the action row mounted while another turn is running. */
@@ -3518,6 +3608,7 @@ function TimelineItem({
 					message={item}
 					showCopy={showCopy}
 					live={live}
+					liveStatus={liveStatus}
 					onRollback={onRollback}
 					rollbackDisabled={rollbackDisabled}
 					durationMs={durationMs}
