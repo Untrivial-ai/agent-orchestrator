@@ -52,7 +52,10 @@ describe("CloudWorkspaceReviewPane", () => {
 		renderPane({ getWorkspaceReviewDiffs } as unknown as CloudCpClient);
 		expect(await screen.findByText("+2")).toBeInTheDocument();
 		expect(screen.getByText("−1")).toBeInTheDocument();
+		expect(await screen.findByTestId("diff:src/App.tsx")).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("checkbox", { name: /Mark src\/App\.tsx as viewed/ }));
 		expect(screen.getByText("1 of 1 viewed")).toBeInTheDocument();
+		expect(screen.queryByTestId("diff:src/App.tsx")).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Expand src/App.tsx" })).toBeInTheDocument();
 	});
 });
