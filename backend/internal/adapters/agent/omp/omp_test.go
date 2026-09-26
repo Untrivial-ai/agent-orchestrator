@@ -59,6 +59,12 @@ func TestGetPromptDeliveryStrategyIsInCommand(t *testing.T) {
 	}
 }
 
+func TestExitDetectionModeUsesSupervisor(t *testing.T) {
+	if got := (&Plugin{}).ExitDetectionMode(); got != ports.AgentExitDetectionSupervisor {
+		t.Fatalf("exit detection mode = %q, want %q", got, ports.AgentExitDetectionSupervisor)
+	}
+}
+
 func TestGetLaunchCommandStartsInteractiveTUIWithPrompt(t *testing.T) {
 	p := &Plugin{resolvedBinary: "omp"}
 	cmd, err := p.GetLaunchCommand(context.Background(), ports.LaunchConfig{
