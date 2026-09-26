@@ -492,10 +492,10 @@ describe("SessionInspector PR section", () => {
 
     expect(screen.getByText("Pull requests (3)")).toBeInTheDocument();
     const cards = prSection("Pull requests (3)")
-      .getAllByText(/^PR #\d+$/)
-      .map((el) => el.textContent);
+      .getAllByRole("article")
+      .map((el) => within(el).getByText(/^#\d+$/).textContent);
     // open (41), draft (42), merged (40)
-    expect(cards).toEqual(["PR #41", "PR #42", "PR #40"]);
+    expect(cards).toEqual(["#41", "#42", "#40"]);
   });
 
   it("uses the singular heading and shows enriched facts for a single PR", () => {
@@ -517,27 +517,65 @@ describe("SessionInspector PR section", () => {
 
     expect(screen.getByText("Pull request")).toBeInTheDocument();
     expect(screen.queryByText(/Pull requests \(/)).not.toBeInTheDocument();
-    expect(prSection("Pull request").getByText("PR #7")).toBeInTheDocument();
+    expect(prSection("Pull request").getByText("#7")).toBeInTheDocument();
     expect(
-      prSection("Pull request").getByText("Mergeable"),
+      prSection("Pull request").getByText("Ready to merge"),
     ).toBeInTheDocument();
-    expect(prSection("Pull request").getByText("PR approved")).toBeInTheDocument();
     expect(
       prSection("Pull request").getByText("Checks passing"),
     ).toBeInTheDocument();
     expect(
-      prSection("Pull request").getByRole("link", { name: "PR 7" }),
+      prSection("Pull request").getByText("PR 7"),
     ).toHaveClass("text-sm");
     expect(
-      prSection("Pull request").getByRole("link", { name: "PR 7" }),
+      prSection("Pull request").getByRole("link", { name: "View PR" }),
     ).toHaveAttribute("href", "https://github.com/acme/repo/pull/7");
-    expect(prSection("Pull request").getByText("open")).toHaveClass(
-      "text-[9px]",
-      "leading-none",
-    );
+    expect(prSection("Pull request").queryByText("open", { exact: true })).not.toBeInTheDocument();
     expect(
       prSection("Pull request").getByRole("button", { name: "Merge PR #7" }),
     ).toBeInTheDocument();
+  });
+
+  it("shows only people who commented beside the review status", () => {
+    renderWithQuery(
+      <SessionInspector session={session([pr(7, "open")])} />,
+      undefined,
+      (client) => {
+        client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
+          prSummary(7, "open", {
+            discussionCommentCount: 2,
+            discussionCommenters: ["alice", "bob"],
+            review: {
+              decision: "approved",
+              hasUnresolvedHumanComments: true,
+              unresolvedBy: [{ reviewerId: "thread-commenter", count: 1, links: [] }],
+              reviews: [{
+                reviewerId: "verdict-only",
+                verdict: "approved",
+                submittedAt: "2026-09-20T12:00:00Z",
+                autoInjectReview: false,
+              }, {
+                reviewerId: "review-body-author",
+                verdict: "approved",
+                body: "I checked this change",
+                submittedAt: "2026-09-21T12:00:00Z",
+                autoInjectReview: false,
+              }],
+            },
+          }),
+        ]);
+      },
+    );
+
+    const commenterGroup = prSection("Pull request").getByLabelText("Commented: alice, bob, review-body-author, thread-commenter");
+    expect(Array.from(commenterGroup.querySelectorAll("img"), (avatar) => avatar.getAttribute("src"))).toEqual([
+      "https://avatars.githubusercontent.com/alice?size=64",
+      "https://avatars.githubusercontent.com/bob?size=64",
+      "https://avatars.githubusercontent.com/review-body-author?size=64",
+      "https://avatars.githubusercontent.com/thread-commenter?size=64",
+    ]);
+    expect(commenterGroup).not.toHaveTextContent("+1");
+    expect(prSection("Pull request").queryByRole("button", { name: "View review details" })).not.toBeInTheDocument();
   });
 
   it("merges a ready pull request directly through the daemon", async () => {
@@ -639,7 +677,7 @@ describe("SessionInspector PR section", () => {
     );
 
     expect(screen.getByRole("button", { name: "Merge PR #7" })).toBeEnabled();
-    expect(prSection("Pull request").getByText("No review required")).toBeInTheDocument();
+    expect(prSection("Pull request").getByText("Ready to merge")).toBeInTheDocument();
     expect(prSection("Pull request").queryByText("Review pending")).not.toBeInTheDocument();
   });
 
@@ -684,7 +722,7 @@ describe("SessionInspector PR section", () => {
     );
 
     const card = prSection("Pull request")
-      .getByText("PR #7")
+      .getByText("#7")
       .closest("article") as HTMLElement;
     expect(within(card).getByText("merged", { exact: true })).toHaveClass(
       "border-border-strong",
@@ -716,7 +754,7 @@ describe("SessionInspector PR section", () => {
       "Terminate session when pull requests merge",
     );
     const prCard = prSection("Pull request")
-      .getByText("PR #7")
+      .getByText("#7")
       .closest("article") as HTMLElement;
     const appearsBefore = (first: HTMLElement, second: HTMLElement) =>
       Boolean(
@@ -836,7 +874,7 @@ describe("SessionInspector PR section", () => {
     );
 
     const card = prSection("Pull request")
-      .getByText("PR #7")
+      .getByText("#7")
       .closest("article") as HTMLElement;
     expect(within(card).getByText("Checks failing")).toBeInTheDocument();
     expect(within(card).queryByText("CI failures not injected")).not.toBeInTheDocument();
@@ -846,18 +884,44 @@ describe("SessionInspector PR section", () => {
     renderWithQuery(
       <SessionInspector session={session([pr(41, "open"), pr(42, "draft")])} />,
     );
-    const links = [
-      prSection("Pull requests (2)").getByRole("link", { name: "Open PR #41" }),
-      prSection("Pull requests (2)").getByRole("link", { name: "Open PR #42" }),
-    ];
+    const links = prSection("Pull requests (2)").getAllByRole("link", { name: "View PR" });
     expect(links[0]).toHaveClass(
       "text-settings-label",
-      "hover:text-settings-label",
+      "hover:bg-interactive-hover",
     );
     expect(links.map((a) => a.getAttribute("href"))).toEqual([
       "https://example.com/pr/41",
       "https://example.com/pr/42",
     ]);
+  });
+
+  it("links the provider conversation count without implying submitted reviews", () => {
+    renderWithQuery(
+      <SessionInspector session={session([pr(4383, "open")])} />,
+      undefined,
+      (client) => {
+        client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
+          prSummary(4383, "open", {
+            discussionCommentCount: 9,
+            discussionCommenters: ["alice", "bob"],
+            review: {
+              decision: "none",
+              hasUnresolvedHumanComments: false,
+              unresolvedBy: [],
+              reviews: [{ reviewerId: "verdict-only", verdict: "approved", submittedAt: "2026-06-15T12:00:00Z", autoInjectReview: false }],
+            },
+          }),
+        ]);
+      },
+    );
+
+    const commentCount = prSection("Pull request").getByLabelText("9 comments");
+    expect(commentCount).toHaveTextContent("9");
+    expect(commentCount.querySelector("svg.lucide-message-square")).toBeInTheDocument();
+    expect(prSection("Pull request").getByLabelText("Commented: alice, bob")).toBeInTheDocument();
+    expect(prSection("Pull request").getAllByRole("link")).toHaveLength(1);
+    expect(prSection("Pull request").getByText("No review required")).toBeInTheDocument();
+    expect(prSection("Pull request").queryByRole("button", { name: "View review details" })).not.toBeInTheDocument();
   });
 });
 
