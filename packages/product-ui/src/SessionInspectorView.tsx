@@ -329,14 +329,14 @@ export function InspectorPullRequestCardView({
 			</div>
 			{branchRange ? <p className="mt-0.5 min-w-0 truncate font-mono text-2xs text-settings-muted" title={branchRange}>{branchRange}</p> : null}
 			{authorHandle || pr.reviewDetailsAction ? (
-				<div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-settings-muted">
+				<div className="mt-1 flex min-w-0 flex-col items-start gap-1 text-xs text-settings-muted">
 					{authorHandle ? (
 						<span className="inline-flex shrink-0 items-center gap-1.5 font-mono text-2xs">
-							<UserAvatar className="size-5" imageUrl={pr.authorAvatarUrl || scmUserAvatarUrl(pr.provider, pr.href, authorHandle)} name={authorHandle} />
+							<UserAvatar className="!size-5" imageUrl={pr.authorAvatarUrl || scmUserAvatarUrl(pr.provider, pr.href, authorHandle)} name={authorHandle} />
 							@{authorHandle}
 						</span>
 					) : null}
-					{pr.reviewDetailsAction}
+					{pr.reviewDetailsAction ? <div className="flex min-h-5 items-center">{pr.reviewDetailsAction}</div> : null}
 				</div>
 			) : null}
 			<div className="mt-1.5 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
