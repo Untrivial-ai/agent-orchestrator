@@ -49,7 +49,11 @@ func TestRouteSpecParity(t *testing.T) {
 		DeviceRoster: stubDeviceRoster{},
 		DeviceLive:   stubDeviceLive{},
 	}
-	router := httpd.NewRouterWithControl(config.Config{}, log, nil, deps, httpd.ControlDeps{})
+	// WebSession, like Mobile above, must be non-nil for mountWebSession to
+	// register /api/v1/web/session — otherwise the web-session spec operations
+	// below would have no mounted route to match.
+	webSession := httpd.NewWebSessionHandlers(httpd.NewAuthState(), httpd.NewLoginLockout(), false, nil)
+	router := httpd.NewRouterWithControl(config.Config{}, log, nil, deps, httpd.ControlDeps{WebSession: webSession})
 
 	mounted := map[string]bool{}
 	err := chi.Walk(router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {

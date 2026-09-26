@@ -13,16 +13,20 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/internal/websession"
 )
 
 // LANManager owns the daemon's second, network-facing HTTP listener. It binds
-// 0.0.0.0 only while Connect Mobile is enabled and wraps the shared router in
-// authMiddleware. The loopback listener is unaffected.
+// the configured host (default 0.0.0.0) only while Connect Mobile is enabled and
+// wraps the shared router in authMiddleware. The loopback listener is unaffected.
 type LANManager struct {
-	handler     http.Handler // shared router, already auth-wrapped
-	defaultPort int
-	log         *slog.Logger
-	state       *authState // shared with authMiddleware; SetPasswordHash writes through here
+	handler        http.Handler // shared router, already auth-wrapped
+	defaultPort    int
+	log            *slog.Logger
+	state          *authState // shared with authMiddleware; SetPasswordHash writes through here
+	bindHost       string     // bind address (0.0.0.0 or 127.0.0.1)
+	strictPort     bool       // if true, fail on port conflict instead of ephemeral fallback
+	identityConfig *IdentityAuthConfig
 
 	transitionMu sync.Mutex // serializes Start and Stop without blocking status reads
 	mu           sync.Mutex
@@ -32,17 +36,83 @@ type LANManager struct {
 	bound        int
 }
 
+// LANManagerConfig holds options for NewLANManager.
+type LANManagerConfig struct {
+	DefaultPort    int
+	BindHost       string // default "0.0.0.0"
+	StrictPort     bool
+	SessionStore   *websession.Store
+	IdentityConfig *IdentityAuthConfig
+	// AuthState, when non-nil (via NewAuthState), is shared with the router's
+	// login route so both validate against the identical password hash. Only
+	// consulted by NewMobileLAN; NewLANManager always takes state explicitly.
+	AuthState *authState
+	// Lockout, when non-nil, is the same instance passed to
+	// NewWebSessionHandlers for the shared router's login route, so a
+	// brute-force attempt there trips the identical per-source lockout as any
+	// other failed credential (ADR-0005 R5). Nil constructs a private one (matches
+	// upstream behavior for callers that don't wire the web login route).
+	Lockout *lockout
+}
+
+// isLoopbackHost reports whether host is a loopback bind address. Used both to
+// derive trustXFF (ADR-0005 R5) and to enforce the identity-trust loopback invariant
+// (ADR-0005 R7).
+func isLoopbackHost(host string) bool {
+	return host == "127.0.0.1" || host == "::1"
+}
+
 // NewLANManager wraps handler in the LAN control-block and authMiddleware
 // (backed by the shared state) and returns a manager that can start/stop the
 // network-facing listener. Most callers want NewMobileLAN, which owns the state.
-func NewLANManager(handler http.Handler, state *authState, defaultPort int, log *slog.Logger, sink ports.EventSink) *LANManager {
-	lock := newLockout(5, time.Minute, time.Now)
-	return &LANManager{
-		handler:     lanControlBlock(authMiddleware(state, lock, newMobileConnectReporter(sink, time.Now))(handler)),
-		defaultPort: defaultPort,
-		log:         loggerOrDefault(log),
-		state:       state,
+func NewLANManager(handler http.Handler, state *authState, cfg LANManagerConfig, log *slog.Logger, sink ports.EventSink) *LANManager {
+	lock := cfg.Lockout
+	if lock == nil {
+		lock = newLockout(5, time.Minute, time.Now)
 	}
+	bindHost := cfg.BindHost
+	if bindHost == "" {
+		bindHost = "0.0.0.0"
+	}
+
+	sessChecker := cfg.SessionStore
+	identityConfig := cfg.IdentityConfig
+
+	// trustXFF only on the trusted-proxy path: a loopback bind reached solely
+	// through a local proxy, whose X-Forwarded-For is genuine (ADR-0005 R5). An
+	// untrusted 0.0.0.0 bind must never trust a client-supplied XFF.
+	trustXFF := isLoopbackHost(bindHost)
+
+	auth := authMiddlewareWithTrust(state, lock, newMobileConnectReporter(sink, time.Now), sessChecker, identityConfig, trustXFF)
+
+	// csrfMiddleware runs as auth's "next" so it can read the AuthKind auth just
+	// set on the request context (ADR-0005 R1, R2): it enforces same-origin only for
+	// the ambient credentials (cookie, identity) that have no SameSite backstop,
+	// and is a no-op for Bearer. It is scoped to the LAN listener only — the
+	// loopback listener never wraps handler in auth/csrf at all, so the
+	// Electron renderer's app://renderer origin and the CLI's no-Origin
+	// requests are unaffected there, matching today's trust model.
+	return &LANManager{
+		handler:        lanControlBlock(capturePeerMiddleware(auth(csrfMiddleware(handler)))),
+		defaultPort:    cfg.DefaultPort,
+		log:            loggerOrDefault(log),
+		state:          state,
+		bindHost:       bindHost,
+		strictPort:     cfg.StrictPort,
+		identityConfig: identityConfig,
+	}
+}
+
+// capturePeerMiddleware wraps the handler and captures the real transport peer
+// address into the request context before authMiddleware runs. This ensures the
+// login lockout keys off the genuine source, not a spoofed X-Forwarded-For.
+func capturePeerMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Capture the real peer before RealIP can rewrite it.
+		ctx := WithRealPeer(r.Context(), r.RemoteAddr)
+		r = r.WithContext(ctx)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // lanControlBlockedPrefixes are the loopback-only daemon-control route
@@ -115,12 +185,16 @@ func isLANControlBlockedPath(path string) bool {
 // tests so route-level invariants can be asserted without a live listener.
 func IsLANControlBlockedPathForTest(path string) bool { return isLANControlBlockedPath(path) }
 
-// NewMobileLAN constructs a LANManager with its own private authState. Callers
-// outside this package (the daemon) cannot construct an authState directly
-// since it is unexported; this gives them a LANManager that owns one, and the
+// NewMobileLAN constructs a LANManager with its own private authState, unless
+// cfg.AuthState is set (the daemon uses this to share the identical instance
+// the shared router's login route validates against — see NewAuthState). The
 // daemon rotates the connection password exclusively via SetPasswordHash.
-func NewMobileLAN(handler http.Handler, defaultPort int, log *slog.Logger, sink ports.EventSink) *LANManager {
-	return NewLANManager(handler, &authState{}, defaultPort, log, sink)
+func NewMobileLAN(handler http.Handler, cfg LANManagerConfig, log *slog.Logger, sink ports.EventSink) *LANManager {
+	state := cfg.AuthState
+	if state == nil {
+		state = &authState{}
+	}
+	return NewLANManager(handler, state, cfg, log, sink)
 }
 
 // SetPasswordHash stores the current connection password hash on the shared
@@ -137,9 +211,10 @@ func (m *LANManager) PasswordHash() string {
 	return m.state.currentHash()
 }
 
-// Start binds the network-facing listener on 0.0.0.0:port (falling back to an
-// ephemeral port if that port is in use) and serves the wrapped handler. It is
-// idempotent: a second call while running returns the already-bound port.
+// Start binds the network-facing listener on bindHost:port and serves the wrapped
+// handler. If strictPort is true, it fails on port conflict; otherwise it falls
+// back to an ephemeral port. It is idempotent: a second call while running
+// returns the already-bound port.
 func (m *LANManager) Start(port int) (int, error) {
 	m.transitionMu.Lock()
 	defer m.transitionMu.Unlock()
@@ -151,18 +226,31 @@ func (m *LANManager) Start(port int) (int, error) {
 	if port == 0 {
 		port = m.defaultPort
 	}
-	ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
+
+	// Check loopback-bind invariant: identity trust is only safe on loopback.
+	// Refuse to start if this invariant is violated (ADR-0005 R7) — refuse, not warn.
+	if m.identityConfig != nil && m.identityConfig.Enabled && !isLoopbackHost(m.bindHost) {
+		m.mu.Unlock()
+		return 0, fmt.Errorf("refusing to start: AO_CONNECT_TRUST_TAILSCALE_IDENTITY requires a loopback bind host (127.0.0.1 or ::1), got %q", m.bindHost)
+	}
+
+	addr := fmt.Sprintf("%s:%d", m.bindHost, port)
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		if !isAddrInUse(err) {
 			m.mu.Unlock()
-			return 0, fmt.Errorf("bind LAN 0.0.0.0:%d: %w", port, err)
+			return 0, fmt.Errorf("bind LAN %s: %w", addr, err)
+		}
+		if m.strictPort {
+			m.mu.Unlock()
+			return 0, fmt.Errorf("bind LAN %s: port already in use (strict mode)", addr)
 		}
 		//nolint:gosec // G102: binding all interfaces is the deliberate purpose of the Connect Mobile LAN listener; it runs only while the bridge is enabled and behind authMiddleware.
-		if ln, err = net.Listen("tcp", "0.0.0.0:0"); err != nil {
+		if ln, err = net.Listen("tcp", fmt.Sprintf("%s:0", m.bindHost)); err != nil {
 			m.mu.Unlock()
-			return 0, fmt.Errorf("bind LAN ephemeral: %w", err)
+			return 0, fmt.Errorf("bind LAN %s ephemeral: %w", m.bindHost, err)
 		}
-		m.log.Warn("LAN port in use; bound ephemeral", "wanted", port, "bound", ln.Addr())
+		m.log.Warn("LAN port in use; bound ephemeral", "wanted", addr, "bound", ln.Addr())
 	}
 	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
 	if !ok {

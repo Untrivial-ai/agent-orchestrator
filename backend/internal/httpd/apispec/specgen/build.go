@@ -587,6 +587,7 @@ func operations() []operation {
 	ops = append(ops, importOperations()...)
 	ops = append(ops, fsOperations()...)
 	ops = append(ops, devOperations()...)
+	ops = append(ops, webSessionOperations()...)
 	ops = append(ops, mobileOperations()...)
 	ops = append(ops, mobileDeviceOperations()...)
 	ops = append(ops, browserOperations()...)
@@ -1417,6 +1418,43 @@ func agentOperations() []operation {
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+	}
+}
+
+// webSessionOperations declares the 3 web-login operations mounted on the
+// shared router (mountWebSession in router.go), reachable on both the
+// loopback and LAN listeners. POST verifies the connection password and mints
+// a session cookie; GET reports whether the current request carries a valid
+// one (unauthenticated by design, so a browser with no cookie can ask "am I
+// logged in?"); DELETE revokes the caller's session.
+func webSessionOperations() []operation {
+	return []operation{
+		{
+			method: http.MethodPost, path: "/api/v1/web/session", id: "createWebSession", tag: "web-session",
+			summary: "Log in with the connection password and receive a session cookie",
+			reqBody: controllers.WebSessionLoginRequest{},
+			resps: []respUnit{
+				{http.StatusNoContent, nil},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusUnauthorized, envelope.APIError{}},
+				{http.StatusTooManyRequests, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/web/session", id: "getWebSession", tag: "web-session",
+			summary: "Report whether the current request is authenticated",
+			resps: []respUnit{
+				{http.StatusOK, controllers.WebSessionResponse{}},
+			},
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/web/session", id: "deleteWebSession", tag: "web-session",
+			summary: "Log out, revoking the current session",
+			resps: []respUnit{
+				{http.StatusNoContent, nil},
+				{http.StatusUnauthorized, envelope.APIError{}},
 			},
 		},
 	}

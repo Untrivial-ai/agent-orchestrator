@@ -24,7 +24,7 @@ func TestLANManagerAuthGatesSharedHandler(t *testing.T) {
 	})
 	st := &authState{}
 	st.setHash(mobilebridge.HashPassword("secret12"))
-	m := NewLANManager(inner, st, 0, slog.Default(), nil) // port 0 → ephemeral
+	m := NewLANManager(inner, st, LANManagerConfig{DefaultPort: 0}, slog.Default(), nil) // port 0 → ephemeral
 	port, err := m.Start(0)
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -62,7 +62,7 @@ func TestLANManagerBlocksLoopbackOnlyControlRoutes(t *testing.T) {
 	})
 	st := &authState{}
 	st.setHash(mobilebridge.HashPassword("secret12"))
-	m := NewLANManager(inner, st, 0, slog.Default(), nil)
+	m := NewLANManager(inner, st, LANManagerConfig{DefaultPort: 0}, slog.Default(), nil)
 	port, err := m.Start(0)
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -177,7 +177,7 @@ func TestLANManagerBlocksLoopbackOnlyControlRoutes(t *testing.T) {
 }
 
 func TestLANManagerStartStopIdempotent(t *testing.T) {
-	m := NewLANManager(http.NotFoundHandler(), &authState{}, 0, slog.Default(), nil)
+	m := NewLANManager(http.NotFoundHandler(), &authState{}, LANManagerConfig{DefaultPort: 0}, slog.Default(), nil)
 	p1, _ := m.Start(0)
 	p2, _ := m.Start(0) // idempotent — same port, no error
 	if p1 != p2 {
@@ -204,7 +204,7 @@ func TestLANManagerServesIdentityProbeWithoutAPassword(t *testing.T) {
 	})
 	st := &authState{}
 	st.setHash(mobilebridge.HashPassword("secret12"))
-	m := NewLANManager(inner, st, 0, slog.Default(), nil)
+	m := NewLANManager(inner, st, LANManagerConfig{}, slog.Default(), nil)
 	port, err := m.Start(0)
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -281,7 +281,7 @@ func TestLANListenerServesCodexModelRoutesFromRealRouter(t *testing.T) {
 
 	st := &authState{}
 	st.setHash(mobilebridge.HashPassword("secret12"))
-	m := NewLANManager(router, st, 0, slog.Default(), nil)
+	m := NewLANManager(router, st, LANManagerConfig{}, slog.Default(), nil)
 	port, err := m.Start(0)
 	if err != nil {
 		t.Fatalf("start: %v", err)

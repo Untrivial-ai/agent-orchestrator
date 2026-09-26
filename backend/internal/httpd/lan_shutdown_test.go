@@ -20,7 +20,7 @@ import (
 
 func startShutdownTestLAN(t *testing.T, handler http.Handler) (*LANManager, string) {
 	t.Helper()
-	m := NewMobileLAN(handler, 0, nil, nil)
+	m := NewMobileLAN(handler, LANManagerConfig{}, nil, nil)
 	m.SetPasswordHash(mobilebridge.HashPassword("secret12"))
 	port, err := m.Start(0)
 	if err != nil {
@@ -246,7 +246,7 @@ func TestLANManagerStopBeforeServeRegistersListener(t *testing.T) {
 	defer ln.Close()
 	streamCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	m := NewMobileLAN(http.NotFoundHandler(), 0, nil, nil)
+	m := NewMobileLAN(http.NotFoundHandler(), LANManagerConfig{}, nil, nil)
 	// This is Start's published state before its Serve goroutine is scheduled.
 	// Delay Serve explicitly so this ownership boundary is deterministic.
 	m.ln = &lanListener{Listener: ln, conns: make(map[*lanConn]struct{})}

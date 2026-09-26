@@ -15,7 +15,7 @@ func newAuthUnderTest(pw string, now func() time.Time) (http.Handler, *lockout) 
 	st.setHash(h)
 	lock := newLockout(5, time.Minute, now)
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
-	return authMiddleware(st, lock, nil)(ok), lock
+	return authMiddleware(st, lock, nil, nil, nil)(ok), lock
 }
 
 func req(auth string) *http.Request {
