@@ -3380,7 +3380,7 @@ const TurnGroup = memo(function TurnGroup({
 				const item = run.items[0];
 				return item?.kind === "message" && item.role === "user";
 			}).map(renderRun)}
-			{group.live ? <LiveResponseStatus /> : null}
+			{group.live ? <LiveResponseStatus startedAt={group.liveStartedAt} /> : null}
 			{!group.outcome && runs.filter((run) => {
 				const item = run.items[0];
 				return !(item?.kind === "message" && item.role === "user");
@@ -3440,16 +3440,10 @@ const TurnGroup = memo(function TurnGroup({
 					<AccordionItem value="worked" className="border-0">
 						<AccordionTrigger
 							className="gap-2 px-1 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-							trailing={
-								<span className="ml-auto inline-flex items-center gap-1.5">
-									{group.outcome.durationMs !== undefined ? (
-										<TurnDuration durationMs={group.outcome.durationMs} />
-									) : null}
-									<ChevronDown aria-hidden="true" className="size-3.5 shrink-0" />
-								</span>
-							}
+							trailing={null}
 						>
-							Worked
+							Worked for {group.outcome.durationMs !== undefined ? <TurnDuration durationMs={group.outcome.durationMs} /> : null}
+							<ChevronDown aria-hidden="true" className="ml-1 size-3.5 shrink-0 transition-transform duration-200 group-data-[state=open]/row:rotate-180" />
 						</AccordionTrigger>
 						<AccordionContent className="space-y-2 pb-2 pt-1">
 							{workedRuns.map(renderRun)}

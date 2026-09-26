@@ -854,14 +854,25 @@ export function AssistantMessage({
 	);
 }
 
-export function LiveResponseStatus() {
+
+export function LiveResponseStatus({ startedAt }: { startedAt?: string }) {
+	const started = useMemo(() => {
+		const parsed = startedAt ? Date.parse(startedAt) : Date.now();
+		return Number.isFinite(parsed) ? parsed : Date.now();
+	}, [startedAt]);
+	const [now, setNow] = useState(() => Date.now());
+	useEffect(() => {
+		const timer = window.setInterval(() => setNow(Date.now()), 1000);
+		return () => window.clearInterval(timer);
+	}, []);
+	const elapsedMs = Math.max(0, now - started);
 	return (
 		<div className="mt-1 flex h-7 items-center gap-0.5">
 			<div className="-ml-1.5 size-7 shrink-0">
 				<ResponseSpinner />
 			</div>
 			<span role="status" data-testid="live-working-label" className="chat-working-shimmer text-sm font-medium">
-				Working
+				Working for {formatDuration(elapsedMs)}
 			</span>
 		</div>
 	);
