@@ -32,6 +32,9 @@ import { MicKey } from "./voice/MicKey";
 
 // The paperclip's frame, so the rail's two icon buttons match.
 const MIC_KEY_SIZE = 38;
+// Keep the project trigger compact and left-anchored. A max-width frame makes
+// the native Menu fill the host, which centers its popup over the whole sheet.
+const PROJECT_MENU_WIDTH = 224;
 // Reserve the harness slot so a different agent name cannot move the model
 // selector sideways; the model uses the remaining width of the rail.
 const HARNESS_MENU_WIDTH = 96;
@@ -65,14 +68,13 @@ export function SpawnComposerControls({
 				<VStack alignment="leading" spacing={10} modifiers={[frame({ height: 104, maxWidth: 1000 })]}>
 				<Menu
 					label={
-						<HStack spacing={7} modifiers={[frame({ maxWidth: 1000, alignment: "leading" })]}>
+						<HStack spacing={7}>
 							<Image systemName="folder" size={iconSize.sm} />
 							<Text modifiers={[font({ size: 14, weight: "medium" }), lineLimit(1), truncationMode("tail")]}>{projectLabel}</Text>
-							<Spacer />
 							<Image systemName="chevron.up.chevron.down" size={iconSize.xs} />
 						</HStack>
 					}
-					modifiers={[buttonStyle("plain"), tint(t.textSecondary), padding({ horizontal: 4 }), frame({ maxWidth: 1000, alignment: "leading" }), accessibilityIdentifier("spawn-project")]}
+					modifiers={[buttonStyle("plain"), tint(t.textSecondary), padding({ horizontal: 4 }), frame({ width: PROJECT_MENU_WIDTH, alignment: "leading" }), accessibilityIdentifier("spawn-project")]}
 				>
 					{projects.map((project) => (
 						<Button
