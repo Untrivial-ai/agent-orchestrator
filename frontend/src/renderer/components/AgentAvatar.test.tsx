@@ -17,4 +17,13 @@ describe("AgentAvatar", () => {
 
 		expect(screen.getByRole("img", { name: "omp" })).toHaveAttribute("src", expect.stringContaining("omp.png"));
 	});
+
+	it("renders the MiMo Code brand asset", () => {
+		render(<AgentAvatar provider="mimo-code" />);
+
+		expect(screen.getByRole("img", { name: "mimo-code" })).toHaveAttribute(
+			"src",
+			expect.stringContaining("data:image/svg+xml"),
+		);
+	});
 });

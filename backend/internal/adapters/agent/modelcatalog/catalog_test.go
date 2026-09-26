@@ -161,6 +161,20 @@ func TestOpenCodeDiscoveryUsesPureMode(t *testing.T) {
 	}
 }
 
+func TestMiMoCodeDiscoveryUsesNativeModelsCommand(t *testing.T) {
+	spec, ok := commandSpecs["mimo-code"]
+	if !ok {
+		t.Fatal("mimo-code has no discovery command")
+	}
+	if !reflect.DeepEqual(spec.args, []string{"models"}) {
+		t.Fatalf("mimo-code discovery args = %q, want [models]", spec.args)
+	}
+	base := Base("mimo-code")
+	if !base.AllowCustom || base.CustomModelEntry != ports.CustomModelEntryDirect {
+		t.Fatalf("mimo-code custom model policy = (%v, %q), want direct", base.AllowCustom, base.CustomModelEntry)
+	}
+}
+
 func TestAiderUsesDocumentedDiscoveryCommand(t *testing.T) {
 	spec := commandSpecs["aider"]
 	want := []string{"--no-check-update", "--no-git", "--no-gitignore", "--no-analytics", "--list-models", "."}

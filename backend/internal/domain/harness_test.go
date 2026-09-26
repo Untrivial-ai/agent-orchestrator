@@ -38,3 +38,12 @@ func TestOMPHarnessIsKnown(t *testing.T) {
 		t.Fatal("AllHarnesses does not contain HarnessOMP")
 	}
 }
+
+func TestMiMoCodeHarnessIsKnown(t *testing.T) {
+	if HarnessMiMoCode != AgentHarness("mimo-code") {
+		t.Fatalf("HarnessMiMoCode = %q, want mimo-code", HarnessMiMoCode)
+	}
+	if !HarnessMiMoCode.IsKnown() {
+		t.Fatal("HarnessMiMoCode.IsKnown() = false, want true")
+	}
+}
