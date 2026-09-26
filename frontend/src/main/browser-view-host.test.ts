@@ -787,8 +787,9 @@ function setupTabHost(
 	failViewConstruction = false,
 	loadURLHook?: (viewIndex: number, url: string) => Promise<void>,
 	browserHistoryStore?: BrowserHistoryStore,
+	clearBrowserProfileData = vi.fn(async (_partition: string) => undefined),
 ) {
-	const constructorOptions: Array<{ webPreferences: { partition?: string } }> = [];
+	const constructorOptions: Array<{ webPreferences: { partition?: string; plugins?: boolean } }> = [];
 	const handlers = new Map<string, InvokeHandler>();
 	const eventHandlers = new Map<string, EventHandler>();
 	const sent: Array<{ channel: string; payload: unknown }> = [];
@@ -968,7 +969,7 @@ function setupTabHost(
 			off: (channel: string) => eventHandlers.delete(channel),
 		} as never,
 		shell: { openExternal: async () => undefined },
-		WebContentsView: function (options: { webPreferences: { partition?: string } }) {
+		WebContentsView: function (options: { webPreferences: { partition?: string; plugins?: boolean } }) {
 			if (failViewConstruction) throw new Error("browser view startup failed");
 			constructorOptions.push(options);
 			return makeView(options.webPreferences.partition ?? "");
@@ -978,6 +979,7 @@ function setupTabHost(
 		agentBrowserRuntime: runtime,
 		browserProfileStore,
 		browserHistoryStore,
+		clearBrowserProfileData,
 		// Kept only as a regression tripwire: the removed auto-send path used
 		// this option to discover the daemon before calling net.fetch.
 		...({ getDaemonPort: () => 43123 } as Record<string, unknown>),
@@ -1009,6 +1011,7 @@ function setupTabHost(
 		sendFromTab,
 		sent,
 		views,
+		clearBrowserProfileData,
 	};
 }
 
@@ -1544,10 +1547,38 @@ describe("browser profile partitions and replacement", () => {
 		const firstPartition = constructorOptions[0]!.webPreferences.partition;
 		const secondPartition = constructorOptions[1]!.webPreferences.partition;
 		const firstTabPartition = constructorOptions[2]!.webPreferences.partition;
-		expect(firstPartition).toMatch(/^ao-browser-/);
-		expect(secondPartition).toMatch(/^ao-browser-/);
+		expect(firstPartition).toMatch(/^persist:ao-browser-temporary-/);
+		expect(secondPartition).toMatch(/^persist:ao-browser-temporary-/);
 		expect(firstPartition).not.toBe(secondPartition);
 		expect(firstTabPartition).toBe(firstPartition);
+		expect(constructorOptions.every(({ webPreferences }) => webPreferences.plugins === true)).toBe(true);
+	});
+
+	it("clears temporary persisted partitions when their browser session is destroyed", async () => {
+		const { clearBrowserProfileData, constructorOptions, host, invoke } = setupTabHost();
+		const nav = (await invoke("browser:ensure", "worker-1")) as BrowserNavState;
+		const partition = constructorOptions[0]!.webPreferences.partition!;
+
+		host.destroy(nav.viewId);
+
+		await vi.waitFor(() => expect(clearBrowserProfileData).toHaveBeenCalledWith(partition));
+		expect(partition).toMatch(/^persist:ao-browser-temporary-/);
+	});
+
+	it("does not clear named profile partitions when their browser session is destroyed", async () => {
+		const clearBrowserProfileData = vi.fn(async (_partition: string) => undefined);
+		const { host, invoke } = setupTabHost(
+			fakeBrowserProfileStore(profile, { "worker-1": profile.id }),
+			false,
+			undefined,
+			undefined,
+			clearBrowserProfileData,
+		);
+		const nav = (await invoke("browser:ensure", "worker-1")) as BrowserNavState;
+
+		host.destroy(nav.viewId);
+
+		expect(clearBrowserProfileData).not.toHaveBeenCalled();
 	});
 
 	it("uses a stable named partition and restores the durable binding on host reconstruction", async () => {
@@ -1763,7 +1794,7 @@ describe("browser profile partitions and replacement", () => {
 			channel: "browser:annotation:canceled",
 			payload: { viewId: nav.viewId, reason: "navigation" },
 		});
-		expect(constructorOptions.slice(2).every(({ webPreferences }) => webPreferences.partition?.startsWith("ao-browser-") === true)).toBe(true);
+		expect(constructorOptions.slice(2).every(({ webPreferences }) => webPreferences.partition?.startsWith("persist:ao-browser-temporary-") === true)).toBe(true);
 		expect(constructorOptions[2]!.webPreferences.partition).toBe(constructorOptions[3]!.webPreferences.partition);
 		for (const view of views.slice(2)) {
 			expect(view.webContents.session.setPermissionCheckHandler).toHaveBeenCalledWith(expect.any(Function));
@@ -2333,8 +2364,7 @@ describe("agent browser runtime", () => {
 		await host.execute("sess-2", "tabs");
 
 		const firstPartition = constructorOptions[0].webPreferences.partition;
-		expect(firstPartition).toMatch(/^ao-browser-/);
-		expect(firstPartition).not.toMatch(/^persist:/);
+		expect(firstPartition).toMatch(/^persist:ao-browser-temporary-/);
 		expect(constructorOptions[1].webPreferences.partition).toBe(firstPartition);
 		expect(constructorOptions[2].webPreferences.partition).not.toBe(firstPartition);
 
