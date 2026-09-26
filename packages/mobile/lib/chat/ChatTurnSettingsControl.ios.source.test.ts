@@ -12,8 +12,9 @@ describe("iOS turn settings menu anchor", () => {
 		expect(source).toContain("matchContents={{ horizontal: false, vertical: true }}");
 		expect(source).toContain('ignoreSafeArea="all"');
 		expect(source).toContain('host: { alignSelf: "flex-start", width: 220, maxWidth: "100%", height: 44 }');
-		expect(source).toContain("<Spacer />");
-		expect(source).toContain('frame({ maxWidth: 1000, alignment: "leading" })');
+		expect(source).toContain('<View pointerEvents="none" accessibilityElementsHidden style={[styles.visibleLabel, disabled && styles.disabledLabel]}>');
+		expect(source).toContain('<RNText numberOfLines={1} style={styles.visibleText}>{label}</RNText>');
+		expect(source).toContain('accessibilityLabel(`Turn settings, ${label}`)');
 	});
 });
 
