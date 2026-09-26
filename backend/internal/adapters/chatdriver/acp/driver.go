@@ -191,6 +191,7 @@ func (d *Driver) Probe(ctx context.Context) (ports.ChatCapabilities, error) {
 
 // Start creates a new ACP session in the AO worktree.
 func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.ChatConversation, error) {
+	totalStarted := time.Now()
 	if !filepath.IsAbs(cfg.WorkspacePath) {
 		return nil, fmt.Errorf("workspace path must be absolute, got %q", cfg.WorkspacePath)
 	}
@@ -207,7 +208,9 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		Model: cfg.Model, Permissions: cfg.Permissions, SystemPrompt: cfg.SystemPrompt,
 		ProviderScopeID: cfg.ProviderScopeID,
 	}
+	connectStarted := time.Now()
 	conv, init, live, err := d.connect(ctx, launchCfg, cfg.PrepareEnv)
+	d.logStartStage(cfg.SessionID, "connect", connectStarted, err)
 	if err != nil {
 		return nil, err
 	}
@@ -239,12 +242,14 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	}
 	openCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
+	sessionStarted := time.Now()
 	resp, err := conv.conn.NewSession(openCtx, acpsdk.NewSessionRequest{
 		Meta:                  meta,
 		Cwd:                   cfg.WorkspacePath,
 		AdditionalDirectories: additional,
 		McpServers:            mcpServers,
 	})
+	d.logStartStage(cfg.SessionID, "session_new", sessionStarted, err)
 	if err != nil {
 		conv.discard()
 		return nil, normalizeACPError("ACP session/new", err)
@@ -259,7 +264,10 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		cfg.Permissions, d.cfg.ValidateTurnSettings, resp.ConfigOptions,
 		conv.legacyWire.modelState(), resp.Modes,
 	)
-	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions}); err != nil {
+	settingsStarted := time.Now()
+	err = conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions})
+	d.logStartStage(cfg.SessionID, "initial_settings", settingsStarted, err)
+	if err != nil {
 		// Initial model and permission mode may have been applied via launch-time
 		// flags (e.g. kimchiacp passes --model, --auto, --yolo). An agent that
 		// does not implement the runtime ACP setters returns -32601; tolerate it
@@ -269,7 +277,22 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 			return nil, fmt.Errorf("configure ACP session: %w", err)
 		}
 	}
+	d.logStartStage(cfg.SessionID, "total", totalStarted, nil)
 	return conv, nil
+}
+
+func (d *Driver) logStartStage(sessionID domain.SessionID, stage string, started time.Time, err error) {
+	outcome := "ok"
+	if err != nil {
+		outcome = "error"
+	}
+	d.log.Info("chat: ACP start stage",
+		"sessionID", sessionID,
+		"harness", d.cfg.Harness,
+		"stage", stage,
+		"duration", time.Since(started),
+		"outcome", outcome,
+	)
 }
 
 // Resume reconnects to the stored ACP session. When the agent advertises
@@ -418,11 +441,16 @@ func (d *Driver) connect(
 	cfg LaunchConfig,
 	prepareEnv func(context.Context) (map[string]string, error),
 ) (*conversation, acpsdk.InitializeResponse, *persistenthost.ACPState, error) {
+	processStarted := time.Now()
 	proc, err := d.openProcess(ctx, cfg, prepareEnv)
+	d.logStartStage(cfg.SessionID, "process_open", processStarted, err)
 	if err != nil {
 		return nil, acpsdk.InitializeResponse{}, nil, err
 	}
-	return d.initialize(ctx, cfg, proc)
+	initializeStarted := time.Now()
+	conv, init, state, err := d.initialize(ctx, cfg, proc)
+	d.logStartStage(cfg.SessionID, "initialize", initializeStarted, err)
+	return conv, init, state, err
 }
 
 func (d *Driver) initialize(

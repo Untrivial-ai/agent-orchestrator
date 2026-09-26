@@ -906,7 +906,7 @@ func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 			"SESSION_MODE_MISMATCH",
 			"this session was created in Terminal UI mode and has no chat conversation", nil)
 
-	case errors.Is(err, chatsvc.ErrNoController):
+	case errors.Is(err, chatsvc.ErrNoController), errors.Is(err, chatsvc.ErrNotProvisioning):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
 			"CHAT_CONTROLLER_NOT_READY",
 			"the agent controller for this session is not running", nil)

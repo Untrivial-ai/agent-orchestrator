@@ -43,6 +43,7 @@ type fakeStore struct {
 	getProjectErr    error
 	getSessionErr    error
 	updateSessionErr error
+	deletePrepErr    error
 	// agentSwitchStore is wired only by agent-switch tests so fakeLCM can model
 	// Lifecycle Manager's atomic ownership-boundary commands.
 	agentSwitchStore any
@@ -102,6 +103,71 @@ func (f *fakeStore) UpdateSessionModel(_ context.Context, id domain.SessionID, m
 	f.sessions[id] = rec
 	return true, nil
 }
+
+func (f *fakeStore) SetSessionProvisionedWorkspace(_ context.Context, id domain.SessionID, branch, workspacePath, workspaceRepoPath string, now time.Time) (bool, error) {
+	rec, ok := f.sessions[id]
+	canPublish := rec.ProvisionState == domain.SessionProvisionProvisioning && !rec.IsTerminated ||
+		rec.ProvisionState == domain.SessionProvisionFailed && (rec.Metadata.WorkspacePath == "" || rec.Metadata.WorkspacePath == workspacePath)
+	if !ok || !canPublish {
+		return false, nil
+	}
+	rec.Metadata.Branch = branch
+	rec.Metadata.WorkspacePath = workspacePath
+	rec.Metadata.WorkspaceRepoPath = workspaceRepoPath
+	rec.UpdatedAt = now
+	f.sessions[id] = rec
+	return true, nil
+}
+
+func (f *fakeStore) SetTaskPreparationBase(_ context.Context, id domain.SessionID, baseSHA, baseRef string) (bool, error) {
+	rec, ok := f.sessions[id]
+	if !ok || !rec.IsTaskPreparation || rec.IsTerminated || rec.ProvisionState != domain.SessionProvisionProvisioning {
+		return false, nil
+	}
+	rec.Metadata.DiffBaseSHA = baseSHA
+	rec.Metadata.DiffBaseRef = baseRef
+	f.sessions[id] = rec
+	return true, nil
+}
+
+func (f *fakeStore) SetSessionProvisionState(_ context.Context, id domain.SessionID, state domain.SessionProvisionState, message string, now time.Time) (bool, error) {
+	rec, ok := f.sessions[id]
+	if !ok {
+		return false, nil
+	}
+	rec.ProvisionState = state
+	rec.ProvisionError = message
+	rec.UpdatedAt = now
+	f.sessions[id] = rec
+	return true, nil
+}
+
+func (f *fakeStore) PromoteTaskPreparation(_ context.Context, id domain.SessionID, rec domain.SessionRecord) (bool, error) {
+	current, ok := f.sessions[id]
+	if !ok || !current.IsTaskPreparation {
+		return false, nil
+	}
+	rec.ID = id
+	rec.Metadata.Branch = current.Metadata.Branch
+	rec.Metadata.WorkspacePath = current.Metadata.WorkspacePath
+	rec.Metadata.WorkspaceRepoPath = current.Metadata.WorkspaceRepoPath
+	f.sessions[id] = rec
+	return true, nil
+}
+
+func (f *fakeStore) DeleteTaskPreparation(_ context.Context, id domain.SessionID) (bool, error) {
+	if f.deletePrepErr != nil {
+		return false, f.deletePrepErr
+	}
+	rec, ok := f.sessions[id]
+	if !ok || !rec.IsTaskPreparation {
+		return false, nil
+	}
+	delete(f.sessions, id)
+	delete(f.worktrees, id)
+	return true, nil
+}
+
 func (f *fakeStore) UpdateBrowserCapabilityVerifier(_ context.Context, id domain.SessionID, expected domain.SessionControllerOwner, verifier string) (bool, error) {
 	if f.updateSessionErr != nil {
 		return false, f.updateSessionErr
@@ -908,9 +974,10 @@ type missingAgents struct{}
 func (missingAgents) Agent(domain.AgentHarness) (ports.Agent, bool) { return nil, false }
 
 type fakeWorkspace struct {
-	createErr  error
-	destroyErr error
-	destroyed  int
+	createErr   error
+	createCount int
+	destroyErr  error
+	destroyed   int
 	// destroyReclaim, when set, is the reclaim outcome DestroyReclaim reports.
 	destroyReclaim ports.WorkspaceReclaim
 	// destroyReclaimByPath overrides destroyReclaim for one workspace path, so a
@@ -1004,6 +1071,7 @@ func (w *fakeWorkspace) FetchDefaultBranch(ctx context.Context, repoPath string,
 }
 
 func (w *fakeWorkspace) Create(_ context.Context, cfg ports.WorkspaceConfig) (ports.WorkspaceInfo, error) {
+	w.createCount++
 	if w.createErr != nil {
 		return ports.WorkspaceInfo{}, w.createErr
 	}
@@ -2223,6 +2291,29 @@ func TestSpawn_AssignsIDAndGoesIdle(t *testing.T) {
 	}
 	if st.sessions["mer-1"].Metadata.RuntimeHandleID != "h1" {
 		t.Fatal("handle not folded")
+	}
+}
+
+func TestSpawnWorkspaceRecordFailurePreservesDirtyWorkspace(t *testing.T) {
+	m, st, _, ws := newManager()
+	project := st.projects["mer"]
+	project.Kind = domain.ProjectKindWorkspace
+	project.Path = t.TempDir()
+	st.projects["mer"] = project
+	path := t.TempDir()
+	ws.projectCreateInfo = ports.WorkspaceProjectInfo{
+		Root:      ports.WorkspaceInfo{Path: path, Branch: "ao/task", SessionID: "mer-1", ProjectID: "mer"},
+		Worktrees: []ports.WorkspaceRepoInfo{{RepoName: domain.RootWorkspaceRepoName, Path: path, Branch: "ao/task", SessionID: "mer-1", ProjectID: "mer", RepoPath: project.Path}},
+	}
+	st.upsertWTErr = errors.New("record worktree failed")
+	ws.destroyErr = ports.ErrWorkspaceDirty
+	_, _, _, err := m.Spawn(ctx, ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode})
+	if !errors.Is(err, ErrWorkspaceCreate) {
+		t.Fatalf("spawn = %v, want workspace creation error", err)
+	}
+	rec, ok := st.sessions["mer-1"]
+	if !ok || rec.Metadata.WorkspacePath != path || !rec.IsTerminated {
+		t.Fatalf("dirty worktree lost its session record: found=%v session=%+v", ok, rec)
 	}
 }
 

@@ -18,7 +18,7 @@ export function GlobalNewTaskDialog() {
 	const newTaskRequest = useUiStore((state) => state.newTaskRequest);
 	const [open, setOpen] = useState(false);
 	const [projectId, setProjectId] = useState<string | undefined>(undefined);
-	const lastNonce = useRef(0);
+	const lastNonce = useRef(newTaskRequest?.nonce ?? 0);
 
 	useEffect(() => {
 		if (!newTaskRequest || newTaskRequest.nonce === lastNonce.current) return;

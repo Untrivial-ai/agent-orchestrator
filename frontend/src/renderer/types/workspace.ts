@@ -118,6 +118,17 @@ export type WorkspaceSession = {
 	 */
 	displayStatus?: string;
 	statusReadiness?: "checking" | "ready" | "unavailable";
+	/**
+	 * How far this session's start-up got. A Chat spawn answers as soon as the
+	 * session is addressable, so a session can be open and typeable while its
+	 * worktree and agent are still being created ("provisioning"), and a start
+	 * that fails leaves the session in place ("failed") with
+	 * {@link provisionError} explaining why. Absent means ready — which is also
+	 * what every session created before asynchronous spawn reads as.
+	 */
+	provisionState?: "provisioning" | "ready" | "failed";
+	/** Why a failed start stopped, in the daemon's words. */
+	provisionError?: string;
 	/** Durable runtime fact from the daemon; independent of the derived SCM-aware status. */
 	isTerminated?: boolean;
 	/** Whether the cloud worker has a current control-plane connection. */

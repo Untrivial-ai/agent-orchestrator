@@ -624,6 +624,9 @@ type Session struct {
 	LatestAssistantUpdateAt          sql.NullTime
 	NativeIdentityObservedAt         sql.NullTime
 	Effort                           string
+	ProvisionState                   domain.SessionProvisionState
+	ProvisionError                   string
+	IsTaskPreparation                bool
 }
 
 type SessionCleanupFact struct {
@@ -672,6 +675,7 @@ type SessionWorktree struct {
 	PreservedRef string
 	State        string
 	BaseRef      string
+	CreationSha  string
 }
 
 type ShellTerminal struct {

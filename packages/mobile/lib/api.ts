@@ -89,6 +89,8 @@ export type DashboardSession = {
 	// finished status: a merged session whose agent is still running belongs on
 	// the board, only a terminated one belongs in the archive.
 	isTerminated?: boolean;
+	provisionState?: "provisioning" | "ready" | "failed";
+	provisionError?: string;
 	isPinned?: boolean;
 	pinnedAt?: string | null;
 };
@@ -178,6 +180,8 @@ type WireSession = {
 	displayName?: string;
 	activity?: unknown;
 	isTerminated?: boolean;
+	provisionState?: "provisioning" | "ready" | "failed";
+	provisionError?: string;
 	status?: string | null;
 	kanbanColumn?: string | null;
 	displayStatus?: string | null;
@@ -271,6 +275,8 @@ function mapSession(s: WireSession): DashboardSession {
 		prs,
 		previewUrl: s.previewUrl ?? null,
 		isTerminated: !!s.isTerminated,
+		provisionState: s.provisionState,
+		provisionError: s.provisionError,
 		isPinned: !!s.isPinned,
 		pinnedAt: s.pinnedAt ?? null,
 	};

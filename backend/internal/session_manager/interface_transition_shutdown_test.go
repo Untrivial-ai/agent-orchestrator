@@ -390,3 +390,11 @@ func TestInterfaceTransitionChatToTUIRetainsShutdownFenceAcrossRestart(t *testin
 		t.Fatalf("confirmed shutdown did not release recovery fence: active=%v err=%v", active, err)
 	}
 }
+
+func (c *shutdownGuardTransitionChat) QueueChatPrompt(_ context.Context, _ domain.SessionID, _ string) (string, error) {
+	return "", nil
+}
+
+func (c *shutdownGuardTransitionChat) DrainChatQueue(_ context.Context, _ domain.SessionID) error {
+	return nil
+}

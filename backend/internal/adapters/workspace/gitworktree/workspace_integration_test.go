@@ -63,6 +63,268 @@ func TestWorkspaceIntegrationCreateRestoreDestroy(t *testing.T) {
 	}
 }
 
+func TestWorkspaceIntegrationCancelledPreparedAddLeavesNoWorktreeOrBranch(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, filepath.Join(tmp, "repo"))
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := "ao/prepared-cancelled"
+	path := filepath.Join(ws.managedRoot, "proj", "prepared-cancelled")
+	actualRun := ws.run
+	ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		out, err := actualRun(ctx, binary, args...)
+		if err == nil && strings.Contains(strings.Join(args, " "), "worktree add -b "+branch+" ") {
+			return nil, context.Canceled // git succeeded immediately before cancellation surfaced
+		}
+		return out, err
+	}
+	_, err = ws.Create(context.Background(), ports.WorkspaceConfig{
+		ProjectID: "proj", SessionID: "prepared-cancelled", Kind: domain.KindWorker,
+		Branch: branch, FreshBranch: true, BaseBranch: "main",
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Create error = %v, want cancellation", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled worktree remains at %q: %v", path, err)
+	}
+	if output, err := exec.Command(git, "-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).CombinedOutput(); err == nil {
+		t.Fatalf("cancelled branch remains: %s", output)
+	}
+}
+
+func TestWorkspaceIntegrationCancelledPreparedAddPreservesUnregisteredPartialDirectory(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	repo := setupOriginClone(t, git, filepath.Join(tmp, "repo"))
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": repo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := "ao/partial"
+	path := filepath.Join(ws.managedRoot, "proj", "partial")
+	actualRun := ws.run
+	ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		if strings.Contains(strings.Join(args, " "), "worktree add -b "+branch+" ") {
+			if err := os.MkdirAll(path, 0o755); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(filepath.Join(path, "partial.txt"), []byte("keep this\n"), 0o644); err != nil {
+				return nil, err
+			}
+			seed := gitOutput(t, git, repo, "rev-parse", "main")
+			runGit(t, git, repo, "update-ref", "refs/heads/"+branch, seed)
+			return nil, context.Canceled
+		}
+		return actualRun(ctx, binary, args...)
+	}
+	info, err := ws.Create(context.Background(), ports.WorkspaceConfig{
+		ProjectID: "proj", SessionID: "partial", Kind: domain.KindWorker,
+		Branch: branch, FreshBranch: true, BaseBranch: "main",
+	})
+	if !errors.Is(err, ports.ErrWorkspaceDirty) || info.Path != path || info.BaseSHA == "" {
+		t.Fatalf("partial create = (%+v, %v), want preserved path and creation SHA", info, err)
+	}
+	if err := ws.Destroy(context.Background(), info); !errors.Is(err, ports.ErrWorkspaceDirty) {
+		t.Fatalf("Destroy unregistered partial worktree = %v, want preservation", err)
+	}
+	if _, err := os.Stat(filepath.Join(path, "partial.txt")); err != nil {
+		t.Fatalf("partial user file disappeared: %v", err)
+	}
+	if err := os.Remove(filepath.Join(path, "partial.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Destroy(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.DeletePreparedBranch(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cleaned partial directory still exists: %v", err)
+	}
+}
+
+func TestWorkspaceIntegrationWorkspaceProjectUsesResolvedNonOriginSeed(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	childRepo := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	branch := "ao/seeded"
+	runGit(t, git, childRepo, "remote", "rename", "origin", "upstream")
+	runGit(t, git, childRepo, "checkout", "-b", "seed-source")
+	if err := os.WriteFile(filepath.Join(childRepo, "seed.txt"), []byte("from upstream\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, git, childRepo, "add", "seed.txt")
+	runGit(t, git, childRepo, "commit", "-m", "seed requested branch")
+	wantSeed := gitOutput(t, git, childRepo, "rev-parse", "HEAD")
+	runGit(t, git, childRepo, "update-ref", "refs/remotes/upstream/"+branch, wantSeed)
+	runGit(t, git, childRepo, "checkout", "main")
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": rootRepo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := ws.CreateWorkspaceProject(context.Background(), ports.WorkspaceProjectConfig{
+		ProjectID: "proj", SessionID: "seeded", Kind: domain.KindWorker, Branch: branch,
+		RootRepoPath: rootRepo, BaseBranch: "main",
+		Repos: []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "api", RepoPath: childRepo}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ws.DestroyWorkspaceProject(context.Background(), info) }()
+	if got := gitOutput(t, git, info.Worktrees[1].Path, "rev-parse", "HEAD"); got != wantSeed {
+		t.Fatalf("child HEAD = %q, want pre-resolved upstream seed %q", got, wantSeed)
+	}
+}
+
+func TestWorkspaceIntegrationRecoveredPreparedBranchWithoutDurableSHAIsPreserved(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	childRepo := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": rootRepo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := ports.WorkspaceProjectConfig{
+		ProjectID: "proj", SessionID: "prepared", Kind: domain.KindWorker,
+		Branch: "ao/prepared", FreshBranch: true, RootRepoPath: rootRepo, BaseBranch: "main",
+		Repos: []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "api", RepoPath: childRepo, BaseBranch: "main"}},
+	}
+	first, err := ws.CreateWorkspaceProject(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := first.Worktrees[1]
+	if child.CreationSHA == "" || child.CreationSHA != child.BaseSHA {
+		t.Fatalf("initial child creation SHA = %q, diff base = %q", child.CreationSHA, child.BaseSHA)
+	}
+	if err := ws.forceDestroyPath(context.Background(), child.RepoPath, child.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(childRepo, "later.txt"), []byte("later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, git, childRepo, "add", "later.txt")
+	runGit(t, git, childRepo, "commit", "-m", "advance default after interrupted preparation")
+	runGit(t, git, childRepo, "update-ref", "refs/remotes/origin/main", gitOutput(t, git, childRepo, "rev-parse", "main"))
+	second, err := ws.CreateWorkspaceProject(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredChild := second.Worktrees[1]
+	if recoveredChild.CreationSHA != "" {
+		t.Fatalf("recovered creation SHA = %q, want unknown without a durable record", recoveredChild.CreationSHA)
+	}
+	if recoveredChild.BaseSHA == child.BaseSHA {
+		t.Fatalf("recovered comparison base did not advance: %+v", recoveredChild)
+	}
+	if err := ws.DestroyWorkspaceProject(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range second.Worktrees {
+		if err := ws.DeletePreparedBranch(context.Background(), ports.WorkspaceInfo{
+			Branch: row.Branch, BaseSHA: row.CreationSHA, RepoPath: row.RepoPath, ProjectID: row.ProjectID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command(git, "-C", row.RepoPath, "show-ref", "--verify", "--quiet", "refs/heads/"+row.Branch).CombinedOutput(); err != nil {
+			t.Fatalf("recovered branch %q was deleted without proof of its creation SHA: %v: %s", row.Branch, err, output)
+		}
+	}
+}
+
+func TestWorkspaceIntegrationCancelledPreparedChildAddRollsBackEveryRepo(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	childRepo := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": rootRepo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := "ao/prepared-cancelled-child"
+	actualRun := ws.run
+	ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		out, err := actualRun(ctx, binary, args...)
+		if err == nil && strings.Contains(strings.Join(args, " "), "worktree add -b "+branch+" ") && strings.Contains(strings.Join(args, " "), childRepo) {
+			return nil, context.Canceled
+		}
+		return out, err
+	}
+	info, err := ws.CreateWorkspaceProject(context.Background(), ports.WorkspaceProjectConfig{
+		ProjectID: "proj", SessionID: "prepared-child", Kind: domain.KindWorker,
+		Branch: branch, FreshBranch: true, RootRepoPath: rootRepo, BaseBranch: "main",
+		Repos: []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "api", RepoPath: childRepo, BaseBranch: "main"}},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("create error = %v, want cancellation", err)
+	}
+	if len(info.Worktrees) != 0 {
+		t.Fatalf("clean rollback returned live worktrees: %+v", info.Worktrees)
+	}
+	for _, repo := range []string{rootRepo, childRepo} {
+		if output, err := exec.Command(git, "-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).CombinedOutput(); err == nil {
+			t.Fatalf("prepared branch remains in %q: %s", repo, output)
+		}
+	}
+}
+
+func TestWorkspaceIntegrationCancelledPreparedChildPreservesDirtyPartial(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	childRepo := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	// The parent can appear clean even while an ignored nested worktree holds
+	// uncommitted user files. Its teardown must never follow a failed child.
+	if err := os.WriteFile(filepath.Join(rootRepo, ".gitignore"), []byte("api/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, git, rootRepo, "add", ".gitignore")
+	runGit(t, git, rootRepo, "commit", "-m", "ignore child checkout")
+	runGit(t, git, rootRepo, "push", "origin", "HEAD:main")
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": rootRepo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := "ao/prepared-dirty-child"
+	actualRun := ws.run
+	ws.run = func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		out, err := actualRun(ctx, binary, args...)
+		joined := strings.Join(args, " ")
+		if err == nil && strings.Contains(joined, "worktree add -b "+branch+" ") && strings.Contains(joined, childRepo) {
+			path := filepath.Join(ws.managedRoot, "proj", "prepared-child", "api")
+			if err := os.WriteFile(filepath.Join(path, "user.txt"), []byte("keep\n"), 0o644); err != nil {
+				return nil, err
+			}
+			return nil, context.Canceled
+		}
+		return out, err
+	}
+	info, err := ws.CreateWorkspaceProject(context.Background(), ports.WorkspaceProjectConfig{
+		ProjectID: "proj", SessionID: "prepared-child", Kind: domain.KindWorker,
+		Branch: branch, FreshBranch: true, RootRepoPath: rootRepo, BaseBranch: "main",
+		Repos: []ports.WorkspaceProjectRepoConfig{{Name: "api", RelativePath: "api", RepoPath: childRepo, BaseBranch: "main"}},
+	})
+	if !errors.Is(err, ports.ErrWorkspaceDirty) || len(info.Worktrees) != 2 || info.Worktrees[1].RepoName != "api" {
+		t.Fatalf("dirty child rollback = (%+v, %v), want root and dirty child preserved", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(info.Worktrees[1].Path, "user.txt")); err != nil {
+		t.Fatalf("dirty child contents lost: %v", err)
+	}
+	if _, err := os.Stat(info.Worktrees[0].Path); err != nil {
+		t.Fatalf("parent worktree removed after dirty child rollback: %v", err)
+	}
+	if info.Worktrees[1].CreationSHA == "" {
+		t.Fatal("preserved child lost creation SHA cleanup fence")
+	}
+}
+
 func TestWorkspaceIntegrationMixedWorkspaceContentReachesEverySessionKind(t *testing.T) {
 	git := requireGit(t)
 	tmp := t.TempDir()
@@ -808,6 +1070,80 @@ func TestWorkspaceIntegrationWorkspaceProjectInfersPerRepoDefaultBranches(t *tes
 	}
 }
 
+func TestWorkspaceIntegrationWorkspaceProjectCreateRecoversExistingPreparation(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	childRepo := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	ws, err := New(Options{
+		Binary: git, ManagedRoot: filepath.Join(tmp, "managed"),
+		RepoResolver: StaticRepoResolver{"proj": rootRepo},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := ports.WorkspaceProjectConfig{
+		ProjectID: "proj", SessionID: "sess", Kind: "worker", Branch: "ao/prepared",
+		RootRepoPath: rootRepo,
+		Repos: []ports.WorkspaceProjectRepoConfig{{
+			Name: "child", RelativePath: "child", RepoPath: childRepo,
+		}},
+	}
+	first, err := ws.CreateWorkspaceProject(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := first.Worktrees[1]
+	if err := ws.forceDestroyPath(context.Background(), child.RepoPath, child.Path); err != nil {
+		t.Fatalf("simulate interrupted child creation: %v", err)
+	}
+	second, err := ws.CreateWorkspaceProject(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("recover existing preparation: %v", err)
+	}
+	if second.Root.Path != first.Root.Path || second.Root.Branch != first.Root.Branch {
+		t.Fatalf("recovered root = %+v, want %+v", second.Root, first.Root)
+	}
+	if len(second.Worktrees) != len(first.Worktrees) {
+		t.Fatalf("recovered worktrees = %d, want %d", len(second.Worktrees), len(first.Worktrees))
+	}
+	if _, err := os.Stat(child.Path); err != nil {
+		t.Fatalf("missing child was not recreated: %v", err)
+	}
+	if err := ws.DestroyWorkspaceProject(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceIntegrationDestroyWorkspaceProjectPreservesDirtyChild(t *testing.T) {
+	git := requireGit(t)
+	tmp := t.TempDir()
+	rootRepo := setupOriginClone(t, git, filepath.Join(tmp, "root"))
+	childRepo := setupOriginClone(t, git, filepath.Join(tmp, "child"))
+	ws, err := New(Options{Binary: git, ManagedRoot: filepath.Join(tmp, "managed"), RepoResolver: StaticRepoResolver{"proj": rootRepo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := ws.CreateWorkspaceProject(context.Background(), ports.WorkspaceProjectConfig{
+		ProjectID: "proj", SessionID: "sess", Kind: "worker", Branch: "ao/dirty-child",
+		RootRepoPath: rootRepo,
+		Repos:        []ports.WorkspaceProjectRepoConfig{{Name: "child", RelativePath: "child", RepoPath: childRepo}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirtyFile := filepath.Join(info.Worktrees[1].Path, "user-change.txt")
+	if err := os.WriteFile(dirtyFile, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.DestroyWorkspaceProject(context.Background(), info); !errors.Is(err, ports.ErrWorkspaceDirty) {
+		t.Fatalf("destroy dirty workspace project = %v, want ErrWorkspaceDirty", err)
+	}
+	if content, err := os.ReadFile(dirtyFile); err != nil || string(content) != "keep me" {
+		t.Fatalf("dirty child was lost: %q, %v", content, err)
+	}
+}
+
 func TestWorkspaceIntegrationWorkspaceProjectCopiesAssetsAndCleansSessionCopy(t *testing.T) {
 	git := requireGit(t)
 	tmp := t.TempDir()
@@ -863,8 +1199,17 @@ func TestWorkspaceIntegrationWorkspaceProjectCopiesAssetsAndCleansSessionCopy(t 
 	if _, err := os.Stat(filepath.Join(info.Root.Path, "api", "README.md")); err != nil {
 		t.Fatalf("child worktree missing: %v", err)
 	}
+	if err := ws.DestroyWorkspaceProject(context.Background(), info); !errors.Is(err, ports.ErrWorkspaceDirty) {
+		t.Fatalf("destroy workspace project with untracked asset = %v, want ErrWorkspaceDirty", err)
+	}
+	if _, err := os.Lstat(filepath.Join(info.Root.Path, "notes", "latest")); err != nil {
+		t.Fatalf("untracked asset was deleted: %v", err)
+	}
+	if err := os.Remove(filepath.Join(info.Root.Path, "notes", "latest")); err != nil {
+		t.Fatal(err)
+	}
 	if err := ws.DestroyWorkspaceProject(context.Background(), info); err != nil {
-		t.Fatalf("destroy workspace project: %v", err)
+		t.Fatalf("destroy clean workspace project: %v", err)
 	}
 	if _, err := os.Stat(info.Root.Path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("session copy still exists after cleanup: %v", err)

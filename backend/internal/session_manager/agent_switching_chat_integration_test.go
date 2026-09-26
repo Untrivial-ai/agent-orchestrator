@@ -579,3 +579,11 @@ func TestSwitchAgentRealChatServiceSQLiteActivationCAS(t *testing.T) {
 		}
 	})
 }
+
+func (l integrationChatLauncher) QueueChatPrompt(_ context.Context, _ domain.SessionID, _ string) (string, error) {
+	return "", nil
+}
+
+func (l integrationChatLauncher) DrainChatQueue(_ context.Context, _ domain.SessionID) error {
+	return nil
+}

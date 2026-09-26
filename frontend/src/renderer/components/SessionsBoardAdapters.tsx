@@ -24,6 +24,7 @@ import {
 	agentSwitchStatusVisual,
 	deriveSessionAgentSwitchPresentation,
 } from "../lib/agent-switch-presentation";
+import { agentLabel } from "../lib/agent-options";
 import type { WorkspaceSession } from "../types/workspace";
 import { canonicalTrackerIssueId } from "../types/workspace";
 import { useSessionScmSummary } from "../hooks/useSessionScmSummary";
@@ -44,6 +45,15 @@ export function toBoardSessionPresentation(
 ): BoardSessionPresentation {
 	const switchPresentation = deriveSessionAgentSwitchPresentation(session);
 	const switchVisual = switchPresentation ? agentSwitchStatusVisual(switchPresentation) : undefined;
+	const provisioningStatus =
+		session.provisionState === "provisioning"
+			? {
+					className: "text-status-working",
+					indicatorClassName: "bg-status-working animate-status-pulse",
+					label: `Starting ${agentLabel(session.provider)}…`,
+					tone: "var(--color-status-working)",
+				}
+			: undefined;
 	return {
 		activity: session.activity,
 		branch: session.branch,
@@ -54,14 +64,15 @@ export function toBoardSessionPresentation(
 		provider: session.provider,
 		status: session.status,
 		statusPresentation:
-			t && switchPresentation && switchVisual
+			provisioningStatus ??
+			(t && switchPresentation && switchVisual
 				? {
 						className: switchVisual.className,
 						indicatorClassName: `${switchVisual.indicatorClassName}${switchVisual.breathe ? " animate-status-pulse" : ""}`,
 						label: t(switchPresentation.compactLabelKey, switchPresentation.values),
 						tone: switchVisual.tone,
 					}
-				: undefined,
+				: undefined),
 		title: session.title,
 		trackerIssueId: canonicalTrackerIssueId(session.issueId),
 		updatedAt: session.updatedAt,

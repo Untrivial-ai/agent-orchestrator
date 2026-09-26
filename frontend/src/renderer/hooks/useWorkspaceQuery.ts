@@ -111,6 +111,8 @@ function toWorkspaceSession(
 		kanbanColumn,
 		displayStatus: session.displayStatus || undefined,
 		statusReadiness,
+		provisionState: session.provisionState,
+		provisionError: session.provisionError || undefined,
 		isTerminated: session.isTerminated,
 		chatProviderPreserved: session.chatProviderPreserved,
 		terminateOnPrMerge: session.terminateOnPrMerge ?? false,

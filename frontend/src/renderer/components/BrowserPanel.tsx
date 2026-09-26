@@ -596,14 +596,26 @@ export function BrowserPanelView({
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const browserDownloads = useBrowserDownloads();
 	const [downloadsOpen, setDownloadsOpen] = useState(false);
-	const previousDownloadCount = useRef(0);
+	const knownDownloadIds = useRef<Set<string> | null>(null);
+	const observedInitialDownloads = useRef(false);
 	const hasActiveDownload = browserDownloads.downloads.some(
 		(download) => download.status === "progressing" || download.status === "paused",
 	);
 	useEffect(() => {
-		if (browserDownloads.downloads.length > previousDownloadCount.current) setDownloadsOpen(true);
-		previousDownloadCount.current = browserDownloads.downloads.length;
-	}, [browserDownloads.downloads.length]);
+		if (!browserDownloads.initialized) return;
+		const nextIds = new Set(browserDownloads.downloads.map((download) => download.id));
+		if (!observedInitialDownloads.current) {
+			observedInitialDownloads.current = true;
+			knownDownloadIds.current = nextIds;
+			return;
+		}
+		const previousIds = knownDownloadIds.current;
+		const hasNewDownload = previousIds
+			? browserDownloads.downloads.some((download) => !previousIds.has(download.id))
+			: false;
+		if (active && hasNewDownload) setDownloadsOpen(true);
+		knownDownloadIds.current = nextIds;
+	}, [active, browserDownloads.downloads, browserDownloads.initialized]);
 
 	const takeScreenshot = useCallback(async () => {
 		if (!viewId || !window.ao?.browser) return;

@@ -248,6 +248,12 @@ sql:
             go_type: "bool"
           - column: "app_settings.cloud_offering"
             go_type: "bool"
+          - column: "sessions.provision_state"
+            go_type:
+              import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"
+              type: "SessionProvisionState"
+          - column: "sessions.is_task_preparation"
+            go_type: "bool"
           - column: "sessions.session_mode"
             go_type:
               import: "github.com/aoagents/agent-orchestrator/backend/internal/domain"

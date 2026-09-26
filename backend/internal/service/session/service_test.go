@@ -128,6 +128,28 @@ func TestListBatchesKanbanReads(t *testing.T) {
 	}
 }
 
+func TestTaskPreparationsStayOutOfSessionReads(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", IsTaskPreparation: true}
+	svc := &Service{store: st}
+
+	list, err := svc.List(context.Background(), ListFilter{ProjectID: "mer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("list = %+v, want no preparations", list)
+	}
+	_, err = svc.Get(context.Background(), "mer-1")
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Code != "SESSION_NOT_FOUND" {
+		t.Fatalf("get preparation error = %v", err)
+	}
+	if first, err := svc.isFirstSession(context.Background()); err != nil || !first {
+		t.Fatalf("isFirstSession = %v, %v", first, err)
+	}
+}
+
 func (f *fakeStore) GetActiveAgentSwitch(_ context.Context, id domain.SessionID) (domain.AgentSwitch, bool, error) {
 	if f.activeSwitchGetErr != nil {
 		return domain.AgentSwitch{}, false, f.activeSwitchGetErr
@@ -2513,6 +2535,12 @@ func (f *fakeCommander) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.
 		return f.spawnRecord, len(cfg.Prompt), 0, nil
 	}
 	return domain.SessionRecord{ID: "mer-9", ProjectID: cfg.ProjectID, Kind: cfg.Kind, Harness: cfg.Harness}, len(cfg.Prompt), 0, nil
+}
+func (*fakeCommander) PrepareTaskWorkspace(context.Context, domain.ProjectRecord) (domain.TaskPreparationToken, error) {
+	return "", nil
+}
+func (*fakeCommander) CancelTaskPreparation(context.Context, domain.TaskPreparationToken) error {
+	return nil
 }
 func (*fakeCommander) SwitchAgent(context.Context, domain.SessionID, sessionmanager.SwitchAgentConfig) (domain.AgentSwitch, error) {
 	return domain.AgentSwitch{}, nil
