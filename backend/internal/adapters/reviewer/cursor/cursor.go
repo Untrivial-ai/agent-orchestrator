@@ -35,10 +35,16 @@ func (r *Reviewer) Harness() domain.ReviewerHarness {
 var _ ports.Reviewer = (*Reviewer)(nil)
 var _ ports.ReviewerCanceller = (*Reviewer)(nil)
 
-// PreLaunch installs the reviewer-only Cursor permissions into its isolated
-// AO-owned data directory without touching the checkout or user configuration.
+// PreLaunch installs the reviewer-only Cursor permissions and MCP policy into
+// its isolated AO-owned data directory without touching the checkout or user
+// configuration.
 func (r *Reviewer) PreLaunch(ctx context.Context, inv ports.ReviewInvocation) error {
 	if err := installReviewerConfig(ctx, inv); err != nil {
+		return err
+	}
+	// Disable every MCP server the review checkout or host config declares so
+	// the unattended pane cannot stall on Cursor's MCP approval screen.
+	if err := applyReviewerMCPDisable(ctx, inv); err != nil {
 		return err
 	}
 	return r.agent.InstallWorkspaceTrust(ctx, ports.WorkspaceHookConfig{
