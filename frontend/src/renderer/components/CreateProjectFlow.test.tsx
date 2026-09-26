@@ -352,6 +352,39 @@ beforeEach(() => {
 	useUiStore.setState({ globalToast: null, globalToasts: [] });
 });
 
+describe("CreateProjectFlow onboarding preparation", () => {
+	it("hands a selected local repository back to onboarding", async () => {
+		bridgeMocks.chooseDirectory.mockResolvedValue("/repo/project");
+		apiMocks.POST.mockResolvedValueOnce({ data: projectValidation("/repo/project") });
+		const onPrepared = vi.fn();
+		const { rerender } = render(
+			<CreateProjectFlow
+				mode="choose"
+				{...noop}
+				onboardingTrigger={{ kind: "folder", nonce: 0 }}
+				prepareOnly={{ onPrepared }}
+				variant="onboarding"
+			/>,
+		);
+
+		rerender(
+			<CreateProjectFlow
+				mode="choose"
+				{...noop}
+				onboardingTrigger={{ kind: "folder", nonce: 1 }}
+				prepareOnly={{ onPrepared }}
+				variant="onboarding"
+			/>,
+		);
+
+		await waitFor(() => expect(onPrepared).toHaveBeenCalledWith({
+			path: "/repo/project",
+			clonePreparationId: undefined,
+			defaultBranch: undefined,
+		}));
+	});
+});
+
 describe("CreateProjectFlow droppedPath", () => {
 	it("shows the standalone agent action when the host provides one", async () => {
 		const onCreateStandaloneAgent = vi.fn();

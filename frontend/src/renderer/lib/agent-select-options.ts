@@ -147,31 +147,37 @@ export function buildRankedAgentOptions({
 	return (agents ?? fallbackAgents)
 		.filter((agent) => (filter ? filter(agent) : true))
 		.map((agent) => {
-			const isInstallationUnknown = agent.installation.state === "unknown";
+			// Catalogs can briefly contain compatibility-shaped entries while the
+			// daemon refreshes. Keep one malformed item from taking down the whole
+			// picker; unknown is the safe presentation for incomplete readiness.
+			const safeAgent = agent.installation && agent.authentication
+				? agent
+				: unknownAgentReadiness(agent.id, agent.label);
+			const isInstallationUnknown = safeAgent.installation.state === "unknown";
 			// Configured ranks with unknown, not below it: a credential AO could
 			// not validate is still more evidence than no observation at all,
 			// and neither is a reason to make the agent unselectable.
 			const isAuthUnknown =
-				agent.authentication.state === "unknown" || agent.authentication.state === "configured";
+				safeAgent.authentication.state === "unknown" || safeAgent.authentication.state === "configured";
 			const isAuthorized =
-				agent.authentication.state === "authorized" || agent.authentication.state === "not_applicable";
+				safeAgent.authentication.state === "authorized" || safeAgent.authentication.state === "not_applicable";
 			const isDefinitelyUnavailable =
-				agent.installation.state === "not_installed" || agent.authentication.state === "unauthorized";
+				safeAgent.installation.state === "not_installed" || safeAgent.authentication.state === "unauthorized";
 			const isSelectable = !isDefinitelyUnavailable;
 			const rank =
-				isAuthorized && agent.installation.state === "installed"
+				isAuthorized && safeAgent.installation.state === "installed"
 					? 0
 					: !isDefinitelyUnavailable && (isInstallationUnknown || isAuthUnknown)
 						? 1
-						: agent.installation.state === "installed"
+						: safeAgent.installation.state === "installed"
 							? 2
 							: 3;
 			return {
-				...agent,
+				...safeAgent,
 				disabled: !isSelectable,
 				priorityRank: priorityRank.get(agent.id) ?? Number.MAX_SAFE_INTEGER,
 				rank,
-				...agentStatus(agent),
+				...agentStatus(safeAgent),
 			};
 		})
 		.sort(
