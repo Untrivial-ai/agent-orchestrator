@@ -371,7 +371,7 @@ export default function SpawnModal() {
 					voice={{ state: voice.state, mode: voice.mode, onPressIn: voice.pressIn, onPressOut: voice.pressOut }}
 					onSpawn={() => { void onSpawn(); }}
 					busy={busy}
-					disabled={!projectId || !harness || busy || modelLoading || loading}
+					disabled={!projectId || !harness || busy || modelLoading || loading || listening || voice.state === "transcribing"}
 				/>
 				</KeyboardStickyView>
 		</View>

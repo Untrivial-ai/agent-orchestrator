@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const spawn = readFileSync(fileURLToPath(new URL("../app/spawn.tsx", import.meta.url)), "utf8");
+const voiceInput = readFileSync(fileURLToPath(new URL("./voice/useVoiceInput.ts", import.meta.url)), "utf8");
 
 describe("spawn composer", () => {
 	it("reflows attachments and messages above keyboard-lifted controls on iOS", () => {
@@ -23,5 +24,14 @@ describe("spawn composer", () => {
 		expect(spawn).toContain('Platform.OS === "android" ? voiceFeedback : null');
 		expect(spawn).toContain('<KeyboardStickyView offset={{ closed: 0, opened: 0 }}>\n\t\t\t\t{Platform.OS === "ios" ? voiceFeedback : null}');
 		expect(spawn.indexOf('Platform.OS === "ios" ? voiceFeedback : null')).toBeLessThan(spawn.indexOf('<SpawnComposerControls'));
+	});
+
+	it("keeps Start task disabled while a stopped dictation waits for its final result", () => {
+		// stop() is asynchronous: the hook stays in recording until onFinal runs.
+		const finish = voiceInput.slice(voiceInput.indexOf("const finish = useCallback"), voiceInput.indexOf("const pressIn = useCallback"));
+		expect(finish).toContain('if (current !== "recording") return;');
+		expect(finish).toContain("device.stop();");
+		expect(finish.slice(finish.indexOf('if (current !== "recording") return;'))).not.toContain('setPhase("idle")');
+		expect(spawn).toContain('disabled={!projectId || !harness || busy || modelLoading || loading || listening || voice.state === "transcribing"}');
 	});
 });
