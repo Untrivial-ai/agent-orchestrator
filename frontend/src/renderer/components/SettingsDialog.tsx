@@ -1,4 +1,4 @@
-import { Bot, Check, Loader2, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
+import { Bot, Loader2, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useRef, useState } from "react";
@@ -200,22 +200,20 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 											/>
 										))}
 							</nav>
-							{isProjectSettings && projectSaveState.phase !== "idle" && (
+							{isProjectSettings &&
+								(projectSaveState.phase === "failed" ||
+									projectSaveState.phase === "pending" ||
+									projectSaveState.phase === "saving") && (
 								<div className="mt-auto border-t border-(--color-border-settings-dialog-header) px-4 py-3 text-xs" role="status" aria-live="polite">
 									{projectSaveState.phase === "failed" ? (
 										<div className="space-y-2 text-error">
 											<p className="flex items-start gap-2" role="alert"><TriangleAlert className="size-4 shrink-0" aria-hidden="true" />{projectSaveState.error ?? t("settings.project.saveFailed")}</p>
 											<button className="text-settings-label underline underline-offset-2" onClick={() => (document.getElementById("project-settings-form") as HTMLFormElement | null)?.requestSubmit()} type="button">{t("settings.models.retry")}</button>
 										</div>
-									) : projectSaveState.phase === "saved" ? (
-										<p className="flex items-center gap-2 text-settings-muted">
-											<Check className="size-4 shrink-0" aria-hidden="true" />
-											{t("settings.project.saved")}
-										</p>
 									) : (
 										<p className="flex items-center gap-2 text-settings-muted">
 											<Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
-											<span className="sr-only">{t("settings.project.saving")}</span>
+											{t("settings.project.saving")}
 										</p>
 									)}
 								</div>

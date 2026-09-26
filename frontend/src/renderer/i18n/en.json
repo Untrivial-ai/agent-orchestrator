@@ -1230,7 +1230,7 @@
 	"settings.project.saveChanges": "Save changes",
 	"settings.project.saveFailed": "Save failed",
 	"settings.project.saved": "Saved.",
-	"settings.project.saving": "Saving…",
+	"settings.project.saving": "Saving",
 	"settings.project.selectOrchestrator": "Select orchestrator agent",
 	"settings.project.selectWorker": "Select worker agent",
 	"settings.project.sessionPrefix": "Session prefix",

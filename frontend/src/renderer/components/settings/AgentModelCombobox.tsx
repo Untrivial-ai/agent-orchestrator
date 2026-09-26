@@ -122,7 +122,9 @@ export function AgentModelCombobox({
 		onEffortReset: tuning?.onEffortReset,
 		onValidityChange: tuning?.onValidityChange,
 	});
-	const showEffort = Boolean(tuning && (effortModel?.efforts?.length || tuning.effort));
+	const catalogSupportsEffort = models.some((model) => (model.efforts?.length ?? 0) > 0);
+	const showEffort = Boolean(tuning && (catalogSupportsEffort || tuning.effort));
+	const showEffortOnTrigger = showEffort;
 	const currentEffortLabel = tuning?.effort ? effortLabel(tuning.effort) : t("settings.models.providerDefault");
 	const entryMode = customModelEntry ?? (allowCustom ? "direct" : "none");
 	const allowDirectCustom = entryMode === "direct";
@@ -201,14 +203,10 @@ export function AgentModelCombobox({
 		}
 		onChange(modelID);
 	};
-	const selectCatalogModel = (event: Event, item: IndexedModel) => {
-		const openEffort = Boolean(tuning && item.model.efforts?.length);
-		if (openEffort) event.preventDefault();
+	const selectCatalogModel = (_event: Event, item: IndexedModel) => {
 		selectModel(item.id);
 		setSearch("");
-		setEffortMenuOpen(openEffort);
-		setAwaitingEffort(openEffort);
-		if (!openEffort) setMenuOpen(false);
+		setMenuOpen(false);
 	};
 	const refreshBusy = refreshing || refreshingLocal;
 	const showManualRefresh = Boolean(
@@ -239,6 +237,7 @@ export function AgentModelCombobox({
 					type="button"
 					className={cn(
 						"group/agent-model-trigger settings-option-trigger max-w-full min-w-0 hover:text-settings-label focus:outline-none focus-visible:outline-none focus-visible:ring-0 data-[state=open]:outline-none data-[state=open]:ring-0",
+						showEffortOnTrigger && !renderTrigger && "h-auto items-stretch py-1.5",
 						disabled && "cursor-not-allowed opacity-50",
 						triggerClassName,
 					)}
@@ -248,11 +247,15 @@ export function AgentModelCombobox({
 					{renderTrigger ? (
 						renderTrigger(currentLabel)
 					) : (
-						<span className="min-w-0 truncate">{currentLabel}</span>
+						<span className="flex min-w-0 flex-1 flex-col gap-0.5 text-left">
+							<span className="min-w-0 truncate leading-5">{currentLabel}</span>
+							{showEffortOnTrigger ? (
+								<span className="min-w-0 truncate text-xs leading-4 text-settings-muted">{currentEffortLabel}</span>
+							) : null}
+						</span>
 					)}
-					{showEffort && (value !== "" || tuning?.effort) && <span className="shrink-0 text-settings-muted"> · {currentEffortLabel}</span>}
 					<ChevronDown
-						className="size-icon-sm shrink-0 opacity-70 transition-transform duration-300 ease-out group-data-[state=open]/agent-model-trigger:rotate-180"
+						className="size-icon-sm shrink-0 self-center opacity-70 transition-transform duration-300 ease-out group-data-[state=open]/agent-model-trigger:rotate-180"
 						aria-hidden="true"
 					/>
 				</button>
@@ -304,15 +307,8 @@ export function AgentModelCombobox({
 						)}
 					</div>
 				)}
-				{(lastSuccessAt || refreshError || refreshFailed) && (
+				{(refreshError || refreshFailed) && (
 					<div className="flex items-center gap-2 px-2 pb-1 text-xs text-settings-muted" aria-live="polite">
-						{lastSuccessAt && (
-							<span>
-								{t("settings.models.lastSuccess", {
-									time: new Date(lastSuccessAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-								})}
-							</span>
-						)}
 						{(refreshError || refreshFailed) && (
 							<button
 								type="button"
@@ -450,7 +446,7 @@ export function AgentModelCombobox({
 						<OptionMenuSub open={effortMenuOpen} onOpenChange={(open) => {
 							if (open || !awaitingEffort) setEffortMenuOpen(open);
 						}}>
-							<OptionMenuSubTrigger ref={effortTriggerRef} label={t("settings.models.reasoningEffort", { defaultValue: "Reasoning effort" })} value={currentEffortLabel} />
+							<OptionMenuSubTrigger ref={effortTriggerRef} label={t("settings.models.effort", { defaultValue: "Effort" })} value={currentEffortLabel} />
 							<OptionMenuSubContent onEscapeKeyDown={(event) => {
 								event.preventDefault();
 								event.stopPropagation();
