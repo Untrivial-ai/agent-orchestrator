@@ -870,7 +870,7 @@ export function LiveResponseStatus({ startedAt, settling = false }: { startedAt?
 				initial={false}
 				animate={{ width: settling ? 0 : 20, opacity: settling ? 0 : 1 }}
 				transition={{ duration: 0.18, ease: "easeOut" }}
-				className="-ml-1.5 flex size-5 shrink-0 items-center overflow-hidden"
+				className="mx-0.5 flex size-5 shrink-0 items-center overflow-hidden"
 			>
 				<ResponseSpinner />
 			</motion.div>
