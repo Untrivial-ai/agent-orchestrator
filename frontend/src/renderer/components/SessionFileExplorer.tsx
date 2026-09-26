@@ -177,11 +177,6 @@ export function SessionFileExplorer({
 						{scmQuery.data?.map((pr) => (
 							<SelectItem key={pr.url} value={pr.url}>{`PR #${pr.number} · ${pr.sourceBranch || pr.title}`}</SelectItem>
 						))}
-						{artifacts.length > 0 ? (
-							<SelectItem value={ARTIFACT_SOURCE_VALUE}>
-								{artifacts.length > 1 ? t("inspector.artifacts", { count: artifacts.length }) : t("inspector.artifact")}
-							</SelectItem>
-						) : null}
 					</SelectContent>
 				</Select>
 				<label className="relative mr-1 min-w-0 flex-1">

@@ -188,18 +188,12 @@ describe("SessionFileExplorer", () => {
 		widthSpy.mockRestore();
 	});
 
-	it("renders multiple artifacts as a selectable Files source", async () => {
+	it("does not offer artifacts as a Files source in the workspace dropdown", async () => {
 		renderWithQuery(<SessionFileExplorer artifacts={artifacts} sessionId="sess-artifacts" />);
 
 		await userEvent.click(screen.getByRole("combobox", { name: "File source" }));
-		await userEvent.click(screen.getByRole("option", { name: "Artifacts (2)" }));
 
-		expect(screen.getByText("Artifacts (2)", { selector: "div" })).toBeInTheDocument();
-		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("true");
-		await userEvent.click(screen.getByRole("button", { name: "select reports/plan.md" }));
-
-		expect(screen.getByTestId("artifact-view")).toHaveTextContent("plan.md:reports/plan.md");
-		expect(useUiStore.getState().inspectorSessions["sess-artifacts"]?.filesSource).toEqual({ kind: "artifact" });
+		expect(screen.queryByRole("option", { name: "Artifacts (2)" })).not.toBeInTheDocument();
 	});
 
 	it("keeps artifact and workspace views available through the source switcher", async () => {
