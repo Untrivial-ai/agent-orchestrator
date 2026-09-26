@@ -624,11 +624,11 @@ type Session struct {
 	LatestAssistantUpdateAt          sql.NullTime
 	NativeIdentityObservedAt         sql.NullTime
 	Effort                           string
-	ArtifactDir                      string
-	SessionOutputType                string
 	ProvisionState                   domain.SessionProvisionState
 	ProvisionError                   string
 	IsTaskPreparation                bool
+	ArtifactDir                      string
+	SessionOutputType                string
 }
 
 type SessionCleanupFact struct {

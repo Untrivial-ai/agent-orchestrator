@@ -489,9 +489,13 @@ func (c *SessionsController) previewFile(w http.ResponseWriter, r *http.Request)
 // /assets/app.css maps to dist/assets/app.css. This mirrors a production static
 // server and fixes root-relative URLs without rewriting user-generated files.
 func (c *SessionsController) PreviewOrigin(w http.ResponseWriter, r *http.Request) bool {
-	id, ok := previewutil.SessionIDFromHost(r.Host)
-	if !ok {
-		return false
+	id, artifactOrigin := previewutil.SessionIDFromArtifactHost(r.Host)
+	if !artifactOrigin {
+		var ok bool
+		id, ok = previewutil.SessionIDFromHost(r.Host)
+		if !ok {
+			return false
+		}
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
@@ -506,6 +510,14 @@ func (c *SessionsController) PreviewOrigin(w http.ResponseWriter, r *http.Reques
 	sess, err := c.Svc.Get(r.Context(), id)
 	if err != nil {
 		envelope.WriteError(w, r, err)
+		return true
+	}
+	if artifactOrigin {
+		// The host alone declares scope on this origin, so the request path
+		// is served verbatim from ArtifactDir: there is no marker to strip
+		// and nothing a real workspace path could collide with.
+		asset := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
+		c.serveRootedPreviewFile(w, r, sess.Metadata.ArtifactDir, asset)
 		return true
 	}
 	entry, ok := previewOriginEntry(sess, r.URL.Path)
@@ -2261,9 +2273,12 @@ func sessionArtifactFiles(r *http.Request, s domain.Session) []SessionArtifactVi
 			UpdatedAt: artifact.UpdatedAt,
 		}
 		if artifact.Kind == domain.SessionArtifactHTML {
-			if scoped, ok := previewutil.ArtifactEntryPath(artifact.Path); ok {
-				view.PreviewURL, _ = previewFileURL(r, s.ID, scoped)
-			}
+			// A distinct host (not a shared path-prefix marker) gives this
+			// link an unambiguous source identity: it can never collide with
+			// a real workspace file, unlike the legacy __ao_artifacts__/
+			// path-prefix form previewFile/previewOriginEntry still accept
+			// for backward compatibility.
+			view.PreviewURL, _ = previewutil.ArtifactFileURL("http://"+r.Host, s.ID, artifact.Path)
 		}
 		out = append(out, view)
 	}
