@@ -88,8 +88,9 @@ describe("mergeCodexAccounts", () => {
 });
 
 describe("codexAuthenticationDisplay", () => {
-	const display = (state: string, freshness: string, reasonCode: string, status = "valid") => codexAuthenticationDisplay({
+	const display = (state: string, freshness: string, reasonCode: string, status = "valid", authMethod = "chatgpt") => codexAuthenticationDisplay({
 		status,
+		authMethod,
 		authentication: { state, freshness, reasonCode },
 	} as Parameters<typeof codexAuthenticationDisplay>[0]);
 
@@ -100,6 +101,14 @@ describe("codexAuthenticationDisplay", () => {
 			checking: false,
 		});
 		expect(display("unknown", "stale", "auth_check_timeout").key).toBe("settings.codexAccounts.authenticationCheckTimeout");
+	});
+
+	it("does not offer a retry for locally loaded API keys that Codex cannot verify", () => {
+		expect(display("unknown", "fresh", "auth_check_inconclusive", "valid", "api_key")).toEqual({
+			key: "settings.codexAccounts.authenticationCheckFailed",
+			action: null,
+			checking: false,
+		});
 	});
 
 	it("keeps checking, unsupported, and rejected credentials distinct", () => {

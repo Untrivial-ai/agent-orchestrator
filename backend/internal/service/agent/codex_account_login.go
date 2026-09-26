@@ -308,11 +308,16 @@ func (m *codexAccountManager) verifyLogin(ctx context.Context, operationID strin
 		}
 	}
 	m.invalidateCredentialEvidence(record.Snapshot.ID)
-	// A native login just produced and committed this credential. Keep that
+	// A native login just produced and committed this credential. Keep OAuth's
 	// immediate success visible while the independent protected check enriches
-	// email, plan and usage in the background.
+	// email, plan and usage in the background. API-key login only proves that
+	// Codex stored a non-empty value, so it must not claim provider validation.
 	m.catalog.updateSnapshot(record.Snapshot.ID, func(snapshot *domain.CodexAccountSnapshot) {
-		snapshot.Authentication = successfulAuthentication(m.now(), domain.AgentAuthenticationAuthorized, domain.AgentReadinessReasonAuthorized, "Codex is signed in.")
+		if identity.Method == domain.CodexAuthMethodAPIKey {
+			snapshot.Authentication = unverifiedAPIKeyAuthentication(m.now())
+		} else {
+			snapshot.Authentication = successfulAuthentication(m.now(), domain.AgentAuthenticationAuthorized, domain.AgentReadinessReasonAuthorized, "Codex is signed in.")
+		}
 		if observation.Method != domain.CodexAuthMethodUnknown {
 			snapshot.AuthMethod = observation.Method
 		}
@@ -328,6 +333,9 @@ func (m *codexAccountManager) verifyLogin(ctx context.Context, operationID strin
 	reason := "Codex account added."
 	if targetAccountID != "" {
 		reason = "Codex account signed in."
+	}
+	if identity.Method == domain.CodexAuthMethodAPIKey {
+		reason = "Codex API key saved, but Codex did not verify it with OpenAI."
 	}
 	result := m.finishLogin(operationID, domain.CodexAccountLoginCompleted, domain.CodexAccountLoginReasonCompleted, reason, &snapshot)
 	if m.terminal != nil && terminalHandle != "" {

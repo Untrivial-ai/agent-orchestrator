@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useCodexAccountActions } from "../../hooks/useCodexAccountActions";
-import { codexAccountCanSwitch, codexAccountReasonKey, codexAuthenticationDisplay, codexSwitchDisplay } from "../../hooks/codex-accounts-state";
+import { codexAccountAuthorized, codexAccountCanSwitch, codexAccountReasonKey, codexAuthenticationDisplay, codexSwitchDisplay } from "../../hooks/codex-accounts-state";
 import { useCodexAccountsQuery, useEnsureCodexAccounts, type CodexAccount, type CodexAccountSwitch, type CodexActiveLogin } from "../../hooks/useCodexAccountsQuery";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { Button } from "../ui/button";
@@ -126,7 +126,9 @@ export function CodexAccountsSection({ titleHidden }: { titleHidden?: boolean })
 	const verifyLogin = useCallback(async (login: CodexActiveLogin) => {
 		const operation = await actions.verifyLogin(login).catch(() => undefined);
 		if (operation?.status !== "completed" || !operation.account) return;
-		setAnnouncement(t("settings.codexAccounts.loginSuccess", { label: operation.account.label }));
+		setAnnouncement(codexAccountAuthorized(operation.account)
+			? t("settings.codexAccounts.loginSuccess", { label: operation.account.label })
+			: operation.reason);
 		window.requestAnimationFrame(() => document.getElementById(`codex-account-${operation.account?.id}`)?.focus());
 	}, [actions, t]);
 

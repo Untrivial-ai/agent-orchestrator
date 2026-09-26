@@ -64,7 +64,7 @@ export type CodexAuthenticationDisplay = {
 	checking: boolean;
 };
 
-export function codexAuthenticationDisplay(account: Pick<CodexAccount, "authentication" | "status">): CodexAuthenticationDisplay {
+export function codexAuthenticationDisplay(account: Pick<CodexAccount, "authentication" | "authMethod" | "status">): CodexAuthenticationDisplay {
 	const authentication = account.authentication;
 	if (account.status === "signed_out") {
 		return { key: "settings.codexAccounts.signedOut", action: "reauthenticate", checking: false };
@@ -83,8 +83,9 @@ export function codexAuthenticationDisplay(account: Pick<CodexAccount, "authenti
 		case "auth_check_timeout":
 			return { key: "settings.codexAccounts.authenticationCheckTimeout", action: "retry", checking: false };
 		case "auth_check_failed":
-		case "auth_check_inconclusive":
 			return { key: "settings.codexAccounts.authenticationCheckFailed", action: "retry", checking: false };
+		case "auth_check_inconclusive":
+			return { key: "settings.codexAccounts.authenticationCheckFailed", action: account.authMethod === "api_key" ? null : "retry", checking: false };
 	}
 	if (codexAccountAuthorized(account)) {
 		return { key: "settings.codexAccounts.signedIn", action: null, checking: false };

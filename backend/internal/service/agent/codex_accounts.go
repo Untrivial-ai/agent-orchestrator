@@ -552,7 +552,19 @@ func (m *codexAccountManager) runAuthentication(record codexAccountRecord, call 
 		return
 	}
 	result := accountAuthenticationObservation(m.now(), observation.Authentication)
+	if observation.Method == domain.CodexAuthMethodAPIKey && observation.Authentication == domain.AgentAuthenticationAuthorized {
+		// account/read only confirms that Codex loaded a non-empty key from
+		// auth.json. It makes no provider request, so treating that local fact as
+		// authorization would turn arbitrary strings into a green "Signed in"
+		// state. Keep the saved credential usable, but present its verification
+		// status honestly until a protected provider call supplies evidence.
+		result = unverifiedAPIKeyAuthentication(m.now())
+	}
 	m.finishAuthentication(ctx, record.Snapshot.ID, result, observation.Method, observation.Email, observation.Authentication == domain.AgentAuthenticationUnknown, call)
+}
+
+func unverifiedAPIKeyAuthentication(at time.Time) domain.AgentAuthenticationObservation {
+	return successfulAuthentication(at, domain.AgentAuthenticationUnknown, domain.AgentReadinessReasonAuthCheckInconclusive, "Codex loaded this API key locally, but has not verified it with OpenAI.")
 }
 
 func (m *codexAccountManager) globalCredentialMissingFor(account ports.CodexAccountContext) bool {

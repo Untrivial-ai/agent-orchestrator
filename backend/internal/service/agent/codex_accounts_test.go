@@ -548,6 +548,56 @@ func TestNativeLoginVerificationSavesAccountWhileDeviceReconciliationRetries(t *
 	}
 }
 
+func TestNativeAPIKeyLoginDoesNotClaimProviderValidation(t *testing.T) {
+	client := &fakeCodexAccountClient{read: ports.CodexAccountObservation{
+		Authentication: domain.AgentAuthenticationAuthorized,
+		Method:         domain.CodexAuthMethodAPIKey,
+	}}
+	manager := newTestCodexAccountManager(t, &fakeCodexAccountFactory{
+		capabilities: supportedCodexAccountCapabilities(),
+		open:         func(ports.CodexAccountContext) (ports.CodexAccountClient, error) { return client, nil },
+	}, nil)
+	manager.newID = func() string { return "b60a377d-da68-4a61-86f2-f31f04c571f2" }
+	manager.catalog.newID = func() string { return testAccountID }
+	manager.executable = func() (string, error) { return "/ao", nil }
+	manager.terminal = &fakeCodexLoginTerminal{
+		writeCredential: true,
+		credential:      testAPIKeyCredential("sk-garbage"),
+		result:          shellterm.ShellTerminal{HandleID: "shellterm-login-api-key", Title: "Add Codex account"},
+	}
+
+	started, err := manager.openLoginTerminal(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := manager.verifyLogin(context.Background(), started.Operation.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != domain.CodexAccountLoginCompleted || completed.Account == nil {
+		t.Fatalf("completed login = %#v", completed)
+	}
+	if completed.Account.Authentication.State != domain.AgentAuthenticationUnknown || completed.Account.Authentication.ReasonCode != domain.AgentReadinessReasonAuthCheckInconclusive {
+		t.Fatalf("API-key authentication = %#v", completed.Account.Authentication)
+	}
+	if !strings.Contains(completed.Reason, "did not verify") {
+		t.Fatalf("login reason = %q", completed.Reason)
+	}
+
+	manager.invalidate(completed.Account.ID)
+	record, ok := manager.catalog.record(completed.Account.ID)
+	if !ok {
+		t.Fatal("saved API-key account missing from catalog")
+	}
+	observation, err := manager.ensureAuthentication(context.Background(), record, domain.AgentReadinessPurposeDisplay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.State != domain.AgentAuthenticationUnknown || observation.ReasonCode != domain.AgentReadinessReasonAuthCheckInconclusive {
+		t.Fatalf("refreshed API-key authentication = %#v", observation)
+	}
+}
+
 func TestNativeReauthenticationReplacesTheExistingAccountSlot(t *testing.T) {
 	email := "person@example.com"
 	observation := ports.CodexAccountObservation{Authentication: domain.AgentAuthenticationAuthorized, Method: domain.CodexAuthMethodChatGPT, Email: &email}

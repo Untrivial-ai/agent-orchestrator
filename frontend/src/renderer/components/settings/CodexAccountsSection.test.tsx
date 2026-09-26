@@ -676,10 +676,49 @@ it("verifies exactly once on terminal exit and collapses after structured succes
 	await screen.findByText("active@example.com");
 	fireEvent.click(screen.getByRole("button", { name: "Add account" }));
 	await screen.findByTestId("inline-terminal-body");
+	await waitFor(() => expect(terminalStateCallback.value).toBeDefined());
 	act(() => terminalStateCallback.value?.("exited"));
 	await waitFor(() => expect(postMock.mock.calls.filter(([path]) => String(path).includes("/verify"))).toHaveLength(1));
 	await waitFor(() => expect(screen.queryByTestId("inline-terminal-body")).not.toBeInTheDocument());
 	expect(await screen.findByText("new@example.com")).toBeInTheDocument();
+});
+
+it("announces that a saved API key was not remotely verified", async () => {
+	const reason = "Codex API key saved, but Codex did not verify it with OpenAI.";
+	const apiKeyLogin = {
+		...pendingLogin,
+		operation: { ...pendingLogin.operation, operationId: "login-api-key" },
+		shellTerminal: { ...pendingLogin.shellTerminal, handleId: "shellterm-login-api-key" },
+	};
+	const apiKeyAccount = {
+		...inactiveAccount,
+		id: "33333333-3333-4333-8333-333333333333",
+		label: "Codex account",
+		accountEmail: null,
+		authMethod: "api_key",
+		authentication: {
+			...authentication,
+			state: "unknown",
+			reasonCode: "auth_check_inconclusive",
+			reason: "Codex loaded this API key locally, but has not verified it with OpenAI.",
+		},
+	};
+	postMock.mockImplementation((path: string) => {
+		if (path === "/api/v1/agents/codex/accounts/ensure") return Promise.resolve({ data: accountResponse });
+		if (path === "/api/v1/agents/codex/accounts/login-terminal") return Promise.resolve({ data: apiKeyLogin });
+		if (path.includes("/verify")) return Promise.resolve({ data: { ...apiKeyLogin.operation, status: "completed", reasonCode: "login_completed", reason, account: apiKeyAccount } });
+		return Promise.resolve({ data: {} });
+	});
+	renderSection();
+	await screen.findByText("active@example.com");
+	fireEvent.click(screen.getByRole("button", { name: "Add account" }));
+	await screen.findByTestId("inline-terminal-body");
+	await waitFor(() => expect(terminalStateCallback.value).toBeDefined());
+	act(() => terminalStateCallback.value?.("exited"));
+
+	await waitFor(() => expect(postMock.mock.calls.filter(([path]) => String(path).includes("/verify"))).toHaveLength(1));
+	expect(await screen.findByText(reason)).toBeInTheDocument();
+	expect(screen.queryByText("Codex account is signed in.")).not.toBeInTheDocument();
 });
 
 it("retains terminal output when verification is unauthorized", async () => {
