@@ -319,7 +319,7 @@ export function InspectorPullRequestCardView({
 		</span>
 	);
 	return (
-		<article className="min-w-0 w-full rounded-lg border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3 py-2.5">
+		<article className="min-w-0 w-full rounded-lg border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3 py-2">
 			<div className="flex min-w-0 items-start justify-between gap-2">
 				<span className="min-w-0 flex-1 text-sm font-semibold leading-snug tracking-tight text-settings-label">{pr.title || `PR #${pr.number}`}</span>
 				<div className="flex shrink-0 items-center gap-1.5">
@@ -329,7 +329,7 @@ export function InspectorPullRequestCardView({
 			</div>
 			{branchRange ? <p className="mt-0.5 min-w-0 truncate font-mono text-2xs text-settings-muted" title={branchRange}>{branchRange}</p> : null}
 			{authorHandle || pr.reviewDetailsAction ? (
-				<div className="mt-2 flex min-w-0 items-center gap-2 text-xs text-settings-muted">
+				<div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-settings-muted">
 					{authorHandle ? (
 						<span className="inline-flex shrink-0 items-center gap-1.5 font-mono text-2xs">
 							<UserAvatar className="size-5" imageUrl={pr.authorAvatarUrl || scmUserAvatarUrl(pr.provider, pr.href, authorHandle)} name={authorHandle} />
@@ -339,31 +339,25 @@ export function InspectorPullRequestCardView({
 					{pr.reviewDetailsAction}
 				</div>
 			) : null}
-			{pr.state !== "merged" ? (
-				<>
-					<PRCardStatusSummary
-						className="mt-2.5"
-						externalLink={ExternalLink}
-						presentation={pr.card}
-					/>
-					{statusNotice}
-					{mergeError ? (
-						<p className="mt-2 text-2xs leading-normal text-error" role="status">
-							{mergeError}
-						</p>
-					) : null}
-				</>
-			) : null}
-			<div className="mt-2 flex items-center justify-end gap-2">
-				{mergeAction}
-				<ExternalLink
-					className="inline-flex h-7 items-center gap-1 rounded-md border border-border-strong px-2 text-xs font-medium text-settings-label hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-					href={pr.href}
-				>
-					{viewLabel}
-					{externalIcon ?? <ArrowUpRightIcon className="size-icon-2xs shrink-0" />}
-				</ExternalLink>
+			<div className="mt-1.5 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
+				{pr.state !== "merged" ? (
+					<PRCardStatusSummary externalLink={ExternalLink} presentation={pr.card} />
+				) : (
+					<span />
+				)}
+				<div className="flex items-center gap-2">
+					{mergeAction}
+					<ExternalLink
+						className="inline-flex h-6 items-center gap-1 rounded-md border border-border-strong px-2 text-xs font-medium text-settings-label hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+						href={pr.href}
+					>
+						{viewLabel}
+						{externalIcon ?? <ArrowUpRightIcon className="size-icon-2xs shrink-0" />}
+					</ExternalLink>
+				</div>
 			</div>
+			{statusNotice}
+			{mergeError ? <p className="mt-2 text-2xs leading-normal text-error" role="status">{mergeError}</p> : null}
 		</article>
 	);
 }
