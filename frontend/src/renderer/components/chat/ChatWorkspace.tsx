@@ -3370,7 +3370,7 @@ const TurnGroup = memo(function TurnGroup({
 				}
 				rollbackDisabled={rollbackDisabled}
 				durationMs={
-					run.items[0]?.id === copyableMessageId ? group.outcome?.durationMs : undefined
+					undefined
 				}
 			/>
 		);
@@ -3429,18 +3429,25 @@ const TurnGroup = memo(function TurnGroup({
 						}
 									rollbackDisabled={rollbackDisabled}
 						durationMs={
-							run.items[0]?.id === copyableMessageId ? group.outcome?.durationMs : undefined
+							undefined
 						}
 					/>
 				),
 			)}
 			{group.outcome ? humanRuns.map(renderRun) : null}
-			{group.outcome && workedRuns.length > 0 ? (
+			{group.outcome ? (
 				<Accordion type="single" collapsible className="-mx-1 border-b border-border" defaultValue="">
 					<AccordionItem value="worked" className="border-0">
 						<AccordionTrigger
 							className="gap-2 px-1 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-							trailing={<ChevronDown aria-hidden="true" className="size-3.5 shrink-0" />}
+							trailing={
+								<span className="ml-auto inline-flex items-center gap-1.5">
+									{group.outcome.durationMs !== undefined ? (
+										<TurnDuration durationMs={group.outcome.durationMs} />
+									) : null}
+									<ChevronDown aria-hidden="true" className="size-3.5 shrink-0" />
+								</span>
+							}
 						>
 							Worked
 						</AccordionTrigger>
@@ -3470,8 +3477,7 @@ const TurnGroup = memo(function TurnGroup({
 			{/* No assistant prose to hang the undo / duration on — still offer them
 			    before the outcome divider so a tool-only turn is not stuck without a
 			    way back or a record of how long it took. */}
-			{!copyableMessageId && !group.live &&
-			(canRollback || (group.outcome?.durationMs !== undefined && group.outcome.durationMs > 0)) ? (
+			{!copyableMessageId && !group.live && canRollback ? (
 				<div className="flex h-7 items-center gap-0.5">
 					{canRollback ? (
 						<button
@@ -3484,9 +3490,6 @@ const TurnGroup = memo(function TurnGroup({
 						>
 							<Undo2 aria-hidden="true" className="size-3" />
 						</button>
-					) : null}
-					{group.outcome?.durationMs !== undefined && group.outcome.durationMs > 0 ? (
-						<TurnDuration durationMs={group.outcome.durationMs} />
 					) : null}
 				</div>
 			) : null}
