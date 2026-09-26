@@ -2,6 +2,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { act } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { DaemonStatus } from "../../shared/daemon-status";
 
 const {
 	getStatusMock,
@@ -44,9 +45,8 @@ vi.mock("./useAgentReadinessQuery", () => ({
 	cacheAgentReadiness: cacheAgentReadinessMock,
 }));
 
+import { setEventsConnectionState } from "../lib/events-connection";
 import { useDaemonStatus } from "./useDaemonStatus";
-
-type DaemonStatus = { state: "starting" | "ready" | "stopped" | "error"; port?: number; pid?: number; message?: string };
 
 function fakeQueryClient(): QueryClient {
 	return { invalidateQueries: vi.fn(), removeQueries: vi.fn(), setQueryData: vi.fn() } as unknown as QueryClient;
@@ -54,6 +54,7 @@ function fakeQueryClient(): QueryClient {
 
 beforeEach(() => {
 	vi.useRealTimers();
+	setEventsConnectionState("idle");
 	getStatusMock.mockReset().mockResolvedValue({ state: "stopped" });
 	onStatusMock.mockReset().mockReturnValue(removeStatusMock);
 	removeStatusMock.mockReset();
@@ -214,6 +215,148 @@ describe("useDaemonStatus", () => {
 
 		expect(result.current).toEqual({ state: "ready", port: 4777 });
 		expect(setApiBaseUrlMock).toHaveBeenLastCalledWith("http://127.0.0.1:4777");
+	});
+
+	it("detects an external daemon exit on event disconnect before the next poll", async () => {
+		vi.useFakeTimers();
+		getStatusMock
+			.mockResolvedValueOnce({ state: "ready", port: 4777, pid: 101 })
+			.mockResolvedValueOnce({ state: "stopped", code: "daemon_unreachable" });
+		const queryClient = fakeQueryClient();
+		const { result } = renderHook(() => useDaemonStatus(queryClient));
+		await act(async () => { await Promise.resolve(); });
+		expect(result.current).toEqual({ state: "ready", port: 4777, pid: 101 });
+		act(() => setEventsConnectionState("connected"));
+		expect(getStatusMock).toHaveBeenCalledTimes(1);
+
+		await act(async () => setEventsConnectionState("disconnected"));
+
+		expect(getStatusMock).toHaveBeenCalledTimes(2);
+		expect(result.current).toEqual({ state: "stopped", code: "daemon_unreachable" });
+		expect(setApiDaemonStatusMock).toHaveBeenLastCalledWith(result.current);
+		expect(setApiBaseUrlMock).toHaveBeenLastCalledWith(null);
+	});
+
+	it("preserves ready status while a disconnect probe confirms a healthy daemon", async () => {
+		vi.useFakeTimers();
+		const ready: DaemonStatus = { state: "ready", port: 4555, pid: 101 };
+		let resolveProbe: (status: DaemonStatus) => void = () => undefined;
+		getStatusMock.mockResolvedValueOnce(ready).mockReturnValueOnce(
+			new Promise<DaemonStatus>((resolve) => { resolveProbe = resolve; }),
+		);
+		const queryClient = fakeQueryClient();
+		const { result } = renderHook(() => useDaemonStatus(queryClient));
+		await act(async () => { await Promise.resolve(); });
+		act(() => setEventsConnectionState("connected"));
+		setApiBaseUrlMock.mockClear();
+		setApiDaemonStatusMock.mockClear();
+		vi.mocked(queryClient.removeQueries).mockClear();
+
+		act(() => setEventsConnectionState("disconnected"));
+		expect(getStatusMock).toHaveBeenCalledTimes(2);
+		expect(result.current).toEqual(ready);
+		expect(setApiDaemonStatusMock).not.toHaveBeenCalled();
+		expect(setApiBaseUrlMock).not.toHaveBeenCalled();
+
+		await act(async () => resolveProbe(ready));
+
+		expect(result.current).toEqual(ready);
+		expect(setApiDaemonStatusMock).toHaveBeenCalledExactlyOnceWith(ready);
+		expect(setApiBaseUrlMock).toHaveBeenCalledExactlyOnceWith("http://127.0.0.1:4555");
+		expect(queryClient.removeQueries).not.toHaveBeenCalled();
+	});
+
+	it.each([4555, 5050])("ignores a late disconnect probe after a pushed restart on port %i", async (port) => {
+		vi.useFakeTimers();
+		let resolveProbe: (status: DaemonStatus) => void = () => undefined;
+		getStatusMock
+			.mockResolvedValueOnce({ state: "ready", port: 4555, pid: 101 })
+			.mockReturnValueOnce(new Promise<DaemonStatus>((resolve) => { resolveProbe = resolve; }));
+		const queryClient = fakeQueryClient();
+		const { result } = renderHook(() => useDaemonStatus(queryClient));
+		await act(async () => { await Promise.resolve(); });
+		const pushStatus = onStatusMock.mock.calls[0][0] as (status: DaemonStatus) => void;
+		act(() => setEventsConnectionState("connected"));
+		act(() => setEventsConnectionState("disconnected"));
+		expect(getStatusMock).toHaveBeenCalledTimes(2);
+
+		const restarted: DaemonStatus = { state: "ready", port, pid: 202 };
+		act(() => pushStatus({ state: "starting" }));
+		act(() => pushStatus(restarted));
+		expect(result.current).toEqual(restarted);
+		setApiDaemonStatusMock.mockClear();
+		vi.mocked(queryClient.removeQueries).mockClear();
+
+		await act(async () => resolveProbe({ state: "stopped", code: "daemon_unreachable" }));
+
+		expect(result.current).toEqual(restarted);
+		expect(setApiDaemonStatusMock).not.toHaveBeenCalled();
+		expect(queryClient.removeQueries).not.toHaveBeenCalled();
+		expect(setApiBaseUrlMock).toHaveBeenLastCalledWith(`http://127.0.0.1:${port}`);
+	});
+
+	it("retains polling after a rejected disconnect probe", async () => {
+		vi.useFakeTimers();
+		getStatusMock
+			.mockResolvedValueOnce({ state: "ready", port: 4777 })
+			.mockRejectedValueOnce(new Error("ipc unavailable"))
+			.mockResolvedValueOnce({ state: "stopped", code: "daemon_unreachable" })
+			.mockResolvedValueOnce({ state: "ready", port: 5050, pid: 202 });
+		const queryClient = fakeQueryClient();
+		const { result } = renderHook(() => useDaemonStatus(queryClient));
+		await act(async () => { await Promise.resolve(); });
+		act(() => setEventsConnectionState("connected"));
+
+		await act(async () => setEventsConnectionState("disconnected"));
+		expect(getStatusMock).toHaveBeenCalledTimes(2);
+		expect(result.current).toEqual({ state: "ready", port: 4777 });
+
+		await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+		expect(getStatusMock).toHaveBeenCalledTimes(3);
+		expect(result.current).toEqual({ state: "stopped", code: "daemon_unreachable" });
+		expect(setApiBaseUrlMock).toHaveBeenLastCalledWith(null);
+
+		await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+		expect(getStatusMock).toHaveBeenCalledTimes(4);
+		expect(result.current).toEqual({ state: "ready", port: 5050, pid: 202 });
+		expect(setApiBaseUrlMock).toHaveBeenLastCalledWith("http://127.0.0.1:5050");
+	});
+
+	it("preserves an app-owned daemon exit push without a disconnect probe", async () => {
+		vi.useFakeTimers();
+		getStatusMock.mockResolvedValue({ state: "ready", port: 4555, pid: 101 });
+		const queryClient = fakeQueryClient();
+		const { result } = renderHook(() => useDaemonStatus(queryClient));
+		await act(async () => { await Promise.resolve(); });
+		const pushStatus = onStatusMock.mock.calls[0][0] as (status: DaemonStatus) => void;
+		act(() => setEventsConnectionState("connected"));
+
+		const exited: DaemonStatus = { state: "stopped", code: "exited", signal: "SIGKILL" };
+		act(() => pushStatus(exited));
+		act(() => setEventsConnectionState("disconnected"));
+
+		expect(result.current).toEqual(exited);
+		expect(setApiDaemonStatusMock).toHaveBeenLastCalledWith(exited);
+		expect(setApiBaseUrlMock).toHaveBeenLastCalledWith(null);
+		expect(getStatusMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("unsubscribes from event disconnects on unmount", async () => {
+		vi.useFakeTimers();
+		getStatusMock.mockResolvedValue({ state: "ready", port: 4555, pid: 101 });
+		const queryClient = fakeQueryClient();
+		const { unmount } = renderHook(() => useDaemonStatus(queryClient));
+		await act(async () => { await Promise.resolve(); });
+		act(() => setEventsConnectionState("connected"));
+		expect(getStatusMock).toHaveBeenCalledTimes(1);
+
+		unmount();
+		act(() => setEventsConnectionState("disconnected"));
+		await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+
+		expect(getStatusMock).toHaveBeenCalledTimes(1);
+		expect(stopTransportMock).toHaveBeenCalledTimes(1);
+		expect(removeStatusMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("still connects the transport when the initial IPC status call fails", async () => {
