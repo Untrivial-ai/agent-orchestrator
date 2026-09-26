@@ -618,6 +618,14 @@ type ChatMCPServer struct {
 	FailureReason string
 }
 
+// ChatMCPReloadResult distinguishes a complete post-reload inventory from a
+// reload whose inventory could not be read. An authoritative empty inventory is
+// meaningful: it says every previously known server was disabled or removed.
+type ChatMCPReloadResult struct {
+	Servers       []ChatMCPServer
+	Authoritative bool
+}
+
 // ChatSkill is one capability the provider exposes to the agent, which a user can
 // invoke by name.
 type ChatSkill struct {
@@ -686,7 +694,7 @@ type (
 	// whose config changed on disk, leaves the agent short of tools for the rest of
 	// the conversation, and the only alternative is throwing the session away.
 	ChatMCPReloader interface {
-		ReloadMCPServers(ctx context.Context) ([]ChatMCPServer, error)
+		ReloadMCPServers(ctx context.Context) (ChatMCPReloadResult, error)
 	}
 )
 

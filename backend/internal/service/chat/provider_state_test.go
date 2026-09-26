@@ -540,7 +540,10 @@ func TestReloadMCPServersRefusedWhileBusy(t *testing.T) {
 func TestReloadMCPServersRecordsWhatCameBack(t *testing.T) {
 	reloader := &mcpReloadRecorder{
 		fakeConversation: newFakeConversation(),
-		servers:          []ports.ChatMCPServer{{Name: "probe", Status: "ready"}},
+		result: ports.ChatMCPReloadResult{
+			Servers:       []ports.ChatMCPServer{{Name: "probe", Status: "ready"}},
+			Authoritative: true,
+		},
 	}
 	h := newHarnessWithConversation(t, reloader)
 
@@ -555,6 +558,112 @@ func TestReloadMCPServersRecordsWhatCameBack(t *testing.T) {
 	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
 		return len(s.Conversation.MCPServers) == 1 &&
 			s.Conversation.MCPServers[0].Status == "ready"
+	})
+}
+
+// A complete inventory is a replacement, not another startup delta. Servers no
+// longer present in configuration must not survive merely because they failed in
+// an earlier provider generation.
+func TestReloadMCPServersRemovesServersMissingFromAuthoritativeInventory(t *testing.T) {
+	reloader := &mcpReloadRecorder{
+		fakeConversation: newFakeConversation(),
+		result: ports.ChatMCPReloadResult{
+			Servers:       []ports.ChatMCPServer{{Name: "still-enabled", Status: "ready"}},
+			Authoritative: true,
+		},
+	}
+	h := newHarnessWithConversation(t, reloader)
+	reloader.emit(ports.ChatEvent{Kind: ports.ChatEventMCPServers, MCPServers: []ports.ChatMCPServer{
+		{Name: "removed", Status: "failed"},
+		{Name: "still-enabled", Status: "failed"},
+	}})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Conversation.MCPServers) == 2
+	})
+
+	servers, err := h.svc.ReloadMCPServers(context.Background(), testSession)
+	if err != nil {
+		t.Fatalf("ReloadMCPServers: %v", err)
+	}
+	if len(servers) != 1 || servers[0].Name != "still-enabled" || servers[0].Status != "ready" {
+		t.Fatalf("servers = %+v, want only the current ready server", servers)
+	}
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		servers := s.Conversation.MCPServers
+		return len(servers) == 1 && servers[0].Name == "still-enabled" && servers[0].Status == "ready"
+	})
+}
+
+func TestReloadMCPServersAuthoritativeEmptyClearsKnownServers(t *testing.T) {
+	reloader := &mcpReloadRecorder{
+		fakeConversation: newFakeConversation(),
+		result:           ports.ChatMCPReloadResult{Authoritative: true},
+	}
+	h := newHarnessWithConversation(t, reloader)
+	reloader.emit(ports.ChatEvent{Kind: ports.ChatEventMCPServers,
+		MCPServers: []ports.ChatMCPServer{{Name: "disabled", Status: "failed"}}})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Conversation.MCPServers) == 1
+	})
+
+	servers, err := h.svc.ReloadMCPServers(context.Background(), testSession)
+	if err != nil {
+		t.Fatalf("ReloadMCPServers: %v", err)
+	}
+	if len(servers) != 0 {
+		t.Fatalf("servers = %+v, want authoritative empty", servers)
+	}
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Conversation.MCPServers) == 0
+	})
+}
+
+func TestReloadMCPServersUnavailableInventoryRetainsKnownState(t *testing.T) {
+	reloader := &mcpReloadRecorder{fakeConversation: newFakeConversation()}
+	h := newHarnessWithConversation(t, reloader)
+	reloader.emit(ports.ChatEvent{Kind: ports.ChatEventMCPServers,
+		MCPServers: []ports.ChatMCPServer{{Name: "unknown", Status: "failed"}}})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Conversation.MCPServers) == 1
+	})
+
+	servers, err := h.svc.ReloadMCPServers(context.Background(), testSession)
+	if err != nil {
+		t.Fatalf("ReloadMCPServers: %v", err)
+	}
+	if len(servers) != 1 || servers[0].Name != "unknown" || servers[0].Status != "failed" {
+		t.Fatalf("servers = %+v, want retained state", servers)
+	}
+}
+
+func TestReloadMCPServersKeepsStartupNotificationsFromCurrentReload(t *testing.T) {
+	reloader := &mcpReloadRecorder{
+		fakeConversation: newFakeConversation(),
+		result:           ports.ChatMCPReloadResult{Authoritative: true},
+	}
+	h := newHarnessWithConversation(t, reloader)
+	reloader.onReload = func() {
+		reloader.emit(ports.ChatEvent{Kind: ports.ChatEventMCPServers,
+			MCPServers: []ports.ChatMCPServer{{Name: "still-enabled", Status: "failed"}}})
+		// Make the race deterministic: the current reload's notification has been
+		// applied before its authoritative inventory is reconciled.
+		h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+			servers := s.Conversation.MCPServers
+			return len(servers) == 2 && servers[1].Name == "still-enabled"
+		})
+	}
+	reloader.emit(ports.ChatEvent{Kind: ports.ChatEventMCPServers,
+		MCPServers: []ports.ChatMCPServer{{Name: "removed", Status: "failed"}}})
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Conversation.MCPServers) == 1
+	})
+
+	if _, err := h.svc.ReloadMCPServers(context.Background(), testSession); err != nil {
+		t.Fatalf("ReloadMCPServers: %v", err)
+	}
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		servers := s.Conversation.MCPServers
+		return len(servers) == 1 && servers[0].Name == "still-enabled" && servers[0].Status == "failed"
 	})
 }
 
@@ -607,17 +716,21 @@ func TestAutoReviewIsItsOwnActivityKind(t *testing.T) {
 // mcpReloadRecorder is a provider double that can reload its tool servers.
 type mcpReloadRecorder struct {
 	*fakeConversation
-	servers []ports.ChatMCPServer
+	result   ports.ChatMCPReloadResult
+	onReload func()
 
 	mu    sync.Mutex
 	count int
 }
 
-func (r *mcpReloadRecorder) ReloadMCPServers(context.Context) ([]ports.ChatMCPServer, error) {
+func (r *mcpReloadRecorder) ReloadMCPServers(context.Context) (ports.ChatMCPReloadResult, error) {
 	r.mu.Lock()
 	r.count++
 	r.mu.Unlock()
-	return r.servers, nil
+	if r.onReload != nil {
+		r.onReload()
+	}
+	return r.result, nil
 }
 
 func (r *mcpReloadRecorder) calls() int {
