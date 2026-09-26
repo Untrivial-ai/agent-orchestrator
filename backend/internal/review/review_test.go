@@ -2731,3 +2731,31 @@ func TestTriggerProceedsNormallyAfterSuccessfulPreflight(t *testing.T) {
 		t.Fatalf("expected 1 review run, got %d", len(store.runs))
 	}
 }
+
+func TestTriggerPassesPriorHarnessRunsToLauncher(t *testing.T) {
+	store := &fakeStore{
+		runs: []domain.ReviewRun{
+			{
+				ID: "run-1", ReviewID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerClaudeCode,
+				PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictChangesRequested, Body: "fix auth",
+			},
+			{
+				ID: "run-codex", ReviewID: "rev-2", SessionID: "mer-1", Harness: domain.ReviewerCodex,
+				PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, Body: "codex view",
+			},
+		},
+	}
+	launcher := &fakeLauncher{handle: "review-mer-1"}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha2"), fakeProjects{}, launcher)
+
+	res, err := eng.Trigger(context.Background(), "mer-1", "", domain.AgentConfig{})
+	if err != nil {
+		t.Fatalf("Trigger: %v", err)
+	}
+	if !res.Created || res.Run.TargetSHA != "sha2" {
+		t.Fatalf("result = %+v", res)
+	}
+	if len(launcher.gotSpec.PreviousRuns) != 1 || launcher.gotSpec.PreviousRuns[0].ID != "run-1" {
+		t.Fatalf("previous runs passed to launcher = %+v, want only the claude-code run", launcher.gotSpec.PreviousRuns)
+	}
+}

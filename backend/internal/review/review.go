@@ -405,6 +405,9 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	queueRuns = append(queueRuns, created...)
 	queue := reviewQueue(queueRuns)
 	launchRun := queueRuns[0]
+	// Earlier verdicts from this harness let a re-review confirm what the new
+	// commit addressed instead of repeating findings.
+	previousRuns := reviewRunsForHarness(runs, harness)
 	previousHandleID := reviewRow.ReviewerHandleID
 	previousAgentSessionID := reviewRow.AgentSessionID
 	launchAgentSessionID := reviewRow.AgentSessionID
@@ -436,7 +439,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 		if err := e.persistReviewerInterfaceMode(ctx, reviewRow.ID, harness, now); err != nil {
 			return TriggerResult{}, failRuns(0, err)
 		}
-		launch, err := e.launcher.Spawn(ctx, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, launchAgentSessionID, launchID))
+		launch, err := e.launcher.Spawn(ctx, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, launchAgentSessionID, launchID, previousRuns))
 		if err != nil {
 			return TriggerResult{}, failRuns(0, fmt.Errorf("launch reviewer: %w", err))
 		}
@@ -448,7 +451,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 			persistedAgentSessionID = launch.AgentSessionID
 		}
 	} else {
-		if err := e.launcher.Notify(ctx, handleID, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, reviewRow.AgentSessionID, reviewRow.ReviewerLaunchID)); err != nil {
+		if err := e.launcher.Notify(ctx, handleID, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, reviewRow.AgentSessionID, reviewRow.ReviewerLaunchID, previousRuns)); err != nil {
 			return TriggerResult{}, failRuns(0, fmt.Errorf("notify reviewer: %w", err))
 		}
 	}
@@ -931,6 +934,7 @@ func reviewLaunchSpec(
 	index int,
 	agentSessionID string,
 	launchID string,
+	previousRuns []domain.ReviewRun,
 ) LaunchSpec {
 	return LaunchSpec{
 		RunID:           run.ID,
@@ -943,7 +947,7 @@ func reviewLaunchSpec(
 		AgentConfig:     config,
 		WorkspacePath:   worker.Metadata.WorkspacePath,
 		AgentSessionID:  agentSessionID,
-		PreviousRuns:    nil,
+		PreviousRuns:    previousRuns,
 		PRURL:           run.PRURL,
 		TargetSHA:       run.TargetSHA,
 		ReviewQueue:     queue,
