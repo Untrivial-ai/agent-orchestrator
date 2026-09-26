@@ -1142,6 +1142,7 @@
 	"settings.language.ja": "日本語",
 	"settings.language.ko": "한국어",
 	"settings.language.ptBR": "Português (Brasil)",
+	"settings.language.ru": "Русский",
 	"settings.language.saveFailed": "Could not save the language preference.",
 	"settings.language.zhCN": "Simplified Chinese",
 	"settings.models.agentDefault": "Agent default",

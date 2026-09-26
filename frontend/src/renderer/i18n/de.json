@@ -1007,6 +1007,7 @@
 	"settings.keyboardShortcuts": "Tastenkürzel",
 	"settings.language": "Sprache",
 	"settings.language.en": "English",
+	"settings.language.ru": "Русский",
 	"settings.language.saveFailed": "Spracheinstellung konnte nicht gespeichert werden.",
 	"settings.language.zhCN": "简体中文",
 	"settings.language.ja": "日本語",

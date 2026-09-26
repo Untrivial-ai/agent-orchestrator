@@ -1027,6 +1027,7 @@
 	"settings.keyboardShortcuts": "Atalhos de teclado",
 	"settings.language": "Idioma",
 	"settings.language.en": "English",
+	"settings.language.ru": "Русский",
 	"settings.language.saveFailed": "Não foi possível salvar a preferência de idioma.",
 	"settings.language.zhCN": "简体中文",
 	"settings.language.ja": "日本語",

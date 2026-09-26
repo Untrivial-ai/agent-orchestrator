@@ -1007,6 +1007,7 @@
 	"settings.keyboardShortcuts": "キーボードショートカット",
 	"settings.language": "言語",
 	"settings.language.en": "English",
+	"settings.language.ru": "Русский",
 	"settings.language.saveFailed": "言語設定を保存できませんでした。",
 	"settings.language.zhCN": "简体中文",
 	"settings.language.ja": "日本語",

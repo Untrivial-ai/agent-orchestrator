@@ -995,6 +995,7 @@
 	"settings.language.ja": "日本語",
 	"settings.language.ko": "한국어",
 	"settings.language.ptBR": "Português (Brasil)",
+	"settings.language.ru": "Русский",
 	"settings.language.saveFailed": "无法保存语言偏好设置。",
 	"settings.language.zhCN": "简体中文",
 	"settings.models.agentDefault": "代理默认值",

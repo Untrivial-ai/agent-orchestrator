@@ -1027,6 +1027,7 @@
 	"settings.keyboardShortcuts": "Raccourcis clavier",
 	"settings.language": "Langue",
 	"settings.language.en": "English",
+	"settings.language.ru": "Русский",
 	"settings.language.saveFailed": "Impossible d'enregistrer la préférence de langue.",
 	"settings.language.zhCN": "简体中文",
 	"settings.language.ja": "日本語",

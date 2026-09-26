@@ -9,6 +9,7 @@ import {
 	jaMessages,
 	koMessages,
 	ptBRMessages,
+	ruMessages,
 	zhCNMessages,
 } from "./messages";
 
@@ -21,6 +22,7 @@ const allCatalogs = {
 	fr: frMessages,
 	de: deMessages,
 	"pt-BR": ptBRMessages,
+	ru: ruMessages,
 } as const;
 
 function emptyCatalogs(): TranslationCatalogs {
@@ -37,6 +39,7 @@ describe("coerceLocale", () => {
 		expect(coerceLocale("fr")).toBe("fr");
 		expect(coerceLocale("de")).toBe("de");
 		expect(coerceLocale("pt-BR")).toBe("pt-BR");
+		expect(coerceLocale("ru")).toBe("ru");
 	});
 
 	it("defaults unknown values to en", () => {
@@ -73,6 +76,7 @@ describe("app i18next instance", () => {
 			fr: "settings.language.fr",
 			de: "settings.language.de",
 			"pt-BR": "settings.language.ptBR",
+			ru: "settings.language.ru",
 		} as const;
 		const expected = {
 			en: "English",
@@ -83,6 +87,7 @@ describe("app i18next instance", () => {
 			fr: "Français",
 			de: "Deutsch",
 			"pt-BR": "Português (Brasil)",
+			ru: "Русский",
 		} as const;
 		for (const locale of APP_LOCALES) {
 			expect(createAppI18n(locale).t(labels[locale])).toBe(expected[locale]);
@@ -123,11 +128,20 @@ describe("app i18next instance", () => {
 		["es", ["1 abierta", "1 borrador", "1 cerrada"], ["2 abiertas", "2 borradores", "2 cerradas"]],
 		["fr", ["1 ouverte", "1 brouillon", "1 fermée"], ["2 ouvertes", "2 brouillons", "2 fermées"]],
 		["pt-BR", ["1 aberta", "1 rascunho", "1 fechada"], ["2 abertas", "2 rascunhos", "2 fechadas"]],
+		["ru", ["1 открыт", "1 черновик", "1 закрыт"], ["2 открыто", "2 черновика", "2 закрыто"]],
 	] as const)("renders singular and plural PR progress suffixes in %s", (locale, singular, plural) => {
 		const instance = createAppI18n(locale);
 		const keys = ["pr.progress.open", "pr.progress.draft", "pr.progress.closed"] as const;
 		expect(keys.map((key) => instance.t(key, { count: 1 }))).toEqual(singular);
 		expect(keys.map((key) => instance.t(key, { count: 2 }))).toEqual(plural);
+	});
+
+	it("renders Russian CLDR plural forms", () => {
+		const russian = createAppI18n("ru");
+		expect(russian.t("files.count", { count: 1 })).toBe("1 файл");
+		expect(russian.t("files.count", { count: 2 })).toBe("2 файла");
+		expect(russian.t("files.count", { count: 5 })).toBe("5 файлов");
+		expect(russian.t("settings.general")).toBe("Основные");
 	});
 
 	it("provides Chinese copy for the remaining audited shell surfaces", () => {
