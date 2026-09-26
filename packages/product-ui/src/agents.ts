@@ -29,6 +29,7 @@ export const AGENT_OPTIONS = [
 	"autohand",
 	"omp",
 	"unreal-agent",
+	"mimo-code",
 ] as const;
 
 export type AgentId = (typeof AGENT_OPTIONS)[number];
@@ -68,6 +69,7 @@ export const AGENT_LABELS: Record<AgentId, string> = {
 	autohand: "Autohand",
 	omp: "OMP",
 	"unreal-agent": "Unreal Agent",
+	"mimo-code": "MiMo Code",
 };
 
 export const AGENT_IDENTITIES: ReadonlyMap<AgentId, AgentIdentity> = new Map(

@@ -36,6 +36,7 @@ var agentDocumentationURLs = map[Target]string{
 	TargetPrimeAgent: "https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/quickstart.md",
 	TargetOMP:        "https://github.com/can1357/oh-my-pi",
 	TargetUnreal:     "https://github.com/unreallabsai/unreal-agent",
+	TargetMiMoCode:   "https://github.com/XiaomiMiMo/MiMo-Code",
 }
 
 func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation) []Plan {
@@ -203,6 +204,8 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 			Target: target, Unsupported: true, Method: "manual",
 			Reason: "Unreal Agent is built into AO; update AO to update the harness.",
 		}}
+	case TargetMiMoCode:
+		plans = []Plan{s.planNPM(target, "@mimo-ai/cli")}
 	default:
 		plans = []Plan{{Target: target, Unsupported: true, Method: "manual", Reason: "unknown install target"}}
 	}

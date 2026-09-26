@@ -82,6 +82,10 @@ surface (`npm run sqlc`, `npm run api`).
   binary/auth/environment resolution and does not bundle provider CLIs; Unreal
   Agent is the library-backed exception. Cursor
   is Chat-only until its ACP and TUI conversation ids are proven to share identity.
+- MiMo Code 0.1.14+ is available as a TUI worker/orchestrator harness with
+  model selection, native-session restore, workspace activity hooks, and
+  truthful configured-credential readiness. Chat and reviewer support are not
+  claimed.
 - Project CRUD plus per-project config (`PUT /projects/{id}/config`).
 - PR action engine wired into the API: `POST /prs/{id}/merge` and
   `/prs/{id}/resolve-comments`.

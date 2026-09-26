@@ -112,6 +112,20 @@ func TestRegistryIncludesOMP(t *testing.T) {
 	t.Fatal("Harnessed does not contain omp")
 }
 
+func TestRegistryIncludesMiMoCode(t *testing.T) {
+	reg, err := Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := reg.Get("mimo-code")
+	if !ok {
+		t.Fatal("registry does not contain mimo-code")
+	}
+	if got := adapter.Manifest().Name; got != "MiMo Code" {
+		t.Fatalf("mimo-code manifest name = %q", got)
+	}
+}
+
 func TestHarnessedExcludesFakeHarness(t *testing.T) {
 	for _, ha := range Harnessed() {
 		if ha.Harness == domain.HarnessFake {
