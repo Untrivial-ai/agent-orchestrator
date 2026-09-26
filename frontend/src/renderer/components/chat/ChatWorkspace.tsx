@@ -3386,10 +3386,10 @@ const TurnGroup = memo(function TurnGroup({
 		);
 	return (
 		<div className="flex min-w-0 flex-col gap-2.5">
-			{!group.outcome && runs.filter((run) => {
+			{(group.outcome ? humanRuns : runs.filter((run) => {
 				const item = run.items[0];
 				return item?.kind === "message" && item.role === "user";
-			}).map(renderRun)}
+			})).map(renderRun)}
 			{group.live || !showSettledStatus ? (
 				<LiveResponseStatus startedAt={group.liveStartedAt} settling={!group.live} />
 			) : null}
@@ -3446,7 +3446,6 @@ const TurnGroup = memo(function TurnGroup({
 					/>
 				),
 			)}
-			{group.outcome ? humanRuns.map(renderRun) : null}
 			{group.outcome && showSettledStatus && hasWorkedActivity ? (
 				<Accordion type="single" collapsible className="-mx-1 border-b border-border" defaultValue="">
 					<AccordionItem value="worked" className="border-0">
