@@ -874,8 +874,12 @@ export function LiveResponseStatus({ startedAt, settling = false }: { startedAt?
 			>
 				<ResponseSpinner />
 			</motion.div>
-			<span role="status" data-testid="live-working-label" className="chat-working-shimmer text-sm font-medium">
-				Working for {formatDuration(elapsedMs)}
+			<span
+				role="status"
+				data-testid="live-working-label"
+				className={settling ? "text-sm font-medium" : "chat-working-shimmer text-sm font-medium"}
+			>
+				{settling ? "Worked for" : "Working for"} {formatDuration(elapsedMs)}
 			</span>
 		</div>
 	);
