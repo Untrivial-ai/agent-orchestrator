@@ -586,7 +586,11 @@ function SettingsBody({
 								ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.reviewerRole") })}
 								value={form.reviewerPermissions}
 								agentId={form.reviewerHarness || defaultReviewerHarness}
-								onChange={(reviewerPermissions) => setForm((f) => ({ ...f, reviewerPermissions }))}
+								onChange={(reviewerPermissions) => setForm((f) => ({
+									...f,
+									reviewerHarness: f.reviewerHarness || defaultReviewerHarness,
+									reviewerPermissions,
+								}))}
 							/>
 						</SettingsRow>
 						{reviewerWarning && (

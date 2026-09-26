@@ -1539,6 +1539,41 @@ describe("ProjectSettingsForm", () => {
 		);
 	});
 
+	it("persists reviewer approval selected from the inherited reviewer after reload", async () => {
+		let savedConfig: Record<string, unknown> = {
+			worker: { agent: "codex" },
+			orchestrator: { agent: "claude-code" },
+		};
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/agents/readiness") return agentCatalogResponse;
+			if (path === "/api/v1/agents/{agent}/models") return { data: { agentId: "codex", selectionMode: "text", models: [] } };
+			return { data: { status: "ok", project: {
+				id: "proj-1", name: "Project One", kind: "single_repo", path: "/repo/project-one",
+				repo: "", config: savedConfig,
+			} } };
+		});
+		putMock.mockImplementation(async (_path: string, request: { body: { config: Record<string, unknown> } }) => {
+			savedConfig = request.body.config;
+			return { data: { project: {} }, error: undefined };
+		});
+
+		const first = render(
+			<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+				<TestProjectSettings projectId="proj-1" section="agents" />
+			</QueryClientProvider>,
+		);
+		const approval = await screen.findByRole("button", { name: "Reviewer approval" });
+		expect(approval).toHaveTextContent("Auto");
+		await chooseOption(approval, "Accept edits");
+		submitSettings();
+		await waitFor(() => expect(putMock).toHaveBeenCalledTimes(1));
+		expect(savedConfig.reviewers).toEqual([{ harness: "codex", agentConfig: { permissions: "accept-edits" } }]);
+
+		first.unmount();
+		renderSettings("proj-1", undefined, "agents");
+		expect(await screen.findByRole("button", { name: "Reviewer approval" })).toHaveTextContent("Accept edits");
+	});
+
 	it("hides the Copilot reviewer when its binary is missing", async () => {
 		getMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/agents/readiness") {
