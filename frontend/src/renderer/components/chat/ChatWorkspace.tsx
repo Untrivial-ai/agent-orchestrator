@@ -115,6 +115,10 @@ import { ActivityRun } from "./ActivityRun";
 import { TurnPlan } from "./TurnPlan";
 import { TurnSettingsBar } from "./TurnSettingsBar";
 import { ElicitationDock } from "./ElicitationDock";
+import {
+	pruneExpiredElicitationDraftsOnce,
+	reconcileElicitationDraftsForConversation,
+} from "../../lib/elicitation-drafts";
 import { McpServerBanner, ReauthBanner, ThreadStateBanner } from "./ChatStatusBanners";
 import {
 	activeTurn,
@@ -1190,12 +1194,36 @@ function ChatWorkspaceContent({
 			) : undefined,
 		[busy, onDecide, stablePendingApproval],
 	);
+	// A question can stop being pending without this dock ever resolving it: a
+	// 30-minute approval wait times out, the agent is stopped or interrupted,
+	// another window or mobile answers it, or the controller fails. None of
+	// those paths call onResolve, so the draft this conversation saved for it
+	// would otherwise sit in storage untouched until its 7-day expiry.
+	//
+	// Reconciling against the loaded snapshot — rather than only reacting to a
+	// live change in stablePendingUserInput — also covers the case where this
+	// whole workspace was unmounted (a session switch) while the question was
+	// still open: a plain "did it change since I last saw it" comparison would
+	// start fresh on the next mount and never notice the old request is gone.
+	// The sweep is scheduled here too, unconditionally, so an abandoned draft
+	// still gets cleaned up on its own schedule even in a conversation that
+	// never shows a question again.
+	useEffect(() => {
+		pruneExpiredElicitationDraftsOnce();
+		reconcileElicitationDraftsForConversation(snapshot.conversationId, stablePendingUserInput?.requestId);
+	}, [snapshot.conversationId, stablePendingUserInput?.requestId]);
 	const composerElicitation = useMemo(
 		() =>
 			stablePendingUserInput ? (
-				<ElicitationDock activity={stablePendingUserInput} onResolve={onResolveInput} />
+				<ElicitationDock
+					key={stablePendingUserInput.requestId ?? stablePendingUserInput.id}
+					activity={stablePendingUserInput}
+					sessionId={snapshot.sessionId}
+					conversationId={snapshot.conversationId}
+					onResolve={onResolveInput}
+				/>
 			) : undefined,
-		[onResolveInput, stablePendingUserInput],
+		[onResolveInput, snapshot.conversationId, snapshot.sessionId, stablePendingUserInput],
 	);
 	const canSteerQueuedMessage =
 		Boolean(onSteer) && can(snapshot, "steer") && turn?.state === "running";

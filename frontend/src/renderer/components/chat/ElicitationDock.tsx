@@ -1,13 +1,35 @@
-import { useId, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ExternalLink, Loader2 } from "lucide-react";
 import { aoBridge } from "../../lib/bridge";
+import { setChatDraftBoundary } from "../../lib/chat-draft-boundary";
+import {
+	clearElicitationDraft,
+	pruneExpiredElicitationDraftsOnce,
+	readElicitationDraft,
+	writeElicitationDraft,
+	type ElicitationDraftValue,
+} from "../../lib/elicitation-drafts";
 import { cn } from "../../lib/utils";
 import type { ConversationActivity } from "../../types/conversation";
 import { ACCENT_ACTION_PILL, QUIET_ACTION_PILL } from "./action-pill";
 
 type InputAction = "accept" | "decline" | "cancel";
-type InputValue = string | number | boolean | string[];
+type InputValue = ElicitationDraftValue;
 type PropertyEntry = [string, Record<string, unknown>];
+type ElicitationDraftKey = { conversationId: string; requestId: string };
+
+/** How long to wait before retrying a draft write that failed (e.g. quota). */
+const ELICITATION_DRAFT_RETRY_DELAY_MS = 3000;
+
+/** Keeps a restored question index inside the bounds of the current question set. */
+function clampActiveQuestion(index: number, questionGroups: PropertyEntry[][] | undefined): number {
+	if (!questionGroups || questionGroups.length === 0) return 0;
+	if (!Number.isFinite(index)) return 0;
+	// A corrupted or hand-edited draft can carry a non-integer index; only a
+	// storage bug reaches this, but truncating keeps it from picking a
+	// questionGroups slot that doesn't exist.
+	return Math.min(Math.max(Math.trunc(index), 0), questionGroups.length - 1);
+}
 
 /**
  * A pending question docks above the composer rather than landing in the
@@ -18,9 +40,25 @@ type PropertyEntry = [string, Record<string, unknown>];
  */
 export function ElicitationDock({
 	activity,
+	sessionId,
+	conversationId,
 	onResolve,
 }: {
 	activity: ConversationActivity;
+	/**
+	 * Scopes the "you have unsaved work" leave/quit warning, the same way the
+	 * Chat composer's own draft does — this is the session the human would be
+	 * navigating away from, regardless of which conversation is open on it.
+	 */
+	sessionId?: string;
+	/**
+	 * Scopes the persisted answer itself. The daemon identifies a pending
+	 * input by `(conversation_id, request_id)`, and a reviewer-chat overlay can
+	 * report the same `sessionId` as its underlying worker chat while reading
+	 * a different conversation, so the draft has to key on conversation, not
+	 * session, to land back on the right question.
+	 */
+	conversationId?: string;
 	onResolve?: (
 		requestId: string,
 		action: InputAction,
@@ -38,9 +76,15 @@ export function ElicitationDock({
 		setError(undefined);
 		try {
 			await onResolve(requestId, action, content);
+			if (conversationId) clearElicitationDraft(conversationId, requestId);
+			if (sessionId) setChatDraftBoundary(sessionId, "elicitation", undefined);
+			// Leave the form disabled on success rather than resetting `submitting`
+			// here: `onResolve`'s conversation refetch is fire-and-forget, so this
+			// question can still be on screen for a beat after it resolves. A
+			// re-enabled form invites a stray edit that would recreate the draft
+			// just cleared above.
 		} catch (reason) {
 			setError(reason instanceof Error ? reason.message : "The answer could not be sent.");
-		} finally {
 			setSubmitting(false);
 		}
 	}
@@ -55,7 +99,19 @@ export function ElicitationDock({
 			{activity.detail?.inputMode === "url" ? (
 				<URLRequest activity={activity} disabled={submitting || unavailable} onResolve={resolve} />
 			) : (
-				<FormRequest activity={activity} disabled={submitting || unavailable} onResolve={resolve} />
+				// Keyed by request: a new question replaces the form outright instead
+				// of inheriting the previous one's answers. ChatWorkspace also keys
+				// the whole ElicitationDock by request id, which additionally resets
+				// `error`/`submitting` above — this key stays so the same guarantee
+				// holds for a caller that reuses one ElicitationDock across requests.
+				<FormRequest
+					key={requestId ?? activity.id}
+					activity={activity}
+					sessionId={sessionId}
+					draftKey={conversationId && requestId ? { conversationId, requestId } : undefined}
+					disabled={submitting || unavailable}
+					onResolve={resolve}
+				/>
 			)}
 
 			{error ? (
@@ -166,10 +222,14 @@ function URLRequest({
 
 function FormRequest({
 	activity,
+	sessionId,
+	draftKey,
 	disabled,
 	onResolve,
 }: {
 	activity: ConversationActivity;
+	sessionId?: string;
+	draftKey?: ElicitationDraftKey;
 	disabled: boolean;
 	onResolve: (action: InputAction, content?: Record<string, unknown>) => Promise<void>;
 }) {
@@ -177,9 +237,90 @@ function FormRequest({
 	const properties = useMemo(() => Object.entries(schema?.properties ?? {}), [schema?.properties]);
 	const questionGroups = useMemo(() => claudeQuestionGroups(properties), [properties]);
 	const required = useMemo(() => new Set(schema?.required ?? []), [schema?.required]);
-	const [values, setValues] = useState<Record<string, InputValue>>(() => initialValues(properties));
+	// ChatWorkspace already schedules this sweep independently of any question
+	// appearing; this call is a cheap, interval-gated no-op there. It stays so
+	// this component keeps sweeping on its own when used outside ChatWorkspace.
+	useEffect(() => {
+		pruneExpiredElicitationDraftsOnce();
+	}, []);
+
+	// A lazy initializer is "read once per mount": React never re-invokes it on
+	// a later render, so this needs no dependency array and no effect. Re-running
+	// it on every `draftKey` change would also re-trigger its delete-on-mismatch
+	// side effect during render, which only the initial mount should ever do.
+	const [draft] = useState(() =>
+		draftKey ? readElicitationDraft(draftKey.conversationId, draftKey.requestId) : undefined,
+	);
+	const [values, setValues] = useState<Record<string, InputValue>>(() =>
+		restoreValues(initialValues(properties), draft?.values, properties),
+	);
 	const [missing, setMissing] = useState<Set<string>>(new Set());
-	const [activeQuestion, setActiveQuestion] = useState(0);
+	// A restored question index is clamped to the current question set: the
+	// index came from storage, and an out-of-range value would otherwise fall
+	// back to showing every field at once instead of the step-by-step flow.
+	const [activeQuestion, setActiveQuestion] = useState(() =>
+		clampActiveQuestion(draft?.activeQuestion ?? 0, questionGroups),
+	);
+	// Tracks what was last *successfully* written (or the initial, unwritten
+	// state) so a write only happens when something actually changed. A
+	// boolean "was this ever touched" flag needs every state-changing handler
+	// to remember to set it — Back already forgot once — where comparing
+	// against the last write can't be missed by a future handler. Comparing
+	// against the *initial* state instead of the last write wouldn't work
+	// either: restore at question 0, go Next, then Back lands back on question
+	// 0, which looks unchanged from the start but must still overwrite the
+	// draft that Next just saved at question 1. A failed write must not
+	// advance this: doing so would make an untouched answer that failed to
+	// save look already saved, with no further edit left to trigger a retry.
+	const lastWritten = useRef({ values, activeQuestion });
+	// Holds the pending retry timer, and — via reassignment on every render —
+	// always the latest values/activeQuestion/draftKey/sessionId to retry
+	// with, so a retry firing after a later edit uses that edit rather than a
+	// stale snapshot from when the failure happened.
+	const retryTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const attemptWrite = useRef<(() => void) | undefined>(undefined);
+	attemptWrite.current = () => {
+		if (!draftKey) return;
+		const result = writeElicitationDraft(draftKey.conversationId, draftKey.requestId, { values, activeQuestion });
+		// Reported the same way a failed composer or queued-edit write is: a
+		// silently dropped write here is exactly the bug this module exists to
+		// prevent, so the leave/quit guard needs to know about it too.
+		if (sessionId) setChatDraftBoundary(sessionId, "elicitation", result.ok ? undefined : "persistence-failed");
+		if (result.ok) {
+			lastWritten.current = { values, activeQuestion };
+			return;
+		}
+		// A quota or storage failure is often transient. Retry without waiting
+		// for another edit — nothing else would otherwise prompt one if the
+		// human never touches the form again after the failure.
+		retryTimer.current = setTimeout(() => attemptWrite.current?.(), ELICITATION_DRAFT_RETRY_DELAY_MS);
+	};
+
+	useEffect(() => {
+		if (!draftKey) return;
+		if (lastWritten.current.activeQuestion === activeQuestion && valuesEqual(lastWritten.current.values, values)) return;
+		// A fresh write supersedes any retry still pending from an earlier failure.
+		clearTimeout(retryTimer.current);
+		attemptWrite.current?.();
+	}, [draftKey?.conversationId, draftKey?.requestId, values, activeQuestion]);
+
+	// `disabled` goes true the moment Cancel/Skip/Continue is clicked, and (on
+	// success) stays true afterward — see the comment in ElicitationDock's own
+	// `resolve`. The submitted answer went to `onResolve` directly from React
+	// state, not through this draft, so a retry gains nothing once disabled;
+	// letting one fire anyway risks re-creating a draft that resolving just
+	// cleared.
+	useEffect(() => {
+		if (disabled) clearTimeout(retryTimer.current);
+	}, [disabled]);
+
+	useEffect(
+		() => () => {
+			clearTimeout(retryTimer.current);
+			if (sessionId) setChatDraftBoundary(sessionId, "elicitation", undefined);
+		},
+		[sessionId],
+	);
 	const visibleProperties = questionGroups?.[activeQuestion] ?? properties;
 	const hasPreviousQuestion = questionGroups !== undefined && activeQuestion > 0;
 	const hasNextQuestion = questionGroups !== undefined && activeQuestion < questionGroups.length - 1;
@@ -528,6 +669,21 @@ function claudeQuestionGroups(properties: PropertyEntry[]): PropertyEntry[][] | 
 	return ordered;
 }
 
+/** Keeps a saved answer only for fields the current schema still declares. */
+function restoreValues(
+	defaults: Record<string, InputValue>,
+	saved: Record<string, InputValue> | undefined,
+	properties: PropertyEntry[],
+): Record<string, InputValue> {
+	if (!saved) return defaults;
+	const known = new Set(properties.map(([name]) => name));
+	const values = { ...defaults };
+	for (const [name, value] of Object.entries(saved)) {
+		if (known.has(name)) values[name] = value;
+	}
+	return values;
+}
+
 function initialValues(properties: PropertyEntry[]): Record<string, InputValue> {
 	const values: Record<string, InputValue> = {};
 	for (const [name, property] of properties) {
@@ -551,6 +707,21 @@ function safeExternalURL(raw: string): URL | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+/** Shallow-equal over the answer map, treating arrays (multi-select) by content, not identity. */
+function valuesEqual(a: Record<string, InputValue>, b: Record<string, InputValue>): boolean {
+	const keys = Object.keys(a);
+	if (keys.length !== Object.keys(b).length) return false;
+	return keys.every((key) => {
+		const left = a[key];
+		const right = b[key];
+		if (Array.isArray(left) || Array.isArray(right)) {
+			return Array.isArray(left) && Array.isArray(right) && left.length === right.length &&
+				left.every((item, index) => item === right[index]);
+		}
+		return left === right;
+	});
 }
 
 function toggleValue(values: string[], value: string): string[] {
