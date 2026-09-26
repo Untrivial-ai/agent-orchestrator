@@ -865,7 +865,7 @@ export function LiveResponseStatus({ startedAt, settling = false }: { startedAt?
 	}, []);
 	const elapsedMs = Math.max(0, now - started);
 	return (
-		<div className="-mx-1 mt-1 flex h-7 items-center gap-0.5 border-b border-border">
+		<div className="-mx-1 flex h-7 items-center gap-0.5 border-b border-border py-0">
 			<motion.div
 				initial={false}
 				animate={{ width: settling ? 0 : 20, opacity: settling ? 0 : 1 }}
