@@ -36,3 +36,35 @@ func TestModelConfigSpecAndFlag(t *testing.T) {
 		t.Fatalf("blank model changed cmd: %q", cmd)
 	}
 }
+
+func TestModelEffortConfigSpecHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ModelEffortConfigSpec(ctx, "model", "effort"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ModelEffortConfigSpec error = %v, want context canceled", err)
+	}
+}
+
+func TestModelEffortConfigSpecAndFlag(t *testing.T) {
+	spec, err := ModelEffortConfigSpec(context.Background(), "Model override.", "Effort override.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ports.ConfigField{
+		{Key: "model", Type: ports.ConfigFieldString, Description: "Model override."},
+		{Key: "effort", Type: ports.ConfigFieldString, Description: "Effort override."},
+	}
+	if !reflect.DeepEqual(spec.Fields, want) {
+		t.Fatalf("spec fields = %#v, want %#v", spec.Fields, want)
+	}
+
+	cmd := []string{"agent"}
+	AppendEffortFlag(&cmd, ports.AgentConfig{Effort: "  high  "}, "--effort")
+	if want := []string{"agent", "--effort", "high"}; !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("cmd = %q, want %q", cmd, want)
+	}
+	AppendEffortFlag(&cmd, ports.AgentConfig{}, "--effort")
+	if len(cmd) != 3 {
+		t.Fatalf("blank effort changed cmd: %q", cmd)
+	}
+}
