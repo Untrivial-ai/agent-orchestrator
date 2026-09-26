@@ -11,6 +11,26 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 )
 
+func TestCreatePersistsWeeklyNextRunOnChosenWeekday(t *testing.T) {
+	now := time.Date(2026, time.March, 6, 8, 0, 0, 0, time.UTC)
+	svc := New(Deps{Store: newFakeStore(), Clock: func() time.Time { return now }})
+	created, err := svc.Create(context.Background(), CreateInput{
+		ProjectID: "scheduled", DisplayName: "Friday review", Prompt: "Review",
+		Kind: domain.KindWorker,
+		RRule: "FREQ=WEEKLY;BYDAY=FR;BYHOUR=9;BYMINUTE=30;BYSECOND=0", Timezone: "UTC",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	want := time.Date(2026, time.March, 6, 9, 30, 0, 0, time.UTC)
+	if !created.NextRunAt.Equal(want) {
+		t.Fatalf("next run = %s, want %s", created.NextRunAt, want)
+	}
+	if !strings.Contains(created.RRuleText, "BYDAY=FR") {
+		t.Fatalf("stored rule %q dropped Friday", created.RRuleText)
+	}
+}
+
 func TestCreateRejectsPromptOverSessionSpawnByteLimit(t *testing.T) {
 	svc := New(Deps{Store: newFakeStore(), Clock: func() time.Time {
 		return time.Date(2026, time.March, 6, 15, 0, 0, 0, time.UTC)

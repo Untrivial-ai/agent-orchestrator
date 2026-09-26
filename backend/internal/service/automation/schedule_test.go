@@ -1,6 +1,7 @@
 package automation
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,6 +37,64 @@ func TestCanonicalizeScheduleRejectsUnsafeTimezoneAndFrequency(t *testing.T) {
 		if _, err := CanonicalizeSchedule(input, now); err == nil {
 			t.Fatalf("CanonicalizeSchedule(%+v) succeeded, want validation error", input)
 		}
+	}
+}
+
+func TestCanonicalizeScheduleWeeklyUIFiresOnChosenWeekday(t *testing.T) {
+	// Friday 6 March 2026, 08:00 UTC — before the 09:00 occurrence, so Friday
+	// itself is still a valid next run.
+	now := time.Date(2026, time.March, 6, 8, 0, 0, 0, time.UTC)
+	want := map[string]time.Time{
+		"MO": time.Date(2026, time.March, 9, 9, 0, 0, 0, time.UTC),
+		"TU": time.Date(2026, time.March, 10, 9, 0, 0, 0, time.UTC),
+		"WE": time.Date(2026, time.March, 11, 9, 0, 0, 0, time.UTC),
+		"TH": time.Date(2026, time.March, 12, 9, 0, 0, 0, time.UTC),
+		"FR": time.Date(2026, time.March, 6, 9, 0, 0, 0, time.UTC),
+		"SA": time.Date(2026, time.March, 7, 9, 0, 0, 0, time.UTC),
+		"SU": time.Date(2026, time.March, 8, 9, 0, 0, 0, time.UTC),
+	}
+	for day, nextWant := range want {
+		rruleText := "FREQ=WEEKLY;BYDAY=" + day + ";BYHOUR=9;BYMINUTE=0;BYSECOND=0"
+		schedule, err := CanonicalizeSchedule(ScheduleInput{RRule: rruleText, Timezone: "UTC"}, now)
+		if err != nil {
+			t.Fatalf("CanonicalizeSchedule(%s): %v", day, err)
+		}
+		if !strings.Contains(schedule.RRuleText, "BYDAY="+day) {
+			t.Fatalf("stored rule %q dropped BYDAY=%s", schedule.RRuleText, day)
+		}
+		if !schedule.NextRunAt.Equal(nextWant) {
+			t.Fatalf("%s next run = %s, want %s", day, schedule.NextRunAt, nextWant)
+		}
+		following, err := NextOccurrence(schedule.RRuleText, schedule.Timezone, schedule.NextRunAt)
+		if err != nil {
+			t.Fatalf("NextOccurrence(%s): %v", day, err)
+		}
+		if !following.Equal(nextWant.AddDate(0, 0, 7)) {
+			t.Fatalf("%s following run = %s, want %s", day, following, nextWant.AddDate(0, 0, 7))
+		}
+	}
+}
+
+func TestCanonicalizeScheduleWeeklyKeepsWallClockAcrossDST(t *testing.T) {
+	// Friday 6 March 2026 is still EST. The following Friday, 13 March, is EDT.
+	now := time.Date(2026, time.March, 6, 12, 0, 0, 0, time.UTC)
+	schedule, err := CanonicalizeSchedule(ScheduleInput{
+		RRule: "FREQ=WEEKLY;BYDAY=FR;BYHOUR=9;BYMINUTE=0;BYSECOND=0", Timezone: "America/New_York",
+	}, now)
+	if err != nil {
+		t.Fatalf("CanonicalizeSchedule: %v", err)
+	}
+	wantThisFriday := time.Date(2026, time.March, 6, 14, 0, 0, 0, time.UTC) // 09:00 EST
+	if !schedule.NextRunAt.Equal(wantThisFriday) {
+		t.Fatalf("next run = %s, want %s", schedule.NextRunAt, wantThisFriday)
+	}
+	wantNextFriday := time.Date(2026, time.March, 13, 13, 0, 0, 0, time.UTC) // 09:00 EDT
+	next, err := NextOccurrence(schedule.RRuleText, schedule.Timezone, schedule.NextRunAt)
+	if err != nil {
+		t.Fatalf("NextOccurrence: %v", err)
+	}
+	if !next.Equal(wantNextFriday) {
+		t.Fatalf("following run = %s, want %s", next, wantNextFriday)
 	}
 }
 

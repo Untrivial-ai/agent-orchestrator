@@ -25,6 +25,21 @@ import {
 	isReadyAgent,
 } from "../lib/agent-select-options";
 import {
+	buildRRuleFromSchedule,
+	clampHourDraft,
+	clampMinuteDraft,
+	clampMonthDayDraft,
+	formatTimeDraft,
+	nowLocalHHMM,
+	parseHourMinute,
+	parseTimeValue,
+	scheduleFieldsFromRRule,
+	schedulesEqual,
+	WEEKDAY_CODES,
+	type ScheduleFields,
+	type WeekdayCode,
+} from "../lib/automation-schedule";
+import {
 	useAutomationRuns,
 	useAutomations,
 	useCreateAutomation,
@@ -112,7 +127,6 @@ type AutomationFormSubmit = {
 	timezone?: string;
 	rrule?: string;
 };
-type ScheduleFields = { preset: string; time: string; raw: string };
 type AutomationFormDialogProps = {
 	open: boolean;
 	automation?: Automation;
@@ -124,85 +138,17 @@ type AutomationFormDialogProps = {
 	onSubmit: (input: AutomationFormSubmit) => Promise<void>;
 };
 
-// Maps a persisted rule back onto the form presets; anything the presets
-// cannot reproduce stays on the custom RRULE field.
-function scheduleFieldsFromRRule(rruleText: string): ScheduleFields {
-	const trimmed = rruleText.trim();
-	const lines = trimmed.split("\n").map((line) => line.trim()).filter(Boolean);
-	const rawRule = lines.length === 1 && lines[0].startsWith("RRULE:") ? lines[0].slice("RRULE:".length) : trimmed;
-	if (lines.length > 1) return { preset: "raw", time: nowLocalHHMM(), raw: trimmed };
-	const parts = Object.fromEntries(rawRule.split(";").map((part) => {
-		const [key, ...value] = part.split("=");
-		return [key, value.join("=")];
-	}));
-	const keys = Object.keys(parts).sort().join(",");
-	const hour = parts.BYHOUR;
-	const minute = parts.BYMINUTE;
-	if (hour !== undefined && minute !== undefined && parts.BYSECOND === "0") {
-		const time = `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
-		if (parts.FREQ === "DAILY" && keys === "BYHOUR,BYMINUTE,BYSECOND,FREQ") return { preset: "daily", time, raw: rawRule };
-		if (parts.FREQ === "WEEKLY" && parts.BYDAY === "MO" && keys === "BYDAY,BYHOUR,BYMINUTE,BYSECOND,FREQ") return { preset: "weekly", time, raw: rawRule };
-	}
-	return { preset: "raw", time: nowLocalHHMM(), raw: trimmed || rawRule };
-}
-
-function nowLocalHHMM() {
-	const now = new Date();
-	return `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-}
-
-/** 24-hour clock values as HH:mm. Empty means unset. */
-function parseTimeValue(value: string): { hour: number; minute: number } | null {
-	const match = value.trim().match(/^(\d{2}):(\d{2})$/);
-	if (!match) return null;
-	const hour = Number(match[1]);
-	const minute = Number(match[2]);
-	if (hour > 23 || minute > 59) return null;
-	return { hour, minute };
-}
-
-/** Digits-only draft → HH:mm, rejecting any digit that would make an invalid clock. */
-function formatTimeDraft(raw: string): string {
-	const out: string[] = [];
-	for (const ch of raw.replace(/\D/g, "")) {
-		if (out.length >= 4) break;
-		const digit = Number(ch);
-		const pos = out.length;
-		if (pos === 0) {
-			// Hour tens is 0–2; 3–9 becomes 0X so the field never holds 3x–9x.
-			if (digit > 2) {
-				out.push("0", ch);
-			} else {
-				out.push(ch);
-			}
-			continue;
-		}
-		if (pos === 1) {
-			if (Number(out[0]) === 2 && digit > 3) continue;
-			out.push(ch);
-			continue;
-		}
-		if (pos === 2) {
-			if (digit > 5) continue;
-			out.push(ch);
-			continue;
-		}
-		out.push(ch);
-	}
-	const digits = out.slice(0, 4).join("");
-	if (digits.length <= 2) return digits;
-	return `${digits.slice(0, 2)}:${digits.slice(2)}`;
-}
-
-type AutomationField = "projectId" | "name" | "prompt" | "raw" | "time";
+type AutomationField = "projectId" | "name" | "prompt" | "time" | "hour" | "minute" | "monthDay";
 type AutomationValidationErrors = Partial<Record<AutomationField, string>>;
 
 const AUTOMATION_FIELD_IDS: Record<AutomationField, string> = {
 	projectId: "automation-project",
 	name: "automation-name",
 	prompt: "automation-prompt",
-	raw: "automation-rrule",
 	time: "automation-time",
+	hour: "automation-hour",
+	minute: "automation-minute",
+	monthDay: "automation-month-day",
 };
 
 function AutomationFormDialog({
@@ -223,11 +169,29 @@ function AutomationFormDialog({
 	const [name, setName] = useState("");
 	const [prompt, setPrompt] = useState("");
 	const [harness, setHarness] = useState("");
-	const [preset, setPreset] = useState("daily");
-	const [time, setTime] = useState(nowLocalHHMM);
-	const [raw, setRaw] = useState("FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0");
+	const [schedule, setSchedule] = useState<ScheduleFields>(() => ({
+		preset: "daily",
+		time: nowLocalHHMM(),
+		customFrequency: "monthly",
+		monthDay: "1",
+		weekday: "MO",
+		hour: "9",
+		minute: "0",
+		legacyRaw: null,
+	}));
 	const [initialSchedule, setInitialSchedule] = useState<ScheduleFields | null>(null);
 	const [validationErrors, setValidationErrors] = useState<AutomationValidationErrors>({});
+
+	function patchSchedule(patch: Partial<ScheduleFields>) {
+		setSchedule((current) => {
+			const clearsLegacy = Object.keys(patch).some((key) => key !== "legacyRaw");
+			return {
+				...current,
+				...patch,
+				legacyRaw: patch.legacyRaw !== undefined ? patch.legacyRaw : clearsLegacy ? null : current.legacyRaw,
+			};
+		});
+	}
 
 	useEffect(() => {
 		if (!open) return;
@@ -237,17 +201,20 @@ function AutomationFormDialog({
 		setHarness(automation?.harness ?? "");
 		const defaultTime = nowLocalHHMM();
 		const [defaultHour, defaultMinute] = defaultTime.split(":");
-		const schedule = automation
+		const nextSchedule = automation
 			? scheduleFieldsFromRRule(automation.rrule)
 			: {
-					preset: "daily",
+					preset: "daily" as const,
 					time: defaultTime,
-					raw: `FREQ=DAILY;BYHOUR=${Number(defaultHour)};BYMINUTE=${Number(defaultMinute)};BYSECOND=0`,
+					customFrequency: "daily" as const,
+					monthDay: "1",
+					weekday: "MO" as WeekdayCode,
+					hour: defaultHour,
+					minute: defaultMinute,
+					legacyRaw: null,
 				};
-		setInitialSchedule(schedule);
-		setPreset(schedule.preset);
-		setTime(schedule.time);
-		setRaw(schedule.raw);
+		setInitialSchedule(nextSchedule);
+		setSchedule(nextSchedule);
 		setValidationErrors({});
 	}, [open, automation]);
 
@@ -281,22 +248,25 @@ function AutomationFormDialog({
 		if (!editing && !projectId) nextErrors.projectId = t("automations.validation.project");
 		if (!name.trim()) nextErrors.name = t("automations.validation.name");
 		if (!prompt.trim()) nextErrors.prompt = t("automations.validation.prompt");
-		if (preset === "raw" && !raw.trim()) nextErrors.raw = t("automations.validation.rrule");
-		const parsedTime = preset === "raw" ? null : parseTimeValue(time);
-		if (preset !== "raw" && !parsedTime) nextErrors.time = t("automations.validation.time");
+		if (schedule.preset === "daily" || schedule.preset === "weekly") {
+			if (!parseTimeValue(schedule.time)) nextErrors.time = t("automations.validation.time");
+		} else {
+			if (!parseHourMinute(schedule.hour, schedule.minute)) {
+				nextErrors.hour = t("automations.validation.hour");
+				nextErrors.minute = t("automations.validation.minute");
+			}
+			if (schedule.customFrequency === "monthly" && !/^[1-9]$|^[12]\d$|^3[01]$/.test(schedule.monthDay.trim())) {
+				nextErrors.monthDay = t("automations.validation.date");
+			}
+		}
 		setValidationErrors(nextErrors);
-		const firstInvalid = (["projectId", "name", "prompt", "raw", "time"] as const).find((field) => nextErrors[field]);
+		const firstInvalid = (["projectId", "name", "prompt", "time", "hour", "minute", "monthDay"] as const).find((field) => nextErrors[field]);
 		if (firstInvalid) {
 			document.getElementById(AUTOMATION_FIELD_IDS[firstInvalid])?.focus();
 			return;
 		}
-		const nextRRule =
-			preset === "daily"
-				? `FREQ=DAILY;BYHOUR=${parsedTime!.hour};BYMINUTE=${parsedTime!.minute};BYSECOND=0`
-				: preset === "weekly"
-					? `FREQ=WEEKLY;BYDAY=MO;BYHOUR=${parsedTime!.hour};BYMINUTE=${parsedTime!.minute};BYSECOND=0`
-					: raw;
-		const scheduleChanged = !(editing && automation && initialSchedule && preset === initialSchedule.preset && time === initialSchedule.time && raw === initialSchedule.raw);
+		const nextRRule = buildRRuleFromSchedule(schedule);
+		const scheduleChanged = !(editing && automation && initialSchedule && schedulesEqual(schedule, initialSchedule));
 		const harnessChanged = !editing || harness !== (automation?.harness ?? "");
 		await onSubmit({
 			// Kind is not a form choice: automations are workers, and editing
@@ -383,34 +353,35 @@ function AutomationFormDialog({
 							<Field label={t("automations.field.schedule")}>
 								<AutomationSelect
 									label={t("automations.field.schedule")}
-									value={preset}
+									value={schedule.preset}
 									onValueChange={(value) => {
-										setPreset(value);
-										if (value === "raw") clearValidationError("time");
-										else clearValidationError("raw");
+										patchSchedule({ preset: value as ScheduleFields["preset"] });
+										clearValidationError("time");
+										clearValidationError("hour");
+										clearValidationError("minute");
+										clearValidationError("monthDay");
 									}}
 									options={[
 										{ value: "daily", label: t("automations.schedule.daily") },
 										{ value: "weekly", label: t("automations.schedule.weekly") },
-										{ value: "raw", label: t("automations.schedule.custom") },
+										{ value: "custom", label: t("automations.schedule.custom") },
 									]}
 								/>
 							</Field>
-							{preset === "raw" ? (
-								<Field label={t("automations.field.rrule")} id={AUTOMATION_FIELD_IDS.raw} error={validationErrors.raw}>
-									<Input
-										id={AUTOMATION_FIELD_IDS.raw}
-										required
-										value={raw}
-										aria-invalid={Boolean(validationErrors.raw) || undefined}
-										aria-describedby={validationErrors.raw ? `${AUTOMATION_FIELD_IDS.raw}-error` : undefined}
-										onChange={(event) => {
-											setRaw(event.target.value);
-											if (event.target.value.trim()) clearValidationError("raw");
-										}}
+							{schedule.preset === "weekly" ? (
+								<Field label={t("automations.field.weekday")}>
+									<AutomationSelect
+										label={t("automations.field.weekday")}
+										value={schedule.weekday}
+										onValueChange={(value) => patchSchedule({ weekday: value as WeekdayCode })}
+										options={WEEKDAY_CODES.map((code) => ({
+											value: code,
+											label: t(`automations.weekday.${code}`),
+										}))}
 									/>
 								</Field>
-							) : (
+							) : null}
+							{schedule.preset === "daily" || schedule.preset === "weekly" ? (
 								<Field label={t("automations.field.localTime")} id={AUTOMATION_FIELD_IDS.time} error={validationErrors.time}>
 									<Input
 										id={AUTOMATION_FIELD_IDS.time}
@@ -420,19 +391,111 @@ function AutomationFormDialog({
 										spellCheck={false}
 										required
 										placeholder="09:00"
-										value={time}
+										value={schedule.time}
 										aria-invalid={Boolean(validationErrors.time) || undefined}
 										aria-describedby={validationErrors.time ? `${AUTOMATION_FIELD_IDS.time}-error` : undefined}
 										className="tabular-nums"
 										onChange={(event) => {
 											const next = formatTimeDraft(event.target.value);
-											setTime(next);
+											patchSchedule({ time: next });
 											if (parseTimeValue(next)) clearValidationError("time");
 										}}
 									/>
 								</Field>
-							)}
+							) : null}
 						</div>
+						{schedule.preset === "custom" ? (
+							<div className="grid grid-cols-2 gap-3">
+								<Field label={t("automations.field.frequency")}>
+									<AutomationSelect
+										label={t("automations.field.frequency")}
+										value={schedule.customFrequency}
+										onValueChange={(value) => {
+											patchSchedule({ customFrequency: value as ScheduleFields["customFrequency"] });
+											clearValidationError("monthDay");
+										}}
+										options={[
+											{ value: "daily", label: t("automations.customFrequency.daily") },
+											{ value: "weekly", label: t("automations.customFrequency.weekly") },
+											{ value: "monthly", label: t("automations.customFrequency.monthly") },
+										]}
+									/>
+								</Field>
+								{schedule.customFrequency === "monthly" ? (
+									<Field label={t("automations.field.date")} id={AUTOMATION_FIELD_IDS.monthDay} error={validationErrors.monthDay}>
+										<Input
+											id={AUTOMATION_FIELD_IDS.monthDay}
+											inputMode="numeric"
+											autoComplete="off"
+											required
+											value={schedule.monthDay}
+											aria-invalid={Boolean(validationErrors.monthDay) || undefined}
+											aria-describedby={validationErrors.monthDay ? `${AUTOMATION_FIELD_IDS.monthDay}-error` : undefined}
+											className="tabular-nums"
+											onChange={(event) => {
+												const next = clampMonthDayDraft(event.target.value);
+												patchSchedule({ monthDay: next });
+												if (/^[1-9]$|^[12]\d$|^3[01]$/.test(next)) clearValidationError("monthDay");
+											}}
+										/>
+									</Field>
+								) : schedule.customFrequency === "weekly" ? (
+									<Field label={t("automations.field.weekday")}>
+										<AutomationSelect
+											label={t("automations.field.weekday")}
+											value={schedule.weekday}
+											onValueChange={(value) => patchSchedule({ weekday: value as WeekdayCode })}
+											options={WEEKDAY_CODES.map((code) => ({
+												value: code,
+												label: t(`automations.weekday.${code}`),
+											}))}
+										/>
+									</Field>
+								) : (
+									<div aria-hidden="true" />
+								)}
+								<Field label={t("automations.field.hour")} id={AUTOMATION_FIELD_IDS.hour} error={validationErrors.hour}>
+									<Input
+										id={AUTOMATION_FIELD_IDS.hour}
+										inputMode="numeric"
+										autoComplete="off"
+										required
+										placeholder="09"
+										value={schedule.hour}
+										aria-invalid={Boolean(validationErrors.hour) || undefined}
+										className="tabular-nums"
+										onChange={(event) => {
+											const next = clampHourDraft(event.target.value);
+											patchSchedule({ hour: next });
+											if (parseHourMinute(next, schedule.minute)) {
+												clearValidationError("hour");
+												clearValidationError("minute");
+											}
+										}}
+									/>
+								</Field>
+								<Field label={t("automations.field.minute")} id={AUTOMATION_FIELD_IDS.minute} error={validationErrors.minute}>
+									<Input
+										id={AUTOMATION_FIELD_IDS.minute}
+										inputMode="numeric"
+										autoComplete="off"
+										required
+										placeholder="00"
+										value={schedule.minute}
+										aria-invalid={Boolean(validationErrors.minute) || undefined}
+										className="tabular-nums"
+										onChange={(event) => {
+											const next = clampMinuteDraft(event.target.value);
+											patchSchedule({ minute: next });
+											if (parseHourMinute(schedule.hour, next)) {
+												clearValidationError("hour");
+												clearValidationError("minute");
+											}
+										}}
+									/>
+								</Field>
+							</div>
+						) : null}
 						<p className={onboardingFieldHintClass}>{t("automations.timezone", { timezone })}</p>
 						{error ? <p role="alert" className={onboardingFieldErrorClass}>{error}</p> : null}
 					</div>

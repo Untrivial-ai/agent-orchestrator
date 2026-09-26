@@ -98,6 +98,86 @@ describe("AutomationsView", () => {
 		expect(mocks.update.mock.calls[0][0].body).not.toHaveProperty("rrule");
 	});
 
+	it("creates a weekly automation on the chosen weekday", async () => {
+		const user = userEvent.setup();
+		renderView();
+		await user.click(screen.getAllByRole("button", { name: /create automation/i })[0]);
+
+		const dialog = screen.getByRole("dialog", { name: "Create automation" });
+		await user.click(within(dialog).getByRole("combobox", { name: "Project" }));
+		await user.click(screen.getByRole("option", { name: "Demo" }));
+		await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "Friday review");
+		await user.type(within(dialog).getByRole("textbox", { name: "Prompt" }), "Review the board");
+		await user.click(within(dialog).getByRole("combobox", { name: "Schedule" }));
+		await user.click(screen.getByRole("option", { name: "Weekly" }));
+		await user.click(within(dialog).getByRole("combobox", { name: "Day" }));
+		await user.click(screen.getByRole("option", { name: "Friday" }));
+		const time = within(dialog).getByLabelText("Time");
+		await user.clear(time);
+		await user.type(time, "0930");
+		await user.click(within(dialog).getByRole("button", { name: "Create automation" }));
+
+		expect(mocks.create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "demo",
+				displayName: "Friday review",
+				prompt: "Review the board",
+				rrule: "FREQ=WEEKLY;BYDAY=FR;BYHOUR=9;BYMINUTE=30;BYSECOND=0",
+			}),
+		);
+	});
+
+	it("creates a custom weekly automation on the chosen weekday", async () => {
+		const user = userEvent.setup();
+		renderView();
+		await user.click(screen.getAllByRole("button", { name: /create automation/i })[0]);
+
+		const dialog = screen.getByRole("dialog", { name: "Create automation" });
+		await user.click(within(dialog).getByRole("combobox", { name: "Project" }));
+		await user.click(screen.getByRole("option", { name: "Demo" }));
+		await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "Wednesday review");
+		await user.type(within(dialog).getByRole("textbox", { name: "Prompt" }), "Review the board");
+		await user.click(within(dialog).getByRole("combobox", { name: "Schedule" }));
+		await user.click(screen.getByRole("option", { name: "Custom" }));
+		await user.click(within(dialog).getByRole("combobox", { name: "Frequency" }));
+		await user.click(screen.getByRole("option", { name: "Weekly" }));
+		await user.click(within(dialog).getByRole("combobox", { name: "Day" }));
+		await user.click(screen.getByRole("option", { name: "Wednesday" }));
+		const hour = within(dialog).getByLabelText("Hour");
+		const minute = within(dialog).getByLabelText("Minute");
+		await user.clear(hour);
+		await user.type(hour, "16");
+		await user.clear(minute);
+		await user.type(minute, "45");
+		await user.click(within(dialog).getByRole("button", { name: "Create automation" }));
+
+		expect(mocks.create).toHaveBeenCalledWith(
+			expect.objectContaining({
+				rrule: "FREQ=WEEKLY;BYDAY=WE;BYHOUR=16;BYMINUTE=45;BYSECOND=0",
+			}),
+		);
+	});
+
+	it("sends an updated weekly RRULE when the day changes", async () => {
+		const user = userEvent.setup();
+		const rrule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0;BYSECOND=0";
+		mocks.automations = [{ id: "automation-1", projectId: "demo", displayName: "Weekly sync", prompt: "Review", kind: "worker", harness: "codex", rrule, timezone: "UTC", enabled: true, nextRunAt: "2026-08-27T09:00:00Z", createdAt: "2026-08-26T09:00:00Z", updatedAt: "2026-08-26T09:00:00Z" }];
+		renderView();
+		await user.click(screen.getByRole("button", { name: "Edit Weekly sync" }));
+
+		const dialog = screen.getByRole("dialog", { name: "Edit automation" });
+		const day = within(dialog).getByRole("combobox", { name: "Day" });
+		await user.click(day);
+		await user.click(screen.getByRole("option", { name: "Friday" }));
+		await user.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+		expect(mocks.update.mock.calls[0][0].body).toEqual(
+			expect.objectContaining({
+				rrule: "FREQ=WEEKLY;BYDAY=FR;BYHOUR=9;BYMINUTE=0;BYSECOND=0",
+			}),
+		);
+	});
+
 	it("omits a custom recurrence rule when only non-schedule fields change", async () => {
 		const user = userEvent.setup();
 		const rrule = "DTSTART:20260826T090000Z\nRRULE:FREQ=DAILY;INTERVAL=2;BYHOUR=9;BYMINUTE=0;BYSECOND=0";
@@ -106,8 +186,8 @@ describe("AutomationsView", () => {
 		await user.click(screen.getByRole("button", { name: "Edit Every other day" }));
 
 		const dialog = screen.getByRole("dialog", { name: "Edit automation" });
-		expect(within(dialog).getByRole("combobox", { name: "Schedule" })).toHaveTextContent("Custom RRule");
-		expect((within(dialog).getByRole("textbox", { name: "RRule" }) as HTMLInputElement).value).toContain("INTERVAL=2");
+		expect(within(dialog).getByRole("combobox", { name: "Schedule" })).toHaveTextContent("Custom");
+		expect(within(dialog).getByRole("combobox", { name: "Frequency" })).toBeInTheDocument();
 		const name = within(dialog).getByRole("textbox", { name: "Name" });
 		await user.clear(name);
 		await user.type(name, "Renamed");
