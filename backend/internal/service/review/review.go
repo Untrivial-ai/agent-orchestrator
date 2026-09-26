@@ -845,6 +845,11 @@ func (s *Service) publishOne(ctx context.Context, workerID domain.SessionID, run
 	// published and persisted the new state meanwhile. Re-read it so the
 	// decision below uses the store, not a stale snapshot.
 	if current, ok, err := s.store.GetReviewRun(ctx, run.ID); err != nil {
+		// The current publication state is unreadable: publishing on a guess
+		// could duplicate a review a concurrent submission already posted.
+		// Record the failure so the CLI reports a reason instead of a bare
+		// outcome-unknown.
+		s.recordPublishState(ctx, run, domain.ReviewPublishUncertain, "", fmt.Sprintf("publication state re-read failed: %v", err))
 		return
 	} else if ok {
 		run.PublishState = current.PublishState

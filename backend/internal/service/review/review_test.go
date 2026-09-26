@@ -29,6 +29,8 @@ type fakeStore struct {
 	prReviews               map[string][]domain.PullRequestReview
 	prComments              map[string][]domain.PullRequestComment
 	sessionAutoInjectReview *bool
+	getRunErr               error
+	getRunCalls             int
 
 	updateCalls        int
 	activityUpdates    int
@@ -76,6 +78,12 @@ func (f *fakeStore) UpdateReviewActivity(_ context.Context, id string, state dom
 func (f *fakeStore) GetReviewRun(_ context.Context, id string) (domain.ReviewRun, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.getRunCalls++
+	// getRunErr fails every read after the first: submitOne's entry read must
+	// succeed while publishOne's locked re-read sees the store failure.
+	if f.getRunErr != nil && f.getRunCalls > 1 {
+		return domain.ReviewRun{}, false, f.getRunErr
+	}
 	for _, run := range f.batchRuns {
 		if run.ID == id {
 			return run, true, nil
@@ -1250,6 +1258,33 @@ func TestSubmitInterruptedPublicationStaysUncertainUntilConfirmed(t *testing.T) 
 	}
 	if run.PublishState != domain.ReviewPublishUncertain || run.PublishError == "" {
 		t.Fatalf("run = %q/%q, want uncertain with a reason", run.PublishState, run.PublishError)
+	}
+	if st.run.PublishState != domain.ReviewPublishUncertain {
+		t.Fatalf("persisted state = %q, want uncertain", st.run.PublishState)
+	}
+}
+
+func TestSubmitPublishStateReReadFailureRecordsUncertain(t *testing.T) {
+	// A store error while re-reading the publication state leaves the outcome
+	// unknown: never publish on a guess, and surface the reason to the CLI.
+	st := &fakeStore{ok: true, run: domain.ReviewRun{
+		ID: "run-1", SessionID: "worker-1", PRURL: "https://github.com/acme/app/pull/9",
+		TargetSHA: "sha1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictChangesRequested,
+		Body: "fix it", PublishState: domain.ReviewPublishPending,
+	}}
+	st.getRunErr = errors.New("db unavailable")
+	pub := &fakePublisher{}
+	svc := publicationTestService(t, st, pub)
+
+	run, err := svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictChangesRequested, "fix it", nil)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if pub.calls != 0 {
+		t.Fatalf("publisher calls = %d, want 0 when the state re-read fails", pub.calls)
+	}
+	if run.PublishState != domain.ReviewPublishUncertain || !strings.Contains(run.PublishError, "publication state re-read failed") {
+		t.Fatalf("run = %q/%q, want uncertain with a re-read reason", run.PublishState, run.PublishError)
 	}
 	if st.run.PublishState != domain.ReviewPublishUncertain {
 		t.Fatalf("persisted state = %q, want uncertain", st.run.PublishState)

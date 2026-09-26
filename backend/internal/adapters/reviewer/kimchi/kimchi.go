@@ -98,9 +98,9 @@ var _ ports.ReviewerRestorer = (*Reviewer)(nil)
 // worker's checkout. --auto keeps the session moving while the allow/deny tool
 // lists provide best-effort hardening for the review tools (git
 // diff/log/status to inspect the PR, gh pr view/diff/checks to read PR
-// metadata, printf to pipe
-// JSON, and `ao review submit` to record the verdict). The deny list covers
-// common mutation paths, but does not make the process read-only or isolated.
+// metadata, and `ao review submit` to record the verdict with the Markdown
+// body piped from stdin). The deny list covers common mutation paths, but
+// does not make the process read-only or isolated.
 func (r *Reviewer) ReviewCommand(ctx context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	argv, err := r.agent.GetLaunchCommand(ctx, ports.LaunchConfig{
 		Config:           inv.Config,
