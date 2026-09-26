@@ -254,6 +254,15 @@ type MessageEditDraft = ChatDraftInlineEdit;
 function useQueuedMessages(snapshot: ConversationSnapshot): QueuedMessage[] {
 	const previous = useRef<QueuedMessage[]>([]);
 	return useMemo(() => {
+		// A queued turn is meaningful only behind an active provider turn. During
+		// completion/reconnect snapshots can briefly expose the durable queue after
+		// the controller has gone idle; never show that stale intermediate state as
+		// something waiting on the user.
+		const hasRunningTurn = snapshot.turns.some((turn) => turn.state === "running");
+		if (!hasRunningTurn) {
+			previous.current = [];
+			return previous.current;
+		}
 		const queuedTurnIds = new Set(
 			snapshot.turns.filter((turn) => turn.state === "queued").map((turn) => turn.id),
 		);
