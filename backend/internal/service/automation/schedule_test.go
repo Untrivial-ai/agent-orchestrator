@@ -29,13 +29,24 @@ func TestCanonicalizeScheduleRejectsUnsafeTimezoneAndFrequency(t *testing.T) {
 		{RRule: "FREQ=MINUTELY;BYSECOND=0,30", Timezone: "UTC"},
 		{RRule: "DTSTART:20260923T090000Z\nRRULE:FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0,30", Timezone: "UTC"},
 		{RRule: "DTSTART:20260101T090000Z\nRRULE:FREQ=YEARLY;BYMONTH=1;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYSECOND=0,30;BYSETPOS=1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33,34", Timezone: "UTC"},
-		{RRule: "DTSTART:20260101T090030Z\nRRULE:FREQ=DAILY", Timezone: "UTC"},
 		{RRule: "DTSTART;TZID=America/New_York:20260306T090000\nRRULE:FREQ=DAILY", Timezone: "Europe/London"},
 		{RRule: "FREQ=DAILY;COUNT=3", Timezone: "UTC"},
 		{RRule: "FREQ=DAILY;UNTIL=20260310T090000Z", Timezone: "UTC"},
 	} {
 		if _, err := CanonicalizeSchedule(input, now); err == nil {
 			t.Fatalf("CanonicalizeSchedule(%+v) succeeded, want validation error", input)
+		}
+	}
+}
+
+func TestCanonicalizeScheduleAllowsLowFrequencySecondOffsets(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 8, 0, 0, 0, time.UTC)
+	for _, input := range []ScheduleInput{
+		{RRule: "DTSTART:20260101T090030Z\nRRULE:FREQ=DAILY", Timezone: "UTC"},
+		{RRule: "FREQ=MINUTELY;BYSECOND=30", Timezone: "UTC"},
+	} {
+		if _, err := CanonicalizeSchedule(input, now); err != nil {
+			t.Fatalf("CanonicalizeSchedule(%+v): %v", input, err)
 		}
 	}
 }

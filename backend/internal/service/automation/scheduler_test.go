@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"testing"
 	"time"
@@ -140,6 +141,7 @@ type recordingSpawner struct {
 	store          *schedulerMemoryStore
 	calls          []ports.SpawnConfig
 	kills          []domain.SessionID
+	killErr        error
 	spawnErr       error
 	leaveSeedOnErr bool
 }
@@ -160,6 +162,9 @@ func (s *recordingSpawner) Spawn(_ context.Context, cfg ports.SpawnConfig) (doma
 
 func (s *recordingSpawner) Kill(_ context.Context, id domain.SessionID) (bool, error) {
 	s.kills = append(s.kills, id)
+	if s.killErr != nil {
+		return false, s.killErr
+	}
 	rec, ok := s.store.sessions[id]
 	if ok {
 		rec.IsTerminated = true
@@ -308,5 +313,57 @@ func TestTickFailsRunWhenSpawnErrorLeavesIncompleteAutomationSession(t *testing.
 	}
 	if len(spawner.calls) != 1 {
 		t.Fatalf("spawns = %d, want 1", len(spawner.calls))
+	}
+	if len(spawner.kills) != 1 || spawner.kills[0] != "scheduled-session-1" {
+		t.Fatalf("kills = %v, want retained session teardown", spawner.kills)
+	}
+}
+
+func TestTickLeavesRunRecoverableWhenRetainedSessionKillFails(t *testing.T) {
+	now := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
+	store := newSchedulerStore()
+	store.automations["automation-1"] = domain.Automation{ID: "automation-1", ProjectID: "scheduled", Enabled: true, NextRunAt: now.Add(time.Hour)}
+	runID := domain.AutomationRunID("run-1")
+	store.runs[runID] = domain.AutomationRun{ID: runID, AutomationID: "automation-1", ScheduledFor: now, Status: domain.AutomationRunPending}
+	spawner := &recordingSpawner{
+		store:          store,
+		spawnErr:       errors.New("completion marker failed"),
+		killErr:        errors.New("kill unavailable"),
+		leaveSeedOnErr: true,
+	}
+	svc := New(Deps{Store: store, Spawner: spawner, Clock: func() time.Time { return now }})
+
+	if err := svc.Tick(context.Background(), now); err == nil {
+		t.Fatal("Tick succeeded, want joined spawn/kill diagnostic")
+	}
+	run := store.runs[runID]
+	if run.Status != domain.AutomationRunSpawning || run.FinishedAt != nil {
+		t.Fatalf("run = %#v, want still spawning for lease recovery", run)
+	}
+	if len(spawner.kills) != 1 || spawner.kills[0] != "scheduled-session-1" {
+		t.Fatalf("kills = %v, want attempted teardown", spawner.kills)
+	}
+}
+
+func TestTickFailsTerminatedRetainedSeedWithoutKilling(t *testing.T) {
+	now := time.Date(2026, time.August, 25, 12, 0, 0, 0, time.UTC)
+	store := newSchedulerStore()
+	store.automations["automation-1"] = domain.Automation{ID: "automation-1", ProjectID: "scheduled", Enabled: true, NextRunAt: now.Add(time.Hour)}
+	runID := domain.AutomationRunID("run-1")
+	store.runs[runID] = domain.AutomationRun{ID: runID, AutomationID: "automation-1", ScheduledFor: now, Status: domain.AutomationRunPending}
+	sessionID := domain.SessionID("scheduled-session-1")
+	store.sessions[sessionID] = domain.SessionRecord{ID: sessionID, ProjectID: "scheduled", AutomationRunID: &runID, IsTerminated: true}
+	spawner := &recordingSpawner{store: store, spawnErr: errors.New("incomplete prior launch")}
+	svc := New(Deps{Store: store, Spawner: spawner, Clock: func() time.Time { return now }})
+
+	if err := svc.Tick(context.Background(), now); err == nil {
+		t.Fatal("Tick succeeded, want spawn diagnostic")
+	}
+	run := store.runs[runID]
+	if run.Status != domain.AutomationRunFailed {
+		t.Fatalf("run status = %s, want failed", run.Status)
+	}
+	if len(spawner.kills) != 0 {
+		t.Fatalf("kills = %v, want no teardown for terminated seed", spawner.kills)
 	}
 }

@@ -66,10 +66,7 @@ func CanonicalizeSchedule(input ScheduleInput, now time.Time) (Schedule, error) 
 	if option.Dtstart.IsZero() {
 		option.Dtstart = now.In(loc).Truncate(time.Minute).Add(time.Minute)
 	}
-	if option.Dtstart.Second() != 0 || option.Dtstart.Nanosecond() != 0 {
-		return Schedule{}, fmt.Errorf("schedule must be aligned to whole minutes")
-	}
-	if len(option.Bysecond) > 1 || len(option.Bysecond) == 1 && option.Bysecond[0] != 0 {
+	if len(option.Bysecond) > 1 {
 		return Schedule{}, fmt.Errorf("schedule frequency cannot be faster than one minute")
 	}
 	rule, err := rrule.NewRRule(*option)
