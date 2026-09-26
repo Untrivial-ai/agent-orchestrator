@@ -652,8 +652,8 @@ function SettingsBody({
 									}
 									ariaLabel={t("settings.project.defaultReviewer")}
 									agents={agentCatalog?.agents}
-									defaultOptionLabel={t("settings.project.default")}
-									defaultTriggerLabel={t("settings.project.default")}
+									defaultOptionLabel={t("settings.project.workerDefault")}
+									defaultTriggerLabel={t("settings.project.workerDefault")}
 									disabled={agentsQuery.isFetching && agentCatalog === undefined}
 								/>
 							}

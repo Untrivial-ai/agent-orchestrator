@@ -1080,7 +1080,7 @@
 	"settings.project.agentsRequired": "Os agentes worker e orchestrator são obrigatórios.",
 	"settings.project.agentDefault": "(padrão do agente)",
 	"settings.project.childReposEmpty": "Nenhum repositório filho registrado.",
-	"settings.project.default": "Padrão do projeto",
+	"settings.project.workerDefault": "Padrão do worker",
 	"settings.project.defaultBranch": "Branch padrão",
 	"settings.project.defaultOrchestrator": "Agente orchestrator padrão",
 	"settings.project.defaultReviewer": "Agente revisor padrão",

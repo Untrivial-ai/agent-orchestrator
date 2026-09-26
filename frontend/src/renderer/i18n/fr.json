@@ -1080,7 +1080,7 @@
 	"settings.project.agentsRequired": "Les agents worker et orchestrateur sont obligatoires.",
 	"settings.project.agentDefault": "(valeur par défaut de l'agent)",
 	"settings.project.childReposEmpty": "Aucun dépôt enfant n'est enregistré.",
-	"settings.project.default": "Valeur par défaut du projet",
+	"settings.project.workerDefault": "Valeur par défaut du worker",
 	"settings.project.defaultBranch": "Branche par défaut",
 	"settings.project.defaultOrchestrator": "Agent orchestrateur par défaut",
 	"settings.project.defaultReviewer": "Agent relecteur par défaut",

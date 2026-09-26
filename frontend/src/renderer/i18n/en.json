@@ -1189,7 +1189,7 @@
 	"settings.project.agentsRequired": "Worker and orchestrator agents are required.",
 	"settings.project.agentDefault": "(agent default)",
 	"settings.project.childReposEmpty": "No child repositories are registered.",
-	"settings.project.default": "Project default",
+	"settings.project.workerDefault": "Worker default",
 	"settings.project.defaultBranch": "Default branch",
 	"settings.project.defaultOrchestrator": "Default orchestrator agent",
 	"settings.project.defaultReviewer": "Default reviewer agent",

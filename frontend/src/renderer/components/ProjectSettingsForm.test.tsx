@@ -1119,10 +1119,10 @@ describe("ProjectSettingsForm", () => {
 		renderSettings("proj-1", undefined, "agents");
 
 		const reviewerAgent = await screen.findByRole("button", { name: "Default reviewer agent" });
-		expect(reviewerAgent).toHaveTextContent("Project default");
+		expect(reviewerAgent).toHaveTextContent("Worker default");
 
 		await userEvent.click(reviewerAgent);
-		expect(await screen.findByRole("menuitem", { name: "Project default" })).toBeInTheDocument();
+		expect(await screen.findByRole("menuitem", { name: "Worker default" })).toBeInTheDocument();
 	});
 
 	it("disables agent selectors while the initial agent catalog is loading", async () => {
@@ -1248,7 +1248,7 @@ describe("ProjectSettingsForm", () => {
 		await userEvent.click(await screen.findByRole("button", { name: "Default reviewer agent" }));
 		const reviewerLabels = (await screen.findAllByRole("menuitem"))
 			.map((option) => option.textContent)
-			.filter((label) => label !== "Project default" && label !== "Enter model ID…");
+			.filter((label) => label !== "Worker default" && label !== "Enter model ID…");
 
 		expect(reviewerLabels).toEqual([
 			"Claude Code",

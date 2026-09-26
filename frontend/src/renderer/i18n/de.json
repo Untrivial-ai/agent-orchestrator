@@ -1060,7 +1060,7 @@
 	"settings.project.agentsRequired": "Worker- und Orchestrator-Agenten sind erforderlich.",
 	"settings.project.agentDefault": "(Agent-Standard)",
 	"settings.project.childReposEmpty": "Keine untergeordneten Repositories registriert.",
-	"settings.project.default": "Projektdefault",
+	"settings.project.workerDefault": "Worker-Standard",
 	"settings.project.defaultBranch": "Standard-Branch",
 	"settings.project.defaultOrchestrator": "Standard-Orchestrator-Agent",
 	"settings.project.defaultReviewer": "Standard-Reviewer-Agent",

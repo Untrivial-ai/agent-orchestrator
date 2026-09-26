@@ -1060,7 +1060,7 @@
 	"settings.project.agentsRequired": "ワーカーとオーケストレーターのエージェントは必須です。",
 	"settings.project.agentDefault": "（エージェントのデフォルト）",
 	"settings.project.childReposEmpty": "子リポジトリは登録されていません。",
-	"settings.project.default": "プロジェクトのデフォルト",
+	"settings.project.workerDefault": "ワーカーのデフォルト",
 	"settings.project.defaultBranch": "デフォルトブランチ",
 	"settings.project.defaultOrchestrator": "デフォルトのオーケストレーターエージェント",
 	"settings.project.defaultReviewer": "デフォルトのレビュアーエージェント",

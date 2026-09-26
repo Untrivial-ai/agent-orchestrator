@@ -1060,7 +1060,7 @@
 	"settings.project.agentsRequired": "워커 및 오케스트레이터 에이전트는 필수입니다.",
 	"settings.project.agentDefault": "(에이전트 기본값)",
 	"settings.project.childReposEmpty": "등록된 하위 저장소가 없습니다.",
-	"settings.project.default": "프로젝트 기본값",
+	"settings.project.workerDefault": "워커 기본값",
 	"settings.project.defaultBranch": "기본 브랜치",
 	"settings.project.defaultOrchestrator": "기본 오케스트레이터 에이전트",
 	"settings.project.defaultReviewer": "기본 리뷰어 에이전트",

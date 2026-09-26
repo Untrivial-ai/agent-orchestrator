@@ -1042,7 +1042,7 @@
 	"settings.project.agentsRequired": "Worker 与编排代理为必填项。",
 	"settings.project.agentDefault": "（代理默认值）",
 	"settings.project.childReposEmpty": "尚未注册子仓库。",
-	"settings.project.default": "项目默认",
+	"settings.project.workerDefault": "Worker 默认值",
 	"settings.project.defaultBranch": "默认分支",
 	"settings.project.defaultOrchestrator": "默认编排代理",
 	"settings.project.defaultReviewer": "默认评审代理",
