@@ -1,4 +1,4 @@
-import { Bot, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
+import { Bot, Check, Loader2, MonitorCog, TriangleAlert, X, type LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useRef, useState } from "react";
@@ -39,12 +39,19 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	// The selected page includes several store/query subscribers. Mount it one
 	// frame after the lightweight dialog chrome so the opening interaction can
 	// paint first.
-	const [bodySettings, setBodySettings] = useState<SettingsModal | null>(null);
+	const deferSettingsBody = settingsModal.scope === "global";
+	const [bodySettings, setBodySettings] = useState<SettingsModal | null>(() =>
+		deferSettingsBody ? null : settingsModal,
+	);
 	useEffect(() => {
 		if (settingsModal === null) return;
+		if (!deferSettingsBody) {
+			setBodySettings(settingsModal);
+			return;
+		}
 		const frame = requestAnimationFrame(() => setBodySettings(settingsModal));
 		return () => cancelAnimationFrame(frame);
-	}, [settingsModal]);
+	}, [deferSettingsBody, settingsModal]);
 	const isBodyReady = bodySettings === displaySettings;
 
 	const globalSections = visibleGlobalSettings({ cloudEnabled });
@@ -153,8 +160,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 					className={cn(
 						settingsDialogContentClass,
 						"fixed left-1/2 top-1/2 h-(--size-settings-dialog-height) w-(--size-settings-dialog-wide) max-h-none -translate-x-1/2 -translate-y-1/2 origin-center overflow-hidden p-0 animate-modal-in motion-reduce:animate-none sm:rounded-lg",
-						isProjectSettings && activeProjectSection === "general" && "h-auto max-h-[calc(100vh-3rem)]",
-						isProjectSettings && activeProjectSection === "agents" && "h-[min(40rem,calc(100vh-3rem))]",
+						isProjectSettings && "h-[min(40rem,calc(100vh-3rem))]",
 					)}
 					onOpenAutoFocus={(event) => event.preventDefault()}
 					onEscapeKeyDown={(event) => {
@@ -201,8 +207,16 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 											<p className="flex items-start gap-2" role="alert"><TriangleAlert className="size-4 shrink-0" aria-hidden="true" />{projectSaveState.error ?? t("settings.project.saveFailed")}</p>
 											<button className="text-settings-label underline underline-offset-2" onClick={() => (document.getElementById("project-settings-form") as HTMLFormElement | null)?.requestSubmit()} type="button">{t("settings.models.retry")}</button>
 										</div>
+									) : projectSaveState.phase === "saved" ? (
+										<p className="flex items-center gap-2 text-settings-muted">
+											<Check className="size-4 shrink-0" aria-hidden="true" />
+											{t("settings.project.saved")}
+										</p>
 									) : (
-										<p className="text-settings-muted">{projectSaveState.phase === "saved" ? t("settings.project.saved") : t("settings.project.saving")}</p>
+										<p className="flex items-center gap-2 text-settings-muted">
+											<Loader2 className="size-4 shrink-0 animate-spin" aria-hidden="true" />
+											<span className="sr-only">{t("settings.project.saving")}</span>
+										</p>
 									)}
 								</div>
 							)}

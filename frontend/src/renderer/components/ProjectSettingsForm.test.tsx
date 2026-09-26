@@ -1628,7 +1628,7 @@ describe("ProjectSettingsForm", () => {
 
 		renderSettings("proj-1", undefined, "general");
 
-		await userEvent.click(await screen.findByLabelText("Automatically work on assigned issues"));
+		await userEvent.click(await screen.findByLabelText("Enable issue intake"));
 
 		// Repository is display-only, derived from the project's own git origin — no input to
 		// fill. Assignee is the only eligibility rule in v1.
@@ -1636,7 +1636,8 @@ describe("ProjectSettingsForm", () => {
 			"href",
 			"https://github.com/acme/project-one",
 		);
-		await userEvent.type(await beginEdit("Assignee"), "octocat");
+		await userEvent.click(await screen.findByRole("button", { name: "Add assignee" }));
+		await userEvent.type(screen.getByLabelText("Assignee"), "octocat");
 
 		submitSettings();
 
@@ -1690,7 +1691,7 @@ describe("ProjectSettingsForm", () => {
 		});
 	});
 
-	it("blocks save when intake is enabled with no assignee", async () => {
+	it("does not save or show a save error when intake is enabled with no assignee yet", async () => {
 		getMock.mockResolvedValue({
 			data: {
 				status: "ok",
@@ -1712,10 +1713,10 @@ describe("ProjectSettingsForm", () => {
 
 		renderSettings("proj-1", undefined, "general");
 
-		await userEvent.click(await screen.findByLabelText("Automatically work on assigned issues"));
+		await userEvent.click(await screen.findByLabelText("Enable issue intake"));
 		submitSettings();
 
-		expect(await screen.findAllByText("Enabling intake requires an assignee.")).toHaveLength(2);
+		expect(screen.queryByText("Enabling intake requires an assignee.")).not.toBeInTheDocument();
 		expect(putMock).not.toHaveBeenCalled();
 	});
 

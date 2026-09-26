@@ -22,7 +22,7 @@ import { captureRendererEvent } from "../lib/telemetry";
 import { type OrchestratorReplacementFailure, useUiStore } from "../stores/ui-store";
 import { newestActiveOrchestrator } from "../types/workspace";
 import { RequiredAgentField } from "./CreateProjectAgentSheet";
-import { buildIntake, deriveRepoPath, deriveRepoHost, IntakeFields, type IntakeForm } from "./IntakeFields";
+import { buildIntake, deriveRepoPath, deriveRepoHost, IntakeFields, intakeNeedsRule, type IntakeForm } from "./IntakeFields";
 import { ProductExternalLink } from "./ProductExternalLink";
 import { ReviewerSelect, reviewerTrustWarning } from "./ReviewerSelect";
 import { AgentModelCombobox } from "./settings/AgentModelCombobox";
@@ -182,6 +182,7 @@ function SettingsBody({
 			intakeAssignee: patch.assignee ?? f.intakeAssignee,
 		}));
 	const effectiveIntakeRepo = form.intakeRepo.trim() || deriveRepoPath(project.repo);
+	const intakeSetupIncomplete = !isScratchProject && intakeNeedsRule(intakeForm);
 	const reviewerWarning = reviewerTrustWarning(form.reviewerHarness);
 	const mutation = useMutation({
 		mutationFn: async (values: typeof form) => {
@@ -353,6 +354,10 @@ function SettingsBody({
 				validateIntake: !isScratchProject,
 				originalDisplayName: project.name,
 			});
+			if (validation === "intake_assignee_required") {
+				setValidationError(null);
+				return;
+			}
 			if (validation || !tuningValidity.worker || !tuningValidity.orchestrator || !tuningValidity.reviewer) {
 				setValidationError(
 					validation === "agents_required"
@@ -363,9 +368,7 @@ function SettingsBody({
 								? t("settings.project.nameTooLong", {
 										max: MAX_PROJECT_DISPLAY_NAME_LEN,
 									})
-								: validation === "intake_assignee_required"
-									? t("settings.project.intakeAssigneeRequired")
-									: t("settings.project.tuningInvalid"),
+								: t("settings.project.tuningInvalid"),
 				);
 				return;
 			}
@@ -378,6 +381,7 @@ function SettingsBody({
 
 	useEffect(() => {
 		const mutationError = mutation.isError ? (mutation.error instanceof Error ? mutation.error.message : t("settings.project.saveFailed")) : undefined;
+		const hasUnsavedChanges = JSON.stringify(form) !== lastSavedRef.current;
 		onSaveState?.({
 			phase:
 				validationError || mutationError
@@ -386,7 +390,7 @@ function SettingsBody({
 						? showSaving
 							? "saving"
 							: "pending"
-						: JSON.stringify(form) !== lastSavedRef.current
+						: hasUnsavedChanges && !intakeSetupIncomplete
 							? "pending"
 							: savedAt !== null
 								? "saved"
@@ -394,7 +398,19 @@ function SettingsBody({
 			error: validationError ?? mutationError,
 			replacementError: !mutation.isPending && !mutation.isError ? (replacementError ?? undefined) : undefined,
 		});
-	}, [mutation.error, mutation.isError, mutation.isPending, onSaveState, replacementError, savedAt, showSaving, form, t, validationError]);
+	}, [
+		form,
+		intakeSetupIncomplete,
+		mutation.error,
+		mutation.isError,
+		mutation.isPending,
+		onSaveState,
+		replacementError,
+		savedAt,
+		showSaving,
+		t,
+		validationError,
+	]);
 
 	useEffect(() => {
 		if (savedAt === null) return;
@@ -413,6 +429,9 @@ function SettingsBody({
 					validateIntake: !isScratchProject,
 					originalDisplayName: project.name,
 				});
+				if (validation === "intake_assignee_required") {
+					return;
+				}
 				if (validation) {
 					setValidationError(
 						validation === "agents_required"
