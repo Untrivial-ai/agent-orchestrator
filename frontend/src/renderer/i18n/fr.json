@@ -731,6 +731,7 @@
 	"pr.card.mergePending": "Fusion en attente",
 	"pr.card.mergeUnavailable": "Fusion indisponible",
 	"pr.card.merged": "Pull request fusionnée",
+	"pr.card.viewPR": "Voir la PR",
 	"pr.card.open": "Pull request ouverte",
 	"pr.card.readyToMerge": "Prête à fusionner",
 	"pr.card.reviewApproved": "Revue approuvée",

@@ -231,9 +231,14 @@ export function prCardPresentation(pr: SessionPRSummary): PRCardPresentation {
 				);
 		const review = cardStatus(
 			"review",
-			"pr.card.reviewStatus",
+			pr.review.hasUnresolvedHumanComments || pr.review.decision === "changes_requested"
+				? "pr.card.changesRequested"
+				: pr.review.decision === "approved"
+					? "pr.review.requirementSatisfied"
+					: pr.review.decision === "review_required"
+						? "pr.review.pending"
+						: "pr.review.notRequired",
 			reviewTone(pr.review.decision, pr.review.hasUnresolvedHumanComments),
-			reviewStatusDetail(pr),
 		);
 		return { primary, supporting, statusRows: [checks, review, mergeReadiness(pr)] };
 	}
@@ -273,15 +278,6 @@ function mergeReadiness(pr: SessionPRSummary): PRCardStatus {
 	return status;
 }
 
-function reviewStatusDetail(pr: SessionPRSummary): string {
-	switch (pr.review.decision) {
-		case "approved": return appI18n.t("pr.review.requirementSatisfied");
-		case "changes_requested": return appI18n.t("pr.review.changesActive");
-		case "review_required": return appI18n.t("pr.review.requiredNotSubmitted");
-		case "none": return appI18n.t("pr.review.notRequired");
-	}
-}
-
 function cardStatus(
 	key: PRCardStatus["key"],
 	labelKey:
@@ -301,7 +297,10 @@ function cardStatus(
 		| "pr.card.reviewApproved"
 		| "pr.card.open"
 		| "pr.card.checksPassing"
-		| "pr.card.reviewStatus",
+		| "pr.card.reviewStatus"
+		| "pr.review.requirementSatisfied"
+		| "pr.review.pending"
+		| "pr.review.notRequired",
 	tone: PRDisplayTone,
 	detail?: string,
 	links: PRSummaryLink[] = [],

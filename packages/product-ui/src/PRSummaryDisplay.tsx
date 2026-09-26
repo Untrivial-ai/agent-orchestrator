@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { ExternalLinkComponent } from "./external-link";
-import { ArrowUpRightIcon } from "./icons";
+import { ArrowUpRightIcon, CheckIcon, XIcon } from "./icons";
 import { UserAvatar } from "./UserAvatar";
 import { scmUserAvatarUrl } from "./scm-avatar";
 import type {
@@ -147,31 +147,21 @@ export function PRCardStatusSummary({
 	const rows = presentation.statusRows?.filter((status) => status.key === "lifecycle" || !omitted?.has(status.key));
 	if (rows) {
 		return (
-			<div className={cn("border-t border-border pt-2", className)}>
-				<div className="grid min-w-0 grid-cols-1 gap-y-1.5">
+			<div className={cn("min-w-0", className)}>
+				<div className="grid min-w-0 grid-cols-1 gap-y-1">
 					{rows.map((status) => (
-						<div className="min-w-0" key={status.key}>
-							<div className="flex min-w-0 items-center justify-between gap-3">
-								<div className={cn("flex min-w-0 items-center gap-2 text-xs font-medium leading-4", toneClass[status.tone])}>
-									<span aria-hidden="true" className={cn("size-dot-sm shrink-0 rounded-full bg-current", status.breathe && "animate-status-pulse")} />
-									<PRCardStatusLink externalLink={externalLink} status={status} />
-								</div>
-								{status.key === "review" && reviewDetailsAction ? <div className="shrink-0">{reviewDetailsAction}</div> : null}
-								{status.key === "merge" && action ? <div className="shrink-0">{action}</div> : null}
+						<div className="flex min-w-0 items-center justify-between gap-2" key={status.key}>
+							<div className={cn("flex min-w-0 items-center gap-1.5 text-xs leading-4", toneClass[status.tone])} title={status.detail}>
+								{status.tone === "success" ? <CheckIcon className="size-3.5 shrink-0" /> :
+									status.tone === "error" || status.tone === "warning" ? <XIcon className="size-3.5 shrink-0" /> :
+									<span aria-hidden="true" className={cn("mx-1 size-dot-sm shrink-0 rounded-full bg-current", status.breathe && "animate-status-pulse")} />}
+									<span>{status.label}</span>
 							</div>
-							{status.detail ? (
-								<div className="mt-0.5 min-w-0 break-words pl-4 text-2xs leading-4 text-muted-foreground">{status.detail}</div>
-							) : null}
-							{status.links.length > 0 ? (
-								<div className="mt-1 flex min-w-0 flex-wrap gap-x-1.5 gap-y-1 pl-4 font-mono text-2xs">
-									{status.links.slice(0, 3).map((link, index) => (
-										<SummaryLink className={toneClass[status.tone]} externalLink={externalLink} interactive key={`${status.key}-${index}-${link.label}`} link={link} />
-									))}
-								</div>
-							) : null}
+							{status.key === "review" && reviewDetailsAction ? <div className="shrink-0">{reviewDetailsAction}</div> : null}
 						</div>
 					))}
 				</div>
+				{action ? <div className="mt-2 flex justify-end">{action}</div> : null}
 			</div>
 		);
 	}

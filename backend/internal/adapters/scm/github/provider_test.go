@@ -1278,6 +1278,9 @@ func TestSCMBatchQueryRequestsStablePullRequestID(t *testing.T) {
 	if !strings.Contains(query, "number id url") {
 		t.Fatalf("batch query does not request the stable pull request id:\n%s", query)
 	}
+	if !strings.Contains(query, "comments{ totalCount }") {
+		t.Fatalf("batch query does not request the conversation comment count:\n%s", query)
+	}
 }
 
 func TestSCMObservationCarriesStableIDAndRequestedURLAlias(t *testing.T) {
@@ -1287,6 +1290,7 @@ func TestSCMObservationCarriesStableIDAndRequestedURLAlias(t *testing.T) {
 		pr = m
 		m["id"] = "PR_kwDOStable"
 		m["url"] = "https://github.com/new-owner/hello/pull/42"
+		m["comments"] = map[string]any{"totalCount": float64(9)}
 	})
 	ref := ports.SCMPRRef{
 		Repo:   ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "old-owner", Name: "hello", Repo: "old-owner/hello"},
@@ -1306,6 +1310,9 @@ func TestSCMObservationCarriesStableIDAndRequestedURLAlias(t *testing.T) {
 	}
 	if obs.PR.Author != "octocat" || obs.PR.AuthorAvatarURL != "https://avatars.githubusercontent.com/u/583231?v=4" {
 		t.Fatalf("author = %q avatar = %q", obs.PR.Author, obs.PR.AuthorAvatarURL)
+	}
+	if obs.PR.DiscussionCommentCount != 9 {
+		t.Fatalf("discussion comments = %d, want 9", obs.PR.DiscussionCommentCount)
 	}
 }
 

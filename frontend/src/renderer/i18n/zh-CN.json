@@ -710,6 +710,7 @@
 	"pr.card.mergePending": "等待合并",
 	"pr.card.mergeUnavailable": "暂时无法合并",
 	"pr.card.merged": "拉取请求已合并",
+	"pr.card.viewPR": "查看 PR",
 	"pr.card.open": "拉取请求已打开",
 	"pr.card.readyToMerge": "可以合并",
 	"pr.card.reviewApproved": "评审已批准",

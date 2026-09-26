@@ -11,8 +11,7 @@ import {
 } from "./icons";
 import {
 	PRCardStatusSummary,
-	PRSummaryMeta,
-	type CountNounLabel,
+	prBranchRange,
 } from "./PRSummaryDisplay";
 import type {
 	PRCardPresentation,
@@ -289,37 +288,24 @@ const prStateTone: Record<InspectorPullRequestState, string> = {
 };
 
 export function InspectorPullRequestCardView({
-	countNounLabel,
 	externalIcon,
 	externalLink: ExternalLink,
 	mergeAction,
 	mergeError,
-	openLabel,
 	pr,
-	pullRequestIcon,
 	statusNotice,
+	viewLabel,
 }: {
-	countNounLabel: CountNounLabel;
 	externalIcon?: ReactNode;
 	externalLink: ExternalLinkComponent;
 	mergeAction?: ReactNode;
 	mergeError?: string | null;
-	openLabel: string;
 	pr: InspectorPullRequest;
-	pullRequestIcon?: ReactNode;
 	statusNotice?: ReactNode;
+	viewLabel: string;
 }) {
-	const pullRequestLink = (
-		<ExternalLink
-			ariaLabel={openLabel}
-			className="inline-flex min-w-0 items-center gap-1 font-mono text-2xs font-medium text-settings-label decoration-muted-foreground underline-offset-2 hover:text-settings-label hover:underline focus-visible:rounded-sm focus-visible:text-settings-label focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-			href={pr.href}
-		>
-			{pullRequestIcon ?? <GitPullRequestIcon className="size-icon-sm shrink-0" />}
-			<span>PR #{pr.number}</span>
-			{externalIcon ?? <ArrowUpRightIcon className="size-icon-2xs shrink-0" />}
-		</ExternalLink>
-	);
+	const branchRange = prBranchRange(pr);
+	const authorHandle = pr.author?.replace(/^@/, "") ?? "";
 	const stateBadge = (
 		<span
 			className={cn(
@@ -334,34 +320,31 @@ export function InspectorPullRequestCardView({
 	);
 	return (
 		<article className="min-w-0 w-full rounded-lg border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3 py-2.5">
-			<div className="flex min-w-0 items-start gap-2">
-				{pr.title ? (
-					<ExternalLink
-						className="min-w-0 flex-1 text-sm font-semibold leading-snug tracking-tight text-settings-label underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-						href={pr.href}
-					>
-						{pr.title}
-					</ExternalLink>
-				) : (
-					pullRequestLink
-				)}
-				{stateBadge}
+			<div className="flex min-w-0 items-start justify-between gap-2">
+				<span className="min-w-0 flex-1 text-sm font-semibold leading-snug tracking-tight text-settings-label">{pr.title || `PR #${pr.number}`}</span>
+				<div className="flex shrink-0 items-center gap-1.5">
+					{pr.state !== "open" ? stateBadge : null}
+					<span className="font-mono text-2xs text-settings-muted">#{pr.number}</span>
+				</div>
 			</div>
-			<PRSummaryMeta
-				className="mt-1.5"
-				countNounLabel={countNounLabel}
-				externalLink={ExternalLink}
-				leading={pr.title ? pullRequestLink : undefined}
-				pr={pr}
-			/>
+			{branchRange ? <p className="mt-0.5 min-w-0 truncate font-mono text-2xs text-settings-muted" title={branchRange}>{branchRange}</p> : null}
+			{authorHandle || pr.reviewDetailsAction ? (
+				<div className="mt-2 flex min-w-0 items-center gap-2 text-xs text-settings-muted">
+					{authorHandle ? (
+						<span className="inline-flex shrink-0 items-center gap-1.5 font-mono text-2xs">
+							<UserAvatar className="size-5" imageUrl={pr.authorAvatarUrl || scmUserAvatarUrl(pr.provider, pr.href, authorHandle)} name={authorHandle} />
+							@{authorHandle}
+						</span>
+					) : null}
+					{pr.reviewDetailsAction}
+				</div>
+			) : null}
 			{pr.state !== "merged" ? (
 				<>
 					<PRCardStatusSummary
-						action={mergeAction}
-						className="mt-2"
+						className="mt-2.5"
 						externalLink={ExternalLink}
 						presentation={pr.card}
-						reviewDetailsAction={pr.reviewDetailsAction}
 					/>
 					{statusNotice}
 					{mergeError ? (
@@ -371,6 +354,16 @@ export function InspectorPullRequestCardView({
 					) : null}
 				</>
 			) : null}
+			<div className="mt-2 flex items-center justify-end gap-2">
+				{mergeAction}
+				<ExternalLink
+					className="inline-flex h-7 items-center gap-1 rounded-md border border-border-strong px-2 text-xs font-medium text-settings-label hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+					href={pr.href}
+				>
+					{viewLabel}
+					{externalIcon ?? <ArrowUpRightIcon className="size-icon-2xs shrink-0" />}
+				</ExternalLink>
+			</div>
 		</article>
 	);
 }

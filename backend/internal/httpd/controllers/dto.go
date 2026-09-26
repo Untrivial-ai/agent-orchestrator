@@ -1020,30 +1020,31 @@ type SessionPRFacts struct {
 // /sessions/{sessionId}/pr. It intentionally omits CI log tails and review
 // comment bodies.
 type SessionPRSummary struct {
-	URL              string                       `json:"url"`
-	HTMLURL          string                       `json:"htmlUrl,omitempty"`
-	Number           int                          `json:"number"`
-	Title            string                       `json:"title"`
-	State            domain.PRState               `json:"state" enum:"draft,open,merged,closed"`
-	Provider         string                       `json:"provider" enum:"github,gitlab"`
-	Repo             string                       `json:"repo"`
-	Author           string                       `json:"author"`
-	AuthorAvatarURL  string                       `json:"authorAvatarUrl,omitempty"`
-	SourceBranch     string                       `json:"sourceBranch"`
-	TargetBranch     string                       `json:"targetBranch"`
-	HeadSHA          string                       `json:"headSha"`
-	Additions        int                          `json:"additions"`
-	Deletions        int                          `json:"deletions"`
-	ChangedFiles     int                          `json:"changedFiles"`
-	CI               SessionPRCISummary           `json:"ci"`
-	Review           SessionPRReviewSummary       `json:"review"`
-	Mergeability     SessionPRMergeabilitySummary `json:"mergeability"`
-	StateChangedAt   *time.Time                   `json:"stateChangedAt,omitempty"`
-	CreatedAt        *time.Time                   `json:"createdAt,omitempty"`
-	UpdatedAt        time.Time                    `json:"updatedAt"`
-	ObservedAt       time.Time                    `json:"observedAt,omitempty"`
-	CIObservedAt     time.Time                    `json:"ciObservedAt,omitempty"`
-	ReviewObservedAt time.Time                    `json:"reviewObservedAt,omitempty"`
+	URL                    string                       `json:"url"`
+	HTMLURL                string                       `json:"htmlUrl,omitempty"`
+	Number                 int                          `json:"number"`
+	Title                  string                       `json:"title"`
+	State                  domain.PRState               `json:"state" enum:"draft,open,merged,closed"`
+	Provider               string                       `json:"provider" enum:"github,gitlab"`
+	Repo                   string                       `json:"repo"`
+	Author                 string                       `json:"author"`
+	AuthorAvatarURL        string                       `json:"authorAvatarUrl,omitempty"`
+	DiscussionCommentCount int                          `json:"discussionCommentCount,omitempty"`
+	SourceBranch           string                       `json:"sourceBranch"`
+	TargetBranch           string                       `json:"targetBranch"`
+	HeadSHA                string                       `json:"headSha"`
+	Additions              int                          `json:"additions"`
+	Deletions              int                          `json:"deletions"`
+	ChangedFiles           int                          `json:"changedFiles"`
+	CI                     SessionPRCISummary           `json:"ci"`
+	Review                 SessionPRReviewSummary       `json:"review"`
+	Mergeability           SessionPRMergeabilitySummary `json:"mergeability"`
+	StateChangedAt         *time.Time                   `json:"stateChangedAt,omitempty"`
+	CreatedAt              *time.Time                   `json:"createdAt,omitempty"`
+	UpdatedAt              time.Time                    `json:"updatedAt"`
+	ObservedAt             time.Time                    `json:"observedAt,omitempty"`
+	CIObservedAt           time.Time                    `json:"ciObservedAt,omitempty"`
+	ReviewObservedAt       time.Time                    `json:"reviewObservedAt,omitempty"`
 }
 
 // SessionPRCISummary is the CI status block for a session PR summary.
@@ -1125,30 +1126,31 @@ type ListSessionPRsResponse struct {
 // NewSessionPRSummary maps the service PR summary model to its HTTP DTO.
 func NewSessionPRSummary(in sessionsvc.PRSummary) SessionPRSummary {
 	return SessionPRSummary{
-		URL:              in.URL,
-		HTMLURL:          in.HTMLURL,
-		Number:           in.Number,
-		Title:            in.Title,
-		State:            in.State,
-		Provider:         in.Provider,
-		Repo:             in.Repo,
-		Author:           in.Author,
-		AuthorAvatarURL:  in.AuthorAvatarURL,
-		SourceBranch:     in.SourceBranch,
-		TargetBranch:     in.TargetBranch,
-		HeadSHA:          in.HeadSHA,
-		Additions:        in.Additions,
-		Deletions:        in.Deletions,
-		ChangedFiles:     in.ChangedFiles,
-		CI:               newSessionPRCISummary(in.CI),
-		Review:           newSessionPRReviewSummary(in.Review),
-		Mergeability:     newSessionPRMergeabilitySummary(in.Mergeability),
-		StateChangedAt:   optionalTime(in.StateChangedAt),
-		CreatedAt:        optionalTime(in.CreatedAt),
-		UpdatedAt:        in.UpdatedAt,
-		ObservedAt:       in.ObservedAt,
-		CIObservedAt:     in.CIObservedAt,
-		ReviewObservedAt: in.ReviewObservedAt,
+		URL:                    in.URL,
+		HTMLURL:                in.HTMLURL,
+		Number:                 in.Number,
+		Title:                  in.Title,
+		State:                  in.State,
+		Provider:               in.Provider,
+		Repo:                   in.Repo,
+		Author:                 in.Author,
+		AuthorAvatarURL:        in.AuthorAvatarURL,
+		DiscussionCommentCount: in.DiscussionCommentCount,
+		SourceBranch:           in.SourceBranch,
+		TargetBranch:           in.TargetBranch,
+		HeadSHA:                in.HeadSHA,
+		Additions:              in.Additions,
+		Deletions:              in.Deletions,
+		ChangedFiles:           in.ChangedFiles,
+		CI:                     newSessionPRCISummary(in.CI),
+		Review:                 newSessionPRReviewSummary(in.Review),
+		Mergeability:           newSessionPRMergeabilitySummary(in.Mergeability),
+		StateChangedAt:         optionalTime(in.StateChangedAt),
+		CreatedAt:              optionalTime(in.CreatedAt),
+		UpdatedAt:              in.UpdatedAt,
+		ObservedAt:             in.ObservedAt,
+		CIObservedAt:           in.CIObservedAt,
+		ReviewObservedAt:       in.ReviewObservedAt,
 	}
 }
 

@@ -29,7 +29,6 @@ import {
 	ArrowUpRight,
 	ChevronDown,
 	ChevronRight,
-	GitPullRequest,
 	GitMerge,
 	Info,
 	Play,
@@ -58,7 +57,7 @@ import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
 import { clearTerminateSessionState, useTerminateSession } from "../hooks/useTerminateSession";
 import { formatEstimatedCost, type EstimatedCost } from "../lib/format-cost";
-import { prBrowserUrl, prCanMerge, prCardPresentation, prNounKeys, sessionPRDisplaySummaries } from "../lib/pr-display";
+import { prBrowserUrl, prCanMerge, prCardPresentation, sessionPRDisplaySummaries } from "../lib/pr-display";
 import { formatTokenCount } from "../lib/format-token-count";
 import type { WorkspaceSession, WorkspaceSummary } from "../types/workspace";
 import {
@@ -1243,17 +1242,21 @@ function PRSummaryCard({
 	const mergeError = mergePr.error instanceof Error ? mergePr.error.message : null;
 	const reviewers = Array.from(
 		new Set(
-			(pr.review.reviews ?? [])
-				.slice()
-				.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))
-				.map((review) => review.reviewerId.trim())
+			[
+				...(pr.review.reviews ?? [])
+					.slice()
+					.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))
+					.map((review) => review.reviewerId),
+				...pr.review.unresolvedBy.map((reviewer) => reviewer.reviewerId),
+			]
+				.map((reviewer) => reviewer.trim())
 				.filter(Boolean),
 		),
 	);
-	const reviewDetailsAction = canOpenReviews && (reviewers.length > 0 || pr.review.decision !== "none") ? (
+	const reviewerAction = canOpenReviews && reviewers.length > 0 ? (
 		<button
 			aria-label={t("pr.review.viewDetails")}
-			className="flex items-center pl-1 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+			className="flex items-center pl-1 text-2xs text-settings-muted hover:text-settings-label focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
 			onClick={onOpenReviews}
 			title={t("pr.review.viewDetails")}
 			type="button"
@@ -1274,12 +1277,17 @@ function PRSummaryCard({
 						</span>
 					) : null}
 				</>
-			) : (
-				<span className="whitespace-nowrap text-2xs text-settings-muted underline-offset-2 hover:underline">
-					{t("pr.review.viewDetails")} ↗
-				</span>
-			)}
+			) : null}
 		</button>
+	) : undefined;
+	const discussionCommentCount = pr.discussionCommentCount ?? 0;
+	const discussionCount = discussionCommentCount > 0 ? (
+		<span className="text-xs text-settings-muted">
+			{discussionCommentCount} {t("pr.noun.comment", { count: discussionCommentCount })}
+		</span>
+	) : null;
+	const reviewDetailsAction = discussionCount || reviewerAction ? (
+		<div className="flex items-center gap-1.5">{discussionCount}{reviewerAction}</div>
 	) : undefined;
 	const viewModel: InspectorPullRequest = {
 		...pr,
@@ -1290,7 +1298,6 @@ function PRSummaryCard({
 	};
 	return (
 		<InspectorPullRequestCardView
-			countNounLabel={(count, noun) => `${count} ${t(prNounKeys[noun], { count })}`}
 			externalIcon={<ArrowUpRight aria-hidden="true" className="size-icon-2xs shrink-0" strokeWidth={2} />}
 			externalLink={ProductExternalLink}
 			mergeAction={
@@ -1313,9 +1320,8 @@ function PRSummaryCard({
 				) : undefined
 			}
 			mergeError={mergeError}
-			openLabel={t("inspector.openPR", { number: pr.number })}
 			pr={viewModel}
-			pullRequestIcon={<GitPullRequest className="size-icon-sm shrink-0" aria-hidden="true" />}
+			viewLabel={t("pr.card.viewPR")}
 		/>
 	);
 }

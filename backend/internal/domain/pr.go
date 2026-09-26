@@ -63,17 +63,18 @@ type PullRequest struct {
 	// renames or transfers.
 	ProviderID string
 
-	SourceBranch    string
-	TargetBranch    string
-	HeadSHA         string
-	Title           string
-	Additions       int
-	Deletions       int
-	ChangedFiles    int
-	Author          string
-	AuthorAvatarURL string
-	BaseSHA         string
-	MergeCommitSHA  string
+	SourceBranch           string
+	TargetBranch           string
+	HeadSHA                string
+	Title                  string
+	Additions              int
+	Deletions              int
+	ChangedFiles           int
+	Author                 string
+	AuthorAvatarURL        string
+	DiscussionCommentCount int
+	BaseSHA                string
+	MergeCommitSHA         string
 
 	ProviderState            string
 	ProviderMergeable        string

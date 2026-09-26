@@ -728,6 +728,7 @@
 	"pr.card.mergePending": "병합 대기 중",
 	"pr.card.mergeUnavailable": "병합할 수 없음",
 	"pr.card.merged": "풀 리퀘스트 병합됨",
+	"pr.card.viewPR": "PR 보기",
 	"pr.card.open": "풀 리퀘스트 열림",
 	"pr.card.readyToMerge": "병합 가능",
 	"pr.card.reviewApproved": "리뷰 승인됨",

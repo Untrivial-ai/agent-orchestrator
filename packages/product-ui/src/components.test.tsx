@@ -171,12 +171,10 @@ describe("portable leaf components", () => {
 			/>,
 		);
 
-		const detail = screen.getByText("Required review not submitted");
-		const reviewRow = detail.parentElement;
+		const reviewRow = screen.getByText("Review status").closest(".flex.min-w-0.items-center.justify-between");
 		expect(reviewRow).toContainElement(screen.getByText("Review status"));
-		expect(reviewRow).toContainElement(detail);
 		expect(reviewRow).toContainElement(screen.getByRole("button", { name: "View review details ↗" }));
-		expect(detail.closest(".grid")).toHaveClass("grid-cols-1");
+		expect(screen.queryByText("Required review not submitted")).not.toBeInTheDocument();
 	});
 
 	it("computes overflow against the requested link limit", () => {

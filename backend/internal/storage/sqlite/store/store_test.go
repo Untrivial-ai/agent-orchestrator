@@ -1248,12 +1248,13 @@ func TestWriteSCMObservationPersistsAuthorAvatarURL(t *testing.T) {
 	seedProject(t, s, "mer")
 	r, _ := s.CreateSession(ctx, sampleRecord("mer"))
 	pr := domain.PullRequest{
-		URL:             "https://github.com/o/r/pull/1",
-		SessionID:       r.ID,
-		Number:          1,
-		Author:          "octocat",
-		AuthorAvatarURL: "https://avatars.githubusercontent.com/u/583231?v=4",
-		UpdatedAt:       time.Now().UTC().Truncate(time.Second),
+		URL:                    "https://github.com/o/r/pull/1",
+		SessionID:              r.ID,
+		Number:                 1,
+		Author:                 "octocat",
+		AuthorAvatarURL:        "https://avatars.githubusercontent.com/u/583231?v=4",
+		DiscussionCommentCount: 9,
+		UpdatedAt:              time.Now().UTC().Truncate(time.Second),
 	}
 
 	if err := s.WriteSCMObservation(ctx, pr, nil, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
@@ -1263,8 +1264,8 @@ func TestWriteSCMObservationPersistsAuthorAvatarURL(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get pr: ok=%v err=%v", ok, err)
 	}
-	if got.Author != pr.Author || got.AuthorAvatarURL != pr.AuthorAvatarURL {
-		t.Fatalf("author = %q avatar = %q", got.Author, got.AuthorAvatarURL)
+	if got.Author != pr.Author || got.AuthorAvatarURL != pr.AuthorAvatarURL || got.DiscussionCommentCount != 9 {
+		t.Fatalf("author = %q avatar = %q discussion comments = %d", got.Author, got.AuthorAvatarURL, got.DiscussionCommentCount)
 	}
 }
 

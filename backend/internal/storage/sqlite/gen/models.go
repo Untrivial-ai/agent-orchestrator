@@ -430,6 +430,7 @@ type PR struct {
 	ProviderID               string
 	AuthorAvatarURL          string
 	ReviewPartial            bool
+	DiscussionCommentCount   int64
 }
 
 type PRCheck struct {

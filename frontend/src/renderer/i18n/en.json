@@ -692,6 +692,7 @@
 	"pr.card.mergePending": "Merge pending",
 	"pr.card.mergeUnavailable": "Merge unavailable",
 	"pr.card.merged": "Pull request merged",
+	"pr.card.viewPR": "View PR",
 	"pr.card.open": "Pull request open",
 	"pr.card.readyToMerge": "Ready to merge",
 	"pr.card.reviewApproved": "Review approved",

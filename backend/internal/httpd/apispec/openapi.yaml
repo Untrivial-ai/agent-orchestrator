@@ -12469,6 +12469,8 @@ components:
           - string
         deletions:
           type: integer
+        discussionCommentCount:
+          type: integer
         headSha:
           type: string
         htmlUrl:

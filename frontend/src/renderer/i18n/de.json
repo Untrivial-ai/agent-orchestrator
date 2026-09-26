@@ -728,6 +728,7 @@
 	"pr.card.mergePending": "Merge ausstehend",
 	"pr.card.mergeUnavailable": "Merge nicht verfügbar",
 	"pr.card.merged": "Pull Request gemergt",
+	"pr.card.viewPR": "PR ansehen",
 	"pr.card.open": "Pull Request offen",
 	"pr.card.readyToMerge": "Bereit zum Mergen",
 	"pr.card.reviewApproved": "Review genehmigt",

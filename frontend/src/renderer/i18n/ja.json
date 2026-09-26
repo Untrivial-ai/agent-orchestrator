@@ -728,6 +728,7 @@
 	"pr.card.mergePending": "マージ待機中",
 	"pr.card.mergeUnavailable": "マージできません",
 	"pr.card.merged": "プルリクエストはマージ済み",
+	"pr.card.viewPR": "PRを見る",
 	"pr.card.open": "プルリクエストはオープン",
 	"pr.card.readyToMerge": "マージ可能",
 	"pr.card.reviewApproved": "レビュー承認済み",

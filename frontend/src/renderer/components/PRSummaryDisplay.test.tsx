@@ -32,7 +32,7 @@ const summary = (overrides: Partial<SessionPRSummary> = {}): SessionPRSummary =>
 });
 
 describe("PRSummaryParts", () => {
-	it("links GitHub authors and successful checks to their provider pages", () => {
+	it("links authors while keeping compact check labels static", () => {
 		render(
 			<>
 				<PRSummaryMeta pr={summary()} />
@@ -45,10 +45,8 @@ describe("PRSummaryParts", () => {
 			"src",
 			"https://avatars.githubusercontent.com/u/123?v=4",
 		);
-		expect(screen.getByRole("link", { name: "Checks passing" })).toHaveAttribute(
-			"href",
-			"https://github.com/acme/repo/pull/7/checks",
-		);
+		expect(screen.getByText("Checks passing")).toBeInTheDocument();
+		expect(screen.queryByRole("link", { name: "Checks passing" })).not.toBeInTheDocument();
 	});
 
 	it("shows pending checks, review, and merge state as separate rows", () => {
@@ -66,14 +64,10 @@ describe("PRSummaryParts", () => {
 			/>,
 		);
 
-		expect(screen.getByText("Review status")).toBeInTheDocument();
-		expect(screen.getByText("Required review not submitted")).toBeInTheDocument();
-		const pendingStatus = screen.getByRole("link", { name: "Merge pending" });
-		expect(pendingStatus).toHaveAttribute(
-			"href",
-			"https://github.com/acme/repo/pull/7",
-		);
-		expect(screen.getByRole("link", { name: "Checks pending" })).toBeInTheDocument();
+		expect(screen.getByText("Review pending")).toBeInTheDocument();
+		expect(screen.queryByText("Required review not submitted")).not.toBeInTheDocument();
+		expect(screen.getByText("Merge pending")).toBeInTheDocument();
+		expect(screen.getByText("Checks pending")).toBeInTheDocument();
 		expect(container.querySelector("svg.animate-spin")).not.toBeInTheDocument();
 		expect(container.querySelector(".animate-status-pulse")).toBeInTheDocument();
 	});
@@ -81,19 +75,20 @@ describe("PRSummaryParts", () => {
 	it("renders a status marker for each checks, review, and merge row", () => {
 		const { container } = render(<PRCardStatusSummary pr={summary()} />);
 
-		expect(container.querySelectorAll(".size-dot-sm")).toHaveLength(3);
+		expect(container.querySelectorAll(".size-dot-sm")).toHaveLength(0);
+		expect(container.querySelectorAll('svg[class*="size-3.5"]')).toHaveLength(3);
 	});
 
 	it("places a supplied merge action on the merge-status row", () => {
 		const { container } = render(<PRCardStatusSummary action={<button type="button">Merge</button>} pr={summary()} />);
 
 		const action = screen.getByRole("button", { name: "Merge" });
-		const supportingStatus = screen.getByRole("link", { name: "Checks passing" });
-		expect(action.parentElement).toHaveClass("shrink-0");
-		expect(action.parentElement?.parentElement).toContainElement(screen.getByRole("link", { name: "Ready to merge" }));
+		const supportingStatus = screen.getByText("Checks passing");
+		expect(action.parentElement).toHaveClass("justify-end");
+		expect(action.parentElement?.parentElement).toContainElement(screen.getByText("Ready to merge"));
 		expect(container).toContainElement(supportingStatus);
-		expect(screen.getByText("Review status")).toBeInTheDocument();
-		expect(screen.getByRole("link", { name: "Ready to merge" })).toBeInTheDocument();
+		expect(screen.getByText("PR approved")).toBeInTheDocument();
+		expect(screen.queryByRole("link", { name: "Ready to merge" })).not.toBeInTheDocument();
 	});
 
 	it("renders failing check links with visible error contrast", () => {
@@ -112,7 +107,7 @@ describe("PRSummaryParts", () => {
 		);
 
 		expect(screen.getByText("Checks failing")).toBeInTheDocument();
-		expect(screen.getByRole("link", { name: "renderer-smoke" })).toHaveClass("text-error");
+		expect(screen.queryByRole("link", { name: "renderer-smoke" })).not.toBeInTheDocument();
 	});
 
 	it("localizes changed-file plurals instead of rebuilding English nouns", async () => {

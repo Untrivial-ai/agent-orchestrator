@@ -155,6 +155,8 @@ type SCMPRObservation struct {
 	// AuthorAvatarURL is the provider-hosted profile image URL for the PR author.
 	// It is optional because not every provider or historical record supplies one.
 	AuthorAvatarURL string
+	// DiscussionCommentCount counts top-level PR conversation comments.
+	DiscussionCommentCount int
 	// BaseSHA is the current base branch SHA when the provider supplies it.
 	BaseSHA string
 	// MergeCommitSHA is the merge commit SHA when the PR has one.

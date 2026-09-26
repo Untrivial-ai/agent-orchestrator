@@ -391,6 +391,7 @@ func scmPRFields() string {
 	return strings.ReplaceAll(`
 number id url state isDraft merged closed title additions deletions changedFiles
 mergeable mergeStateStatus reviewDecision headRefName headRefOid baseRefName baseRefOid
+comments{ totalCount }
 createdAt updatedAt mergedAt closedAt
 author{ login avatarUrl }
 mergeCommit{ oid }
@@ -495,6 +496,7 @@ func scmObservationFromGraphQL(ref ports.SCMPRRef, pr map[string]any) ports.SCMO
 	if urlAlias == strings.TrimSpace(prURL) {
 		urlAlias = ""
 	}
+	discussion, _ := pr["comments"].(map[string]any)
 	obs := ports.SCMObservation{
 		Fetched:  true,
 		Provider: ref.Repo.Provider,
@@ -518,6 +520,7 @@ func scmObservationFromGraphQL(ref ports.SCMPRRef, pr map[string]any) ports.SCMO
 			ChangedFiles:             int(num(pr["changedFiles"])),
 			Author:                   authorLogin(pr["author"]),
 			AuthorAvatarURL:          authorAvatarURL(pr["author"]),
+			DiscussionCommentCount:   int(num(discussion["totalCount"])),
 			BaseSHA:                  str(pr["baseRefOid"]),
 			MergeCommitSHA:           mergeCommitOID(pr),
 			ProviderState:            str(pr["state"]),

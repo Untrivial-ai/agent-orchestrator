@@ -246,7 +246,7 @@ describe("prCardPresentation", () => {
 		expect(presentation.primary.label).toBe(primaryLabel);
 		expect(presentation.statusRows?.map((status) => status.label)).toEqual([
 			overrides.ci?.state === "failing" ? "Checks failing" : "Checks passing",
-			"Review status",
+			"PR approved",
 			readinessLabel,
 		]);
 		expect(presentation.readiness).toBeUndefined();
@@ -273,7 +273,7 @@ describe("prCardPresentation", () => {
 		expect(presentation.supporting.map((status) => status.label)).toEqual(["Checks passing"]);
 		expect(presentation.statusRows?.map((status) => status.label)).toEqual([
 			"Checks passing",
-			"Review status",
+			"Review pending",
 			"Merge blocked",
 		]);
 	});
@@ -289,7 +289,7 @@ describe("prCardPresentation", () => {
 		expect(presentation.primary.label).toBe("Checks running");
 		expect(presentation.statusRows?.map((status) => status.label)).toEqual([
 			"Checks running",
-			"Review status",
+			"PR approved",
 			"Merge pending",
 		]);
 	});
