@@ -154,9 +154,10 @@ describe("McpServerBanner", () => {
 		);
 	});
 
-	it("draws no control at all when the harness cannot reload", () => {
+	it("keeps dismiss available when the harness cannot reload", () => {
 		render(<McpServerBanner servers={broken} />);
-		expect(screen.queryByRole("button")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /Reload/ })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Dismiss tool server warning" })).toBeInTheDocument();
 	});
 
 	it("surfaces a failed reload", () => {
