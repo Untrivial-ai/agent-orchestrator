@@ -31,6 +31,8 @@ ARG TARGETARCH
 ARG CLAUDE_CODE_VERSION=2.1.228
 ARG CODEX_VERSION=0.147.0
 ARG CURSOR_AGENT_VERSION=2026.08.11-e8db854
+# TODO(cloud-opencode): pin to a verified release once validated on staging.
+ARG OPENCODE_VERSION=latest
 ARG GH_VERSION=2.97.0
 RUN apt-get update && \
     apt-get upgrade --yes && \
@@ -54,9 +56,11 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/* && \
     npm install --global \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-        "@openai/codex@${CODEX_VERSION}" && \
+        "@openai/codex@${CODEX_VERSION}" \
+        "opencode-ai@${OPENCODE_VERSION}" && \
     claude --version && \
     codex --version && \
+    opencode --version && \
     gh --version && \
     groupadd --gid 10001 ao-worker && \
     useradd --uid 10001 --gid ao-worker --home-dir /workspace/.ao/home --shell /bin/bash ao-worker && \

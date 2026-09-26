@@ -2,11 +2,11 @@ import { agentLabel } from "./agent-options";
 import type { AgentInfo } from "./agent-select-options";
 import type { CloudCpProviderConnection } from "./cloud-cp";
 
-/** The only agents AO cloud supports, matching the three the control plane's
+/** The only agents AO cloud supports, matching the set the control plane's
  * validAgentProvider accepts (cloud/internal/httpapi/provider_handlers.go).
  * Unlike local's full AGENT_OPTIONS list, cloud has no "install" step, so any
  * unlisted agent would just be a dead end. */
-export const CLOUD_AGENT_PROVIDERS = ["claude-code", "codex", "cursor"] as const;
+export const CLOUD_AGENT_PROVIDERS = ["claude-code", "codex", "cursor", "opencode"] as const;
 
 /** Maps the org's cloud provider connections onto the same AgentInfo shape
  * local readiness uses, so the cloud agent picker is the identical component

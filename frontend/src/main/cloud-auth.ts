@@ -17,6 +17,18 @@ import type { CloudAccount } from "../shared/cloud-account";
 import { revokeLocalSession } from "./cloud-auth-local";
 import { providerAuthFlow } from "./provider-auth-flow";
 
+// persistLocalClaudeOAuthToken writes a captured Claude setup-token under the AO
+// data dir so local claude sessions can authenticate with the SAME credential
+// pushed to the cloud (read back by the daemon's claudecode adapter). Scoped to
+// ~/.ao, never the user's ~/.claude; 0600 file in a 0700 dir.
+async function persistLocalClaudeOAuthToken(dataDir: string, token: string): Promise<void> {
+  const dir = path.join(dataDir, "harnesses", "claude-code");
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const file = path.join(dir, "oauth-token");
+  await writeFile(file, token, { mode: 0o600 });
+  await chmod(file, 0o600);
+}
+
 // The WorkOS AuthKit client id is public configuration (it appears in every
 // sign-in URL), so a baked default keeps sign-in working without build-time
 // setup; VITE_WORKOS_CLIENT_ID overrides it per build when needed.
@@ -626,8 +638,9 @@ export function installCloudIPC(
   });
   ipcMain.handle("cloud:connectProviderAuth", async (_event, input: unknown) => {
     if (typeof input !== "object" || input === null) throw new Error("Invalid Cloud provider login request.");
-    const { baseUrl, orgId, provider } = input as Record<string, unknown>;
+    const { baseUrl, orgId, provider, pushTarget, persistLocalClaudeToken } = input as Record<string, unknown>;
     if (typeof baseUrl !== "string" || typeof orgId !== "string" || typeof provider !== "string" || orgId.trim() === "") throw new Error("Invalid Cloud provider login request.");
+    if (pushTarget !== undefined && pushTarget !== "org" && pushTarget !== "me") throw new Error("Invalid Cloud provider login target.");
     let base: URL;
     try {
       base = new URL(baseUrl);
@@ -651,6 +664,14 @@ export function installCloudIPC(
 
     if (credential.provider !== provider) throw new Error("Cloud provider login returned an unexpected provider.");
 
+    // Unified "one login for local + cloud": persist the captured Claude
+    // setup-token locally so local sessions authenticate with the SAME credential
+    // the cloud copy uses. The daemon's claudecode adapter injects it only when no
+    // native login is present, so this never shadows an existing local login.
+    if (persistLocalClaudeToken === true && credential.provider === "claude-code" && credential.credentialType === "oauth_token") {
+      await persistLocalClaudeOAuthToken(dataDir, credential.secret);
+    }
+
     if (provider === "github") {
       // Returned to the renderer, which saves it via the daemon's
       // PUT /api/v1/github/pat endpoint. Include the OAuth refresh material so
@@ -664,7 +685,12 @@ export function installCloudIPC(
     }
 
     const basePath = base.pathname.replace(/\/+$/, "");
-    const target = new URL(`${base.origin}${basePath}/api/cloud/v1/orgs/${encodeURIComponent(orgId)}/provider-connections/agents/${encodeURIComponent(credential.provider)}`);
+    // Personal (/me) push is the no-admin, per-developer path used by the unified
+    // one-login flow; the org path (default) remains for the shared-team dialog.
+    const endpointPath = pushTarget === "me"
+      ? `/api/cloud/v1/me/providers/${encodeURIComponent(credential.provider)}`
+      : `/api/cloud/v1/orgs/${encodeURIComponent(orgId)}/provider-connections/agents/${encodeURIComponent(credential.provider)}`;
+    const target = new URL(`${base.origin}${basePath}${endpointPath}`);
     const response = await fetch(target, {
       method: "PUT",
       redirect: "error",
