@@ -853,7 +853,7 @@ export function AssistantMessage({
 }
 
 
-export function LiveResponseStatus({ startedAt }: { startedAt?: string }) {
+export function LiveResponseStatus({ startedAt, settling = false }: { startedAt?: string; settling?: boolean }) {
 	const started = useMemo(() => {
 		const parsed = startedAt ? Date.parse(startedAt) : Date.now();
 		return Number.isFinite(parsed) ? parsed : Date.now();
@@ -866,9 +866,14 @@ export function LiveResponseStatus({ startedAt }: { startedAt?: string }) {
 	const elapsedMs = Math.max(0, now - started);
 	return (
 		<div className="-mx-1 mt-1 flex h-7 items-center gap-0.5 border-b border-border">
-			<div className="-ml-1.5 size-7 shrink-0">
+			<motion.div
+				initial={false}
+				animate={{ width: settling ? 0 : 20, opacity: settling ? 0 : 1 }}
+				transition={{ duration: 0.18, ease: "easeOut" }}
+				className="-ml-1.5 flex size-5 shrink-0 items-center overflow-hidden"
+			>
 				<ResponseSpinner />
-			</div>
+			</motion.div>
 			<span role="status" data-testid="live-working-label" className="chat-working-shimmer text-sm font-medium">
 				Working for {formatDuration(elapsedMs)}
 			</span>

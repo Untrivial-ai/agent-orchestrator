@@ -3326,6 +3326,15 @@ const TurnGroup = memo(function TurnGroup({
 		: [];
 	const hasWorkedActivity = workedRuns.some((run) => run.kind === "activities");
 	const finalRun = finalAssistantRunIndex >= 0 ? runs[finalAssistantRunIndex] : undefined;
+	const [showSettledStatus, setShowSettledStatus] = useState(!group.live);
+	useEffect(() => {
+		if (group.live) {
+			setShowSettledStatus(false);
+			return;
+		}
+		const timer = window.setTimeout(() => setShowSettledStatus(true), 180);
+		return () => window.clearTimeout(timer);
+	}, [group.live]);
 	const renderRun = (run: TimelineRun) =>
 		run.kind === "activities" ? (
 			<ActivityRun
@@ -3381,7 +3390,9 @@ const TurnGroup = memo(function TurnGroup({
 				const item = run.items[0];
 				return item?.kind === "message" && item.role === "user";
 			}).map(renderRun)}
-			{group.live ? <LiveResponseStatus startedAt={group.liveStartedAt} /> : null}
+			{group.live || !showSettledStatus ? (
+				<LiveResponseStatus startedAt={group.liveStartedAt} settling={!group.live} />
+			) : null}
 			{!group.outcome && runs.filter((run) => {
 				const item = run.items[0];
 				return !(item?.kind === "message" && item.role === "user");
@@ -3436,7 +3447,7 @@ const TurnGroup = memo(function TurnGroup({
 				),
 			)}
 			{group.outcome ? humanRuns.map(renderRun) : null}
-			{group.outcome && hasWorkedActivity ? (
+			{group.outcome && showSettledStatus && hasWorkedActivity ? (
 				<Accordion type="single" collapsible className="-mx-1 border-b border-border" defaultValue="">
 					<AccordionItem value="worked" className="border-0">
 						<AccordionTrigger
@@ -3455,7 +3466,7 @@ const TurnGroup = memo(function TurnGroup({
 					</AccordionItem>
 				</Accordion>
 			) : null}
-			{group.outcome && !hasWorkedActivity ? (
+			{group.outcome && showSettledStatus && !hasWorkedActivity ? (
 				<div className="flex min-h-7 items-center border-b border-border px-0 py-1 text-sm font-medium text-muted-foreground">
 					<span className="inline-flex w-fit items-center gap-1">
 						Worked for
