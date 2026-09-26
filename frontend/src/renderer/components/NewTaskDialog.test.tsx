@@ -145,7 +145,7 @@ describe("NewTaskDialog", () => {
 		expect(screen.getByTestId("execution-context-toggle")).toHaveTextContent("main");
 		await userEvent.click(screen.getByTestId("execution-context-toggle"));
 		expect(screen.getByTestId("execution-context")).toHaveAttribute("open");
-		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Use Claude Code's default");
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Model not reported");
 		expect(screen.getByRole("button", { name: "Add file" })).toBeInTheDocument();
 		expect(screen.getByLabelText("Task").getAttribute("placeholder")).toBeTruthy();
 		expect(screen.queryByLabelText("Title")).not.toBeInTheDocument();
@@ -362,7 +362,7 @@ describe("NewTaskDialog", () => {
 		await waitForAgentCatalog();
 
 		expect(screen.queryByLabelText("Branch")).not.toBeInTheDocument();
-		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Use Claude Code's default");
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Model not reported");
 
 		await user.type(screen.getByLabelText("Task"), "Build a quick prototype in scratch.");
 		await user.click(screen.getByRole("button", { name: "Start task" }));

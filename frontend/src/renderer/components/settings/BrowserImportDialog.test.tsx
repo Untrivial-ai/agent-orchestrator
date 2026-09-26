@@ -88,7 +88,7 @@ describe("BrowserImportDialog", () => {
 		expect(sourcePicker).toHaveTextContent("Firefox");
 		await userEvent.click(sourcePicker);
 		await userEvent.click(screen.getByRole("option", { name: /Google Chrome/ }));
-		expect(screen.getByRole("checkbox", { name: /Default/ })).toBeChecked();
+		expect(screen.getByRole("checkbox", { name: /Main profile/ })).toBeChecked();
 		const personalProfile = screen.getByRole("checkbox", { name: /Personal/ });
 		expect(personalProfile).not.toBeChecked();
 		await userEvent.click(personalProfile);

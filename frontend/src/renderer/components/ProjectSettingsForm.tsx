@@ -24,6 +24,8 @@ import {
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { isConcreteModelID, modelChoiceLabel } from "../lib/agent-model-choices";
+import { WORKER_DEFAULT_REVIEWERS } from "../lib/reviewer-harnesses";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
 import { OrchestratorSpawnError, spawnOrchestrator } from "../lib/spawn-orchestrator";
 import { captureRendererEvent } from "../lib/telemetry";
@@ -43,7 +45,7 @@ type Project = components["schemas"]["Project"];
 type ProjectConfig = components["schemas"]["ProjectConfig"];
 type TrackerIntakeConfig = components["schemas"]["TrackerIntakeConfig"];
 
-const PERMISSION_MODE_VALUES = ["default", "accept-edits", "auto", "bypass-permissions"] as const;
+const PERMISSION_MODE_VALUES = ["auto", "accept-edits", "bypass-permissions"] as const;
 const DEFAULT_BRANCH_AUTO = "auto";
 
 const projectQueryKey = (id: string) => ["project", id] as const;
@@ -189,6 +191,7 @@ function SettingsBody({
 		}));
 	const effectiveIntakeRepo = form.intakeRepo.trim() || deriveRepoPath(project.repo);
 	const reviewerWarning = reviewerTrustWarning(form.reviewerHarness);
+	const defaultReviewerHarness = WORKER_DEFAULT_REVIEWERS[form.workerAgent] ?? "claude-code";
 	const mutation = useMutation({
 		mutationFn: async () => {
 			void captureRendererEvent("ao.renderer.settings_save_requested", { project_id: projectId });
@@ -516,13 +519,14 @@ function SettingsBody({
 								<PermissionModeSelect
 									ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.workerRole") })}
 									value={form.workerPermissions}
+									agentId={form.workerAgent}
 									onChange={(v) => setForm((f) => ({ ...f, workerPermissions: v }))}
 								/>
 							),
 							label: t("settings.project.roleApproval", { role: t("settings.models.workerRole") }),
 						}}
 						orchestratorPermissions={{
-							control: <PermissionModeSelect ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.orchestratorRole") })} value={form.orchestratorPermissions} onChange={(v) => setForm((f) => ({ ...f, orchestratorPermissions: v }))} />,
+							control: <PermissionModeSelect ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.orchestratorRole") })} value={form.orchestratorPermissions} agentId={form.orchestratorAgent} onChange={(v) => setForm((f) => ({ ...f, orchestratorPermissions: v }))} />,
 							label: t("settings.project.roleApproval", { role: t("settings.models.orchestratorRole") }),
 						}}
 						missingRequiredMessage={
@@ -537,11 +541,16 @@ function SettingsBody({
 								model={form.reviewerModel}
 								mode={form.reviewerMode}
 								projectId={projectId}
-								onConfigChange={(_harness, config) => setForm((f) => ({
-									...f,
-									reviewerModel: config.model ?? "",
-									reviewerMode: config.mode ?? "",
-								}))}
+								onConfigChange={(harness, config) => setForm((f) => {
+									const nextHarness = harness || (config.model || config.mode ? defaultReviewerHarness : "");
+									return {
+										...f,
+										reviewerHarness: nextHarness,
+										...(nextHarness !== f.reviewerHarness ? { reviewerEffort: "", reviewerPermissions: "" } : {}),
+										reviewerModel: config.model ?? "",
+										reviewerMode: config.mode ?? "",
+									};
+								})}
 								onChange={(v) =>
 								setForm((f) => ({
 									...f,
@@ -554,8 +563,7 @@ function SettingsBody({
 								}
 								ariaLabel={t("settings.project.defaultReviewer")}
 								agents={agentCatalog?.agents}
-								defaultOptionLabel={t("settings.project.default")}
-								defaultTriggerLabel={t("settings.project.default")}
+								defaultHarness={defaultReviewerHarness}
 								disabled={agentsQuery.isFetching && agentCatalog === undefined}
 							/>
 						</SettingsRow>
@@ -577,7 +585,12 @@ function SettingsBody({
 							<PermissionModeSelect
 								ariaLabel={t("settings.project.roleApproval", { role: t("settings.models.reviewerRole") })}
 								value={form.reviewerPermissions}
-								onChange={(reviewerPermissions) => setForm((f) => ({ ...f, reviewerPermissions }))}
+								agentId={form.reviewerHarness || defaultReviewerHarness}
+								onChange={(reviewerPermissions) => setForm((f) => ({
+									...f,
+									reviewerHarness: f.reviewerHarness || defaultReviewerHarness,
+									reviewerPermissions,
+								}))}
 							/>
 						</SettingsRow>
 						{reviewerWarning && (
@@ -733,21 +746,26 @@ function AgentModelField({
 	}
 
 	if (isMode) {
-		const options = [
-			{ value: "__default__", label: t("settings.models.agentDefault") },
-			...(catalog.models ?? []).map((item) => ({ value: item.id, label: item.label })),
-		];
+		const defaultMode = catalog?.models?.find((item) => item.isDefault && isConcreteModelID(item.id))?.id;
+		const selectedMode = isConcreteModelID(mode) ? mode : "";
+		const options = (catalog.models ?? []).filter((item) => isConcreteModelID(item.id)).map((item) => ({
+			value: item.id,
+			label: modelChoiceLabel(item),
+		}));
 		return (
 			<>
 				<SettingsRow label={label}>
 					<div className="flex min-w-0 items-center gap-2">
 						<SettingsOptionMenu
 							aria-label={label}
-							value={mode || "__default__"}
+							value={selectedMode || defaultMode || ""}
 							options={options}
+							placeholder={t("settings.models.modeNotReported")}
+							action={selectedMode && !defaultMode ? { label: t("settings.models.useAgentMode"), onSelect: () => onModeChange("") } : undefined}
 							triggerClassName="justify-end"
+							disabled={options.length === 0 && !(selectedMode && !defaultMode)}
 							onChange={(value) => {
-								onModeChange(value === "__default__" ? "" : value);
+								onModeChange(value === defaultMode ? "" : value);
 								onModelChange("");
 							}}
 						/>
@@ -806,29 +824,33 @@ function AgentModelField({
 	);
 }
 
-function PermissionModeSelect({ ariaLabel, value, onChange }: { ariaLabel: string; value: string; onChange: (value: string) => void }) {
+function PermissionModeSelect({ ariaLabel, value, agentId, onChange }: { ariaLabel: string; value: string; agentId: string; onChange: (value: string) => void }) {
 	const { t } = useTranslation();
-	const options = [
-		{ value: "__default__", label: `${t("settings.project.permissionAuto")} (${t("settings.project.default")})` },
-		...PERMISSION_MODE_VALUES.map((value) => ({
-			value,
-			label:
-				value === "default"
-					? t("settings.project.permissionDefault")
-					: value === "accept-edits"
-						? t("settings.project.permissionAcceptEdits")
-						: value === "auto"
-							? t("settings.project.permissionAuto")
-							: t("settings.project.permissionBypass"),
-		})),
-	];
+	const options: { value: string; label: string }[] = PERMISSION_MODE_VALUES.map((value) => ({
+		value,
+		label:
+			value === "accept-edits"
+				? t("settings.project.permissionAcceptEdits")
+				: value === "auto"
+					? t("settings.project.permissionAuto")
+					: t("settings.project.permissionBypass"),
+	}));
+	if (agentId !== "codex") {
+		options.unshift({
+			value: "default",
+			label: agentId === "claude-code"
+				? t("settings.project.permissionUseClaude")
+				: t("settings.project.permissionUseAgent"),
+		});
+	}
 
 	return (
 		<SettingsOptionMenu
 			aria-label={ariaLabel}
-			value={value || "__default__"}
+			value={value === "default" && agentId === "codex" ? "bypass-permissions" : value || "auto"}
 			options={options}
-			onChange={(v) => onChange(v === "__default__" ? "" : v)}
+			placeholder={t("settings.project.permissionNotReported")}
+			onChange={onChange}
 		/>
 	);
 }

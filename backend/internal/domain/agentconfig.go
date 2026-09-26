@@ -67,5 +67,5 @@ func (c AgentConfig) Validate() error {
 	if c.Permissions.Valid() {
 		return nil
 	}
-	return fmt.Errorf("invalid permissions %q: want one of default, accept-edits, auto, bypass-permissions", c.Permissions)
+	return fmt.Errorf("invalid permissions %q: choose a supported permission mode", c.Permissions)
 }
