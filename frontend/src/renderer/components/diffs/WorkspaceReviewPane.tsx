@@ -28,7 +28,7 @@ import { usePersistentGutterUtility } from "./usePersistentGutterUtility";
 const PATCH_BATCH_SIZE = 100;
 const parsedPatchCache = new Map<string, FileDiffMetadata[]>();
 const MAX_PARSED_GROUPS = 24;
-const workingScopeOrder = ["unstaged", "staged"] as const;
+const workingScopeOrder = ["unstaged", "staged", "untracked"] as const;
 
 function chunked<T>(items: readonly T[], size: number): T[][] {
 	const chunks: T[][] = [];
@@ -60,16 +60,12 @@ function parseGroupPatch(workspaceVersion: string | undefined, scope: WorkspaceD
 
 function sectionFiles(data: WorkspaceFilesResponse, scope: WorkspaceDiffScope): WorkspaceFileSummary[] {
 	if (scope === "combined") {
-		const untrackedPaths = new Set(data.sections.untracked.map((file) => file.path));
-		return data.files.filter((file) => file.status !== "unmodified" && !untrackedPaths.has(file.path));
+		return data.files.filter((file) => file.status !== "unmodified");
 	}
 	return data.sections[scope];
 }
 
-function initialReviewSelection(data: WorkspaceFilesResponse): { commitSha?: string; scope: WorkspaceDiffScope } {
-	const workingScope = workingScopeOrder.find((scope) => data.sections[scope].length > 0);
-	if (workingScope) return { scope: workingScope };
-	if (data.commits[0]) return { scope: "committed", commitSha: data.commits[0].sha };
+function initialReviewSelection(): { commitSha?: string; scope: WorkspaceDiffScope } {
 	return { scope: "combined" };
 }
 
@@ -138,7 +134,7 @@ export function WorkspaceReviewPane({
 }) {
 	const { t } = useTranslation();
 	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
-	const initialSelection = useMemo(() => initialReviewSelection(data), [data]);
+	const initialSelection = useMemo(initialReviewSelection, []);
 	const [scope, setScope] = useState<WorkspaceDiffScope>(() => initialSelection.scope);
 	const [selectedCommitSha, setSelectedCommitSha] = useState<string | undefined>(() => initialSelection.commitSha);
 	const [commitBrowserOpen, setCommitBrowserOpen] = useState(false);
@@ -157,21 +153,17 @@ export function WorkspaceReviewPane({
 		[data.sections],
 	);
 	const combinedWorkingCount = sectionFiles(data, "combined").length;
-	const showCombinedWorkingSource = visibleWorkingScopes.length === 0
-		&& data.sections.committed.length === 0
-		&& data.commits.length === 0
-		&& !data.compareBaseSha
-		&& !data.compareBaseRef
-		&& combinedWorkingCount > 0;
-	const workingSourceOptions: WorkspaceDiffScope[] = showCombinedWorkingSource ? ["combined"] : [...visibleWorkingScopes];
+	const workingSourceOptions: WorkspaceDiffScope[] = combinedWorkingCount > 0
+		? ["combined", ...visibleWorkingScopes]
+		: visibleWorkingScopes;
 	useEffect(() => {
 		if (scope === "committed" && selectedCommit) return;
-		if (scope === "combined" && showCombinedWorkingSource) return;
+		if (scope === "combined" && combinedWorkingCount > 0) return;
 		if (scope !== "committed" && scope !== "combined" && data.sections[scope].length > 0) return;
-		const next = initialReviewSelection(data);
+		const next = initialReviewSelection();
 		setScope(next.scope);
 		setSelectedCommitSha(next.commitSha);
-	}, [data, initialSelection, scope, selectedCommit, showCombinedWorkingSource]);
+	}, [combinedWorkingCount, data, initialSelection, scope, selectedCommit]);
 
 	const allFiles = useMemo(
 		() => scope === "committed" && selectedCommit ? selectedCommit.files : sectionFiles(data, scope),
