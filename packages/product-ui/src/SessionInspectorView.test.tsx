@@ -219,7 +219,7 @@ describe("portable inspector presentations", () => {
     expect(screen.queryByText("open", { exact: true })).not.toBeInTheDocument();
     expect(screen.getByText("feature → main")).toBeInTheDocument();
     expect(title.parentElement).toContainElement(screen.getByText("#12"));
-    expect(screen.getByText("@ada")).toBeInTheDocument();
+    expect(screen.queryByText("@ada")).not.toBeInTheDocument();
     expect(screen.getByText("Ready to merge")).toHaveClass("text-success");
     expect(screen.getByRole("button", { name: "Merge" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "View PR" })).toHaveAttribute("href", "https://example.com/pull/12");
