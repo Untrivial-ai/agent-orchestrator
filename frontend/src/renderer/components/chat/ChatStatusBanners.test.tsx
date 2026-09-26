@@ -117,6 +117,31 @@ describe("McpServerBanner", () => {
 		expect(onReload).toHaveBeenCalledOnce();
 	});
 
+	it("can be dismissed even when reloading is unavailable", async () => {
+		const user = userEvent.setup();
+		render(<McpServerBanner servers={broken} turnInFlight />);
+
+		await user.click(screen.getByRole("button", { name: "Dismiss tool server warning" }));
+
+		expect(screen.queryByText("A tool server did not start")).not.toBeInTheDocument();
+	});
+
+	it("shows again when the broken server set changes or clears", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(<McpServerBanner servers={broken} />);
+		await user.click(screen.getByRole("button", { name: "Dismiss tool server warning" }));
+		expect(screen.queryByText("A tool server did not start")).not.toBeInTheDocument();
+
+		const anotherBrokenServer = [{ name: "figma", status: "failed" as const }];
+		rerender(<McpServerBanner servers={anotherBrokenServer} />);
+		expect(screen.getByText("A tool server did not start")).toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "Dismiss tool server warning" }));
+		rerender(<McpServerBanner servers={[]} />);
+		rerender(<McpServerBanner servers={anotherBrokenServer} />);
+		expect(screen.getByText("A tool server did not start")).toBeInTheDocument();
+	});
+
 	// The daemon refuses a reload mid-turn, so the control explains itself rather than
 	// being allowed to fail.
 	it("disables the reload mid-turn and says why", () => {
@@ -129,9 +154,10 @@ describe("McpServerBanner", () => {
 		);
 	});
 
-	it("draws no control at all when the harness cannot reload", () => {
+	it("keeps dismiss available when the harness cannot reload", () => {
 		render(<McpServerBanner servers={broken} />);
-		expect(screen.queryByRole("button")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /Reload/ })).not.toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Dismiss tool server warning" })).toBeInTheDocument();
 	});
 
 	it("surfaces a failed reload", () => {

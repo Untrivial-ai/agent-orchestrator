@@ -12,8 +12,8 @@
  * stuck.
  */
 
-import { memo } from "react";
-import { KeyRound, Plug, RefreshCw, TriangleAlert } from "lucide-react";
+import { memo, useEffect, useState } from "react";
+import { KeyRound, Plug, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import type { ConversationAccount, ConversationThreadState, McpServer } from "../../types/conversation";
@@ -173,7 +173,17 @@ export const McpServerBanner = memo(function McpServerBanner({
 	turnInFlight?: boolean;
 	error?: string;
 }) {
+	const brokenServerSet = servers.map((server) => server.name).sort().join("\0");
+	const [dismissedServerSet, setDismissedServerSet] = useState<string | null>(null);
+
+	useEffect(() => {
+		if (dismissedServerSet !== null && dismissedServerSet !== brokenServerSet) {
+			setDismissedServerSet(null);
+		}
+	}, [brokenServerSet, dismissedServerSet]);
+
 	if (servers.length === 0) return null;
+	if (dismissedServerSet === brokenServerSet) return null;
 
 	return (
 		<div
@@ -234,6 +244,17 @@ export const McpServerBanner = memo(function McpServerBanner({
 					{reloading ? "Reloading…" : "Reload"}
 				</Button>
 			) : null}
+			<Button
+				type="button"
+				size="icon-sm"
+				variant="ghost"
+				className="shrink-0"
+				aria-label="Dismiss tool server warning"
+				title="Dismiss tool server warning"
+				onClick={() => setDismissedServerSet(brokenServerSet)}
+			>
+				<X aria-hidden="true" />
+			</Button>
 		</div>
 	);
 });
