@@ -346,8 +346,8 @@ export function TaskComposer({
 	const globalDefaultAgent = projectQuery.data?.agent ?? "";
 	const configuredProjectAgent = projectWorkerAgent || globalDefaultAgent;
 	const agentCatalog = agentsQuery.data;
-	// Cloud projects only support the three control-plane agents (claude-code,
-	// codex, cursor), with readiness derived from the org's provider connections.
+	// Cloud projects support the control-plane agents listed in CLOUD_AGENT_PROVIDERS
+	// (the single source), with readiness derived from the org's provider connections.
 	const cloudConnectionsQuery = useProviderConnections(isCloudProject ? cloudOrg?.id : undefined);
 	const cloudAgents = useMemo(() => cloudAgentInfos(cloudConnectionsQuery.data), [cloudConnectionsQuery.data]);
 	const standaloneDefaultAgent = useMemo(() => {

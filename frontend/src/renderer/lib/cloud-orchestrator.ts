@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { createRendererCloudCpClient } from "../hooks/useCloudCp";
 import type { CloudCpAgentProvider, CloudCpProviderConnection } from "./cloud-cp";
+import { CLOUD_AGENT_PROVIDERS } from "./cloud-agents";
 import { settingsQueryKey, type Settings } from "../hooks/useSettings";
 import { readSelectedSandboxProvider } from "../stores/sandbox-provider-store";
 import { captureRendererEvent } from "./telemetry";
@@ -16,11 +17,15 @@ import { captureRendererEvent } from "./telemetry";
 // palette) render everywhere, and subscribing them to the cloud session/org
 // queries just for this click handler would fire cloud requests on every
 // mount. The client is built lazily from the settings query cache instead.
-// A Cloud worker image currently ships these three harnesses. This ordering
-// preserves the former Codex default whenever it is available, while allowing
-// a user's connected Claude Code or Cursor credential to run the orchestrator
-// when Codex is not connected.
-const CLOUD_ORCHESTRATOR_HARNESS_PRIORITY: readonly CloudCpAgentProvider[] = ["codex", "claude-code", "cursor"];
+// Orchestrator harness preference. Codex stays the historical default; the rest
+// follow in the canonical CLOUD_AGENT_PROVIDERS order. Derived from that single
+// list so a newly onboarded cloud harness is automatically eligible to run the
+// orchestrator with no change here (see cloud-agents.ts).
+const ORCHESTRATOR_PREFERRED_HARNESSES: readonly string[] = ["codex"];
+const CLOUD_ORCHESTRATOR_HARNESS_PRIORITY: readonly CloudCpAgentProvider[] = [
+	...ORCHESTRATOR_PREFERRED_HARNESSES,
+	...CLOUD_AGENT_PROVIDERS.filter((provider) => !ORCHESTRATOR_PREFERRED_HARNESSES.includes(provider)),
+] as readonly CloudCpAgentProvider[];
 
 function connectedProviders(
 	connections: readonly CloudCpProviderConnection[],
