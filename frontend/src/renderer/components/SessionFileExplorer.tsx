@@ -196,10 +196,12 @@ export function SessionFileExplorer({
 	const treeSelectedPath = selectedPath;
 	const selectedPreviousPath = sourceFiles?.find((file) => file.path === selectedPath)?.previousPath;
 	const sourceValue = source.kind === "pull_request" ? source.url : source.kind === "artifact" ? ARTIFACT_SOURCE_VALUE : "workspace";
+	// Artifacts remain viewable by clicking one from the Summary panel (which
+	// switches the Files source programmatically to ARTIFACT_SOURCE), but are
+	// not offered as a manually selectable Files source alongside Workspace/PR.
 	const sourceOptions: { value: string; label: string }[] = [
 		{ value: "workspace", label: t("files.explorer.workspaceSource") },
 		...(scmQuery.data ?? []).map((pr) => ({ value: pr.url, label: `PR #${pr.number} · ${pr.sourceBranch || pr.title}` })),
-		...(artifacts.length > 0 ? [{ value: ARTIFACT_SOURCE_VALUE, label: artifacts.length > 1 ? t("inspector.artifacts", { count: artifacts.length }) : t("inspector.artifact") }] : []),
 	];
 	const selectPRCommit = (sha: string | null) => {
 		setPreviewRequest(null);

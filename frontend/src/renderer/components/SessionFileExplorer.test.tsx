@@ -223,19 +223,30 @@ describe("SessionFileExplorer", () => {
 		titlebar.remove();
 	});
 
-	it("renders multiple artifacts as a selectable Files source", async () => {
+	it("does not offer artifacts as a Files source in the workspace dropdown", async () => {
+		// A PR keeps the source picker itself visible (with only artifacts and
+		// no PR, the picker has nothing to switch to and does not render at
+		// all), so the Branch submenu can actually be opened and inspected.
+		getMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/pr") {
+				return { data: { sessionId: "sess-artifacts", prs: [{ number: 42, url: "https://example.test/pr/42", sourceBranch: "feature/files", title: "Files" }] } };
+			}
+			return {
+				data: {
+					sessionId: "sess-artifacts",
+					files: [{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 0, size: 10, binary: false }],
+					truncated: false,
+				},
+			};
+		});
 		renderWithQuery(<SessionFileExplorer artifacts={artifacts} sessionId="sess-artifacts" />);
 
+		expect(await screen.findByRole("tablist", { name: "File view" })).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "File source" }));
 		await userEvent.click(await screen.findByRole("menuitem", { name: "Branch" }));
-		await userEvent.click(await screen.findByRole("menuitem", { name: "Artifacts (2)" }));
 
-		expect(screen.getByRole("button", { name: "File source" })).toHaveTextContent("Artifacts (2)");
-		expect(screen.getByTestId("tree-changed-only")).toHaveTextContent("true");
-		await userEvent.click(screen.getByRole("button", { name: "select reports/plan.md" }));
-
-		expect(screen.getByTestId("artifact-view")).toHaveTextContent("plan.md:reports/plan.md");
-		expect(useUiStore.getState().inspectorSessions["sess-artifacts"]?.filesSource).toEqual({ kind: "artifact" });
+		expect(await screen.findByRole("menuitem", { name: "PR #42 · feature/files" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitem", { name: "Artifacts (2)" })).not.toBeInTheDocument();
 	});
 
 	it("keeps artifact and workspace views available through the source switcher", async () => {
