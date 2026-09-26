@@ -17,7 +17,6 @@ import {
 	type WorkspaceSession,
 	type WorkspaceSummary,
 } from "../types/workspace";
-import { BoardWelcome } from "./BoardEmptyStates";
 import { CreateProjectFlow } from "./CreateProjectFlow";
 import { DaemonStartupLoader } from "./DaemonStartupLoader";
 import { GitHubOnboardingNotice } from "./GitHubOnboardingNotice";
@@ -196,8 +195,6 @@ export function HomePage() {
 		);
 	}
 
-	if (projects.length === 0) return <BoardWelcome />;
-
 	return (
 		<div className="flex min-h-full items-center justify-center px-6 py-16">
 			<div className="w-full max-w-[640px]">
@@ -241,29 +238,31 @@ export function HomePage() {
 						</div>
 					</section>
 
-					<section className="space-y-3 px-3">
-						<h2 className={HOME_SECTION_TITLE_CLASS}>{t("home.recentProjects")}</h2>
-						<div>
-							{recentProjects.map((project) => (
-								<ProjectRow
-									key={project.id}
-									project={project}
-									onClick={() => {
-										if (project.kind === STANDALONE_PROJECT_KIND) {
-											const session = mostRecentStandaloneSession(project.sessions);
-											session
-												? void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } })
-												: requestNewTask(STANDALONE_WORKSPACE_ID);
-											return;
-										}
-										openProject(project.id);
-									}}
-									emptyTimeLabel={t("home.never")}
-									justNowLabel={t("time.justNow")}
-								/>
-							))}
-						</div>
-					</section>
+					{recentProjects.length > 0 && (
+						<section className="space-y-3 px-3">
+							<h2 className={HOME_SECTION_TITLE_CLASS}>{t("home.recentProjects")}</h2>
+							<div>
+								{recentProjects.map((project) => (
+									<ProjectRow
+										key={project.id}
+										project={project}
+										onClick={() => {
+											if (project.kind === STANDALONE_PROJECT_KIND) {
+												const session = mostRecentStandaloneSession(project.sessions);
+												session
+													? void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } })
+													: requestNewTask(STANDALONE_WORKSPACE_ID);
+												return;
+											}
+											openProject(project.id);
+										}}
+										emptyTimeLabel={t("home.never")}
+										justNowLabel={t("time.justNow")}
+									/>
+								))}
+							</div>
+						</section>
+					)}
 
 					<GitHubOnboardingNotice />
 				</div>
