@@ -71,8 +71,8 @@ func (c *SystemInstallController) startAgent(w http.ResponseWriter, r *http.Requ
 	if operation == "" {
 		operation = systeminstall.AgentOperationInstall
 	}
-	if operation != systeminstall.AgentOperationInstall && operation != systeminstall.AgentOperationReinstall {
-		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_INSTALL_OPERATION", "operation must be install or reinstall", nil)
+	if operation != systeminstall.AgentOperationInstall && operation != systeminstall.AgentOperationReinstall && operation != systeminstall.AgentOperationUpdate && operation != systeminstall.AgentOperationUninstall {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_INSTALL_OPERATION", "operation must be install, reinstall, update, or uninstall", nil)
 		return
 	}
 	job, err := c.Installer.StartAgentOperation(r.Context(), target, request.Method, operation)
@@ -125,7 +125,7 @@ func writeAgentInstallError(w http.ResponseWriter, r *http.Request, err error) b
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INSTALL_METHOD_UNAVAILABLE", "the selected install method is unavailable", nil)
 		return true
 	case errors.Is(err, systeminstall.ErrHarnessActive):
-		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "HARNESS_ACTIVE", "end active Droid sessions before installing or reinstalling Droid", nil)
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "HARNESS_ACTIVE", "end active sessions for this harness before changing its installation", nil)
 		return true
 	case errors.Is(err, systeminstall.ErrInstallActive):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "INSTALL_ACTIVE", "an install or verification job is already active for this harness", nil)

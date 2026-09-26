@@ -1666,7 +1666,7 @@ type AgentInstallResponse = systeminstall.Job
 // catalog. The daemon still owns the argv behind the method id.
 type StartAgentInstallRequest struct {
 	Method    string                       `json:"method,omitempty" description:"Server-issued installation method id. Omit to use the recommended viable method."`
-	Operation systeminstall.AgentOperation `json:"operation,omitempty" enum:"install,reinstall" description:"Requested operation. Defaults to install for older clients."`
+	Operation systeminstall.AgentOperation `json:"operation,omitempty" enum:"install,reinstall,update,uninstall" description:"Requested operation. Defaults to install for older clients."`
 }
 
 // AgentInstallJobsResponse hydrates Settings with the latest durable job for
