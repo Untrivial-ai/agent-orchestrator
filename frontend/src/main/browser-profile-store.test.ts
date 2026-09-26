@@ -33,6 +33,7 @@ function registryWithProfiles(count: number): BrowserProfileRegistry {
 			updatedAt: now,
 		})),
 		bindings: {},
+		defaultProfileId: null,
 	};
 }
 
@@ -45,7 +46,7 @@ describe("BrowserProfileStore", () => {
 		const stateDir = await makeStateDir();
 		const store = new BrowserProfileStore({ stateDir });
 
-		expect(await store.load()).toEqual({ profiles: [] });
+		expect(await store.load()).toEqual({ profiles: [], defaultProfileId: null });
 		const work = await store.createProfile(" Work ");
 		const personal = await store.createProfile("Personal");
 
@@ -134,6 +135,37 @@ describe("BrowserProfileStore", () => {
 		});
 		expect(store.getProfile(profile.id)).toBeUndefined();
 		expect(store.getSessionProfileId("worker-1")).toBeUndefined();
+	});
+
+	it("loads a pre-existing registry written before defaultProfileId existed", async () => {
+		const stateDir = await makeStateDir();
+		const registryPath = path.join(stateDir, "browser-profiles.json");
+		const legacy = registryWithProfiles(1);
+		// Registries written before this field existed have no `defaultProfileId` key at all.
+		await writeFile(registryPath, JSON.stringify({ version: legacy.version, profiles: legacy.profiles, bindings: legacy.bindings }), "utf8");
+
+		const store = new BrowserProfileStore({ stateDir });
+		expect((await store.load()).error).toBeUndefined();
+		expect(store.getDefaultProfileId()).toBeNull();
+	});
+
+	it("persists a default profile and clears it when that profile is deleted", async () => {
+		const stateDir = await makeStateDir();
+		const store = new BrowserProfileStore({ stateDir });
+		const profile = await store.createProfile("Work");
+
+		expect(store.getDefaultProfileId()).toBeNull();
+		await store.setDefaultProfileId(profile.id);
+		expect(store.getDefaultProfileId()).toBe(profile.id);
+
+		const reloaded = new BrowserProfileStore({ stateDir });
+		await reloaded.load();
+		expect(reloaded.getDefaultProfileId()).toBe(profile.id);
+
+		await expect(store.setDefaultProfileId("not-a-uuid")).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+
+		await store.deleteProfile(profile.id);
+		expect(store.getDefaultProfileId()).toBeNull();
 	});
 
 	it("serializes profile data operations and keeps the live-operation marker until the full queue drains", async () => {

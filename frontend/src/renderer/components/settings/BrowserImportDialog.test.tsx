@@ -55,11 +55,12 @@ describe("BrowserImportDialog", () => {
 			updatedAt: "2026-01-01T00:00:00.000Z",
 		};
 		const bridge: AoBridge["browserProfiles"] = {
-			list: vi.fn(async () => ({ profiles: [] })),
+			list: vi.fn(async () => ({ profiles: [], defaultProfileId: null })),
 			create: vi.fn(),
 			rename: vi.fn(),
 			clear: vi.fn(),
 			delete: vi.fn(),
+			setDefault: vi.fn(),
 			discoverImportSources: vi.fn(async () => ({ sources: [source, firefoxSource], warnings: ["safari-access-denied" as const] })),
 			import: vi.fn(async () => ({
 				sourceName: source.name,
@@ -111,11 +112,12 @@ describe("BrowserImportDialog", () => {
 
 	it("clears a failed import when choosing another browser", async () => {
 		const bridge: AoBridge["browserProfiles"] = {
-			list: vi.fn(async () => ({ profiles: [] })),
+			list: vi.fn(async () => ({ profiles: [], defaultProfileId: null })),
 			create: vi.fn(),
 			rename: vi.fn(),
 			clear: vi.fn(),
 			delete: vi.fn(),
+			setDefault: vi.fn(),
 			discoverImportSources: vi.fn(async () => ({ sources: [source, firefoxSource] })),
 			import: vi.fn(async () => { throw new Error("Firefox cookie data is unavailable."); }),
 			onImportProgress: vi.fn(() => () => undefined),
@@ -212,11 +214,12 @@ describe("BrowserImportDialog", () => {
 	it("explains how to recover when a source browser database cannot be opened", async () => {
 		const braveSource = { ...source, name: "Brave" };
 		const bridge: AoBridge["browserProfiles"] = {
-			list: vi.fn(async () => ({ profiles: [] })),
+			list: vi.fn(async () => ({ profiles: [], defaultProfileId: null })),
 			create: vi.fn(),
 			rename: vi.fn(),
 			clear: vi.fn(),
 			delete: vi.fn(),
+			setDefault: vi.fn(),
 			discoverImportSources: vi.fn(async () => ({ sources: [braveSource] })),
 			import: vi.fn(async () => {
 				throw new Error("Error invoking remote method 'browserProfiles:import:start': Error: unable to open database file");
@@ -238,11 +241,12 @@ describe("BrowserImportDialog", () => {
 
 	it("points Safari users to Full Disk Access when macOS blocks its data", async () => {
 		const bridge: AoBridge["browserProfiles"] = {
-			list: vi.fn(async () => ({ profiles: [] })),
+			list: vi.fn(async () => ({ profiles: [], defaultProfileId: null })),
 			create: vi.fn(),
 			rename: vi.fn(),
 			clear: vi.fn(),
 			delete: vi.fn(),
+			setDefault: vi.fn(),
 			discoverImportSources: vi.fn(async () => ({ sources: [safariSource] })),
 			import: vi.fn(async () => { throw new Error("EPERM: operation not permitted"); }),
 			onImportProgress: vi.fn(() => () => undefined),
@@ -260,11 +264,12 @@ describe("BrowserImportDialog", () => {
 
 	it("keeps discovery failures visible and disables import", async () => {
 		const bridge: AoBridge["browserProfiles"] = {
-			list: vi.fn(async () => ({ profiles: [] })),
+			list: vi.fn(async () => ({ profiles: [], defaultProfileId: null })),
 			create: vi.fn(),
 			rename: vi.fn(),
 			clear: vi.fn(),
 			delete: vi.fn(),
+			setDefault: vi.fn(),
 			discoverImportSources: vi.fn(async () => { throw new Error("Browser discovery failed."); }),
 			import: vi.fn(),
 			onImportProgress: vi.fn(() => () => undefined),
