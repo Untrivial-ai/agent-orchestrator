@@ -12,8 +12,8 @@
  * stuck.
  */
 
-import { memo } from "react";
-import { KeyRound, Plug, RefreshCw, TriangleAlert } from "lucide-react";
+import { memo, useEffect, useState } from "react";
+import { KeyRound, Plug, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import type { ConversationAccount, ConversationThreadState, McpServer } from "../../types/conversation";
@@ -173,7 +173,16 @@ export const McpServerBanner = memo(function McpServerBanner({
 	turnInFlight?: boolean;
 	error?: string;
 }) {
+	const [dismissedSignature, setDismissedSignature] = useState<string>();
+	const signature = servers
+		.map((server) => `${server.name}\u0000${server.status}\u0000${server.failureReason ?? ""}\u0000${server.error ?? ""}`)
+		.join("\u0001");
+	useEffect(() => {
+		setDismissedSignature((dismissed) => (dismissed === signature ? dismissed : undefined));
+	}, [signature]);
+
 	if (servers.length === 0) return null;
+	if (dismissedSignature === signature) return null;
 
 	return (
 		<div
@@ -234,6 +243,17 @@ export const McpServerBanner = memo(function McpServerBanner({
 					{reloading ? "Reloading…" : "Reload"}
 				</Button>
 			) : null}
+			<Button
+				type="button"
+				size="icon"
+				variant="ghost"
+				aria-label="Dismiss tool server warning"
+				title="Dismiss tool server warning"
+				onClick={() => setDismissedSignature(signature)}
+				className="size-7 shrink-0"
+			>
+				<X aria-hidden="true" className="size-3.5" />
+			</Button>
 		</div>
 	);
 });
