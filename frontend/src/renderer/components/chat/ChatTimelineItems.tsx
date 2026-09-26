@@ -868,11 +868,13 @@ export function LiveResponseStatus({ startedAt, settling = false }: { startedAt?
 		<div className="-mx-1 flex h-7 items-center gap-0.5 border-b border-border py-0">
 			<motion.div
 				initial={false}
-				animate={{ width: settling ? 0 : 20, opacity: settling ? 0 : 1 }}
+				animate={{ width: settling ? 0 : 24, opacity: settling ? 0 : 1 }}
 				transition={{ duration: 0.18, ease: "easeOut" }}
-				className="mx-0.5 flex size-5 shrink-0 items-center overflow-hidden"
+				className="flex shrink-0 items-center overflow-hidden"
 			>
-				<ResponseSpinner />
+				<div className="mx-0.5 flex size-5 shrink-0 items-center">
+					<ResponseSpinner />
+				</div>
 			</motion.div>
 			<span
 				role="status"
