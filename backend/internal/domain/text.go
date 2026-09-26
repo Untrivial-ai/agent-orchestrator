@@ -3,7 +3,13 @@ package domain
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
+
+var titleSmallWords = map[string]struct{}{
+	"a": {}, "an": {}, "and": {}, "as": {}, "at": {}, "by": {}, "for": {},
+	"in": {}, "of": {}, "on": {}, "or": {}, "the": {}, "to": {}, "via": {},
+}
 
 // SanitizeControlChars removes control characters that are unsafe to deliver
 // into a live terminal pane, while preserving the whitespace that legitimate
@@ -23,4 +29,28 @@ func SanitizeControlChars(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// TitleCaseSessionTitle turns a task label into a readable card title while
+// preserving acronyms such as API and PR. Short connector words stay lowercase
+// except at the beginning, matching normal title-case conventions.
+func TitleCaseSessionTitle(s string) string {
+	words := strings.Fields(strings.TrimSpace(s))
+	for i, word := range words {
+		lower := strings.ToLower(word)
+		if i > 0 {
+			if _, ok := titleSmallWords[lower]; ok {
+				words[i] = lower
+				continue
+			}
+		}
+		first, size := utf8.DecodeRuneInString(word)
+		if first == utf8.RuneError && size == 0 {
+			continue
+		}
+		if strings.ToLower(word) == word {
+			words[i] = string(unicode.ToUpper(first)) + word[size:]
+		}
+	}
+	return strings.Join(words, " ")
 }

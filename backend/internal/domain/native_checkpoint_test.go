@@ -25,6 +25,21 @@ func TestNativeCheckpointKeepsUnknownStopsAndSubmissionMultiplicity(t *testing.T
 	}
 }
 
+func TestLatestObservedAssistantTextSkipsPromptAndInvalidEvidence(t *testing.T) {
+	submit := NativeCheckpointObservation{Generation: "launch", PromptID: "A", Submission: true, SubmissionID: "s", Text: "Add prices.txt"}
+	encoded := AppendNativeCheckpoint("", "native", submit)
+	encoded = AppendNativeCheckpoint(encoded, "native", NativeCheckpointObservation{Generation: "launch", PromptID: "A", Text: "I wrote prices.txt."})
+	if got := LatestObservedAssistantText(encoded); got != "I wrote prices.txt." {
+		t.Fatalf("text = %q", got)
+	}
+	if got := LatestObservedAssistantText(`{"invalid":true,"events":[{"text":"nope"}]}`); got != "" {
+		t.Fatalf("invalid evidence text = %q", got)
+	}
+	if got := LatestObservedAssistantText("{"); got != "" {
+		t.Fatalf("corrupt evidence text = %q", got)
+	}
+}
+
 func TestNativeCheckpointOverflowAndCorruptionStayFailClosed(t *testing.T) {
 	for _, initial := range []string{"{bad JSON", `{"nativeId":"other"}`, ""} {
 		encoded := initial

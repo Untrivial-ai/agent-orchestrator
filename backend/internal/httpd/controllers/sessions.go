@@ -284,6 +284,9 @@ func (c *SessionsController) spawn(w http.ResponseWriter, r *http.Request) {
 	// required CLI-side. When present, it is held to the same length cap here so
 	// a direct API call cannot exceed it.
 	displayName := strings.TrimSpace(in.DisplayName)
+	if displayName != "" {
+		displayName = domain.TitleCaseSessionTitle(displayName)
+	}
 	if utf8.RuneCountInString(displayName) > maxDisplayNameLen {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "DISPLAY_NAME_TOO_LONG", fmt.Sprintf("displayName must be %d characters or fewer", maxDisplayNameLen), nil)
 		return
@@ -1210,6 +1213,7 @@ func (c *SessionsController) rename(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "DISPLAY_NAME_REQUIRED", "displayName is required", nil)
 		return
 	}
+	displayName = domain.TitleCaseSessionTitle(displayName)
 	if utf8.RuneCountInString(displayName) > maxDisplayNameLen {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "DISPLAY_NAME_TOO_LONG", fmt.Sprintf("displayName must be %d characters or fewer", maxDisplayNameLen), nil)
 		return

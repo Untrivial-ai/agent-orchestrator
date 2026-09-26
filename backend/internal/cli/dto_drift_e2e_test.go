@@ -239,8 +239,8 @@ func TestE2E_SpawnAndProjectAddDTORoundTrip(t *testing.T) {
 		if got.IssueID != "ISS-1" {
 			t.Errorf("IssueID = %q, want %q", got.IssueID, "ISS-1")
 		}
-		if got.DisplayName != "my worker" {
-			t.Errorf("DisplayName = %q, want %q (CLI json:\"displayName\" vs SpawnSessionRequest)", got.DisplayName, "my worker")
+	if got.DisplayName != "My Worker" {
+		t.Errorf("DisplayName = %q, want %q (CLI json:\"displayName\" vs SpawnSessionRequest)", got.DisplayName, "My Worker")
 		}
 		if got.AgentConfig.Model != "gpt-5.6-sol" {
 			t.Errorf("AgentConfig.Model = %q, want %q (CLI json:\"model\" vs SpawnSessionRequest)", got.AgentConfig.Model, "gpt-5.6-sol")

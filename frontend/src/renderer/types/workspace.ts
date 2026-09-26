@@ -111,6 +111,12 @@ export type WorkspaceSession = {
 	 * {@link status} already produced.
 	 */
 	displayStatus?: string;
+	/**
+	 * Generic human-readable summary derived by the daemon from lifecycle and PR
+	 * facts. Conversation prompts, assistant replies, and tool output are never
+	 * used as card summaries.
+	 */
+	summary?: string;
 	statusReadiness?: "checking" | "ready" | "unavailable";
 	/**
 	 * How far this session's start-up got. A Chat spawn answers as soon as the

@@ -3261,6 +3261,7 @@ export interface components {
             status: "working" | "pr_open" | "draft" | "ci_failed" | "review_pending" | "changes_requested" | "approved" | "mergeable" | "merged" | "needs_input" | "exited" | "idle" | "terminated" | "no_signal";
             /** @enum {string} */
             statusReadiness: "checking" | "ready" | "unavailable";
+            summary?: string;
             terminalGeneration?: string;
             terminalHandleId?: string;
             terminateOnPrMerge: boolean;

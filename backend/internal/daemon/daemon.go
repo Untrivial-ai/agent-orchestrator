@@ -77,6 +77,223 @@ import (
 // are healed on this cadence even when no event or hook fires.
 const usageReconcileTick = 3 * time.Minute
 
+func liveProgressSummary(taskBrief, evidence string) string {
+	lower := strings.ToLower(strings.Join(strings.Fields(evidence), " "))
+	task := strings.ToLower(strings.Join(strings.Fields(taskBrief), " "))
+	fileSummary := sourceFileActivitySummary(evidence)
+	switch {
+	case lower == "":
+		return ""
+	case strings.Contains(lower, "packages/ai/src/stream") || strings.Contains(lower, "streaming chunk"):
+		return "Inspecting streaming chunk parsing"
+	case strings.Contains(lower, "providers/ollama") || strings.Contains(lower, "ollama provider"):
+		return "Reviewing Ollama provider settings"
+	case strings.Contains(lower, "cli/src/args") || strings.Contains(lower, "command-line argument"):
+		return "Reviewing command-line argument parsing"
+	case strings.Contains(lower, "agent/src/loop") || strings.Contains(lower, "agent loop"):
+		return "Inspecting agent iteration flow"
+	case strings.Contains(lower, "gmail_tokens") || strings.Contains(lower, "gmail token"):
+		return "Reviewing Gmail token storage"
+	case strings.Contains(lower, "src/lib/gmail") || strings.Contains(lower, "gmail api"):
+		return "Inspecting Gmail API handling"
+	case strings.Contains(lower, "callback"):
+		return "Inspecting authentication callbacks"
+	case strings.Contains(lower, "conversations") || strings.Contains(lower, "conversation"):
+		return "Reviewing conversation API routes"
+	case strings.Contains(lower, "user_persona") || strings.Contains(lower, "user persona"):
+		return "Reviewing user persona migrations"
+	case strings.Contains(lower, "policy") || strings.Contains(lower, "rls"):
+		return "Reviewing row-level access policies"
+	case strings.Contains(lower, "migration"):
+		return "Reviewing database migrations"
+	case strings.Contains(lower, "dashboard"):
+		return "Reviewing dashboard components"
+	case fileSummary != "":
+		return fileSummary
+	case strings.Contains(task, "avatar"):
+		return "Reviewing user avatar presentation"
+	case strings.Contains(task, "format"):
+		return "Reviewing display formatting helpers"
+	case strings.Contains(task, "cloud client"):
+		return "Inspecting cloud client requests"
+	case strings.Contains(task, "icon"):
+		return "Reviewing icon library organization"
+	case strings.Contains(task, "proxy"):
+		return "Inspecting cloud proxy behavior"
+	case strings.Contains(lower, "style") || strings.Contains(lower, "css") || strings.Contains(lower, "typography"):
+		return "Reviewing interface styling"
+	case strings.Contains(lower, "route") || strings.Contains(lower, "navigation"):
+		return "Inspecting application routes"
+	case strings.Contains(lower, "auth"):
+		return "Inspecting authentication behavior"
+	case (strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "debug")) && (strings.Contains(task, "gmail") || strings.Contains(task, "token")):
+		return "Diagnosing Gmail token failures"
+	case (strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "debug")) && strings.Contains(task, "auth"):
+		return "Diagnosing authentication failures"
+	case (strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "debug")) && strings.Contains(task, "conversation"):
+		return "Diagnosing conversation API failures"
+	case (strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "debug")) && (strings.Contains(task, "dashboard") || strings.Contains(task, "style")):
+		return "Diagnosing dashboard interface failures"
+	case strings.Contains(lower, "lint") || strings.Contains(lower, "type-check"):
+		return "Diagnosing static check failures"
+	case strings.Contains(lower, "build") || strings.Contains(lower, "test") || strings.Contains(lower, "validat"):
+		return "Validating the current build"
+	case strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "debug"):
+		return ""
+	case strings.Contains(task, "gmail") || strings.Contains(task, "token"):
+		return "Reviewing Gmail account handling"
+	case strings.Contains(task, "rls") || strings.Contains(task, "migration") || strings.Contains(task, "database"):
+		return "Reviewing database access rules"
+	case strings.Contains(task, "style") || strings.Contains(task, "css") || strings.Contains(task, "typography") || strings.Contains(task, "visual"):
+		return "Reviewing interface presentation"
+	case strings.Contains(task, "route") || strings.Contains(task, "navigation"):
+		return "Inspecting route behavior"
+	case strings.Contains(task, "auth"):
+		return "Reviewing authentication behavior"
+	case strings.Contains(lower, "read") || strings.Contains(lower, "find") || strings.Contains(lower, "grep") || strings.Contains(lower, "glob"):
+		return "Inspecting active source files"
+	default:
+		return ""
+	}
+}
+
+// sourceFileActivitySummary is the last useful heuristic before a neutral
+// status. It turns a file observed in a tool batch into a human description,
+// never the command or the raw path shown by the agent. This keeps cards
+// legible when a configured model times out or answers too generically.
+func sourceFileActivitySummary(evidence string) string {
+	if base := latestSourceFile(evidence); base != "" {
+		dot := strings.LastIndex(base, ".")
+		stem := strings.NewReplacer("_", " ", "-", " ").Replace(base[:dot])
+		words := strings.Fields(stem)
+		if len(words) == 0 {
+			return ""
+		}
+		for index, word := range words {
+			switch strings.ToLower(word) {
+			case "api", "cli", "sse", "ai", "ui":
+				words[index] = strings.ToUpper(word)
+			default:
+				words[index] = strings.ToUpper(word[:1]) + word[1:]
+			}
+		}
+		action := "Reviewing"
+		lower := strings.ToLower(evidence)
+		if strings.Contains(lower, "edit") || strings.Contains(lower, "write") || strings.Contains(lower, "patch") {
+			action = "Updating"
+		}
+		return action + " " + strings.Join(words, " ") + " behavior"
+	}
+	return ""
+}
+
+func latestSourceFile(evidence string) string {
+	var found string
+	for _, token := range strings.Fields(evidence) {
+		token = strings.Trim(token, "`'\"()[]{}.,;:")
+		base := token
+		if slash := strings.LastIndex(base, "/"); slash >= 0 {
+			base = base[slash+1:]
+		}
+		dot := strings.LastIndex(base, ".")
+		if dot <= 0 || dot == len(base)-1 {
+			continue
+		}
+		switch strings.ToLower(base[dot+1:]) {
+		case "ts", "tsx", "js", "jsx", "go", "py", "rs", "sql", "json", "md":
+			found = base
+		}
+	}
+	return found
+}
+
+// cardSummaryIsGrounded rejects a plausible-sounding provider answer when it
+// describes a different worker's domain. A configured model occasionally sees
+// a very short tool batch and fills in a familiar, but unrelated, subject. The
+// board must prefer the deterministic, evidence-scoped description in that
+// case; it is better to be slightly less fluent than to report another
+// session's work.
+func cardSummaryIsGrounded(summary, taskBrief, evidence string) bool {
+	summary = strings.ToLower(summary)
+	// Tool output can include stale documentation, policy text, or prior command
+	// output. Once a concrete source file is present, it is the authoritative
+	// current artifact; do not let incidental text in that batch change the
+	// summary's subject.
+	context := taskBrief
+	if file := latestSourceFile(evidence); file != "" {
+		context += " " + file
+	} else {
+		context += " " + evidence
+	}
+	context = strings.ToLower(context)
+	if strings.TrimSpace(summary) == "working on the task" ||
+		strings.TrimSpace(summary) == "working through the task" ||
+		strings.TrimSpace(summary) == "reviewing the task" ||
+		strings.TrimSpace(summary) == "investigating the task" {
+		return false
+	}
+	for _, domain := range []struct {
+		summaryTerms []string
+		contextTerms []string
+	}{
+		{[]string{"gmail", "token"}, []string{"gmail", "token"}},
+		{[]string{"callback", "authentication", "auth"}, []string{"callback", "authentication", "auth"}},
+		{[]string{"conversation"}, []string{"conversation"}},
+		{[]string{"dashboard"}, []string{"dashboard"}},
+		{[]string{"policy", "row-level", "rls"}, []string{"policy", "row-level", "rls"}},
+		{[]string{"migration"}, []string{"migration"}},
+		{[]string{"route", "navigation"}, []string{"route", "navigation"}},
+		{[]string{"style", "typography", "interface"}, []string{"style", "typography", "css", "dashboard"}},
+	} {
+		mentionsDomain := false
+		for _, term := range domain.summaryTerms {
+			mentionsDomain = mentionsDomain || strings.Contains(summary, term)
+		}
+		if !mentionsDomain {
+			continue
+		}
+		for _, term := range domain.contextTerms {
+			if strings.Contains(context, term) {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+const cardSummaryMetadataPrefix = "ao-card-summary:"
+
+// uniqueLiveCardSummary prevents a broad model answer for one worker from
+// collapsing unrelated active cards into the same board label. The retry is
+// deterministic and uses that worker's own task brief—not another card's text.
+func uniqueLiveCardSummary(sessionID domain.SessionID, taskBrief, candidate string, sessions []domain.SessionRecord) string {
+	if strings.TrimSpace(candidate) == "" {
+		return candidate
+	}
+	taken := func(summary string) bool {
+		for _, other := range sessions {
+			if other.ID == sessionID || other.IsTerminated {
+				continue
+			}
+			otherSummary := strings.TrimSpace(strings.TrimPrefix(other.Metadata.LatestAssistantUpdate, cardSummaryMetadataPrefix))
+			if strings.EqualFold(otherSummary, summary) {
+				return true
+			}
+		}
+		return false
+	}
+	if !taken(candidate) {
+		return candidate
+	}
+	if scoped := liveProgressSummary(taskBrief, taskBrief); scoped != "" && !strings.EqualFold(scoped, candidate) && !taken(scoped) {
+		return scoped
+	}
+	// The only remaining collision is genuinely indistinguishable evidence. Do
+	// not invent a misleading suffix merely to make strings look different.
+	return candidate
+}
+
 // sentryEnvironment maps the daemon's app version to a Sentry environment so a
 // nightly/edge build's issues do not mix with stable release health.
 func sentryEnvironment(version string) string {
@@ -400,7 +617,11 @@ func Run() error {
 	// registered driver cannot start in chat mode, so an unsupported request fails
 	// loudly instead of silently becoming a TUI session.
 	var sessMgr sessionLifecycle
-	chatSvc := chatsvc.New(chatsvc.Options{
+	var chatSvc *chatsvc.Service
+	var cardSummaryMu sync.Mutex
+	cardSummaryVersion := make(map[domain.SessionID]uint64)
+	cardSummaryAppliedVersion := make(map[domain.SessionID]uint64)
+	chatSvc = chatsvc.New(chatsvc.Options{
 		Store:    store,
 		Sessions: store,
 		StopProviderHost: func(ctx context.Context, id domain.SessionID) error {
@@ -481,6 +702,57 @@ func Run() error {
 					"sessionID", sessionID, "model", model, "error", err)
 			}
 		},
+		OnAssistantMessage: func(msgCtx context.Context, sessionID domain.SessionID, evidence string) {
+			cardSummaryMu.Lock()
+			cardSummaryVersion[sessionID]++
+			version := cardSummaryVersion[sessionID]
+			cardSummaryMu.Unlock()
+
+			// Summarize each fixed activity window through the worker's configured
+			// model. If it is unavailable or too slow, use a conservative heuristic,
+			// then the neutral safety net.
+			go func() {
+				rec, ok, err := store.GetSession(msgCtx, sessionID)
+				if err != nil || !ok || rec.IsTerminated {
+					return
+				}
+
+				// The scheduler collects each batch for one second. Cap provider
+				// selection below one second so a stalled configured worker cannot
+				// turn the requested two-to-three-second card cadence into a much
+				// slower one.
+				providerCtx, cancelProviders := context.WithTimeout(msgCtx, 900*time.Millisecond)
+				summary, _ := chatSvc.GenerateCardSummary(providerCtx, sessionID, rec.Metadata.Prompt, evidence)
+				cancelProviders()
+				if summary != "" && !cardSummaryIsGrounded(summary, rec.Metadata.Prompt, evidence) {
+					summary = ""
+				}
+				if summary == "" {
+					summary = liveProgressSummary(rec.Metadata.Prompt, evidence)
+				}
+				if summary == "" {
+					summary = "Working on the task"
+				}
+				cardSummaryMu.Lock()
+				fresh := version > cardSummaryAppliedVersion[sessionID]
+				if !fresh {
+					cardSummaryMu.Unlock()
+					return
+				}
+				// Keep the collision check and the following durable write in one
+				// critical section. Otherwise two sessions can both observe an empty
+				// board, choose the same generic phrase, and race to persist it.
+				if sessions, listErr := store.ListSessions(msgCtx, rec.ProjectID); listErr == nil {
+					summary = uniqueLiveCardSummary(sessionID, rec.Metadata.Prompt, summary, sessions)
+				}
+				cardSummaryAppliedVersion[sessionID] = version
+				rec.Metadata.LatestAssistantUpdate = cardSummaryMetadataPrefix + summary
+				rec.UpdatedAt = time.Now().UTC()
+				_ = store.UpdateSession(msgCtx, rec)
+				cardSummaryMu.Unlock()
+			}()
+		},
+		KeepCardSummaryFresh: true,
 	})
 
 	codexModelDriver := codexappserver.New(codexagent.New(), log)
@@ -549,6 +821,15 @@ func Run() error {
 		}
 		return fmt.Errorf("wire session service: %w", err)
 	}
+	// Direct TUI spawns do not pass through DelegateTask's orchestrator title
+	// refinement. Generate their title through the same configured harness/model
+	// in a detached read-only conversation.
+	sessionSvc.SetCardTitleGenerator(func(titleCtx context.Context, rec domain.SessionRecord) (string, error) {
+		return chatSvc.GenerateCardTitleWithConfig(titleCtx, rec.Harness, ports.ChatStartConfig{
+			SessionID: rec.ID, DataDir: cfg.DataDir, WorkspacePath: rec.Metadata.WorkspacePath,
+			Model: rec.Metadata.Model, Permissions: ports.PermissionModeAuto,
+		}, rec.Metadata.Prompt)
+	})
 	sessionSvc.SetChatProviderPreserver(chatSvc.PreservesProviderOnRestart)
 	sessMgr = wiredSessMgr
 	if tunable, ok := sessMgr.(interface {

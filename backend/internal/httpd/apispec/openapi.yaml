@@ -9433,6 +9433,8 @@ components:
           - ready
           - unavailable
           type: string
+        summary:
+          type: string
         terminalGeneration:
           type: string
         terminalHandleId:
