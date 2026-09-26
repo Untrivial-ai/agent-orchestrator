@@ -1226,17 +1226,17 @@ function PRSummaryCard({ pr, sessionId }: { pr: SessionPRSummary; sessionId: str
 		...(pr.review.resolvedBy ?? []).filter((person) => person.count > 0).map((person) => person.reviewerId),
 	].map((login) => login.trim()).filter(Boolean)));
 	const commenterAvatars = commenters.length > 0 ? (
-		<div className="flex shrink-0 items-center pl-1" aria-label={t("pr.commenters", { names: commenters.join(", ") })}>
+		<div className="inline-flex h-5 shrink-0 items-center" aria-label={t("pr.commenters", { names: commenters.join(", ") })}>
 			{commenters.slice(0, 5).map((login, index) => (
 				<span
 					aria-label={t("pr.commentBy", { name: login })}
-					className={cn("group relative shrink-0 cursor-default outline-none hover:z-20 focus-visible:z-20", index > 0 && "-ml-0.5")}
+					className={cn("group relative inline-flex size-5 shrink-0 items-center justify-center cursor-default outline-none hover:z-20 focus-visible:z-20", index > 0 && "-ml-0.5")}
 					key={login}
 					role="img"
 					tabIndex={0}
 				>
 					<UserAvatar
-						className="size-7 border border-(--color-bg-settings-input) shadow-sm transition-transform duration-200 ease-out group-hover:-translate-y-1 group-hover:scale-[1.65] group-focus-visible:-translate-y-1 group-focus-visible:scale-[1.65]"
+						className="!size-5 border border-(--color-bg-settings-input) shadow-sm transition-transform duration-200 ease-out group-hover:-translate-y-1 group-hover:scale-[1.7] group-focus-visible:-translate-y-1 group-focus-visible:scale-[1.7]"
 						imageUrl={scmUserAvatarUrl(pr.provider, prBrowserUrl(pr), login)}
 						name={login}
 					/>
@@ -1254,12 +1254,12 @@ function PRSummaryCard({ pr, sessionId }: { pr: SessionPRSummary; sessionId: str
 	) : null;
 	const discussionCommentCount = pr.discussionCommentCount ?? 0;
 	const discussionCount = discussionCommentCount > 0 ? (
-		<span className="text-xs text-settings-muted">
+		<span className="inline-flex h-5 items-center text-xs leading-none text-settings-muted">
 			{discussionCommentCount} {t("pr.noun.comment", { count: discussionCommentCount })}
 		</span>
 	) : null;
 	const reviewDetailsAction = discussionCount || commenterAvatars ? (
-		<div className="flex items-center gap-1.5">{discussionCount}{commenterAvatars}</div>
+		<div className="inline-flex h-5 items-center gap-1">{discussionCount}{commenterAvatars}</div>
 	) : undefined;
 	const viewModel: InspectorPullRequest = {
 		...pr,
