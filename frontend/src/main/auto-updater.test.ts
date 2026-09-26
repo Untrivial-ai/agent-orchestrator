@@ -1822,7 +1822,9 @@ describe("startAutoUpdates", () => {
     const checkedAt = module.getUpdateStatus().checkedAt;
     updaterEvents.get("error")?.(err);
     expect(module.getUpdateStatus().checkedAt).toBe(checkedAt);
-    expect(module.getUpdateStatus().checkError).toBe(err.message);
+    expect(module.getUpdateStatus().checkError).toBe(
+      "Couldn't check for updates — the update information was not found on the server.",
+    );
 
     expect(module.getUpdateStatus()).toEqual(
       expect.objectContaining({
@@ -1885,7 +1887,7 @@ describe("startAutoUpdates", () => {
     ]);
   });
 
-  it("still surfaces non-manifest 404 errors", async () => {
+  it("rewrites non-manifest HttpError dumps to a short server-error line", async () => {
     const { module, updaterEvents } = await importAutoUpdater();
     const err = new Error(
       'HttpError: 404 "method: GET url: https://github.com/AgentWrapper/agent-orchestrator/releases/download/v0.10.1/some-file.png"',
@@ -1896,7 +1898,35 @@ describe("startAutoUpdates", () => {
 
     expect(module.getUpdateStatus()).toEqual({
       state: "error",
-      message: err.message,
+      message:
+        "Couldn't check for updates — the update server returned an error. Try again later.",
+      checkedAt: expect.any(Number),
+    });
+  });
+
+  it("rewrites GitHub releases-feed 504 dumps to a short unavailable line", async () => {
+    const { module, updaterEvents } = await importAutoUpdater();
+    const err = new Error(
+      [
+        "Cannot parse releases feed: Error: Unable to find latest version on GitHub (https://github.com/Untrivial-ai/agent-orchestrator/releases/latest), please ensure a production release exists:",
+        'HttpError: 504 "method: GET url: https://github.com/Untrivial-ai/agent-orchestrator/releases/latest',
+        "Data:",
+        "<html><body><h1>504 Gateway Time-out</h1>",
+        "The server didn't respond in time.",
+        "</body></html>",
+        'Headers: {"cache-control":"no-cache","content-type":"text/html","set-cookie":["_octo=GH1.1;"]}',
+        "    at e.GitHubProvider.getLatestTagName (C:\\Users\\Lenovo\\AppData\\Local\\Programs\\agent-orchestrator\\resources\\app.asar\\.vite\\build\\main.js:1:1)",
+        "    at e.NsisUpdater.doCheckForUpdates (C:\\Users\\Lenovo\\AppData\\Local\\Programs\\agent-orchestrator\\resources\\app.asar\\.vite\\build\\main.js:1:1)",
+      ].join("\n"),
+    );
+
+    await module.checkForUpdatesNow(stateDir);
+    updaterEvents.get("error")?.(err);
+
+    expect(module.getUpdateStatus()).toEqual({
+      state: "error",
+      message:
+        "Couldn't check for updates — the update server is temporarily unavailable. Try again in a few minutes.",
       checkedAt: expect.any(Number),
     });
   });
