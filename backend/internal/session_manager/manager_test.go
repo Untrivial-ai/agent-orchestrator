@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,6 +66,10 @@ type fakeStore struct {
 	// sharedLog, when non-nil, receives an ordered call entry for each
 	// UpsertSessionWorktree invocation so ordering tests can compare across fakes.
 	sharedLog *[]string
+	// listCalls counters back the store reads Cleanup performs; the
+	// once-per-project regression test asserts on them.
+	listSessionsCalls    atomic.Int64
+	listAllSessionsCalls atomic.Int64
 }
 
 func newFakeStore() *fakeStore {
@@ -232,6 +237,7 @@ func (f *fakeStore) ConversationForSession(_ context.Context, id domain.SessionI
 	return conversation, nil
 }
 func (f *fakeStore) ListSessions(_ context.Context, p domain.ProjectID) ([]domain.SessionRecord, error) {
+	f.listSessionsCalls.Add(1)
 	var out []domain.SessionRecord
 	for _, r := range f.sessions {
 		if r.ProjectID == p {
@@ -241,6 +247,7 @@ func (f *fakeStore) ListSessions(_ context.Context, p domain.ProjectID) ([]domai
 	return out, nil
 }
 func (f *fakeStore) ListAllSessions(context.Context) ([]domain.SessionRecord, error) {
+	f.listAllSessionsCalls.Add(1)
 	if f.listAllErr != nil {
 		return nil, f.listAllErr
 	}
@@ -4172,6 +4179,48 @@ func TestCleanup_ReclaimsTerminalWorkspaces(t *testing.T) {
 	}
 	if ws.destroyed != 1 {
 		t.Fatal("live workspace must not be destroyed")
+	}
+}
+
+// TestCleanup_ListsSessionsOncePerProject pins Cleanup's store-read count:
+// one initial list plus one fresh list per project group, regardless of
+// session count. The per-session re-list it replaced made a many-session
+// project perform N+1 full list reads inside the request deadline — the O(N²)
+// behind project-deletion timeouts (upstream issue #2598).
+func TestCleanup_ListsSessionsOncePerProject(t *testing.T) {
+	m, st, _, ws := newManager()
+	for i := 1; i <= 5; i++ {
+		seedTerminal(st, domain.SessionID(fmt.Sprintf("mer-%d", i)), domain.SessionMetadata{WorkspacePath: fmt.Sprintf("/ws/mer-%d", i)})
+	}
+	st.sessions["mer-live"] = mkLive("mer-live")
+
+	res, err := m.Cleanup(ctx, "mer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Cleaned) != 5 {
+		t.Fatalf("cleaned = %v, want 5", res.Cleaned)
+	}
+	if got := st.listSessionsCalls.Load(); got != 2 { // initial list + one fresh list for the group
+		t.Fatalf("ListSessions calls = %d, want 2", got)
+	}
+	if got := st.listAllSessionsCalls.Load(); got != 0 {
+		t.Fatalf("ListAllSessions calls = %d, want 0", got)
+	}
+
+	// Reclaim persists: a rerun reports the same sessions as already gone and
+	// keeps the same one-fresh-list-per-group read count.
+	ws.destroyReclaim = ports.WorkspaceReclaimAlreadyAbsent
+	before := st.listSessionsCalls.Load()
+	res, err = m.Cleanup(ctx, "mer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.AlreadyGone) != 5 {
+		t.Fatalf("alreadyGone = %v, want 5", res.AlreadyGone)
+	}
+	if got := st.listSessionsCalls.Load() - before; got != 2 {
+		t.Fatalf("rerun added %d ListSessions calls, want 2", got)
 	}
 }
 

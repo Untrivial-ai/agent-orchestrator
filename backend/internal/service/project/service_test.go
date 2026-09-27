@@ -157,6 +157,8 @@ func wantCode(t *testing.T, err error, code string) {
 type fakeProjectTeardowner struct {
 	projects []domain.ProjectID
 	err      error
+	// fn, when set, runs when TeardownProject is invoked (test hook).
+	fn func()
 }
 
 type captureSink struct {
@@ -171,6 +173,9 @@ func (*captureSink) Close(context.Context) error { return nil }
 
 func (f *fakeProjectTeardowner) TeardownProject(_ context.Context, project domain.ProjectID) error {
 	f.projects = append(f.projects, project)
+	if f.fn != nil {
+		f.fn()
+	}
 	return f.err
 }
 
@@ -625,6 +630,37 @@ func TestManager_RemoveDoesNotArchiveWhenTeardownFails(t *testing.T) {
 	}
 	if got, err := m.Get(ctx, "ao"); err != nil || got.Project == nil || got.Project.ID != "ao" {
 		t.Fatalf("project after failed remove = %#v, %v; want still active", got, err)
+	}
+}
+
+// TestManager_RemoveReturnsDeadlineInsteadOfArchivingOnDeadContext: teardown
+// reports per-session failures in its skip summary and returns nil, so an
+// exhausted request deadline would otherwise reach ArchiveProject and surface
+// as a generic remove failure. Remove must return the context error raw (the
+// API layer maps it to a retryable 503) and leave the project unarchived.
+func TestManager_RemoveReturnsDeadlineInsteadOfArchivingOnDeadContext(t *testing.T) {
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	teardown := &fakeProjectTeardowner{}
+	m := project.NewWithDeps(project.Deps{Store: store, Sessions: teardown})
+
+	if _, err := m.Add(context.Background(), project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// The deadline starts only here: Add's git setup must not consume it.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	// Teardown blocks until the deadline fires, mirroring a cleanup pass that
+	// exhausts the request budget without returning an error.
+	teardown.fn = func() { <-ctx.Done() }
+	if _, err := m.Remove(ctx, "ao"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Remove err = %v, want context.DeadlineExceeded", err)
+	}
+	if got, err := m.Get(context.Background(), "ao"); err != nil || got.Project == nil || got.Project.ID != "ao" {
+		t.Fatalf("project after dead-context remove = %#v, %v; want still active", got, err)
 	}
 }
 
