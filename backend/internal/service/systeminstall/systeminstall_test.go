@@ -1002,14 +1002,14 @@ func TestTerminalPersistenceFailureOverridesStaleActiveDurableJob(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if job.Status != StatusFailed || !strings.Contains(job.Error, "persist terminal install state") {
+	if job.Status != StatusFailed || !strings.Contains(job.Error, "persist terminal operation state") {
 		t.Fatalf("Status returned stale durable job: %+v", job)
 	}
 	jobs, err := s.AgentJobs(context.Background())
 	if err != nil {
 		t.Fatalf("AgentJobs: %v", err)
 	}
-	if len(jobs) != 1 || jobs[0].Status != StatusFailed || !strings.Contains(jobs[0].Error, "persist terminal install state") {
+	if len(jobs) != 1 || jobs[0].Status != StatusFailed || !strings.Contains(jobs[0].Error, "persist terminal operation state") {
 		t.Fatalf("AgentJobs returned stale durable jobs: %+v", jobs)
 	}
 }

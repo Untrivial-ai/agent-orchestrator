@@ -48,7 +48,7 @@ export interface paths {
         /** Get the current or last install job for one agent harness */
         get: operations["getAgentInstallStatus"];
         put?: never;
-        /** Start an asynchronous install for one fixed agent harness */
+        /** Start an asynchronous install, update, or uninstall for one fixed agent harness */
         post: operations["startAgentInstall"];
         delete?: never;
         options?: never;
@@ -2892,6 +2892,12 @@ export interface components {
             reinstallAvailable: boolean;
             reinstallCommand?: string;
             reinstallReason?: string;
+            uninstallAvailable: boolean;
+            uninstallCommand?: string;
+            uninstallReason?: string;
+            updateAvailable: boolean;
+            updateCommand?: string;
+            updateReason?: string;
         };
         AgentInstallPlan: {
             agentId: string;
@@ -4803,7 +4809,7 @@ export interface components {
              * @description Requested operation. Defaults to install for older clients.
              * @enum {string}
              */
-            operation?: "install" | "reinstall";
+            operation?: "install" | "reinstall" | "update" | "uninstall";
         };
         StartCodexAccountSwitchRequest: {
             /** @deprecated */

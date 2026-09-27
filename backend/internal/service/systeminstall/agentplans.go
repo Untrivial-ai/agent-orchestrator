@@ -3,6 +3,7 @@ package systeminstall
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -274,32 +275,99 @@ func (s requestPlanner) planForOperation(plan Plan, operation AgentOperation) Pl
 	if operation == AgentOperationInstall || plan.Unsupported {
 		return plan
 	}
-	switch plan.Method {
-	case "homebrew":
-		// planHomebrew already chooses install when another manager owns the
-		// harness and reinstall when the formula/cask itself is present.
-	case "npm":
-		plan.Command = append(plan.Command, "--force")
-	case "winget":
-		plan.Command = append(plan.Command, "--force")
-	case "uv":
-		pkg := plan.Command[len(plan.Command)-1]
-		plan.Command = []string{"uv", "tool", "install", pkg, "--force", "--reinstall"}
-	case "pipx":
-		pkg := plan.Command[len(plan.Command)-1]
-		plan.Command = []string{"pipx", "install", "--force", pkg}
-	case "bun":
-		plan.Command = append(plan.Command, "--force")
-	case "official-installer":
-		plan.Unsupported = true
-		plan.Command = nil
-		plan.Script = nil
-		plan.Reason = "This vendor installer does not provide a verified headless reinstall operation."
-	default:
-		plan.Unsupported = true
-		plan.Reason = "This installation method does not provide an explicit reinstall operation."
+	plan.Script = nil
+	if operation == AgentOperationReinstall {
+		switch plan.Method {
+		case "homebrew":
+		case "npm":
+			plan.Command = append(plan.Command, "--force")
+		case "winget":
+			plan.Command = append(plan.Command, "--force")
+		case "uv":
+			plan.Command = []string{"uv", "tool", "install", plan.Package, "--force", "--reinstall"}
+		case "pipx":
+			plan.Command = []string{"pipx", "install", "--force", plan.Package}
+		case "bun":
+			plan.Command = append(plan.Command, "--force")
+		case "official-installer":
+			plan.Unsupported = true
+			plan.Command = nil
+			plan.Script = nil
+			plan.Reason = "This vendor installer does not provide a verified headless reinstall operation."
+		default:
+			plan.Unsupported = true
+			plan.Reason = "This installation method does not provide an explicit reinstall operation."
+		}
+		return plan
+	}
+
+	if operation == AgentOperationUpdate {
+		switch plan.Method {
+		case "homebrew":
+			plan.Command = []string{"brew", "upgrade"}
+			if plan.PackageCask {
+				plan.Command = append(plan.Command, "--cask")
+			}
+			plan.Command = append(plan.Command, plan.Package)
+		case "npm":
+			pkg := packageWithoutLatest(plan.Package)
+			plan.Command = []string{"npm", "install", "-g", "--prefix", plan.PackagePrefix, "--allow-scripts=" + pkg, pkg + "@latest"}
+		case "winget":
+			plan.Command = []string{"winget", "upgrade", "-e", "--id", plan.Package, "--silent", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"}
+		case "uv":
+			plan.Command = []string{"uv", "tool", "upgrade", plan.Package}
+		case "pipx":
+			plan.Command = []string{"pipx", "upgrade", plan.Package}
+		case "bun":
+			plan.Command = []string{"bun", "install", "-g", packageWithoutLatest(plan.Package) + "@latest"}
+		case "official-installer":
+			binary := map[Target]string{TargetClaudeCode: "claude", TargetCodex: "codex", TargetOpencode: "opencode"}[plan.Target]
+			verb := "update"
+			if plan.Target == TargetOpencode {
+				verb = "upgrade"
+			}
+			if binary == "" {
+				plan.Unsupported = true
+				plan.Reason = "This vendor installer does not expose a supported update command."
+			} else {
+				plan.Command = []string{binary, verb}
+			}
+		default:
+			plan.Unsupported = true
+			plan.Reason = "This installation method does not provide a supported update command."
+		}
+		return plan
+	}
+
+	if operation == AgentOperationUninstall {
+		switch plan.Method {
+		case "homebrew":
+			plan.Command = []string{"brew", "uninstall"}
+			if plan.PackageCask {
+				plan.Command = append(plan.Command, "--cask")
+			}
+			plan.Command = append(plan.Command, plan.Package)
+		case "npm":
+			plan.Command = []string{"npm", "uninstall", "-g", "--prefix", plan.PackagePrefix, packageWithoutLatest(plan.Package)}
+		case "winget":
+			plan.Command = []string{"winget", "uninstall", "-e", "--id", plan.Package, "--silent", "--disable-interactivity"}
+		case "uv":
+			plan.Command = []string{"uv", "tool", "uninstall", plan.Package}
+		case "pipx":
+			plan.Command = []string{"pipx", "uninstall", plan.Package}
+		case "bun":
+			plan.Command = []string{"bun", "remove", "-g", packageWithoutLatest(plan.Package)}
+		default:
+			plan.Unsupported = true
+			plan.Command = nil
+			plan.Reason = "This installation method does not provide a supported uninstall command."
+		}
 	}
 	return plan
+}
+
+func packageWithoutLatest(pkg string) string {
+	return strings.TrimSuffix(pkg, "@latest")
 }
 
 // planAgent preserves the legacy single-plan call sites while selecting from
@@ -356,7 +424,7 @@ func (s *Service) planUV(target Target, pkg string) Plan {
 	if _, err := s.executables.LookPath("uv"); err != nil {
 		return Plan{Target: target, Unsupported: true, Method: "uv", Reason: "uv was not found on PATH. Install uv, then retry."}
 	}
-	return Plan{Target: target, Method: "uv", Command: []string{"uv", "tool", "install", pkg}}
+	return Plan{Target: target, Method: "uv", Command: []string{"uv", "tool", "install", pkg}, Package: pkg}
 }
 
 func (s *Service) planBun(target Target) Plan {
@@ -364,14 +432,14 @@ func (s *Service) planBun(target Target) Plan {
 	if _, err := s.executables.LookPath("bun"); err != nil {
 		return Plan{Target: target, Unsupported: true, Method: "bun", Reason: "Bun was not found on PATH."}
 	}
-	return Plan{Target: target, Method: "bun", Command: []string{"bun", "install", "-g", pkg}}
+	return Plan{Target: target, Method: "bun", Command: []string{"bun", "install", "-g", pkg}, Package: pkg}
 }
 
 func (s *Service) planPipx(target Target, pkg string) Plan {
 	if _, err := s.executables.LookPath("pipx"); err != nil {
 		return Plan{Target: target, Unsupported: true, Method: "pipx", Reason: "pipx was not found on PATH. Install pipx, then retry."}
 	}
-	return Plan{Target: target, Method: "pipx", Command: []string{"pipx", "install", pkg}}
+	return Plan{Target: target, Method: "pipx", Command: []string{"pipx", "install", pkg}, Package: pkg}
 }
 
 func manualPlan(target Target, reason, docsURL string) Plan {
