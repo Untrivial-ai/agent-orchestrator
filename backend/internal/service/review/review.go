@@ -864,7 +864,12 @@ func (s *Service) publishOne(ctx context.Context, workerID domain.SessionID, run
 		// outcome-unknown.
 		s.recordPublishState(ctx, run, domain.ReviewPublishUncertain, "", fmt.Sprintf("publication state re-read failed: %v", err))
 		return
-	} else if ok {
+	} else if !ok {
+		// Same invariant as the error branch: the row is unreadable, so the
+		// in-memory snapshot is a guess. Never publish on a guess.
+		s.recordPublishState(ctx, run, domain.ReviewPublishUncertain, "", "publication state row is missing; outcome unknown")
+		return
+	} else {
 		run.PublishState = current.PublishState
 		run.PublishError = current.PublishError
 		if current.GithubReviewID != "" {
@@ -912,10 +917,12 @@ func (s *Service) publishOne(ctx context.Context, workerID domain.SessionID, run
 	}
 	result, err := s.publisher.PublishReview(ctx, ports.SCMReviewPublishRequest{PR: ref, CommitSHA: run.TargetSHA, Body: run.Body, Comments: comments})
 	if err != nil {
-		// The provider never answered: the review may or may not exist there.
-		// Leave the persisted publishing state so a restart marks the run
-		// uncertain and nothing reposts it blindly.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// An unknown-outcome failure (transport outage, 5xx — the adapter
+		// classifies them) or a cancelled call means the review may or may not
+		// exist at the provider. Record uncertainty so nothing reposts it
+		// blindly; only a definitive provider rejection is a failed publish.
+		if errors.Is(err, ports.ErrSCMPublishOutcomeUnknown) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			s.recordPublishState(ctx, run, domain.ReviewPublishUncertain, "", fmt.Sprintf("publication outcome unknown: %v", err))
 			return
 		}
 		s.recordPublishState(ctx, run, domain.ReviewPublishFailed, "", err.Error())

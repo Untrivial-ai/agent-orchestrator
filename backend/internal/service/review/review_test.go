@@ -1339,6 +1339,55 @@ func TestSubmitPublishStateReReadFailureRecordsUncertain(t *testing.T) {
 	}
 }
 
+// A transport outage or 5xx may have been processed by the provider: the run
+// must land in uncertain (never failed), so a rerun cannot post a duplicate
+// review. A definitive rejection stays failed and may republish.
+func TestSubmitUnknownOutcomePublicationRecordsUncertain(t *testing.T) {
+	st := &fakeStore{ok: true, run: domain.ReviewRun{
+		ID: "run-1", SessionID: "worker-1", PRURL: "https://github.com/acme/app/pull/9",
+		TargetSHA: "sha1", Status: domain.ReviewRunRunning,
+	}}
+	pub := &fakePublisher{err: fmt.Errorf("%w: POST repos/acme/app/pulls/9/reviews: TLS handshake timeout", ports.ErrSCMPublishOutcomeUnknown)}
+	svc := publicationTestService(t, st, pub)
+
+	run, err := svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictApproved, "ship it", nil)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if run.PublishState != domain.ReviewPublishUncertain || !strings.Contains(run.PublishError, "publication outcome unknown") {
+		t.Fatalf("run = %q/%q, want uncertain with an unknown-outcome reason", run.PublishState, run.PublishError)
+	}
+
+	// The uncertain outcome blocks a blind repost.
+	if _, err := svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictApproved, "ship it", nil); err != nil {
+		t.Fatalf("resubmit: %v", err)
+	}
+	if pub.calls != 1 {
+		t.Fatalf("publisher calls after resubmit = %d, want 1", pub.calls)
+	}
+}
+
+// A vanished run row is the same never-publish-on-a-guess situation as a
+// re-read error: record uncertainty instead of trusting the stale snapshot.
+func TestPublishOneMissingRunRowRecordsUncertain(t *testing.T) {
+	st := &fakeStore{ok: false, run: domain.ReviewRun{ID: "run-1"}}
+	pub := &fakePublisher{}
+	svc := publicationTestService(t, st, pub)
+
+	run := domain.ReviewRun{ID: "run-1", SessionID: "worker-1", PRURL: "https://github.com/acme/app/pull/9", TargetSHA: "sha1", PublishState: domain.ReviewPublishPending}
+	svc.publishOne(context.Background(), "worker-1", &run)
+
+	if pub.calls != 0 {
+		t.Fatalf("publisher calls = %d, want 0 when the run row is missing", pub.calls)
+	}
+	if run.PublishState != domain.ReviewPublishUncertain || !strings.Contains(run.PublishError, "row is missing") {
+		t.Fatalf("in-memory run = %q/%q, want uncertain", run.PublishState, run.PublishError)
+	}
+	if st.run.PublishState != domain.ReviewPublishUncertain {
+		t.Fatalf("persisted state = %q, want uncertain", st.run.PublishState)
+	}
+}
+
 func TestSubmitManyConcurrentIdenticalSubmissionsPublishOnce(t *testing.T) {
 	st := &fakeStore{ok: true, run: domain.ReviewRun{
 		ID: "run-1", SessionID: "worker-1", PRURL: "https://github.com/acme/app/pull/9",

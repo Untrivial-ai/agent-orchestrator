@@ -42,6 +42,14 @@ func (p *Provider) PublishReview(ctx context.Context, request ports.SCMReviewPub
 		repoPath(request.PR.Repo.Owner, request.PR.Repo.Name, "pulls", strconv.Itoa(request.PR.Number), "reviews"),
 		nil, payload)
 	if err != nil {
+		// A transport failure (status unset) or a 5xx leaves the review's
+		// existence unknown: GitHub may have processed the request before the
+		// failure. 4xx rejections are definitive — no review was created. The
+		// service maps the unknown case to an uncertain publication instead of
+		// a failed one, so a rerun cannot post a duplicate review.
+		if resp.StatusCode == 0 || resp.StatusCode >= 500 {
+			return ports.SCMReviewPublishResult{}, fmt.Errorf("%w: %w", ports.ErrSCMPublishOutcomeUnknown, err)
+		}
 		return ports.SCMReviewPublishResult{}, err
 	}
 	var created struct {
