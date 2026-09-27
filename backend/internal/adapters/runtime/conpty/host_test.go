@@ -763,3 +763,48 @@ func TestShutdownViaCtxCancel(t *testing.T) {
 		t.Fatal("expected pty.Close() on ctx cancel")
 	}
 }
+
+// TestIdleExitNoClientsAfterChildExitShutsDown is the #5948 regression: a
+// host whose child has exited and that no client ever re-attaches to must
+// shut itself down instead of serving scrollback forever after a daemon
+// crash left it unowned.
+func TestIdleExitNoClientsAfterChildExitShutsDown(t *testing.T) {
+	hostIdleExit = 20 * time.Millisecond
+	t.Cleanup(func() { hostIdleExit = 5 * time.Minute })
+
+	f := startServe(t, 108)
+	f.pty.signalExit(0)
+
+	f.waitDone(t)
+
+	f.pty.closeMu.Lock()
+	closed := f.pty.closed
+	f.pty.closeMu.Unlock()
+	if !closed {
+		t.Fatal("expected pty.Close() on idle exit")
+	}
+}
+
+// TestIdleExitKeepsHostWhileClientAttachedThenShutsDownAfterDetach pins the
+// keep-alive contract: an attached viewer keeps the exited-child host up, and
+// the idle clock only runs from the last detach.
+func TestIdleExitKeepsHostWhileClientAttachedThenShutsDownAfterDetach(t *testing.T) {
+	hostIdleExit = 20 * time.Millisecond
+	t.Cleanup(func() { hostIdleExit = 5 * time.Minute })
+
+	f := startServe(t, 109)
+	c := newTestClient(t, f.addr)
+	defer c.close()
+
+	f.pty.signalExit(0)
+	// Several idle windows must pass with the viewer attached.
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case err := <-f.done:
+		t.Fatalf("host shut down while a client was attached: %v", err)
+	default:
+	}
+
+	c.close()
+	f.waitDone(t)
+}

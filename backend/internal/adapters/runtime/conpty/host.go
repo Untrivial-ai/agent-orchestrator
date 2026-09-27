@@ -25,6 +25,12 @@ const (
 	hostClientWriteBuffer = 256
 )
 
+// hostIdleExit is how long a pty-host whose child has exited waits with no
+// attached client before shutting itself down (issue #5948: a daemon crash
+// must not leave an exited-child host alive forever). Package var: tests
+// shorten it.
+var hostIdleExit = 5 * time.Minute
+
 // ptyConn is the host's handle to the running agent's pseudo-terminal.
 // The real impl (conptyConn) lives in host_conpty_windows.go; tests use a fake.
 type ptyConn interface {
@@ -49,7 +55,8 @@ type ServeConfig struct {
 // invoked via the returned ShutdownFunc. It pumps PTY output into the ring
 // and broadcasts to all clients, accepts new clients (replaying ring snapshot),
 // and dispatches client messages. On PTY exit it broadcasts a status update
-// but stays alive (keep-alive, mirroring tmux behavior). Returns when shut down.
+// but stays alive (keep-alive, mirroring tmux behavior) until no viewer has
+// been attached for hostIdleExit. Returns when shut down.
 func Serve(ctx context.Context, cfg ServeConfig) error {
 	h := &host{
 		cfg:       cfg,
@@ -253,8 +260,43 @@ func (h *host) pumpPTY() {
 	code, _ := h.cfg.PTY.ExitCode()
 	pid := h.cfg.PTY.PID()
 	h.broadcast(statusFrame(false, pid, &code))
-	// Keep-alive: do NOT shutdown here. The host stays up so clients can
-	// still connect and read scrollback.
+	// Keep-alive: the host stays up so clients can still connect and read
+	// scrollback — but only for hostIdleExit once nobody is watching. A
+	// daemon crash must not leave an exited-child host alive forever (#5948).
+	go h.idleExitWatch()
+}
+
+// idleExitWatch shuts the host down once the child has exited and no client
+// has been attached for hostIdleExit. Checked at hostIdleExit granularity:
+// shutdown fires within [hostIdleExit, 2*hostIdleExit) after the last viewer
+// detaches — never early. ponytail: coarse window; a finer tick only buys
+// minutes on a leak reaper. The window is read once: tests mutate the var
+// between hosts, and watchers may briefly outlive their own Serve.
+func (h *host) idleExitWatch() {
+	window := hostIdleExit
+	emptySince := time.Time{}
+	for {
+		select {
+		case <-h.shutdownC:
+			return
+		case <-time.After(window):
+		}
+		h.mu.Lock()
+		empty := len(h.clients) == 0
+		h.mu.Unlock()
+		if !empty {
+			emptySince = time.Time{} // viewers attached; re-arm for after they leave
+			continue
+		}
+		if emptySince.IsZero() {
+			emptySince = time.Now() // first empty tick after the last detach
+			continue
+		}
+		if time.Since(emptySince) >= window {
+			h.shutdown()
+			return
+		}
+	}
 }
 
 // broadcast queues msg to all connected clients. Socket writes happen only in
