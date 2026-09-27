@@ -79,6 +79,7 @@ type fakeStore struct {
 	comments            map[string][]domain.PullRequestComment
 	commentsErr         error
 	reviewRuns          map[domain.SessionID][]domain.CurrentHeadReviewRun
+	publishedReviewIDs  map[string][]string
 	listPRFactsCalls    int
 	listReviewRunsCalls int
 	num                 int
@@ -86,19 +87,20 @@ type fakeStore struct {
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		sessions:       map[domain.SessionID]domain.SessionRecord{},
-		activeSwitches: map[domain.SessionID]domain.AgentSwitch{},
-		pr:             map[domain.SessionID]domain.PRFacts{},
-		prFacts:        map[domain.SessionID][]domain.PRFacts{},
-		prs:            map[domain.SessionID][]domain.PullRequest{},
-		reportedPRURLs: map[domain.SessionID][]string{},
-		projects:       map[string]domain.ProjectRecord{},
-		worktrees:      map[domain.SessionID][]domain.SessionWorktreeRecord{},
-		checks:         map[string][]domain.PullRequestCheck{},
-		reviews:        map[string][]domain.PullRequestReview{},
-		threads:        map[string][]domain.PullRequestReviewThread{},
-		comments:       map[string][]domain.PullRequestComment{},
-		reviewRuns:     map[domain.SessionID][]domain.CurrentHeadReviewRun{},
+		sessions:           map[domain.SessionID]domain.SessionRecord{},
+		activeSwitches:     map[domain.SessionID]domain.AgentSwitch{},
+		pr:                 map[domain.SessionID]domain.PRFacts{},
+		prFacts:            map[domain.SessionID][]domain.PRFacts{},
+		prs:                map[domain.SessionID][]domain.PullRequest{},
+		reportedPRURLs:     map[domain.SessionID][]string{},
+		projects:           map[string]domain.ProjectRecord{},
+		worktrees:          map[domain.SessionID][]domain.SessionWorktreeRecord{},
+		checks:             map[string][]domain.PullRequestCheck{},
+		reviews:            map[string][]domain.PullRequestReview{},
+		threads:            map[string][]domain.PullRequestReviewThread{},
+		comments:           map[string][]domain.PullRequestComment{},
+		reviewRuns:         map[domain.SessionID][]domain.CurrentHeadReviewRun{},
+		publishedReviewIDs: map[string][]string{},
 	}
 }
 
@@ -450,6 +452,10 @@ func (f *fakeStore) ListCurrentHeadReviewRunsForSessions(_ context.Context, ids 
 		out[id] = append([]domain.CurrentHeadReviewRun(nil), f.reviewRuns[id]...)
 	}
 	return out, nil
+}
+
+func (f *fakeStore) ListPublishedReviewGitHubIDsByPR(_ context.Context, prURL string) ([]string, error) {
+	return f.publishedReviewIDs[prURL], nil
 }
 
 func (f *fakeStore) ListChecks(_ context.Context, prURL string) ([]domain.PullRequestCheck, error) {
@@ -4763,6 +4769,91 @@ func TestListPRSummariesExposesReviewSummariesButKeepsRawLogsAndCommentBodiesPri
 	}
 }
 
+// GitHub's reviewDecision never moves when AO publishes a review under the
+// same account that authored the PR, so the provider aggregate alone shows
+// "no review required" for a requested/published AO pass. The summary folds
+// the current-head AO run into the decision, but a provider verdict wins.
+func TestListPRSummariesFoldsAORunVerdictIntoReviewDecision(t *testing.T) {
+	now := time.Date(2026, 9, 27, 3, 0, 0, 0, time.UTC)
+	prURL := "https://github.com/acme/repo/pull/7"
+	newPR := func(review domain.ReviewDecision) []domain.PullRequest {
+		return []domain.PullRequest{{
+			URL: prURL, HTMLURL: prURL, SessionID: "mer-1", Number: 7,
+			Provider: "github", Repo: "acme/repo", Review: review,
+			HeadSHA: "abc123", UpdatedAt: now, ObservedAt: now,
+		}}
+	}
+
+	cases := []struct {
+		name string
+		pr   domain.ReviewDecision
+		runs []domain.CurrentHeadReviewRun
+		want domain.ReviewDecision
+	}{
+		{name: "published approval", pr: domain.ReviewNone, runs: []domain.CurrentHeadReviewRun{{PRURL: prURL, ID: "run-1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, CreatedAt: now}}, want: domain.ReviewApproved},
+		{name: "changes requested", pr: domain.ReviewNone, runs: []domain.CurrentHeadReviewRun{{PRURL: prURL, ID: "run-1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictChangesRequested, CreatedAt: now}}, want: domain.ReviewChangesRequest},
+		{name: "review in flight", pr: domain.ReviewNone, runs: []domain.CurrentHeadReviewRun{{PRURL: prURL, ID: "run-1", Status: domain.ReviewRunRunning, CreatedAt: now}}, want: domain.ReviewRequired},
+		{name: "provider verdict wins", pr: domain.ReviewApproved, runs: []domain.CurrentHeadReviewRun{{PRURL: prURL, ID: "run-1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictChangesRequested, CreatedAt: now}}, want: domain.ReviewApproved},
+		{name: "run for another pr is ignored", pr: domain.ReviewNone, runs: []domain.CurrentHeadReviewRun{{PRURL: "https://github.com/acme/repo/pull/8", ID: "run-1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, CreatedAt: now}}, want: domain.ReviewNone},
+		{name: "latest run wins", pr: domain.ReviewNone, runs: []domain.CurrentHeadReviewRun{
+			{PRURL: prURL, ID: "run-old", Status: domain.ReviewRunComplete, Verdict: domain.VerdictChangesRequested, CreatedAt: now.Add(-time.Hour)},
+			{PRURL: prURL, ID: "run-new", Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, CreatedAt: now},
+		}, want: domain.ReviewApproved},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+			st.reviewRuns["mer-1"] = tc.runs
+			stList := &multiPRFakeStore{fakeStore: st, prs: newPR(tc.pr)}
+			got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 1 || got[0].Review.Decision != tc.want {
+				t.Fatalf("decision = %+v, want %q", got[0].Review, tc.want)
+			}
+		})
+	}
+}
+
+// Inline findings from AO-published reviews are AO's own words, not unresolved
+// human feedback: they must not light up "changes requested" or the reviewer
+// attention grouping on the PR card.
+func TestListPRSummariesAOPublishedCommentsAreNotHumanFeedback(t *testing.T) {
+	now := time.Date(2026, 9, 27, 3, 0, 0, 0, time.UTC)
+	prURL := "https://github.com/acme/repo/pull/7"
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker}
+	st.publishedReviewIDs[prURL] = []string{"5328579754"}
+	stList := &multiPRFakeStore{fakeStore: st, prs: []domain.PullRequest{{
+		URL: prURL, HTMLURL: prURL, SessionID: "mer-1", Number: 7,
+		Provider: "github", Repo: "acme/repo",
+		HeadSHA: "abc123", UpdatedAt: now, ObservedAt: now,
+	}}}
+	stList.comments[prURL] = []domain.PullRequestComment{
+		{Author: "axisrow", ReviewID: "5328579754", File: "main.go", Line: 12, Body: "non-blocking AO finding", URL: "https://github.com/acme/repo/pull/7#discussion_r1"},
+		{Author: "alice", ReviewID: "9999", File: "main.go", Line: 20, Body: "real human feedback", URL: "https://github.com/acme/repo/pull/7#discussion_r2"},
+	}
+
+	got, err := (&Service{store: stList}).ListPRSummaries(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := got[0].Review
+	if !review.HasUnresolvedHumanComments {
+		t.Fatal("human feedback lost")
+	}
+	if len(review.UnresolvedBy) != 1 || review.UnresolvedBy[0].ReviewerID != "alice" {
+		t.Fatalf("unresolved reviewers = %+v, want only alice", review.UnresolvedBy)
+	}
+	blob := fmt.Sprintf("%+v", got)
+	if strings.Contains(blob, "axisrow") {
+		t.Fatal("AO-published comment leaked into reviewer grouping")
+	}
+}
+
 func TestListPRSummariesThreadCountKnownOnlyForCompleteObservations(t *testing.T) {
 	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 	unresolved := []domain.PullRequestReviewThread{{ThreadID: "thread-1"}, {ThreadID: "thread-2"}}
@@ -4894,7 +4985,7 @@ func TestSummarizeReviewSurfacesSubmittedReviewSummaries(t *testing.T) {
 		{ID: "c", Author: "charlie", State: domain.ReviewNone, Body: "non-blocking suggestion", URL: "url-c", SubmittedAt: now},
 	}
 
-	got := summarizeReview(domain.PullRequest{URL: "u", Review: domain.ReviewChangesRequest}, nil, reviews, nil, false)
+	got := summarizeReview(domain.PullRequest{URL: "u", Review: domain.ReviewChangesRequest}, nil, reviews, nil, false, domain.CurrentHeadReviewRun{}, nil)
 
 	byReviewer := map[string]PRReviewEntry{}
 	for _, entry := range got.Reviews {

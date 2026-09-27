@@ -522,6 +522,18 @@ func reviewRunFromRow(r gen.ReviewRun) domain.ReviewRun {
 	}
 }
 
+// ListPublishedReviewGitHubIDsByPR returns the provider review ids of every
+// published AO review pass for one PR. Comments filed under these reviews are
+// AO's own published findings rather than human feedback, so unresolved-comment
+// read models can exclude them by id.
+func (s *Store) ListPublishedReviewGitHubIDsByPR(ctx context.Context, prURL string) ([]string, error) {
+	ids, err := s.qr.ListPublishedReviewGitHubIDsByPR(ctx, prURL)
+	if err != nil {
+		return nil, fmt.Errorf("list published review ids for pr %s: %w", prURL, err)
+	}
+	return ids, nil
+}
+
 // ListCurrentHeadReviewRunsForSession returns AO's review passes against the
 // current head commit of each PR the session owns. Passes recorded for an
 // earlier head are filtered out in SQL, so callers cannot let a stale run

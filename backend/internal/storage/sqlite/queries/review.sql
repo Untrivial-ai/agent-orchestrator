@@ -118,6 +118,13 @@ FROM review_run WHERE session_id = ? AND status = 'running' AND verdict = '' ORD
 SELECT id, review_id, session_id, harness, pr_url, target_sha, status, verdict, body, created_at, github_review_id, delivered_at, batch_id, auto_inject_review, trigger_source, findings, publish_state, publish_error
 FROM review_run WHERE session_id = ? AND batch_id = ? ORDER BY created_at ASC, id ASC;
 
+-- name: ListPublishedReviewGitHubIDsByPR :many
+-- Provider review ids of every published AO review pass for one PR. Comments
+-- under these reviews are AO's own published findings, not human feedback, so
+-- read models must not count them as unresolved human review comments.
+SELECT DISTINCT github_review_id FROM review_run
+WHERE pr_url = ? AND github_review_id != '';
+
 -- name: ListCurrentHeadReviewRunsBySession :many
 -- AO review passes recorded against each PR's CURRENT head commit. Passes for
 -- an earlier head are excluded here so a stale run can never decide the

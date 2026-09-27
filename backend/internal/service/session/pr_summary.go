@@ -52,6 +52,11 @@ func (s *Service) ListPRSummaries(ctx context.Context, id domain.SessionID) ([]P
 	if err != nil {
 		return nil, err
 	}
+	headRuns, err := s.store.ListCurrentHeadReviewRunsForSession(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	latestHeadRun := latestReviewRunByPR(headRuns)
 	groups := groupPullRequestAliases(prs)
 	out := make([]PRSummary, 0, len(groups))
 	for _, group := range groups {
@@ -89,10 +94,42 @@ func (s *Service) ListPRSummaries(ctx context.Context, id domain.SessionID) ([]P
 				threadsExact = false
 			}
 		}
-		out = append(out, summarizePR(group.primary, checks, reviews, threads, comments, threadsExact))
+		out = append(out, summarizePR(group.primary, checks, reviews, threads, comments, threadsExact, latestHeadRun[group.primary.URL], aoPublishedReviewIDs(ctx, s.store, group.primary.URL)))
 	}
 	sortPRSummaries(out)
 	return out, nil
+}
+
+// latestReviewRunByPR reduces current-head review runs to the newest run per
+// PR URL. The summary only consults it when the provider's own aggregate says
+// nothing (self-published reviews never move GitHub's reviewDecision), so a
+// stale verdict can never override fresher provider facts.
+func latestReviewRunByPR(runs []domain.CurrentHeadReviewRun) map[string]domain.CurrentHeadReviewRun {
+	latest := make(map[string]domain.CurrentHeadReviewRun, len(runs))
+	for _, run := range runs {
+		if run.PRURL == "" {
+			continue
+		}
+		if existing, ok := latest[run.PRURL]; !ok || run.CreatedAt.After(existing.CreatedAt) {
+			latest[run.PRURL] = run
+		}
+	}
+	return latest
+}
+
+// aoPublishedReviewIDs returns the provider review ids of AO-published review
+// passes for one PR. Lookup failures degrade to an empty set so a storage hiccup
+// falls back to the previous (more conservative) human-comment counting.
+func aoPublishedReviewIDs(ctx context.Context, store Store, prURL string) map[string]bool {
+	ids, err := store.ListPublishedReviewGitHubIDsByPR(ctx, prURL)
+	out := make(map[string]bool, len(ids))
+	if err != nil {
+		return out
+	}
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out
 }
 
 // PRListing keeps reported references separate from SCM facts and actions.
@@ -133,7 +170,7 @@ func (s *Service) ListPRListing(ctx context.Context, id domain.SessionID) (PRLis
 	return PRListing{Tracked: tracked, Linked: linked}, nil
 }
 
-func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, comments []domain.PullRequestComment, threadsExact bool) PRSummary {
+func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, comments []domain.PullRequestComment, threadsExact bool, headRun domain.CurrentHeadReviewRun, aoReviewIDs map[string]bool) PRSummary {
 	return PRSummary{
 		URL:              pr.URL,
 		HTMLURL:          firstNonEmpty(pr.HTMLURL, pr.URL),
@@ -151,7 +188,7 @@ func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, review
 		Deletions:        pr.Deletions,
 		ChangedFiles:     pr.ChangedFiles,
 		CI:               summarizeCI(pr, checks),
-		Review:           summarizeReview(pr, comments, reviews, threads, threadsExact),
+		Review:           summarizeReview(pr, comments, reviews, threads, threadsExact, headRun, aoReviewIDs),
 		Mergeability:     summarizeMergeability(pr, threads),
 		StateChangedAt:   summarizePRStateChangedAt(pr),
 		CreatedAt:        pr.CreatedAtProvider,
@@ -201,7 +238,7 @@ func summarizeCI(pr domain.PullRequest, checks []domain.PullRequestCheck) PRCISu
 	return out
 }
 
-func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, threadsExact bool) PRReviewSummary {
+func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, threadsExact bool, headRun domain.CurrentHeadReviewRun, aoReviewIDs map[string]bool) PRReviewSummary {
 	// A nil count means "unknown", not zero: it must stay absent on the wire
 	// rather than present-as-zero. It is only published when the stored thread
 	// rows are a complete observation.
@@ -210,7 +247,7 @@ func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment
 		count := unresolvedHumanThreadCount(dedupeReviewThreads(threads))
 		unresolvedThreadCount = &count
 	}
-	out := PRReviewSummary{Decision: reviewOrNone(pr.Review), UnresolvedThreadCount: unresolvedThreadCount}
+	out := PRReviewSummary{Decision: foldAORunDecision(reviewOrNone(pr.Review), headRun), UnresolvedThreadCount: unresolvedThreadCount}
 	if pr.Merged || pr.Closed {
 		return out
 	}
@@ -223,7 +260,7 @@ func summarizeReview(pr domain.PullRequest, comments []domain.PullRequestComment
 	isBot := map[string]bool{}
 	resolvedIsBot := map[string]bool{}
 	for _, c := range comments {
-		if c.IsBot {
+		if c.IsBot || aoReviewIDs[c.ReviewID] {
 			continue
 		}
 		reviewer := strings.TrimSpace(c.Author)
@@ -529,6 +566,28 @@ func reviewOrNone(decision domain.ReviewDecision) domain.ReviewDecision {
 		return domain.ReviewNone
 	}
 	return decision
+}
+
+// foldAORunDecision fills the provider's silent aggregate with AO's own review
+// outcome. GitHub's reviewDecision never moves when AO publishes a review under
+// the same account that authored the PR (self-reviews are excluded), so without
+// this fold a requested in-flight pass shows as "no review required" and a
+// published verdict is invisible on the PR card. Only a run recorded against
+// the PR's current head participates, and a provider verdict always wins.
+func foldAORunDecision(decision domain.ReviewDecision, headRun domain.CurrentHeadReviewRun) domain.ReviewDecision {
+	if decision != domain.ReviewNone || headRun.ID == "" {
+		return decision
+	}
+	switch {
+	case headRun.Status == domain.ReviewRunRunning:
+		return domain.ReviewRequired
+	case headRun.Verdict == domain.VerdictApproved:
+		return domain.ReviewApproved
+	case headRun.Verdict == domain.VerdictChangesRequested:
+		return domain.ReviewChangesRequest
+	default:
+		return decision
+	}
 }
 
 func mergeabilityOrUnknown(state domain.Mergeability) domain.Mergeability {
