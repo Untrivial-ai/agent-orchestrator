@@ -916,6 +916,8 @@ func (f *fakeSessionLifecycle) ReconcileBackground(_ context.Context) error {
 	return f.reconcileErr
 }
 
+func (*fakeSessionLifecycle) ReconcileOrphanedPtyHosts(context.Context) error { return nil }
+
 func (f *fakeSessionLifecycle) RestoreAll(_ context.Context) error {
 	f.restoreAllCalled = true
 	return f.restoreErr
