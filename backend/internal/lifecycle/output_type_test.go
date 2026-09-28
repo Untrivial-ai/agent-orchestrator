@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -223,5 +224,106 @@ func TestReconcileSessionOutputType_DoesNotResurrectSessionTerminatedDuringRead(
 	}
 	if got.OutputType != domain.SessionOutputArtifact {
 		t.Fatalf("OutputType = %q, want %q", got.OutputType, domain.SessionOutputArtifact)
+	}
+}
+
+// nthCallBlockingStore blocks the Nth GetSession(blockID) call until release
+// is closed, so a test can deterministically force a goroutine to sit inside
+// mutate's locked critical section while another goroutine attempts to
+// acquire the same lock. entered closes the instant the call starts
+// blocking, so the test knows the lock is actually held before proceeding.
+type nthCallBlockingStore struct {
+	*fakeStore
+	blockID    domain.SessionID
+	blockOnNth int32
+	calls      int32
+	entered    chan struct{}
+	release    chan struct{}
+}
+
+func (s *nthCallBlockingStore) GetSession(ctx context.Context, id domain.SessionID) (domain.SessionRecord, bool, error) {
+	if id == s.blockID {
+		if n := atomic.AddInt32(&s.calls, 1); n == s.blockOnNth {
+			close(s.entered)
+			<-s.release
+		}
+	}
+	return s.fakeStore.GetSession(ctx, id)
+}
+
+// TestReconcileSessionOutputType_SerializesWithLifecycleMutate is the reverse
+// direction of the critical-risk regression above: MarkTerminated (like every
+// other lifecycle write) funnels through mutate, which reads a full
+// SessionRecord and later writes it back whole via UpdateSession — including
+// whatever OutputType it saw at read time. Without synchronization, this
+// method's write could land inside that window, and mutate's later full-row
+// write would silently revert it back to "none", keeping a real artifact off
+// the board. Both methods now hold the same m.mu for their entire
+// read-to-write span, so ReconcileSessionOutputType cannot interleave with
+// mutate's critical section at all — it either runs fully before or fully
+// after.
+//
+// mutate calls GetSession a second time from inside its locked section
+// (MarkTerminated also reads once, unlocked, before calling mutate), so the
+// blocking store blocks that second call specifically: the first, unlocked
+// read must not be mistaken for the critical section.
+func TestReconcileSessionOutputType_SerializesWithLifecycleMutate(t *testing.T) {
+	dataDir := t.TempDir()
+	artifactDir := filepath.Join(dataDir, "artifacts", "mer-1")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactDir, "report.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{
+		ID:         "mer-1",
+		OutputType: domain.SessionOutputNone,
+		Activity:   domain.Activity{State: domain.ActivityActive, LastActivityAt: time.Now()},
+		Metadata:   domain.SessionMetadata{RuntimeLaunchID: "launch-1"},
+	}
+
+	blocking := &nthCallBlockingStore{
+		fakeStore:  st,
+		blockID:    "mer-1",
+		blockOnNth: 2,
+		entered:    make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	m := New(blocking, &fakeMessenger{}, WithDataDir(dataDir))
+
+	terminateDone := make(chan error, 1)
+	go func() {
+		terminateDone <- m.MarkTerminated(ctx, "mer-1")
+	}()
+	<-blocking.entered // MarkTerminated now holds m.mu, blocked mid-read.
+
+	reconcileDone := make(chan error, 1)
+	go func() {
+		reconcileDone <- m.ReconcileSessionOutputType(ctx, "mer-1")
+	}()
+
+	select {
+	case <-reconcileDone:
+		t.Fatal("ReconcileSessionOutputType completed while MarkTerminated held the reducer lock mid-write; the reverse race is not closed")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(blocking.release)
+	if err := <-terminateDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-reconcileDone; err != nil {
+		t.Fatal(err)
+	}
+
+	got := st.sessions["mer-1"]
+	if !got.IsTerminated {
+		t.Fatal("IsTerminated = false, want true")
+	}
+	if got.OutputType != domain.SessionOutputArtifact {
+		t.Fatalf("OutputType = %q, want %q (MarkTerminated's full-row write must not have reverted the reconcile that ran once it released the lock)", got.OutputType, domain.SessionOutputArtifact)
 	}
 }

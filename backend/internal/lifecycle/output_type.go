@@ -29,7 +29,20 @@ import (
 // in between. UpdateSessionArtifactOutput only ever names artifact_dir and
 // session_output_type, so it cannot touch those other columns regardless of
 // how stale the read was.
+//
+// That narrow write closed the forward direction, but left the reverse one
+// open: mutate (the reducer every other lifecycle write — including
+// MarkTerminated — funnels through) reads a full SessionRecord and later
+// writes it back whole via UpdateSession, including whatever
+// artifact_dir/OutputType it saw at read time. Without synchronization, this
+// method's write could land in the middle of that window, and mutate's
+// later full-row write would silently revert it. mutate holds m.mu for its
+// entire read-to-write span, so acquiring the same lock here makes the two
+// mutually exclusive: this method's read-then-write can no longer straddle
+// a mutate() call, and vice versa.
 func (m *Manager) ReconcileSessionOutputType(ctx context.Context, id domain.SessionID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil || !ok {
 		return err
