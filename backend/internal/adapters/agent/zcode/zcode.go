@@ -36,7 +36,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
-	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -87,20 +86,17 @@ func (p *Plugin) Manifest() adapters.Manifest {
 }
 
 // GetConfigSpec reports ZCode's permission modes. ZCode pins its model in
-// its own config (model.main); zcode 0.16.5 has no --model launch flag, so
-// AO exposes the mode instead of a misleading raw-model field. The enum is
-// the domain vocabulary, so it can never diverge from what AgentConfig
-// validation accepts.
+// its own config (model.main); zcode has no --model launch flag, so AO
+// exposes the mode instead of a misleading raw-model field.
 func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 	if err := ctx.Err(); err != nil {
 		return ports.ConfigSpec{}, err
 	}
-	v, _ := domain.ModeVocabulary(domain.HarnessZCode)
 	return ports.ConfigSpec{Fields: []ports.ConfigField{{
 		Key:         "mode",
 		Type:        ports.ConfigFieldEnum,
 		Description: "ZCode permission mode passed to `zcode --mode`.",
-		Enum:        v.Values,
+		Enum:        []string{"build", "edit", "plan", "yolo"},
 	}}}, nil
 }
 
@@ -235,12 +231,13 @@ func (p *Plugin) zcodeBinary(ctx context.Context) (string, error) {
 // default: build).
 func appendModeFlags(cmd *[]string, permissions ports.PermissionMode, configMode string) error {
 	if mode := strings.TrimSpace(configMode); mode != "" {
-		// Defense-in-depth: the domain table accepts the union of every
-		// harness's modes, so re-check against ZCode's own vocabulary here —
-		// a config written by another path must fail as a clean input error,
-		// not reach argv and kill the terminal session at launch.
-		if err := domain.ValidateMode(domain.HarnessZCode, mode); err != nil {
-			return err
+		// ZCode's own vocabulary — a config written by another path must
+		// fail as a clean input error, not reach argv and kill the terminal
+		// session at launch.
+		switch mode {
+		case "build", "edit", "plan", "yolo":
+		default:
+			return fmt.Errorf("invalid zcode mode %q: want one of build, edit, plan, yolo", mode)
 		}
 		*cmd = append(*cmd, "--mode", mode)
 		return nil

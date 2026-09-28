@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/authprobe"
-	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/pkg/agentcreds"
@@ -133,30 +132,12 @@ func Base(agentID string) ports.AgentModelCatalog {
 			model("muse-spark-1.2", "Muse Spark 1.2", false),
 		)
 	case "amp":
-		// Modes come from the domain vocabulary so the picker can never
-		// offer a value AgentConfig validation rejects. Labels are display
-		// metadata keyed by mode id; an id without a label falls back to the
-		// raw value.
-		v, _ := domain.ModeVocabulary(domain.HarnessAmp)
-		labels := map[string]struct {
-			label     string
-			isDefault bool
-		}{
-			"low":    {label: "Low"},
-			"medium": {label: "Medium", isDefault: true},
-			"high":   {label: "High"},
-			"ultra":  {label: "Ultra"},
-		}
-		modes := make([]ports.AgentModelInfo, 0, len(v.Values))
-		for _, id := range v.Values {
-			meta := labels[id]
-			label := meta.label
-			if label == "" {
-				label = id
-			}
-			modes = append(modes, model(id, label, meta.isDefault))
-		}
-		c := catalog(agentID, "official-modes", entryMode, now, modes...)
+		c := catalog(agentID, "official-modes", entryMode, now,
+			model("low", "Low", false),
+			model("medium", "Medium", true),
+			model("high", "High", false),
+			model("ultra", "Ultra", false),
+		)
 		c.SelectionMode = ports.ModelSelectionModeList
 		return c
 	default:
