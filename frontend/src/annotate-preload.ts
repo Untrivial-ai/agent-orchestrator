@@ -3,6 +3,7 @@ import { animate } from "motion";
 import geistLatinWoff2 from "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?inline";
 import geistMonoLatinWoff2 from "@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2?inline";
 import {
+	annotationElementKind,
 	createBrowserAnnotationContext,
 	createBrowserAnnotationSession,
 	type BrowserAnnotationDraft,
@@ -70,8 +71,6 @@ const COMPOSER_OUTER_RADIUS = COMPOSER_CONTROL_RADIUS + COMPOSER_PAD;
 const COMMENT_CHROME_VERTICAL = COMPOSER_PAD * 2;
 /** Icon for the adjust/options control: palette | sliders | sliders-horizontal | sparkles | settings */
 const ADJUST_ICON = "palette" as const;
-/** Extra pixels outside the target on each side while a selection is active. */
-const SELECTED_OUTSET_PX = 6;
 const MARKDOWN_TARGETS =
 	"h1, h2, h3, h4, h5, h6, p, ul, ol, li, blockquote, pre, table, th, td, figure, figcaption, img, hr, details, summary";
 
@@ -222,6 +221,7 @@ function removeListeners(): void {
 
 function handlePointerMove(event: PointerEvent): void {
 	if (!enabled || isOverlayEvent(event) || session.draft) return;
+	shadow?.querySelector(".hover")?.classList.remove("hover--tracking");
 	const target = annotationTarget(event.target);
 	if (target === hoveredElement) return;
 	hoveredElement = target;
@@ -418,31 +418,10 @@ function renderHover(): void {
 		: hoveredElement;
 	if (!target) {
 		highlight.hidden = true;
-		highlight.classList.remove("hover--selected");
 		return;
 	}
-	const selecting = Boolean(session.draft);
-	const rect = target.getBoundingClientRect();
-	const wasHidden = highlight.hidden;
-	const alreadySelected = highlight.classList.contains("hover--selected");
 	highlight.hidden = false;
-	if (selecting) {
-		// Ease from flush bounds to a constant outset once per selection.
-		if (wasHidden || !alreadySelected) {
-			highlight.classList.remove("hover--selected");
-			positionBox(highlight, rect, 0);
-			requestAnimationFrame(() => {
-				if (!session.draft) return;
-				highlight.classList.add("hover--selected");
-				positionBox(highlight, target.getBoundingClientRect(), SELECTED_OUTSET_PX);
-			});
-		} else {
-			positionBox(highlight, rect, SELECTED_OUTSET_PX);
-		}
-	} else {
-		highlight.classList.remove("hover--selected");
-		positionBox(highlight, rect, 0);
-	}
+	positionBox(highlight, target.getBoundingClientRect());
 }
 
 function renderMarkers(): void {
@@ -454,6 +433,7 @@ function renderMarkers(): void {
 		const element = resolveTarget(annotation.target);
 		if (!element) continue;
 		const rect = element.getBoundingClientRect();
+		const origin = hostOrigin();
 		const key = `${Math.round(rect.left)}:${Math.round(rect.top)}`;
 		const offset = stacks.get(key) ?? 0;
 		stacks.set(key, offset + 1);
@@ -462,8 +442,8 @@ function renderMarkers(): void {
 		marker.type = "button";
 		marker.textContent = String(annotation.number);
 		marker.title = `Edit ${annotation.kind} ${annotation.number}`;
-		marker.style.left = `${Math.max(4, rect.right - 9 + offset * 15)}px`;
-		marker.style.top = `${Math.max(4, rect.top - 9)}px`;
+		marker.style.left = `${rect.right - 9 + offset * 15 - origin.left}px`;
+		marker.style.top = `${rect.top - 9 - origin.top}px`;
 		marker.addEventListener("click", (event) => {
 			event.stopPropagation();
 			if (!session.draft) openComposer(element, annotation);
@@ -702,7 +682,8 @@ function adjustmentPanel(element: Element): string {
 			row([field("columnGap"), field("rowGap")]),
 		].join(""))
 		: "";
-	return `<div class="adjustment-panel" data-adjustment-panel><div class="adjustment-panel-inner"><div class="element-header"><strong>${escapeAttribute(element.tagName.toLowerCase())}</strong></div>
+	const caption = elementCaption(element);
+	return `<div class="adjustment-panel" data-adjustment-panel><div class="adjustment-panel-inner"><div class="element-header"><span class="element-kind">${escapeHtml(caption.kind)}</span>${caption.text ? `<span class="element-text">${escapeHtml(caption.text)}</span>` : ""}</div>
 		<div class="adjustment-scroll">
 			${content}${type}${fill}${border}${size}${padding}${margin}${layout}
 	</div></div></div>`;
@@ -986,11 +967,11 @@ async function animateAdjustmentPanel(
 	const applyTop = (panelHeight: number): void => {
 		const span = endPanelHeight - startPanelHeight;
 		const progress = Math.abs(span) < 0.5 ? 1 : Math.min(1, Math.max(0, (panelHeight - startPanelHeight) / span));
-		form.style.top = `${startTop + (endTop - startTop) * progress}px`;
+		form.style.top = `${startTop + (endTop - startTop) * progress - hostOrigin().top}px`;
 	};
 	const settle = (): void => {
 		panel.style.height = `${endPanelHeight}px`;
-		form.style.top = `${endTop}px`;
+		form.style.top = `${endTop - hostOrigin().top}px`;
 		if (open) applyAdjustmentPanelLayout(inner, form, endPanelHeight);
 		onComplete?.();
 	};
@@ -1357,28 +1338,41 @@ function uniqueQuery(selector: string): Element | null {
 
 function refreshPositions(): void {
 	if (!enabled) return;
+	shadow?.querySelector(".hover")?.classList.add("hover--tracking");
 	renderHover();
 	renderMarkers();
 	if (!session.draft) return;
 	const form = shadow?.querySelector<HTMLFormElement>(".composer");
 	const textarea = form?.querySelector<HTMLTextAreaElement>(".composer-note");
 	const target = selectedElement ?? resolveTarget(session.draft.target);
-	if (!composerAnchorRect && target) composerAnchorRect = copyRect(target.getBoundingClientRect());
-	if (form && textarea && composerAnchorRect) resizeAndPositionComposer(form, textarea, composerAnchorRect);
+	if (target) composerAnchorRect = copyRect(target.getBoundingClientRect());
+	if (form && textarea && composerAnchorRect) resizeAndPositionComposer(form, textarea, composerAnchorRect, true);
+}
+
+// A transformed page makes position:fixed follow the document. Offset from the overlay host.
+function hostOrigin(): { left: number; top: number } {
+	const rect = host?.getBoundingClientRect();
+	return { left: rect?.left ?? 0, top: rect?.top ?? 0 };
 }
 
 function copyRect(rect: AnnotationRectLike): AnnotationRectLike {
 	return { left: rect.left, top: rect.top, bottom: rect.bottom };
 }
 
-function positionBox(box: HTMLElement, rect: DOMRect, outset = 0): void {
-	box.style.left = `${Math.max(0, rect.left - outset)}px`;
-	box.style.top = `${Math.max(0, rect.top - outset)}px`;
-	box.style.width = `${Math.max(0, rect.width + outset * 2)}px`;
-	box.style.height = `${Math.max(0, rect.height + outset * 2)}px`;
+function positionBox(box: HTMLElement, rect: DOMRect): void {
+	const origin = hostOrigin();
+	box.style.left = `${rect.left - origin.left}px`;
+	box.style.top = `${rect.top - origin.top}px`;
+	box.style.width = `${rect.width}px`;
+	box.style.height = `${rect.height}px`;
 }
 
-function resizeAndPositionComposer(form: HTMLFormElement, textarea: HTMLTextAreaElement, rect: AnnotationRectLike): void {
+function resizeAndPositionComposer(
+	form: HTMLFormElement,
+	textarea: HTMLTextAreaElement,
+	rect: AnnotationRectLike,
+	follow = false,
+): void {
 	const viewport = viewportSize();
 	const adjusting = form.classList.contains("composer--adjustment");
 	const width = composerWidth(adjusting);
@@ -1405,18 +1399,18 @@ function resizeAndPositionComposer(form: HTMLFormElement, textarea: HTMLTextArea
 	const measured = form.getBoundingClientRect().height;
 	const height = Math.min(viewport.height - PROMPT_GUTTER * 2, measured > 1 ? measured : 44);
 	const placement = composerPlacement(rect, width, height);
+	const origin = hostOrigin();
 	if (!composerPanelAnimating) {
 		// Which side the card opens on is decided when it grows, not from every
 		// intermediate height — otherwise collapsing a section could hop the card
 		// to the other side of the element. A closed composer decides for itself.
 		if (!adjusting) form.classList.toggle("composer--above", placement.above);
 		const above = form.classList.contains("composer--above");
-		const top = above
-			? Math.max(PROMPT_GUTTER, rect.top - PROMPT_GAP - height)
-			: rect.bottom + PROMPT_GAP;
-		form.style.top = `${top}px`;
+		const rawTop = above ? rect.top - PROMPT_GAP - height : rect.bottom + PROMPT_GAP;
+		const top = follow || !above ? rawTop : Math.max(PROMPT_GUTTER, rawTop);
+		form.style.top = `${top - origin.top}px`;
 	}
-	form.style.left = `${placement.left}px`;
+	form.style.left = `${placement.left - origin.left}px`;
 }
 
 function decodeBase64Font(dataUri: string): ArrayBuffer {
@@ -1485,6 +1479,7 @@ function overlayStyles(): string {
 			background:rgba(77,141,255,.10);pointer-events:none;
 			transition:left 180ms ease,top 180ms ease,width 180ms ease,height 180ms ease;
 		}
+		.hover--tracking{transition:none}
 		.marker{
 			position:fixed;width:20px;height:20px;border:2px solid var(--bg);border-radius:50%;
 			background:#74b98a;color:#101512;padding:0;
@@ -1579,11 +1574,15 @@ function overlayStyles(): string {
 		}
 		.adjustment-scroll{min-height:0;flex:1 1 auto;overflow-y:auto;scrollbar-width:none}
 		.element-header{
-			display:flex;flex:0 0 auto;align-items:center;justify-content:space-between;
+			display:flex;flex:0 0 auto;align-items:baseline;justify-content:space-between;gap:8px;
 			border-bottom:1px solid var(--border);
 			padding:var(--pad);font-size:12px;
 		}
-		.element-header strong{font-weight:600}
+		.element-kind{flex:0 0 auto;font-weight:600}
+		.element-text{
+			min-width:0;overflow:hidden;color:var(--muted-fg);font-weight:400;
+			text-overflow:ellipsis;white-space:nowrap;
+		}
 		.adjustment-group{
 			display:flex;flex-direction:column;gap:var(--gap);
 			border-bottom:1px solid var(--border);padding:var(--pad);
@@ -1728,5 +1727,17 @@ function localId(prefix: string): string { nextLocalId += 1; return `${prefix}-$
 function samePage(left: string, right: string): boolean { try { const a = new URL(left); const b = new URL(right); a.hash = ""; b.hash = ""; return a.href === b.href; } catch { return left.split("#")[0] === right.split("#")[0]; } }
 function kebabCase(value: string): string { return value.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`); }
 function cssEscape(value: string): string { return globalThis.CSS?.escape ? globalThis.CSS.escape(value) : value.replace(/[^a-zA-Z0-9_-]/g, "\\$&"); }
+function elementCaption(element: Element): { kind: string; text: string } {
+	const kind = annotationElementKind({
+		tag: element.tagName.toLowerCase(),
+		role: element.getAttribute("role") || undefined,
+	});
+	const raw = (element as HTMLElement).innerText || element.textContent || element.getAttribute("alt") || element.getAttribute("aria-label") || "";
+	const text = raw.replace(/\s+/g, " ").trim();
+	if (!text || text.toLowerCase() === kind.toLowerCase()) return { kind, text: "" };
+	const limit = 72;
+	return { kind, text: text.length > limit ? `${text.slice(0, limit - 1).trimEnd()}…` : text };
+}
+
 function escapeAttribute(value: string): string { return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 function escapeHtml(value: string): string { return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }

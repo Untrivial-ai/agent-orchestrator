@@ -75,6 +75,7 @@
 	"browser.annotationActive": "Annotation en cours",
 	"browser.annotationCount_one": "{{count}} annotation",
 	"browser.annotationCount_other": "{{count}} annotations",
+	"browser.annotationEmptyHint": "Pointez quelque chose et dites ce qu'il faut changer",
 	"browser.annotationCount_many": "{{count}} annotations",
 	"browser.annotationDiscardAll": "Tout supprimer",
 	"browser.annotationDiscardAllComments": "Supprimer tous les commentaires",

@@ -75,6 +75,7 @@
 	"browser.annotationActive": "Anotando",
 	"browser.annotationCount_one": "{{count}} anotação",
 	"browser.annotationCount_other": "{{count}} anotações",
+	"browser.annotationEmptyHint": "Aponte para algo e diga o que mudar",
 	"browser.annotationCount_many": "{{count}} anotações",
 	"browser.annotationDiscardAll": "Descartar tudo",
 	"browser.annotationDiscardAllComments": "Descartar todos os comentários",

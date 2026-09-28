@@ -38,6 +38,7 @@
 	"browser.annotationActive": "Annotating",
 	"browser.annotationCount_one": "{{count}} annotation",
 	"browser.annotationCount_other": "{{count}} annotations",
+	"browser.annotationEmptyHint": "Point at something and say what to change",
 	"browser.annotationDiscardAll": "Discard all",
 	"browser.annotationDiscardAllComments": "Discard all comments",
 	"browser.annotationExit": "Exit",

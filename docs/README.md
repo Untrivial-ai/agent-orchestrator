@@ -10,6 +10,9 @@ Start with [architecture.md](architecture.md) for the current backend model and
 
 ## Reference docs
 
+Gemini CLI setup, permission mapping, and current capability limits are documented
+in [gemini-cli.md](gemini-cli.md).
+
 | Doc                                                    | What it covers                                                                                                        |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
 | [documentation-map.md](documentation-map.md)           | Human-facing docs vs the machine-readable contract layer, source of truth per concern, and the CI gates that hold it. |

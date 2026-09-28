@@ -75,6 +75,7 @@
 	"browser.annotationActive": "Wird annotiert",
 	"browser.annotationCount_one": "{{count}} Annotation",
 	"browser.annotationCount_other": "{{count}} Annotationen",
+	"browser.annotationEmptyHint": "Zeigen Sie auf etwas und sagen Sie, was sich ändern soll",
 	"browser.annotationDiscardAll": "Alle verwerfen",
 	"browser.annotationDiscardAllComments": "Alle Kommentare verwerfen",
 	"browser.annotationExit": "Beenden",

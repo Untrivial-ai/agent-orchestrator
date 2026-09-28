@@ -10740,6 +10740,7 @@ components:
           - crush
           - cursor
           - qwen
+          - gemini
           - copilot
           - goose
           - auggie
@@ -11373,6 +11374,7 @@ components:
           - cline
           - goose
           - qwen
+          - gemini
           - continue
           - devin
           - kiro
@@ -13558,6 +13560,7 @@ components:
           - crush
           - cursor
           - qwen
+          - gemini
           - copilot
           - goose
           - auggie

@@ -4992,6 +4992,19 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	white-space: nowrap;
 }
 
+.browser-panel__annotation-context:has(.browser-panel__annotation-hint) {
+	max-width: min(70%, 420px);
+}
+
+.browser-panel__annotation-hint {
+	min-width: 0;
+	overflow: hidden;
+	color: var(--muted-foreground);
+	font-weight: var(--font-weight-medium);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .browser-panel__annotation-separator {
 	width: 1px;
 	height: 16px;
@@ -5044,9 +5057,12 @@ body:has(#root .platform-linux) > .files-popout-overlay {
 	height: var(--size-control-md);
 	gap: var(--space-1_5);
 	padding-inline: var(--space-2_5);
-	color: var(--primary-foreground);
 	font-size: var(--font-size-sm);
 	font-weight: var(--font-weight-medium);
+}
+
+.browser-panel__toolbar--annotation .browser-panel__annotation-send:not(:disabled) {
+	color: var(--primary-foreground);
 }
 
 /* The shared primary hover is a translucent wash (bg-primary/80). Over the

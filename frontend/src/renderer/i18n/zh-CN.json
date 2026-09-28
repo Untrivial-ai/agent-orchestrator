@@ -75,6 +75,7 @@
 	"browser.annotationActive": "正在标注",
 	"browser.annotationCount_one": "{{count}} 条标注",
 	"browser.annotationCount_other": "{{count}} 条标注",
+	"browser.annotationEmptyHint": "指向任意内容，并说明要改什么",
 	"browser.annotationDiscardAll": "全部丢弃",
 	"browser.annotationDiscardAllComments": "丢弃所有评论",
 	"browser.annotationExit": "退出",

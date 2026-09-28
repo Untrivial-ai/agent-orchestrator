@@ -34,6 +34,7 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 		{"crush", "Log in to Crush", "crush", "Native Charm Hyper login flow; GitHub Copilot remains available as a platform option", "https://github.com/charmbracelet/crush", "", ActionLogin, []string{"crush", "login"}},
 		{"cline", "Log in to Cline", "cline", "Native authentication flow", "https://github.com/cline/cline", "", ActionLogin, []string{"cline", "auth"}},
 		{"goose", "Set up Goose", "goose", "Native provider configuration; AO forwards terminal input without persisting or logging the raw input, while Goose controls credential storage", "https://block.github.io/goose/index.html", "", ActionSetup, []string{"goose", "configure"}},
+		{"gemini", "Set up Gemini CLI", "gemini", "Select Open setup after Gemini finishes starting to sign in or choose a provider", "https://geminicli.com/docs/get-started/authentication/", "/auth\r", ActionSetup, []string{"gemini"}},
 		{"qwen", "Set up Qwen", "qwen", "Select Open setup after Qwen finishes starting to configure a model provider", "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/", "i\x7f/auth\r", ActionSetup, []string{"qwen"}},
 		{"continue", "Log in to Continue", "cn", "Native browser flow", "https://docs.continue.dev/cli/quickstart", "", ActionLogin, []string{"cn", "login"}},
 		{"devin", "Log in to Devin", "devin", "Native browser flow; manual-token flow remains available from the CLI", "https://docs.devin.ai/get-started/devin-intro", "", ActionLogin, []string{"devin", "auth", "login"}},

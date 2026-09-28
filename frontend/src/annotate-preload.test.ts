@@ -552,26 +552,19 @@ describe("annotation adjustment preload", () => {
 		expect(overlayRoot().querySelector(".composer")).toBeNull();
 	});
 
-	it("keeps the selection highlight visible with a 6px outset while annotating", async () => {
+	it("keeps the selection the same size as the element", () => {
 		const button = setElementBounds(document.createElement("button"), { left: 20, top: 30, width: 140, height: 36 });
 		button.id = "selected-box";
 		button.textContent = "Continue";
 		document.body.appendChild(button);
 
-		const styles = overlayRoot().querySelector("style")?.textContent ?? "";
-		expect(styles).toContain("transition:left 180ms ease,top 180ms ease,width 180ms ease,height 180ms ease");
-		expect(styles).not.toContain("transform:scale(1.1)");
-
 		clickPage(button);
 		const highlight = overlayRoot().querySelector<HTMLElement>(".hover");
 		expect(highlight?.hidden).toBe(false);
-		await vi.waitFor(() => {
-			expect(highlight?.classList.contains("hover--selected")).toBe(true);
-			expect(highlight?.style.left).toBe("14px");
-			expect(highlight?.style.top).toBe("24px");
-			expect(highlight?.style.width).toBe("152px");
-			expect(highlight?.style.height).toBe("48px");
-		});
+		expect(highlight?.style.left).toBe("20px");
+		expect(highlight?.style.top).toBe("30px");
+		expect(highlight?.style.width).toBe("140px");
+		expect(highlight?.style.height).toBe("36px");
 	});
 
 	it("clears open selection when re-entering annotation mode but keeps batch markers", () => {
@@ -605,6 +598,62 @@ describe("annotation adjustment preload", () => {
 		expect(latestSession().draft).toBeUndefined();
 		expect(latestSession().annotations).toHaveLength(1);
 		expect(overlayRoot().querySelectorAll(".marker")).toHaveLength(1);
+	});
+
+	it("names an element apart from the words in it", () => {
+		const link = setElementBounds(document.createElement("a"), { left: 10, top: 10, width: 80, height: 20 });
+		link.textContent = "Pricing";
+		document.body.appendChild(link);
+
+		const root = openAdjust(link);
+
+		expect(root.querySelector(".element-kind")?.textContent).toBe("Link");
+		expect(root.querySelector(".element-text")?.textContent).toBe("Pricing");
+	});
+
+	it("keeps a plain box's label distinct from its text", () => {
+		const box = setElementBounds(document.createElement("div"), { left: 10, top: 10, width: 120, height: 40 });
+		box.textContent = "Welcome back";
+		document.body.appendChild(box);
+
+		const root = openAdjust(box);
+
+		expect(root.querySelector(".element-kind")?.textContent).toBe("Box");
+		expect(root.querySelector(".element-text")?.textContent).toBe("Welcome back");
+	});
+
+	it("keeps the outline on an element that stays put while the page scrolls", () => {
+		const header = setElementBounds(document.createElement("header"), { left: 0, top: 12, width: 320, height: 40 });
+		header.textContent = "Stay";
+		document.body.appendChild(header);
+		clickPage(header);
+
+		const host = document.querySelector<HTMLElement>("[data-ao-annotation-root]");
+		if (!host) throw new Error("annotation overlay was not rendered");
+		// A transformed document makes the fixed overlay scroll with the page.
+		// The element itself is still at the top of the viewport.
+		setElementBounds(host, { left: 0, top: -240, width: 800, height: 4000 });
+		window.dispatchEvent(new Event("scroll"));
+
+		const box = overlayRoot().querySelector<HTMLElement>(".hover");
+		expect(box?.style.top).toBe("252px");
+		expect(box?.classList.contains("hover--tracking")).toBe(true);
+		expect(overlayRoot().querySelector("style")?.textContent).toContain(".hover--tracking{transition:none}");
+
+		setElementBounds(header, { left: 0, top: 12, width: 320, height: 40 });
+		window.dispatchEvent(new Event("scroll"));
+		expect(box?.style.top).toBe("252px");
+
+		setElementBounds(header, { left: 0, top: 180, width: 320, height: 40 });
+		window.dispatchEvent(new Event("scroll"));
+		expect(box?.style.top).toBe("420px");
+
+		// Scrolling the element off the top must take the outline with it.
+		setElementBounds(header, { left: 0, top: -48, width: 320, height: 40 });
+		window.dispatchEvent(new Event("scroll"));
+		expect(box?.style.top).toBe("192px");
+		expect(box?.style.width).toBe("320px");
+		expect(box?.style.height).toBe("40px");
 	});
 
 	it("copies a screenshot to the clipboard instead of adding it to the batch", async () => {

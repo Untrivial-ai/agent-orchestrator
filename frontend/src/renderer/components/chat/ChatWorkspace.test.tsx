@@ -1774,6 +1774,7 @@ Annotation 1 (adjustment):
 Target: div.badge
 Selector: body > div.badge
 Dimensions: 120×24
+Element text: "New"
 Requested visual changes:
 - Text color: "rgb(0, 0, 0)" → "#d7193f"
 - Background: "transparent" → "#32c873"
@@ -1791,6 +1792,7 @@ Task: Address the feedback below according to its wording. Visual adjustments ar
 		expect(screen.getByText("1 annotation on Google")).toBeInTheDocument();
 		expect(screen.getByText("2 visual changes")).toBeInTheDocument();
 		expect(screen.getByText("div.badge")).toBeInTheDocument();
+		expect(screen.getByText("New")).toBeInTheDocument();
 		expect(screen.getByText("1 reference screenshot")).toBeInTheDocument();
 		expect(screen.queryByText(/body > div\.badge/)).not.toBeInTheDocument();
 		expect(screen.queryByText(/Task: Address/)).not.toBeInTheDocument();

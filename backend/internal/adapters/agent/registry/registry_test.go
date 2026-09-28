@@ -13,6 +13,19 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+func TestGeminiAdapterIsSelectable(t *testing.T) {
+	reg, err := Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Get("gemini"); !ok {
+		t.Fatal("Gemini CLI is not registered")
+	}
+	if !domain.AgentHarness("gemini").IsKnown() {
+		t.Fatal("Gemini is not selectable")
+	}
+}
+
 // TestGetAgentHooksFootprintIsGitignored enforces a contract every shipped
 // (and future) adapter must hold: any file GetAgentHooks writes into a session
 // worktree must be covered by a sibling AO-managed self-ignoring .gitignore

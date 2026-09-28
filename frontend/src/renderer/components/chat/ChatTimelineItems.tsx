@@ -718,7 +718,8 @@ function BrowserAnnotationOrigin({
 										? `${item.changes.length} visual change${item.changes.length === 1 ? "" : "s"}`
 										: "Comment")}
 							</p>
-							{item.target ? <p className="truncate">{item.target}</p> : null}
+							{item.target ? <p className="truncate text-foreground">{item.target}</p> : null}
+							{item.text ? <p className="truncate">{item.text}</p> : null}
 						</div>
 					</div>
 				))}

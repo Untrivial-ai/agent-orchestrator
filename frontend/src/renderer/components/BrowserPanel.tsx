@@ -1046,6 +1046,7 @@ export function BrowserPanelView({
 				</BrowserControlTooltip>
 		</div>
 	);
+	const annotationIdle = annotationState.count === 0 && !annotationState.hasDraft;
 	const annotationToolbar = (
 		<div className="browser-panel__toolbar browser-panel__toolbar--annotation">
 			<div className="browser-panel__annotation-actions browser-panel__annotation-actions--leading">
@@ -1054,6 +1055,7 @@ export function BrowserPanelView({
 						<Button
 							aria-label={t("browser.annotationDiscardAllComments")}
 							className="browser-panel__annotation-discard"
+							disabled={annotationIdle && annotationState.screenshotCount === 0}
 							onClick={() => void annotationAction("discard-all")}
 							size="icon-sm"
 							type="button"
@@ -1068,10 +1070,18 @@ export function BrowserPanelView({
 				</Tooltip>
 			</div>
 			<div className="browser-panel__annotation-context">
-				<span aria-hidden="true" className="browser-panel__annotation-status-dot" />
-				<span className="browser-panel__annotation-count">
-					{t("browser.annotationCount", { count: annotationState.count })}
-				</span>
+				{annotationIdle ? (
+					<span className="browser-panel__annotation-hint">{t("browser.annotationEmptyHint")}</span>
+				) : (
+					<>
+						{annotationState.count > 0 ? (
+							<span aria-hidden="true" className="browser-panel__annotation-status-dot" />
+						) : null}
+						<span className="browser-panel__annotation-count">
+							{t("browser.annotationCount", { count: annotationState.count })}
+						</span>
+					</>
+				)}
 			</div>
 			<div className="browser-panel__annotation-actions browser-panel__annotation-actions--trailing">
 				<Tooltip>
@@ -1097,6 +1107,7 @@ export function BrowserPanelView({
 					<TooltipTrigger asChild>
 						<Button
 							aria-label={t("browser.annotationOriginalPage")}
+							disabled={annotationIdle}
 							onBlur={() => void annotationAction("restore-preview")}
 							onPointerCancel={() => void annotationAction("restore-preview")}
 							onPointerDown={() => void annotationAction("preview-original")}
@@ -1117,11 +1128,11 @@ export function BrowserPanelView({
 				<Button
 					aria-label={t("browser.annotationSendAll")}
 					className="browser-panel__annotation-send"
-					disabled={annotationState.count === 0 && !annotationState.hasDraft}
+					disabled={annotationIdle}
 					onClick={() => void annotationAction("submit")}
 					size="sm"
 					type="button"
-					variant="primary"
+					variant={annotationIdle ? "ghost" : "primary"}
 				>
 					{t("browser.annotationSend")}
 					{annotationState.count > 0 ? (

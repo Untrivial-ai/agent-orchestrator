@@ -928,7 +928,7 @@ func TestMigrateRepairsOMPHarnessConstraint(t *testing.T) {
 	).Scan(&schema); err != nil {
 		t.Fatalf("read sessions schema: %v", err)
 	}
-	for _, harness := range []string{"'omp'"} {
+	for _, harness := range []string{"'omp'", "'gemini'"} {
 		if !strings.Contains(schema, harness) {
 			t.Fatalf("sessions.harness CHECK is missing %s after repair:\n%s", harness, schema)
 		}
@@ -940,6 +940,12 @@ INSERT INTO sessions (id, project_id, num, harness, activity_last_at, created_at
 VALUES ('agent-orchestrator-1', 'agent-orchestrator', 1, 'omp', ?, ?, ?);
 `, time.Unix(100, 0).UTC(), time.Unix(101, 0).UTC(), time.Unix(101, 0).UTC(), time.Unix(101, 0).UTC()); err != nil {
 		t.Fatalf("insert omp session after repair: %v", err)
+	}
+	if _, err := db.Exec(`
+INSERT INTO sessions (id, project_id, num, harness, activity_last_at, created_at, updated_at)
+VALUES ('agent-orchestrator-2', 'agent-orchestrator', 2, 'gemini', ?, ?, ?);
+`, time.Unix(102, 0).UTC(), time.Unix(102, 0).UTC(), time.Unix(102, 0).UTC()); err != nil {
+		t.Fatalf("insert gemini session after legacy harness repair: %v", err)
 	}
 }
 
@@ -1005,13 +1011,13 @@ INSERT INTO projects (id, path, registered_at) VALUES ('alpha', '/repos/alpha', 
 	}
 }
 
-// TestMigration0164AddsZcodeToLegacyQMConstraint seeds the QM-variant
-// post-0163 constraint (... 'omp', 'unreal-agent', 'fx', 'qm', 'fake') and
-// runs only migration 0164, asserting the QM replace pair inserted 'zcode'.
-// Without the QM pair, the replace() source string omits 'qm' and no-ops,
-// leaving zcode session inserts to fail with a CHECK violation on installs
-// that took the legacy QM branch.
-func TestMigration0164AddsZcodeToLegacyQMConstraint(t *testing.T) {
+// TestMigration0165AddsZcodeToLegacyQMConstraint seeds the QM-variant
+// post-0164 constraint (... 'gemini', 'omp', 'unreal-agent', 'fx', 'qm',
+// 'fake') and runs only migration 0165, asserting the QM replace pair
+// inserted 'zcode'. Without the QM pair, the replace() source string omits
+// 'qm' and no-ops, leaving zcode session inserts to fail with a CHECK
+// violation on installs that took the legacy QM branch.
+func TestMigration0165AddsZcodeToLegacyQMConstraint(t *testing.T) {
 	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "ao.db")+pragmas)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
@@ -1021,7 +1027,8 @@ func TestMigration0164AddsZcodeToLegacyQMConstraint(t *testing.T) {
 	upTo(t, db, 163)
 
 	// Simulate a legacy QM-variant database: swap the post-0163 constraint
-	// (fx, no qm) to the QM variant (fx, qm).
+	// (fx, no qm, no gemini) to the QM variant. Migration 0164 then inserts
+	// gemini via its 'omp', 'unreal-agent' anchor rewrite, preserving qm.
 	if _, err := db.Exec(`PRAGMA writable_schema = ON`); err != nil {
 		t.Fatalf("enable writable_schema: %v", err)
 	}
@@ -1038,8 +1045,8 @@ WHERE type = 'table' AND name = 'sessions'`,
 		t.Fatalf("reparse legacy qm harness constraint: %v", err)
 	}
 
-	// Run only migration 0164 (versions 1–163 are already applied).
-	upTo(t, db, 164)
+	// Run only migration 0165 (versions 1–164 are already applied).
+	upTo(t, db, 165)
 
 	var schema string
 	if err := db.QueryRow(
@@ -1049,7 +1056,7 @@ WHERE type = 'table' AND name = 'sessions'`,
 	}
 	for _, harness := range []string{"'zcode'", "'qm'", "'omp'"} {
 		if !strings.Contains(schema, harness) {
-			t.Fatalf("sessions.harness CHECK is missing %s after migration 0164:\n%s", harness, schema)
+			t.Fatalf("sessions.harness CHECK is missing %s after migration 0165:\n%s", harness, schema)
 		}
 	}
 }

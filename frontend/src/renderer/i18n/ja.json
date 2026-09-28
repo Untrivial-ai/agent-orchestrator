@@ -75,6 +75,7 @@
 	"browser.annotationActive": "注釈中",
 	"browser.annotationCount_one": "注釈 {{count}} 件",
 	"browser.annotationCount_other": "注釈 {{count}} 件",
+	"browser.annotationEmptyHint": "何かを指して、変えたいことを書いてください",
 	"browser.annotationDiscardAll": "すべて破棄",
 	"browser.annotationDiscardAllComments": "すべてのコメントを破棄",
 	"browser.annotationExit": "終了",

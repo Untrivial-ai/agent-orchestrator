@@ -75,6 +75,7 @@
 	"browser.annotationActive": "주석 작성 중",
 	"browser.annotationCount_one": "주석 {{count}}개",
 	"browser.annotationCount_other": "주석 {{count}}개",
+	"browser.annotationEmptyHint": "원하는 곳을 가리키고 바꿀 내용을 적으세요",
 	"browser.annotationDiscardAll": "모두 버리기",
 	"browser.annotationDiscardAllComments": "모든 댓글 버리기",
 	"browser.annotationExit": "나가기",

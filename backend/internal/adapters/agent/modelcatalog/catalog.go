@@ -179,7 +179,7 @@ func Manual(agentID string) ports.AgentModelCatalog {
 // availability remain agent-owned and are never listed here.
 func customModelEntryMode(agentID string) ports.CustomModelEntryMode {
 	switch agentID {
-	case "claude-code", "codex", "opencode", "grok", "cursor", "qwen",
+	case "claude-code", "codex", "opencode", "grok", "cursor", "qwen", "gemini",
 		"kimi", "muse", "aider", "goose", "autohand", "fx", "unreal-agent":
 		return ports.CustomModelEntryDirect
 	case "continue", "cline", "kilocode", "vibe", "pi", "kimchi", "prime-agent":

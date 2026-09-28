@@ -173,6 +173,7 @@ export type ParsedBrowserAnnotationItem = {
 	number: number;
 	kind: BrowserAnnotationKind;
 	target: string;
+	text: string;
 	comment: string;
 	changes: string[];
 };
@@ -286,11 +287,11 @@ export function formatBrowserAnnotationMessage(
 	for (const annotation of session.annotations) {
 		const context = annotation.target.context;
 		lines.push("", `Annotation ${annotation.number} (${annotation.kind}):`);
-		lines.push(`Target: ${elementSummary(context)}`);
+		lines.push(`Target: ${annotationElementKind(context)}`);
 		lines.push(`Selector: ${context.selector}`);
 		lines.push(`Dimensions: ${context.size.width}×${context.size.height}`);
-		if (context.visibleText || context.selectedText)
-			lines.push(`Element text: ${JSON.stringify(compactText(context.visibleText || context.selectedText || "", MAX_TEXT_FIELD_LENGTH))}`);
+		const written = compactText(context.selectedText || context.visibleText || "", MAX_TEXT_FIELD_LENGTH);
+		if (written) lines.push(`Element text: ${JSON.stringify(written)}`);
 		if (context.ariaLabel) lines.push(`Accessible name: ${JSON.stringify(compactText(context.ariaLabel, 180))}`);
 		const comment = compactText(annotation.body, MAX_ANNOTATION_BODY_LENGTH);
 		if (comment) lines.push(`Comment: ${comment}`);
@@ -332,6 +333,7 @@ export function parseBrowserAnnotationMessage(message: string): ParsedBrowserAnn
 				number: Number(heading[1]),
 				kind: heading[2] as BrowserAnnotationKind,
 				target: "",
+				text: "",
 				comment: "",
 				changes: [],
 			};
@@ -356,6 +358,7 @@ export function parseBrowserAnnotationMessage(message: string): ParsedBrowserAnn
 		}
 		if (!current) continue;
 		if (line.startsWith("Target: ")) current.target = line.slice("Target: ".length).trim();
+		else if (line.startsWith("Element text: ")) current.text = quotedField(line.slice("Element text: ".length).trim());
 		else if (line.startsWith("Comment: ")) current.comment = line.slice("Comment: ".length).trim();
 		else if (readingChanges && line.startsWith("- ")) current.changes.push(line.slice(2).trim());
 	}
@@ -367,8 +370,62 @@ function valueAfterPrefix(lines: string[], prefix: string): string {
 	return lines.find((line) => line.startsWith(prefix))?.slice(prefix.length).trim() ?? "";
 }
 
-function elementSummary(context: BrowserAnnotationContext): string {
-	return `${context.tag}${context.id ? `#${context.id}` : ""}${context.classes.length > 0 ? `.${context.classes.join(".")}` : ""}`;
+const ELEMENT_KIND_BY_ROLE: Record<string, string> = {
+	button: "Button",
+	link: "Link",
+	heading: "Heading",
+	img: "Image",
+	image: "Image",
+	textbox: "Field",
+	navigation: "Navigation",
+};
+
+const ELEMENT_KIND_BY_TAG: Record<string, string> = {
+	a: "Link",
+	button: "Button",
+	img: "Image",
+	svg: "Image",
+	picture: "Image",
+	video: "Video",
+	h1: "Heading",
+	h2: "Heading",
+	h3: "Heading",
+	h4: "Heading",
+	h5: "Heading",
+	h6: "Heading",
+	p: "Text",
+	span: "Text",
+	label: "Label",
+	input: "Field",
+	textarea: "Field",
+	select: "Menu",
+	li: "List item",
+	ul: "List",
+	ol: "List",
+	nav: "Navigation",
+	header: "Header",
+	footer: "Footer",
+	code: "Code",
+	pre: "Code",
+	table: "Table",
+	form: "Form",
+	blockquote: "Quote",
+};
+
+export function annotationElementKind(input: { tag: string; role?: string }): string {
+	const role = input.role?.toLowerCase();
+	if (role && ELEMENT_KIND_BY_ROLE[role]) return ELEMENT_KIND_BY_ROLE[role];
+	return ELEMENT_KIND_BY_TAG[input.tag] ?? "Box";
+}
+
+function quotedField(value: string): string {
+	if (!value.startsWith('"')) return value;
+	try {
+		const parsed = JSON.parse(value);
+		return typeof parsed === "string" ? parsed : value;
+	} catch {
+		return value;
+	}
 }
 
 function selectorFor(element: Element): string {
