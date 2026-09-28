@@ -6,6 +6,7 @@ export * from "./agents";
 export * from "./external-link";
 export * from "./ExecutionContextView";
 export * from "./formatting";
+export * from "./NavRowHighlight";
 export * from "./overlay-auto-focus";
 export * from "./PRSummaryDisplay";
 export * from "./project-models";

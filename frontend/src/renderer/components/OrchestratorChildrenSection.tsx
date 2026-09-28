@@ -1,4 +1,4 @@
-import { InspectorSection, inspectorEmptyClass } from "@aoagents/product-ui";
+import { InspectorSection, inspectorEmptyClass, inspectorSectionHeadingClass } from "@aoagents/product-ui";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
@@ -32,7 +32,7 @@ export function OrchestratorChildrenSection({ session }: { session: WorkspaceSes
 	const title =
 		children.length > 0 ? t("inspector.workersCount", { count: children.length }) : t("inspector.workers");
 	return (
-		<InspectorSection surface={false} title={title}>
+		<InspectorSection surface={false} title={title} titleClassName={inspectorSectionHeadingClass}>
 			<div className="flex flex-col gap-1" data-testid="orchestrator-children">
 				{query.isLoading ? (
 					<p className={inspectorEmptyClass}>{t("inspector.workersLoading")}</p>

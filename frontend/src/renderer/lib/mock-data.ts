@@ -27,6 +27,270 @@ const demoPr = (
 	updatedAt: now,
 });
 
+/** Browser-preview fixture: open Reviews → Review summary with a full PR stack. */
+const DEMO_REVIEW_EXTREME_SPECS: Array<{
+	number: number;
+	title: string;
+	state: PRState;
+	ci: PullRequestFacts["ci"];
+	review: PullRequestFacts["review"];
+	mergeability?: PullRequestFacts["mergeability"];
+	scm?: Partial<SessionPRSummary>;
+}> = [
+	{
+		number: 401,
+		title: "Stack inspector review rows behind one accordion",
+		state: "open",
+		ci: "passing",
+		review: "approved",
+		scm: {
+			review: {
+				decision: "approved",
+				hasUnresolvedHumanComments: false,
+				reviews: [
+					{
+						reviewerId: "prateek",
+						autoInjectReview: true,
+						verdict: "approved",
+						submittedAt: hoursAgo(3),
+						reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/401#review-1",
+						body: "Accordion chrome matches Summary; ship it.",
+					},
+				],
+				unresolvedBy: [],
+			},
+		},
+	},
+	{
+		number: 402,
+		title: "Dedupe GitHub review threads when AO already imported the comment",
+		state: "open",
+		ci: "failing",
+		review: "changes_requested",
+		mergeability: "unstable",
+		scm: {
+			ci: {
+				autoInjectCI: true,
+				state: "failing",
+				failingChecks: [
+					{
+						name: "frontend / SessionInspector.test.tsx",
+						status: "failed",
+						conclusion: "failure",
+						url: "https://github.com/Untrivial-ai/agent-orchestrator/actions/runs/401001",
+					},
+				],
+			},
+			review: {
+				decision: "changes_requested",
+				hasUnresolvedHumanComments: true,
+				reviews: [
+					{
+						reviewerId: "maya",
+						autoInjectReview: true,
+						verdict: "changes_requested",
+						submittedAt: hoursAgo(2),
+						reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/402#review-1",
+						body: "Inline list hover should stay off; thread dedupe still drops bot duplicates.",
+					},
+					{
+						reviewerId: "copilot",
+						isBot: true,
+						autoInjectReview: false,
+						verdict: "none",
+						submittedAt: hoursAgo(2),
+						reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/402#review-2",
+						body: "Consider extracting shared review labels.",
+					},
+				],
+				unresolvedBy: [
+					{
+						reviewerId: "maya",
+						count: 4,
+						reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/402#review-1",
+						links: [
+							{ file: "packages/product-ui/src/SessionInspectorView.tsx", line: 702, body: "Restore outer Review summary section.", autoInjectReview: true },
+							{ file: "frontend/src/renderer/lib/session-reviews.ts", line: 118, body: "History pager needs more than three runs in stress mode.", autoInjectReview: true },
+						],
+					},
+				],
+			},
+		},
+	},
+	{
+		number: 403,
+		title: "Align PR cards with accordion gutter in Summary and Reviews",
+		state: "open",
+		ci: "pending",
+		review: "none",
+	},
+	{
+		number: 404,
+		title: "Draft: mobile Connect review parity (do not merge yet)",
+		state: "draft",
+		ci: "pending",
+		review: "none",
+		mergeability: "unknown",
+	},
+	{
+		number: 405,
+		title: "Reviewer session kill switch while auto-review owns the run",
+		state: "open",
+		ci: "passing",
+		review: "none",
+	},
+	{
+		number: 406,
+		title: "Re-run review after force-push rewrote the last AO verdict",
+		state: "open",
+		ci: "passing",
+		review: "approved",
+	},
+	{
+		number: 407,
+		title: "Request re-review when external reviewer dismisses without resolve",
+		state: "open",
+		ci: "passing",
+		review: "changes_requested",
+		scm: {
+			review: {
+				decision: "changes_requested",
+				hasUnresolvedHumanComments: true,
+				reviews: [
+					{
+						reviewerId: "vickyshaw29",
+						autoInjectReview: false,
+						verdict: "changes_requested",
+						submittedAt: hoursAgo(5),
+						reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/407#review-1",
+						body: "Please split the SCM mock from the session list fixture.",
+					},
+					{
+						reviewerId: "cursor-bugbot",
+						isBot: true,
+						autoInjectReview: false,
+						verdict: "none",
+						submittedAt: hoursAgo(4),
+						reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/407#review-2",
+						body: "Potential null dereference when scm summary is empty.",
+					},
+				],
+				unresolvedBy: [{ reviewerId: "vickyshaw29", count: 2, reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/407#review-1", links: [] }],
+			},
+		},
+	},
+	{
+		number: 408,
+		title: "Load-more review history when a PR has twelve agent passes",
+		state: "open",
+		ci: "failing",
+		review: "none",
+		scm: {
+			ci: {
+				autoInjectCI: true,
+				state: "failing",
+				failingChecks: [{ name: "api-drift", status: "failed", conclusion: "failure", url: "https://github.com/Untrivial-ai/agent-orchestrator/actions/runs/408001" }],
+			},
+		},
+	},
+	{
+		number: 409,
+		title: "Merge queue blocked: waiting on parent stack PR #401",
+		state: "open",
+		ci: "passing",
+		review: "approved",
+		mergeability: "blocked",
+		scm: {
+			mergeability: {
+				state: "blocked",
+				reasons: ["behind_base", "review_required"],
+				prUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/409",
+				conflictFiles: [],
+			},
+		},
+	},
+	{
+		number: 410,
+		title: "Eight unresolved inline comments on BrowserPanel resize handle",
+		state: "open",
+		ci: "passing",
+		review: "changes_requested",
+		scm: {
+			review: {
+				decision: "changes_requested",
+				hasUnresolvedHumanComments: true,
+				reviews: [
+					{
+						reviewerId: "Prasad-D-Ware",
+						autoInjectReview: true,
+						verdict: "changes_requested",
+						submittedAt: hoursAgo(6),
+						reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/410#review-1",
+						body: "Resize handle overlaps native traffic lights at minimum inspector width.",
+					},
+				],
+				unresolvedBy: [
+					{
+						reviewerId: "Prasad-D-Ware",
+						count: 8,
+						reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/410#review-1",
+						links: [
+							{ file: "frontend/src/renderer/components/BrowserPanel.tsx", line: 144, body: "Handle hit target too narrow.", autoInjectReview: true },
+							{ file: "frontend/src/renderer/styles.css", line: 3583, body: "Resize affordance z-index.", autoInjectReview: true },
+						],
+					},
+				],
+			},
+		},
+	},
+	{
+		number: 411,
+		title:
+			"Extremely long pull request title that should wrap across multiple lines in the inspector rail without blowing out the verdict column or clipping the chevron on narrow widths",
+		state: "open",
+		ci: "pending",
+		review: "none",
+	},
+	{
+		number: 412,
+		title: "Codex + Claude both approved; GitHub still shows review required",
+		state: "open",
+		ci: "passing",
+		review: "approved",
+		scm: {
+			review: {
+				decision: "review_required",
+				hasUnresolvedHumanComments: false,
+				reviews: [
+					{
+						reviewerId: "codex",
+						isBot: true,
+						autoInjectReview: true,
+						verdict: "approved",
+						submittedAt: hoursAgo(1),
+						reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/412#review-1",
+						body: "Approved via AO agent pass.",
+					},
+					{
+						reviewerId: "claude-code",
+						isBot: true,
+						autoInjectReview: true,
+						verdict: "approved",
+						submittedAt: minutesAgo(55),
+						reviewUrl: "https://github.com/Untrivial-ai/agent-orchestrator/pull/412#review-2",
+						body: "Second agent pass agrees.",
+					},
+				],
+				unresolvedBy: [],
+			},
+		},
+	},
+];
+
+const demoReviewExtremePRFacts = DEMO_REVIEW_EXTREME_SPECS.map((spec) =>
+	demoPr(spec.number, spec.state, spec.ci, spec.review, spec.mergeability ?? "mergeable"),
+);
+
 // Standalone shell terminals for the browser-preview build. The real ones need
 // a daemon to spawn a PTY, so the preview shows representative tabs instead —
 // enough to exercise the tab strip's layout, selection, and close control.
@@ -136,6 +400,28 @@ export const mockWorkspaces: WorkspaceSummary[] = [
 					demoPr(320, "open", "pending", "none", "unknown"),
 					demoPr(321, "draft", "pending", "none", "unknown"),
 				],
+			},
+			{
+				id: "demo-review-extreme",
+				terminalHandleId: "demo-review-extreme/terminal_0",
+				workspaceId: "ao-demo",
+				workspaceName: "ao-demo",
+				title: "Reviews tab stress fixture (12 stacked PRs)",
+				provider: "codex",
+				branch: "demo/review-extreme-stack",
+				status: "review_pending",
+				kanbanColumn: "needs_review",
+				displayStatus: "Needs human review",
+				createdAt: hoursAgo(9),
+				updatedAt: minutesAgo(3),
+				activity: { state: "idle", lastActivityAt: minutesAgo(3) },
+				autoInjectReview: true,
+				changedFiles: [
+					{ path: "frontend/src/renderer/lib/mock-data.ts", additions: 420, deletions: 12 },
+					{ path: "packages/product-ui/src/SessionInspectorView.tsx", additions: 88, deletions: 41 },
+				],
+				commitMessage: "add review extreme preview session",
+				prs: demoReviewExtremePRFacts,
 			},
 			{
 				id: "demo-in-review",
@@ -376,6 +662,12 @@ export const mockSessionScmSummaries: Record<string, SessionPRSummary[]> = {
 			},
 		}),
 	],
+	"demo-review-extreme": DEMO_REVIEW_EXTREME_SPECS.map((spec) =>
+		prSummary("demo-review-extreme", spec.number, {
+			title: spec.title,
+			...(spec.scm ?? {}),
+		}),
+	),
 	"demo-review-stack": [
 		prSummary("demo-review-stack", 321, {
 			state: "merged",

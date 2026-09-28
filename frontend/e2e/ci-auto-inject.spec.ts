@@ -7,7 +7,7 @@ test("CI auto-injection policy is visible before a PR exists", async ({ page }) 
 	const toggle = inspector.getByRole("switch", { name: "Automatically send CI failures" });
 	await expect(toggle).toBeVisible();
 	await expect(toggle).toBeChecked();
-	await expect(inspector.getByText("No pull request opened yet.")).toBeVisible();
+	await expect(inspector.getByText("Pull request")).toHaveCount(0);
 
 	await toggle.click();
 	await expect(toggle).not.toBeChecked();

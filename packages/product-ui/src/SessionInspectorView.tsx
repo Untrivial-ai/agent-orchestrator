@@ -1,5 +1,5 @@
-import { type KeyboardEvent, type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
-import { motion, useReducedMotion } from "motion/react";
+import { type KeyboardEvent, type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ExternalLinkComponent } from "./external-link";
 import {
 	ArrowUpRightIcon,
@@ -7,6 +7,7 @@ import {
 	CheckIcon,
 	ChevronIcon,
 	GitPullRequestIcon,
+	LoaderCircleIcon,
 	MoreHorizontalIcon,
 } from "./icons";
 import {
@@ -19,6 +20,7 @@ import type {
 	PRSummaryMetadata,
 } from "./pull-request-models";
 import { scmUserAvatarUrl } from "./scm-avatar";
+import { NAV_ROW_HIGHLIGHT_HOST_CLASS, NavRowHighlight } from "./NavRowHighlight";
 import { cn } from "./utils";
 import { UserAvatar } from "./UserAvatar";
 
@@ -34,8 +36,42 @@ export type InspectorTab = {
 
 const inspectorShellClass = "@container/inspector flex h-full min-h-0 flex-col overflow-hidden";
 const inspectorBodyBaseClass = "min-h-0 flex-1";
-const inspectorScrollableBodyClass = "board-scrollbar overflow-x-hidden overflow-y-auto p-3 pb-4 @max-[300px]/inspector:px-2.5";
+const inspectorScrollableBodyClass = "inspector-scrollbar overflow-x-hidden overflow-y-auto";
 export const inspectorEmptyClass = "text-xs text-settings-muted leading-normal";
+/**
+ * Positions each section header in the panel: top/left inset match; bottom is half of top so
+ * stacked headers share the gap (pb + next pt).
+ */
+export const inspectorSectionHeaderSlotClass = "px-1.5 pt-1.5 pb-0.5";
+
+/** Inset inside the hover pill (equal x/y so label sits evenly in the gray highlight). */
+export const inspectorSectionHeaderInsetClass = "p-1.5";
+
+/** Body inset matches header label (panel px-1.5 + header button p-1.5). */
+export const inspectorSectionInsetClass = "px-3 pb-0";
+
+/** Bleed section cards to the accordion button edges (body px-3 vs header slot px-1.5). */
+export const inspectorSectionCardBleedClass = "-mx-1.5";
+
+/** Inspector tab section titles: sentence case, normal weight (not settings-rail small caps). */
+export const inspectorSectionHeadingClass =
+	"font-normal normal-case tracking-normal [&>span:first-child]:font-normal";
+
+/** @deprecated Use {@link inspectorSectionHeadingClass}. */
+export const inspectorReviewHeadingClass = inspectorSectionHeadingClass;
+
+const inspectorSectionHeaderShellClass =
+	"relative w-full min-w-0 rounded-lg text-nano font-normal normal-case leading-none tracking-normal text-muted-foreground";
+
+const inspectorSectionHeaderContentClass =
+	"relative z-[1] flex w-full min-w-0 items-center justify-between gap-2";
+
+const inspectorSectionAccordionButtonClass = cn(
+	inspectorSectionHeaderShellClass,
+	NAV_ROW_HIGHLIGHT_HOST_CLASS,
+	"flex w-full items-center text-left transition-none",
+	inspectorSectionHeaderInsetClass,
+);
 
 export function SessionInspectorShellView({
 	activeView,
@@ -197,34 +233,122 @@ export function InspectorSection({
 	action,
 	children,
 	className,
+	collapsible = true,
+	defaultOpen = true,
 	surface = true,
+	surfaceClassName,
 	title,
 	titleClassName,
 }: {
 	action?: ReactNode;
 	children: ReactNode;
 	className?: string;
+	/** When true (default), the header toggles body visibility and shows a chevron. */
+	collapsible?: boolean;
+	defaultOpen?: boolean;
 	surface?: boolean;
+	/** Overrides the row card's own padding, for a section that runs flush. */
+	surfaceClassName?: string;
 	title?: string;
 	titleClassName?: string;
 }) {
+	const contentId = useId();
+	const headingId = useId();
+	const [open, setOpen] = useState(defaultOpen);
+	const prefersReducedMotion = useReducedMotion();
+	const canCollapse = collapsible && Boolean(title);
+	const showBody = !canCollapse || open;
+	const collapseTransition = prefersReducedMotion
+		? { duration: 0 }
+		: { duration: 0.22, ease: [0.4, 0, 0.2, 1] as const };
+
 	const heading =
 		title || action ? (
-			<div className={cn("mb-1 flex items-center justify-between gap-2 text-2xs font-bold uppercase tracking-settings-section text-settings-muted", titleClassName)}>
-				{title ? <span>{title}</span> : <span />}
-				{action ?? null}
+			<div className={inspectorSectionHeaderSlotClass}>
+				{canCollapse ? (
+					<button
+						aria-controls={contentId}
+						aria-expanded={open}
+						className={cn(inspectorSectionAccordionButtonClass, titleClassName)}
+						id={headingId}
+						onClick={() => setOpen((current) => !current)}
+						type="button"
+					>
+					<NavRowHighlight />
+					<span className={inspectorSectionHeaderContentClass}>
+						<span className="min-w-0 flex-1">{title}</span>
+						{action ? (
+							// Keep section actions clickable without toggling the accordion.
+							<span
+								className="shrink-0"
+								onClick={(event) => event.stopPropagation()}
+								onKeyDown={(event) => event.stopPropagation()}
+							>
+								{action}
+							</span>
+						) : null}
+						<ChevronIcon
+							aria-hidden="true"
+							className="size-icon-2xs shrink-0 text-passive"
+							direction={open ? "down" : "right"}
+						/>
+					</span>
+				</button>
+			) : (
+				<div
+					className={cn(inspectorSectionHeaderShellClass, inspectorSectionHeaderInsetClass, titleClassName)}
+					id={headingId}
+				>
+					<div className={inspectorSectionHeaderContentClass}>
+						{title ? <span className="min-w-0 flex-1">{title}</span> : <span className="flex-1" />}
+						{action ?? null}
+					</div>
+				</div>
+			)}
 			</div>
 		) : null;
+
+	const body =
+		surface ? (
+			<div className={cn("overflow-hidden rounded-none bg-settings-row py-1", surfaceClassName)}>
+				{children}
+			</div>
+		) : (
+			children
+		);
+
+	const bodyPanel = (
+		<div
+			aria-labelledby={title ? headingId : undefined}
+			className={cn("min-w-0", inspectorSectionInsetClass, heading ? "pt-0" : "pt-2")}
+			id={contentId}
+			role={canCollapse ? "region" : undefined}
+		>
+			{body}
+		</div>
+	);
+
 	return (
-		<section className={cn("mb-4 last:mb-0", className)} data-testid="inspector-section">
+		<section className={cn("flex flex-col", className)} data-testid="inspector-section">
 			{heading}
-			{surface ? (
-				<div className="overflow-hidden rounded-settings-row bg-settings-row px-3.5 py-1.5">
-					{children}
-				</div>
-			) : (
-				children
-			)}
+			{canCollapse ? (
+				<AnimatePresence initial={false}>
+					{showBody ? (
+						<motion.div
+							animate={{ height: "auto", opacity: 1 }}
+							className="overflow-hidden"
+							exit={{ height: 0, opacity: 0 }}
+							initial={{ height: 0, opacity: 0 }}
+							key="inspector-section-body"
+							transition={collapseTransition}
+						>
+							{bodyPanel}
+						</motion.div>
+					) : null}
+				</AnimatePresence>
+			) : showBody ? (
+				bodyPanel
+			) : null}
 		</section>
 	);
 }
@@ -244,8 +368,8 @@ export function SessionInspectorSummaryView({
 	activityTitle: string;
 	completion?: ReactNode;
 	context?: ReactNode;
-	pullRequestCards: ReactNode;
-	pullRequestTitle: string;
+	pullRequestCards?: ReactNode;
+	pullRequestTitle?: string;
 	reviews?: ReactNode;
 	usage?: ReactNode;
 	/**
@@ -258,12 +382,16 @@ export function SessionInspectorSummaryView({
 		<div role="tabpanel">
 			{workers}
 			{context}
-			<InspectorSection surface={false} title={pullRequestTitle}>
-				<div className="flex flex-col gap-1.5">{pullRequestCards}</div>
-			</InspectorSection>
+			{pullRequestTitle && pullRequestCards ? (
+				<InspectorSection surface={false} title={pullRequestTitle} titleClassName={inspectorSectionHeadingClass}>
+					<div className={cn("flex flex-col gap-1.5", inspectorSectionCardBleedClass)}>{pullRequestCards}</div>
+				</InspectorSection>
+			) : null}
 			{reviews}
 			{completion}
-			<InspectorSection title={activityTitle}>{activity}</InspectorSection>
+			<InspectorSection title={activityTitle} titleClassName={inspectorSectionHeadingClass}>
+				{activity}
+			</InspectorSection>
 			{usage}
 		</div>
 	);
@@ -544,10 +672,14 @@ export type InspectorReviewLabels = {
 	viewOnPR: string;
 };
 
+const reviewPrRowButtonClass =
+	"flex w-full items-start gap-2 px-3 py-2.5 text-left transition-none";
+
 export function InspectorReviewsView({
 	externalLink,
 	groups,
 	isLoading,
+	liveReviewLabel,
 	labels,
 	onRequestRereview,
 	onResolveInlineComment,
@@ -561,6 +693,7 @@ export function InspectorReviewsView({
 	externalLink: ExternalLinkComponent;
 	groups: InspectorReviewGroup[];
 	isLoading: boolean;
+	liveReviewLabel?: string;
 	labels: InspectorReviewLabels;
 	onRequestRereview?: (review: InspectorGithubReview) => Promise<void> | void;
 	onResolveInlineComment?: (comment: InspectorInlineComment & { reviewerId?: string }) => Promise<void> | void;
@@ -571,17 +704,26 @@ export function InspectorReviewsView({
 	renderAvatar: (harness: string) => ReactNode;
 	renderMarkdown: (body: string) => ReactNode;
 }) {
-	if (isLoading && groups.length === 0) {
+	if (isLoading && groups.length === 0 && !liveReviewLabel) {
 		return (
-			<InspectorSection surface title={labels.reviews}>
+			<InspectorSection surface={false} title={labels.reviews} titleClassName={inspectorSectionHeadingClass}>
 				<p className={inspectorEmptyClass}>{labels.loadingReviews}</p>
 			</InspectorSection>
 		);
 	}
-	if (groups.length === 0) return null;
+	if (groups.length === 0 && !liveReviewLabel) return null;
 	return (
-		<InspectorSection surface={false} title={labels.reviews} titleClassName="text-foreground [&>span:first-child]:text-xs [&>span:first-child]:tracking-wide">
-			<div className="flex flex-col gap-2">
+		<InspectorSection surface={false} title={labels.reviews} titleClassName={inspectorSectionHeadingClass}>
+			<div className={cn("flex flex-col gap-1.5", inspectorSectionCardBleedClass)}>
+				{liveReviewLabel ? (
+					<article
+						className="flex min-w-0 items-center gap-2 rounded-lg border border-border bg-settings-row px-3 py-2.5"
+						data-testid="review-live-card"
+					>
+						<LoaderCircleIcon aria-hidden="true" className="size-icon-sm shrink-0 animate-spin text-muted-foreground" />
+						<span className="min-w-0 flex-1 text-xs font-medium leading-snug text-muted-foreground">{liveReviewLabel}</span>
+					</article>
+				) : null}
 				{groups.map((group) => (
 					<ReviewDisclosure
 						defaultOpen={false}
@@ -668,10 +810,10 @@ function ReviewSourceLabel({
 }) {
 	return (
 		<div className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-			<span className="flex size-5 shrink-0 items-center justify-center rounded-sm bg-muted/55 [&_svg]:size-icon-xs">
+			<span className="flex shrink-0 items-center justify-center text-passive [&_svg]:size-icon-xs">
 				{icon}
 			</span>
-			<span className="shrink-0 text-2xs font-semibold text-foreground">
+			<span className="shrink-0 text-2xs font-normal normal-case text-passive">
 				{children}
 			</span>
 			{marker ? (
@@ -716,7 +858,7 @@ function ReviewDisclosure({
 				<div className="flex min-w-0 flex-col gap-1 border-b border-border/70 px-3 py-2.5">
 					<span className="flex min-w-0 items-start justify-between gap-2 @max-[420px]/inspector:flex-col @max-[420px]/inspector:items-stretch">
 						<span
-							className="min-w-0 whitespace-normal break-words text-sm-md font-semibold leading-snug text-foreground"
+							className="min-w-0 whitespace-normal break-words text-xs font-normal leading-snug text-foreground"
 							title={title}
 						>
 							{title}
@@ -736,20 +878,29 @@ function ReviewDisclosure({
 			<button
 				aria-expanded={open}
 				data-testid="review-pr-row"
-				className="flex w-full min-w-0 items-start gap-2 px-3 py-2.5 text-left transition-colors hover:bg-interactive-hover/30 @max-[420px]/inspector:grid @max-[420px]/inspector:grid-cols-[auto_minmax(0,1fr)]"
+				className={reviewPrRowButtonClass}
 				onClick={() => setOpen((current) => !current)}
 				type="button"
 			>
-				<ChevronIcon className="size-icon-sm shrink-0 text-passive" direction={open ? "down" : "right"} />
+				<span
+					className={cn(
+						inspectorSectionHeaderContentClass,
+						"items-start @max-[420px]/inspector:grid @max-[420px]/inspector:grid-cols-[auto_minmax(0,1fr)]",
+					)}
+				>
+					<ChevronIcon className="size-icon-sm shrink-0 text-passive" direction={open ? "down" : "right"} />
 					<span className="flex min-w-0 flex-1 flex-col gap-0.5">
-					<span className="whitespace-normal break-words text-sm-md font-semibold leading-snug text-foreground" title={title}>
-						{title}
+						<span className="whitespace-normal break-words text-xs font-normal leading-snug text-foreground" title={title}>
+							{title}
+						</span>
+						<span className="whitespace-normal break-words font-mono text-micro leading-snug text-passive" title={meta}>
+							{meta}
+						</span>
 					</span>
-					<span className="whitespace-normal break-words font-mono text-micro leading-snug text-passive" title={meta}>
-						{meta}
-					</span>
+					{verdict ? (
+						<VerdictBadge className="@max-[420px]/inspector:col-start-2 @max-[420px]/inspector:row-start-2 @max-[420px]/inspector:justify-self-start" verdict={verdict} />
+					) : null}
 				</span>
-				{verdict ? <VerdictBadge className="@max-[420px]/inspector:col-start-2 @max-[420px]/inspector:row-start-2 @max-[420px]/inspector:justify-self-start" verdict={verdict} /> : null}
 			</button>
 			{open ? <div className="flex flex-col gap-3 px-3 py-3">{children}</div> : null}
 		</article>
@@ -1065,7 +1216,7 @@ function GithubInlineComments({
 	if (comments.length === 0) return null;
 	return (
 		<section className="min-w-0" data-testid="github-inline-comments">
-			<button aria-expanded={open} className="flex min-h-8 w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs font-medium leading-none text-muted-foreground transition-colors hover:bg-interactive-hover/20 hover:text-foreground" onClick={() => setOpen((current) => !current)} type="button">
+			<button aria-expanded={open} className="flex min-h-8 w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs font-medium leading-none text-muted-foreground" onClick={() => setOpen((current) => !current)} type="button">
 				<ChevronIcon className="size-icon-2xs shrink-0" direction={open ? "down" : "right"} />
 				<span>{labels.openComments} · {comments.length}</span>
 			</button>
@@ -1091,12 +1242,16 @@ function ResolvedInlineComments({
 }) {
 	const [open, setOpen] = useState(false);
 	return (
-		<section className="min-w-0 border-t border-border/60 pt-2" data-testid="github-resolved-comments">
-			<button aria-expanded={open} className="flex min-h-8 w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs font-medium leading-none text-muted-foreground transition-colors hover:bg-interactive-hover/20 hover:text-foreground" onClick={() => setOpen((current) => !current)} type="button">
+		<section className="min-w-0" data-testid="github-resolved-comments">
+			<button aria-expanded={open} className="-ml-1 flex min-h-7 w-full min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-left text-2xs font-medium leading-none text-muted-foreground transition-colors hover:text-foreground" onClick={() => setOpen((current) => !current)} type="button">
 				<ChevronIcon className="size-icon-2xs shrink-0" direction={open ? "down" : "right"} />
 				<span>{labels.resolvedComments(comments.length)}</span>
 			</button>
-			{open ? <InlineCommentList comments={comments} externalLink={ExternalLink} labels={labels} onViewInlineCommentInFile={onViewInlineCommentInFile} reviewerId={reviewerId} reviewUrl={reviewUrl} /> : null}
+			{open ? (
+				<div className="ml-1 border-l border-border/60 pl-3">
+					<InlineCommentList comments={comments} externalLink={ExternalLink} labels={labels} onViewInlineCommentInFile={onViewInlineCommentInFile} reviewerId={reviewerId} reviewUrl={reviewUrl} />
+				</div>
+			) : null}
 		</section>
 	);
 }
@@ -1240,10 +1395,10 @@ function InlineCommentRow({
 		}
 	};
 	return (
-		<div className="relative flex min-w-0 flex-col gap-1.5 py-2.5 text-xs">
+		<div className="relative flex min-w-0 flex-col gap-1.5 py-1.5 text-xs">
 			<div
 				{...(canExpand ? { "aria-expanded": expanded, role: "button", tabIndex: 0 } : {})}
-				className={cn("w-full min-w-0 rounded-md py-1 text-left transition-colors", canExpand && "cursor-pointer hover:bg-interactive-hover/20")}
+				className={cn("w-full min-w-0 rounded-md py-1 text-left", canExpand && "cursor-pointer")}
 				onClick={canExpand ? () => setExpanded((current) => !current) : undefined}
 				onKeyDown={canExpand ? (event) => {
 					if (event.key === "Enter" || event.key === " ") {
@@ -1259,13 +1414,13 @@ function InlineCommentRow({
 					</span>
 					<span className="flex shrink-0 items-center justify-end" onClick={(event) => event.stopPropagation()}>
 						{sent ? (
-							<span aria-label={labels.sentToWorkerAgent} className="inline-flex size-7 items-center justify-center rounded-md text-success" role="status" title={labels.sentToWorkerAgent}>
+							<span aria-label={labels.sentToWorkerAgent} className="inline-flex size-6 items-center justify-center rounded-md text-success" role="status" title={labels.sentToWorkerAgent}>
 								<CheckIcon className="size-icon-xs shrink-0" />
 							</span>
 						) : null}
 					</span>
 					<span className="relative flex shrink-0 items-start justify-end" onClick={(event) => event.stopPropagation()}>
-						<button aria-expanded={menuOpen} aria-label="Comment actions" className="inline-flex size-7 items-center justify-center rounded-md border border-border/70 text-muted-foreground transition-colors hover:border-border-strong hover:bg-interactive-hover hover:text-foreground" onClick={() => setMenuOpen((current) => !current)} type="button">
+						<button aria-expanded={menuOpen} aria-label="Comment actions" className="inline-flex size-6 items-center justify-center rounded-md text-passive transition-colors hover:bg-interactive-hover hover:text-foreground" onClick={() => setMenuOpen((current) => !current)} type="button">
 							<MoreHorizontalIcon className="size-icon-xs" />
 						</button>
 						{menuOpen ? (
@@ -1279,7 +1434,7 @@ function InlineCommentRow({
 						) : null}
 					</span>
 				</span>
-				{body ? <span data-overflow-axis="horizontal" ref={previewRef} className={cn("mt-1 block min-w-0 text-muted-foreground", expanded ? "whitespace-pre-wrap break-words" : "truncate")}>{expanded ? body : preview}</span> : null}
+				{body ? <span data-overflow-axis="horizontal" ref={previewRef} className={cn("mt-1 block min-w-0 text-2xs leading-relaxed text-muted-foreground", expanded ? "whitespace-pre-wrap break-words" : "truncate")}>{expanded ? body : preview}</span> : null}
 			</div>
 			{resolvedSuccess ? <p className="m-0 text-2xs font-medium text-success">{labels.resolvedReview}</p> : null}
 			{resolveError ? <p className="m-0 text-2xs font-medium text-error">{labels.resolveReviewFailed}</p> : null}
@@ -1335,39 +1490,59 @@ function ReviewSummaryCard({
 	const trimmed = rawBody?.trim();
 	const body = trimmed ? trimmed.replace(/\n{3,}/g, "\n\n") : trimmed;
 	const { ref: bodyRef, isOverflowing } = useRenderedOverflow<HTMLDivElement>(body ?? "", "vertical", !expanded);
+	const textEnd = useClampedTextEnd(bodyRef, !expanded && isOverflowing, body ?? "");
 	useEffect(() => setExpanded(false), [body]);
 	return (
-		<article className="flex min-w-0 flex-col gap-1 rounded-md bg-overlay/50 px-2.5 py-2.5">
-			<span className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-1.5 gap-y-1 @max-[420px]/inspector:grid-cols-[minmax(0,1fr)_auto]">
-				<span className="inline-flex min-w-0 items-center gap-1.5">
-					<span className="inline-flex min-w-0 flex-1 items-center gap-1 text-micro font-medium text-muted-foreground">
+		<article className="flex min-w-0 flex-col gap-2 rounded-md border border-border/60 px-3 py-2.5">
+			{/* One line: who reviewed and when on the left, the verdict and its
+			    actions together on the right. The timing used to take a line of its
+			    own, which pushed the prose down and read as a second heading. */}
+			<span className="flex min-w-0 items-center gap-2">
+				{/* Name and timing sit together and wrap as a pair, so a narrow rail
+				    drops the timing to its own line rather than clipping the
+				    reviewer's name. The verdict and its actions stay pinned right. */}
+				<span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
+					<span className="inline-flex min-w-0 items-center gap-1.5 text-xs font-medium text-foreground">
 						{renderAvatar(actor)}
 						<span className="truncate">{actor}</span>
 						{isBot ? <span className="shrink-0 font-mono text-micro text-passive">{labels.bot}</span> : null}
 					</span>
+					{/* Two facts, two nodes: "Earlier commit" and the time stay separately
+					    addressable even though they read as one line. */}
+					<span className="flex min-w-0 shrink-0 items-center gap-1 text-2xs text-passive">
+						{isEarlier ? (
+							<>
+								<span>{labels.earlierPass}</span>
+								<span aria-hidden="true">·</span>
+							</>
+						) : null}
+						<span>{timestamp}</span>
+					</span>
+				</span>
+				<span className="flex shrink-0 items-center gap-2">
 					<VerdictBadge className="shrink-0" verdict={verdict} />
+					<ReviewSummaryActions body={body ?? ""} className="shrink-0" externalLink={externalLink} labels={labels} onOpenInAOBrowser={onOpenInAOBrowser} onSendReviewSummary={onSendReviewSummary} reviewerId={actor} source={source} url={url} />
 				</span>
-				<span className="ml-auto inline-flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-x-1.5 gap-y-0.5 text-right text-micro text-passive @max-[420px]/inspector:col-span-2 @max-[420px]/inspector:col-start-1 @max-[420px]/inspector:row-start-2 @max-[420px]/inspector:ml-0 @max-[420px]/inspector:justify-self-start @max-[420px]/inspector:text-left">
-					{isEarlier ? <span>{labels.earlierPass}</span> : null}
-					<span className="font-mono">{timestamp}</span>
-				</span>
-				<ReviewSummaryActions body={body ?? ""} className="@max-[420px]/inspector:col-start-2 @max-[420px]/inspector:row-start-1" externalLink={externalLink} labels={labels} onOpenInAOBrowser={onOpenInAOBrowser} onSendReviewSummary={onSendReviewSummary} reviewerId={actor} source={source} url={url} />
 			</span>
-			{body ? (
-				<ReviewMarkdownBody
-					body={body}
-					clamped={!expanded}
-					elementRef={bodyRef}
-					renderMarkdown={renderMarkdown}
-					testId={testId}
+			<span className="relative flex min-w-0 flex-col">
+				{body ? (
+					<ReviewMarkdownBody
+						body={body}
+						clamped={!expanded}
+						elementRef={bodyRef}
+						renderMarkdown={renderMarkdown}
+						testId={testId}
+					/>
+				) : null}
+				<ReviewLinks
+					clamped={isOverflowing}
+					expanded={expanded}
+					inline={!expanded}
+					labels={labels}
+					onExpandedChange={() => setExpanded((open) => !open)}
+					textEnd={textEnd}
 				/>
-			) : null}
-			<ReviewLinks
-				clamped={isOverflowing}
-				expanded={expanded}
-				labels={labels}
-				onExpandedChange={() => setExpanded((open) => !open)}
-			/>
+			</span>
 			<GithubInlineComments
 				comments={inlineComments}
 				externalLink={externalLink}
@@ -1514,22 +1689,103 @@ function useClickAway<T extends HTMLElement>(open: boolean, onDismiss: () => voi
 function ReviewLinks({
 	clamped,
 	expanded,
+	inline = false,
 	labels,
 	onExpandedChange,
+	textEnd,
 }: {
 	clamped: boolean;
 	expanded: boolean;
+	/** Ride the end of the clamped text rather than taking a line below it. */
+	inline?: boolean;
 	labels: InspectorReviewLabels;
 	onExpandedChange: () => void;
+	/** Where the clamped text stops, so the control can sit beside it. */
+	textEnd?: { left: number; top: number } | null;
 }) {
 	if (!clamped) return null;
+	// Measured: sit just after the last word. Unmeasured, or before the first
+	// layout pass: fall back to the bottom-right corner, which is always inside
+	// the block even though it is further from the text than we would like.
+	const placed = inline ? textEnd : null;
 	return (
-		<span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-micro text-passive">
-			<button className="font-medium transition-colors hover:text-foreground" onClick={onExpandedChange} type="button">
+		<span
+			className={cn(
+				"flex min-w-0 flex-wrap items-center text-[10px]",
+				inline && "pointer-events-none absolute flex-nowrap",
+				inline && !placed && "bottom-0 right-0",
+			)}
+			style={placed ? { left: placed.left, top: placed.top } : undefined}
+		>
+			<button
+				className={cn(
+					"rounded font-medium text-passive transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+					inline && "pointer-events-auto whitespace-nowrap bg-background pl-1.5 leading-[1.7em]",
+				)}
+				onClick={onExpandedChange}
+				type="button"
+			>
 				{expanded ? labels.showLess : labels.showMore}
 			</button>
 		</span>
 	);
+}
+
+/**
+ * Where the last visible character of a clamped block sits, relative to that
+ * block. `line-clamp` hides the overflow without telling anyone where the cut
+ * landed, so an expander pinned to the right edge floats away from text that
+ * ends mid-line. Walking the rendered text with a Range gives the real end
+ * point, which is the only way to put the control next to the words.
+ */
+function useClampedTextEnd<T extends HTMLElement>(
+	elementRef: RefObject<T | null>,
+	active: boolean,
+	contentKey: string,
+) {
+	const [end, setEnd] = useState<{ left: number; top: number } | null>(null);
+	useEffect(() => {
+		if (!active) {
+			setEnd(null);
+			return;
+		}
+		const element = elementRef.current;
+		if (!element || typeof document === "undefined" || typeof document.createRange !== "function") return;
+		const measure = () => {
+			const box = element.getBoundingClientRect();
+			// jsdom reports zero-size rects; there is nothing to place there.
+			if (!box.height) return setEnd(null);
+			const limit = box.bottom + 1;
+			const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+			const range = document.createRange();
+			let best: DOMRect | null = null;
+			for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+				const length = node.textContent?.length ?? 0;
+				for (let index = length; index > 0; index -= 1) {
+					range.setStart(node, index - 1);
+					range.setEnd(node, index);
+					const rect = range.getBoundingClientRect();
+					if (!rect.width && !rect.height) continue;
+					if (rect.bottom > limit) continue;
+					if (!best || rect.bottom > best.bottom || (rect.bottom === best.bottom && rect.right > best.right)) {
+						best = rect;
+					}
+					break;
+				}
+			}
+			if (!best) return setEnd(null);
+			setEnd({ left: best.right - box.left, top: best.top - box.top });
+		};
+		measure();
+		window.addEventListener("resize", measure);
+		const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+		observer?.observe(element);
+		return () => {
+			window.removeEventListener("resize", measure);
+			observer?.disconnect();
+		};
+	}, [active, contentKey, elementRef]);
+	return end;
 }
 
 function useRenderedOverflow<T extends HTMLElement>(contentKey: string, axis: "horizontal" | "vertical", active = true) {

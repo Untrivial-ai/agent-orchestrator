@@ -43,10 +43,10 @@ test("review controls stay aligned and collapse the run action at minimum width"
 
 	const inspector = page.locator("#inspector");
 	await inspector.getByRole("tab", { name: "Reviews" }).click();
-	await expect(inspector.getByText("Review controls")).toBeVisible();
+	await expect(inspector.getByText("Reviewer agent", { exact: true })).toBeVisible();
 
-	const reviewerLabel = inspector.getByText("Select reviewer agent", { exact: true });
-	const reviewerSelect = inspector.getByRole("button", { name: "Select reviewer agent" });
+	const reviewerLabel = inspector.getByText("Reviewer agent", { exact: true });
+	const reviewerSelect = inspector.getByRole("button", { name: "Reviewer agent" });
 	const [reviewerLabelBox, reviewerSelectBox] = await Promise.all([
 		reviewerLabel.boundingBox(),
 		reviewerSelect.boundingBox(),
@@ -61,7 +61,7 @@ test("review controls stay aligned and collapse the run action at minimum width"
 	if (!controlsBox) throw new Error("review controls are not visible");
 	expect(reviewerSelectBox.width).toBeLessThan(controlsBox.width / 2);
 
-	const triggerLabel = inspector.getByText("Trigger review", { exact: true });
+	const triggerLabel = inspector.getByText("Reviewer session", { exact: true });
 	const runButton = inspector.getByRole("button", { name: "Re-run review" });
 	const [triggerLabelBox, runButtonBox] = await Promise.all([
 		triggerLabel.boundingBox(),
