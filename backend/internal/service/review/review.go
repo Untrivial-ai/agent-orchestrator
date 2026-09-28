@@ -857,24 +857,25 @@ func (s *Service) publishOne(ctx context.Context, workerID domain.SessionID, run
 	// fetched before the lock: a concurrent identical submission may have
 	// published and persisted the new state meanwhile. Re-read it so the
 	// decision below uses the store, not a stale snapshot.
-	if current, ok, err := s.store.GetReviewRun(ctx, run.ID); err != nil {
+	current, ok, err := s.store.GetReviewRun(ctx, run.ID)
+	if err != nil {
 		// The current publication state is unreadable: publishing on a guess
 		// could duplicate a review a concurrent submission already posted.
 		// Record the failure so the CLI reports a reason instead of a bare
 		// outcome-unknown.
 		s.recordPublishState(ctx, run, domain.ReviewPublishUncertain, "", fmt.Sprintf("publication state re-read failed: %v", err))
 		return
-	} else if !ok {
+	}
+	if !ok {
 		// Same invariant as the error branch: the row is unreadable, so the
 		// in-memory snapshot is a guess. Never publish on a guess.
 		s.recordPublishState(ctx, run, domain.ReviewPublishUncertain, "", "publication state row is missing; outcome unknown")
 		return
-	} else {
-		run.PublishState = current.PublishState
-		run.PublishError = current.PublishError
-		if current.GithubReviewID != "" {
-			run.GithubReviewID = current.GithubReviewID
-		}
+	}
+	run.PublishState = current.PublishState
+	run.PublishError = current.PublishError
+	if current.GithubReviewID != "" {
+		run.GithubReviewID = current.GithubReviewID
 	}
 	switch run.PublishState {
 	case domain.ReviewPublishPublished:
