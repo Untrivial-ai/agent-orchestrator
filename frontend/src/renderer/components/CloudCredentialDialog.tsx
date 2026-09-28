@@ -57,9 +57,30 @@ const AGENTS = [
 	{
 		agent: "cursor",
 		label: "Cursor",
-		creds: [{ value: "api_key", label: "API key" }],
+		creds: [
+			{ value: "api_key", label: "API key" },
+			{ value: BROWSER_LOGIN, label: "Log in with Cursor" },
+		],
 	},
 ] as const;
+
+// Copy for the browser-login panel, keyed by agent rather than nested
+// conditionals so a new provider is one row instead of another ternary arm.
+// Every value must exist in en.json (MessageKey) and all other locales.
+const LOGIN_COPY = {
+	"claude-code": {
+		description: "cloudCredential.anthropicLoginDescription",
+		button: "cloudCredential.loginWithAnthropic",
+	},
+	codex: {
+		description: "cloudCredential.chatgptLoginDescription",
+		button: "cloudCredential.loginWithChatGPT",
+	},
+	cursor: {
+		description: "cloudCredential.cursorLoginDescription",
+		button: "cloudCredential.loginWithCursor",
+	},
+} as const satisfies Record<CloudCpAgentProvider, { description: string; button: string }>;
 
 type Phase = "idle" | "submitting" | "success";
 
@@ -208,7 +229,7 @@ export function CloudCredentialDialog() {
 								aria-label={t("cloudCredential.typeLabel")}
 								value={credentialType}
 								options={credentialOptions}
-								disabled={busy || creds.length === 1}
+								disabled={busy || credentialOptions.length === 1}
 								menuAlign="start"
 								onChange={(val) => {
 									setCredentialType(val);
@@ -246,11 +267,7 @@ export function CloudCredentialDialog() {
 							<p className={onboardingFieldHintClass}>{t("cloudCredential.tokenHint")}</p>
 						</div>
 						) : (
-							<p className={onboardingFieldHintClass}>
-								{agent === "claude-code"
-									? t("cloudCredential.anthropicLoginDescription")
-									: t("cloudCredential.chatgptLoginDescription")}
-							</p>
+							<p className={onboardingFieldHintClass}>{t(LOGIN_COPY[agent].description)}</p>
 						)}
 
 						{error ? (
@@ -280,7 +297,7 @@ export function CloudCredentialDialog() {
 					) : null}
 					{phase !== "success" && !needsSecret ? (
 						<Button type="button" variant="primary" disabled={org === undefined || phase === "submitting"} onClick={() => void loginWithBrowser()}>
-							{phase === "submitting" ? t("cloudCredential.connecting") : (agent === "claude-code" ? t("cloudCredential.loginWithAnthropic") : t("cloudCredential.loginWithChatGPT"))}
+							{phase === "submitting" ? t("cloudCredential.connecting") : t(LOGIN_COPY[agent].button)}
 						</Button>
 					) : null}
 				</div>

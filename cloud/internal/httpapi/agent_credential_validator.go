@@ -71,6 +71,7 @@ func (v *agentCredentialValidator) Validate(
 			"OpenAI",
 			strings.TrimRight(v.openAIBaseURL, "/")+"/models",
 			secret,
+			defaultBearerAccepted,
 		)
 	case "cursor":
 		if credentialType != "api_key" {
@@ -81,6 +82,7 @@ func (v *agentCredentialValidator) Validate(
 			"Cursor",
 			strings.TrimRight(v.cursorBaseURL, "/")+"/v1/me",
 			secret,
+			cursorBearerAccepted,
 		)
 	case "github":
 		if credentialType != "personal_access_token" {
@@ -91,6 +93,7 @@ func (v *agentCredentialValidator) Validate(
 			"GitHub",
 			strings.TrimRight(v.githubBaseURL, "/")+"/user",
 			secret,
+			defaultBearerAccepted,
 		)
 	default:
 		return errInvalidAgentCredential
@@ -148,10 +151,23 @@ func (v *agentCredentialValidator) validateClaude(
 	}
 }
 
+func defaultBearerAccepted(status int, _ []byte) bool {
+	return status == http.StatusOK || status == http.StatusTooManyRequests
+}
+
+func cursorBearerAccepted(status int, body []byte) bool {
+	if defaultBearerAccepted(status, body) {
+		return true
+	}
+	return status == http.StatusForbidden &&
+		bytes.Contains(body, []byte("plan_required"))
+}
+
 func (v *agentCredentialValidator) validateBearerEndpoint(
 	ctx context.Context,
 	provider, endpoint string,
 	secret []byte,
+	accepted func(status int, body []byte) bool,
 ) error {
 	request, err := http.NewRequestWithContext(
 		ctx,
@@ -168,12 +184,13 @@ func (v *agentCredentialValidator) validateBearerEndpoint(
 		return fmt.Errorf("validate %s credential: %w", provider, err)
 	}
 	defer func() { _ = response.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
+	body, _ := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if accepted(response.StatusCode, body) {
+		return nil
+	}
 	switch response.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return errInvalidAgentCredential
-	case http.StatusOK, http.StatusTooManyRequests:
-		return nil
 	default:
 		return fmt.Errorf(
 			"validate %s credential: provider returned HTTP %d",

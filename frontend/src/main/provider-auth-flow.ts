@@ -419,6 +419,52 @@ const claudeAuthFlow: ProviderAuthFlow = {
 	},
 };
 
+// Cursor documents no third-party OAuth flow and no token-bearing CLI output —
+// only CURSOR_API_KEY, which the control plane already validates. Rather than
+// scrape `cursor-agent login` for a credential file AO cannot reliably locate,
+// drive Cursor's own SDK browser flow, which mints a named, expiring user API key
+// and returns it directly.
+//
+// The key is never written to this machine: `store: null` keeps the secret out of
+// the data dir and it goes straight to the control plane, like every other
+// provider's credential. `openBrowser` is supplied rather than left to the SDK so
+// the login URL opens through Electron's shell, the supported way to leave a
+// sandboxed app.
+const CURSOR_LOGIN_API_KEY_NAME = "Agent Orchestrator";
+const CURSOR_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+
+const cursorAuthFlow: ProviderAuthFlow = {
+	provider: "cursor",
+	async authenticate(_dataDir: string, signal?: AbortSignal): Promise<ProviderAuthCredential> {
+		if (signal?.aborted) throw new Error("Login was cancelled.");
+		// Loaded on demand so a browser login pulls the SDK in without costing every
+		// app start, and so a resolution failure surfaces here — with a fallback the
+		// user can act on — rather than at launch.
+		const { Cursor } = await import("@cursor/sdk");
+		const timeout = AbortSignal.timeout(CURSOR_LOGIN_TIMEOUT_MS);
+		const active = signal ? AbortSignal.any([signal, timeout]) : timeout;
+		let apiKey: string;
+		try {
+			({ apiKey } = await Cursor.auth.login({
+				store: null,
+				apiKeyName: CURSOR_LOGIN_API_KEY_NAME,
+				openBrowser: (url) => void shell.openExternal(url),
+				signal: active,
+			}));
+		} catch (error) {
+			if (signal?.aborted) throw new Error("Login was cancelled.");
+			if (timeout.aborted) throw new Error("Login timed out after 5 minutes.");
+			throw new Error(
+				`Cursor sign-in did not complete: ${error instanceof Error ? error.message : String(error)}. Connect with the "API key" credential type instead.`,
+			);
+		}
+		if (!apiKey) {
+			throw new Error('Cursor sign-in did not create an API key. Connect with the "API key" credential type instead.');
+		}
+		return { provider: "cursor", credentialType: "api_key", secret: apiKey };
+	},
+};
+
 // GitHub OAuth scopes requested by Agent Orchestrator:
 //   repo        – full control of public and private repos (clone, push, pull, PRs, issues, hooks)
 //   read:org    – read org membership and team membership
@@ -580,6 +626,7 @@ const githubAuthFlow: ProviderAuthFlow = {
 const flows = new Map<string, ProviderAuthFlow>([
 	[codexAuthFlow.provider, codexAuthFlow],
 	[claudeAuthFlow.provider, claudeAuthFlow],
+	[cursorAuthFlow.provider, cursorAuthFlow],
 	[githubAuthFlow.provider, githubAuthFlow],
 ]);
 

@@ -35,6 +35,24 @@ const PACKAGED_EXTERNAL_DEPENDENCIES = [
 	"/node_modules/better-sqlite3",
 	"/node_modules/bindings",
 	"/node_modules/file-uri-to-path",
+	// @cursor/sdk is external in vite.main.config.ts, so its whole runtime
+	// closure has to be carried explicitly: this list is the only reason any
+	// file under node_modules reaches the asar. The optional @cursor/sdk-<os>-<arch>
+	// entries are inert when absent — npm installs only the matching platform.
+	"/node_modules/@bufbuild/protobuf",
+	"/node_modules/@connectrpc/connect",
+	"/node_modules/@connectrpc/connect-node",
+	"/node_modules/@connectrpc/connect-web",
+	"/node_modules/@cursor/sdk",
+	"/node_modules/@cursor/sdk-darwin-arm64",
+	"/node_modules/@cursor/sdk-darwin-x64",
+	"/node_modules/@cursor/sdk-linux-arm64",
+	"/node_modules/@cursor/sdk-linux-x64",
+	"/node_modules/@cursor/sdk-win32-x64",
+	"/node_modules/@statsig/client-core",
+	"/node_modules/@statsig/js-client",
+	"/node_modules/undici",
+	"/node_modules/zod",
 ];
 
 function ignoreFromVitePackage(file: string): boolean {
@@ -195,6 +213,13 @@ const config: ForgeConfig = {
 			);
 			if (!existsSync(nativeModule)) {
 				throw new Error("Packaged app is missing the better-sqlite3 native runtime");
+			}
+			// @cursor/sdk is external, so a mistake in PACKAGED_EXTERNAL_DEPENDENCIES
+			// would otherwise surface as a MODULE_NOT_FOUND the first time a user
+			// clicks "Login with Cursor". Fail at package time instead.
+			const cursorSdk = path.join(buildPath, "node_modules", "@cursor", "sdk", "package.json");
+			if (!existsSync(cursorSdk)) {
+				throw new Error("Packaged app is missing the @cursor/sdk runtime required by Cursor browser login");
 			}
 		},
 		// Assert the native resource survived Electron Packager's copy/asar/sign
