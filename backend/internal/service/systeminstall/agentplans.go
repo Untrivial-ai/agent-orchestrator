@@ -37,6 +37,7 @@ var agentDocumentationURLs = map[Target]string{
 	TargetOMP:        "https://github.com/can1357/oh-my-pi",
 	TargetFX:         "https://fx.sh/docs",
 	TargetUnreal:     "https://github.com/unreallabsai/unreal-agent",
+	TargetZCode:      "https://github.com/zai-org/ZCode",
 }
 
 func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation) []Plan {
@@ -215,6 +216,17 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 			Target: target, Unsupported: true, Method: "manual",
 			Reason: "Unreal Agent is built into AO; update AO to update the harness.",
 		}}
+	case TargetZCode:
+		// ZCode is distributed by Z.ai directly — desktop app or the CLI
+		// release package from the official open repo (github.com/zai-org/ZCode).
+		// There is no official npm package (the npm names are unrelated
+		// placeholders / community clients), so AO surfaces a manual plan
+		// pointing at the official docs instead of a package install.
+		plans = []Plan{manualPlan(
+			target,
+			"ZCode is distributed by Z.ai: install the desktop app from https://zcode.z.ai or the CLI from the official repo releases (github.com/zai-org/ZCode), which provides the `zcode` binary (TUI; `zcode --web`).",
+			agentDocumentationURLs[target],
+		)}
 	default:
 		plans = []Plan{{Target: target, Unsupported: true, Method: "manual", Reason: "unknown install target"}}
 	}

@@ -10758,6 +10758,7 @@ components:
           - prime-agent
           - autohand
           - unreal-agent
+          - zcode
           - fake
           type: string
         approvalMode:
@@ -11385,6 +11386,7 @@ components:
           - omp
           - fx
           - unreal-agent
+          - zcode
           - cloudflared
           type: string
         updatedAt:
@@ -13574,6 +13576,7 @@ components:
           - prime-agent
           - autohand
           - unreal-agent
+          - zcode
           type: string
         issueId:
           type: string

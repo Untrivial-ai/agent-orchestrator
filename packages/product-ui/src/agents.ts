@@ -30,6 +30,7 @@ export const AGENT_OPTIONS = [
 	"omp",
 	"fx",
 	"unreal-agent",
+	"zcode",
 ] as const;
 
 export type AgentId = (typeof AGENT_OPTIONS)[number];
@@ -70,6 +71,7 @@ export const AGENT_LABELS: Record<AgentId, string> = {
 	omp: "OMP",
 	fx: "fx",
 	"unreal-agent": "Unreal Agent",
+	zcode: "ZCode",
 };
 
 export const AGENT_IDENTITIES: ReadonlyMap<AgentId, AgentIdentity> = new Map(

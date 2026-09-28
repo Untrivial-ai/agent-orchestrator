@@ -28,8 +28,8 @@ type AgentConfig struct {
 	// Effort selects a model-advertised reasoning level. Empty defers to the
 	// provider/model default.
 	Effort string `json:"effort,omitempty"`
-	// Mode selects an agent-owned operating mode when the adapter exposes modes
-	// instead of raw model ids (currently Amp: low|medium|high|ultra).
+	// Mode selects an agent-owned operating mode when the adapter exposes
+	// modes instead of raw model ids (see HarnessModeVocabularies).
 	Mode string `json:"mode,omitempty"`
 	// Permissions sets the agent's starting permission mode. Empty inherits the
 	// project/role preference; new sessions fall back to Auto when none is saved.
@@ -58,11 +58,13 @@ func (m PermissionMode) Valid() bool {
 
 // Validate rejects values outside the typed vocabulary so a bad config is
 // refused when it is set (CLI/API) rather than silently dropped at spawn.
+// Mode is harness-shaped: any value an adapter's mode vocabulary declares is
+// accepted here (the adapter re-validates at argv time as defense-in-depth),
+// while a value no adapter declares is refused with the combined vocabulary
+// so the usage error names the real choices.
 func (c AgentConfig) Validate() error {
-	switch c.Mode {
-	case "", "low", "medium", "high", "ultra":
-	default:
-		return fmt.Errorf("invalid mode %q: want one of low, medium, high, ultra", c.Mode)
+	if !ModeKnownAnywhere(c.Mode) {
+		return fmt.Errorf("invalid mode %q: want one of %s", c.Mode, AllModeValues())
 	}
 	if c.Permissions.Valid() {
 		return nil
