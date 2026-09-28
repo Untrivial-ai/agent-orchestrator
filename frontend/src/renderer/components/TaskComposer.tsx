@@ -443,9 +443,14 @@ export function TaskComposer({
 	const selectedMode = mode || (modelTouched ? (catalogUsesModes ? catalogDefaultOption : "") : defaultModeForSelectedAgent);
 	const selectedModelOrMode = (selectedModel || selectedMode).trim();
 	const projectModelOrMode = projectModelForSelectedAgent || projectModeForSelectedAgent;
-	const requestedModel = selectedModelOrMode && selectedModelOrMode !== projectModelOrMode && (
-		selectedModelOrMode !== catalogDefaultOption || isConcreteModelID(projectModelOrMode)
-	) ? selectedModelOrMode : undefined;
+	const requestedModel = isStandalone
+		// Standalone sessions have no project config to inherit. If the UI shows a
+		// concrete catalog default, send it explicitly; otherwise the native agent
+		// may launch with a different harness-owned default than the one displayed.
+		? (isConcreteModelID(selectedModelOrMode) ? selectedModelOrMode : undefined)
+		: selectedModelOrMode && selectedModelOrMode !== projectModelOrMode && (
+				selectedModelOrMode !== catalogDefaultOption || isConcreteModelID(projectModelOrMode)
+			) ? selectedModelOrMode : undefined;
 	const rememberedEffortIsExplicit = Boolean(
 		rememberedConfigForSelectedAgent &&
 			Object.prototype.hasOwnProperty.call(rememberedConfigForSelectedAgent, "effort"),
@@ -465,9 +470,18 @@ export function TaskComposer({
 	const effortOptions = effortModel?.efforts?.filter((option) => option && option.toLowerCase() !== "default") ?? [];
 	const inheritedEffort = selectedAgent === configuredProjectAgent ? defaultWorkerEffort : "";
 	const implicitEffort = inheritedEffort || effortModel?.defaultEffort || "";
-	const requestedEffort = effortTouched || rememberedEffortIsExplicit
-		? effort === implicitEffort ? undefined : effort
-		: undefined;
+	const catalogDefaultEffort = effortModel?.defaultEffort && effortOptions.includes(effortModel.defaultEffort)
+		? effortModel.defaultEffort
+		: "";
+	const selectedEffort = effort || catalogDefaultEffort;
+	const requestedEffort = isStandalone
+		// Match the model behavior above: for standalone there is no project role
+		// to inherit from, so a visible provider default effort must be part of the
+		// launch request rather than trusting each harness CLI to share that default.
+		? (selectedEffort || undefined)
+		: effortTouched || rememberedEffortIsExplicit
+			? effort === implicitEffort ? undefined : effort
+			: undefined;
 
 	const selectedAgentLabel = agentCatalog?.agents.find((item) => item.id === selectedAgent)?.label || selectedAgent;
 	const requiresTuiFallback =
