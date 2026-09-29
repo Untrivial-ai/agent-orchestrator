@@ -1999,7 +1999,8 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 	needsOMP := !strings.Contains(schema, "'omp'")
 	needsGemini := !strings.Contains(schema, "'gemini'")
 	needsUnreal := !strings.Contains(schema, "'unreal-agent'")
-	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP && !needsGemini && !needsUnreal {
+	needsCodewhale := !strings.Contains(schema, "'codewhale'")
+	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP && !needsGemini && !needsUnreal && !needsCodewhale {
 		return nil
 	}
 	if _, err := db.Exec(`PRAGMA writable_schema = ON`); err != nil {
@@ -2058,6 +2059,9 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 			repairs = append(repairs, replacement{withGemini, strings.Replace(withGemini, "'omp'", "'omp', 'unreal-agent'", 1)})
 		}
 	}
+	if needsCodewhale {
+		repairs = append(repairs, replacement{"'fake'))", "'codewhale', 'fake'))"})
+	}
 	for _, r := range repairs {
 		if _, err := db.Exec(
 			`UPDATE sqlite_master
@@ -2094,6 +2098,9 @@ WHERE type = 'table' AND name = 'sessions'`,
 	}
 	if !strings.Contains(schema, "'unreal-agent'") {
 		return fmt.Errorf("schema repair: sessions harness constraint is missing Unreal Agent and did not match known pre-Unreal-Agent schema")
+	}
+	if !strings.Contains(schema, "'codewhale'") {
+		return fmt.Errorf("schema repair: sessions harness constraint is missing Codewhale")
 	}
 	return nil
 }

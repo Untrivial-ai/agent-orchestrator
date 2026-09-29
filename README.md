@@ -180,7 +180,7 @@ AO works with the coding agents and source-control workflow you already use. Age
   <tr valign="middle">
     <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/fx.svg" alt="fx" width="24" height="24" align="middle" /> &nbsp; <b>fx (experimental)</b></td>
     <td valign="middle" nowrap><b>Unreal Agent</b></td>
-    <td></td>
+    <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/codewhale.svg" alt="Codewhale" width="24" height="24" align="middle" /> &nbsp; <b>Codewhale</b></td>
   </tr>
 </table>
 

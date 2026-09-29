@@ -35,8 +35,8 @@ func TestMigration0163AllowsFXAndReversesBothHistoricalSchemas(t *testing.T) {
 				t.Fatalf("insert fx session after migration: %v", err)
 			}
 			var version int
-			if err := db.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil || version != 164 {
-				t.Fatalf("migration version = %d, err = %v; want 164", version, err)
+			if err := db.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil || version != 165 {
+				t.Fatalf("migration version = %d, err = %v; want 165", version, err)
 			}
 			if _, err := db.Exec(insert, "unknown", 4, "unknown-agent"); err == nil {
 				t.Fatal("unknown harness bypassed the CHECK constraint")

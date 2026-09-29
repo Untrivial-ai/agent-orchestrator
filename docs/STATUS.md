@@ -119,7 +119,7 @@ surface (`npm run sqlc`, `npm run api`).
   sessions, per-client `tmux attach` for Linux and persisted legacy macOS
   handles, and a ConPTY loopback host on Windows.
 - Lifecycle reducer plus reaper (`internal/observe/reaper`).
-- Agent adapter platform under `internal/adapters/agent/` (28 public harnesses) with a
+- Agent adapter platform under `internal/adapters/agent/` (29 public harnesses) with a
   registry and `ao hooks` activity dispatch.
 - Experimental fx adapter: Terminal UI only (no Chat), with restore, agent
   switching, and Settings installation.

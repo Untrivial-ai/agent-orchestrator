@@ -101,8 +101,8 @@ func TestAgentPlansCoverEveryHarnessOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plans) != 30 {
-		t.Fatalf("got %d plans, want 30", len(plans))
+	if len(plans) != 31 {
+		t.Fatalf("got %d plans, want 31", len(plans))
 	}
 	seen := make(map[string]bool, len(plans))
 	for _, plan := range plans {
@@ -593,5 +593,18 @@ func TestAgentTargetsAreValidButPrerequisitesAreNotHarnessRows(t *testing.T) {
 		if !Valid(target) || IsAgentTarget(target) {
 			t.Fatalf("prerequisite target %q was classified incorrectly", target)
 		}
+	}
+}
+
+func TestCodewhaleInstallPlanIsManualOnly(t *testing.T) {
+	plan := newTestService("darwin", "brew", "npm", "sh").planAgent(TargetCodewhale)
+	if !plan.Unsupported || plan.Method != "manual" || len(plan.Command) != 0 || plan.Script != nil {
+		t.Fatalf("Codewhale plan = %+v, want command-free manual plan", plan)
+	}
+	if plan.DocsURL != "https://github.com/Hmbown/Codewhale" {
+		t.Fatalf("Codewhale documentation URL = %q", plan.DocsURL)
+	}
+	if !strings.Contains(plan.Reason, "does not automatically install Codewhale") {
+		t.Fatalf("Codewhale reason = %q", plan.Reason)
 	}
 }
