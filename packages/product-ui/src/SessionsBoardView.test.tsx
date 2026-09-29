@@ -98,6 +98,16 @@ describe("SessionsBoardView", () => {
 		expect(screen.getByTestId("session-status").querySelector(".animate-spin")).not.toBeNull();
 	});
 
+	it("keeps larger card titles on one line without losing the full title", () => {
+		const title = "Explain This Repository’s Purpose and Its Local Development Workflow";
+		render(<SessionCardView externalLink={ExternalLink}
+			labels={{ formatTime: () => "now", intakeIssue: (id) => id, pr: progressLabels, updatedAt: (at) => at }}
+			renderAvatar={() => null}
+			session={{ ...baseSession, title }} />);
+		expect(screen.getByText(title)).toHaveClass("min-w-0", "truncate", "text-sm");
+		expect(screen.getByText(title)).toHaveAttribute("title", title);
+	});
+
 	it("keeps a readable Working label beside a loader when a status source is empty", () => {
 		render(<SessionCardView externalLink={ExternalLink}
 			labels={{ formatTime: () => "now", intakeIssue: (id) => id, pr: progressLabels, updatedAt: (at) => at }}

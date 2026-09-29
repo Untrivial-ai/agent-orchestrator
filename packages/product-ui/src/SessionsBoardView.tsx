@@ -388,7 +388,7 @@ export function SessionCardView({
 				<div className="flex min-w-0 items-center gap-2.5">
 					{renderAvatar(session.provider)}
 					<div
-						className="min-w-0 flex-1 line-clamp-2 overflow-hidden text-balance text-sm-md font-semibold leading-tight tracking-tight text-foreground"
+						className="min-w-0 flex-1 truncate text-sm font-semibold leading-tight tracking-tight text-foreground"
 						title={session.title}
 					>
 						{session.title}
