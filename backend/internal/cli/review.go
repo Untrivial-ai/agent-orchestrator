@@ -255,8 +255,14 @@ func (c *commandContext) submitReview(cmd *cobra.Command, args []string, opts re
 	// the CLI: the review result itself is recorded; only the daemon-side
 	// GitHub publication can report a problem.
 	switch res.Review.PublishState {
-	case "", "published":
+	case "published":
 		_, err = fmt.Fprintf(out, "published GitHub review %s\n", strings.TrimSpace(res.Review.GithubReviewID))
+	case "":
+		// A current daemon always reports a publish state (the publication
+		// migration backfills it). An empty state means a CLI newer than its
+		// daemon: the recorded result is real, but a "published" line would be
+		// a guess with an empty id.
+		_, err = fmt.Fprintf(out, "recorded; publication outcome unknown (daemon predates publication tracking)\n")
 	case "failed":
 		msg := strings.TrimSpace(res.Review.PublishError)
 		if msg == "" {

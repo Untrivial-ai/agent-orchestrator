@@ -475,6 +475,19 @@ func TestReviewSubmitPrintsPublicationOutcome(t *testing.T) {
 			t.Fatalf("stdout = %q", out)
 		}
 	})
+	t.Run("no publish state", func(t *testing.T) {
+		srv, _ := reviewServer(t, http.StatusOK, `{"review":{"id":"run-1","verdict":"approved"}}`)
+		writeRunFileFor(t, cfg, srv)
+		deps := aliveDeps()
+		deps.In = strings.NewReader("ship it")
+		out, _, err := executeCLI(t, deps, "review", "submit", "mer-1", "--run", "run-1", "--verdict", "approved", "--body", "-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(out, "published") || !strings.Contains(out, "publication outcome unknown") {
+			t.Fatalf("stdout = %q, want the unknown-outcome line without a published claim", out)
+		}
+	})
 	t.Run("failed", func(t *testing.T) {
 		srv, _ := reviewServer(t, http.StatusOK, `{"review":{"id":"run-1","verdict":"approved","publishState":"failed","publishError":"422: validation"}}`)
 		writeRunFileFor(t, cfg, srv)

@@ -142,10 +142,16 @@ func shellAllowedCommands(inv ports.ReviewInvocation) []string {
 	gitPrefix := `git --no-pager -C ['"]?` + workspace + `['"]? `
 	safeArg := `[A-Za-z0-9_./:=,@{}^~+\-]+`
 	base64Pipe := `printf '%s' '[A-Za-z0-9+/=]+' \| base64 (?:--decode|-D) \| `
+	// Finding bodies are single-quoted operands; the shared review prompt tells
+	// the model to write an embedded single quote as '\''. The literal must
+	// accept that escape (same grammar as reviewerSubmitJSONLiteral in
+	// internal/cli/hooks.go) or an apostrophe in any finding gets the whole
+	// submit denied.
+	commentLiteral := `'[^']*(?:'\\''[^']*)*'`
 	// The submit command carries the review body on stdin and its inline
 	// findings as the repeatable --comment-* trio; the trio may repeat any
 	// number of times, in order.
-	submitFlags := `--run [A-Za-z0-9_-]+ --verdict (?:approved|changes_requested) --body -(?: --comment-path ` + safeArg + ` --comment-line [0-9]+ --comment-body '[^']*')*$`
+	submitFlags := `--run [A-Za-z0-9_-]+ --verdict (?:approved|changes_requested) --body -(?: --comment-path ` + safeArg + ` --comment-line [0-9]+ --comment-body ` + commentLiteral + `)*$`
 	// Kiro accepts regex policies rather than structured argv. Anchor every
 	// pattern to the complete command and intentionally support only the exact
 	// whitespace-free argument shapes described in the reviewer prompt above.
