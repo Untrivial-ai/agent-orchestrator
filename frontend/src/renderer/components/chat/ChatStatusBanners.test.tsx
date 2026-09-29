@@ -88,7 +88,10 @@ describe("ThreadStateBanner", () => {
 });
 
 describe("McpServerBanner", () => {
-	afterEach(() => vi.useRealTimers());
+	afterEach(() => {
+		vi.useRealTimers();
+		window.localStorage.clear();
+	});
 
 	const broken = [
 		{
@@ -138,6 +141,16 @@ describe("McpServerBanner", () => {
 			</TooltipProvider>,
 		);
 		expect(screen.getByRole("status").parentElement).toHaveClass("top-full");
+	});
+
+	it("does not replay after the renderer reloads a session that already showed it", () => {
+		window.localStorage.setItem("ao:mcp-notice-shown:restored-session", "1");
+		const { container } = render(
+			<TooltipProvider>
+				<McpServerBanner servers={broken} sessionId="restored-session" />
+			</TooltipProvider>,
+		);
+		expect(container).toBeEmptyDOMElement();
 	});
 
 	// A healthy server is not news. The caller filters, and an empty list must not

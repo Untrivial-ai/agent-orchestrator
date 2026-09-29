@@ -17,9 +17,28 @@ import { motion, useReducedMotion } from "motion/react";
 import type { ConversationAccount, ConversationThreadState, McpServer } from "../../types/conversation";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
-// Survives session-pane unmounts so switching away and back does not replay the
-// same spawn notice. The set intentionally lives for the renderer lifetime.
+// The set covers ordinary pane remounts; local storage carries the acknowledgement
+// across renderer/app restarts so a spawn-only notice does not replay on reopen.
 const mcpNoticeShownSessions = new Set<string>();
+const MCP_NOTICE_STORAGE_PREFIX = "ao:mcp-notice-shown:";
+
+function mcpNoticeWasShown(sessionId: string): boolean {
+	if (mcpNoticeShownSessions.has(sessionId)) return true;
+	try {
+		return window.localStorage.getItem(`${MCP_NOTICE_STORAGE_PREFIX}${sessionId}`) === "1";
+	} catch {
+		return false;
+	}
+}
+
+function rememberMcpNotice(sessionId: string): void {
+	mcpNoticeShownSessions.add(sessionId);
+	try {
+		window.localStorage.setItem(`${MCP_NOTICE_STORAGE_PREFIX}${sessionId}`, "1");
+	} catch {
+		// Persistence is best-effort; the renderer-lifetime set still prevents remount replays.
+	}
+}
 
 /**
  * The provider will not do any more work until someone signs in.
@@ -179,8 +198,8 @@ export const McpServerBanner = memo(function McpServerBanner({
 
 	useEffect(() => {
 		if (!fingerprint) return;
-		if (sessionId && mcpNoticeShownSessions.has(sessionId)) return;
-		if (sessionId) mcpNoticeShownSessions.add(sessionId);
+		if (sessionId && mcpNoticeWasShown(sessionId)) return;
+		if (sessionId) rememberMcpNotice(sessionId);
 		setShownFingerprint((current) => current ?? fingerprint);
 		const timeout = window.setTimeout(() => setDismissingFingerprint(fingerprint), 3_000);
 		return () => window.clearTimeout(timeout);
