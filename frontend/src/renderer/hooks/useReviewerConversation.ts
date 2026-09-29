@@ -52,6 +52,7 @@ export function useReviewerConversationCommands(reviewId: string | undefined) {
 		mutationFn: async (input: ConversationSendInput) => {
 			const { data, error } = await apiClient.POST("/api/v1/reviews/{reviewId}/conversation/messages", {
 				params: { path: { reviewId: reviewId as string } },
+				headers: input.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 				body: { ...input, clientMessageId: crypto.randomUUID() },
 			});
 			if (error) throw error;

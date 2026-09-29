@@ -49,6 +49,7 @@ type Store interface {
 	ApplyGitHubInstallationEvent(context.Context, string, string, string) error
 	WorkerGitHubCheckoutContext(context.Context, string, string) (domain.GitHubCheckoutContext, error)
 	WorkerRemoteGitHubCheckoutContext(context.Context, string, string) (domain.RemoteGitHubCheckoutContext, error)
+	WorkerSessionExtraRepos(context.Context, string, string) ([]domain.RepoRef, error)
 	CreatePullRequestRecord(
 		ctx context.Context,
 		orgID, sessionID string,
@@ -59,11 +60,12 @@ type Store interface {
 	) (domain.PullRequest, error)
 	ClaimPullRequestRecord(context.Context, string, string, domain.PullRequest) (domain.PullRequest, error)
 	GitHubInstallationForRepository(ctx context.Context, orgID, repository string) (installationID, repositoryID int64, err error)
-	UpdatePullRequestObservation(
-		ctx context.Context,
-		orgID, pullRequestID string,
-		observation domain.PullRequestObservation,
-	) (domain.PullRequest, error)
+	PullRequestByGitHubReference(ctx context.Context, orgID string, repositoryID int64, number int) (domain.PullRequest, error)
+	PullRequestByGitHubHead(ctx context.Context, orgID string, repositoryID int64, headSHA string) (domain.PullRequest, error)
+	PullRequestsByGitHubRepository(ctx context.Context, orgID string, repositoryID int64) ([]domain.PullRequest, error)
+	RecordPullRequestOpened(ctx context.Context, orgID string, pr domain.PullRequest, deliveryID string) error
+	ApplyPullRequestSnapshot(ctx context.Context, orgID, pullRequestID string, snapshot domain.PullRequestSnapshot, refresh domain.PullRequestRefreshContext) (domain.PullRequestTransition, error)
+	SchedulePullRequestRefresh(ctx context.Context, orgID, pullRequestID string, reason domain.PullRequestRefreshReason, dueAt time.Time, message string) error
 	CreateReviewRun(ctx context.Context, orgID, pullRequestID, reviewSessionID, targetSHA string) (domain.ReviewRun, bool, error)
 	OpenReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID, prompt string) error
 	CloseReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID string) error
@@ -88,19 +90,37 @@ type CheckoutGrant struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
+// MergePullRequest uses the installation's repository-scoped write token.
+func (s *Service) MergePullRequest(ctx context.Context, orgID, repository string, number int, expectedHeadSHA string) error {
+	installationID, repositoryID, err := s.store.GitHubInstallationForRepository(ctx, orgID, repository)
+	if err != nil {
+		return err
+	}
+	owner, repo, ok := strings.Cut(repository, "/")
+	if !ok || owner == "" || repo == "" {
+		return postgres.ErrInvalid
+	}
+	access, err := s.client.repositoryWriteToken(ctx, installationID, repositoryID)
+	if err != nil {
+		return err
+	}
+	return s.client.MergePullRequest(ctx, access.Token, owner, repo, number, expectedHeadSHA)
+}
+
 type Service struct {
-	store         Store
-	client        *Client
-	stateKey      []byte
-	webhookSecret string
-	installTTL    time.Duration
-	logger        *slog.Logger
-	workerID      string
-	credentialKey []byte
-	userTokenMu   sync.Mutex
-	checkMu       sync.Mutex
-	checkAt       time.Time
-	checkErr      error
+	store                    Store
+	client                   *Client
+	stateKey                 []byte
+	webhookSecret            string
+	installTTL               time.Duration
+	logger                   *slog.Logger
+	workerID                 string
+	credentialKey            []byte
+	userTokenMu              sync.Mutex
+	checkMu                  sync.Mutex
+	checkAt                  time.Time
+	checkErr                 error
+	refreshPullRequestStatus func(context.Context, domain.PullRequestRef, domain.PullRequestRefreshContext) (domain.PullRequest, error)
 }
 
 func (s *Service) Check(ctx context.Context) error {
@@ -286,6 +306,55 @@ func (s *Service) CompleteOAuth(
 	return installation, nil
 }
 
+// CompleteInstallationOAuth handles GitHub's combined installation and user
+// authorization callback. In this mode (the App requests user authorization
+// during installation) GitHub returns the OAuth code directly to the callback,
+// so there is no second authorization redirect and therefore no PKCE verifier.
+// The original installation state remains the single-use correlation key while
+// the durable attempt advances to the oauth phase, then the normal completion
+// (authority checks, token exchange, installation upsert) runs.
+func (s *Service) CompleteInstallationOAuth(
+	ctx context.Context,
+	state, code string,
+	installationID int64,
+) (domain.GitHubInstallation, error) {
+	if state == "" || code == "" || installationID <= 0 {
+		return domain.GitHubInstallation{}, postgres.ErrInvalid
+	}
+	stateHash := HashState(state)
+	if err := s.store.ValidateGitHubInstallState(ctx, stateHash); err != nil {
+		return domain.GitHubInstallation{}, err
+	}
+	providerInstallation, err := s.client.GetInstallation(ctx, installationID)
+	if err != nil {
+		return domain.GitHubInstallation{}, err
+	}
+	if !InstallationSupportsAuthorityProof(providerInstallation) {
+		return domain.GitHubInstallation{}, postgres.ErrForbidden
+	}
+	// No PKCE verifier: GitHub already performed the authorization during
+	// installation, so we never issued a code_challenge. Store an empty verifier
+	// and reuse the install state as the oauth state so CompleteOAuth can find
+	// the attempt.
+	associatedData := []byte(strconv.FormatInt(installationID, 10))
+	ciphertext, nonce, err := Encrypt(s.stateKey, nil, associatedData)
+	if err != nil {
+		return domain.GitHubInstallation{}, err
+	}
+	if _, err := s.store.BeginGitHubOAuth(
+		ctx,
+		stateHash,
+		toDomainInstallation(providerInstallation),
+		stateHash,
+		ciphertext,
+		nonce,
+		time.Now().UTC().Add(s.installTTL),
+	); err != nil {
+		return domain.GitHubInstallation{}, err
+	}
+	return s.CompleteOAuth(ctx, state, code)
+}
+
 func (s *Service) ListInstallations(
 	ctx context.Context,
 	principal domain.Principal,
@@ -342,41 +411,25 @@ func (s *Service) ListRepositories(
 }
 
 // IssueCheckoutGrant first resolves the worker's durable session-to-repository
-// authorization, then asks GitHub for a token restricted to that one repository
-// with read-only contents permission. Installation-token issuance is kept
-// private to this service so callers cannot bypass the PostgreSQL grant check.
+// authorization, then asks GitHub for a token with read-only contents permission
+// restricted to the project's primary repository plus any declared extra
+// repositories that resolve within the same installation. Installation-token
+// issuance is kept private to this service so callers cannot bypass the
+// PostgreSQL grant check.
 func (s *Service) IssueCheckoutGrant(
 	ctx context.Context,
 	orgID, sessionID string,
-) (CheckoutGrant, error) {
-	return s.issueGrant(ctx, orgID, sessionID, s.client.repositoryToken)
-}
-
-// IssuePushGrant is IssueCheckoutGrant's write-scoped counterpart: the token
-// it mints carries contents:write (and pull_requests:write, unused for a
-// push but harmless to request once rather than adding a third token
-// shape). Only ever handed to a worker immediately before a git push, never
-// cached — see repositoryWriteToken.
-func (s *Service) IssuePushGrant(
-	ctx context.Context,
-	orgID, sessionID string,
-) (CheckoutGrant, error) {
-	return s.issueGrant(ctx, orgID, sessionID, s.client.repositoryWriteToken)
-}
-
-// issueGrant is IssueCheckoutGrant and IssuePushGrant's shared authorization
-// and token-minting path; they differ only in which of the client's two
-// token-scope functions mints the access token.
-func (s *Service) issueGrant(
-	ctx context.Context,
-	orgID, sessionID string,
-	mintToken func(ctx context.Context, installationID, repositoryID int64) (installationAccessToken, error),
 ) (CheckoutGrant, error) {
 	authorization, err := s.resolveWorkerCheckoutAuthorization(ctx, orgID, sessionID)
 	if err != nil {
 		return CheckoutGrant{}, err
 	}
-	access, err := mintToken(ctx, authorization.GitHubInstallationID, authorization.GitHubRepositoryID)
+	repositoryIDs := s.checkoutRepositoryIDs(ctx, orgID, sessionID, authorization)
+	access, err := s.client.repositoryReadTokenForRepos(
+		ctx,
+		authorization.GitHubInstallationID,
+		repositoryIDs,
+	)
 	if err != nil {
 		return CheckoutGrant{}, err
 	}
@@ -388,6 +441,219 @@ func (s *Service) issueGrant(
 		Token:     access.Token,
 		ExpiresAt: access.ExpiresAt,
 	}, nil
+}
+
+// checkoutRepositoryIDs returns the repository IDs a checkout token should be
+// scoped to: always the session's primary repository, plus any of the project's
+// declared extra repositories that resolve within the same installation. It is
+// deliberately failure-tolerant — any error loading the extras or resolving them
+// against the installation falls back to the primary repository alone, so
+// broadening the scope can never regress the primary checkout that already
+// worked. Extra repositories outside the primary's installation cannot be minted
+// into one installation token and are simply left out.
+func (s *Service) checkoutRepositoryIDs(
+	ctx context.Context,
+	orgID, sessionID string,
+	authorization domain.GitHubCheckoutContext,
+) []int64 {
+	primary := authorization.GitHubRepositoryID
+	extras, err := s.store.WorkerSessionExtraRepos(ctx, orgID, sessionID)
+	if err != nil {
+		s.logger.Warn("load session extra repositories for checkout scope",
+			"error", err, "org_id", orgID, "session_id", sessionID)
+		return []int64{primary}
+	}
+	primaryFullName := strings.Trim(authorization.FullName, "/")
+	fullNames := make([]string, 0, len(extras))
+	for _, extra := range extras {
+		fullName, ok := gitHubRepositoryFullName(extra.URL)
+		if !ok || strings.EqualFold(fullName, primaryFullName) {
+			continue
+		}
+		fullNames = append(fullNames, fullName)
+	}
+	if len(fullNames) == 0 {
+		return []int64{primary}
+	}
+	extraIDs, unresolved, err := s.client.resolveInstallationRepositoryIDs(
+		ctx,
+		authorization.GitHubInstallationID,
+		fullNames,
+	)
+	if err != nil {
+		s.logger.Warn("resolve extra repositories for checkout scope",
+			"error", err, "org_id", orgID, "session_id", sessionID)
+		return []int64{primary}
+	}
+	if len(unresolved) > 0 {
+		// A declared extra the installation cannot access is dropped from the
+		// checkout token scope, so the worker's clone of it will fail. Surface it
+		// loudly (rather than silently narrowing the scope) so the gap is
+		// diagnosable: the usual cause is the repository not being granted to the
+		// GitHub App installation.
+		s.logger.Warn("extra repositories excluded from checkout scope; not accessible to the installation",
+			"unresolved", unresolved,
+			"org_id", orgID,
+			"session_id", sessionID,
+			"installation_id", authorization.GitHubInstallationID)
+	}
+	ids := make([]int64, 0, len(extraIDs)+1)
+	ids = append(ids, primary)
+	for _, id := range extraIDs {
+		if id > 0 && id != primary {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// gitHubRepositoryFullName extracts "owner/repo" from a github.com repository
+// URL (with or without a trailing .git). It returns ok=false for anything that
+// is not a plain https github.com repository URL, so a malformed or non-GitHub
+// extra repository is skipped rather than scoped.
+func gitHubRepositoryFullName(repoURL string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(repoURL))
+	if err != nil ||
+		parsed.Scheme != "https" ||
+		!strings.EqualFold(parsed.Hostname(), "github.com") ||
+		parsed.Port() != "" ||
+		parsed.User != nil ||
+		parsed.RawQuery != "" ||
+		parsed.Fragment != "" {
+		return "", false
+	}
+	path, err := url.PathUnescape(parsed.EscapedPath())
+	if err != nil {
+		return "", false
+	}
+	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
+	owner, repo, ok := strings.Cut(path, "/")
+	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		return "", false
+	}
+	return owner + "/" + repo, true
+}
+
+// IssuePushGrant is IssueCheckoutGrant's write-scoped counterpart: the token
+// it mints carries contents:write and pull_requests:write, scoped to the
+// project's primary repository plus any declared extra repositories that
+// resolve within the same installation — the write-side mirror of
+// IssueCheckoutGrant's multi-repository scope. One broad token backs a worker's
+// push and gh-CLI pull-request creation across every repository the session
+// checked out, so a push to an extra dev-kit repository is no longer scoped
+// out. Only ever handed to a worker immediately before a git operation, never
+// cached — see repositoryWriteTokenForRepos.
+func (s *Service) IssuePushGrant(
+	ctx context.Context,
+	orgID, sessionID string,
+) (CheckoutGrant, error) {
+	authorization, err := s.resolveWorkerCheckoutAuthorization(ctx, orgID, sessionID)
+	if err != nil {
+		return CheckoutGrant{}, err
+	}
+	repositoryIDs := s.checkoutRepositoryIDs(ctx, orgID, sessionID, authorization)
+	access, err := s.client.repositoryWriteTokenForRepos(
+		ctx,
+		authorization.GitHubInstallationID,
+		repositoryIDs,
+	)
+	if err != nil {
+		return CheckoutGrant{}, err
+	}
+	if access.ExpiresAt.After(time.Now().UTC().Add(2 * time.Hour)) {
+		return CheckoutGrant{}, errors.New("GitHub returned an unexpectedly long-lived installation token")
+	}
+	return CheckoutGrant{
+		CloneURL:  authorization.CloneURL,
+		Token:     access.Token,
+		ExpiresAt: access.ExpiresAt,
+	}, nil
+}
+
+// IssuePushGrantForRepo is IssuePushGrant scoped to one specific repository —
+// the session's primary repository or one of its declared extra repositories.
+// It mints a write token for exactly that repository when the App installation
+// can access it, and returns postgres.ErrForbidden when it cannot (the name is
+// not declared for the session, or the App is not installed on it) so the
+// caller falls back to a stored PAT. This is the per-repository, App-first half
+// of the worker credential helper's App-first/PAT-fallback precedence: the
+// helper forwards the repository git is asking about, and an App-uninstalled
+// extra can still push through a PAT that covers it.
+func (s *Service) IssuePushGrantForRepo(
+	ctx context.Context,
+	orgID, sessionID, repoFullName string,
+) (CheckoutGrant, error) {
+	authorization, err := s.resolveWorkerCheckoutAuthorization(ctx, orgID, sessionID)
+	if err != nil {
+		return CheckoutGrant{}, err
+	}
+	repositoryID, err := s.pushRepositoryID(ctx, orgID, sessionID, authorization, repoFullName)
+	if err != nil {
+		return CheckoutGrant{}, err
+	}
+	access, err := s.client.repositoryWriteToken(ctx, authorization.GitHubInstallationID, repositoryID)
+	if err != nil {
+		return CheckoutGrant{}, err
+	}
+	if access.ExpiresAt.After(time.Now().UTC().Add(2 * time.Hour)) {
+		return CheckoutGrant{}, errors.New("GitHub returned an unexpectedly long-lived installation token")
+	}
+	return CheckoutGrant{
+		CloneURL:  authorization.CloneURL,
+		Token:     access.Token,
+		ExpiresAt: access.ExpiresAt,
+	}, nil
+}
+
+// pushRepositoryID resolves the single repository a write grant should target.
+// An empty name (or one equal to the session's primary repository) resolves to
+// the primary repository. Any other name must be one of the project's declared
+// extra repositories AND resolve within the same installation; otherwise it
+// returns postgres.ErrForbidden so the caller can fall back to a stored PAT.
+// This is the write-side, single-repository mirror of checkoutRepositoryIDs —
+// it never broadens write access beyond a repository the session already
+// checked out.
+func (s *Service) pushRepositoryID(
+	ctx context.Context,
+	orgID, sessionID string,
+	authorization domain.GitHubCheckoutContext,
+	repoFullName string,
+) (int64, error) {
+	primaryFullName := strings.Trim(authorization.FullName, "/")
+	requested := strings.Trim(strings.TrimSpace(repoFullName), "/")
+	if requested == "" || strings.EqualFold(requested, primaryFullName) {
+		return authorization.GitHubRepositoryID, nil
+	}
+	extras, err := s.store.WorkerSessionExtraRepos(ctx, orgID, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	canonical := ""
+	for _, extra := range extras {
+		fullName, ok := gitHubRepositoryFullName(extra.URL)
+		if ok && strings.EqualFold(fullName, requested) {
+			canonical = fullName
+			break
+		}
+	}
+	if canonical == "" {
+		// The requested repository is not one the session is authorized to
+		// touch. Forbid the App grant; the caller decides whether a PAT applies.
+		return 0, postgres.ErrForbidden
+	}
+	ids, unresolved, err := s.client.resolveInstallationRepositoryIDs(
+		ctx, authorization.GitHubInstallationID, []string{canonical},
+	)
+	if err != nil {
+		return 0, err
+	}
+	if len(unresolved) > 0 || len(ids) == 0 || ids[0] <= 0 {
+		// Declared for the project but the installation cannot access it (the App
+		// is not installed on it). Forbid the App grant so the caller falls back
+		// to a stored PAT that may still cover it.
+		return 0, postgres.ErrForbidden
+	}
+	return ids[0], nil
 }
 
 // resolveWorkerCheckoutAuthorization loads and re-validates a session's
@@ -725,6 +991,9 @@ func (s *Service) processWebhook(
 		return err
 	}
 	switch delivery.Event {
+	case "pull_request", "check_suite", "check_run", "pull_request_review",
+		"pull_request_review_comment", "pull_request_review_thread", "status", "push":
+		return s.processSCMWebhook(ctx, orgID, delivery)
 	case "installation":
 		action := "unsuspend"
 		providerInstallation, err := s.client.GetInstallation(
@@ -767,7 +1036,35 @@ func (s *Service) processWebhook(
 	return s.sync(ctx, installation)
 }
 
+// sync enumerates the installation's repositories and reconciles its grants.
+// Its triggers overlap deliberately — the durable webhook worker and explicit
+// client sync requests — and every BeginGitHubRepositorySync bumps
+// sync_generation, so
+// whichever Reconcile runs against a superseded generation loses with
+// ErrConflict. Losing is benign: the winner writes the same grants. Re-run
+// with a fresh generation instead of surfacing the conflict, bounded so two
+// racers cannot ping-pong indefinitely.
 func (s *Service) sync(
+	ctx context.Context,
+	installation domain.GitHubInstallation,
+) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * 150 * time.Millisecond):
+			}
+		}
+		if err = s.syncOnce(ctx, installation); !errors.Is(err, postgres.ErrConflict) {
+			return err
+		}
+	}
+	return err
+}
+
+func (s *Service) syncOnce(
 	ctx context.Context,
 	installation domain.GitHubInstallation,
 ) error {
@@ -837,87 +1134,23 @@ func toDomainInstallation(value Installation) domain.GitHubInstallation {
 }
 
 func (s *Service) CompletionHTML(success bool) []byte {
-	return s.completionHTML(success, false)
+	return s.completionHTML(success)
 }
 
 func (s *Service) InstallationCompletionHTML(success bool) []byte {
-	return s.completionHTML(success, true)
+	return s.completionHTML(success)
 }
 
-func (s *Service) completionHTML(success, closeImmediately bool) []byte {
+func (s *Service) completionHTML(success bool) []byte {
 	title := "Connection failed"
-	message := "Return to AO and try connecting GitHub again."
-	statusClass := "error"
-	statusIcon := "!"
-	buttonLabel := "Close window"
-	autoClose := ""
+	message := "GitHub could not finish the connection. Return to AO and try again."
 	if success {
 		title = "GitHub connected"
-		message = "Repository access is ready. Return to AO to continue."
-		statusClass = "success"
-		statusIcon = "✓"
-		// Keep the popup alive long enough for the opener to advance the
-		// account-authorization step into GitHub App installation. The final
-		// step closes it immediately once the installation is visible.
-		if closeImmediately {
-			autoClose = "window.close();"
-		} else {
-			autoClose = "window.setTimeout(function(){window.close()},10000);"
-		}
+		message = "Return to AO. Your repositories will appear in the project picker as soon as they finish syncing. You can close this tab."
 	}
 	return []byte(fmt.Sprintf(
-		`<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark">
-<title>%s · AO</title>
-<style>
-:root{color-scheme:dark;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#090a0c;color:#f4f5f7}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;background:#090a0c}
-main{min-height:100vh;display:grid;place-items:center;padding:32px}
-.content{width:min(100%%,440px);border:1px solid #292c32;border-radius:8px;background:#111317;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.32)}
-.brand{display:flex;align-items:center;gap:10px;margin-bottom:36px;color:#a7abb3;font-size:13px;font-weight:500}
-.brand-mark{display:grid;place-items:center;width:30px;height:30px;border:1px solid #353941;border-radius:7px;background:#1a1d22;color:#f4f5f7;font-size:12px;font-weight:700}
-.status{display:grid;place-items:center;width:44px;height:44px;margin-bottom:20px;border:1px solid;border-radius:50%%;font-size:20px;font-weight:600}
-.status.success{border-color:rgba(74,222,128,.38);background:rgba(74,222,128,.08);color:#4ade80}
-.status.error{border-color:rgba(212,84,79,.42);background:rgba(212,84,79,.09);color:#e16a65}
-h1{margin:0;font-size:24px;line-height:1.25;letter-spacing:0;font-weight:650}
-p{margin:10px 0 0;color:#9ba1aa;font-size:14px;line-height:1.6}
-.footer{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:30px;padding-top:22px;border-top:1px solid #292c32}
-.action{display:inline-flex;height:38px;align-items:center;justify-content:center;border:1px solid #d8dbe1;border-radius:6px;background:#e8eaf0;color:#17191d;padding:0 16px;font:inherit;font-size:13px;font-weight:600;cursor:pointer}
-.action:hover{background:#fff;border-color:#fff}
-.action:focus-visible{outline:2px solid #4d8dff;outline-offset:2px}
-.hint{display:flex;align-items:center;gap:7px;color:#777d87;font-size:12px}
-.hint::before{content:"";width:6px;height:6px;border-radius:50%%;background:#4ade80;box-shadow:0 0 0 3px rgba(74,222,128,.1)}
-.status.error~.footer .hint::before{background:#e16a65;box-shadow:0 0 0 3px rgba(225,106,101,.1)}
-@media(max-width:520px){main{place-items:start;padding:20px}.content{padding:24px}.footer{align-items:flex-start;flex-direction:column-reverse}}
-</style>
-</head>
-<body>
-<main>
-<section class="content" aria-labelledby="title">
-<div class="brand"><span class="brand-mark" aria-hidden="true">AO</span><span>Agent Orchestrator</span></div>
-<div class="status %s" aria-hidden="true">%s</div>
-<h1 id="title">%s</h1>
-<p>%s</p>
-<div class="footer">
-<div class="hint">This window may close automatically.</div>
-<button class="action" type="button" onclick="window.close()">%s</button>
-</div>
-</section>
-</main>
-<script>%s</script>
-</body>
-</html>`,
-		title,
-		statusClass,
-		statusIcon,
-		title,
-		message,
-		buttonLabel,
-		autoClose,
-	))
+		`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title>
+<body style="font:15px -apple-system,system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.5rem;color:#111">
+<main><h1 style="font-size:1.25rem">%s</h1><p style="color:#555">%s</p></main></body></html>`,
+		title, title, message))
 }

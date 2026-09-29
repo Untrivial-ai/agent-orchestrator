@@ -49,23 +49,70 @@ export function BrowserImportDialog({
 	const [destinationNames, setDestinationNames] = useState<Record<string, string>>({});
 	const [mergeName, setMergeName] = useState("");
 	const [loading, setLoading] = useState(false);
+	const [loadingSourceId, setLoadingSourceId] = useState("");
 	const [error, setError] = useState("");
 	const [safariAccessDenied, setSafariAccessDenied] = useState(false);
 	const [progress, setProgress] = useState<BrowserImportProgress | null>(null);
 	const [result, setResult] = useState<BrowserImportResult | null>(null);
 	const errorRef = useRef<HTMLParagraphElement>(null);
+	const selectedSourceIdRef = useRef("");
+	const sourcesRef = useRef<BrowserImportSource[]>([]);
 
 	const source = sources.find((candidate) => candidate.id === sourceId);
 	const selectedProfiles = source?.profiles.filter((profile) => selectedProfileIds.includes(profile.id)) ?? [];
 	const canClose = view !== "running";
 	const requestId = progress?.requestId;
+	const sourceLoading = source ? loadingSourceId === source.id : false;
+	const showSafariAccessDenied = source?.family === "safari" && safariAccessDenied;
+
+	async function loadSourceProfiles(id: string): Promise<BrowserImportSource | null> {
+		if (!bridge) return null;
+		setLoadingSourceId(id);
+		try {
+			const discovery = await bridge.discoverImportSources({ sourceId: id });
+			const accessDenied = discovery.warnings?.includes("safari-access-denied") ?? false;
+			setSafariAccessDenied(accessDenied);
+			const hydrated = discovery.sources.find((candidate) => candidate.id === id) ?? null;
+			if (hydrated) {
+				const nextSources = sourcesRef.current.map((candidate) => candidate.id === id ? hydrated : candidate);
+				sourcesRef.current = nextSources;
+				setSources(nextSources);
+			} else if (!accessDenied) {
+				const nextSources = sourcesRef.current.filter((candidate) => candidate.id !== id);
+				sourcesRef.current = nextSources;
+				setSources(nextSources);
+				if (selectedSourceIdRef.current === id) {
+					const fallback = nextSources.find((candidate) => !candidate.profilesDeferred) ?? nextSources[0];
+					if (fallback) {
+						selectedSourceIdRef.current = fallback.id;
+						applySourceDefaults(fallback, setSourceId, setSelectedProfileIds, setDestinationNames, setMergeName, setDestinationMode);
+					} else {
+						selectedSourceIdRef.current = "";
+						setSourceId("");
+						setSelectedProfileIds([]);
+						setDestinationNames({});
+						setMergeName("");
+					}
+				}
+			}
+			return hydrated;
+		} catch (reason) {
+			setError(reason instanceof Error ? reason.message : t("settings.browserImport.discoveryFailed"));
+			return null;
+		} finally {
+			setLoadingSourceId((current) => current === id ? "" : current);
+		}
+	}
 
 	useEffect(() => {
 		if (!open) return;
 		setView("form");
 		setSources([]);
+		sourcesRef.current = [];
 		setSafariAccessDenied(false);
+		setLoadingSourceId("");
 		setSourceId("");
+		selectedSourceIdRef.current = "";
 		setSelectedProfileIds([]);
 		setIncludeCookies(true);
 		setIncludeHistory(true);
@@ -82,10 +129,21 @@ export function BrowserImportDialog({
 		setLoading(true);
 		void bridge.discoverImportSources().then(
 			(discovery) => {
+				sourcesRef.current = discovery.sources;
 				setSources(discovery.sources);
 				setSafariAccessDenied(discovery.warnings?.includes("safari-access-denied") ?? false);
-				const first = discovery.sources[0];
-				if (first) applySourceDefaults(first, setSourceId, setSelectedProfileIds, setDestinationNames, setMergeName, setDestinationMode);
+				const first = discovery.sources.find((candidate) => !candidate.profilesDeferred) ?? discovery.sources[0];
+				if (first) {
+					selectedSourceIdRef.current = first.id;
+					applySourceDefaults(first, setSourceId, setSelectedProfileIds, setDestinationNames, setMergeName, setDestinationMode);
+					if (first.profilesDeferred) {
+						void loadSourceProfiles(first.id).then((hydrated) => {
+							if (hydrated && selectedSourceIdRef.current === first.id) {
+								applySourceDefaults(hydrated, setSourceId, setSelectedProfileIds, setDestinationNames, setMergeName, setDestinationMode);
+							}
+						});
+					}
+				}
 			},
 			(reason) => setError(reason instanceof Error ? reason.message : t("settings.browserImport.discoveryFailed")),
 		).finally(() => setLoading(false));
@@ -113,8 +171,16 @@ export function BrowserImportDialog({
 	const selectSource = (id: string) => {
 		const next = sources.find((candidate) => candidate.id === id);
 		if (!next) return;
+		selectedSourceIdRef.current = id;
 		applySourceDefaults(next, setSourceId, setSelectedProfileIds, setDestinationNames, setMergeName, setDestinationMode);
 		setError("");
+		if (next.profilesDeferred) {
+			void loadSourceProfiles(id).then((hydrated) => {
+				if (hydrated && selectedSourceIdRef.current === id) {
+					applySourceDefaults(hydrated, setSourceId, setSelectedProfileIds, setDestinationNames, setMergeName, setDestinationMode);
+				}
+			});
+		}
 	};
 
 	const selectProfiles = (ids: string[]) => {
@@ -190,7 +256,7 @@ export function BrowserImportDialog({
 					{view === "form" && error ? (
 						<p ref={errorRef} tabIndex={-1} className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive" role="alert">{error}</p>
 					) : null}
-					{view === "form" && safariAccessDenied ? (
+					{view === "form" && showSafariAccessDenied ? (
 						<p className="text-xs text-warning" role="status">{t("settings.browserImport.safariAccessUnavailable")}</p>
 					) : null}
 					{view === "form" ? (
@@ -201,6 +267,7 @@ export function BrowserImportDialog({
 							includeCookies={includeCookies}
 							includeHistory={includeHistory}
 							loading={loading}
+							sourceLoading={sourceLoading}
 							mergeName={mergeName}
 							onSelectProfiles={selectProfiles}
 							onSelectSource={selectSource}
@@ -242,7 +309,7 @@ export function BrowserImportDialog({
 					) : null}
 					{view === "form" ? (
 						<Button
-							disabled={loading || !source || selectedProfiles.length === 0 || (!includeCookies && !includeHistory) || !namesValid}
+							disabled={loading || sourceLoading || !source || selectedProfiles.length === 0 || (!includeCookies && !includeHistory) || !namesValid}
 							onClick={() => void startImport()}
 							type="button"
 							variant="footer-primary"
@@ -277,6 +344,7 @@ function ImportForm({
 	profiles,
 	selectedProfileIds,
 	loading,
+	sourceLoading,
 	error,
 	includeCookies,
 	includeHistory,
@@ -297,6 +365,7 @@ function ImportForm({
 	profiles: BrowserImportSource["profiles"];
 	selectedProfileIds: string[];
 	loading: boolean;
+	sourceLoading: boolean;
 	error: string;
 	includeCookies: boolean;
 	includeHistory: boolean;
@@ -343,7 +412,7 @@ function ImportForm({
 								<SelectItem className={selected ? "bg-settings-menu-selected text-foreground" : ""} key={candidate.id} value={candidate.id}>
 									<span className="flex w-full min-w-0 items-center gap-2">
 										<span className="min-w-0 flex-1 truncate">{candidate.name}</span>
-										<span className="text-xs text-muted-foreground">{t("settings.browserImport.profileCount", { count: candidate.profiles.length })}</span>
+										{candidate.profilesDeferred ? null : <span className="text-xs text-muted-foreground">{t("settings.browserImport.profileCount", { count: candidate.profiles.length })}</span>}
 										{selected ? <CheckCircle2 aria-hidden="true" className="size-4 shrink-0 text-accent" /> : null}
 									</span>
 								</SelectItem>
@@ -355,7 +424,12 @@ function ImportForm({
 
 			{source ? (
 				<>
-					<ProfilesStep onChange={onSelectProfiles} selected={selectedProfileIds} source={source} />
+					{sourceLoading ? (
+						<div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+							<LoaderCircle aria-hidden="true" className="size-4 animate-spin" />
+							{t("settings.browserImport.detecting")}
+						</div>
+					) : <ProfilesStep onChange={onSelectProfiles} selected={selectedProfileIds} source={source} />}
 					<OptionsStep
 						destinationMode={destinationMode}
 						destinationNames={destinationNames}
@@ -392,8 +466,7 @@ function ProfilesStep({ source, selected, onChange }: { source: BrowserImportSou
 							onChange={(event) => onChange(event.target.checked ? [...selected, profile.id] : selected.filter((id) => id !== profile.id))}
 							type="checkbox"
 						/>
-						<span className="text-sm font-medium">{profile.name}</span>
-						{profile.default ? <span className="text-xs text-muted-foreground">{t("settings.browserImport.defaultProfile")}</span> : null}
+						<span className="text-sm font-medium">{profile.name.toLowerCase() === "default" ? t("settings.browserImport.defaultProfile") : profile.name}</span>
 					</label>
 					);
 				})}
@@ -475,7 +548,7 @@ function OptionsStep({
 					<div className="grid gap-2">
 						{profiles.map((profile) => (
 							<label className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] items-center gap-3 text-xs" key={profile.id}>
-								<span className="truncate text-muted-foreground">{profile.name}</span>
+								<span className="truncate text-muted-foreground">{profile.name.toLowerCase() === "default" ? t("settings.browserImport.defaultProfile") : profile.name}</span>
 								<Input maxLength={64} onChange={(event) => setDestinationNames((current) => ({ ...current, [profile.id]: event.target.value }))} value={destinationNames[profile.id] ?? ""} />
 							</label>
 						))}

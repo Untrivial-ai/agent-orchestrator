@@ -621,6 +621,10 @@ retryProjection:
 		m.mu.Unlock()
 		return nil
 	}
+	if s.ExpectedHarness != "" && s.ExpectedHarness != rec.Harness {
+		m.mu.Unlock()
+		return nil
+	}
 	mode := domain.NormalizeSessionMode(rec.Mode)
 	// Rollback restores the TUI mode before its replacement runtime has a launch
 	// generation. While the durable transition remains active, an untagged hook
@@ -742,7 +746,7 @@ retryProjection:
 			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointCoordination
 			checkpoint.ConversationCheckpointGeneration = ownerGeneration
 			checkpoint.ConversationCheckpointNativeID = checkpointNativeID
-			checkpoint.ConversationCheckpointTurnID = ""
+			checkpoint.ConversationCheckpointTurnID = s.CoordinationID
 		} else {
 			promptAt := timeOr(s.Timestamp, now)
 			sameCheckpointOwner := !resetConversationCheckpoint && ownerGeneration != "" &&
@@ -805,7 +809,9 @@ retryProjection:
 			checkpoint.ConversationCheckpointState = domain.ConversationCheckpointCoordination
 			checkpoint.ConversationCheckpointGeneration = ownerGeneration
 			checkpoint.ConversationCheckpointNativeID = checkpointNativeID
-			checkpoint.ConversationCheckpointTurnID = ""
+			if s.CoordinationID != "" {
+				checkpoint.ConversationCheckpointTurnID = s.CoordinationID
+			}
 		} else if checkpoint.ConversationCheckpointState == domain.ConversationCheckpointPrompt &&
 			!checkpoint.ConversationCheckpointUnsettled &&
 			(s.Timestamp.IsZero() || !s.Timestamp.Before(checkpoint.LatestUserPromptAt)) &&
@@ -1022,6 +1028,9 @@ func (m *Manager) stagePendingAgentSwitchNativeMetadata(ctx context.Context, id 
 		return err
 	}
 	if !found || sw.State != domain.AgentSwitchStartingTarget || string(sw.TargetGenerationID) != s.LaunchID || sw.TargetNativeSessionRef == nil {
+		return nil
+	}
+	if s.ExpectedHarness != "" && s.ExpectedHarness != sw.TargetHarness {
 		return nil
 	}
 	native, found, err := store.GetAgentNativeSession(ctx, *sw.TargetNativeSessionRef)
@@ -1914,6 +1923,7 @@ func mergeMetadata(base, in domain.SessionMetadata) domain.SessionMetadata {
 	set(&base.LatestAssistantUpdate, in.LatestAssistantUpdate)
 	set(&base.NativeTranscriptPath, in.NativeTranscriptPath)
 	set(&base.Model, in.Model)
+	set(&base.Effort, in.Effort)
 	set(&base.BrowserCapabilityVerifier, in.BrowserCapabilityVerifier)
 	// The chat controller's resume handle. Without this a restart has no thread to
 	// resume and the conversation is stranded — the provider still holds it, but

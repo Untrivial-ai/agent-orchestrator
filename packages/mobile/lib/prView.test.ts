@@ -136,10 +136,11 @@ describe("prSummaryLine", () => {
 describe("prStatusAtoms", () => {
 	it("collapses a decided PR to one atom", () => {
 		// "Merged · CI passing" is noise about a PR nobody can act on.
-		// Green: this is the status slot, the one that says "CI passing ·
-		// Mergeable". The purple belongs to the lifecycle badge above the title.
+		// Purple, matching the lifecycle badge above the title. The green in this
+		// slot is for "CI passing · Mergeable" — states you can still act on — and
+		// merged borrowed it, so the same word wore two colours on one card.
 		expect(prStatusAtoms({ state: "merged", ci: { state: "passing" } })).toEqual([
-			{ text: "Merged", tone: "success" },
+			{ text: "Merged", tone: "merged" },
 		]);
 		expect(prStatusAtoms({ state: "closed" })).toEqual([{ text: "Closed", tone: "passive" }]);
 	});

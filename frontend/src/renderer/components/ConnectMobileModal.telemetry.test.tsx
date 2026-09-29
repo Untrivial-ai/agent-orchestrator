@@ -80,7 +80,9 @@ describe("Connect Mobile telemetry", () => {
 		await userEvent.click(screen.getByRole("button", { name: "Generate" }));
 
 		await waitFor(() => expect(toggleEvents()).toHaveLength(1));
-		await waitFor(() => expect(screen.getByRole("button", { name: "Generate" })).toBeDisabled());
+		expect(await screen.findByTestId("mobile-pairing-preparing")).toBeInTheDocument();
+		expect(screen.queryByText(/Preparing remote access/i)).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Generate" })).not.toBeInTheDocument();
 		expect(openEvents()).toHaveLength(1);
 	});
 

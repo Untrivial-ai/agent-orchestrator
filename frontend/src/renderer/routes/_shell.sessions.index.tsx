@@ -1,10 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { SessionsBoard } from "../components/SessionsBoard";
+import { StandaloneArchiveView } from "../components/StandaloneArchiveView";
 
 export const Route = createFileRoute("/_shell/sessions/")({
-	component: AllSessionsBoardRoute,
+	component: StandaloneArchiveRoute,
 });
 
-function AllSessionsBoardRoute() {
-	return <SessionsBoard />;
+function StandaloneArchiveRoute() {
+	return <StandaloneArchiveView />;
 }

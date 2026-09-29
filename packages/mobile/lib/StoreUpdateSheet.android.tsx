@@ -1,8 +1,9 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { describePrompt } from "./storeUpdate";
 import { useTheme } from "./ThemeProvider";
 import { SheetScreen } from "./ui";
+import { iconSize, space, type } from "./tokens";
 
 export function StoreUpdateSheet({
 	version,
@@ -20,8 +21,8 @@ export function StoreUpdateSheet({
 	return (
 		<SheetScreen title="Software update" subtitle={describePrompt({ version, storeConfirmed, storeName })}>
 			<View style={styles.content}>
-				<View style={[styles.icon, { backgroundColor: t.tintBlue }]}>
-					<Feather name="download-cloud" size={24} color={t.blue} />
+				<View style={[styles.icon, { backgroundColor: t.accentTint }]}>
+					<Feather name="download-cloud" size={iconSize.xl} color={t.accent} />
 				</View>
 				<View style={styles.copy}>
 					<Text style={[styles.title, { color: t.textPrimary }]}>A newer AO is ready</Text>
@@ -31,7 +32,7 @@ export function StoreUpdateSheet({
 					<Pressable onPress={onDismiss} android_ripple={{ color: t.bgSubtle }} style={styles.secondaryAction}>
 						<Text style={[styles.actionLabel, { color: t.textPrimary }]}>Not now</Text>
 					</Pressable>
-					<Pressable onPress={onUpdate} android_ripple={{ color: "rgba(255,255,255,0.18)" }} style={[styles.primaryAction, { backgroundColor: t.blue }]}>
+					<Pressable onPress={onUpdate} android_ripple={{ color: "rgba(255,255,255,0.18)" }} style={[styles.primaryAction, { backgroundColor: t.accent }]}>
 						<Text style={[styles.actionLabel, { color: t.onAccent }]}>Open {storeName}</Text>
 					</Pressable>
 				</View>
@@ -41,13 +42,13 @@ export function StoreUpdateSheet({
 }
 
 const styles = StyleSheet.create({
-	content: { paddingTop: 20, gap: 16 },
-	icon: { width: 48, height: 48, borderRadius: 16, alignItems: "center", justifyContent: "center" },
-	copy: { gap: 6 },
-	title: { fontSize: 20, lineHeight: 25, fontWeight: "700" },
-	message: { fontSize: 14, lineHeight: 20 },
-	actions: { flexDirection: "row", justifyContent: "flex-end", gap: 8, paddingTop: 4 },
-	secondaryAction: { height: 44, minWidth: 92, paddingHorizontal: 16, borderRadius: 14, alignItems: "center", justifyContent: "center", overflow: "hidden" },
-	primaryAction: { height: 44, minWidth: 148, paddingHorizontal: 16, borderRadius: 14, alignItems: "center", justifyContent: "center", overflow: "hidden" },
-	actionLabel: { fontSize: 14, fontWeight: "700" },
+	content: { paddingTop: space.xl, gap: space.lg },
+	icon: { width: 48, height: 48, borderRadius: 16, borderCurve: "continuous", alignItems: "center", justifyContent: "center" },
+	copy: { gap: space.xs },
+	title: { fontFamily: "Geist_600SemiBold", fontSize: type.title3.fontSize, lineHeight: type.title3.lineHeight, fontWeight: "600" },
+	message: { fontFamily: "Geist_400Regular", fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight },
+	actions: { flexDirection: "row", justifyContent: "flex-end", gap: space.sm, paddingTop: space.xxs },
+	secondaryAction: { height: 44, minWidth: 92, paddingHorizontal: space.lg, borderRadius: 12, borderCurve: "continuous", alignItems: "center", justifyContent: "center", overflow: "hidden" },
+	primaryAction: { height: 44, minWidth: 148, paddingHorizontal: space.lg, borderRadius: 12, borderCurve: "continuous", alignItems: "center", justifyContent: "center", overflow: "hidden" },
+	actionLabel: { fontFamily: "Geist_600SemiBold", fontSize: type.subheadline.fontSize, fontWeight: "600" },
 });

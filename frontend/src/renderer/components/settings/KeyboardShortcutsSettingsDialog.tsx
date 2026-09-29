@@ -281,7 +281,7 @@ export function KeyboardShortcutsSettingsDialog({
 		await resetBinding(id);
 		showToast({
 			title: t("shortcut.restored"),
-			body: `${definition(id)?.label ?? id} now uses its default binding.`,
+			body: `${definition(id)?.label ?? id} now uses its original binding.`,
 			undo: async () => {
 				await setOverrides(before);
 				showToast({ title: t("shortcut.undone") });

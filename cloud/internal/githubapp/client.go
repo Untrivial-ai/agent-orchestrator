@@ -259,7 +259,13 @@ func (c *Client) ExchangeOAuthCode(ctx context.Context, code, verifier string) (
 		"client_secret": c.clientSecret,
 		"code":          code,
 		"redirect_uri":  c.OAuthCallbackURL(),
-		"code_verifier": verifier,
+	}
+	// Only send code_verifier when we actually issued a PKCE challenge. The
+	// bundled installation+OAuth flow (CompleteInstallationOAuth) has no verifier
+	// because GitHub authorized during installation without our code_challenge;
+	// sending an empty code_verifier would make GitHub reject the exchange.
+	if verifier = strings.TrimSpace(verifier); verifier != "" {
+		payload["code_verifier"] = verifier
 	}
 	var response struct {
 		AccessToken string `json:"access_token"`
@@ -481,6 +487,11 @@ type PullRequestResponse struct {
 	Base struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
+	// Mergeable and MergeableState come from the REST pulls endpoint, which — unlike
+	// GraphQL — triggers GitHub's async mergeability computation. They resolve the
+	// GraphQL "UNKNOWN" that otherwise strands a PR at mergeability=unknown.
+	Mergeable      *bool  `json:"mergeable"`
+	MergeableState string `json:"mergeable_state"`
 }
 
 // GetPullRequestRecord fetches the full pull request fields required to
@@ -511,6 +522,17 @@ func (c *Client) GetPullRequestRecord(
 		return PullRequestResponse{}, errors.New("GitHub returned an incomplete pull request response")
 	}
 	return pullRequest, nil
+}
+
+// MergePullRequest asks GitHub to squash the exact head the user reviewed.
+// GitHub rejects a moved head or unmet branch protection atomically.
+func (c *Client) MergePullRequest(ctx context.Context, token, owner, repo string, number int, expectedHeadSHA string) error {
+	if owner == "" || repo == "" || number <= 0 || expectedHeadSHA == "" {
+		return errors.New("pull request identity and expected head are required")
+	}
+	return c.userJSON(ctx, token, http.MethodPut,
+		"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo)+"/pulls/"+strconv.Itoa(number)+"/merge",
+		map[string]string{"sha": expectedHeadSHA, "merge_method": "squash"}, nil)
 }
 
 // CreatePullRequestInput is the request to open a pull request.
@@ -723,6 +745,161 @@ func (c *Client) repositoryToken(
 	return response, nil
 }
 
+// resolveInstallationRepositoryIDs maps declared extra-repository full names
+// ("owner/repo") to their numeric IDs, but only for repositories the
+// installation can actually mint a token for. It first enumerates the
+// installation's repositories; any declared name the enumeration does not cover
+// is retried with a direct GET /repos/{owner}/{repo} and then confirmed grantable
+// by minting a single-repo token. The GET matters because the installation
+// listing is eventually consistent: a repository the App can access may not
+// appear in the paginated list for a short window after it is granted or flipped
+// to private, and without the retry a (typically private) extra would be dropped
+// from the checkout scope even though the App can read it. The mint confirmation
+// matters because GET /repos answers 200 for ANY public repository, including ones
+// outside this installation that it cannot scope a token to; adding such an ID
+// would 422 the whole broadened checkout token and fail the primary clone too. A
+// repository that is not grantable (404 on the GET, or a failed confirming mint)
+// is reported as unresolved rather than force-added, so every returned ID is still
+// one the installation can mint a token for and a broadened checkout token never
+// 422s. The result preserves input order, contains no duplicates, and returns the
+// declared names that could not be resolved.
+func (c *Client) resolveInstallationRepositoryIDs(
+	ctx context.Context,
+	installationID int64,
+	fullNames []string,
+) (ids []int64, unresolved []string, err error) {
+	if installationID <= 0 || len(fullNames) == 0 {
+		return nil, nil, nil
+	}
+	repositories, err := c.ListRepositories(ctx, installationID)
+	if err != nil {
+		return nil, nil, err
+	}
+	byName := make(map[string]int64, len(repositories))
+	for _, repository := range repositories {
+		byName[strings.ToLower(strings.Trim(repository.FullName, "/"))] = repository.ID
+	}
+	// The fallback token is minted at most once, and only if a declared name is
+	// missing from the listing. A failure to mint it leaves matched extras intact
+	// and marks the rest unresolved, so a hiccup here never regresses the repos
+	// that already resolved from the listing.
+	var (
+		fallbackToken    string
+		fallbackTokenErr error
+		fallbackMinted   bool
+	)
+	ids = make([]int64, 0, len(fullNames))
+	seen := make(map[int64]bool, len(fullNames))
+	for _, fullName := range fullNames {
+		normalized := strings.ToLower(strings.Trim(strings.TrimSpace(fullName), "/"))
+		if normalized == "" {
+			continue
+		}
+		id, ok := byName[normalized]
+		if !ok {
+			if !fallbackMinted {
+				fallbackToken, fallbackTokenErr = c.installationToken(ctx, installationID)
+				fallbackMinted = true
+			}
+			if fallbackTokenErr != nil {
+				unresolved = append(unresolved, normalized)
+				continue
+			}
+			resolvedID, resolveErr := c.installationRepositoryID(ctx, fallbackToken, normalized)
+			if resolveErr != nil {
+				unresolved = append(unresolved, normalized)
+				continue
+			}
+			// GET /repos returns 200 for any public repo, including one outside
+			// this installation, but the installation can only scope a token to a
+			// repo it was granted. Confirm the repo is grantable before adding it,
+			// so a declared public extra outside the installation is dropped here
+			// instead of 422ing the whole checkout token mint (which would fail the
+			// primary clone). This keeps every returned ID one the installation can
+			// mint, exactly as the listing-only path guaranteed.
+			if _, mintErr := c.repositoryToken(ctx, installationID, resolvedID); mintErr != nil {
+				unresolved = append(unresolved, normalized)
+				continue
+			}
+			id = resolvedID
+		}
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids, unresolved, nil
+}
+
+// installationRepositoryID resolves a single "owner/repo" to its numeric ID via a
+// direct GET /repos/{owner}/{repo} with the installation token. It backs
+// resolveInstallationRepositoryIDs' fallback for repositories missing from the
+// eventually-consistent installation listing. A repository the installation
+// cannot access returns an *HTTPError with StatusCode 404, which the caller treats
+// as unresolved; the token minted here is the installation's own, so this never
+// widens access beyond what the App is already granted.
+func (c *Client) installationRepositoryID(
+	ctx context.Context,
+	installationToken, fullName string,
+) (int64, error) {
+	owner, name, ok := strings.Cut(strings.Trim(strings.TrimSpace(fullName), "/"), "/")
+	owner = strings.TrimSpace(owner)
+	name = strings.TrimSpace(name)
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return 0, errors.New("GitHub repository full name is invalid")
+	}
+	var repository Repository
+	if err := c.userJSON(
+		ctx,
+		installationToken,
+		http.MethodGet,
+		"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name),
+		nil,
+		&repository,
+	); err != nil {
+		return 0, err
+	}
+	if repository.ID <= 0 {
+		return 0, errors.New("GitHub returned a repository without an ID")
+	}
+	return repository.ID, nil
+}
+
+// repositoryReadTokenForRepos mints a short-lived installation token scoped to a
+// set of repositories with read-only contents access. It backs a checkout that
+// clones the project's primary repository plus any declared extra repositories;
+// repositoryToken remains the single-repository path used by capability
+// redemption. The scope is exactly the given IDs — nothing is granted
+// installation-wide.
+func (c *Client) repositoryReadTokenForRepos(
+	ctx context.Context,
+	installationID int64,
+	repositoryIDs []int64,
+) (installationAccessToken, error) {
+	if installationID <= 0 || len(repositoryIDs) == 0 {
+		return installationAccessToken{}, errors.New("GitHub installation token scope is invalid")
+	}
+	for _, id := range repositoryIDs {
+		if id <= 0 {
+			return installationAccessToken{}, errors.New("GitHub installation token scope is invalid")
+		}
+	}
+	response, err := c.createInstallationToken(ctx, installationID, map[string]any{
+		"repository_ids": repositoryIDs,
+		"permissions": map[string]string{
+			"contents": "read",
+		},
+	})
+	if err != nil {
+		return installationAccessToken{}, err
+	}
+	if response.ExpiresAt.IsZero() || !response.ExpiresAt.After(c.now()) {
+		return installationAccessToken{}, errors.New("GitHub returned an expired installation token")
+	}
+	return response, nil
+}
+
 // repositoryWriteToken mints a short-lived installation token scoped to one
 // repository with write access to its contents and pull requests. Unlike
 // repositoryToken (contents:read, used for checkout), this is minted only
@@ -738,6 +915,42 @@ func (c *Client) repositoryWriteToken(
 	}
 	response, err := c.createInstallationToken(ctx, installationID, map[string]any{
 		"repository_ids": []int64{repositoryID},
+		"permissions": map[string]string{
+			"contents":      "write",
+			"pull_requests": "write",
+		},
+	})
+	if err != nil {
+		return installationAccessToken{}, err
+	}
+	if response.ExpiresAt.IsZero() || !response.ExpiresAt.After(c.now()) {
+		return installationAccessToken{}, errors.New("GitHub returned an expired installation token")
+	}
+	return response, nil
+}
+
+// repositoryWriteTokenForRepos is repositoryWriteToken's multi-repository
+// counterpart: it mints one short-lived installation token scoped to a set of
+// repositories with write access to their contents and pull requests. It backs
+// a worker's push and gh-CLI pull-request creation across the project's primary
+// repository plus any declared extra repositories that resolve within the same
+// installation — the write-side mirror of repositoryReadTokenForRepos. The
+// scope is exactly the given IDs; nothing is granted installation-wide.
+func (c *Client) repositoryWriteTokenForRepos(
+	ctx context.Context,
+	installationID int64,
+	repositoryIDs []int64,
+) (installationAccessToken, error) {
+	if installationID <= 0 || len(repositoryIDs) == 0 {
+		return installationAccessToken{}, errors.New("GitHub installation token scope is invalid")
+	}
+	for _, id := range repositoryIDs {
+		if id <= 0 {
+			return installationAccessToken{}, errors.New("GitHub installation token scope is invalid")
+		}
+	}
+	response, err := c.createInstallationToken(ctx, installationID, map[string]any{
+		"repository_ids": repositoryIDs,
 		"permissions": map[string]string{
 			"contents":      "write",
 			"pull_requests": "write",
@@ -823,8 +1036,10 @@ func (c *Client) GetPullRequest(
 
 // CheckRun is one GitHub Checks API run against a commit.
 type CheckRun struct {
+	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
+	HTMLURL    string `json:"html_url"`
 }
 
 // ListCheckRuns returns every check run GitHub has recorded against ref
@@ -950,6 +1165,11 @@ func (c *Client) appJSON(ctx context.Context, method, path string, body, destina
 
 func (c *Client) userJSON(ctx context.Context, token, method, path string, body, destination any) error {
 	return c.jsonRequest(ctx, method, c.apiBaseURL+path, "Bearer "+token, body, destination)
+}
+
+func (c *Client) graphQL(ctx context.Context, token, query string, variables map[string]any, destination any) error {
+	return c.jsonRequest(ctx, http.MethodPost, c.apiBaseURL+"/graphql", "Bearer "+token,
+		map[string]any{"query": query, "variables": variables}, destination)
 }
 
 func (c *Client) jsonRequest(

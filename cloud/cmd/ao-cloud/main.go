@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/auth"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/cifeedback"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/config"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/githubapp"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/httpapi"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/idlepause"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/notification"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/prstatus"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/reconcile"
@@ -27,6 +29,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/sandboxresolve"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/secrets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
+	"github.com/google/uuid"
 )
 
 // readSSHPubKeys loads the operator SSH keys authorized on every sandbox. They
@@ -168,6 +171,7 @@ func newSandboxReconciler(
 		StartupTimeout:         cfg.SandboxStartupTimeout,
 		HeartbeatTimeout:       cfg.WorkerHeartbeatTimeout,
 		AllowAnonymousCheckout: cfg.AllowAnonymousCheckout,
+		KeepWarm:               cfg.IdlePauseDisabled(),
 		Logger:                 logger,
 	}), nil
 }
@@ -247,6 +251,7 @@ func run(logger *slog.Logger) error {
 			return err
 		}
 	}
+	notificationProcessor := notification.NewService(store, notification.Config{Logger: logger})
 
 	var workosVerifier auth.WorkOSVerifier
 	if cfg.WorkOSIssuer != "" {
@@ -340,9 +345,11 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// The scanner only has anything to do where sandboxes exist to pause.
+	// The scanner only has anything to do where sandboxes exist to pause, and
+	// only when idle-pause is enabled. With AO_CLOUD_IDLE_PAUSE_THRESHOLD=0
+	// (keep-warm) it never runs, so no session is ever paused for idleness.
 	var idlePauseScanner *idlepause.Scanner
-	if reconciler != nil {
+	if reconciler != nil && !cfg.IdlePauseDisabled() {
 		idlePauseScanner = idlepause.New(store, idlepause.Options{
 			Interval:      cfg.IdlePauseInterval,
 			IdleThreshold: cfg.IdlePauseThreshold,
@@ -354,8 +361,10 @@ func run(logger *slog.Logger) error {
 	var prStatusScanner *prstatus.Scanner
 	if githubService != nil {
 		prStatusScanner = prstatus.New(store, githubService, prstatus.Options{
-			Interval: cfg.PRStatusPollInterval,
-			Logger:   logger,
+			Interval:     cfg.PRStatusPollInterval,
+			WorkerID:     "pr-fallback-" + uuid.NewString(),
+			SilenceGrace: cfg.PRWebhookSilenceGrace,
+			Logger:       logger,
 		})
 	}
 	// Worker tokens are only issued where sandboxes are provisioned. Leaving
@@ -421,6 +430,7 @@ func run(logger *slog.Logger) error {
 		WebhookMaxBody:            cfg.GitHub.WebhookMaxBody,
 		TerminalStreamEnabled:     cfg.TerminalStreamEnabled,
 		TerminalRelayEnabled:      cfg.TerminalRelayEnabled,
+		NotificationWake:          notificationProcessor.Wake,
 	}
 	if cfg.Environment == "development" &&
 		os.Getenv("AO_CLOUD_DEVELOPMENT_SKIP_CREDENTIAL_VALIDATION") == "true" {
@@ -428,6 +438,9 @@ func run(logger *slog.Logger) error {
 		apiOptions.CredentialValidator = developmentCredentialValidator{}
 	}
 	api := httpapi.New(apiOptions)
+	go notificationProcessor.Run(ctx)
+	feedbackDispatcher := cifeedback.New(store, cifeedback.Config{Logger: logger})
+	go feedbackDispatcher.Run(ctx)
 	if cfg.TerminalRelayEnabled {
 		logger.Info("experimental terminal relay enabled",
 			"terminal_stream_enabled", cfg.TerminalStreamEnabled,
@@ -439,6 +452,7 @@ func run(logger *slog.Logger) error {
 	if reconciler != nil {
 		notifyListener := postgres.NewListener(cfg.DatabaseURL, logger)
 		notifyListener.Handle("ao_worker_work", api.HandleWorkerWorkNotify)
+		notifyListener.Handle("ao_notification_event", api.HandleNotificationEventNotify)
 		if cfg.TerminalStreamEnabled {
 			notifyListener.Handle("ao_terminal_output", api.HandleTerminalOutputNotify)
 			notifyListener.Handle("ao_terminal_input", api.HandleTerminalInputNotify)
@@ -487,9 +501,12 @@ func run(logger *slog.Logger) error {
 
 	if prStatusScanner != nil {
 		go func() {
-			logger.Info("pull request status scanner started", "interval", cfg.PRStatusPollInterval)
+			logger.Info("pull request fallback scanner started",
+				"interval", cfg.PRStatusPollInterval,
+				"silence_grace", cfg.PRWebhookSilenceGrace,
+			)
 			if err := prStatusScanner.Run(ctx); err != nil {
-				logger.Error("pull request status scanner stopped", "error", err)
+				logger.Error("pull request fallback scanner stopped", "error", err)
 			}
 		}()
 	}

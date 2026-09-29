@@ -49,6 +49,9 @@ export const agentReadinessQueryOptions = {
 	// Freshness belongs to the daemon coordinator. React Query only retains the
 	// latest display copy and must never decide whether native work is required.
 	staleTime: Number.POSITIVE_INFINITY,
+	// Keep the last daemon snapshot for the lifetime of the renderer so returning
+	// to Harness settings can paint immediately while its silent refresh runs.
+	gcTime: Number.POSITIVE_INFINITY,
 };
 
 export function useAgentReadinessQuery(enabled = true) {

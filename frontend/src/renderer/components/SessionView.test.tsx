@@ -1,9 +1,11 @@
 import { StrictMode, useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render as rtlRender, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionView } from "./SessionView";
+import { useFilesTopbarHost } from "./files-topbar-host";
 import { SessionTopbarProvider } from "./SessionTopbarPortal";
 import { TooltipProvider } from "./ui/tooltip";
 import type { SessionInterfaceTransitionStatus } from "../hooks/useSessionInterfaceTransition";
@@ -31,6 +33,11 @@ const interfaceTransitionState = vi.hoisted(() => ({
 	settling: false,
 	startError: undefined as string | undefined,
 	status: undefined as SessionInterfaceTransitionStatus | undefined,
+}));
+// Unset by default so the suite follows the per-session status; tests that
+// exercise the daemon's Chat harness list set it explicitly.
+const settingsState = vi.hoisted(() => ({
+	chatHarnesses: undefined as string[] | undefined,
 }));
 const reviewGetMock = vi.hoisted(() => vi.fn());
 const inspectorVisibilityRenders = vi.hoisted(() => [] as boolean[]);
@@ -189,6 +196,13 @@ vi.mock("../hooks/useSessionHandoffMenu", () => ({
 		agentSwitch: undefined,
 		switchControlPresentation: undefined,
 		switchError: null,
+	}),
+}));
+vi.mock("../hooks/useSettings", () => ({
+	useSettings: () => ({
+		settings: settingsState.chatHarnesses ? { chatHarnesses: settingsState.chatHarnesses } : undefined,
+		isLoading: false,
+		error: undefined,
 	}),
 }));
 vi.mock("./TerminalSwitchAgentButton", () => ({
@@ -447,10 +461,12 @@ vi.mock("./SessionFileExplorer", () => ({
 		revealRequest?: { path: string; key: number } | null;
 		split?: boolean;
 	}) => {
+		const topbarHost = useFilesTopbarHost();
 		useEffect(() => {
 			if (!isMaximized && revealRequest) onOpenFile?.(revealRequest.path, { mode: "file" });
 		}, [isMaximized, onOpenFile, revealRequest]);
 		return <div>
+			{topbarHost ? createPortal(<input aria-label="files filter" />, topbarHost) : null}
 			<button type="button" onClick={() => onToggleMaximized?.(!isMaximized)}>
 				{isMaximized ? "files center" : "files rail"}
 			</button>
@@ -764,6 +780,7 @@ describe("SessionView", () => {
 		interfaceTransitionState.settling = false;
 		interfaceTransitionState.startError = undefined;
 		interfaceTransitionState.status = undefined;
+		settingsState.chatHarnesses = undefined;
 		chatSurfaceWorkState.controllerBusy = false;
 		chatSurfaceWorkState.hasRunningTurn = false;
 		chatSurfaceWorkState.queuedTurnCount = 0;
@@ -947,6 +964,13 @@ describe("SessionView", () => {
 		const loaderScreen = screen.getByTestId("cloud-session-loader-screen");
 		const loader = within(loaderScreen).getByRole("status", { name: "Session setup activity" });
 		expect(loaderScreen).toHaveClass("absolute", "inset-0", "grid", "place-items-center", "bg-background");
+		// The loader covers the session pane but MUST stay within the app z-scale,
+		// below the overlay layer (dialogs/dropdowns at z-overlay). A raw high z
+		// (previously z-[200]) painted over any shell modal opened while a cloud
+		// session loads (New Task, the project three-dots menu), hiding it while
+		// its Radix modal still locked body pointer-events and froze the whole UI.
+		expect(loaderScreen).toHaveClass("z-chrome");
+		expect(loaderScreen.className).not.toMatch(/z-\[\d+\]/);
 		expect(loaderScreen.children).toHaveLength(1);
 		expect(loader).toHaveTextContent("Orchestrating your environment");
 		expect(loader).not.toHaveTextContent("Connecting");
@@ -2527,7 +2551,7 @@ describe("SessionView", () => {
 	it.each([
 		["worker", "sess-1"],
 		["orchestrator", "sess-orch"],
-	] as const)("hides the interface switch button for %s sessions when Chat UI is unsupported", async (_label, sessionId) => {
+	] as const)("removes the session actions menu for %s sessions when Chat UI is unsupported", (_label, sessionId) => {
 		interfaceTransitionState.status = { supported: false, targetMode: "chat", reasonCode: "CHAT_UNSUPPORTED" };
 		const session = workerSession(sessionId);
 		session.mode = "tui";
@@ -2536,8 +2560,37 @@ describe("SessionView", () => {
 
 		render(<SessionView sessionId={sessionId} />);
 
+		// Nothing in the menu applies, so it must not render as an empty dropdown.
+		expect(screen.queryByRole("button", { name: "Session actions" })).not.toBeInTheDocument();
+	});
+
+	it.each([
+		["before its status loads", undefined, false],
+		["once terminated", { supported: false, targetMode: "chat", reasonCode: "SESSION_TERMINATED" }, true],
+	] as const)("removes the session actions menu for a harness outside the Chat list %s", (_label, status, terminated) => {
+		settingsState.chatHarnesses = ["claude-code", "codex"];
+		interfaceTransitionState.status = status;
+		const session = workerSession("sess-1");
+		session.provider = "goose";
+		session.mode = "tui";
+		if (terminated) session.isTerminated = true;
+
+		render(<SessionView sessionId="sess-1" />);
+
+		expect(screen.queryByRole("button", { name: "Session actions" })).not.toBeInTheDocument();
+	});
+
+	it("keeps the session actions menu for a harness in the Chat list", async () => {
+		settingsState.chatHarnesses = ["claude-code", "codex", "opencode"];
+		interfaceTransitionState.status = { supported: true, targetMode: "chat" };
+		const session = workerSession("sess-1");
+		session.provider = "opencode";
+		session.mode = "tui";
+
+		render(<SessionView sessionId="sess-1" />);
+
 		await userEvent.click(screen.getByRole("button", { name: "Session actions" }));
-		expect(screen.queryByRole("menuitem", { name: "Switch to chat UI" })).not.toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "Switch to chat UI" })).toBeInTheDocument();
 	});
 
 	it("shows the switch button when the adapter only reports a generic unsupported reason", async () => {
@@ -3084,7 +3137,7 @@ describe("SessionView", () => {
 		expect(inspectorPanelWidthVariable()).toBe("400px");
 	});
 
-	it("grows Browser into a co-work canvas while utility surfaces stay consistent", async () => {
+	it("grows Browser into a co-work canvas while utility surfaces (Files included) stay consistent", async () => {
 		render(<SessionView sessionId="sess-1" />);
 		expect(screen.getByTestId("panel-group")).toHaveAttribute("data-workspace-mode", "utility");
 		expect(inspectorWidthVariable()).toBe("500px");
@@ -3101,10 +3154,17 @@ describe("SessionView", () => {
 		act(() => useUiStore.getState().setInspectorView("sess-1", "files"));
 		await waitFor(() => {
 			expect(screen.getByTestId("panel-group")).toHaveAttribute("data-workspace-mode", "files");
+			// Files sizes like Summary/Review: opening it doesn't widen the panel.
 			expect(inspectorWidthVariable()).toBe("500px");
 			expect(
 				screen.getByTestId("panel-group").style.getPropertyValue("--session-inspector-max-width"),
 			).toBe("min(55%, max(300px, calc(100% - 560px)))");
+		});
+
+		act(() => useUiStore.getState().setInspectorView("sess-1", "summary"));
+		await waitFor(() => {
+			expect(screen.getByTestId("panel-group")).toHaveAttribute("data-workspace-mode", "utility");
+			expect(inspectorWidthVariable()).toBe("500px");
 		});
 	});
 
@@ -3140,6 +3200,18 @@ describe("SessionView", () => {
 
 		fireEvent.click(screen.getByRole("tab", { name: "Summary" }));
 		expect(inspectorWidthVariable()).toBe("500px");
+	});
+
+	it("shares the utility width with Files but keeps Files at least 460px wide", async () => {
+		window.localStorage.setItem("ao.inspector.widthPx", "400");
+		render(<SessionView sessionId="sess-1" />);
+		expect(inspectorWidthVariable()).toBe("400px");
+
+		act(() => useUiStore.getState().setInspectorView("sess-1", "files"));
+		await waitFor(() => expect(inspectorWidthVariable()).toBe("460px"));
+
+		act(() => useUiStore.getState().setInspectorView("sess-1", "summary"));
+		await waitFor(() => expect(inspectorWidthVariable()).toBe("400px"));
 	});
 
 	it("never changes the sidebar preference while browser surfaces open and close", async () => {
@@ -3485,6 +3557,14 @@ describe("SessionView", () => {
 		const overlay = document.querySelector(".files-popout-overlay");
 		expect(overlay).toHaveClass("files-popout-overlay--mac-windowed");
 		expect(overlay?.parentElement).toBe(document.body);
+		// Same chrome as the maximized browser: the filter sits in the titlebar
+		// band, outside the inset frame that holds the explorer.
+		const titlebar = screen.getByTestId("files-popout-topbar");
+		const frame = overlay?.querySelector(".files-popout-frame");
+		expect(titlebar).toHaveClass("files-popout-titlebar--mac-windowed");
+		expect(within(titlebar).getByRole("textbox", { name: "files filter" })).toBeInTheDocument();
+		expect(frame).toContainElement(screen.getByRole("button", { name: "files center" }));
+		expect(frame).not.toContainElement(titlebar);
 		expect(screen.getByText("terminal center")).toBeInTheDocument();
 
 		fireEvent.click(screen.getByRole("button", { name: "files center" }));
@@ -3504,6 +3584,7 @@ describe("SessionView", () => {
 		fireEvent.click(within(screen.getByTestId("panel-inspector")).getByRole("button", { name: "files rail" }));
 
 		expect(document.querySelector(".files-popout-overlay")).not.toHaveClass("files-popout-overlay--mac-windowed");
+		expect(screen.getByTestId("files-popout-topbar")).not.toHaveClass("files-popout-titlebar--mac-windowed");
 	});
 
 	it("badges Browser as unseen for a new live `ao preview` target instead of auto-opening it", () => {

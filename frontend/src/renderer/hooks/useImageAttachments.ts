@@ -5,8 +5,8 @@ import { useCallback, useState } from "react";
 // maxAttachmentBytes / maxAttachmentsBytes). Enforced here too so the user gets
 // inline feedback at paste/drop time instead of a late rejection after submit.
 export const MAX_ATTACHMENTS = 8;
-export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-export const MAX_ATTACHMENTS_BYTES = 25 * 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+export const MAX_ATTACHMENTS_BYTES = 100 * 1024 * 1024;
 
 const mb = (bytes: number) => Math.round(bytes / (1024 * 1024));
 

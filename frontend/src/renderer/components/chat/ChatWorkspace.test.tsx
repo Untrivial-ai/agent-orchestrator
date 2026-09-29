@@ -202,6 +202,17 @@ const chatSession = {
 } satisfies WorkspaceSession;
 
 describe("HumanMessage attachments", () => {
+	it("hides appended worker report context from the human message", async () => {
+		const text =
+			"Please continue\n\n<ao-worker-reports>\nReports since your previous turn:\n\n[done] ao://sessions/project/worker\nFinished\n</ao-worker-reports>";
+		render(<HumanMessage message={humanMessage(text)} sessionId="ao-1" />);
+
+		expect(screen.getByText("Please continue")).toBeInTheDocument();
+		expect(screen.queryByText(/Reports since your previous turn/)).not.toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Copy user message" }));
+		expect(writeText).toHaveBeenCalledWith("Please continue");
+	});
+
 	function renderImageAttachment(header: string, name: string) {
 		render(
 			<HumanMessage
@@ -494,6 +505,30 @@ describe("ChatWorkspace timeline", () => {
 			/>,
 		);
 		expect(screen.getByRole("tab", { name: "Orchestrator · Codex · Working" })).toBeInTheDocument();
+	});
+
+	it("shows live provider context usage beside the composer settings", () => {
+		const reported = {
+			...idleSnapshot(chatFixture),
+			usage: {
+				contextUsed: 18_055,
+				contextWindow: 258_400,
+				inputTokens: 18_050,
+				outputTokens: 5,
+				cachedTokens: 0,
+				totalTokens: 18_055,
+			},
+		};
+		const view = render(<ChatWorkspace snapshot={reported} />);
+		const composer = screen.getByLabelText("Message the agent").closest("form") as HTMLElement;
+		const gauge = within(composer).getByRole("progressbar", { name: "Context window used" });
+		expect(gauge).toHaveAttribute("aria-valuetext", "18,055 / 258,400 tokens (7%)");
+		gauge.focus();
+		fireEvent.click(gauge.querySelector("svg") as SVGSVGElement);
+		expect(gauge).toHaveFocus();
+
+		view.rerender(<ChatWorkspace snapshot={{ ...reported, usage: { ...reported.usage, contextUsed: 129_200 } }} />);
+		expect(within(composer).getByRole("progressbar", { name: "Context window used" })).toHaveAttribute("aria-valuetext", "129,200 / 258,400 tokens (50%)");
 	});
 
 	it("refreshes the owning workspace after renaming the primary chat tab", async () => {
@@ -1151,6 +1186,56 @@ describe("ChatWorkspace timeline", () => {
 		expect(openShell).toHaveBeenCalledOnce();
 	});
 
+	// An asynchronous spawn puts the session on screen before its agent exists.
+	// That is not a controller that stopped, and the composer has to stay open:
+	// what the user types while it starts is queued, not lost.
+	it("explains a session that is still starting and keeps it typeable", () => {
+		const snapshot = {
+			...chatFixtureSettled,
+			controller: { state: "connecting" as const },
+			turns: [
+				...chatFixtureSettled.turns,
+				{ id: "queued-start", state: "queued" as const, requestedAt: "2026-08-15T00:00:00Z" },
+			],
+		};
+		render(
+			<ChatWorkspace
+				snapshot={snapshot}
+				session={{ ...chatSession, provisionState: "provisioning" }}
+				onResumeAgent={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByRole("status")).toHaveTextContent("Starting Codex…");
+		expect(screen.queryByText(/^Working for /)).not.toBeInTheDocument();
+		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+		expect(screen.getByTestId("chat-conversation-panel")).not.toHaveAttribute("inert");
+	});
+
+	it("offers retry for a failed start without reporting a crash", async () => {
+		const user = userEvent.setup();
+		const resume = vi.fn();
+		render(
+			<ChatWorkspace
+				snapshot={{ ...chatFixtureSettled, controller: { state: "stopped" } }}
+				session={{
+					...chatSession,
+					provisionState: "failed",
+					provisionError: "spawn mer-1: create workspace: branch already checked out",
+				}}
+				onResumeAgent={resume}
+			/>,
+		);
+
+		const banner = screen.getByRole("alert");
+		expect(banner).toHaveTextContent("This session could not be started");
+		expect(banner).toHaveTextContent("branch already checked out");
+		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Retry start" }));
+		expect(resume).toHaveBeenCalledOnce();
+	});
+
 	it("shows connecting during the controller gap, then restores the composer when ready", () => {
 		const { rerender } = render(
 			<ChatWorkspace
@@ -1689,6 +1774,7 @@ Annotation 1 (adjustment):
 Target: div.badge
 Selector: body > div.badge
 Dimensions: 120×24
+Element text: "New"
 Requested visual changes:
 - Text color: "rgb(0, 0, 0)" → "#d7193f"
 - Background: "transparent" → "#32c873"
@@ -1706,6 +1792,7 @@ Task: Address the feedback below according to its wording. Visual adjustments ar
 		expect(screen.getByText("1 annotation on Google")).toBeInTheDocument();
 		expect(screen.getByText("2 visual changes")).toBeInTheDocument();
 		expect(screen.getByText("div.badge")).toBeInTheDocument();
+		expect(screen.getByText("New")).toBeInTheDocument();
 		expect(screen.getByText("1 reference screenshot")).toBeInTheDocument();
 		expect(screen.queryByText(/body > div\.badge/)).not.toBeInTheDocument();
 		expect(screen.queryByText(/Task: Address/)).not.toBeInTheDocument();

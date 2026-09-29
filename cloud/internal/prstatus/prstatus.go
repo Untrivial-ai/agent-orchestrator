@@ -1,38 +1,42 @@
-// Package prstatus refreshes tracked pull request status.
+// Package prstatus recovers pull request refreshes when GitHub webhooks fail
+// or remain silent beyond the configured grace period.
 package prstatus
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 )
 
-// Store lists the pull requests this scanner needs to refresh.
 type Store interface {
-	// OpenPullRequestRefs lists every open pull request across every
-	// organization.
-	OpenPullRequestRefs(ctx context.Context) ([]domain.PullRequestRef, error)
+	ClaimPullRequestRefresh(context.Context, string, time.Time, time.Time, time.Duration) (domain.PullRequestRefreshJob, error)
+	RetryPullRequestRefresh(context.Context, domain.PullRequestRefreshJob, time.Time, string) error
 }
 
-// GitHub fetches one pull request's current state and applies it over its
-// durable record.
 type GitHub interface {
-	RefreshPullRequestStatus(ctx context.Context, ref domain.PullRequestRef) (domain.PullRequest, error)
+	RefreshPullRequestStatus(context.Context, domain.PullRequestRef, domain.PullRequestRefreshContext) (domain.PullRequest, error)
 }
 
-// Options configures a Scanner. Zero values fall back to the defaults below.
 type Options struct {
-	// Interval is how often the scanner refreshes open pull requests.
-	Interval time.Duration
-	// Logger receives lifecycle events.
-	Logger *slog.Logger
+	Interval      time.Duration
+	WorkerID      string
+	SilenceGrace  time.Duration
+	LeaseDuration time.Duration
+	Now           func() time.Time
+	Logger        *slog.Logger
 }
 
-const DefaultInterval = 30 * time.Second
+const (
+	DefaultInterval      = 30 * time.Second
+	DefaultSilenceGrace  = 2 * time.Minute
+	DefaultLeaseDuration = 30 * time.Second
+	maxRetryBackoff      = 5 * time.Minute
+)
 
-// Scanner periodically refreshes every open pull request's status.
 type Scanner struct {
 	store   Store
 	github  GitHub
@@ -40,10 +44,21 @@ type Scanner struct {
 	log     *slog.Logger
 }
 
-// New creates a pull-request status scanner.
 func New(store Store, github GitHub, options Options) *Scanner {
 	if options.Interval <= 0 {
 		options.Interval = DefaultInterval
+	}
+	if options.WorkerID == "" {
+		options.WorkerID = "pull-request-fallback-scanner"
+	}
+	if options.SilenceGrace <= 0 {
+		options.SilenceGrace = DefaultSilenceGrace
+	}
+	if options.LeaseDuration <= 0 {
+		options.LeaseDuration = DefaultLeaseDuration
+	}
+	if options.Now == nil {
+		options.Now = func() time.Time { return time.Now().UTC() }
 	}
 	if options.Logger == nil {
 		options.Logger = slog.Default()
@@ -51,10 +66,12 @@ func New(store Store, github GitHub, options Options) *Scanner {
 	return &Scanner{store: store, github: github, options: options, log: options.Logger}
 }
 
-// Run scans on Options.Interval until ctx is canceled.
 func (s *Scanner) Run(ctx context.Context) error {
+	if ctx.Err() != nil {
+		return nil
+	}
 	if err := s.ScanOnce(ctx); err != nil && ctx.Err() == nil {
-		s.log.Error("pull request status scan failed", "err", err)
+		s.log.Error("pull request fallback scan failed", "error", err)
 	}
 	ticker := time.NewTicker(s.options.Interval)
 	defer ticker.Stop()
@@ -64,24 +81,78 @@ func (s *Scanner) Run(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			if err := s.ScanOnce(ctx); err != nil && ctx.Err() == nil {
-				s.log.Error("pull request status scan failed", "err", err)
+				s.log.Error("pull request fallback scan failed", "error", err)
 			}
 		}
 	}
 }
 
-// ScanOnce refreshes every currently open pull request once.
 func (s *Scanner) ScanOnce(ctx context.Context) error {
-	refs, err := s.store.OpenPullRequestRefs(ctx)
+	if ctx.Err() != nil {
+		return nil
+	}
+	now := s.options.Now().UTC()
+	job, err := s.store.ClaimPullRequestRefresh(
+		ctx,
+		s.options.WorkerID,
+		now,
+		now.Add(s.options.LeaseDuration),
+		s.options.SilenceGrace,
+	)
+	if errors.Is(err, postgres.ErrNotFound) {
+		return nil
+	}
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	}
-	for _, ref := range refs {
-		if _, err := s.github.RefreshPullRequestStatus(ctx, ref); err != nil {
-			s.log.Error("pull request status refresh failed",
-				"pull_request_id", ref.ID, "org_id", ref.OrgID, "err", err)
-			continue
+
+	refresh := domain.PullRequestRefreshContext{
+		Source:     domain.PullRequestRefreshFallback,
+		LeaseOwner: job.LeaseOwner,
+	}
+	if _, err := s.github.RefreshPullRequestStatus(ctx, job.Ref, refresh); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if errors.Is(err, postgres.ErrConflict) {
+			return err
+		}
+		retryAt := now.Add(retryBackoff(job.AttemptCount))
+		if retryErr := s.store.RetryPullRequestRefresh(ctx, job, retryAt, err.Error()); retryErr != nil {
+			return errors.Join(err, retryErr)
+		}
+		s.log.Warn("pull request fallback refresh retry scheduled",
+			"org_id", job.Ref.OrgID,
+			"pull_request_id", job.Ref.ID,
+			"repository", job.Ref.Repository,
+			"number", job.Ref.Number,
+			"reason", job.Reason,
+			"attempt_count", job.AttemptCount,
+			"error", err,
+		)
+		return nil
+	}
+	s.log.Info("pull request fallback refresh succeeded",
+		"org_id", job.Ref.OrgID,
+		"pull_request_id", job.Ref.ID,
+		"repository", job.Ref.Repository,
+		"number", job.Ref.Number,
+		"reason", job.Reason,
+		"attempt_count", job.AttemptCount,
+	)
+	return nil
+}
+
+func retryBackoff(attempt int) time.Duration {
+	backoff := time.Second
+	for current := 1; current < attempt && backoff < maxRetryBackoff; current++ {
+		backoff *= 2
+		if backoff >= maxRetryBackoff {
+			return maxRetryBackoff
 		}
 	}
-	return nil
+	return backoff
 }

@@ -16,7 +16,7 @@ export const LOGO_KEYS: ReadonlySet<string> = new Set([
 	"agy", "aider", "amp", "auggie", "autohand", "claude-code", "cline", "codex",
 	"continue", "copilot", "crush", "cursor", "devin", "droid", "goose", "grok",
 	"kilocode", "kimi", "kiro", "muse", "opencode", "pi", "qwen", "vibe",
-	"kimchi",
+	"kimchi", "fx",
 ]);
 
 /** Normalised lookup key, or "" when there is no usable harness. */
@@ -42,7 +42,7 @@ export function hasLogo(harness?: string | null): boolean {
 // completely on the dark card. Desktop has both bugs and renders every mark
 // bare on every theme.
 const NEEDS_DARK_BACKDROP = new Set(["opencode", "cursor", "cline", "continue", "grok", "copilot"]);
-const NEEDS_LIGHT_BACKDROP = new Set(["kilocode", "goose", "devin", "droid", "pi", "kimi"]);
+const NEEDS_LIGHT_BACKDROP = new Set(["kilocode", "goose", "devin", "droid", "pi", "kimi", "fx"]);
 
 /**
  * What the mark needs behind it to stay visible.
@@ -57,6 +57,29 @@ export function backdropFor(harness?: string | null): BackdropPolarity {
 	if (NEEDS_DARK_BACKDROP.has(key)) return "needs-dark";
 	if (NEEDS_LIGHT_BACKDROP.has(key)) return "needs-light";
 	return "neutral";
+}
+
+/**
+ * The chip colours. Deliberately not palette tokens: opencode's mark is pure
+ * #ffffff, so it needs the same dark chip on the light theme as on the dark one,
+ * and a token that followed the palette would put it on a light surface and make
+ * it vanish again.
+ */
+export const HARNESS_CHIP = { dark: "#24272e", light: "#ffffff" } as const;
+
+/**
+ * The colour to draw behind a mark, or `undefined` when it can stand alone.
+ *
+ * Every surface that renders a brand mark has to ask this. Anything white (or
+ * anything black) needs its own backdrop, and a path that draws the raw asset
+ * loses the mark entirely on the theme it does not contrast with — the desktop
+ * does exactly that, which is where opencode swallowed the logo whole.
+ */
+export function chipColorFor(harness?: string | null): string | undefined {
+	const polarity = backdropFor(harness);
+	if (polarity === "needs-dark") return HARNESS_CHIP.dark;
+	if (polarity === "needs-light") return HARNESS_CHIP.light;
+	return undefined;
 }
 
 /**

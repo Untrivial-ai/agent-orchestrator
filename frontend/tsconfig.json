@@ -35,5 +35,5 @@
 		"vite.renderer.config.ts",
 		"playwright.config.ts"
 	],
-	"exclude": ["node_modules", "dist", "dist-electron", ".vite", "release", "out", "src/landing", "src/docs"]
+	"exclude": ["node_modules", "dist", "dist-electron", ".vite", "release", "out", "src/docs"]
 }

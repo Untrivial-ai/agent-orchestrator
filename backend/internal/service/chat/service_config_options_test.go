@@ -61,7 +61,7 @@ func TestPermissionConfigOptionsLabelsOpenCodeTiers(t *testing.T) {
 		mode  domain.PermissionMode
 		label string
 	}{
-		{"ao-default", domain.PermissionModeDefault, "Default approvals"},
+		{"ao-default", domain.PermissionModeDefault, "Use agent permissions"},
 		{"ao-accept-edits", domain.PermissionModeAcceptEdits, "Accept edits"},
 		{"ao-auto", domain.PermissionModeAuto, "Auto-approve"},
 		{"ao-bypass", domain.PermissionModeBypassPermissions, "Bypass permissions"},

@@ -101,7 +101,6 @@ export function TopbarOpenEditorButton({
 	const workspaceError = !stateQuery.isPending && !workspaceAvailable
 		? state?.unavailableReason ?? t("editor.workspaceUnavailable")
 		: null;
-	const visibleActionError = launchError ?? workspaceError;
 	const noEditorInstalled = !stateQuery.isPending && workspaceAvailable && editors.length === 0;
 	const mainTitle = stateQuery.isPending
 		? t("editor.preparingWorkspace")
@@ -112,9 +111,12 @@ export function TopbarOpenEditorButton({
 
 	return (
 		<>
-			{visibleActionError ? (
-				<TopbarActionError className="max-w-content-max truncate" title={visibleActionError}>
-					{visibleActionError}
+			{/* Only a launch the user just attempted earns inline topbar space. An
+			    unavailable workspace is a standing state: the controls are disabled
+			    and the reason lives in the main button's tooltip. */}
+			{launchError ? (
+				<TopbarActionError className="max-w-content-max truncate" title={launchError}>
+					{launchError}
 				</TopbarActionError>
 			) : null}
 			<div
@@ -128,9 +130,10 @@ export function TopbarOpenEditorButton({
 							<TopbarButton
 								aria-label={stateQuery.isPending
 									? t("editor.preparingWorkspace")
-									: preferred
-										? t("editor.openInAria", { name: preferred.name })
-										: (noEditorInstalled ? t("editor.noEditorInstalled") : t("editor.chooseEditor"))}
+									: (workspaceError
+										?? (preferred
+											? t("editor.openInAria", { name: preferred.name })
+											: (noEditorInstalled ? t("editor.noEditorInstalled") : t("editor.chooseEditor"))))}
 								className="hover:bg-transparent"
 								disabled={mainDisabled}
 								onClick={() => launch()}

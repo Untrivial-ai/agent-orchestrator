@@ -11,6 +11,7 @@ import { playNotificationSound } from "./lib/notification-sound-player";
 import { createAppRouter } from "./router";
 import { TelemetryBoundary } from "./components/TelemetryBoundary";
 import { CloudOnboardingGate } from "./components/CloudOnboardingGate";
+import { CloudNotificationRuntime } from "./components/CloudNotificationRuntime";
 import { applyRendererTelemetryPolicy, clearRendererTelemetryQueues, initTelemetry } from "./lib/telemetry";
 import { aoBridge } from "./lib/bridge";
 import { startDaemonFailureTelemetry } from "./lib/daemon-telemetry";
@@ -99,6 +100,7 @@ async function renderApp(): Promise<void> {
 		<I18nextProvider i18n={appI18n}>
 			<TelemetryBoundary>
 				<QueryClientProvider client={queryClient}>
+					<CloudNotificationRuntime />
 					<RouterProvider router={router} />
 					<CloudOnboardingGate />
 				</QueryClientProvider>

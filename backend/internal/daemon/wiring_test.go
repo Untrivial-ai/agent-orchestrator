@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -49,6 +50,7 @@ func TestReviewerAgentAuthUsesLaunchReadinessAndPreservesStrictStates(t *testing
 		want  ports.AgentAuthStatus
 	}{
 		{name: "authorized", state: domain.AgentAuthenticationAuthorized, want: ports.AgentAuthStatusAuthorized},
+		{name: "configured", state: domain.AgentAuthenticationConfigured, want: ports.AgentAuthStatusConfigured},
 		{name: "not applicable", state: domain.AgentAuthenticationNotApplicable, want: ports.AgentAuthStatusAuthorized},
 		{name: "unauthorized", state: domain.AgentAuthenticationUnauthorized, want: ports.AgentAuthStatusUnauthorized},
 		{name: "unknown", state: domain.AgentAuthenticationUnknown, want: ports.AgentAuthStatusUnknown},
@@ -186,6 +188,8 @@ func TestWiring_AgentResolverResolvesRealAdapters(t *testing.T) {
 		{domain.HarnessPi, "pi"},
 		{domain.HarnessPrimeAgent, "prime-agent"},
 		{domain.HarnessAutohand, "autohand"},
+		{domain.HarnessFX, "fx"},
+		{domain.HarnessUnreal, "unreal-agent"},
 	} {
 		agent, ok := resolver.Agent(tc.harness)
 		if !ok {
@@ -449,8 +453,9 @@ func TestStartSession_SpawnDoesNotPanicWhenNoTrackerToken(t *testing.T) {
 // startTrackerIntake used to scan projects once at call time and skip starting
 // the observer loop entirely when none had intake enabled yet. Poll() itself
 // already re-reads project config on every tick, so a project enabling
-// intake after daemon boot was silently never picked up until a restart. The
-// loop must always start; Poll is what decides whether there's work to do.
+// intake after daemon boot was silently never picked up until a restart. With
+// the AO_TRACKER_INTAKE gate on, the loop must still always start; Poll is what
+// decides whether there's work to do.
 func TestStartTrackerIntake_RunsEvenWithoutEnabledProjects(t *testing.T) {
 	store, err := sqlitetest.Open(t.TempDir())
 	if err != nil {
@@ -473,7 +478,7 @@ func TestStartTrackerIntake_RunsEvenWithoutEnabledProjects(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	done := startTrackerIntake(ctx, store, svc, newMultiTracker(config.GitLabConfig{}, log), log)
+	done := startTrackerIntake(ctx, config.Config{TrackerIntake: true}, store, svc, newMultiTracker(config.GitLabConfig{}, log), log)
 
 	select {
 	case <-done:
@@ -486,6 +491,62 @@ func TestStartTrackerIntake_RunsEvenWithoutEnabledProjects(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("observer did not stop after context cancellation")
+	}
+}
+
+func TestStartTrackerIntake_GatedOff(t *testing.T) {
+	enabled := domain.TrackerIntakeConfig{Enabled: true, Assignee: "octocat"}
+	tests := []struct {
+		name      string
+		intake    []domain.TrackerIntakeConfig
+		wantLevel string
+		wantAttr  string
+	}{
+		{"no stranded project informs", []domain.TrackerIntakeConfig{{}}, "level=INFO", ""},
+		{"one stranded project warns", []domain.TrackerIntakeConfig{{}, enabled}, "level=WARN", "projectsWithIntakeEnabled=1"},
+		{"count reflects every stranded project", []domain.TrackerIntakeConfig{enabled, enabled, {}}, "level=WARN", "projectsWithIntakeEnabled=2"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := sqlitetest.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+
+			ctx := context.Background()
+			for i, intake := range tc.intake {
+				id := fmt.Sprintf("mer-%d", i)
+				if err := store.UpsertProject(ctx, domain.ProjectRecord{
+					ID:            id,
+					Path:          "/repo/" + id,
+					RepoOriginURL: "https://github.com/acme/repo",
+					RegisteredAt:  time.Now(),
+					Config:        domain.ProjectConfig{TrackerIntake: intake},
+				}); err != nil {
+					t.Fatalf("UpsertProject %s: %v", id, err)
+				}
+			}
+
+			var logs strings.Builder
+			logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			if done := startTrackerIntake(ctx, config.Config{}, store, nil, nil, logger); done != nil {
+				t.Fatal("startTrackerIntake returned a non-nil channel while gated off")
+			}
+
+			out := logs.String()
+			if !strings.Contains(out, tc.wantLevel) {
+				t.Errorf("want %s in gated-off log, got:\n%s", tc.wantLevel, out)
+			}
+			if tc.wantAttr == "" {
+				if strings.Contains(out, "projectsWithIntakeEnabled") {
+					t.Errorf("gated-off log reported a stranded count with none stranded:\n%s", out)
+				}
+			} else if !strings.Contains(out, tc.wantAttr) {
+				t.Errorf("want %s in gated-off log, got:\n%s", tc.wantAttr, out)
+			}
+		})
 	}
 }
 
@@ -672,7 +733,7 @@ func TestWiring_StartLifecycleThreadsMessengerIntoLCM(t *testing.T) {
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	messenger := &captureMessenger{}
-	stack := startLifecycle(ctx, store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
+	stack := startLifecycle(ctx, t.TempDir(), store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
 	t.Cleanup(stack.Stop)
 	t.Cleanup(cancel)
 
@@ -744,7 +805,7 @@ func TestWiring_MergeConflictNudgeReArmsAfterConflictClears(t *testing.T) {
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	messenger := &captureMessenger{}
-	stack := startLifecycle(ctx, store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
+	stack := startLifecycle(ctx, t.TempDir(), store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
 	t.Cleanup(stack.Stop)
 	t.Cleanup(cancel)
 
@@ -921,6 +982,7 @@ func (f *fakeSessionLifecycle) RestoreAll(_ context.Context) error {
 }
 
 func (*fakeSessionLifecycle) WaitAgentSwitchWorkers(context.Context) error { return nil }
+func (*fakeSessionLifecycle) WaitBackgroundWorkers(context.Context) error  { return nil }
 
 func (f *fakeSessionLifecycle) SetShellTerminalCloser(sessionmanager.ShellTerminalCloser) {}
 func (f *fakeSessionLifecycle) SetTerminalInputGate(sessionmanager.TerminalInputGate)     {}

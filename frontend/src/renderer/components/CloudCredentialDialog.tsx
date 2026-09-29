@@ -59,6 +59,18 @@ const AGENTS = [
 		label: "Cursor",
 		creds: [{ value: "api_key", label: "API key" }],
 	},
+	{
+		agent: "opencode",
+		label: "OpenCode",
+		// opencode is multi-provider; the credential type doubles as a provider
+		// selector so the worker injects the key as the matching env var.
+		creds: [
+			{ value: "opencode_api_key", label: "OpenCode API key" },
+			{ value: "anthropic_api_key", label: "Anthropic API key" },
+			{ value: "openai_api_key", label: "OpenAI API key" },
+			{ value: "openrouter_api_key", label: "OpenRouter API key" },
+		],
+	},
 ] as const;
 
 type Phase = "idle" | "submitting" | "success";
@@ -74,6 +86,7 @@ export function CloudCredentialDialog() {
 	const queryClient = useQueryClient();
 	const open = useCredentialDialogStore((s) => s.open);
 	const setOpen = useCredentialDialogStore((s) => s.setOpen);
+	const targetAgent = useCredentialDialogStore((s) => s.targetAgent);
 
 	const [agent, setAgent] = useState<CloudCpAgentProvider>(AGENTS[0].agent);
 	const [credentialType, setCredentialType] = useState<string>(AGENTS[0].creds[0].value);
@@ -91,16 +104,23 @@ export function CloudCredentialDialog() {
 	const selectedCredential = creds.find((entry) => entry.value === credentialType);
 	const needsSecret = credentialType !== BROWSER_LOGIN;
 
+	// When opened from a specific harness row (targetAgent) the agent is fixed to
+	// that harness -- the dialog is "for OpenCode", not a picker over all harnesses.
+	// The credential-type/provider dropdown remains the interactive choice.
+	const agentLocked = Boolean(targetAgent && AGENTS.some((a) => a.agent === targetAgent));
+
 	// Reset the whole form each time the dialog opens so a reopen never shows a
-	// stale secret or a previous error/success.
+	// stale secret or a previous error/success. Pre-select the harness the user
+	// opened it from, when scoped.
 	useEffect(() => {
 		if (!open) return;
-		setAgent(AGENTS[0].agent);
-		setCredentialType(AGENTS[0].creds[0].value);
+		const initial = AGENTS.find((a) => a.agent === targetAgent) ?? AGENTS[0];
+		setAgent(initial.agent);
+		setCredentialType(initial.creds[0].value);
 		setSecret("");
 		setPhase("idle");
 		setError(null);
-	}, [open]);
+	}, [open, targetAgent]);
 
 	const onAgentChange = (next: string) => {
 		const agentValue = (AGENTS.find((a) => a.agent === next) ?? AGENTS[0]).agent;
@@ -181,23 +201,32 @@ export function CloudCredentialDialog() {
 							<Label htmlFor="cloud-cred-agent" className={onboardingFormLabelClass}>
 								{t("cloudCredential.agentLabel")}
 							</Label>
-							<SettingsOptionMenu
-								aria-label={t("cloudCredential.agentLabel")}
-								value={agent}
-								options={agentOptions}
-								disabled={busy}
-								menuAlign="start"
-								onChange={onAgentChange}
-								triggerClassName="composer-chip composer-toolbar-option h-control-form w-full justify-between"
-								renderTrigger={() => (
-									<span className="flex min-w-0 items-center gap-2">
-										<AgentAvatar provider={agent} className="size-icon-base" decorative />
-										<span className="min-w-0 truncate text-control text-foreground" title={selectedAgent?.label}>
-											{selectedAgent?.label}
-										</span>
+							{agentLocked ? (
+								<div className="composer-chip composer-toolbar-option flex h-control-form w-full items-center gap-2 px-3">
+									<AgentAvatar provider={agent} className="size-icon-base" decorative />
+									<span className="min-w-0 truncate text-control text-foreground" title={selectedAgent?.label}>
+										{selectedAgent?.label}
 									</span>
-								)}
-							/>
+								</div>
+							) : (
+								<SettingsOptionMenu
+									aria-label={t("cloudCredential.agentLabel")}
+									value={agent}
+									options={agentOptions}
+									disabled={busy}
+									menuAlign="start"
+									onChange={onAgentChange}
+									triggerClassName="composer-chip composer-toolbar-option h-control-form w-full justify-between"
+									renderTrigger={() => (
+										<span className="flex min-w-0 items-center gap-2">
+											<AgentAvatar provider={agent} className="size-icon-base" decorative />
+											<span className="min-w-0 truncate text-control text-foreground" title={selectedAgent?.label}>
+												{selectedAgent?.label}
+											</span>
+										</span>
+									)}
+								/>
+							)}
 						</div>
 
 						<div className="space-y-2">

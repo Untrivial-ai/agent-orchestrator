@@ -58,19 +58,20 @@ export function useFileAnnotation(sessionId: string, options: UseFileAnnotationO
 		setStatus("idle");
 		setError("");
 	};
-	const submit = async () => {
-		if (!target || !draft.trim() || status === "sending") return;
+	const submit = async (text = draft) => {
+		if (!target || !text.trim() || status === "sending") return;
 		const generation = generationRef.current;
+		setDraft(text);
 		setStatus("sending");
 		setError("");
 		try {
-			const message = formatFileAnnotationMessage(target, draft);
+			const message = formatFileAnnotationMessage(target, text);
 			if (sendMessage) {
 				await sendMessage(message);
 			} else {
 				const { error: responseError } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
 					params: { path: { sessionId } },
-					body: { message },
+					body: { message, userAuthored: true },
 				});
 				if (responseError) throw new Error(apiErrorMessage(responseError, t("files.feedbackError")));
 			}

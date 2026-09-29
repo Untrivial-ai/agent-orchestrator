@@ -64,6 +64,41 @@ func TestDecodeSpawnAttachments(t *testing.T) {
 		}
 	})
 
+	t.Run("accepts video above previous file limit", func(t *testing.T) {
+		const size = 11 << 20
+		out, err := decodeSpawnAttachments([]AttachmentInput{{MimeType: "video/quicktime", Data: b64(make([]byte, size))}})
+		if err != nil {
+			t.Fatalf("11 MiB video rejected: %+v", err)
+		}
+		if len(out) != 1 {
+			t.Fatalf("decoded video count = %d, want 1", len(out))
+		}
+		if out[0].Ext != ".mov" || len(out[0].Data) != size {
+			t.Fatalf("decoded video extension = %q, bytes = %d", out[0].Ext, len(out[0].Data))
+		}
+	})
+
+	t.Run("accepts batch above previous total limit", func(t *testing.T) {
+		const size = 9 << 20
+		data := b64(make([]byte, size))
+		out, err := decodeSpawnAttachments([]AttachmentInput{
+			{MimeType: "application/octet-stream", Data: data},
+			{MimeType: "application/octet-stream", Data: data},
+			{MimeType: "application/octet-stream", Data: data},
+		})
+		if err != nil {
+			t.Fatalf("27 MiB batch rejected: %+v", err)
+		}
+		if len(out) != 3 {
+			t.Fatalf("decoded batch count = %d, want 3", len(out))
+		}
+		for i, attachment := range out {
+			if len(attachment.Data) != size {
+				t.Fatalf("decoded batch attachment %d = %d bytes, want %d", i, len(attachment.Data), size)
+			}
+		}
+	})
+
 	// SVG is XML that can carry active content; it is explicitly blocked.
 	t.Run("rejects svg", func(t *testing.T) {
 		_, err := decodeSpawnAttachments([]AttachmentInput{{MimeType: "image/svg+xml", Data: b64([]byte("<svg/>"))}})

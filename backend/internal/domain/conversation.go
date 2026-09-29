@@ -631,6 +631,10 @@ type ConversationMessage struct {
 	Role     MessageRole   `json:"role"`
 	Origin   MessageOrigin `json:"origin"`
 	Text     string        `json:"text"`
+	// AuthoredByUser is an intake-only fact used to project user activity when
+	// AO delivered the message as automation. It is not part of the persisted
+	// delivery origin or the conversation API representation.
+	AuthoredByUser bool `json:"-"`
 	// Streaming is true while more deltas are expected.
 	Streaming bool `json:"streaming"`
 	// ProviderItemID deduplicates provider observations of the same message.
@@ -701,6 +705,9 @@ var ErrNoConversation = errors.New("session has no conversation")
 // ErrNoQueuedTurn reports that nothing is waiting to be sent. Draining an empty
 // queue is the normal case, not an error.
 var ErrNoQueuedTurn = errors.New("no queued turn")
+
+// ErrSessionNotProvisioning rejects a pre-controller turn after startup ended.
+var ErrSessionNotProvisioning = errors.New("session is not provisioning")
 
 // ErrNoConversationTurn reports a turn id that is not in the conversation it was
 // named against. It lives here rather than in the storage layer so a controller and

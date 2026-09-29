@@ -41,10 +41,19 @@ func (m *Manager) StageAttachments(
 	if !ok {
 		return nil, ports.ErrSessionNotFound
 	}
-	if rec.Metadata.WorkspacePath == "" {
-		// Nothing to write into. Refusing beats writing somewhere the agent cannot
-		// reach and then telling the user their image was attached.
+	// A session that is still starting has no worktree yet, but it is on screen
+	// and typeable, so a file attached to the next message has to go somewhere.
+	// The canonical copy is already the durable half of every attachment;
+	// completeAsyncChatSpawn materializes it as soon as the worktree exists.
+	provisioning := rec.ProvisionState.IsProvisioning()
+	if rec.Metadata.WorkspacePath == "" && !provisioning {
 		return nil, fmt.Errorf("session %s has no workspace", id)
+	}
+	if rec.Metadata.WorkspacePath != "" {
+		// Establish the git guard before any attachment becomes visible to git.
+		if err := m.workspace.AddExclude(ctx, workspaceInfo(rec), "/"+attachmentsDir+"/"); err != nil {
+			return nil, fmt.Errorf("exclude attachments: %w", err)
+		}
 	}
 
 	refs := make([]string, 0, len(attachments))
@@ -60,7 +69,11 @@ func (m *Manager) StageAttachments(
 				return nil, fmt.Errorf("name attachment %d: %w", i+1, err)
 			}
 			name = "attachment-" + suffix + ext
-			err = m.attachments.Put(ctx, id, rec.Metadata.WorkspacePath, name, a.Data)
+			if rec.Metadata.WorkspacePath == "" {
+				err = m.attachments.PutCanonical(ctx, id, name, a.Data)
+			} else {
+				err = m.attachments.Put(ctx, id, rec.Metadata.WorkspacePath, name, a.Data)
+			}
 			if err == nil {
 				break
 			}
@@ -75,11 +88,23 @@ func (m *Manager) StageAttachments(
 		refs = append(refs, attachmentsDir+"/"+name)
 	}
 
-	// Keep the directory out of git status. Best-effort for the same reason spawn
-	// treats it that way: the files are already written and usable, and a session
-	// the user cannot attach to is worse than a worktree that reads as dirty.
-	if err := m.workspace.AddExclude(ctx, workspaceInfo(rec), "/"+attachmentsDir+"/"); err != nil {
-		m.logger.Warn("stage attachments: exclude attachments dir", "sessionID", id, "error", err)
+	if rec.Metadata.WorkspacePath == "" {
+		// Publication may have raced the canonical writes. If it did, project
+		// these files now; otherwise the spawn's post-publication replay will.
+		latest, ok, err := m.store.GetSession(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("get %s after staging: %w", id, err)
+		}
+		if !ok || latest.Metadata.WorkspacePath == "" {
+			return refs, nil
+		}
+		rec = latest
+		if err := m.workspace.AddExclude(ctx, workspaceInfo(rec), "/"+attachmentsDir+"/"); err != nil {
+			return nil, fmt.Errorf("exclude attachments: %w", err)
+		}
+		if _, err := m.attachments.MaterializeWorkspace(ctx, id, rec.Metadata.WorkspacePath, nil); err != nil {
+			return nil, fmt.Errorf("materialize staged attachments: %w", err)
+		}
 	}
 	return refs, nil
 }

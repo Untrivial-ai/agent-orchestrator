@@ -86,7 +86,7 @@ func buildSystemPromptText(cfg systemPromptConfig) string {
 		if orchestratorID != "" {
 			sections = append(sections, workerOrchestratorPrompt(orchestratorID))
 		}
-		sections = append(sections, workerMultiPRPrompt(), workerContainerLabelPrompt())
+		sections = append(sections, workerMultiPRPrompt(), workerContainerLabelPrompt(), workerGitIsolationPrompt())
 		if rules := strings.TrimSpace(cfg.ProjectRules); rules != "" {
 			sections = append(sections, "## Project Rules\n"+rules)
 		}
@@ -109,7 +109,7 @@ func publishingScopePrompt() string {
 
 - Keep the task-source workflows above for provider-backed issues, explicitly enabled issue intake, and user-requested PR/MR continuation. Do not request fresh approval for each push or PR/MR update within an already authorized workflow.
 - For freeform work, publish only when the user requests it or explicitly configured project rules require it. Available credentials, a configured remote, auto/bypass tool permissions, or an associated PR/MR alone do not authorize publishing.
-- Explicit user restrictions such as local-only, review-only, or do-not-publish take precedence over workflow defaults, including issue-task prompts and CI/review follow-up instructions. Complete the permitted local work and report the result without publishing.
+- Explicit user restrictions such as local-only, review-only, or do-not-publish take precedence over workflow defaults, including issue-task prompts and CI/review follow-up instructions. Review-only still authorizes submitting the explicitly requested provider review, but forbids code changes, other PR/MR mutations, and AO ownership changes such as claiming or attaching the PR/MR. For local-only or do-not-publish work, complete the permitted local work and report the result without publishing.
 - Preserve the user's publishing scope and restrictions when spawning or redirecting workers. Do not add publishing to a freeform implementation task unless the user or explicitly configured project rules authorize it.`
 }
 
@@ -119,6 +119,12 @@ func standaloneWorkerSystemPrompt() string {
 You are a standalone Agent Orchestrator worker. This session is not attached to a project, repository, branch, issue tracker, orchestrator, PR/MR workflow, CI integration, or review automation.
 
 Work only from the user's requests and the files in this AO-managed workspace. Do not invent project context or create repository, branch, issue, PR/MR, CI, or review requirements. You may create and edit ordinary files in the workspace, run relevant commands, and use AO session capabilities such as the terminal, browser, attachments, and chat. Keep work focused, verify it when appropriate, and report blockers clearly.`
+}
+
+func workerGitIsolationPrompt() string {
+	return `## Worktree Git Isolation
+
+AO sessions use linked Git worktrees. Linked worktrees share the repository's .git/config and remote definitions with the human checkout. Do not run 'git remote add', 'git remote set-url', 'git remote remove', or write repository config with 'git config --local' (or the default write mode). For session-specific settings, use 'git config --worktree ...'. For a one-off fork push or fetch, use an explicit URL instead of adding a named remote. Existing remotes may be inspected and used read-only.`
 }
 
 // systemPromptGuard is appended to every agent system prompt. The role,
@@ -247,7 +253,8 @@ func workerSystemPrompt(project promptProject, hasOrchestrator bool) string {
 - Treat the explicit task description, provider issue context, or claimed PR/MR context as the source of truth for this session.
 - If the task is backed by a provider issue from GitHub, GitLab, or another tracker/SCM, implement the task, run verification, and create or update a PR/MR when the project has a configured remote/provider and the change is ready. Link the provider issue in the PR/MR body.
 - If the task is a freeform task, new-task button task, or orchestrator-requested feature without a provider issue, implement and verify the task; do not invent issue, PR, or MR requirements. Create or update a PR/MR only when the user asks for that action or explicitly configured project rules require it. An associated PR/MR alone does not authorize publishing; a user request to continue that PR/MR does authorize its normal follow-up workflow.
-- If the task is to claim or continue an existing PR/MR, attach it to this worker first with ` + "`ao session claim-pr <pr-ref>`" + `; AO resolves this session from ` + "`AO_SESSION_ID`" + `. Then inspect its description, diff, CI, and review comments, keep that PR/MR context, and continue only the work required by that PR/MR. Do not create a replacement PR/MR unless explicitly asked.
+- If the task is to claim or continue implementation, CI recovery, review-comment follow-up, or other explicitly authorized work that continues or changes an existing PR/MR, attach it to this worker first with ` + "`ao session claim-pr <pr-ref>`" + `; AO resolves this session from ` + "`AO_SESSION_ID`" + `. Then inspect its description, diff, CI, and review comments, keep that PR/MR context, and continue only the work required by that PR/MR. Do not create a replacement PR/MR unless explicitly asked.
+- A review-only task is not PR/MR continuation. Do not claim or attach the PR/MR for review-only work because claiming mutates AO ownership metadata. Inspect it through the provider and submit only the requested review.
 - If no remote or SCM provider is available, work locally, verify the result, and report changed files, tests, and risks instead of inventing issue, PR, or MR requirements.`
 
 	repoRules := `## Git and PR/MR Rules
@@ -281,10 +288,20 @@ Your job is to complete the assigned task in this workspace. Inspect the relevan
 
 - Focus on the assigned task only.
 - Do not take unrelated work or perform broad refactors.
-- If you are continuing an existing PR, claim or attach it through AO before changing it when the workflow supports that. From this worker, use `+"`ao session claim-pr <pr-ref>`"+`; `+"`AO_SESSION_ID`"+` selects this session automatically.
+- If you are continuing implementation, CI recovery, review-comment follow-up, or other explicitly authorized work that continues or changes an existing PR, claim or attach it through AO before changing it when the workflow supports that. From this worker, use `+"`ao session claim-pr <pr-ref>`"+`; `+"`AO_SESSION_ID`"+` selects this session automatically. Never claim or attach a PR for a review-only task.
 - If CI fails, fix the failures and push again.
 - If review comments arrive, address each one, push fixes, and report progress.
 - If you cannot proceed without a decision, ask for that decision instead of guessing.
+
+## Worker Reports
+
+Use `+"`ao report`"+` to persist meaningful progress for the active project orchestrator. `+"`AO_SESSION_ID`"+` selects this worker automatically.
+
+- After a meaningful milestone, run `+"`ao report --checkpoint --note <text>`"+`.
+- When a decision or missing input blocks progress, run `+"`ao report --needs-input --note <text>`"+`.
+- When work cannot proceed for another reason, run `+"`ao report --stuck --note <text>`"+`.
+- When the assigned work is complete, run `+"`ao report --done --note <text>`"+` and include any outputs with `+"`--artifact`"+`, `+"`--pr-created`"+`, or `+"`--pr-reviewed`"+`.
+- Do not narrate routine commands. Report meaningful transitions, decisions, blockers, outputs, and completion. Outputs do not imply completion, and `+"`--done`"+` does not terminate the session.
 
 %s
 

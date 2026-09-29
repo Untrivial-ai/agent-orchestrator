@@ -1,8 +1,9 @@
 import { useEffect } from "react";
-import { useRouter } from "expo-router";
+import { useNavigation, useRouter } from "expo-router";
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { setOnboardingSkipped } from "../lib/onboardingStore";
+import { completeOnboarding } from "../lib/onboardingNavigation";
 import { useApp } from "../lib/store";
 import { Button, NumberedStep } from "../lib/ui";
 import MASCOT from "../assets/mascot.png";
@@ -11,10 +12,12 @@ import type { Theme } from "../lib/theme";
 import { haptics } from "../lib/haptics";
 import { MOBILE_EVENTS } from "../lib/telemetry/events";
 import { mobileTelemetry } from "../lib/telemetry/runtime";
+import { space, type } from "../lib/tokens";
 
 export default function OnboardingScreen() {
 	const styles = useThemedStyles(makeStyles);
 	const router = useRouter();
+	const navigation = useNavigation();
 	const insets = useSafeAreaInsets();
 	const { reloadConfig } = useApp();
 
@@ -26,7 +29,7 @@ export default function OnboardingScreen() {
 		mobileTelemetry()?.capture(MOBILE_EVENTS.onboardingSkipped);
 		await setOnboardingSkipped();
 		await reloadConfig();
-		router.replace("/");
+		completeOnboarding(navigation);
 	}
 
 	return (
@@ -92,41 +95,41 @@ const makeStyles = (t: Theme) =>
 		flexDirection: "row",
 		alignItems: "center",
 		justifyContent: "space-between",
-		paddingHorizontal: 20,
-		paddingTop: 6,
-		paddingBottom: 4,
+		paddingHorizontal: space.xl,
+		paddingTop: space.xs,
+		paddingBottom: space.xxs,
 	},
-	brand: { flexDirection: "row", alignItems: "center", gap: 8 },
+	brand: { flexDirection: "row", alignItems: "center", gap: space.sm },
 	mascot: { width: 26, height: 23 },
-	brandName: { color: t.textPrimary, fontSize: 17, fontWeight: "800", letterSpacing: -0.2 },
-	skip: { color: t.textTertiary, fontSize: 15, fontWeight: "600" },
+	brandName: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.body.fontSize, fontWeight: "600", letterSpacing: -0.2 },
+	skip: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.subheadline.fontSize, fontWeight: "600" },
 
 	scroll: { flex: 1 },
-	body: { flexGrow: 1, paddingHorizontal: 24 },
-	hero: { flexGrow: 1, alignItems: "center", justifyContent: "center", paddingVertical: 32 },
-	title: {
+	body: { flexGrow: 1, paddingHorizontal: space.xxl },
+	hero: { flexGrow: 1, alignItems: "center", justifyContent: "center", paddingVertical: space.xxxl },
+	title: { fontFamily: "Geist_600SemiBold",
 		color: t.textPrimary,
-		fontSize: 32,
-		fontWeight: "800",
+		fontSize: type.largeTitle.fontSize,
+		fontWeight: "600",
 		letterSpacing: -0.8,
 		textAlign: "center",
 	},
-	lede: {
+	lede: { fontFamily: "Geist_400Regular",
 		color: t.textSecondary,
-		fontSize: 15,
-		lineHeight: 23,
+		fontSize: type.subheadline.fontSize,
+		lineHeight: type.subheadline.lineHeight,
 		textAlign: "center",
-		marginTop: 14,
+		marginTop: space.md,
 		maxWidth: 330,
 	},
-	cta: { marginTop: 32, alignSelf: "center", width: "100%", maxWidth: 300 },
+	cta: { marginTop: space.xxxl, alignSelf: "center", width: "100%", maxWidth: 300 },
 	how: {},
-	howLabel: {
+	howLabel: { fontFamily: "Geist_600SemiBold",
 		color: t.textTertiary,
-		fontSize: 11,
-		fontWeight: "700",
+		fontSize: type.caption2.fontSize,
+		fontWeight: "600",
 		letterSpacing: 1.3,
-		marginBottom: 4,
+		marginBottom: space.xxs,
 	},
 	divider: { height: 1, backgroundColor: t.borderSubtle, marginLeft: 43 },
 });

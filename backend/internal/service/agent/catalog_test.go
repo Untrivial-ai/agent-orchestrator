@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -45,6 +46,14 @@ type concurrentResolverAgent struct {
 type countingResolverAgent struct {
 	fakeAgent
 	calls atomic.Int32
+}
+
+type blockingSubsequentResolverAgent struct {
+	fakeAgent
+	calls   atomic.Int32
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
 }
 
 type startupPresenceAgent struct {
@@ -133,6 +142,13 @@ type fakeModelDiscoverer struct {
 	overlap                atomic.Bool
 }
 
+type blockingSubsequentModelDiscoverer struct {
+	*fakeModelDiscoverer
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
 func (f *fakeModelDiscoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
 	f.discoverCalls.Add(1)
 	active := f.active.Add(1)
@@ -173,6 +189,18 @@ func (f *fakeModelDiscoverer) Discover(ctx context.Context, request ports.AgentM
 		f.successfulCalls.Add(1)
 	}
 	return catalog, discoverErr
+}
+
+func (f *blockingSubsequentModelDiscoverer) Discover(ctx context.Context, request ports.AgentModelDiscoveryRequest) (ports.AgentModelCatalog, error) {
+	if f.discoverCalls.Load() > 0 {
+		f.once.Do(func() { close(f.started) })
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return ports.AgentModelCatalog{}, ctx.Err()
+		}
+	}
+	return f.fakeModelDiscoverer.Discover(ctx, request)
 }
 
 func TestCatalogFreshnessUsesMachineLocalDateAndTimezone(t *testing.T) {
@@ -677,6 +705,19 @@ func (f *countingResolverAgent) ResolveBinary(ctx context.Context) (string, erro
 	return f.fakeAgent.ResolveBinary(ctx)
 }
 
+func (f *blockingSubsequentResolverAgent) ResolveBinary(ctx context.Context) (string, error) {
+	if f.calls.Add(1) == 1 {
+		return f.fakeAgent.ResolveBinary(ctx)
+	}
+	f.once.Do(func() { close(f.started) })
+	select {
+	case <-f.release:
+		return f.fakeAgent.ResolveBinary(ctx)
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
 func (f *mutableInstallAgent) ResolveBinary(context.Context) (string, error) {
 	if !f.installed.Load() {
 		return "", ports.ErrAgentBinaryNotFound
@@ -1010,6 +1051,22 @@ func TestDefaultCatalogDisplaysPrimeAgent(t *testing.T) {
 	t.Fatal("default catalog does not contain prime-agent")
 }
 
+func TestDefaultCatalogDisplaysFX(t *testing.T) {
+	got, err := New().List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, info := range got.Supported {
+		if info.ID == "fx" {
+			if info.Label != "fx" {
+				t.Fatalf("fx label = %q, want fx", info.Label)
+			}
+			return
+		}
+	}
+	t.Fatal("default catalog does not contain fx")
+}
+
 func TestRefreshReportsInstalledAgentsAndIgnoresDetectorErrors(t *testing.T) {
 	svc := NewWithAgents([]agentregistry.HarnessAgent{
 		harnessAgent("codex", "Codex", nil),
@@ -1032,6 +1089,7 @@ func TestRefreshReportsInstalledAgentsAndIgnoresDetectorErrors(t *testing.T) {
 func TestRefreshReportsAuthorizedInstalledAgents(t *testing.T) {
 	svc := NewWithAgents([]agentregistry.HarnessAgent{
 		harnessAuthAgent("codex", "Codex", ports.AgentAuthStatusAuthorized, nil),
+		harnessAuthAgent("fx", "fx", ports.AgentAuthStatusConfigured, nil),
 		harnessAuthAgent("claude-code", "Claude Code", ports.AgentAuthStatusUnauthorized, nil),
 		harnessAgent("opencode", "OpenCode", nil),
 		harnessAuthAgent("broken-auth", "Broken Auth", ports.AgentAuthStatusAuthorized, errors.New("probe failed")),
@@ -1041,8 +1099,8 @@ func TestRefreshReportsAuthorizedInstalledAgents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	if len(got.Supported) != 4 || len(got.Installed) != 4 {
-		t.Fatalf("inventory = %#v, want supported=4 installed=4", got)
+	if len(got.Supported) != 5 || len(got.Installed) != 5 {
+		t.Fatalf("inventory = %#v, want supported=5 installed=5", got)
 	}
 	if len(got.Authorized) != 1 || got.Authorized[0].ID != "codex" {
 		t.Fatalf("authorized = %#v, want only codex", got.Authorized)
@@ -1054,6 +1112,9 @@ func TestRefreshReportsAuthorizedInstalledAgents(t *testing.T) {
 	}
 	if byID["codex"].AuthStatus != ports.AgentAuthStatusAuthorized {
 		t.Fatalf("codex authStatus = %q", byID["codex"].AuthStatus)
+	}
+	if byID["fx"].AuthStatus != ports.AgentAuthStatusConfigured {
+		t.Fatalf("fx authStatus = %q, want configured", byID["fx"].AuthStatus)
 	}
 	if byID["claude-code"].AuthStatus != ports.AgentAuthStatusUnauthorized {
 		t.Fatalf("claude-code authStatus = %q", byID["claude-code"].AuthStatus)
@@ -1334,7 +1395,10 @@ func TestModelsCachesDiscoveredCatalogGlobally(t *testing.T) {
 
 func TestModelsReusesCacheWhileBinaryVersionMatches(t *testing.T) {
 	cache := &fakeModelCache{}
-	agent := &countingResolverAgent{}
+	agent := &blockingSubsequentResolverAgent{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
 	discoverer := &fakeModelDiscoverer{version: "v1", catalog: ports.AgentModelCatalog{
 		SelectionMode: ports.ModelSelectionCatalog,
 		Models:        []ports.AgentModelInfo{{ID: "model-one"}},
@@ -1346,6 +1410,12 @@ func TestModelsReusesCacheWhileBinaryVersionMatches(t *testing.T) {
 		Manifest: adapters.Manifest{ID: "codex", Name: "Codex"},
 		Agent:    agent,
 	}}, cache, nil, discoverer)
+	ctx, cancel := context.WithCancel(context.Background())
+	svc.ctx = ctx
+	t.Cleanup(func() {
+		cancel()
+		close(agent.release)
+	})
 
 	_, err := svc.Models(context.Background(), "codex", "proj-1", false)
 	if err != nil {
@@ -1364,13 +1434,14 @@ func TestModelsReusesCacheWhileBinaryVersionMatches(t *testing.T) {
 	record.CatalogJSON = string(data)
 	cache.records["codex\x00"] = record
 
-	resolveCalls := agent.calls.Load()
 	cached, err := svc.Models(context.Background(), "codex", "proj-1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if agent.calls.Load() != resolveCalls {
-		t.Fatalf("cache hit synchronously resolved the binary: calls=%d want=%d", agent.calls.Load(), resolveCalls)
+	select {
+	case <-agent.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for background cache revalidation")
 	}
 	if discoverer.discoverCalls.Load() != 1 {
 		t.Fatalf("discovery calls=%d, want cached result", discoverer.discoverCalls.Load())
@@ -1466,7 +1537,7 @@ func TestModelsLeaderCancellationDoesNotCancelCoalescedLoad(t *testing.T) {
 	}
 }
 
-func TestModelsDoesNotResolveProjectWorkingDirectory(t *testing.T) {
+func TestModelsResolvesProjectWorkingDirectory(t *testing.T) {
 	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
 		"proj-1": {ID: "proj-1", Path: "/work/project"},
 	}}
@@ -1477,12 +1548,12 @@ func TestModelsDoesNotResolveProjectWorkingDirectory(t *testing.T) {
 	if _, err := svc.Models(context.Background(), "codex", "proj-1", false); err != nil {
 		t.Fatal(err)
 	}
-	if projects.gotID != "" {
-		t.Fatalf("project lookup id = %q, want no project lookup", projects.gotID)
+	if projects.gotID != "proj-1" {
+		t.Fatalf("project lookup id = %q, want proj-1", projects.gotID)
 	}
 }
 
-func TestModelsDoesNotPassProjectEnvironmentToDiscovery(t *testing.T) {
+func TestModelsPassesProjectEnvironmentToDiscovery(t *testing.T) {
 	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
 		"proj-1": {
 			ID:   "proj-1",
@@ -1505,8 +1576,32 @@ func TestModelsDoesNotPassProjectEnvironmentToDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Models) != 1 || discoverer.lastRequest.WorkingDir != "" || len(discoverer.lastRequest.Env) != 0 {
-		t.Fatalf("catalog=%#v request=%#v, want global discovery", got, discoverer.lastRequest)
+	if len(got.Models) != 1 || discoverer.lastRequest.WorkingDir != "/work/project" || discoverer.lastRequest.Env["OPENCODE_CONFIG"] != "/work/project/opencode.json" {
+		t.Fatalf("catalog=%#v request=%#v, want project discovery", got, discoverer.lastRequest)
+	}
+}
+
+func TestModelsCachesProjectScopesIndependently(t *testing.T) {
+	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
+		"proj-a": {ID: "proj-a", Path: "/work/a", Config: domain.ProjectConfig{Env: map[string]string{"ANTHROPIC_MODEL": "model-a"}}},
+		"proj-b": {ID: "proj-b", Path: "/work/b", Config: domain.ProjectConfig{Env: map[string]string{"ANTHROPIC_MODEL": "model-b"}}},
+	}}
+	cache := &fakeModelCache{}
+	discoverer := successfulModelDiscoverer()
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, projects, discoverer)
+
+	for _, projectID := range []string{"proj-a", "proj-b"} {
+		if _, err := svc.Models(context.Background(), "claude-code", projectID, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := discoverer.discoverCalls.Load(); got != 2 {
+		t.Fatalf("discoveries = %d, want one per project scope", got)
+	}
+	for _, projectID := range []string{"proj-a", "proj-b"} {
+		if _, ok, err := cache.GetAgentModelCatalog(context.Background(), "claude-code", projectID); err != nil || !ok {
+			t.Fatalf("cache scope %s = found %v err %v", projectID, ok, err)
+		}
 	}
 }
 
@@ -1692,6 +1787,120 @@ func TestModelsKeepsFullerCacheWhenRefreshReturnsPartialCatalog(t *testing.T) {
 	}
 }
 
+func TestClaudeModelsUsesMatchingProviderCache(t *testing.T) {
+	validatedAt := time.Now()
+	cached := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models: []ports.AgentModelInfo{{ID: "us.anthropic.claude-opus-v1", Efforts: []string{"high"}}},
+		Source: "provider", FetchedAt: validatedAt, ValidatedAt: validatedAt,
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00": {
+			AgentID: "claude-code", BinaryVersion: "same-fingerprint", CatalogJSON: string(data),
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "same-fingerprint",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{{ID: "sonnet"}, {ID: "opus"}}, Source: "catalog",
+		},
+		err: errors.New("provider unavailable"),
+	}
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, nil, discoverer)
+
+	got, err := svc.Models(context.Background(), "claude-code", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discoverer.discoverCalls.Load() != 0 {
+		t.Fatalf("discovery calls = %d, want matching provider cache", discoverer.discoverCalls.Load())
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "us.anthropic.claude-opus-v1" || got.Stale {
+		t.Fatalf("catalog = %#v, want fresh provider cache", got)
+	}
+}
+
+func TestClaudeModelsRevalidationKeepsMatchingProviderCacheOnFailure(t *testing.T) {
+	validatedAt := time.Now().Add(-24 * time.Hour)
+	lastSuccessAt := validatedAt
+	cached := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models:        []ports.AgentModelInfo{{ID: "us.anthropic.claude-opus-v1", Efforts: []string{"high"}}},
+		Source:        "provider",
+		FetchedAt:     validatedAt,
+		ValidatedAt:   validatedAt,
+		LastSuccessAt: &lastSuccessAt,
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00": {
+			AgentID: "claude-code", BinaryVersion: "same-fingerprint", CatalogJSON: string(data),
+			LastSuccessAt: lastSuccessAt,
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "same-fingerprint",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{{ID: "sonnet"}, {ID: "opus"}}, Source: "catalog",
+		},
+		err: errors.New("provider unavailable"),
+	}
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, nil, discoverer)
+
+	got, err := svc.RevalidateModels(context.Background(), "claude-code", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discoverer.discoverCalls.Load() != 1 {
+		t.Fatalf("discovery calls = %d, want provider revalidation", discoverer.discoverCalls.Load())
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "us.anthropic.claude-opus-v1" || !got.Stale {
+		t.Fatalf("catalog = %#v, want stale provider cache", got)
+	}
+}
+
+func TestClaudeModelsRejectProviderCacheWhenCredentialFingerprintChanges(t *testing.T) {
+	cached := ports.AgentModelCatalog{
+		AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+		Models: []ports.AgentModelInfo{{ID: "us.anthropic.claude-opus-v1"}}, Source: "provider",
+	}
+	data, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeModelCache{records: map[string]ports.CachedAgentModelCatalog{
+		"claude-code\x00": {
+			AgentID: "claude-code", BinaryVersion: "credential-a", CatalogJSON: string(data),
+		},
+	}}
+	discoverer := &fakeModelDiscoverer{
+		version: "credential-b",
+		catalog: ports.AgentModelCatalog{
+			AgentID: "claude-code", SelectionMode: ports.ModelSelectionCatalog,
+			Models: []ports.AgentModelInfo{{ID: "sonnet"}, {ID: "opus"}}, Source: "catalog",
+		},
+		err: errors.New("provider unavailable"),
+	}
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)}, cache, nil, discoverer)
+
+	got, err := svc.Models(context.Background(), "claude-code", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 2 || got.Models[0].ID != "sonnet" || got.Models[1].ID != "opus" || got.Source != "catalog" || !got.Stale {
+		t.Fatalf("catalog = %#v, want current-credential fallback", got)
+	}
+}
+
 func TestModelsUsesGlobalCacheWhenDiscoveryFails(t *testing.T) {
 	newer := cachedModelRecord(t, "cursor", "", time.Now().Add(-time.Hour), false)
 	var newerCatalog ports.AgentModelCatalog
@@ -1778,7 +1987,7 @@ func TestInvalidateAgentInstallationInvalidatesAdapterBinary(t *testing.T) {
 	}
 }
 
-func TestModelsFingerprintsTheSameGlobalInputsDiscoveryReads(t *testing.T) {
+func TestModelsFingerprintsTheSameProjectInputsDiscoveryReads(t *testing.T) {
 	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
 		"proj-1": {
 			ID:     "proj-1",
@@ -1798,26 +2007,32 @@ func TestModelsFingerprintsTheSameGlobalInputsDiscoveryReads(t *testing.T) {
 	if _, err := svc.Models(context.Background(), "claude-code", "proj-1", false); err != nil {
 		t.Fatal(err)
 	}
-	// Fingerprinting and discovery must use the same global inputs.
+	// Fingerprinting and discovery must use the same project inputs.
 	fingerprinted := discoverer.lastFingerprintRequest.Load()
 	if fingerprinted == nil {
 		t.Fatal("catalog fingerprint was never requested")
+		return
 	}
 	if !reflect.DeepEqual(*fingerprinted, discoverer.lastRequest) {
 		t.Fatalf("fingerprint request = %#v, want the discovery request %#v", *fingerprinted, discoverer.lastRequest)
 	}
-	if fingerprinted.WorkingDir != "" || len(fingerprinted.Env) != 0 {
-		t.Fatalf("fingerprint request = %#v, want project-independent inputs", *fingerprinted)
+	if fingerprinted.WorkingDir != "/work/project" || fingerprinted.Env["ANTHROPIC_MODEL"] != "opus" {
+		t.Fatalf("fingerprint request = %#v, want project inputs", *fingerprinted)
 	}
 }
 
 func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 	cache := &fakeModelCache{}
-	discoverer := &fakeModelDiscoverer{version: "v1", catalog: ports.AgentModelCatalog{
-		SelectionMode: ports.ModelSelectionCatalog,
-		Models:        []ports.AgentModelInfo{{ID: "model-one"}},
-		Source:        "cli",
-	}}
+	discoverer := &blockingSubsequentModelDiscoverer{
+		fakeModelDiscoverer: &fakeModelDiscoverer{version: "v1", catalog: ports.AgentModelCatalog{
+			SelectionMode: ports.ModelSelectionCatalog,
+			Models:        []ports.AgentModelInfo{{ID: "model-one"}},
+			Source:        "cli",
+		}},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	defer close(discoverer.release)
 	svc := newService([]agentregistry.HarnessAgent{
 		harnessAgent("opencode", "OpenCode", nil),
 	}, cache, nil, discoverer)
@@ -1845,7 +2060,6 @@ func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 	}
 	record.CatalogJSON = string(data)
 	cache.records["opencode\x00"] = record
-	discoverer.catalog.Models = []ports.AgentModelInfo{{ID: "model-two"}}
 
 	// A CLI-backed catalog can drift with no change to the binary or its config,
 	// so an aged cache hit is what replaces the manual "Refresh models" button.
@@ -1856,8 +2070,13 @@ func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 	if !stale.RefreshRecommended {
 		t.Fatalf("catalog validated %s ago did not ask for revalidation", time.Since(aged.ValidatedAt))
 	}
-	if len(stale.Models) != 1 || stale.Models[0].ID != "model-one" {
-		t.Fatalf("models = %#v, want the cached catalog served before background discovery", stale.Models)
+	select {
+	case <-discoverer.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for background cache revalidation")
+	}
+	if discoverer.discoverCalls.Load() != 1 {
+		t.Fatalf("discovery calls = %d before releasing revalidation, want the cached catalog served immediately", discoverer.discoverCalls.Load())
 	}
 }
 
@@ -1890,6 +2109,180 @@ func TestRevalidateModelsRediscoversAnAgedCatalog(t *testing.T) {
 	}
 	if got.RefreshRecommended {
 		t.Fatal("revalidated catalog still recommends refresh")
+	}
+}
+
+func signInRequiredDiscoverer() *fakeModelDiscoverer {
+	return &fakeModelDiscoverer{
+		version: "v1",
+		err:     fmt.Errorf("kiro model discovery: %w", ports.ErrAgentModelDiscoverySignInRequired),
+	}
+}
+
+func (f *fakeModelDiscoverer) signIn(models ...ports.AgentModelInfo) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = nil
+	f.catalog = ports.AgentModelCatalog{SelectionMode: ports.ModelSelectionCatalog, Models: models, Source: "cli"}
+}
+
+func (f *fakeModelDiscoverer) signOut() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.err = fmt.Errorf("kiro model discovery: %w", ports.ErrAgentModelDiscoverySignInRequired)
+}
+
+func assertIdleWithoutRetries(t *testing.T, cache *fakeModelCache, agentID string) {
+	t.Helper()
+	record, ok, _ := cache.GetAgentModelCatalog(context.Background(), agentID, "")
+	if !ok {
+		t.Fatal("no catalog record was stored")
+	}
+	if record.RefreshState != "idle" || record.RefreshError != "" || record.RetryCount != 0 || !record.RetryAt.IsZero() {
+		t.Fatalf("record = state %q error %q retries %d retryAt %s, want idle with no retry scheduled",
+			record.RefreshState, record.RefreshError, record.RetryCount, record.RetryAt)
+	}
+}
+
+func TestSignInRequiredDiscoveryStoresAnIdlePlaceholderThatLoadsAfterSignIn(t *testing.T) {
+	cache := &fakeModelCache{}
+	discoverer := signInRequiredDiscoverer()
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("kiro", "Kiro", nil)}, cache, nil, discoverer)
+
+	got, err := svc.Models(context.Background(), "kiro", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 0 || got.Stale || got.RefreshState != "idle" || !strings.Contains(got.Warning, "Kiro is not signed in") {
+		t.Fatalf("signed-out catalog = %#v, want an idle, non-stale placeholder with a sign-in warning", got)
+	}
+	assertIdleWithoutRetries(t, cache, "kiro")
+
+	// The placeholder has never succeeded, so cache-first readers are told to
+	// revalidate; that is how the models appear once the user signs in.
+	read, err := svc.Models(context.Background(), "kiro", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.RefreshRecommended {
+		t.Fatal("signed-out placeholder does not ask readers to revalidate")
+	}
+	if !strings.Contains(read.Warning, "Kiro is not signed in") {
+		t.Fatalf("cache-first warning = %q, want the sign-in warning", read.Warning)
+	}
+
+	discoverer.signIn(ports.AgentModelInfo{ID: "model-one"})
+	got, err = svc.RevalidateModels(context.Background(), "kiro", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "model-one" || got.Warning != "" {
+		t.Fatalf("catalog after sign-in = %#v, want model-one", got)
+	}
+}
+
+func TestSignInRequiredDiscoveryKeepsTheCachedCatalogAndRetryBudget(t *testing.T) {
+	cache := &fakeModelCache{}
+	discoverer := signInRequiredDiscoverer()
+	discoverer.signIn(ports.AgentModelInfo{ID: "model-one"})
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("kiro", "Kiro", nil)}, cache, nil, discoverer)
+	if _, err := svc.Models(context.Background(), "kiro", "", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// An earlier ordinary failure leaves the cached list stale with its error.
+	discoverer.mu.Lock()
+	discoverer.err = errors.New("kiro model discovery timed out after 20s")
+	discoverer.mu.Unlock()
+	if failed, err := svc.Models(context.Background(), "kiro", "", true); err != nil || !failed.Stale {
+		t.Fatalf("failed refresh = %#v, %v; want a stale cached catalog", failed, err)
+	}
+
+	discoverer.signOut()
+	// More skipped attempts than the failure retry budget allows.
+	for range modelCatalogMaxRetries + 2 {
+		got, err := svc.Models(context.Background(), "kiro", "", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Models) != 1 || got.Models[0].ID != "model-one" || got.Stale || got.RefreshState != "idle" {
+			t.Fatalf("signed-out refresh = %#v, want the cached model-one catalog, not stale", got)
+		}
+		assertIdleWithoutRetries(t, cache, "kiro")
+	}
+	// Cache-first reads show the sign-in state, not the earlier timeout.
+	read, err := svc.Models(context.Background(), "kiro", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Stale || !strings.Contains(read.Warning, "Kiro is not signed in") || strings.Contains(read.Warning, "timed out") {
+		t.Fatalf("cache-first read = stale %t warning %q, want the sign-in warning only", read.Stale, read.Warning)
+	}
+
+	discoverer.signIn(ports.AgentModelInfo{ID: "model-two"})
+	got, err := svc.RevalidateModels(context.Background(), "kiro", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Models) != 1 || got.Models[0].ID != "model-two" {
+		t.Fatalf("catalog after signing back in = %#v, want model-two", got)
+	}
+}
+
+func TestSignInOutsideAOReloadsACatalogThatLoadedEarlierTheSameDay(t *testing.T) {
+	cache := &fakeModelCache{}
+	discoverer := signInRequiredDiscoverer()
+	discoverer.signIn(ports.AgentModelInfo{ID: "model-one"})
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("kiro", "Kiro", nil)}, cache, nil, discoverer)
+	noon := time.Date(2026, 9, 24, 12, 0, 0, 0, time.Local)
+	svc.now = func() time.Time { return noon }
+
+	// Models load in the morning, then the user signs out and a refresh is skipped.
+	if _, err := svc.Models(context.Background(), "kiro", "", true); err != nil {
+		t.Fatal(err)
+	}
+	discoverer.signOut()
+	if _, err := svc.Models(context.Background(), "kiro", "", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// The user signs back in from a terminal; AO's auth probe is never called.
+	discoverer.signIn(ports.AgentModelInfo{ID: "model-two"})
+	noon = noon.Add(time.Hour)
+	read, err := svc.Models(context.Background(), "kiro", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.RefreshRecommended {
+		t.Fatal("same-day catalog skipped for sign-in is not due for revalidation")
+	}
+	// The cache-first read revalidates in the background.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, err := svc.Models(context.Background(), "kiro", "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Models) == 1 && got.Models[0].ID == "model-two" && got.Warning == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("catalog after signing in outside AO = %#v, want model-two without the sign-in warning", got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestOrdinaryDiscoveryFailureStillSpendsTheRetryBudget(t *testing.T) {
+	cache := &fakeModelCache{}
+	discoverer := &fakeModelDiscoverer{version: "v1", err: errors.New("kiro model discovery: exit status 1")}
+	svc := newService([]agentregistry.HarnessAgent{harnessAgent("kiro", "Kiro", nil)}, cache, nil, discoverer)
+	if _, err := svc.Models(context.Background(), "kiro", "", true); err != nil {
+		t.Fatal(err)
+	}
+	record, _, _ := cache.GetAgentModelCatalog(context.Background(), "kiro", "")
+	if record.RefreshState != "error" || record.RetryCount != 1 {
+		t.Fatalf("record = state %q retries %d, want an error with one retry spent", record.RefreshState, record.RetryCount)
 	}
 }
 

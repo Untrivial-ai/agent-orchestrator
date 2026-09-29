@@ -42,7 +42,7 @@ func configure(ctx context.Context, cfg acpdriver.LaunchConfig) ([]string, map[s
 
 func validateTurnSettings(_ ports.PermissionMode, settings ports.ChatTurnSettings) error {
 	if mode := ports.NormalizePermissionMode(settings.Approval); mode != ports.PermissionModeDefault {
-		return fmt.Errorf("%w: Kimi ACP advertises only its default session mode; requested %q",
+		return fmt.Errorf("%w: Kimi ACP does not offer other session modes; requested %q",
 			ports.ErrChatPermissionModeUnsupported, mode)
 	}
 	return nil

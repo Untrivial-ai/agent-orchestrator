@@ -6,8 +6,8 @@ import { chatDraftScopeSessionId } from "../lib/chat-drafts";
 // maxAttachmentBytes / maxAttachmentsBytes). Enforced here too so the user gets
 // inline feedback at paste/drop time instead of a late rejection after submit.
 export const MAX_ATTACHMENTS = 8;
-export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-export const MAX_ATTACHMENTS_BYTES = 25 * 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+export const MAX_ATTACHMENTS_BYTES = 100 * 1024 * 1024;
 
 const mb = (bytes: number) => Math.round(bytes / (1024 * 1024));
 
@@ -354,20 +354,38 @@ export function useFileAttachments(options: FileAttachmentOptions = {}) {
 			(file) => file.type.toLowerCase().trim() !== "image/svg+xml",
 		);
 
-		// Reject oversized files before the (async) read.
-		const readable = valid.filter((file) => {
-			if (file.size > MAX_ATTACHMENT_BYTES) {
-				errors.add(`Each file must be under ${mb(MAX_ATTACHMENT_BYTES)} MB.`);
-				return false;
+		// Check metadata before each read so rejected files never enter JS memory.
+		// Reserve budget only after a successful read: a later small file can still
+		// fit if an earlier read fails.
+		const pendingReads = (async () => {
+			const results: Array<{ file: File; result: { dataUrl: string; data: string } }> = [];
+			let freshBytes = 0;
+			for (const file of valid) {
+				if (generationRef.current !== generation ||
+					(initialKey && sharedWork && !sharedAttachmentWorkIsCurrent(initialKey, sharedWork))) break;
+				if (file.size > MAX_ATTACHMENT_BYTES) {
+					errors.add(`Each file must be under ${mb(MAX_ATTACHMENT_BYTES)} MB.`);
+					continue;
+				}
+				if (attachmentsRef.current.length + results.length >= MAX_ATTACHMENTS) {
+					errors.add(`You can attach up to ${MAX_ATTACHMENTS} files.`);
+					break;
+				}
+				const total = attachmentsRef.current.reduce((sum, attachment) => sum + attachment.bytes, freshBytes);
+				if (total + file.size > MAX_ATTACHMENTS_BYTES) {
+					errors.add(`Attachments must total under ${mb(MAX_ATTACHMENTS_BYTES)} MB.`);
+					continue;
+				}
+				const result = await readFileAsBase64(file).catch(() => null);
+				if (!result) {
+					errors.add(`Some files couldn't be read and were skipped.`);
+					continue;
+				}
+				results.push({ file, result });
+				freshBytes += file.size;
 			}
-			return true;
-		});
-
-		const pendingReads = Promise.all(
-			readable.map((file) =>
-				readFileAsBase64(file).catch(() => null).then((result) => ({ file, result })),
-			),
-		);
+			return results;
+		})();
 		pendingReadsRef.current.add(pendingReads);
 		const results = await pendingReads;
 		pendingReadsRef.current.delete(pendingReads);
@@ -376,10 +394,6 @@ export function useFileAttachments(options: FileAttachmentOptions = {}) {
 
 		const fresh: FileAttachment[] = [];
 		for (const { file, result } of results) {
-			if (!result) {
-				errors.add(`Some files couldn't be read and were skipped.`);
-				continue;
-			}
 			const isImage = file.type.startsWith("image/") && isSupportedImageAttachment(file.type);
 			fresh.push({
 				id:

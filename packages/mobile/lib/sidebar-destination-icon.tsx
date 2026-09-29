@@ -1,4 +1,4 @@
-import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Feather, type FeatherIconName } from "./icons";
 import { NotificationTypeIcon } from "./notification-type-icon";
 import { WorkersIcon } from "./workers-icon";
 import type { SidebarDestination, SidebarDestinationId } from "./sidebar-navigation";
@@ -12,9 +12,9 @@ import type { SidebarDestination, SidebarDestinationId } from "./sidebar-navigat
  * Desktop has no equivalent nav item to copy, so this follows the product's own
  * language: a worker is an agent doing the work.
  */
-const glyphs: Record<Exclude<SidebarDestinationId, "prs" | "agents">, { idle: keyof typeof MaterialCommunityIcons.glyphMap; active: keyof typeof MaterialCommunityIcons.glyphMap }> = {
-	projects: { idle: "folder-outline", active: "folder-open" },
-	settings: { idle: "cog-outline", active: "cog" },
+const glyphs: Record<Exclude<SidebarDestinationId, "prs" | "agents">, { idle: FeatherIconName; active: FeatherIconName }> = {
+	projects: { idle: "folder", active: "folder-open" },
+	settings: { idle: "settings", active: "settings" },
 };
 
 export function SidebarDestinationIcon({
@@ -33,5 +33,5 @@ export function SidebarDestinationIcon({
 	const glyph = glyphs[destination.id];
 	// No RNHostView here: this path is Android's, and hosting a vector-icon glyph
 	// inside a Compose view renders nothing at all.
-	return <MaterialCommunityIcons name={active ? glyph.active : glyph.idle} size={21} color={color} />;
+	return <Feather name={active ? glyph.active : glyph.idle} size={20} color={color} />;
 }

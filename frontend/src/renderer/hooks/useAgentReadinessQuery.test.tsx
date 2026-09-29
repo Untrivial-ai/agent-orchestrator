@@ -42,6 +42,7 @@ beforeEach(() => {
 describe("agent readiness query", () => {
 	it("leaves freshness policy to the daemon", () => {
 		expect(agentReadinessQueryOptions.staleTime).toBe(Number.POSITIVE_INFINITY);
+		expect(agentReadinessQueryOptions.gcTime).toBe(Number.POSITIVE_INFINITY);
 	});
 
 	it("reads the cached daemon snapshot without invoking ensure", async () => {

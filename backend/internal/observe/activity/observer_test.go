@@ -267,7 +267,7 @@ func TestPollReconcilesStaleClaudeCodeAfterAbortedTurn(t *testing.T) {
 		t.Fatalf("signals = %d, want 1", len(sink.signals))
 	}
 	signal := sink.signals[0]
-	if sink.id != session.ID || signal.State != domain.ActivityIdle || signal.Event != "terminal-idle" {
+	if sink.id != session.ID || signal.State != domain.ActivityWaitingInput || signal.Event != "terminal-waiting-input" {
 		t.Fatalf("unexpected reconciliation: id=%q signal=%+v", sink.id, signal)
 	}
 	if signal.ExpectedRevision == nil || *signal.ExpectedRevision != session.Revision || signal.LaunchID != "launch-1" {

@@ -24,6 +24,7 @@ import {
 	type InspectorView,
 } from "@aoagents/product-ui";
 import {
+	Archive,
 	ArrowUpRight,
 	ChevronDown,
 	ChevronRight,
@@ -38,6 +39,7 @@ import {
 } from "lucide-react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { WORKER_DEFAULT_REVIEWERS } from "../lib/reviewer-harnesses";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { captureRendererEvent } from "../lib/telemetry";
 import { formatTimeCompact } from "../lib/format-time";
@@ -68,10 +70,11 @@ import {
 import { getAgentActivityView, getSessionTimelinePillView } from "../lib/session-presentation";
 import { BrowserPanelView, type BrowserAnnotationQueueModel } from "./BrowserPanel";
 import type { BrowserViewModel } from "../hooks/useBrowserView";
+import { FilesTopbarHostContext } from "./files-topbar-host";
 import { useUiStore } from "../stores/ui-store";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
-import { SessionTerminationPopover } from "./SessionTerminationPopover";
+import { SessionArchiveDialog } from "./SessionArchiveDialog";
 import { ReviewerSelect } from "./ReviewerSelect";
 import { agentLabel } from "../lib/agent-options";
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
@@ -199,13 +202,16 @@ export const SessionInspector = memo(function SessionInspector({
 	const { t } = useTranslation();
 	const [internalView, setInternalView] = useState<InspectorView>("summary");
 	const [browserTopbarHost, setBrowserTopbarHost] = useState<HTMLDivElement | null>(null);
+	const [filesTopbarHost, setFilesTopbarHost] = useState<HTMLDivElement | null>(null);
 	const requestedView = viewProp ?? internalView;
 	// Badge the Browser tab when a preview target arrived without us opening it.
 	const browserUnseen = useUiStore((state) =>
 		session ? Boolean(state.inspectorSessions[session.id]?.browserUnseen) : false,
 	);
 	const inspectorQueryClient = useQueryClient();
-	const localFilesChangedCount = useSessionWorkspaceFilesChangedCount(browserOnly ? undefined : session?.id);
+	const localFilesChangedCount = useSessionWorkspaceFilesChangedCount(
+		browserOnly || session?.cloud ? undefined : session?.id,
+	);
 	const localWorkspaceData = session ? inspectorQueryClient.getQueryData<{ files?: unknown[] }>(sessionWorkspaceFilesQueryKey(session.id)) : undefined;
 	const { client: cloudCpClient, ready: cloudReady, baseUrl: cloudBaseUrl } = useCloudCp();
 	const cloudOrgId = session?.cloud?.orgId;
@@ -273,11 +279,22 @@ export const SessionInspector = memo(function SessionInspector({
 						/>
 					) : undefined
 				}
-				filesView={session ? <FilesView filesView={filesView} onOpenFiles={onOpenFiles} /> : undefined}
+				filesView={
+					session ? (
+						<FilesTopbarHostContext.Provider value={filesTopbarHost}>
+							<FilesView filesView={filesView} onOpenFiles={onOpenFiles} />
+						</FilesTopbarHostContext.Provider>
+					) : undefined
+				}
 						headerActions={
 							view === "browser" && !browserPoppedOut ? (
 								<>
 									<div className="browser-panel__topbar-host min-w-0 flex-1" ref={setBrowserTopbarHost} />
+									<span aria-hidden="true" className="session-inspector-actions-spacer" />
+								</>
+							) : view === "files" && filesView ? (
+								<>
+									<div className="files-panel__topbar-host min-w-0 flex-1" ref={setFilesTopbarHost} />
 									<span aria-hidden="true" className="session-inspector-actions-spacer" />
 								</>
 							) : (
@@ -324,7 +341,7 @@ const SummaryView = memo(function SummaryView({
 	session: WorkspaceSession;
 }) {
 	const { t } = useTranslation();
-	const query = useSessionScmSummary(session.id);
+	const query = useSessionScmSummary(session.id, true, session.cloud?.orgId, session.autoInjectCI === true);
 	const developerMode = useUiStore((state) => state.developerMode);
 	const usageQuery = useSessionUsage(session.id, developerMode);
 	const showUsage =
@@ -364,6 +381,7 @@ const SummaryView = memo(function SummaryView({
 								onOpenReviews={onOpenReviews}
 								pr={pr}
 								sessionId={session.id}
+								cloudOrgId={session.cloud?.orgId}
 							/>
 						))
 					) : (
@@ -599,6 +617,7 @@ function UsageAgentAttribution({ harness }: { harness: SessionUsage["harnesses"]
 function AutoInjectCIPolicyControl({ session }: { session: WorkspaceSession }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const { client: cloudClient } = useCloudCp();
 	const [enabled, setEnabled] = useState(session.autoInjectCI ?? true);
 	useEffect(() => {
 		setEnabled(session.autoInjectCI ?? true);
@@ -606,6 +625,10 @@ function AutoInjectCIPolicyControl({ session }: { session: WorkspaceSession }) {
 	const save = useMutation({
 		mutationFn: async (autoInjectCI: boolean) => {
 			if (usePreviewData) return;
+			if (session.cloud) {
+				await cloudClient.setSessionAutoInjectCI(session.cloud.orgId, session.id, autoInjectCI);
+				return;
+			}
 			const { error, response } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/auto-inject-ci", {
 				params: { path: { sessionId: session.id } },
 				body: { autoInjectCI },
@@ -702,12 +725,18 @@ function ProviderUsageDetails({ harness }: { harness: SessionUsage["harnesses"][
 function AutoInjectReviewPolicyControl({ session }: { session: WorkspaceSession }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const { client: cloudClient } = useCloudCp();
 	const [enabled, setEnabled] = useState(session.autoInjectReview ?? true);
 	useEffect(() => {
 		setEnabled(session.autoInjectReview ?? true);
 	}, [session.id, session.autoInjectReview]);
 	const save = useMutation({
 		mutationFn: async (autoInjectReview: boolean) => {
+			if (usePreviewData) return;
+			if (session.cloud) {
+				await cloudClient.setSessionAutoInjectReview(session.cloud.orgId, session.id, autoInjectReview);
+				return;
+			}
 			const { error } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/auto-inject-review", {
 				params: { path: { sessionId: session.id } },
 				body: { autoInjectReview },
@@ -1075,9 +1104,14 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 	const queryClient = useQueryClient();
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const terminate = useTerminateSession();
+	const { client: cloudClient } = useCloudCp();
 	const policy = useMutation({
 		mutationFn: async (terminateOnPrMerge: boolean) => {
 			if (usePreviewData) return;
+			if (session.cloud) {
+				await cloudClient.setSessionMergePolicy(session.cloud.orgId, session.id, terminateOnPrMerge);
+				return;
+			}
 			const { error, response } = await apiClient.PATCH("/api/v1/sessions/{sessionId}/merge-policy", {
 				params: { path: { sessionId: session.id } },
 				body: { terminateOnPrMerge },
@@ -1129,34 +1163,33 @@ function SessionControls({ session }: { session: WorkspaceSession }) {
 
 	const terminateAction = (
 		<div className="flex items-center justify-between gap-3 py-1">
-			<span className="min-w-0 text-xs font-medium text-settings-label">{t("inspector.terminateShort")}</span>
+			<span className="min-w-0 text-xs font-medium text-settings-label">{t("inspector.archiveShort")}</span>
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<span className="inline-flex">
-						<SessionTerminationPopover
+						<SessionArchiveDialog
 							onConfirm={confirmTermination}
 							onOpenChange={setConfirmOpen}
 							open={confirmOpen}
 							session={session}
 							trigger={
 								<button
-									aria-label={t("inspector.terminate")}
-									className="inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-colors hover:bg-error/10 hover:text-error focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+									aria-label={t("inspector.archive")}
+									className="inline-flex size-control-md items-center justify-center rounded-sm text-passive transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
 									onClick={() => {
 										clearTerminateSessionState(queryClient, session.id);
-										// Force the confirm open instead of toggling it, so repeated
-										// trash taps keep the dialog up rather than dismissing it.
+										// Always open the confirm; the modal owns its own dismissal.
 										setConfirmOpen(true);
 									}}
 									type="button"
 								>
-									<Trash2 className="size-icon-sm" aria-hidden="true" />
+									<Archive className="size-icon-sm" aria-hidden="true" />
 								</button>
 							}
 						/>
 					</span>
 				</TooltipTrigger>
-				<TooltipContent side="bottom">{t("inspector.terminate")}</TooltipContent>
+				<TooltipContent side="bottom">{t("inspector.archive")}</TooltipContent>
 			</Tooltip>
 		</div>
 	);
@@ -1209,22 +1242,29 @@ function updateSessionMergePolicy(
 
 function PRSummaryCard({
 	canOpenReviews,
+	cloudOrgId,
 	onOpenReviews,
 	pr,
 	sessionId,
 }: {
 	canOpenReviews: boolean;
+	cloudOrgId?: string;
 	onOpenReviews: () => void;
 	pr: SessionPRSummary;
 	sessionId: string;
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
+	const { client: cloudClient, baseUrl: cloudBaseUrl } = useCloudCp();
 	const presentation = prCardPresentation(pr);
 	const canMerge = prCanMerge(pr) && Boolean(pr.url && pr.headSha);
 	const mergePr = useMutation({
 		mutationFn: async () => {
 			if (usePreviewData) return;
+			if (cloudOrgId) {
+				await cloudClient.mergePullRequest(cloudOrgId, sessionId, pr.number, pr.url, pr.headSha);
+				return;
+			}
 			const { error } = await apiClient.POST("/api/v1/prs/{id}/merge", {
 				params: { path: { id: String(pr.number) } },
 				body: { prUrl: pr.url, expectedHeadSha: pr.headSha },
@@ -1233,7 +1273,7 @@ function PRSummaryCard({
 		},
 		onSuccess: async () => {
 			await Promise.all([
-				queryClient.invalidateQueries({ queryKey: sessionScmSummaryQueryKey(sessionId) }),
+				queryClient.invalidateQueries({ queryKey: cloudOrgId ? ["cloud-session-scm-summary", cloudBaseUrl, cloudOrgId, sessionId] : sessionScmSummaryQueryKey(sessionId) }),
 				queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
 			]);
 		},
@@ -1468,14 +1508,6 @@ function scmTimelineStates(session: WorkspaceSession): ScmTimelineState[] {
 type ReviewerHarness = NonNullable<components["schemas"]["TriggerReviewRequest"]["harness"]>;
 type AgentCatalog = components["schemas"]["AgentReadinessResponse"];
 
-const WORKER_DEFAULT_REVIEWERS: Partial<Record<WorkspaceSession["provider"], ReviewerHarness>> = {
-	"claude-code": "claude-code",
-	codex: "codex",
-	opencode: "opencode",
-	muse: "muse",
-	kimchi: "kimchi",
-};
-
 function resolveDefaultReviewerHarness(config: ProjectConfig | undefined, workerHarness: WorkspaceSession["provider"]): ReviewerHarness {
 	const configuredHarness = config?.reviewers?.[0]?.harness;
 	if (configuredHarness) return configuredHarness as ReviewerHarness;
@@ -1646,7 +1678,7 @@ function ReviewsSection({
 	});
 	const reviewStates = reviewsQuery.data?.reviews ?? [];
 	const autoReviewEnabled = session.autoReviewEnabled === true;
-	const scmSummary = useSessionScmSummary(session.id);
+	const scmSummary = useSessionScmSummary(session.id, true, session.cloud?.orgId, session.autoInjectCI === true);
 	const prSummaries = sessionPRDisplaySummaries(session, scmSummary.data);
 	const githubReviews = prSummaries.filter(
 		(pr) =>
@@ -2313,7 +2345,6 @@ function ReviewPanel({
 							agents={agentCatalog?.agents}
 							contentAlign="end"
 							defaultHarness={resolvedDefaultHarness}
-							defaultOptionLabel={agentLabel(resolvedDefaultHarness)}
 							disabled={reviewRunning || autoReviewEnabled || isKilling || isSwitchingReviewer || isTriggering || isCancelling}
 							onChange={(next) => onReviewerHarnessPreviewChange(next as ReviewerHarness | "")}
 							onConfigChange={(harness, config) => onReviewerOverrideChange(harness as ReviewerHarness | "", config)}
@@ -2322,7 +2353,6 @@ function ReviewPanel({
 							projectId={session.workspaceId}
 							triggerClassName="review-run-agent-select ml-auto h-control-md w-auto min-w-0 max-w-[11rem] shrink-0 justify-end px-2 text-right text-xs"
 							value={reviewerOverride}
-							showDefaultOption
 						/>
 					</div>
 					<InspectorPolicyRow

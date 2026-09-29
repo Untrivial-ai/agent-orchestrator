@@ -95,6 +95,51 @@ export interface CloudCpPageInfo {
 	nextCursor?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Cloud notifications (`notification_handlers.go`)
+// ---------------------------------------------------------------------------
+
+export interface CloudCpNotification {
+	id: string;
+	source: "cloud";
+	eventId?: string;
+	orgId: string;
+	projectId?: string;
+	sessionId?: string;
+	type: string;
+	title: string;
+	body: string;
+	status: "unread" | "read";
+	resolvedAt?: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface CloudCpNotificationEvent {
+	sequence: number;
+	orgId: string;
+	recipientUserId: string;
+	kind: "notification_created" | "notification_updated" | "notification_resolved";
+	notification: CloudCpNotification;
+	createdAt: string;
+}
+
+export interface CloudCpNotificationListQuery extends CloudCpListQuery {
+	status?: "unread" | "read" | "all";
+}
+
+export interface CloudCpNotificationListResponse {
+	items: CloudCpNotification[];
+	page: CloudCpPageInfo;
+	unreadCount: number;
+	latestSequence: number;
+}
+
+export interface CloudCpNotificationEventsResponse {
+	items: CloudCpNotificationEvent[];
+	hasMore: boolean;
+}
+
 export interface CloudCpListQuery {
 	/** Page size, 1-100 (control-plane default: 50). */
 	limit?: number;
@@ -189,6 +234,11 @@ export interface CloudCpCreateSessionRequest {
 	prompt: string;
 	/** Defaults to "trusted" on the control plane when omitted. */
 	mode?: CloudCpSessionMode;
+	/**
+	 * Coding-agent model the session launches with (harness-native id). Optional:
+	 * omitted uses the harness default.
+	 */
+	model?: string;
 	deniedCommands?: string[];
 	sandboxProviderConnectionId?: string;
 	/**
@@ -240,6 +290,10 @@ export interface CloudCpSession {
 	runtimeState?: string;
 	runtimeError?: string;
 	isTerminated: boolean;
+	autoInjectCI?: boolean;
+	autoInjectReview?: boolean;
+	terminateOnPrMerge?: boolean;
+	prs: CloudCpSessionPullRequest[];
 	/**
 	 * Highest worker epoch the session has minted for its agent terminal. It
 	 * advances on every fresh worker connection (resume from idle-pause,
@@ -454,6 +508,12 @@ export interface CloudCpSessionPullRequest {
 	ci: string;
 	review: string;
 	mergeability: string;
+	failingChecks?: Array<{
+		name: string;
+		status: "failed" | "cancelled";
+		conclusion: string;
+		url?: string;
+	}>;
 	/** Always false today: the control plane does not track unresolved comments yet. */
 	reviewComments: boolean;
 	sourceBranch?: string;
@@ -469,6 +529,78 @@ export interface CloudCpSessionChild extends CloudCpSession {
 export interface CloudCpSessionChildrenResponse {
 	items: CloudCpSessionChild[];
 	page: CloudCpPageInfo;
+}
+
+/** Detailed PR data used by the shared local/cloud inspector UI. */
+export interface CloudCpPullRequestSummary {
+	url: string;
+	htmlUrl?: string;
+	number: number;
+	title: string;
+	state: "draft" | "open" | "merged" | "closed";
+	provider: string;
+	repository: string;
+	author: string;
+	authorAvatarUrl?: string;
+	sourceBranch: string;
+	targetBranch: string;
+	headSha: string;
+	additions: number;
+	deletions: number;
+	changedFiles: number;
+	ci: {
+		state: "unknown" | "pending" | "passing" | "failing";
+		failingChecks: Array<{
+			name: string;
+			status: "failed" | "cancelled";
+			conclusion: string;
+			url?: string;
+		}>;
+	};
+	review: {
+		decision: "none" | "approved" | "changes_requested" | "review_required";
+		hasUnresolvedHumanComments: boolean;
+		unresolvedBy: Array<{
+			reviewerId: string;
+			count: number;
+			links: Array<{ url?: string; reviewId?: string; file?: string; line?: number; body?: string; autoInjectReview: boolean }>;
+			reviewUrl?: string;
+			isBot?: boolean;
+		}>;
+		resolvedBy: Array<{
+			reviewerId: string;
+			count: number;
+			links: Array<{ url?: string; reviewId?: string; file?: string; line?: number; body?: string; autoInjectReview: boolean }>;
+			reviewUrl?: string;
+			isBot?: boolean;
+		}>;
+		reviews: Array<{
+			reviewerId: string;
+			verdict: "none" | "approved" | "changes_requested" | "review_required";
+			body?: string;
+			reviewUrl?: string;
+			submittedAt: string;
+			isBot?: boolean;
+			autoInjectReview: boolean;
+		}>;
+	};
+	mergeability: {
+		state: "unknown" | "mergeable" | "conflicting" | "blocked" | "unstable";
+		reasons: string[];
+		pullRequestUrl: string;
+		conflictFiles: Array<{ path: string; url?: string }>;
+	};
+	stateChangedAt?: string;
+	createdAt?: string;
+	updatedAt: string;
+	observedAt: string;
+	ciObservedAt: string;
+	reviewObservedAt: string;
+}
+
+export interface CloudCpSessionPullRequestsResponse {
+	sessionId: string;
+	pullRequests: CloudCpPullRequestSummary[];
 }
 
 export interface CloudCpListSessionsQuery extends CloudCpListQuery {
@@ -572,13 +704,14 @@ export interface CloudCpTerminalTicketResponse {
 // ---------------------------------------------------------------------------
 
 /** Coding-agent providers the control plane accepts (`validAgentProvider`). */
-export type CloudCpAgentProvider = "claude-code" | "codex" | "cursor";
+export type CloudCpAgentProvider = "claude-code" | "codex" | "cursor" | "opencode";
 
 /**
  * Credential types by provider (`validAgentCredentialType`):
  * claude-code accepts "api_key" | "oauth_token"; codex accepts
  * "api_key" | "access_token" | "auth_json" (the opaque result of a
- * ChatGPT subscription login); cursor accepts "api_key".
+ * ChatGPT subscription login); cursor accepts "api_key"; opencode accepts
+ * "auth_json" (its multi-provider auth document; no single api-key env var).
  */
 export interface CloudCpPutAgentConnectionRequest {
 	credentialType: string;
@@ -633,4 +766,93 @@ export interface CloudCpGitHubRepo {
 
 export interface CloudCpGitHubReposResponse {
 	repos: CloudCpGitHubRepo[];
+}
+
+// ---------------------------------------------------------------------------
+// GitHub App connect flow (github_handlers.go)
+//
+// The secure, hosted GitHub connection: the control plane owns the GitHub App
+// client id and secret, builds the install/authorize URL, catches the redirect
+// on its own callback, and stores the installation. The desktop only opens the
+// URL and polls for completion, then lists the App's repositories and creates a
+// project from one. No GitHub secret ever reaches the desktop.
+// ---------------------------------------------------------------------------
+
+/** POST /orgs/{orgId}/github/installations/start */
+export interface CloudCpStartGitHubInstallationResponse {
+	installationUrl: string;
+	expiresAt: string;
+}
+
+export interface CloudCpGitHubInstallation {
+	id: string;
+	githubInstallationId: string;
+	accountLogin: string;
+	accountType: string;
+	status: string;
+	repositorySelection: string;
+	syncStatus: string;
+	lastSyncedAt?: string;
+	lastError?: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/** GET /orgs/{orgId}/github/installations */
+export interface CloudCpGitHubInstallationsResponse {
+	installations: CloudCpGitHubInstallation[];
+}
+
+/** POST /orgs/{orgId}/github/installations/{installationId}/sync */
+export interface CloudCpSyncGitHubInstallationResponse {
+	installation: CloudCpGitHubInstallation;
+}
+
+export interface CloudCpGitHubUserInstallation {
+	githubInstallationId: string;
+	accountLogin: string;
+	accountType: string;
+	repositorySelection: string;
+	canCreateRepository: boolean;
+	unavailableReason?: string;
+}
+
+/** GET /github/user */
+export interface CloudCpGitHubUserConnection {
+	connected: boolean;
+	login?: string;
+	avatarUrl?: string;
+	installations: CloudCpGitHubUserInstallation[];
+	lastSyncedAt?: string;
+}
+
+/** One repository an installation grants access to (GET /orgs/{orgId}/github/repositories). */
+export interface CloudCpGitHubAppRepository {
+	githubRepositoryId: string;
+	name: string;
+	fullName: string;
+	htmlUrl: string;
+	defaultBranch: string;
+	visibility: string;
+	isPrivate: boolean;
+	isArchived: boolean;
+	access: string;
+	grantedAt: string;
+	revokedAt?: string;
+}
+
+export interface CloudCpGitHubRepositoriesPage {
+	items: CloudCpGitHubAppRepository[];
+	page: CloudCpPageInfo;
+}
+
+/**
+ * POST /orgs/{orgId}/github/projects. `config` is stored verbatim on the
+ * project; nest the coder dev-kit config under a `coder` key to attach a
+ * template/size/startup/extra repos (the control plane reads `config.coder`).
+ */
+export interface CloudCpCreateGitHubProjectRequest {
+	githubRepositoryId: string;
+	displayName?: string;
+	config?: Record<string, unknown>;
 }

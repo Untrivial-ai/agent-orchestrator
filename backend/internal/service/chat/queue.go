@@ -180,7 +180,7 @@ func (c *Controller) EditQueuedTurn(ctx context.Context, turnID string, edit Que
 		content = selected
 	}
 	content = append(content, edit.Content...)
-	// Match the upload limits across repeated edits as well as a single request.
+	// Match the native chat upload limits across repeated edits as well as a single request.
 	images, imageBytes := 0, 0
 	for _, block := range content {
 		if block.Type != "image" {
@@ -188,7 +188,7 @@ func (c *Controller) EditQueuedTurn(ctx context.Context, turnID string, edit Que
 		}
 		images++
 		data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(block.Data))
-		if err != nil {
+		if err != nil || len(data) > 10<<20 {
 			return ErrQueuedContentInvalid
 		}
 		imageBytes += len(data)

@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentModelsQueryKey } from "../hooks/useAgentModelsQuery";
+import { apiClient } from "../lib/api-client";
 import type { AgentSwitchSummary, WorkspaceSession } from "../types/workspace";
 import { SwitchAgentDialog } from "./SwitchAgentDialog";
 import { TooltipProvider } from "./ui/tooltip";
@@ -52,11 +53,13 @@ function renderDialog(
 	session: WorkspaceSession = worker,
 	onOpenChange = vi.fn(),
 	agentSwitch?: AgentSwitchSummary,
+	projectConfig: unknown = { config: {} },
 ) {
 	const queryClient = new QueryClient({
 		defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
 	});
-	for (const agentId of ["claude-code", "codex"]) {
+	if (projectConfig !== null) queryClient.setQueryData(["project", session.workspaceId], projectConfig);
+	for (const agentId of ["claude-code", "codex", "fx"]) {
 		queryClient.setQueryData(agentModelsQueryKey(agentId, session.workspaceId), {
 			agentId,
 			allowCustom: false,
@@ -98,6 +101,8 @@ beforeEach(() => {
 	switchMocks.state.error = null;
 	switchMocks.state.isPending = false;
 });
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("SwitchAgentDialog", () => {
 	it("renders a compact agent and model picker without optional context or cancel actions", () => {
@@ -156,6 +161,38 @@ describe("SwitchAgentDialog", () => {
 		expect(onOpenChange).toHaveBeenCalledWith(false);
 	});
 
+	it("offers fx as a switch target", async () => {
+		const tuiWorker = { ...worker, mode: "tui" as const };
+		renderDialog(tuiWorker);
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		await userEvent.click(within(dialog).getByRole("button", { name: "Target agent" }));
+
+		const fxOption = screen.getByRole("menuitem", { name: "fx" });
+		expect(fxOption).not.toHaveAttribute("data-disabled");
+		await userEvent.click(fxOption);
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+
+		expect(switchMocks.mutate).toHaveBeenCalledWith(
+			{
+				idempotencyKey: "idempotency-1",
+				model: "",
+				session: tuiWorker,
+				targetHarness: "fx",
+			},
+			{ onSuccess: expect.any(Function) },
+		);
+	});
+
+	it("keeps fx unavailable as a Chat switch target", async () => {
+		renderDialog({ ...worker, mode: "chat" });
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		await userEvent.click(within(dialog).getByRole("button", { name: "Target agent" }));
+
+		expect(screen.getByRole("menuitem", { name: /fx,\s*Coming soon/ })).toHaveAttribute(
+			"data-disabled",
+		);
+	});
+
 	it("keeps direct model IDs in the same searchable model picker", async () => {
 		const { queryClient } = renderDialog();
 		queryClient.setQueryData(agentModelsQueryKey("codex", worker.workspaceId), {
@@ -203,9 +240,7 @@ describe("SwitchAgentDialog", () => {
 		);
 
 		await waitFor(() =>
-			expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent(
-				"Use Claude Code's default",
-			),
+			expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Claude Opus 4.6"),
 		);
 		await userEvent.click(screen.getByRole("button", { name: "Switch" }));
 		expect(switchMocks.mutate).toHaveBeenLastCalledWith(
@@ -216,6 +251,110 @@ describe("SwitchAgentDialog", () => {
 				targetHarness: "claude-code",
 			},
 			{ onSuccess: expect.any(Function) },
+		);
+	});
+
+	it("shows the reported target model without pinning it on switch", async () => {
+		renderDialog();
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		expect(within(dialog).getByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.4");
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenCalledWith(
+			expect.objectContaining({ model: "", targetHarness: "codex" }),
+			expect.any(Object),
+		);
+	});
+
+	it("shows the project model and inherits it when switching without a model change", async () => {
+		const { queryClient } = renderDialog();
+		queryClient.setQueryData(["project", worker.workspaceId], {
+			config: { worker: { agent: "codex", agentConfig: { model: "gpt-5.4-mini" } } },
+		});
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		await waitFor(() => expect(within(dialog).getByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.4 Mini"));
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenCalledWith(
+			expect.objectContaining({ model: "", targetHarness: "codex" }),
+			expect.any(Object),
+		);
+	});
+
+	it("sends the catalog choice only when it overrides a different project model", async () => {
+		const { queryClient } = renderDialog();
+		queryClient.setQueryData(["project", worker.workspaceId], {
+			config: { worker: { agent: "codex", agentConfig: { model: "gpt-5.4-mini" } } },
+		});
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		await waitFor(() => expect(within(dialog).getByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.4 Mini"));
+		await userEvent.click(within(dialog).getByRole("button", { name: "Model" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "GPT-5.4" }));
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenCalledWith(
+			expect.objectContaining({ model: "gpt-5.4", targetHarness: "codex" }),
+			expect.any(Object),
+		);
+	});
+
+	it("uses the legacy project model when the role model belongs to another agent", async () => {
+		const { queryClient } = renderDialog();
+		queryClient.setQueryData(["project", worker.workspaceId], {
+			config: {
+				agentConfig: { model: "gpt-5.4-mini" },
+				worker: { agent: "claude-code", agentConfig: { model: "claude-opus-4-6" } },
+			},
+		});
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		await waitFor(() => expect(within(dialog).getByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.4 Mini"));
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenCalledWith(
+			expect.objectContaining({ model: "", targetHarness: "codex" }),
+			expect.any(Object),
+		);
+	});
+
+	it("inherits the project model while project settings are loading", async () => {
+		vi.spyOn(apiClient, "GET").mockImplementation(() => new Promise(() => {}));
+		renderDialog(worker, vi.fn(), undefined, null);
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		expect(within(dialog).getByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.4");
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenCalledWith(
+			expect.objectContaining({ model: "", targetHarness: "codex" }),
+			expect.any(Object),
+		);
+		await userEvent.click(within(dialog).getByRole("button", { name: "Model" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "GPT-5.4" }));
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenLastCalledWith(
+			expect.objectContaining({ model: "", targetHarness: "codex" }),
+			expect.any(Object),
+		);
+		await userEvent.click(within(dialog).getByRole("button", { name: "Model" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "GPT-5.4 Mini" }));
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenLastCalledWith(
+			expect.objectContaining({ model: "gpt-5.4-mini", targetHarness: "codex" }),
+			expect.any(Object),
+		);
+	});
+
+	it("inherits the project model when project settings fail to load", async () => {
+		vi.spyOn(apiClient, "GET").mockRejectedValue(new Error("settings unavailable"));
+		renderDialog(worker, vi.fn(), undefined, null);
+		const dialog = screen.getByRole("dialog", { name: "Switch agent" });
+		await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent("settings unavailable"));
+		expect(within(dialog).getByRole("button", { name: "Model" })).toHaveTextContent("GPT-5.4");
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenCalledWith(
+			expect.objectContaining({ model: "", targetHarness: "codex" }),
+			expect.any(Object),
+		);
+		await userEvent.click(within(dialog).getByRole("button", { name: "Model" }));
+		await userEvent.click(screen.getByRole("menuitem", { name: "GPT-5.4" }));
+		await userEvent.click(within(dialog).getByRole("button", { name: "Switch" }));
+		expect(switchMocks.mutate).toHaveBeenLastCalledWith(
+			expect.objectContaining({ model: "", targetHarness: "codex" }),
+			expect.any(Object),
 		);
 	});
 

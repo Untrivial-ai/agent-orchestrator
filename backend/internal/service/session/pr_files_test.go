@@ -46,6 +46,69 @@ func TestPRFilesUsePersistedBaseAndHeadWithoutReadingWorkspaceChanges(t *testing
 	}
 }
 
+func TestPRFilesListCommitsAndReadOneCommit(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	runGit(t, repo, "remote", "add", "origin", "https://example.test/acme/repo.git")
+	base := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+	runGit(t, repo, "switch", "-c", "feature")
+	writeWorkspaceFile(t, repo, "README.md", "first\n")
+	runGit(t, repo, "commit", "-am", "first change")
+	first := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+	writeWorkspaceFile(t, repo, "README.md", "second\n")
+	writeWorkspaceFile(t, repo, "notes.txt", "notes\n")
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "second change")
+	head := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+	writeWorkspaceFile(t, repo, "README.md", "workspace only\n")
+
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", Metadata: domain.SessionMetadata{WorkspacePath: repo}}
+	st.prs["ao-1"] = []domain.PullRequest{{Number: 42, URL: "https://example.test/acme/repo/-/merge_requests/42", Provider: "gitlab", Host: "example.test", Repo: "acme/repo", BaseSHA: base, HeadSHA: head}}
+	svc := &Service{store: st}
+	ctx := context.Background()
+
+	files, err := svc.ListPRFiles(ctx, "ao-1", 42, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files.Commits) != 2 || files.Commits[0].SHA != head || files.Commits[1].SHA != first {
+		t.Fatalf("commits = %+v, want second then first", files.Commits)
+	}
+	if got := files.Commits[0].Files; len(got) != 2 || got[0].Path != "README.md" || got[1].Path != "notes.txt" || got[1].Status != WorkspaceFileAdded {
+		t.Fatalf("second commit files = %+v", got)
+	}
+	if got := files.Commits[1].Files; len(got) != 1 || got[0].Path != "README.md" || got[0].Additions != 1 || got[0].Deletions != 1 {
+		t.Fatalf("first commit files = %+v", got)
+	}
+
+	detail, err := svc.GetPRFileAtCommit(ctx, "ao-1", 42, "", "README.md", first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Content != "first\n" || !detail.Historical || !strings.Contains(detail.Diff, "-hello") || !strings.Contains(detail.Diff, "+first") || strings.Contains(detail.Diff, "second") {
+		t.Fatalf("first commit README.md = %+v", detail)
+	}
+	before, err := svc.GetPRFileRevisionAtCommit(ctx, "ao-1", 42, "", "README.md", WorkspaceBlobBefore, head)
+	if err != nil || before.Content != "first\n" {
+		t.Fatalf("before = %#v, %v; want the first commit's content", before, err)
+	}
+	after, err := svc.GetPRFileRevisionAtCommit(ctx, "ao-1", 42, "", "README.md", WorkspaceBlobAfter, head)
+	if err != nil || after.Content != "second\n" {
+		t.Fatalf("after = %#v, %v; want the second commit's content", after, err)
+	}
+	added, err := svc.GetPRFileRevisionAtCommit(ctx, "ao-1", 42, "", "notes.txt", WorkspaceBlobBefore, head)
+	if err != nil || added.Exists {
+		t.Fatalf("added file before = %#v, %v; want a missing revision", added, err)
+	}
+
+	if _, err := svc.GetPRFileAtCommit(ctx, "ao-1", 42, "", "notes.txt", first); err == nil {
+		t.Fatal("read a file the selected commit did not change")
+	}
+	if _, err := svc.GetPRFileRevisionAtCommit(ctx, "ao-1", 42, "", "README.md", WorkspaceBlobAfter, base); err == nil {
+		t.Fatal("read a commit that is not part of the pull request")
+	}
+}
+
 func TestGetPRFileScopesRenameMetadataToSelectedPaths(t *testing.T) {
 	repo := newWorkspaceRepo(t)
 	runGit(t, repo, "remote", "add", "origin", "https://example.test/acme/repo.git")

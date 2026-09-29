@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { haptics } from "./haptics";
@@ -6,7 +6,7 @@ import { staleAgeLabel } from "./screenState";
 import { useApp } from "./store";
 import type { Theme } from "./theme";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
-import { fontScaleCap } from "./tokens";
+import { fontScaleCap, space, type } from "./tokens";
 import { useStaleness } from "./useStaleness";
 
 /**
@@ -51,7 +51,7 @@ export function StaleBanner({ error = false, onRetry }: { error?: boolean; onRet
 			accessibilityLabel={text}
 			style={[styles.banner, { backgroundColor: fill }]}
 		>
-			<Feather name={error ? "wifi-off" : "clock"} size={13} color={tone} />
+			<Feather name={error ? "wifi-off" : "clock"} size={12} color={tone} />
 			<Text
 				numberOfLines={1}
 				maxFontSizeMultiplier={fontScaleCap.chrome}
@@ -86,12 +86,12 @@ const makeStyles = (t: Theme) =>
 			minHeight: 35,
 			flexDirection: "row",
 			alignItems: "center",
-			gap: 8,
-			paddingHorizontal: 12,
-			paddingVertical: 7,
+			gap: space.sm,
+			paddingHorizontal: space.md,
+			paddingVertical: space.xs,
 			borderBottomWidth: 1,
 			borderBottomColor: t.borderSubtle,
 		},
-		bannerText: { flex: 1, color: t.textSecondary, fontSize: 11, lineHeight: 15 },
-		bannerAction: { fontSize: 11, lineHeight: 15, fontWeight: "700" },
+		bannerText: { fontFamily: "Geist_400Regular", flex: 1, color: t.textSecondary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
+		bannerAction: { fontFamily: "Geist_600SemiBold", fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, fontWeight: "600" },
 	});

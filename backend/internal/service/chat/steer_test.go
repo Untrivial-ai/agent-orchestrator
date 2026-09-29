@@ -872,6 +872,7 @@ func TestPromoteQueuedTurnAmbiguousProviderFailureSettlesUncertainWithoutRedeliv
 	}
 	if source == nil {
 		t.Fatalf("uncertain source turn %s is not visible", queued.ID)
+		return
 	}
 	if source.State != domain.TurnStateFailed || source.ErrorMessage != chatsvc.ErrPromotionUncertain.Error() {
 		t.Fatalf("uncertain source = %+v, want failed with promotion-uncertain error", *source)

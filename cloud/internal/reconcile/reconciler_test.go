@@ -232,6 +232,46 @@ func TestIdleWorkDoesNotExtendCoderDeadline(t *testing.T) {
 	}
 }
 
+func testReconcilerKeepWarm(store Store, provider sandbox.Provider) *Reconciler {
+	return New(store, lifecycleResolver{provider: provider}, Options{
+		KeepWarm: true,
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+}
+
+// With keep-warm on, an idle session (no active turn, KeepAlive false) must still
+// get its Coder deadline extended so the workspace never auto-stops for idleness —
+// the opposite of TestIdleWorkDoesNotExtendCoderDeadline above.
+func TestKeepWarmExtendsIdleCoderDeadline(t *testing.T) {
+	deadline := time.Now().Add(time.Minute)
+	store := &lifecycleStore{}
+	provider := &lifecycleProvider{environment: sandbox.Environment{
+		ID: "workspace-1", State: sandbox.StateRunning, Deadline: &deadline,
+	}}
+	if err := testReconcilerKeepWarm(store, provider).reconcileSandbox(context.Background(), runningRecord(false)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(provider.extensions) != 1 {
+		t.Fatalf("extensions = %v, want one (keep-warm extends even when idle)", provider.extensions)
+	}
+}
+
+// With keep-warm on, a provider external-idle stop must be refused and the box
+// restored — an idle cloud session stays up like a local one — the opposite of
+// TestCoderAutostopBecomesPausedWithoutRestart above.
+func TestKeepWarmRestoresIdleStoppedCoderWorkspace(t *testing.T) {
+	store := &lifecycleStore{acceptedPause: true}
+	provider := &lifecycleProvider{environment: sandbox.Environment{
+		ID: "workspace-1", State: sandbox.StateStopped, StopCause: sandbox.StopCauseExternalIdle,
+	}}
+	if err := testReconcilerKeepWarm(store, provider).reconcileSandbox(context.Background(), runningRecord(false)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if store.acceptCalls != 0 || provider.starts != 1 {
+		t.Fatalf("accept calls = %d, starts = %d; want 0, 1 (keep-warm restores, never accepts idle stop)", store.acceptCalls, provider.starts)
+	}
+}
+
 type workerSpecStore struct {
 	Store
 	issued int

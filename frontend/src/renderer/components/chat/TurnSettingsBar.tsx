@@ -30,6 +30,7 @@ import {
 	OptionMenuTrigger,
 } from "../ui/option-menu";
 import { cn } from "../../lib/utils";
+import { isDefaultPlaceholderLabel } from "../../lib/agent-model-choices";
 import { Switch } from "../ui/switch";
 import { ModelMenuChoices } from "./ModelMenuChoices";
 import type {
@@ -43,7 +44,7 @@ import type {
 
 /** AO's generic approval modes, used by harnesses without a native vocabulary. */
 const APPROVAL_COPY: Record<ApprovalMode, { label: string }> = {
-	default: { label: "Default approvals" },
+	default: { label: "Use agent permissions" },
 	"accept-edits": { label: "Accept edits" },
 	auto: { label: "Auto-approve" },
 	"bypass-permissions": { label: "Bypass permissions" },
@@ -128,7 +129,7 @@ export function TurnSettingsBar({
 	// A catalog miss must not relabel an explicit choice or borrow another model's
 	// effort settings. Custom or newly available models may not be listed yet.
 	const chosenLabel =
-		selected?.displayName ?? settings.model ?? fallback?.displayName ?? "Provider default";
+		selected?.displayName ?? settings.model ?? fallback?.displayName ?? "Choose a model";
 	const rerouted = reroute
 		? models.find((model) => model.id === reroute.toModel)?.displayName ?? reroute.toModel
 		: undefined;
@@ -275,7 +276,7 @@ export function TurnSettingsBar({
 			</div>
 			{rememberPermissionsPending || (rememberedPermissionMode !== undefined && rememberedPermissionMode === rememberMode && !planning && !configPending) ? (
 				<p role="status" className="px-1 text-[11px] text-muted-foreground">
-					{rememberPermissionsPending ? "Saving project default…" : "Permission mode saved for new sessions in this project."}
+					{rememberPermissionsPending ? "Saving project permissions…" : "Permission mode saved for new sessions in this project."}
 				</p>
 			) : null}
 			{rememberPermissionsError ? (
@@ -342,7 +343,7 @@ function ModelEffortPicker({
 					}
 					className={TRIGGER_CLASS}
 				>
-					<span className="min-w-0 max-w-[22ch] truncate">{groupLabel}</span>
+					<span className="min-w-0 max-w-[38ch] truncate">{groupLabel}</span>
 					{reroute ? (
 						// A mark, not a second name. Two truncated model names side by side is
 						// less legible than one readable name plus a flag that says it is not
@@ -471,7 +472,7 @@ function ClubbedConfigPicker({
 					title="Model and reasoning effort for the next turn"
 					className={TRIGGER_CLASS}
 				>
-					<span className="min-w-0 max-w-[22ch] truncate">{groupLabel}</span>
+					<span className="min-w-0 max-w-[38ch] truncate">{groupLabel}</span>
 				</OptionMenuTrigger>
 			<OptionMenuContent align="start" className={CHAT_MENU_CLASS}>
 				{modelOptions.map((option) => (
@@ -655,12 +656,14 @@ function OptionSubmenu({
 
 function ConfigOptionPicker({
 	option,
+	label,
 	title,
 	onChange,
 	disabled,
 	footer,
 }: {
 	option: ChatConfigOption;
+	label?: string;
 	title?: string;
 	onChange: (value: ChatConfigOptionValue) => void;
 	disabled?: boolean;
@@ -668,7 +671,7 @@ function ConfigOptionPicker({
 }) {
 	return (
 		<Picker
-			label={optionCurrentLabel(option)}
+			label={label ?? optionCurrentLabel(option)}
 			title={title || option.description || option.name}
 			disabled={disabled}
 			onFocus={isModelOption(option) ? focusModelSearch : undefined}
@@ -883,7 +886,9 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 	const extra: ChatConfigOption[] = [];
 	let executionMode: ChatConfigOption | undefined;
 	let mode: ChatConfigOption | undefined;
-	for (const option of options) {
+	for (const rawOption of options) {
+		const option = rawOption.type === "select" ? resolveImplicitChoice(rawOption) : rawOption;
+		if (option.type === "select" && option.choices.length === 0) continue;
 		if (isAgentOption(option)) continue;
 		if (isModelOption(option)) {
 			if (option.category === "model" || option.id === "model") primaryModel.push(option);
@@ -917,6 +922,45 @@ function partitionConfigOptions(options: ChatConfigOption[]): {
 		extra.push(option);
 	}
 	return { model: [...primaryModel, ...otherModel], effort, executionMode, toggles, mode, extra };
+}
+
+// ACP may expose a provider-owned choice whose description names a concrete
+// option. Keep its wire value so users can return to following the provider.
+function resolveImplicitChoice(option: ChatConfigOption): ChatConfigOption {
+	const mapped = isModeOption(option) ? {
+		...option,
+		choices: option.choices.map((choice) =>
+			choice.permissionMode === "default" && isDefaultPlaceholderLabel(choice.name)
+				? { ...choice, name: "Use agent permissions" }
+				: choice,
+		),
+	} : option;
+	const implicit = mapped.choices.find((choice) =>
+		choice.value === "default" && (
+			!isModeOption(mapped) || (choice.permissionMode !== "default" && (isDefaultPlaceholderLabel(choice.name) || /^use agent permissions$/i.test(choice.name.trim())))
+		),
+	);
+	if (!implicit) return mapped;
+	if (isModeOption(mapped)) return { ...mapped, choices: mapped.choices.filter((choice) => choice !== implicit) };
+	const concrete = mapped.choices.find((choice) =>
+		choice.value !== implicit.value && choice.name.toLowerCase() === implicit.description?.trim().toLowerCase(),
+	);
+	const followLabel = isModelOption(mapped) ? "Use agent model" : isEffortOption(mapped) ? "Use agent effort" : "Use agent setting";
+	if (concrete && mapped.currentValue !== concrete.value) {
+		const label = isDefaultPlaceholderLabel(concrete.name) ? concrete.value : concrete.name;
+		return {
+			...mapped,
+			choices: mapped.choices.filter((choice) => choice !== concrete).map((choice) =>
+				choice === implicit ? { ...choice, name: label } : choice,
+			),
+		};
+	}
+	return {
+		...mapped,
+		choices: mapped.choices.map((choice) => choice === implicit && isDefaultPlaceholderLabel(choice.name)
+			? { ...choice, name: concrete ? `${followLabel} (${concrete.name})` : followLabel }
+			: choice),
+	};
 }
 
 /** Ask is an execution mode only when the same option advertises Agent; otherwise it is an approval policy. */
@@ -1000,6 +1044,11 @@ function withChoices(
 
 function optionCurrentLabel(option: ChatConfigOption): string {
 	if (option.type === "boolean") return option.currentBoolean ? "On" : "Off";
+	if (option.currentValue === "default" && !option.choices.some((choice) => choice.value === "default")) {
+		if (isEffortOption(option)) return "Effort not reported";
+		if (isModelOption(option)) return "Model not reported";
+		return "Selection not reported";
+	}
 	return option.choices.find((choice) => choice.value === option.currentValue)?.name
 		?? option.currentValue
 		?? option.name;

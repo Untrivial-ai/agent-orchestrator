@@ -6,10 +6,13 @@ export function useBrowserDownloads() {
 	const bridge = aoBridge.browser?.downloads;
 	const [downloads, setDownloads] = useState<BrowserDownload[]>([]);
 	const [error, setError] = useState("");
+	const [initialized, setInitialized] = useState(false);
 
 	useEffect(() => {
+		setInitialized(false);
 		if (!bridge) {
 			setDownloads([]);
+			setInitialized(true);
 			return;
 		}
 		let active = true;
@@ -17,8 +20,11 @@ export function useBrowserDownloads() {
 			if (!active) return;
 			setDownloads(state.downloads);
 			setError(state.error ?? "");
+			setInitialized(true);
 		}).catch((reason) => {
-			if (active) setError(reason instanceof Error ? reason.message : String(reason));
+			if (!active) return;
+			setError(reason instanceof Error ? reason.message : String(reason));
+			setInitialized(true);
 		});
 		const unsubscribe = bridge.onChanged((state) => {
 			setDownloads(state.downloads);
@@ -52,5 +58,5 @@ export function useBrowserDownloads() {
 		}
 	}, [bridge]);
 
-	return { downloads, error, action, clear };
+	return { downloads, error, initialized, action, clear };
 }

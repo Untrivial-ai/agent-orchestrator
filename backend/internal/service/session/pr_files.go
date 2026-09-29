@@ -16,6 +16,8 @@ import (
 type PRFiles struct {
 	SessionID domain.SessionID
 	Files     []WorkspaceFileSummary
+	// Commits are the PR's own commits (base..head), newest first.
+	Commits   []CommitSummary
 	Truncated bool
 	Summary   WorkspaceSummary
 }
@@ -54,7 +56,29 @@ func (s *Service) ListPRFiles(ctx context.Context, id domain.SessionID, number i
 		binary := status != WorkspaceFileDeleted && !hasTextCounts
 		files = append(files, WorkspaceFileSummary{Path: rel, PreviousPath: previous[rel], Status: status, Additions: additions, Deletions: deletions, Size: size, Binary: binary})
 	}
-	return PRFiles{SessionID: id, Files: files, Truncated: truncated, Summary: workspaceSummaryFromFiles(files)}, nil
+	// The commit list is best-effort: a PR whose files load still opens, just
+	// without its per-commit menu, if its log cannot be read.
+	commits, _ := prCommitLog(ctx, root, pr)
+	return PRFiles{SessionID: id, Files: files, Commits: commits, Truncated: truncated, Summary: workspaceSummaryFromFiles(files)}, nil
+}
+
+// GetPRFileAtCommit returns one file's immutable snapshot and patch for a
+// single commit of an associated PR.
+func (s *Service) GetPRFileAtCommit(ctx context.Context, id domain.SessionID, number int, sourceURL, rawPath, commitSHA string) (WorkspaceFileDetail, error) {
+	rec, pr, err := s.prFileSource(ctx, id, number, sourceURL)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	rel, err := cleanWorkspaceRelativePath(rawPath)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	root := rec.Metadata.WorkspacePath
+	commit, summary, err := prCommitFile(ctx, root, pr, commitSHA, rel)
+	if err != nil {
+		return WorkspaceFileDetail{}, err
+	}
+	return workspaceCommitFileDetail(ctx, id, root, "", rel, commit.SHA, summary)
 }
 
 // GetPRFile returns one file and its exact base...head diff for an associated PR.
@@ -154,7 +178,41 @@ func (s *Service) GetPRFileRevision(ctx context.Context, id domain.SessionID, nu
 		}
 		revision = pr.BaseSHA
 	}
-	data, size, exists, truncated, err := readGitRevision(ctx, rec.Metadata.WorkspacePath, revision+":"+path)
+	return readPRFileRevision(ctx, rec.Metadata.WorkspacePath, id, rel, side, revision+":"+path)
+}
+
+// GetPRFileRevisionAtCommit reads one immutable side of a single PR commit: the
+// commit's first parent before, the commit itself after.
+func (s *Service) GetPRFileRevisionAtCommit(ctx context.Context, id domain.SessionID, number int, sourceURL, rawPath string, side WorkspaceFileBlobSide, commitSHA string) (WorkspaceFileRevision, error) {
+	rec, pr, err := s.prFileSource(ctx, id, number, sourceURL)
+	if err != nil {
+		return WorkspaceFileRevision{}, err
+	}
+	if side != WorkspaceBlobBefore && side != WorkspaceBlobAfter {
+		return WorkspaceFileRevision{}, apierr.Invalid("INVALID_WORKSPACE_REVISION_SIDE", "side must be before or after", nil)
+	}
+	rel, err := cleanWorkspaceRelativePath(rawPath)
+	if err != nil {
+		return WorkspaceFileRevision{}, err
+	}
+	root := rec.Metadata.WorkspacePath
+	commit, summary, err := prCommitFile(ctx, root, pr, commitSHA, rel)
+	if err != nil {
+		return WorkspaceFileRevision{}, err
+	}
+	path, revision := rel, commit.SHA
+	if side == WorkspaceBlobBefore {
+		if summary.PreviousPath != "" {
+			path = summary.PreviousPath
+		}
+		revision = commit.SHA + "^"
+	}
+	return readPRFileRevision(ctx, root, id, rel, side, revision+":"+path)
+}
+
+// readPRFileRevision reads one immutable <revision>:<path> spec of a PR view.
+func readPRFileRevision(ctx context.Context, root string, id domain.SessionID, rel string, side WorkspaceFileBlobSide, spec string) (WorkspaceFileRevision, error) {
+	data, size, exists, truncated, err := readGitRevision(ctx, root, spec)
 	if err != nil {
 		return WorkspaceFileRevision{}, unavailablePRSource()
 	}
@@ -170,6 +228,56 @@ func (s *Service) GetPRFileRevision(ctx context.Context, id domain.SessionID, nu
 		result.Content = content
 	}
 	return result, nil
+}
+
+// prCommitLog lists the PR's own commits (base..head), newest first. Like the
+// rest of the PR read model it reads revisions only, never the session
+// worktree, so file sizes are left unset: the list only picks and filters
+// files, and reading a file reports its real size.
+func prCommitLog(ctx context.Context, root string, pr domain.PullRequest) ([]CommitSummary, error) {
+	commits, changes, counts, err := gitCommitLogChanges(ctx, root, pr.BaseSHA+".."+pr.HeadSHA)
+	if err != nil {
+		return nil, unavailablePRSource()
+	}
+	for i := range commits {
+		change := changes[commits[i].SHA]
+		paths := make([]string, 0, len(change.statuses))
+		for rel := range change.statuses {
+			paths = append(paths, rel)
+		}
+		sort.Strings(paths)
+		files := make([]WorkspaceFileSummary, 0, len(paths))
+		for _, rel := range paths {
+			status := change.statuses[rel]
+			lines, hasTextCounts := counts[commits[i].SHA][rel]
+			files = append(files, WorkspaceFileSummary{Path: rel, PreviousPath: change.previous[rel], Status: status, Additions: lines[0], Deletions: lines[1], Binary: status != WorkspaceFileDeleted && !hasTextCounts})
+		}
+		commits[i].Files = files
+	}
+	return commits, nil
+}
+
+// prCommitFile resolves one of the PR's own commits and the file rel within
+// it. A SHA outside base..head is rejected, so a commit view never reads
+// revisions the selected PR does not contain.
+func prCommitFile(ctx context.Context, root string, pr domain.PullRequest, rawSHA, rel string) (CommitSummary, WorkspaceFileSummary, error) {
+	commits, err := prCommitLog(ctx, root, pr)
+	if err != nil {
+		return CommitSummary{}, WorkspaceFileSummary{}, err
+	}
+	sha := strings.TrimSpace(rawSHA)
+	for _, commit := range commits {
+		if commit.SHA != sha {
+			continue
+		}
+		for _, file := range commit.Files {
+			if file.Path == rel {
+				return commit, file, nil
+			}
+		}
+		return CommitSummary{}, WorkspaceFileSummary{}, apierr.NotFound("PR_COMMIT_FILE_NOT_FOUND", "File was not changed by this commit")
+	}
+	return CommitSummary{}, WorkspaceFileSummary{}, apierr.NotFound("PR_COMMIT_NOT_FOUND", "Commit is not part of the selected pull request")
 }
 
 func (s *Service) prFileSource(ctx context.Context, id domain.SessionID, number int, sourceURL string) (domain.SessionRecord, domain.PullRequest, error) {

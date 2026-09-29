@@ -61,7 +61,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             frontend/package-lock.json
-            frontend/src/landing/package-lock.json
+            frontend/src/docs/package-lock.json
             packages/cloud-client/package-lock.json
             packages/product-ui/package-lock.json
 
@@ -104,11 +104,11 @@ jobs:
       - name: Prepare pinned agent-browser runtime
         run: npm run browser-runtime:prepare -- --quiet
 
-      - name: Install landing dependencies
-        run: npm ci --prefix src/landing
+      - name: Install docs dependencies
+        run: npm ci --prefix src/docs
 
-      - name: Verify generated landing favicons
-        run: npm run icons:check --prefix src/landing
+      - name: Build docs
+        run: npm run build --prefix src/docs
 
       - name: Typecheck project
         run: npm run typecheck

@@ -1,3 +1,5 @@
+import { userFacingError } from "../connectionError";
+
 export async function runSheetMutation<T>(
 	action: () => Promise<T>,
 	onSuccess: (value: T) => void,
@@ -6,6 +8,6 @@ export async function runSheetMutation<T>(
 	try {
 		onSuccess(await action());
 	} catch (cause) {
-		onError(cause instanceof Error ? cause.message : String(cause));
+		onError(userFacingError(cause));
 	}
 }

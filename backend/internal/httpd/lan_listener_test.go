@@ -49,6 +49,47 @@ func TestLANManagerAuthGatesSharedHandler(t *testing.T) {
 	}
 }
 
+// TestLANManagerIdentityEndpoint verifies the unauthenticated identity probe
+// works as expected for mobile pairing (ADR 0003).
+func TestLANManagerIdentityEndpoint(t *testing.T) {
+	inner := chi.NewRouter()
+	inner.Get("/api/v1/identity", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"hostId":"test-host-id","apiVersion":1}`)
+	})
+	st := &authState{}
+	st.setHash(mobilebridge.HashPassword("secret12"))
+	m := NewLANManager(inner, st, 0, slog.Default(), nil)
+	port, err := m.Start(0)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer m.Stop(context.Background())
+
+	// Identity endpoint should be accessible without auth (ADR 0003)
+	base := fmt.Sprintf("http://127.0.0.1:%d/api/v1/identity", port)
+	resp, err := http.Get(base)
+	if err != nil {
+		t.Fatalf("identity probe failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("identity probe: got %d want 200", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != `{"hostId":"test-host-id","apiVersion":1}` {
+		t.Fatalf("identity probe response: got %s want hostId", string(body))
+	}
+
+	// Other endpoints should still require auth
+	authBase := fmt.Sprintf("http://127.0.0.1:%d/api/v1/anything", port)
+	resp2, _ := http.Get(authBase)
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("other endpoint without auth: got %d want 401", resp2.StatusCode)
+	}
+}
+
 // TestLANManagerBlocksLoopbackOnlyControlRoutes proves the LAN listener never
 // serves /shutdown, /internal/*, /api/v1/mobile*, /api/v1/dev*,
 // /api/v1/browser*, or the Codex credential routes under

@@ -39,7 +39,7 @@ describe("describePushToggle", () => {
 		const t = describePushToggle(status({ registered: true }), { host: "" });
 		expect(t.value).toBe(false);
 		expect(t.disabled).toBe(true);
-		expect(t.footer).toMatch(/connect to your ao server/i);
+		expect(t.footer).toMatch(/pair a desktop first/i);
 	});
 
 	it("reads on only when permission is granted and the device is registered", () => {
@@ -113,7 +113,7 @@ describe("describeRegisterFailure", () => {
 	// "has no push entitlement", which was false and alarming.
 	it("blames the server, not the build, when the daemon is unreachable", () => {
 		const { title, message } = describeRegisterFailure("server-unreachable", "ios");
-		expect(title).toMatch(/couldn't reach your ao server/i);
+		expect(title).toMatch(/couldn't reach your desktop/i);
 		expect(`${title} ${message}`).not.toMatch(/entitlement/i);
 	});
 
@@ -157,7 +157,7 @@ describe("describeRegisterFailure", () => {
 
 	it("tells an unpaired user to connect rather than blaming the build or network", () => {
 		const { title, message } = describeRegisterFailure("not-configured", "ios");
-		expect(title).toMatch(/connect to your ao server/i);
+		expect(title).toMatch(/pair a desktop first/i);
 		expect(`${title} ${message}`).not.toMatch(/entitlement|couldn't reach/i);
 	});
 

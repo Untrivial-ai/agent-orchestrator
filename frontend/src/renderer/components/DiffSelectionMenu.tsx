@@ -104,7 +104,7 @@ export function DiffSelectionMenu({
 			try {
 				const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
 					params: { path: { sessionId } },
-					body: { message },
+					body: { message, userAuthored: true },
 				});
 				if (openGeneration !== openGenerationRef.current) return;
 				if (error) {

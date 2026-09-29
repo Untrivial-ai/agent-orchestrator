@@ -1,4 +1,4 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../icons";
 import * as Clipboard from "expo-clipboard";
 import { createContext, Fragment, memo, useContext, useState, type ReactNode } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from "react-native";
@@ -8,6 +8,7 @@ import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { HighlightedCodeText } from "./HighlightedCodeText";
 import { parseBlocks } from "./markdownBlocks";
+import { iconSize, microLabel, prose, radius, space, type } from "../tokens";
 
 // The conversation screen decides how a tapped link opens (it knows the AO host
 // that the agent's localhost links map onto); the renderer only reports the tap.
@@ -111,7 +112,7 @@ function CodeBlock({ text, language, streaming }: { text: string; language?: str
 		<View style={styles.codeCard}>
 			<View style={styles.codeHeader}>
 				<Text style={styles.codeLanguage}>{language || "code"}</Text>
-				<Pressable accessibilityRole="button" accessibilityLabel={wrap ? "Disable code wrapping" : "Wrap code"} accessibilityState={{ selected: wrap }} onPress={() => { haptics.select(); preferredCodeWrap = !wrap; setWrap(!wrap); }} style={styles.copyButton}><Feather name="corner-down-left" size={13} color={wrap ? t.blue : t.textTertiary} /><Text style={[styles.copyLabel, wrap && { color: t.blue }]}>Wrap</Text></Pressable>
+				<Pressable accessibilityRole="button" accessibilityLabel={wrap ? "Disable code wrapping" : "Wrap code"} accessibilityState={{ selected: wrap }} onPress={() => { haptics.select(); preferredCodeWrap = !wrap; setWrap(!wrap); }} style={styles.copyButton}><Feather name="corner-down-left" size={iconSize.xs} color={wrap ? t.accent : t.textTertiary} /><Text style={[styles.copyLabel, wrap && { color: t.accent }]}>Wrap</Text></Pressable>
 				<Pressable
 					accessibilityRole="button"
 					accessibilityLabel="Copy code"
@@ -123,7 +124,7 @@ function CodeBlock({ text, language, streaming }: { text: string; language?: str
 					}}
 					style={styles.copyButton}
 				>
-					<Feather name={copied ? "check" : "copy"} size={13} color={copied ? t.green : t.textTertiary} />
+					<Feather name={copied ? "check" : "copy"} size={iconSize.xs} color={copied ? t.green : t.textTertiary} />
 					<Text style={[styles.copyLabel, copied && { color: t.green }]}>{copied ? "Copied" : "Copy"}</Text>
 				</Pressable>
 			</View>
@@ -168,36 +169,38 @@ function inline(text: string, styles: ReturnType<typeof makeStyles>): ReactNode[
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		root: { gap: 10 },
-		body: { color: t.textPrimary, fontSize: 16, lineHeight: 24 },
-		heading: { color: t.textPrimary, fontSize: 19, lineHeight: 25, fontWeight: "700", marginTop: 6 },
-		smallHeading: { fontSize: 16, lineHeight: 22 },
-		strong: { fontWeight: "700" },
+		body: { fontFamily: "Geist_400Regular", color: t.textPrimary, fontSize: prose.fontSize, lineHeight: prose.lineHeight },
+		heading: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.title3.fontSize, lineHeight: type.title3.lineHeight, fontWeight: "600", marginTop: space.xs },
+		smallHeading: { fontFamily: "Geist_400Regular", fontSize: type.callout.fontSize, lineHeight: type.callout.lineHeight },
+		strong: { fontFamily: "Geist_600SemiBold", fontWeight: "600" },
 		em: { fontStyle: "italic" },
 		strike: { textDecorationLine: "line-through" },
-		link: { color: t.blue, textDecorationLine: "underline" },
-		inlineCode: { color: t.blue, fontFamily: t.fontMono, fontSize: 14, backgroundColor: t.bgSubtle },
-		list: { gap: 5 },
-		listRow: { flexDirection: "row", alignItems: "flex-start", gap: 8, paddingRight: 4 },
-		marker: { width: 20, color: t.textTertiary, fontSize: 15, lineHeight: 23, textAlign: "right" },
+		link: { color: t.accent, textDecorationLine: "underline" },
+		inlineCode: { color: t.accent, fontFamily: t.fontMono, fontSize: type.subheadline.fontSize, backgroundColor: t.bgSubtle },
+		list: { gap: space.xxs },
+		listRow: { flexDirection: "row", alignItems: "flex-start", gap: space.sm, paddingRight: space.xxs },
+		// The marker sits on the same line as prose, so it borrows prose leading.
+		marker: { fontFamily: "Geist_400Regular", width: 20, color: t.textTertiary, fontSize: type.subheadline.fontSize, lineHeight: prose.lineHeight, textAlign: "right" },
 		taskDone: { color: t.textTertiary, textDecorationLine: "line-through" },
 		quote: { borderLeftWidth: 2, borderLeftColor: t.borderStrong, paddingLeft: 12 },
-		quoteText: { color: t.textSecondary, fontSize: 15, lineHeight: 23, fontStyle: "italic" },
-		rule: { height: 1, backgroundColor: t.borderSubtle, marginVertical: 4 },
-		codeCard: { borderRadius: 12, overflow: "hidden", borderWidth: 1, borderColor: t.borderSubtle, backgroundColor: t.bgColumn },
-		codeHeader: { minHeight: 34, paddingHorizontal: 11, flexDirection: "row", alignItems: "center", borderBottomWidth: 1, borderBottomColor: t.borderSubtle },
-		codeLanguage: { flex: 1, color: t.textTertiary, fontFamily: t.fontMono, fontSize: 11, textTransform: "uppercase" },
-		copyButton: { flexDirection: "row", alignItems: "center", gap: 5, paddingVertical: 7, paddingLeft: 12 },
-		copyLabel: { color: t.textTertiary, fontSize: 11, fontWeight: "600" },
-		codeText: { color: t.textPrimary, fontFamily: t.fontMono, fontSize: 13, lineHeight: 20, padding: 12 },
+		quoteText: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.subheadline.fontSize, lineHeight: prose.lineHeight, fontStyle: "italic" },
+		rule: { height: 1, backgroundColor: t.borderSubtle, marginVertical: space.xxs },
+		codeCard: { borderRadius: radius.md, borderCurve: "continuous", overflow: "hidden", borderWidth: 1, borderColor: t.borderSubtle, backgroundColor: t.bgColumn },
+		codeHeader: { minHeight: 34, paddingHorizontal: space.md, flexDirection: "row", alignItems: "center", borderBottomWidth: 1, borderBottomColor: t.borderSubtle },
+		codeLanguage: { flex: 1, color: t.textTertiary, ...microLabel, fontFamily: t.fontMono, textTransform: "uppercase" },
+		copyButton: { flexDirection: "row", alignItems: "center", gap: space.xxs, paddingVertical: space.xs, paddingLeft: space.md },
+		copyLabel: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.caption2.fontSize, fontWeight: "600" },
+		// Code keeps looser leading than UI text at the same size.
+		codeText: { color: t.textPrimary, fontFamily: t.fontMono, fontSize: type.footnote.fontSize, lineHeight: 20, padding: space.md },
 		codeWrap: { flexGrow: 1 },
 		codeTextWrap: { flexShrink: 1 },
-		imageCard: { overflow: "hidden", borderRadius: 12, borderWidth: 1, borderColor: t.borderSubtle, backgroundColor: t.bgColumn },
+		imageCard: { overflow: "hidden", borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: t.borderSubtle, backgroundColor: t.bgColumn },
 		image: { width: "100%", minHeight: 190, maxHeight: 420 },
-		imageCaption: { color: t.textTertiary, fontSize: 10, paddingHorizontal: 10, paddingVertical: 7, borderTopWidth: 1, borderTopColor: t.borderSubtle },
-		imageFallback: { color: t.textTertiary, fontSize: 12, fontStyle: "italic" },
-		table: { borderWidth: 1, borderColor: t.borderSubtle, borderRadius: 8, overflow: "hidden" },
+		imageCaption: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.caption2.fontSize, paddingHorizontal: space.sm, paddingVertical: space.xs, borderTopWidth: 1, borderTopColor: t.borderSubtle },
+		imageFallback: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.caption1.fontSize, fontStyle: "italic" },
+		table: { borderWidth: 1, borderColor: t.borderSubtle, borderRadius: radius.sm, borderCurve: "continuous", overflow: "hidden" },
 		tableRow: { flexDirection: "row", borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle },
 		tableHeader: { borderTopWidth: 0, backgroundColor: t.bgSubtle },
-		tableCell: { minWidth: 110, maxWidth: 260, color: t.textSecondary, fontSize: 12, lineHeight: 17, paddingHorizontal: 9, paddingVertical: 7, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: t.borderSubtle },
-		tableHeaderText: { color: t.textPrimary, fontWeight: "700" },
+		tableCell: { fontFamily: "Geist_400Regular", minWidth: 110, maxWidth: 260, color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, paddingHorizontal: space.sm, paddingVertical: space.xs, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: t.borderSubtle },
+		tableHeaderText: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontWeight: "600" },
 	});

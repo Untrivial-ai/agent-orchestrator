@@ -960,6 +960,296 @@ paths:
       summary: Refresh the cached local agent adapter catalog
       tags:
       - agents
+  /api/v1/automations:
+    get:
+      operationId: listAutomations
+      parameters:
+      - in: query
+        name: projectId
+        schema:
+          type: string
+      - in: query
+        name: enabled
+        schema:
+          type:
+          - "null"
+          - boolean
+      - in: query
+        name: limit
+        schema:
+          maximum: 100
+          minimum: 1
+          type: integer
+      - in: query
+        name: cursor
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAutomationsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List recurring automations
+      tags:
+      - automations
+    post:
+      operationId: createAutomation
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAutomationRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationEnvelope'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Create a recurring automation
+      tags:
+      - automations
+  /api/v1/automations/{automationId}:
+    delete:
+      operationId: deleteAutomation
+      parameters:
+      - description: Automation identifier.
+        in: path
+        name: automationId
+        required: true
+        schema:
+          description: Automation identifier.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Delete an automation and its run history
+      tags:
+      - automations
+    get:
+      operationId: getAutomation
+      parameters:
+      - description: Automation identifier.
+        in: path
+        name: automationId
+        required: true
+        schema:
+          description: Automation identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationEnvelope'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get one recurring automation
+      tags:
+      - automations
+    patch:
+      operationId: updateAutomation
+      parameters:
+      - description: Automation identifier.
+        in: path
+        name: automationId
+        required: true
+        schema:
+          description: Automation identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAutomationRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationEnvelope'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Update a recurring automation
+      tags:
+      - automations
+  /api/v1/automations/{automationId}/runs:
+    get:
+      operationId: listAutomationRuns
+      parameters:
+      - description: Automation identifier.
+        in: path
+        name: automationId
+        required: true
+        schema:
+          description: Automation identifier.
+          type: string
+      - in: query
+        name: limit
+        schema:
+          maximum: 100
+          minimum: 1
+          type: integer
+      - in: query
+        name: cursor
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListAutomationRunsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List durable automation run history
+      tags:
+      - automations
   /api/v1/browser/commands:
     post:
       operationId: executeBrowserCommand
@@ -1693,6 +1983,43 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Internal Server Error
       summary: Enable the Connect Mobile LAN bridge and issue a fresh password
+      tags:
+      - mobile
+  /api/v1/mobile/keep-awake:
+    post:
+      operationId: setMobileKeepAwake
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersSetKeepAwakeRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileStatusResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Keep this Mac from idle-sleeping while Connect Mobile is on
       tags:
       - mobile
   /api/v1/mobile/regenerate:
@@ -2475,6 +2802,45 @@ paths:
       summary: Remember project permissions for future sessions
       tags:
       - projects
+  /api/v1/projects/{id}/tasks/prepare:
+    post:
+      operationId: prepareTask
+      parameters:
+      - description: Project identifier (registry key).
+        in: path
+        name: id
+        required: true
+        schema:
+          description: Project identifier (registry key).
+          type: string
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrepareTaskResponse'
+          description: Accepted
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Speculatively create the next task's worktree
+      tags:
+      - projects
   /api/v1/projects/clone:
     post:
       operationId: cloneProject
@@ -2808,6 +3174,87 @@ paths:
       summary: Unpair this phone from the daemon, removing it from the roster
       tags:
       - push
+  /api/v1/reports:
+    get:
+      operationId: listReports
+      parameters:
+      - description: Stable project identifier.
+        in: query
+        name: projectId
+        required: true
+        schema:
+          description: Stable project identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListReportsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List persisted project reports without changing delivery state
+      tags:
+      - reports
+    post:
+      operationId: createReport
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReportRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateReportResponse'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Persist a worker report for later orchestrator delivery
+      tags:
+      - reports
   /api/v1/reviews/{reviewId}/conversation:
     get:
       operationId: getReviewerConversation
@@ -5482,6 +5929,14 @@ paths:
         schema:
           description: Stable URL of the selected associated pull request.
           type: string
+      - description: Exact SHA of one of the pull request's commits; reads that commit's
+          change instead of the whole pull request.
+        in: query
+        name: commitSha
+        schema:
+          description: Exact SHA of one of the pull request's commits; reads that
+            commit's change instead of the whole pull request.
+          type: string
       responses:
         "200":
           content:
@@ -5550,6 +6005,14 @@ paths:
         name: sourceUrl
         schema:
           description: Stable URL of the selected associated pull request.
+          type: string
+      - description: Exact SHA of one of the pull request's commits; before is its
+          first parent, after is the commit.
+        in: query
+        name: commitSha
+        schema:
+          description: Exact SHA of one of the pull request's commits; before is its
+            first parent, after is the commit.
           type: string
       responses:
         "200":
@@ -7777,6 +8240,35 @@ paths:
       summary: Check local machine readiness (git, tmux, agent harness, gh)
       tags:
       - system
+  /api/v1/task-preparations/{token}:
+    delete:
+      operationId: cancelTaskPreparation
+      parameters:
+      - description: Opaque speculative task-worktree token.
+        in: path
+        name: token
+        required: true
+        schema:
+          description: Opaque speculative task-worktree token.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Cancel an unclaimed speculative task worktree
+      tags:
+      - projects
   /api/v1/usage/sessions:
     get:
       operationId: listCompactSessionUsage
@@ -7970,6 +8462,7 @@ components:
           - unauthorized
           - unknown
           - not_applicable
+          - configured
           type: string
       required:
       - state
@@ -7993,12 +8486,15 @@ components:
     AgentInfo:
       properties:
         authStatus:
-          description: Advisory local auth probe result. authorized means a recent
-            local probe passed; spawn remains the authoritative validation point.
+          description: Auth probe result. authorized means a provider round-trip accepted
+            the credential; configured means a credential exists locally but was never
+            validated, and must not be presented as ready; spawn remains the authoritative
+            validation point.
           enum:
           - authorized
           - unauthorized
           - unknown
+          - configured
           type: string
         id:
           type: string
@@ -8361,6 +8857,158 @@ components:
           type: string
       required:
       - data
+      type: object
+    AutomationEnvelope:
+      properties:
+        automation:
+          $ref: '#/components/schemas/AutomationResponse'
+      required:
+      - automation
+      type: object
+    AutomationResponse:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        displayName:
+          type: string
+        enabled:
+          type: boolean
+        harness:
+          type: string
+        id:
+          type: string
+        kind:
+          enum:
+          - worker
+          - orchestrator
+          type: string
+        lastRunAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        latestRun:
+          $ref: '#/components/schemas/AutomationRunSummaryResponse'
+        nextRunAt:
+          format: date-time
+          type: string
+        projectId:
+          type: string
+        prompt:
+          type: string
+        rrule:
+          type: string
+        timezone:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - id
+      - projectId
+      - displayName
+      - prompt
+      - kind
+      - rrule
+      - timezone
+      - enabled
+      - nextRunAt
+      - createdAt
+      - updatedAt
+      type: object
+    AutomationRunResponse:
+      properties:
+        attemptCount:
+          format: int64
+          type: integer
+        automationId:
+          type: string
+        claimedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        createdAt:
+          format: date-time
+          type: string
+        errorMessage:
+          type: string
+        finishedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        id:
+          type: string
+        leaseExpiresAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        scheduledFor:
+          format: date-time
+          type: string
+        sessionId:
+          type: string
+        startedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        status:
+          enum:
+          - pending
+          - spawning
+          - running
+          - completed
+          - failed
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - id
+      - automationId
+      - scheduledFor
+      - status
+      - attemptCount
+      - createdAt
+      - updatedAt
+      type: object
+    AutomationRunSummaryResponse:
+      properties:
+        errorMessage:
+          type: string
+        finishedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        id:
+          type: string
+        scheduledFor:
+          format: date-time
+          type: string
+        sessionId:
+          type: string
+        startedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
+        status:
+          enum:
+          - pending
+          - spawning
+          - running
+          - completed
+          - failed
+          type: string
+      required:
+      - id
+      - status
+      - scheduledFor
       type: object
     BrowserCommandRequest:
       properties:
@@ -9075,6 +9723,22 @@ components:
         disabled:
           type: boolean
       type: object
+    ControllersKeepAwakeStatus:
+      properties:
+        active:
+          type: boolean
+        enabled:
+          type: boolean
+        hasBattery:
+          type: boolean
+        supported:
+          type: boolean
+      required:
+      - supported
+      - enabled
+      - active
+      - hasBattery
+      type: object
     ControllersRequestRereviewRequest:
       properties:
         pullRequestUrl:
@@ -9168,6 +9832,7 @@ components:
           - Needs review
           - Review scheduled
           - Reviewing
+          - Review failed
           - Review pending
           - Draft
           - CI failing
@@ -9223,6 +9888,14 @@ components:
         previewUrl:
           type: string
         projectId:
+          type: string
+        provisionError:
+          type: string
+        provisionState:
+          enum:
+          - provisioning
+          - ready
+          - failed
           type: string
         prs:
           items:
@@ -9316,6 +9989,13 @@ components:
       - kanbanColumn
       - displayStatus
       - prs
+      type: object
+    ControllersSetKeepAwakeRequest:
+      properties:
+        enabled:
+          type: boolean
+      required:
+      - enabled
       type: object
     ControllersSetSecurePairingRequest:
       properties:
@@ -9976,6 +10656,69 @@ components:
       - cachedTokens
       - totalTokens
       type: object
+    CreateAutomationRequest:
+      properties:
+        cron:
+          type: string
+        displayName:
+          type: string
+        enabled:
+          type:
+          - "null"
+          - boolean
+        harness:
+          type: string
+        kind:
+          enum:
+          - worker
+          - orchestrator
+          type: string
+        projectId:
+          type: string
+        prompt:
+          type: string
+        rrule:
+          type: string
+        timezone:
+          type: string
+      required:
+      - projectId
+      - displayName
+      - prompt
+      - kind
+      - timezone
+      type: object
+    CreateReportRequest:
+      properties:
+        message:
+          maxLength: 1000
+          type: string
+        note:
+          maxLength: 1000
+          type: string
+        outputs:
+          items:
+            $ref: '#/components/schemas/ReportOutputRequest'
+          type: array
+        sessionId:
+          type: string
+        state:
+          enum:
+          - checkpoint
+          - needs_input
+          - stuck
+          - done
+          type: string
+      required:
+      - sessionId
+      type: object
+    CreateReportResponse:
+      properties:
+        id:
+          type: string
+      required:
+      - id
+      type: object
     DegradedProject:
       properties:
         id:
@@ -10014,6 +10757,7 @@ components:
           - crush
           - cursor
           - qwen
+          - gemini
           - copilot
           - goose
           - auggie
@@ -10028,8 +10772,11 @@ components:
           - pi
           - kimchi
           - omp
+          - fx
           - prime-agent
           - autohand
+          - unreal-agent
+          - mimo-code
           - fake
           type: string
         approvalMode:
@@ -10060,6 +10807,8 @@ components:
           maxLength: 256
           type: string
         projectId:
+          type: string
+        taskPreparation:
           type: string
       required:
       - projectId
@@ -10642,6 +11391,7 @@ components:
           - cline
           - goose
           - qwen
+          - gemini
           - continue
           - devin
           - kiro
@@ -10653,6 +11403,9 @@ components:
           - kimchi
           - prime-agent
           - omp
+          - fx
+          - unreal-agent
+          - mimo-code
           - cloudflared
           type: string
         updatedAt:
@@ -10755,6 +11508,28 @@ components:
       - installed
       - authorized
       type: object
+    ListAutomationRunsResponse:
+      properties:
+        nextCursor:
+          type: string
+        runs:
+          items:
+            $ref: '#/components/schemas/AutomationRunResponse'
+          type: array
+      required:
+      - runs
+      type: object
+    ListAutomationsResponse:
+      properties:
+        automations:
+          items:
+            $ref: '#/components/schemas/AutomationResponse'
+          type: array
+        nextCursor:
+          type: string
+      required:
+      - automations
+      type: object
     ListCompactSessionUsageResponse:
       properties:
         sessions:
@@ -10806,6 +11581,10 @@ components:
       type: object
     ListPRFilesResponse:
       properties:
+        commits:
+          items:
+            $ref: '#/components/schemas/WorkspaceCommitSummary'
+          type: array
         files:
           items:
             $ref: '#/components/schemas/WorkspaceFileSummary'
@@ -10819,6 +11598,7 @@ components:
       required:
       - sessionId
       - files
+      - commits
       - truncated
       - summary
       type: object
@@ -10830,6 +11610,15 @@ components:
           type: array
       required:
       - projects
+      type: object
+    ListReportsResponse:
+      properties:
+        reports:
+          items:
+            $ref: '#/components/schemas/ReportResponse'
+          type: array
+      required:
+      - reports
       type: object
     ListReviewsResponse:
       properties:
@@ -10913,6 +11702,10 @@ components:
           - base
           - head_fallback
           type: string
+        degraded:
+          type: boolean
+        degradedCode:
+          type: string
         files:
           items:
             $ref: '#/components/schemas/WorkspaceFileSummary'
@@ -10935,6 +11728,7 @@ components:
       - sections
       - commits
       - summary
+      - degraded
       type: object
     ListWorkspaceTreeResponse:
       properties:
@@ -11087,6 +11881,8 @@ components:
           type: string
         hostId:
           type: string
+        keepAwake:
+          $ref: '#/components/schemas/ControllersKeepAwakeStatus'
         password:
           type: string
         port:
@@ -11110,6 +11906,7 @@ components:
       - password
       - warning
       - securePairing
+      - keepAwake
       type: object
     MobileTunnelStatus:
       properties:
@@ -11278,6 +12075,15 @@ components:
       - title
       - targetSha
       - status
+      type: object
+    PrepareTaskResponse:
+      properties:
+        ok:
+          type: boolean
+        taskPreparation:
+          type: string
+      required:
+      - ok
       type: object
     PreviewServerStatusResponse:
       properties:
@@ -11630,6 +12436,66 @@ components:
       - requiredActions
       - blockingErrors
       type: object
+    ReportOutputRequest:
+      properties:
+        kind:
+          enum:
+          - artifact
+          - pr_created
+          - pr_reviewed
+          type: string
+        label:
+          type: string
+        reference:
+          minLength: 1
+          type: string
+      required:
+      - kind
+      - reference
+      type: object
+    ReportOutputResponse:
+      properties:
+        kind:
+          type: string
+        label:
+          type: string
+        reference:
+          type: string
+      required:
+      - kind
+      - reference
+      type: object
+    ReportResponse:
+      properties:
+        createdAt:
+          format: date-time
+          type: string
+        id:
+          type: string
+        message:
+          type: string
+        note:
+          type: string
+        outputs:
+          items:
+            $ref: '#/components/schemas/ReportOutputResponse'
+          type: array
+        projectId:
+          type: string
+        repeatCount:
+          format: int64
+          type: integer
+        sessionId:
+          type: string
+        state:
+          type: string
+      required:
+      - id
+      - sessionId
+      - projectId
+      - createdAt
+      - repeatCount
+      type: object
     ResolveCommentsResponse:
       properties:
         ok:
@@ -11879,6 +12745,8 @@ components:
           maxLength: 4096
           minLength: 1
           type: string
+        userAuthored:
+          type: boolean
       required:
       - message
       type: object
@@ -12337,6 +13205,10 @@ components:
           - human
           - coordination
           type: string
+        coordinationId:
+          description: Opaque identity of an AO-authored semantic prompt accepted
+            by the native agent.
+          type: string
         event:
           description: AO hook sub-command that produced this state (e.g. post-tool-use).
           type: string
@@ -12673,6 +13545,13 @@ components:
       type: object
     SpawnSessionRequest:
       properties:
+        approvalMode:
+          enum:
+          - default
+          - accept-edits
+          - auto
+          - bypass-permissions
+          type: string
         attachments:
           items:
             $ref: '#/components/schemas/AttachmentInput'
@@ -12681,6 +13560,9 @@ components:
           type: string
         displayName:
           maxLength: 100
+          type: string
+        effort:
+          maxLength: 32
           type: string
         harness:
           enum:
@@ -12695,6 +13577,7 @@ components:
           - crush
           - cursor
           - qwen
+          - gemini
           - copilot
           - goose
           - auggie
@@ -12709,8 +13592,11 @@ components:
           - pi
           - kimchi
           - omp
+          - fx
           - prime-agent
           - autohand
+          - unreal-agent
+          - mimo-code
           type: string
         issueId:
           type: string
@@ -12980,6 +13866,7 @@ components:
           enum:
           - claude-code
           - codex
+          - fx
           type: string
       required:
       - targetHarness
@@ -13106,6 +13993,44 @@ components:
       required:
       - token
       - deleted
+      type: object
+    UpdateAutomationRequest:
+      properties:
+        cron:
+          type:
+          - "null"
+          - string
+        displayName:
+          type:
+          - "null"
+          - string
+        enabled:
+          type:
+          - "null"
+          - boolean
+        harness:
+          type:
+          - "null"
+          - string
+        kind:
+          enum:
+          - worker
+          - orchestrator
+          type:
+          - "null"
+          - string
+        prompt:
+          type:
+          - "null"
+          - string
+        rrule:
+          type:
+          - "null"
+          - string
+        timezone:
+          type:
+          - "null"
+          - string
       type: object
     UpdateProjectSettingsInput:
       properties:
@@ -13659,12 +14584,16 @@ tags:
   name: projects
 - description: Agent session lifecycle and messaging
   name: sessions
+- description: Recurring daemon-owned session schedules and durable run history
+  name: automations
 - description: Pull-request actions (SCM lane)
   name: prs
 - description: Code-review runs and findings
   name: reviews
 - description: Durable dashboard notifications
   name: notifications
+- description: Durable worker reports
+  name: reports
 - description: Token usage telemetry for AO sessions
   name: usage
 - description: Mobile push-device registration for OS push notifications

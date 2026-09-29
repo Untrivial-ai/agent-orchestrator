@@ -33,6 +33,40 @@ func TestPiAuthJSONStatusAuthorizedWithResolvedEnvKey(t *testing.T) {
 	}
 }
 
+func TestPiAuthJSONStatusAuthorizedWithOAuth(t *testing.T) {
+	tests := map[string]string{
+		"oauth with access and refresh": `{"anthropic":{"type":"oauth","access":"ya29.test","refresh":"refresh-test","expires":9999999999999}}`,
+		"oauth with expired token":      `{"anthropic":{"type":"oauth","access":"ya29.test","refresh":"refresh-test","expires":1}}`,
+		"oauth with access only":        `{"anthropic":{"type":"oauth","access":"ya29.test"}}`,
+	}
+
+	for name, content := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := writePiAuthJSON(t, content)
+
+			status, ok, err := piAuthJSONStatus(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !ok || status != ports.AgentAuthStatusAuthorized {
+				t.Fatalf("status = (%q, %v), want (%q, true)", status, ok, ports.AgentAuthStatusAuthorized)
+			}
+		})
+	}
+}
+
+func TestPiAuthJSONStatusUnknownWithOAuthMissingAccess(t *testing.T) {
+	path := writePiAuthJSON(t, `{"anthropic":{"type":"oauth","refresh":"refresh-test","expires":9999999999999}}`)
+
+	status, ok, err := piAuthJSONStatus(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || status != ports.AgentAuthStatusUnknown {
+		t.Fatalf("status = (%q, %v), want (%q, false)", status, ok, ports.AgentAuthStatusUnknown)
+	}
+}
+
 func TestPiAuthJSONStatusUnknownWithUnresolvedKey(t *testing.T) {
 	t.Setenv("PI_MISSING_API_KEY", "")
 	tests := map[string]string{

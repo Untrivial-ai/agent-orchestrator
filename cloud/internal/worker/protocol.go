@@ -1,6 +1,9 @@
 package worker
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // BootstrapRequest is what a worker sends to redeem its one-time ticket.
 type BootstrapRequest struct {
@@ -21,11 +24,14 @@ type LaunchContext struct {
 	AgentSessionID string `json:"agentSessionId,omitempty"`
 	// ParentSessionID is the orchestrator that spawned this session; empty for
 	// top-level sessions.
-	ParentSessionID string   `json:"parentSessionId,omitempty"`
-	Mode            string   `json:"mode"`
-	DeniedCommands  []string `json:"deniedCommands"`
-	RepositoryURL   string   `json:"repositoryUrl"`
-	DefaultBranch   string   `json:"defaultBranch"`
+	ParentSessionID string `json:"parentSessionId,omitempty"`
+	Mode            string `json:"mode"`
+	// Model is the coding-agent model the worker launches the harness with;
+	// empty uses the harness default.
+	Model          string   `json:"model,omitempty"`
+	DeniedCommands []string `json:"deniedCommands"`
+	RepositoryURL  string   `json:"repositoryUrl"`
+	DefaultBranch  string   `json:"defaultBranch"`
 	// ExtraRepos are additional repositories the worker clones alongside the
 	// primary repo (multi-repo dev kit). Empty for a single-repo session.
 	ExtraRepos []RepoRef `json:"extraRepos,omitempty"`
@@ -132,6 +138,19 @@ type SubmitReviewResponse struct {
 type EventRequest struct {
 	Type    string `json:"type"`
 	Payload any    `json:"payload,omitempty"`
+}
+
+type NotificationEventRequest struct {
+	EventID    string          `json:"eventId"`
+	Type       string          `json:"type"`
+	OccurredAt time.Time       `json:"occurredAt"`
+	Payload    json.RawMessage `json:"payload"`
+}
+
+type NotificationEventResponse struct {
+	Accepted  bool   `json:"accepted"`
+	EventID   string `json:"eventId"`
+	Duplicate bool   `json:"duplicate"`
 }
 
 type ClaimTurnRequest struct{}
@@ -311,11 +330,16 @@ type TerminalCommand struct {
 // pushes user keystrokes down; "error" tells the worker to fall back to the
 // polled transport.
 type TerminalStreamFrame struct {
-	Type     string `json:"type"`
-	Data     []byte `json:"data,omitempty"`
-	ID       int64  `json:"id,omitempty"`
-	Sequence int64  `json:"sequence,omitempty"`
-	Code     string `json:"code,omitempty"`
+	Type       string          `json:"type"`
+	Data       []byte          `json:"data,omitempty"`
+	ID         int64           `json:"id,omitempty"`
+	Sequence   int64           `json:"sequence,omitempty"`
+	Code       string          `json:"code,omitempty"`
+	EventID    string          `json:"eventId,omitempty"`
+	EventType  string          `json:"eventType,omitempty"`
+	OccurredAt time.Time       `json:"occurredAt,omitempty"`
+	Payload    json.RawMessage `json:"payload,omitempty"`
+	Duplicate  bool            `json:"duplicate,omitempty"`
 }
 
 type TerminalOutputRequest struct {

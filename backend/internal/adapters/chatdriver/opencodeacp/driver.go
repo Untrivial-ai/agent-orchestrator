@@ -66,7 +66,7 @@ func validateTurnSettings(_ ports.PermissionMode, settings ports.ChatTurnSetting
 	}
 	provider, model, found := strings.Cut(settings.Model, "/")
 	if !found || strings.TrimSpace(provider) == "" || strings.TrimSpace(model) == "" {
-		return fmt.Errorf("%w: OpenCode model %q must use provider/model format (for example, anthropic/claude-sonnet); select a full model ID from `opencode models`, or clear the model override to use Agent default", ports.ErrChatConfigOptionInvalid, settings.Model)
+		return fmt.Errorf("%w: OpenCode model %q must use provider/model format (for example, anthropic/claude-sonnet); select a full model ID from `opencode models`, or clear the model override to use agent settings", ports.ErrChatConfigOptionInvalid, settings.Model)
 	}
 	return nil
 }
@@ -81,17 +81,10 @@ func permissionPolicy(
 	mode ports.PermissionMode,
 	params acpsdk.RequestPermissionRequest,
 ) (acpsdk.PermissionOptionId, bool) {
-	switch ports.NormalizePermissionMode(mode) {
-	case ports.PermissionModeAuto:
-	case ports.PermissionModeAcceptEdits:
-		var kind acpsdk.ToolKind
-		if params.ToolCall.Kind != nil {
-			kind = *params.ToolCall.Kind
-		}
-		if kind != acpsdk.ToolKindEdit && kind != acpsdk.ToolKindDelete && kind != acpsdk.ToolKindMove {
-			return "", false
-		}
-	default:
+	mode = ports.NormalizePermissionMode(mode)
+	kind := params.ToolCall.Kind
+	if mode != ports.PermissionModeAuto && (mode != ports.PermissionModeAcceptEdits || kind == nil ||
+		(*kind != acpsdk.ToolKindEdit && *kind != acpsdk.ToolKindDelete && *kind != acpsdk.ToolKindMove)) {
 		return "", false
 	}
 	// Once, not always: --auto answers each request and persists nothing.

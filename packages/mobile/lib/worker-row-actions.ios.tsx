@@ -8,10 +8,10 @@ import {
 	controlSize,
 	frame,
 	labelStyle,
-	rotationEffect,
 	tint,
 } from "@expo/ui/swift-ui/modifiers";
-import { useThemeState } from "./ThemeProvider";
+import { useTheme, useThemeState } from "./ThemeProvider";
+import { iconSize, type } from "./tokens";
 
 const ACTION_WIDTH = 64;
 const CONTROL_SIZE = 44;
@@ -28,9 +28,15 @@ export function WorkerRowActions({
 	onDelete(): void;
 }) {
 	const { scheme } = useThemeState();
+	const t = useTheme();
 
 	return (
 		<Host style={{ width: ACTION_WIDTH * 2, height: 76 }} colorScheme={scheme}>
+			{/* Deliberately not a `GlassEffectContainer`. That is the right wrapper
+			    when two glass controls should read as one surface, but inside one the
+			    system blends their material as they approach, so pin and delete
+			    morphed into a single blob mid-swipe. Each button keeps its own glass
+			    here, and the 16pt gap is what separates them. */}
 			<HStack spacing={16} modifiers={[frame({ width: ACTION_WIDTH * 2, height: 76 })]}>
 				<Button
 					onPress={() => onSetPinned(!pinned)}
@@ -39,7 +45,11 @@ export function WorkerRowActions({
 						buttonBorderShape("circle"),
 						controlSize("large"),
 						labelStyle("iconOnly"),
-						tint(pinned ? "#E2AC50" : "#4B87FF"),
+						// Foreground ink, not a hue: `amber` is the palette's "needs your
+						// attention" colour, so a yellow pin claimed this row wanted you when
+						// it was only pinned. The state is carried by the glyph — `pin.fill`
+						// against `pin` — which is how the palette says emphasis works.
+						tint(t.textPrimary),
 						frame({ width: CONTROL_SIZE, height: CONTROL_SIZE }),
 						accessibilityLabel(pinned ? `Unpin ${title}` : `Pin ${title}`),
 						accessibilityIdentifier("worker-pin"),
@@ -47,9 +57,8 @@ export function WorkerRowActions({
 				>
 					<Image
 						systemName={pinned ? "pin.fill" : "pin"}
-						size={19}
-						color={pinned ? "#E2AC50" : "#4B87FF"}
-						modifiers={[rotationEffect(28)]}
+						size={iconSize.lg}
+						color={t.textPrimary}
 					/>
 				</Button>
 				<Button
@@ -59,13 +68,13 @@ export function WorkerRowActions({
 						buttonBorderShape("circle"),
 						controlSize("large"),
 						labelStyle("iconOnly"),
-						tint("#F06A6A"),
+						tint(t.red),
 						frame({ width: CONTROL_SIZE, height: CONTROL_SIZE }),
 						accessibilityLabel(`Delete ${title}`),
 						accessibilityIdentifier("worker-delete"),
 					]}
 				>
-					<Image systemName="trash" size={19} color="#F06A6A" />
+					<Image systemName="trash" size={iconSize.lg} color={t.red} />
 				</Button>
 			</HStack>
 		</Host>

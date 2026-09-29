@@ -238,6 +238,17 @@ func (s *Store) HasPendingUsageDiscovery(ctx context.Context) (bool, error) {
 	return pending != 0, nil
 }
 
+// HasUsageSourceByPath reports whether any binding already registers a source
+// at this exact artifact path, so one physical transcript cannot be bound to a
+// second session and counted twice.
+func (s *Store) HasUsageSourceByPath(ctx context.Context, artifactPath string) (bool, error) {
+	exists, err := s.qr.ExistsUsageSourceByArtifactPath(ctx, artifactPath)
+	if err != nil {
+		return false, fmt.Errorf("check usage source by path: %w", err)
+	}
+	return exists != 0, nil
+}
+
 // ListLatestRetiredCodexReplacementClaimsByPath returns durable replacement
 // claims for one exact provider artifact path on resumable bindings.
 func (s *Store) ListLatestRetiredCodexReplacementClaimsByPath(

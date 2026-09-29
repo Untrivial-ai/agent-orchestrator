@@ -75,10 +75,7 @@ function CloudProviderSectionInner({ titleHidden }: { titleHidden?: boolean }) {
 	const effective = selectedProvider && available.includes(selectedProvider) ? selectedProvider : defaultProvider;
 	const options: SettingsOption<string>[] = available.map((provider) => ({
 		value: provider,
-		label:
-			provider === defaultProvider
-				? t("settings.cloudProvider.optionDefault", { provider: providerLabel(provider) })
-				: providerLabel(provider),
+		label: providerLabel(provider),
 	}));
 
 	return (

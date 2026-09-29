@@ -18,7 +18,15 @@ import type { Endpoint } from "./endpoints";
  *
  * A stable hostname removes the cause; see the named-tunnel follow-up.
  */
-export function tunnelMayHaveRotated(known: Endpoint[], anyReachable: boolean): boolean {
+export function tunnelMayHaveRotated(
+	known: Endpoint[],
+	activeKind: Endpoint["kind"] | undefined,
+	anyReachable: boolean,
+): boolean {
 	if (anyReachable) return false;
-	return known.some((e) => e.kind === "tunnel");
+	// A tunnel elsewhere in the saved candidate list says nothing about why the
+	// active LAN or tailnet address failed. This distinction matters when the
+	// phone simply leaves Wi-Fi: the LAN endpoint becomes unreachable, but its
+	// address did not rotate.
+	return activeKind === "tunnel" && known.some((e) => e.kind === "tunnel");
 }

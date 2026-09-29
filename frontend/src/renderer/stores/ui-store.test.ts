@@ -85,3 +85,27 @@ describe("remoteHosts flag", () => {
 		expect((await bootStore()).getState().remoteHosts).toBe(true);
 	});
 });
+
+describe("terminalCopyOnSelect flag", () => {
+	beforeEach(() => {
+		window.localStorage.clear();
+		vi.resetModules();
+		useUiStore.setState({ terminalCopyOnSelect: true });
+	});
+
+	it("is on until the user turns it off", async () => {
+		expect((await bootStore()).getState().terminalCopyOnSelect).toBe(true);
+	});
+
+	it("persists the switch so the choice survives a restart", () => {
+		useUiStore.getState().setTerminalCopyOnSelect(false);
+		expect(useUiStore.getState().terminalCopyOnSelect).toBe(false);
+		expect(window.localStorage.getItem("ao.terminalCopyOnSelect")).toBe("false");
+		useUiStore.getState().setTerminalCopyOnSelect(true);
+	});
+
+	it("reads a stored opt-out back at startup", async () => {
+		window.localStorage.setItem("ao.terminalCopyOnSelect", "false");
+		expect((await bootStore()).getState().terminalCopyOnSelect).toBe(false);
+	});
+});

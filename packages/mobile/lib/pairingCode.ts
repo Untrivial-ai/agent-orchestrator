@@ -133,7 +133,7 @@ export function parsePairingCode(input: string): PairingOffer | null {
 	// A code with nothing to connect to is not usable.
 	if (endpoints.length === 0) return null;
 
-	return {
+	const offer: PairingOffer = {
 		v: 2,
 		hostId: o.hostId,
 		name: typeof o.name === "string" ? o.name : "",
@@ -141,4 +141,14 @@ export function parsePairingCode(input: string): PairingOffer | null {
 		endpoints,
 		token: typeof o.token === "string" ? o.token : "",
 	};
+	// Log the parsed endpoints for debugging pairing issues
+	if (typeof __DEV__ !== "undefined" && __DEV__) {
+		console.log("[pairingCode] Parsed pairing offer:", {
+			hostId: offer.hostId,
+			name: offer.name,
+			endpointCount: offer.endpoints.length,
+			endpoints: offer.endpoints.map((e) => `${e.kind}://${e.host}:${e.port}`),
+		});
+	}
+	return offer;
 }

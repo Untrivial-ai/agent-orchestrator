@@ -154,7 +154,7 @@ the containing Agent Orchestrator checkout. Develop it through
 `private/ao-cloud` as the public repository's submodule; a standalone private
 clone does not contain those public packages.
 
-For a direct Go loop, requirements are Go 1.26.5 and PostgreSQL 15 or newer.
+For a direct Go loop, requirements are Go 1.27.1 and PostgreSQL 15 or newer.
 Development and test environments can apply embedded Goose migrations at
 startup, using `AO_CLOUD_MIGRATION_DATABASE_URL` when set and
 `AO_CLOUD_DATABASE_URL` otherwise. Hosted deployments run

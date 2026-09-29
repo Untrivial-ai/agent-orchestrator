@@ -1,6 +1,6 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../lib/icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
 import { Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -16,6 +16,7 @@ import {
 import type { Theme } from "../lib/theme";
 import { haptics } from "../lib/haptics";
 import { clearOnboardingSkipped } from "../lib/onboardingStore";
+import { completeOnboarding } from "../lib/onboardingNavigation";
 import { pairFromCode } from "../lib/pairFlow";
 import { isLegacyPairingCode, parsePairingCode } from "../lib/pairingCode";
 import { saveHost, setActiveHost } from "../lib/hosts";
@@ -28,11 +29,14 @@ import { useTheme, useThemedStyles } from "../lib/ThemeProvider";
 import { MinimalBackButton } from "../lib/MinimalBackButton";
 import { MOBILE_EVENTS } from "../lib/telemetry/events";
 import { mobileTelemetry } from "../lib/telemetry/runtime";
+import { iconSize, space, type } from "../lib/tokens";
+import { backOr } from "../lib/backNavigation";
 
 export default function PairScreen() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const router = useRouter();
+	const navigation = useNavigation();
 	const insets = useSafeAreaInsets();
 	const { from } = useLocalSearchParams<{ from?: string }>();
 	const fromOnboarding = from === "onboarding";
@@ -63,7 +67,7 @@ export default function PairScreen() {
 		if (Platform.OS !== "ios" || lens) return;
 		try {
 			const lenses = (await camera.current?.getAvailableLensesAsync()) ?? [];
-			if (__DEV__) console.log("[pair] available lenses", lenses);
+			if (typeof __DEV__ !== "undefined" && __DEV__) console.log("[pair] available lenses", lenses);
 			setLens(pickNormalLens(lenses));
 		} catch {
 			/* keep the native default */
@@ -73,15 +77,16 @@ export default function PairScreen() {
 	async function finish() {
 		await clearOnboardingSkipped();
 		await reloadConfig(); // reconnect with the new credentials
-		if (fromOnboarding) router.replace("/");
-		else router.back();
+		if (fromOnboarding) completeOnboarding(navigation);
+		else backOr(router);
 	}
 
 	async function onScan({ data }: { data: string }) {
 		if (scanned.current || busy || !focused.current) return;
 		// Cheap reject first: the camera sees every barcode in frame, and only a
 		// code we can actually parse should stop the scanner.
-		if (!parsePairingCode(data)) {
+		const offer = parsePairingCode(data);
+		if (!offer) {
 			if (rejected.current !== data) {
 				rejected.current = data;
 				// A v1 code is a recognisable thing, not noise: say what to do
@@ -93,13 +98,13 @@ export default function PairScreen() {
 		}
 		rejected.current = null;
 		scanned.current = true;
-		await pair(data);
+		await pair(data, offer);
 	}
 
 	// Races the code's endpoints, verifies the winner, then stores the machine.
 	// The scanned code is kept so "Try again" can re-run the whole thing rather
 	// than making the user re-scan.
-	async function pair(code: string) {
+	async function pair(code: string, offer?: ReturnType<typeof parsePairingCode>) {
 		pendingCode.current = code;
 		setBusy(true);
 		setFailure(null);
@@ -113,10 +118,15 @@ export default function PairScreen() {
 
 		if (!result.ok) {
 			haptics.warning();
+			// Use the first endpoint from the offer for error reporting, if available
+			const firstEndpoint = offer?.endpoints[0];
+			const errorTarget = firstEndpoint
+				? { host: firstEndpoint.host, port: String(firstEndpoint.port), platform: Platform.OS }
+				: { host: "", port: "", platform: Platform.OS };
 			setFailure(
 				describeConnectionFailure(
 					result.reason === "not-ao-qr" ? "not-ao-qr" : classifyConnectionFailure(undefined),
-					{ host: "", port: "", platform: Platform.OS },
+					errorTarget,
 				),
 			);
 			setBusy(false);
@@ -136,13 +146,14 @@ export default function PairScreen() {
 		setFailure(null);
 		rejected.current = null;
 		if (pendingCode.current) {
-			void pair(pendingCode.current);
+			const offer = parsePairingCode(pendingCode.current);
+			void pair(pendingCode.current, offer);
 			return;
 		}
 		scanned.current = false;
 	}
 
-	const back = () => (router.canGoBack() ? router.back() : router.replace("/"));
+	const back = () => backOr(router);
 
 	return (
 		<View style={[styles.screen, { paddingTop: insets.top }]}>
@@ -185,11 +196,11 @@ export default function PairScreen() {
 
 			{failure ? (
 				<View style={styles.errorBox}>
-					<Feather name="alert-circle" size={15} color={t.red} />
+					<Feather name="alert-circle" size={iconSize.sm} color={t.red} />
 					<View style={{ flex: 1 }}>
 						<Text style={styles.errorText}>{failure.message}</Text>
 						{failure.showLocalNetworkHint ? (
-							<Text style={[styles.errorText, { marginTop: 6 }]}>{LOCAL_NETWORK_HINT}</Text>
+							<Text style={[styles.errorText, { marginTop: space.xs }]}>{LOCAL_NETWORK_HINT}</Text>
 						) : null}
 						<View style={styles.errorActions}>
 							{/* Re-arms the scanner; without it a failed scan is a dead end,
@@ -215,7 +226,7 @@ export default function PairScreen() {
 				style={[styles.manual, { paddingBottom: insets.bottom + 14 }]}
 				accessibilityRole="button"
 			>
-				<Feather name="edit-3" size={15} color={t.textSecondary} />
+				<Feather name="edit-3" size={iconSize.sm} color={t.textSecondary} />
 				<Text style={styles.manualText}>Enter details manually</Text>
 			</Pressable>
 		</View>
@@ -247,7 +258,7 @@ function CameraGate({
 	}
 	return (
 		<View style={styles.gate}>
-			<Feather name="camera-off" size={24} color={t.textTertiary} />
+			<Feather name="camera-off" size={iconSize.xl} color={t.textTertiary} />
 			<Text style={styles.gateTitle}>Camera access needed</Text>
 			<Text style={styles.gateHint}>
 				{canAskAgain
@@ -258,14 +269,14 @@ function CameraGate({
 				// App Review 5.1.1(iv): the button ahead of the system permission
 				// prompt must read "Continue"/"Next", never "Allow ...", so the grant
 				// decision is only ever made in the system dialog itself.
-				<Button title="Continue" onPress={onRequest} style={{ marginTop: 18 }} />
+				<Button title="Continue" onPress={onRequest} style={{ marginTop: space.lg }} />
 			) : (
 				<Button
 					title="Open settings"
 					variant="ghost"
 					icon="settings"
 					onPress={() => Linking.openSettings()}
-					style={{ marginTop: 18 }}
+					style={{ marginTop: space.lg }}
 				/>
 			)}
 		</View>
@@ -278,14 +289,14 @@ const CORNER_W = 3;
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 	screen: { flex: 1, backgroundColor: t.bgBase },
-	topBar: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 8 },
+	topBar: { paddingHorizontal: space.lg, paddingTop: space.xxs, paddingBottom: space.sm },
 
-	steps: { paddingHorizontal: 20, paddingBottom: 16 },
+	steps: { paddingHorizontal: space.xl, paddingBottom: space.lg },
 
 	viewfinder: {
 		flex: 1,
-		marginHorizontal: 16,
-		borderRadius: 18,
+		marginHorizontal: space.lg,
+		borderRadius: 16, borderCurve: "continuous",
 		overflow: "hidden",
 		// The viewfinder is a camera preview, so it stays dark in both themes.
 		backgroundColor: "#0c0d10",
@@ -301,38 +312,38 @@ const makeStyles = (t: Theme) =>
 	cBL: { bottom: 14, left: 14, borderBottomWidth: CORNER_W, borderLeftWidth: CORNER_W, borderBottomLeftRadius: 6 },
 	cBR: { bottom: 14, right: 14, borderBottomWidth: CORNER_W, borderRightWidth: CORNER_W, borderBottomRightRadius: 6 },
 
-	gate: { flex: 1, alignItems: "center", justifyContent: "center", padding: 28 },
-	gateTitle: { color: t.textPrimary, fontSize: 16, fontWeight: "700", marginTop: 12 },
-	gateHint: {
+	gate: { flex: 1, alignItems: "center", justifyContent: "center", padding: space.xxl },
+	gateTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.callout.fontSize, fontWeight: "600", marginTop: space.md },
+	gateHint: { fontFamily: "Geist_400Regular",
 		color: t.textSecondary,
-		fontSize: 13,
-		lineHeight: 19,
+		fontSize: type.footnote.fontSize,
+		lineHeight: type.footnote.lineHeight,
 		textAlign: "center",
-		marginTop: 8,
+		marginTop: space.sm,
 		maxWidth: 300,
 	},
 
 	errorBox: {
 		flexDirection: "row",
-		gap: 9,
+		gap: space.sm,
 		alignItems: "flex-start",
 		backgroundColor: t.tintRed,
-		borderRadius: 10,
-		padding: 12,
-		marginHorizontal: 16,
-		marginTop: 14,
+		borderRadius: 8, borderCurve: "continuous",
+		padding: space.md,
+		marginHorizontal: space.lg,
+		marginTop: space.md,
 	},
-	errorText: { color: t.red, fontSize: 13, lineHeight: 19 },
-	errorActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
+	errorText: { fontFamily: "Geist_400Regular", color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
+	errorActions: { flexDirection: "row", flexWrap: "wrap", gap: space.sm, marginTop: space.sm },
 
 	manual: {
 		flexDirection: "row",
 		alignItems: "center",
 		justifyContent: "center",
-		gap: 8,
-		paddingTop: 18,
+		gap: space.sm,
+		paddingTop: space.lg,
 	},
-	manualText: { color: t.textSecondary, fontSize: 15, fontWeight: "600" },
+	manualText: { fontFamily: "Geist_600SemiBold", color: t.textSecondary, fontSize: type.subheadline.fontSize, fontWeight: "600" },
 });
 
 export { RouteErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";

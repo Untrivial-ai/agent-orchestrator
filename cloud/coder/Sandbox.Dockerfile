@@ -10,18 +10,26 @@ FROM node:22-bookworm-slim AS node-runtime
 
 FROM codercom/enterprise-base:ubuntu
 ARG CLAUDE_CODE_VERSION=2.1.228
+# TODO(cloud-opencode): pin to a verified release once validated on staging.
+ARG OPENCODE_VERSION=latest
 USER root
 
-# Keep the normal Coder image/user/sudo contract, while baking the harness that
+# Keep the normal Coder image/user/sudo contract, while baking the harnesses that
 # this approved template exposes. Copying the official Node runtime avoids a
 # package-manager install on every workspace start.
 COPY --from=node-runtime /usr/local/ /usr/local/
-RUN npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" && \
+RUN npm install --global \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+      "opencode-ai@${OPENCODE_VERSION}" && \
     claude --version && \
+    opencode --version && \
     mkdir -p /etc/skel/.local/bin && \
     ln -sfn "$(readlink -f "$(command -v claude)")" \
       /etc/skel/.local/bin/claude && \
-    test -x /etc/skel/.local/bin/claude
+    ln -sfn "$(readlink -f "$(command -v opencode)")" \
+      /etc/skel/.local/bin/opencode && \
+    test -x /etc/skel/.local/bin/claude && \
+    test -x /etc/skel/.local/bin/opencode
 
 COPY --from=ao-release /ao-worker /usr/local/bin/ao-worker
 COPY --from=ao-release /ao /usr/local/bin/ao

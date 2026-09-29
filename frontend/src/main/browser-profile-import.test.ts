@@ -260,7 +260,7 @@ async function createSafariFixture(root: string): Promise<{ library: string; nam
 }
 
 describe("BrowserProfileImportService", () => {
-	it("keeps other browsers discoverable and importable when Safari access is denied", async () => {
+	it("does not probe Safari protected data during general discovery or another browser import", async () => {
 		const root = await fixtureRoot();
 		await createSafariFixture(root);
 		const firefox = path.join(root, "Library", "Application Support", "Firefox", "Profiles", "test.default");
@@ -269,7 +269,9 @@ describe("BrowserProfileImportService", () => {
 		db.exec("CREATE TABLE moz_places (url TEXT, title TEXT, visit_count INTEGER, last_visit_date INTEGER); INSERT INTO moz_places VALUES ('https://example.com', 'Firefox', 1, 1767225600000000)");
 		db.close();
 		const original = fs.lstat;
+		const sourceLstatCalls: string[] = [];
 		const sourceLstat = ((file: Parameters<typeof fs.lstat>[0], options: never) => {
+			sourceLstatCalls.push(String(file));
 			if (String(file).includes("com.apple.Safari")) return Promise.reject(Object.assign(new Error("blocked"), { code: "EPERM" }));
 			return original(file, options);
 		}) as typeof fs.lstat;
@@ -281,13 +283,25 @@ describe("BrowserProfileImportService", () => {
 			fromPartition: () => ({ cookies: { set: async () => undefined }, clearStorageData: async () => undefined, clearCache: async () => undefined }),
 		});
 		const discovery = await service.discover();
-		expect(discovery.warnings).toEqual(["safari-access-denied"]);
-		expect(discovery.sources.map((source) => source.name)).toEqual(["Firefox"]);
-		const source = discovery.sources[0]!;
-		await expect(service.import({ requestId: "18181818-1818-4818-8818-181818181818", sourceId: source.id,
-			profileIds: [source.profiles[0]!.id], includeCookies: false, includeHistory: true,
+		expect(discovery.warnings).toBeUndefined();
+		expect(discovery.sources).toEqual(expect.arrayContaining([
+			expect.objectContaining({ name: "Safari", profilesDeferred: true, profiles: [] }),
+			expect.objectContaining({ name: "Firefox" }),
+		]));
+		expect(sourceLstatCalls).toEqual([]);
+
+		const firefoxSource = discovery.sources.find((source) => source.name === "Firefox")!;
+		await expect(service.import({ requestId: "18181818-1818-4818-8818-181818181818", sourceId: firefoxSource.id,
+			profileIds: [firefoxSource.profiles[0]!.id], includeCookies: false, includeHistory: true,
 			destination: { mode: "merge", name: "Firefox despite Safari" },
 		}, vi.fn())).resolves.toMatchObject({ entries: [{ importedHistoryEntries: 1 }] });
+		expect(sourceLstatCalls).toEqual([]);
+
+		const safariSource = discovery.sources.find((source) => source.name === "Safari")!;
+		await expect(service.discover({ sourceId: safariSource.id })).resolves.toMatchObject({
+			sources: [],
+			warnings: ["safari-access-denied"],
+		});
 	});
 
 	it("bounds Safari metadata snapshots and removes discovery staging", async () => {
@@ -301,12 +315,13 @@ describe("BrowserProfileImportService", () => {
 			fromPartition: () => ({ cookies: { set: async () => undefined }, clearStorageData: async () => undefined, clearCache: async () => undefined }),
 		});
 		const backup = vi.spyOn(Database.prototype, "backup");
-		await service.discover();
+		const shallow = await service.discover();
+		await service.discover({ sourceId: shallow.sources[0]!.id });
 		expect(backup).toHaveBeenCalledWith(expect.stringContaining(path.join(stateDir, "browser-import-staging")));
 		expect(await readdir(path.join(stateDir, "browser-import-staging"))).toEqual([]);
 		backup.mockClear();
 		await truncate(path.join(library, "Containers", "com.apple.Safari", "Data", "Library", "Safari", "SafariTabs.db"), 256 * 1024 * 1024 + 1);
-		const discovery = await service.discover();
+		const discovery = await service.discover({ sourceId: shallow.sources[0]!.id });
 		expect(backup).not.toHaveBeenCalled();
 		expect(discovery.sources[0]!.profiles[0]!.name).toBe("Personal");
 		expect(await readdir(path.join(stateDir, "browser-import-staging"))).toEqual([]);
@@ -329,7 +344,10 @@ describe("BrowserProfileImportService", () => {
 		});
 
 		expect((await createService("win32").discover()).sources).toEqual([]);
-		const discovery = await createService("darwin").discover();
+		const darwinService = createService("darwin");
+		const shallow = await darwinService.discover();
+		expect(shallow.sources).toEqual([expect.objectContaining({ name: "Safari", profilesDeferred: true, profiles: [] })]);
+		const discovery = await darwinService.discover({ sourceId: shallow.sources[0]!.id });
 		expect(discovery.sources).toEqual([expect.objectContaining({
 			name: "Safari",
 			family: "safari",
@@ -364,7 +382,8 @@ describe("BrowserProfileImportService", () => {
 				clearCache: async () => undefined,
 			}),
 		});
-		const source = (await service.discover()).sources[0]!;
+		const shallow = await service.discover();
+		const source = (await service.discover({ sourceId: shallow.sources[0]!.id })).sources[0]!;
 		const result = await service.import({
 			requestId: "15151515-1515-4515-8515-151515151515",
 			sourceId: source.id,
@@ -412,7 +431,8 @@ describe("BrowserProfileImportService", () => {
 				clearCache: async () => undefined,
 			}),
 		});
-		const source = (await service.discover()).sources[0]!;
+		const shallow = await service.discover();
+		const source = (await service.discover({ sourceId: shallow.sources[0]!.id })).sources[0]!;
 		const work = source.profiles.find((profile) => profile.name === "Work")!;
 		const result = await service.import({
 			requestId: "16161616-1616-4616-8616-161616161616",
@@ -454,7 +474,8 @@ describe("BrowserProfileImportService", () => {
 			env: {},
 			fromPartition: () => ({ cookies: { set: async () => undefined }, clearStorageData: async () => undefined, clearCache: async () => undefined }),
 		});
-		const source = (await service.discover()).sources[0]!;
+		const shallow = await service.discover();
+		const source = (await service.discover({ sourceId: shallow.sources[0]!.id })).sources[0]!;
 
 		await expect(service.import({
 			requestId: "17171717-1717-4717-8717-171717171717",
@@ -464,6 +485,133 @@ describe("BrowserProfileImportService", () => {
 			includeHistory: false,
 			destination: { mode: "merge", name: "Broken Safari" },
 		}, vi.fn())).rejects.toThrow("supported cookie data");
+		expect(profileStore.profiles).toEqual([]);
+		expect(await readdir(path.join(stateDir, "browser-import-staging"))).toEqual([]);
+	});
+
+	it("retries when a Chromium SQLite backup resolves without creating its snapshot", async () => {
+		const root = await fixtureRoot();
+		const { localAppData } = await createChromeFixture(root);
+		const stateDir = path.join(root, "ao-state");
+		const profileStore = new BrowserProfileStore({ stateDir });
+		await profileStore.load();
+		const backup = vi.spyOn(Database.prototype, "backup");
+		backup.mockImplementationOnce(async () => undefined);
+		const service = new BrowserProfileImportService({
+			stateDir,
+			profileStore,
+			historyStore: new BrowserHistoryStore({ stateDir }),
+			platform: "win32",
+			homeDir: root,
+			env: { LOCALAPPDATA: localAppData },
+			fromPartition: () => ({ cookies: { set: async () => undefined }, clearStorageData: async () => undefined, clearCache: async () => undefined }),
+		});
+		const source = (await service.discover()).sources[0]!;
+
+		const result = await service.import({
+			requestId: "19191919-1919-4919-8919-191919191919",
+			sourceId: source.id,
+			profileIds: [source.profiles[0]!.id],
+			includeCookies: false,
+			includeHistory: true,
+			destination: { mode: "merge", name: "Retried Chrome" },
+		}, vi.fn());
+
+		expect(backup).toHaveBeenCalledTimes(2);
+		expect(result.entries[0]).toMatchObject({ importedHistoryEntries: 2 });
+		expect(await readdir(path.join(stateDir, "browser-import-staging"))).toEqual([]);
+	});
+
+	it("retries when a Chromium SQLite backup rejects before succeeding", async () => {
+		const root = await fixtureRoot();
+		const { localAppData } = await createChromeFixture(root);
+		const stateDir = path.join(root, "ao-state");
+		const profileStore = new BrowserProfileStore({ stateDir });
+		await profileStore.load();
+		const backup = vi.spyOn(Database.prototype, "backup");
+		backup.mockRejectedValueOnce(new Error("SQLITE_BUSY: database is locked"));
+		const service = new BrowserProfileImportService({
+			stateDir,
+			profileStore,
+			historyStore: new BrowserHistoryStore({ stateDir }),
+			platform: "win32",
+			homeDir: root,
+			env: { LOCALAPPDATA: localAppData },
+			fromPartition: () => ({ cookies: { set: async () => undefined }, clearStorageData: async () => undefined, clearCache: async () => undefined }),
+		});
+		const source = (await service.discover()).sources[0]!;
+
+		const result = await service.import({
+			requestId: "21212121-2121-4121-8121-212121212121",
+			sourceId: source.id,
+			profileIds: [source.profiles[0]!.id],
+			includeCookies: false,
+			includeHistory: true,
+			destination: { mode: "merge", name: "Retried Busy Chrome" },
+		}, vi.fn());
+
+		expect(backup).toHaveBeenCalledTimes(2);
+		expect(result.entries[0]).toMatchObject({ importedHistoryEntries: 2 });
+		expect(await readdir(path.join(stateDir, "browser-import-staging"))).toEqual([]);
+	});
+
+	it("returns an actionable Chromium snapshot error when retry cannot create the temporary database copy", async () => {
+		const root = await fixtureRoot();
+		const { localAppData } = await createChromeFixture(root);
+		const stateDir = path.join(root, "ao-state");
+		const profileStore = new BrowserProfileStore({ stateDir });
+		await profileStore.load();
+		vi.spyOn(Database.prototype, "backup").mockResolvedValue(undefined);
+		const service = new BrowserProfileImportService({
+			stateDir,
+			profileStore,
+			historyStore: new BrowserHistoryStore({ stateDir }),
+			platform: "win32",
+			homeDir: root,
+			env: { LOCALAPPDATA: localAppData },
+			fromPartition: () => ({ cookies: { set: async () => undefined }, clearStorageData: async () => undefined, clearCache: async () => undefined }),
+		});
+		const source = (await service.discover()).sources[0]!;
+
+		await expect(service.import({
+			requestId: "20202020-2020-4020-8020-202020202020",
+			sourceId: source.id,
+			profileIds: [source.profiles[0]!.id],
+			includeCookies: false,
+			includeHistory: true,
+			destination: { mode: "merge", name: "Broken Chrome Snapshot" },
+		}, vi.fn())).rejects.toThrow("AO couldn't create a temporary copy of Google Chrome's profile database");
+		expect(profileStore.profiles).toEqual([]);
+		expect(await readdir(path.join(stateDir, "browser-import-staging"))).toEqual([]);
+	});
+
+	it("returns an actionable Chromium snapshot error when backup rejects after retry", async () => {
+		const root = await fixtureRoot();
+		const { localAppData } = await createChromeFixture(root);
+		const stateDir = path.join(root, "ao-state");
+		const profileStore = new BrowserProfileStore({ stateDir });
+		await profileStore.load();
+		const backup = vi.spyOn(Database.prototype, "backup").mockRejectedValue(new Error("SQLITE_BUSY: database is locked"));
+		const service = new BrowserProfileImportService({
+			stateDir,
+			profileStore,
+			historyStore: new BrowserHistoryStore({ stateDir }),
+			platform: "win32",
+			homeDir: root,
+			env: { LOCALAPPDATA: localAppData },
+			fromPartition: () => ({ cookies: { set: async () => undefined }, clearStorageData: async () => undefined, clearCache: async () => undefined }),
+		});
+		const source = (await service.discover()).sources[0]!;
+
+		await expect(service.import({
+			requestId: "22222222-2222-4222-8222-222222222222",
+			sourceId: source.id,
+			profileIds: [source.profiles[0]!.id],
+			includeCookies: false,
+			includeHistory: true,
+			destination: { mode: "merge", name: "Busy Chrome Snapshot" },
+		}, vi.fn())).rejects.toThrow("AO couldn't create a temporary copy of Google Chrome's profile database");
+		expect(backup).toHaveBeenCalledTimes(2);
 		expect(profileStore.profiles).toEqual([]);
 		expect(await readdir(path.join(stateDir, "browser-import-staging"))).toEqual([]);
 	});
@@ -793,7 +941,8 @@ describe("BrowserProfileImportService", () => {
 			env: { LOCALAPPDATA: localAppData },
 			fromPartition,
 		});
-		const source = (await service.discover()).sources[0]!;
+		const shallow = await service.discover();
+		const source = (await service.discover({ sourceId: shallow.sources[0]!.id })).sources[0]!;
 
 		await expect(service.import({
 			requestId: "91919191-9191-4191-8191-919191919191",
@@ -953,7 +1102,8 @@ describe("BrowserProfileImportService", () => {
 				clearCache: async () => undefined,
 			}),
 		});
-		const source = (await service.discover()).sources[0]!;
+		const shallow = await service.discover();
+		const source = (await service.discover({ sourceId: shallow.sources[0]!.id })).sources[0]!;
 
 		await expect(service.import({
 			requestId: "12121212-1212-4212-8212-121212121212",

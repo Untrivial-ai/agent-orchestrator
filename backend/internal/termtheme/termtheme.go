@@ -9,6 +9,7 @@ package termtheme
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -55,8 +56,17 @@ func Read(dataDir string) (Scheme, bool) {
 }
 
 // Apply writes TERM_THEME and COLORFGBG when a scheme is known and the caller
-// has not already set those keys (project env and explicit tests win).
+// has not already set those keys (project env and explicit tests win). Keys
+// compare case-insensitively on Windows, where the OS treats them that way.
 func Apply(env map[string]string, dataDir string) {
+	ApplyFoldingKeys(env, dataDir, runtime.GOOS == "windows")
+}
+
+// ApplyFoldingKeys is Apply with explicit key-case semantics. With foldKeys, a
+// project's `term_theme=dark` counts as already set: adding an uppercase
+// TERM_THEME beside it would leave two case variants for Windows to dedupe in
+// map order, so the project's value could be lost nondeterministically.
+func ApplyFoldingKeys(env map[string]string, dataDir string, foldKeys bool) {
 	if env == nil {
 		return
 	}
@@ -64,12 +74,33 @@ func Apply(env map[string]string, dataDir string) {
 	if !ok {
 		return
 	}
-	if strings.TrimSpace(env[EnvTheme]) == "" {
+	if !hasValue(env, EnvTheme, foldKeys) {
 		env[EnvTheme] = string(scheme)
 	}
-	if strings.TrimSpace(env[EnvColorFgBg]) == "" {
+	if !hasValue(env, EnvColorFgBg, foldKeys) {
 		env[EnvColorFgBg] = colorFgBg(scheme)
 	}
+}
+
+// hasValue reports whether env already carries a non-blank key, matching case
+// variants too when foldKeys is set. A blank variant is removed so the value
+// written in its place is the only one left.
+func hasValue(env map[string]string, key string, foldKeys bool) bool {
+	if !foldKeys {
+		return strings.TrimSpace(env[key]) != ""
+	}
+	found := false
+	for existing, value := range env {
+		if !strings.EqualFold(existing, key) {
+			continue
+		}
+		if strings.TrimSpace(value) != "" {
+			found = true
+			continue
+		}
+		delete(env, existing)
+	}
+	return found
 }
 
 func colorFgBg(scheme Scheme) string {

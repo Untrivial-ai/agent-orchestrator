@@ -88,6 +88,26 @@ type recordingLauncher struct {
 	prepared            []domain.SessionID
 	preparePolicy       []domain.SessionInterfaceTransitionPolicy
 	aborted             []domain.SessionID
+
+	// The asynchronous spawn path records the opening prompt instead of sending
+	// it, then drains once the controller is live.
+	queued   []string
+	queueErr error
+	drainErr error
+	drained  []domain.SessionID
+}
+
+func (l *recordingLauncher) QueueChatPrompt(_ context.Context, _ domain.SessionID, text string) (string, error) {
+	if l.queueErr != nil {
+		return "", l.queueErr
+	}
+	l.queued = append(l.queued, text)
+	return "turn-1", nil
+}
+
+func (l *recordingLauncher) DrainChatQueue(_ context.Context, id domain.SessionID) error {
+	l.drained = append(l.drained, id)
+	return l.drainErr
 }
 
 type historicalChatRestoreStore struct {
@@ -1110,6 +1130,33 @@ func TestDefaultChatSpawnUsesChatWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestUnrealSpawnDefaultsToChatWithBypassPermissions(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, _, runtime := newChatManager(launcher)
+	mgr.defaults = fixedSessionModeDefaults(domain.SessionModeTUI)
+
+	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID: chatTestProject,
+		Kind:      domain.KindWorker,
+		Harness:   domain.HarnessUnreal,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if rec.Mode != domain.SessionModeChat {
+		t.Fatalf("mode = %q, want chat", rec.Mode)
+	}
+	if runtime.created != 0 {
+		t.Fatalf("Unreal spawn created %d terminal runtimes, want 0", runtime.created)
+	}
+	if len(launcher.preflightPermissions) != 1 || launcher.preflightPermissions[0] != ports.PermissionModeBypassPermissions {
+		t.Fatalf("preflight permissions = %v, want bypass-permissions", launcher.preflightPermissions)
+	}
+	if len(launcher.started) != 1 || launcher.started[0].Permissions != ports.PermissionModeBypassPermissions {
+		t.Fatalf("started controllers = %#v, want one bypass-permissions controller", launcher.started)
+	}
+}
+
 // A TUI spawn must never reach the chat launcher, even when one is wired.
 func TestTUISpawnNeverTouchesTheChatLauncher(t *testing.T) {
 	launcher := &recordingLauncher{}
@@ -1570,4 +1617,12 @@ func TestChatSpawn_RollbackGivesEachCleanupStepAFreshDeadline(t *testing.T) {
 	if !st.sessions["mer-1"].IsTerminated {
 		t.Fatal("session row was not terminated after chat shutdown exhausted its deadline")
 	}
+}
+
+func (l *deadlineConsumingChatLauncher) QueueChatPrompt(_ context.Context, _ domain.SessionID, _ string) (string, error) {
+	return "", nil
+}
+
+func (l *deadlineConsumingChatLauncher) DrainChatQueue(_ context.Context, _ domain.SessionID) error {
+	return nil
 }

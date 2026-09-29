@@ -1,14 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { backdropFor, harnessInitial, hasLogo, LOGO_KEYS } from "./harnessLogo";
+import { backdropFor, chipColorFor, HARNESS_CHIP, harnessInitial, hasLogo, LOGO_KEYS } from "./harnessLogo";
 
 // The 24 harnesses the daemon accepts — backend/internal/domain/harness.go.
 const ALL_HARNESSES = [
 	"claude-code", "codex", "aider", "opencode", "grok", "droid", "amp", "agy",
 	"crush", "cursor", "qwen", "copilot", "goose", "auggie", "continue", "devin",
 	"cline", "kimi", "muse", "kiro", "kilocode", "vibe", "pi", "autohand",
-	"kimchi", "prime-agent",
+	"kimchi", "prime-agent", "fx",
 ];
 
 // The fake harness exists only for tests and intentionally has no brand asset.
@@ -53,6 +53,13 @@ describe("logo registry", () => {
 			.sort();
 		expect(onDisk).toEqual([...LOGO_KEYS].sort());
 	});
+
+	it("registers fx as a real PNG asset for Metro", () => {
+		const registry = fs.readFileSync(path.join(__dirname, "harnessLogoAssets.ts"), "utf8");
+		expect(registry).toMatch(/fx:\s*require\("\.\.\/assets\/agents\/fx\.png"\)/);
+		const png = fs.readFileSync(path.join(__dirname, "..", "assets", "agents", "fx.png"));
+		expect([...png.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+	});
 });
 
 describe("backdropFor", () => {
@@ -67,7 +74,7 @@ describe("backdropFor", () => {
 	// The symmetric case, which is the one that is easy to miss: goose and
 	// kilocode are pure black and vanish on the dark card.
 	it("puts a light chip behind marks that vanish on a dark card", () => {
-		for (const h of ["kilocode", "goose", "devin", "droid", "pi", "kimi"]) {
+		for (const h of ["kilocode", "goose", "devin", "droid", "pi", "kimi", "fx"]) {
 			expect(backdropFor(h), h).toBe("needs-light");
 		}
 	});
@@ -88,6 +95,31 @@ describe("backdropFor", () => {
 	it("treats an unknown or missing harness as neutral", () => {
 		expect(backdropFor("some-new-agent")).toBe("neutral");
 		expect(backdropFor(null)).toBe("neutral");
+	});
+});
+
+describe("chipColorFor", () => {
+	// Every surface that draws a mark has to route through this. The spawn
+	// composer's SwiftUI menu drew the raw asset instead, so opencode's pure-white
+	// mark rendered on the light theme's own surface and disappeared.
+	it("returns the fixed chip for each polarity", () => {
+		expect(chipColorFor("opencode")).toBe(HARNESS_CHIP.dark);
+		expect(chipColorFor("cursor")).toBe(HARNESS_CHIP.dark);
+		expect(chipColorFor("goose")).toBe(HARNESS_CHIP.light);
+		expect(chipColorFor("kilocode")).toBe(HARNESS_CHIP.light);
+	});
+
+	it("returns nothing for a mark that needs no backdrop", () => {
+		expect(chipColorFor("codex")).toBeUndefined();
+		expect(chipColorFor("claude-code")).toBeUndefined();
+		expect(chipColorFor(null)).toBeUndefined();
+	});
+
+	// A palette token would follow the theme and put the white mark back on a
+	// light surface, which is the bug this exists to prevent.
+	it("keeps both chips theme-independent", () => {
+		expect(HARNESS_CHIP.dark).toBe("#24272e");
+		expect(HARNESS_CHIP.light).toBe("#ffffff");
 	});
 });
 

@@ -18,6 +18,7 @@ var allTicketScopes = []string{
 	"worker:orchestrate",
 	"worker:report",
 	"worker:transport",
+	"worker:notification",
 }
 
 func TestIssuedWorkerScopes(t *testing.T) {
@@ -42,7 +43,7 @@ func TestIssuedWorkerScopes(t *testing.T) {
 		{
 			name:   "top-level worker loses both",
 			launch: domain.WorkerLaunch{Kind: "worker"},
-			keeps:  []string{"worker:connect", "worker:git"},
+			keeps:  []string{"worker:connect", "worker:git", "worker:notification"},
 			strips: []string{"worker:orchestrate", "worker:report"},
 		},
 	}

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -269,7 +270,7 @@ func TestLoadOfferingDefaults(t *testing.T) {
 	if !cfg.LocalOffering {
 		t.Error("LocalOffering = false, want true by default")
 	}
-	if cfg.CloudControlPlaneURL != "https://staging-api.aoagents.dev" {
+	if cfg.CloudControlPlaneURL != "https://api.aoagents.dev" {
 		t.Errorf("CloudControlPlaneURL = %q, want the baked default", cfg.CloudControlPlaneURL)
 	}
 }
@@ -469,5 +470,59 @@ func TestLoadGitLabInvalidHostTokens(t *testing.T) {
 				t.Fatal("Load() = nil error, want error for malformed AO_GITLAB_HOST_TOKENS")
 			}
 		})
+	}
+}
+
+func TestLoadTrackerIntakeDefaultsOff(t *testing.T) {
+	// A blank-but-present value counts as unset. Load() feeds every ao
+	// command, so treating it as malformed would fail `ao status`/`ao stop`
+	// over an empty export rather than just leaving intake off.
+	for _, raw := range []string{"", " ", "\t"} {
+		t.Run(fmt.Sprintf("%q", raw), func(t *testing.T) {
+			t.Setenv("AO_TRACKER_INTAKE", raw)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.TrackerIntake {
+				t.Error("TrackerIntake = true, want false by default")
+			}
+		})
+	}
+}
+
+func TestLoadTrackerIntakeToggle(t *testing.T) {
+	on := []string{"on", "true", "1", "yes"}
+	off := []string{"off", "false", "0", "no"}
+	for _, raw := range on {
+		t.Run("on/"+raw, func(t *testing.T) {
+			t.Setenv("AO_TRACKER_INTAKE", raw)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !cfg.TrackerIntake {
+				t.Errorf("TrackerIntake = false for %q, want true", raw)
+			}
+		})
+	}
+	for _, raw := range off {
+		t.Run("off/"+raw, func(t *testing.T) {
+			t.Setenv("AO_TRACKER_INTAKE", raw)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.TrackerIntake {
+				t.Errorf("TrackerIntake = true for %q, want false", raw)
+			}
+		})
+	}
+}
+
+func TestLoadTrackerIntakeRejectsGarbage(t *testing.T) {
+	t.Setenv("AO_TRACKER_INTAKE", "maybe")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() = nil error, want error for malformed AO_TRACKER_INTAKE")
 	}
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { components } from "../../../api/schema";
+import { isConcreteModelID } from "../../lib/agent-model-choices";
 import { SettingsOptionMenu } from "./SettingsOptionMenu";
 import { SettingsRow } from "./SettingsRow";
 
@@ -29,9 +30,10 @@ export function useModelTuning(props: Omit<ModelTuningControlsProps, "variant" |
 	} = props;
 	const previousModel = useRef(model);
 	const previousValidity = useRef<boolean | undefined>(undefined);
+	const concreteModel = isConcreteModelID(model) ? model : "";
 	const selected =
-		models?.find((item) => item.id === model) ??
-		(model === "" ? models?.find((item) => item.isDefault) : undefined);
+		(concreteModel ? models?.find((item) => item.id === concreteModel) : undefined) ??
+		(concreteModel === "" ? models?.find((item) => item.isDefault && isConcreteModelID(item.id)) : undefined);
 	const capabilitiesKnown = models !== undefined;
 	const invalidEffort = Boolean(effort && capabilitiesKnown && !selected?.efforts?.includes(effort));
 
@@ -64,16 +66,17 @@ export function ModelTuningControls(props: ModelTuningControlsProps) {
 			<p role="alert" className="px-1 text-xs leading-row text-warning">{warning}</p>
 		) : null;
 	}
-	const effortControl = selected.efforts?.length ? (
+	const effortOptions = selected.efforts?.filter((value) => value && value.toLowerCase() !== "default") ?? [];
+	const explicitEffort = effort.toLowerCase() === "default" ? "" : effort;
+	const effectiveEffort = explicitEffort || (effortOptions.includes(selected.defaultEffort ?? "") ? selected.defaultEffort : "") || "";
+	const effortControl = effortOptions.length ? (
 		<SettingsOptionMenu
 			aria-label={`${prefix}${t("settings.models.effort")}`}
-			value={effort || "__default__"}
+			value={effectiveEffort}
+			placeholder={t("settings.models.effortNotReported")}
 			disabled={disabled}
-			options={[
-				{ value: "__default__", label: t("settings.models.providerDefault") },
-				...selected.efforts.map((value) => ({ value, label: value })),
-			]}
-			onChange={(value) => onEffortChange(value === "__default__" ? "" : value)}
+			options={effortOptions.map((value) => ({ value, label: value }))}
+			onChange={onEffortChange}
 			triggerClassName={variant === "composer" ? "composer-chip composer-toolbar-option" : "justify-end"}
 		/>
 	) : null;

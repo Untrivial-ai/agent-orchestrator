@@ -60,7 +60,7 @@ describe("BrowserImportDialog", () => {
 			rename: vi.fn(),
 			clear: vi.fn(),
 			delete: vi.fn(),
-			discoverImportSources: vi.fn(async () => ({ sources: [source, firefoxSource], warnings: ["safari-access-denied" as const] })),
+			discoverImportSources: vi.fn(async () => ({ sources: [source, firefoxSource] })),
 			import: vi.fn(async () => ({
 				sourceName: source.name,
 				entries: [{
@@ -79,7 +79,7 @@ describe("BrowserImportDialog", () => {
 
 		render(<BrowserImportDialog onImported={onImported} onOpenChange={() => undefined} open />);
 		expect(await screen.findByText("Google Chrome")).toBeInTheDocument();
-		expect(screen.getByRole("status")).toHaveTextContent("Full Disk Access");
+		expect(screen.queryByText(/Full Disk Access/)).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Start import" })).toBeEnabled();
 		const sourcePicker = screen.getByRole("combobox", { name: "From" });
 		expect(sourcePicker).toHaveTextContent("Google Chrome");
@@ -88,7 +88,7 @@ describe("BrowserImportDialog", () => {
 		expect(sourcePicker).toHaveTextContent("Firefox");
 		await userEvent.click(sourcePicker);
 		await userEvent.click(screen.getByRole("option", { name: /Google Chrome/ }));
-		expect(screen.getByRole("checkbox", { name: /Default/ })).toBeChecked();
+		expect(screen.getByRole("checkbox", { name: /Main profile/ })).toBeChecked();
 		const personalProfile = screen.getByRole("checkbox", { name: /Personal/ });
 		expect(personalProfile).not.toBeChecked();
 		await userEvent.click(personalProfile);
@@ -107,6 +107,60 @@ describe("BrowserImportDialog", () => {
 			includeHistory: true,
 			destination: { mode: "merge", name: "Google Chrome" },
 		}));
+	});
+
+	it("only probes and warns about Safari after Safari is selected", async () => {
+		const safariDeferred = { ...safariSource, profiles: [], profilesDeferred: true as const };
+		const discoverImportSources = vi.fn(async (input?: { sourceId?: string }) => (
+			input?.sourceId === safariSource.id
+				? { sources: [safariSource], warnings: ["safari-access-denied" as const] }
+				: { sources: [source, safariDeferred] }
+		));
+		aoBridge.browserProfiles = {
+			...originalBridge,
+			discoverImportSources,
+			import: vi.fn(),
+			onImportProgress: vi.fn(() => () => undefined),
+		};
+
+		render(<BrowserImportDialog onImported={() => undefined} onOpenChange={() => undefined} open />);
+		const sourcePicker = await screen.findByRole("combobox", { name: "From" });
+		expect(sourcePicker).toHaveTextContent("Google Chrome");
+		expect(screen.queryByText(/Full Disk Access/)).not.toBeInTheDocument();
+		expect(discoverImportSources).toHaveBeenCalledWith();
+
+		await userEvent.click(sourcePicker);
+		await userEvent.click(screen.getByRole("option", { name: /Safari/ }));
+
+		await waitFor(() => expect(discoverImportSources).toHaveBeenCalledWith({ sourceId: safariSource.id }));
+		expect(await screen.findByText(/Full Disk Access/)).toBeInTheDocument();
+		expect(await screen.findByRole("checkbox", { name: /Personal/ })).toBeChecked();
+	});
+
+	it("removes a deferred Safari source when targeted discovery finds no profiles", async () => {
+		const safariDeferred = { ...safariSource, profiles: [], profilesDeferred: true as const };
+		const discoverImportSources = vi.fn(async (input?: { sourceId?: string }) => (
+			input?.sourceId === safariSource.id
+				? { sources: [] }
+				: { sources: [source, safariDeferred] }
+		));
+		aoBridge.browserProfiles = {
+			...originalBridge,
+			discoverImportSources,
+			import: vi.fn(),
+			onImportProgress: vi.fn(() => () => undefined),
+		};
+
+		render(<BrowserImportDialog onImported={() => undefined} onOpenChange={() => undefined} open />);
+		const sourcePicker = await screen.findByRole("combobox", { name: "From" });
+		await userEvent.click(sourcePicker);
+		await userEvent.click(screen.getByRole("option", { name: /Safari/ }));
+
+		await waitFor(() => expect(discoverImportSources).toHaveBeenCalledWith({ sourceId: safariSource.id }));
+		await waitFor(() => expect(sourcePicker).toHaveTextContent("Google Chrome"));
+		expect(screen.queryByText(/Full Disk Access/)).not.toBeInTheDocument();
+		await userEvent.click(sourcePicker);
+		expect(screen.queryByRole("option", { name: /Safari/ })).not.toBeInTheDocument();
 	});
 
 	it("clears a failed import when choosing another browser", async () => {

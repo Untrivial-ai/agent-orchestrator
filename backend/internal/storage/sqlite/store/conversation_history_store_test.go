@@ -122,6 +122,26 @@ func TestAppendUserMessageTracksOnlyLatestHumanMessage(t *testing.T) {
 	if rec.Metadata.LatestAssistantUpdate != "" || rec.Metadata.ConversationCheckpointState != domain.ConversationCheckpointLegacy {
 		t.Fatalf("automation changed human checkpoint state: %+v", rec.Metadata)
 	}
+
+	feedbackAt := automationAt.Add(time.Minute)
+	created, err = s.AppendUserMessage(ctx, conversationID, sessionID, "gen-1", domain.ConversationMessage{
+		ID: "annotation-feedback", Text: "move this control closer to the heading",
+		Origin: domain.MessageOriginAutomation, AuthoredByUser: true,
+	}, "annotation-turn", feedbackAt)
+	if err != nil || !created {
+		t.Fatalf("append user-authored annotation: created=%v err=%v", created, err)
+	}
+	rec, _, _ = s.GetSession(ctx, sessionID)
+	if rec.Metadata.LatestUserPrompt != "move this control closer to the heading" || !rec.Metadata.LatestUserPromptAt.Equal(feedbackAt) {
+		t.Fatalf("latest user-authored feedback = %q at %s", rec.Metadata.LatestUserPrompt, rec.Metadata.LatestUserPromptAt)
+	}
+	snapshot, err := s.LoadConversationSnapshot(ctx, conversationID)
+	if err != nil {
+		t.Fatalf("load conversation snapshot: %v", err)
+	}
+	if got := snapshot.Messages[len(snapshot.Messages)-1].Origin; got != domain.MessageOriginAutomation {
+		t.Fatalf("annotation delivery origin = %q, want automation", got)
+	}
 }
 
 func TestProjectConversationRebindsAcrossOrchestratorReplacement(t *testing.T) {

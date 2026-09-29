@@ -1,7 +1,8 @@
-import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { Pressable, StyleSheet, View } from "react-native";
 import { type Theme } from "./theme";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
+import { iconSize, press, type } from "./tokens";
 
 const ACTION_WIDTH = 64;
 const CONTROL_SIZE = 44;
@@ -55,15 +56,16 @@ function PinAction({
 			<Pressable
 				accessibilityRole="button"
 				accessibilityLabel={accessibilityLabel}
-				android_ripple={{ color: t.tintBlue, borderless: false, radius: CONTROL_SIZE / 2 }}
+				android_ripple={{ color: t.accentTint, borderless: false, radius: CONTROL_SIZE / 2 }}
 				onPress={onPress}
 				style={({ pressed }) => [styles.control, styles.pinControl, pressed && styles.pressed]}
 			>
-				<MaterialCommunityIcons
-					name={pinned ? "pin" : "pin-outline"}
-					size={21}
-					color={pinned ? t.amber : t.blue}
-					style={{ transform: [{ rotate: "28deg" }] }}
+				<Feather
+					name={pinned ? "pin-off" : "pin"}
+					size={20}
+					// Foreground ink: `amber` means "needs your attention" in this palette,
+					// and a pinned row is not asking for anything.
+					color={t.textPrimary}
 				/>
 			</Pressable>
 		</View>
@@ -95,7 +97,7 @@ function Action({
 				onPress={onPress}
 				style={({ pressed }) => [styles.control, style, pressed && styles.pressed]}
 			>
-				<Feather name={icon} size={19} color={iconColor} />
+				<Feather name={icon} size={iconSize.lg} color={iconColor} />
 			</Pressable>
 		</View>
 	);
@@ -108,13 +110,13 @@ const makeStyles = (t: Theme) =>
 		control: {
 			width: CONTROL_SIZE,
 			height: CONTROL_SIZE,
-			borderRadius: CONTROL_SIZE / 2,
+			borderRadius: CONTROL_SIZE / 2, borderCurve: "continuous",
 			borderWidth: StyleSheet.hairlineWidth,
 			alignItems: "center",
 			justifyContent: "center",
 			overflow: "hidden",
 		},
-		pinControl: { borderColor: t.blue, backgroundColor: t.tintBlue },
+		pinControl: { borderColor: t.accent, backgroundColor: t.accentTint },
 		deleteControl: { borderColor: t.red, backgroundColor: t.tintRed },
-		pressed: { opacity: 0.78 },
+		pressed: { opacity: press.opacity },
 	});

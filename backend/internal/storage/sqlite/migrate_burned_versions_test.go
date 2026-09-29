@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +156,19 @@ var shippedMigrations = map[int64]string{
 	150: "0150_agent_model_catalog_cache_state.sql",
 	151: "0151_global_agent_model_catalog_cdc.sql",
 	152: "0152_session_effort.sql",
+	153: "0153_reports.sql",
+	154: "0154_report_delivery.sql",
+	155: "0155_allow_unreal_agent_harness.sql",
+	156: "0156_session_provisioning.sql",
+	157: "0157_task_preparations.sql",
+	158: "0158_prepared_worktree_creation_sha.sql",
+	159: "0159_pr_discussion_comment_count.sql",
+	160: "0160_pr_discussion_commenters.sql",
+	161: "0161_automations.sql",
+	162: "0162_drop_pr_discussion_columns.sql",
+	163: "0163_allow_fx_harness.sql",
+	164: "0164_allow_gemini_harness.sql",
+	165: "0165_allow_mimo_code_harness.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they
@@ -224,6 +238,32 @@ func TestMigrationVersionLedger(t *testing.T) {
 		if _, ok := present[version]; !ok {
 			t.Errorf("ledgered migration %q (version %d) was deleted: installs that have not applied it yet will silently miss its schema, and the number is burned for reuse", name, version)
 		}
+	}
+}
+
+func TestReconcileMiMoHarnessConstraintAfterBurnedVersion(t *testing.T) {
+	db := openMigratedDatabaseCopy(t, 164)
+	if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (165, 1)`); err != nil {
+		t.Fatalf("seed burned MiMo migration: %v", err)
+	}
+	var schema string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`).Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(schema, "'mimo-code'") {
+		t.Fatal("burned migration unexpectedly added MiMo Code")
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate burned MiMo profile: %v", err)
+	}
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`).Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(schema, "'fx'") || !strings.Contains(schema, "'gemini'") || !strings.Contains(schema, "'mimo-code'") {
+		t.Fatalf("repaired sessions constraint lost fx, Gemini, or MiMo Code: %s", schema)
+	}
+	if err := reconcileHarnessConstraint(db); err != nil {
+		t.Fatalf("repeat repair: %v", err)
 	}
 }
 

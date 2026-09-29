@@ -81,6 +81,109 @@ func TestCloneIntoNonEmptyWorkspaceStagesInsideWorkspace(t *testing.T) {
 	}
 }
 
+// noopGitRunner satisfies the git-config/checkout commands ConfigureWorkerGit
+// runs without touching a real repository.
+type noopGitRunner struct{}
+
+func (noopGitRunner) Run(context.Context, string, map[string]string, ...string) (string, error) {
+	return "", nil
+}
+
+// The sandbox git credential helper must scope the brokered token to the exact
+// repository git is asking about. git supplies host+path (useHttpPath=true); the
+// helper turns those into a ?repo=owner/repo query so a push to a declared extra
+// dev-kit repository gets a correctly scoped token — while a malformed or
+// non-GitHub request falls back to the broad grant (no ?repo=). This drives the
+// actually-rendered shell (the fmt.Sprintf %-escaping is easy to get wrong)
+// through stubbed curl/jq and asserts the URL the helper would call.
+func TestConfigureWorkerGitCredentialHelperScopesRepo(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	dataDir := t.TempDir()
+	workspace := t.TempDir()
+	if err := ConfigureWorkerGit(
+		context.Background(), noopGitRunner{},
+		workspace, dataDir, "https://cp.example.com", "sess-xyz", "ao/branch",
+	); err != nil {
+		t.Fatalf("ConfigureWorkerGit: %v", err)
+	}
+	helperPath := GitCredentialHelperPath(dataDir)
+
+	// Syntax-check the rendered shell.
+	if out, err := exec.Command("sh", "-n", helperPath).CombinedOutput(); err != nil {
+		t.Fatalf("rendered helper is not valid shell: %v\n%s", err, out)
+	}
+
+	// The helper reads the rotating worker token from this file.
+	if err := os.WriteFile(filepath.Join(dataDir, "worker-token"), []byte("WT\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stub curl (records the URL it is asked to fetch) and jq (returns a token),
+	// so the helper never touches the network and we can inspect the URL.
+	stubBin := t.TempDir()
+	urlFile := filepath.Join(dataDir, "captured-url")
+	writeStub(t, filepath.Join(stubBin, "curl"),
+		"#!/bin/sh\nfor a in \"$@\"; do url=\"$a\"; done\nprintf '%s' \"$url\" > \""+urlFile+"\"\nprintf '{\"token\":\"x\"}'\n")
+	writeStub(t, filepath.Join(stubBin, "jq"),
+		"#!/bin/sh\ncat >/dev/null 2>&1\nprintf 'x'\n")
+	env := append(os.Environ(), "PATH="+stubBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	base := "https://cp.example.com/api/cloud/v1/worker/github-token"
+	cases := []struct {
+		name      string
+		stdin     string
+		wantURL   string // expected token-endpoint URL when a credential is issued
+		wantToken bool   // false = helper must NOT contact the token endpoint (host gate)
+	}{
+		{"primary", "protocol=https\nhost=github.com\npath=octo/app.git\n\n", base + "?repo=octo/app", true},
+		{"extra", "protocol=https\nhost=github.com\npath=octo/extra.git\n\n", base + "?repo=octo/extra", true},
+		{"no path", "protocol=https\nhost=github.com\n\n", base, true},
+		// A single-segment path is not a real owner/repo → broad grant, not a bogus scoped request.
+		{"single segment", "protocol=https\nhost=github.com\npath=octoonly\n\n", base, true},
+		// Host gate: a non-github remote (which the agent can add) must never be handed the token.
+		{"non-github host", "protocol=https\nhost=example.com\npath=octo/app.git\n\n", "", false},
+		{"gitlab host", "protocol=https\nhost=gitlab.com\npath=octo/app.git\n\n", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_ = os.Remove(urlFile)
+			cmd := exec.Command("sh", helperPath, "get")
+			cmd.Stdin = strings.NewReader(tc.stdin)
+			cmd.Env = env
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("helper get: %v\n%s", err, out)
+			}
+			if !tc.wantToken {
+				// The gate must short-circuit before curl and emit no credential.
+				if u, statErr := os.ReadFile(urlFile); statErr == nil {
+					t.Fatalf("host %q must not fetch a token, but curl was called with %q", tc.name, u)
+				}
+				if strings.Contains(string(out), "password=") {
+					t.Fatalf("host %q must not emit a credential; got %q", tc.name, out)
+				}
+				return
+			}
+			got, err := os.ReadFile(urlFile)
+			if err != nil {
+				t.Fatalf("read captured URL: %v", err)
+			}
+			if string(got) != tc.wantURL {
+				t.Fatalf("helper called %q, want %q", got, tc.wantURL)
+			}
+		})
+	}
+}
+
+func writeStub(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEnsureWorkspaceReviewBaseRecordsRemoteMergeBaseOnce(t *testing.T) {
 	repo := initReviewBaseRepository(t)
 	base := gitOutput(t, repo, "rev-parse", "HEAD")

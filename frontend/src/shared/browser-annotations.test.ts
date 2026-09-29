@@ -155,13 +155,74 @@ describe("formatBrowserAnnotationMessage", () => {
 				{
 					number: 1,
 					kind: "adjustment",
-					target: "button#save.primary",
+					target: "Button",
+					text: "Save changes",
 					comment: "Make the primary action clearer.",
 					changes: ['Text color: "black" → "white"', 'Background: "white" → "blue"'],
 				},
 			],
 			screenshotCount: 1,
 		});
+	});
+
+	it("keeps an element's kind distinct from its written text", () => {
+		const session = createBrowserAnnotationSession("http://localhost:5173/", "Home");
+		session.annotations.push({
+			id: "annotation-1",
+			number: 1,
+			kind: "comment",
+			body: "Tighten this.",
+			target: {
+				context: context({
+					tag: "div",
+					id: undefined,
+					role: undefined,
+					classes: ["hero", "flex"],
+					selector: "div.hero.flex",
+					visibleText: "Welcome back",
+					selectedText: "Welcome",
+					ariaLabel: undefined,
+				}),
+			},
+			adjustments: [],
+			createdAt: "2026-09-10T12:00:00.000Z",
+			updatedAt: "2026-09-10T12:00:00.000Z",
+		});
+
+		const message = formatBrowserAnnotationMessage(submitPayload(session));
+
+		expect(message).toContain("Target: Box");
+		expect(message).toContain('Element text: "Welcome"');
+		expect(message).toContain("Selector: div.hero.flex");
+		expect(message).not.toContain("Target: div.hero.flex");
+		expect(message).not.toContain("Target: Welcome");
+	});
+
+	it("names a textless element without inventing a description", () => {
+		const session = createBrowserAnnotationSession("http://localhost:5173/", "Home");
+		session.annotations.push({
+			id: "annotation-1",
+			number: 1,
+			kind: "comment",
+			body: "Move this.",
+			target: {
+				context: context({
+					tag: "div",
+					id: undefined,
+					classes: [],
+					visibleText: undefined,
+					ariaLabel: undefined,
+				}),
+			},
+			adjustments: [],
+			createdAt: "2026-09-10T12:00:00.000Z",
+			updatedAt: "2026-09-10T12:00:00.000Z",
+		});
+
+		const message = formatBrowserAnnotationMessage(submitPayload(session));
+
+		expect(message).toContain("Target: Box");
+		expect(message).not.toContain("Element text:");
 	});
 
 	it("keeps the generated handoff below the daemon message limit", () => {

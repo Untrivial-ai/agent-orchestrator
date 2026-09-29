@@ -1,25 +1,26 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../icons";
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { haptics } from "../haptics";
 import type { Theme } from "../theme";
 import { useTheme, useThemedStyles } from "../ThemeProvider";
 import { SheetHeader } from "../ui";
 import type { ConversationActionsEntry } from "./chatSheetRegistry";
-import { contextReadout } from "./conversationChrome";
+import { compactContextUsageLabel, compactTokenCount, contextReadout, contextUsageLabel } from "./conversationChrome";
 import { conversationMenuSections, type ConversationMenuAction } from "./conversationMenuModel";
-import { can } from "./types";
+import { can, type ConversationSnapshot } from "./types";
+import { type, space } from "../tokens";
 
-export function ConversationActionsSheet({ entry, onAction }: { entry: ConversationActionsEntry; onAction(action: () => void): void }) {
+export function ConversationActionsSheet({ entry, snapshot, onAction }: { entry: ConversationActionsEntry; snapshot: ConversationSnapshot; onAction(action: () => void): void }) {
 	const styles = useThemedStyles(makeStyles);
-	const turnInFlight = entry.snapshot.turns.some((turn) => turn.state === "running" || turn.state === "queued");
+	const turnInFlight = snapshot.turns.some((turn) => turn.state === "running" || turn.state === "queued");
 	const sections = conversationMenuSections({
-		canRename: can(entry.snapshot, "rename"),
+		canRename: can(snapshot, "rename"),
 		canPin: entry.canPin,
 		canCompact: entry.compactSupported,
 		canReloadMcp: entry.mcpReloadSupported,
 		canDelete: entry.canDelete,
 	});
-	const context = contextReadout(entry.snapshot.usage);
+	const context = contextReadout(snapshot.usage);
 
 	const details = (action: ConversationMenuAction) => {
 		switch (action) {
@@ -28,7 +29,7 @@ export function ConversationActionsSheet({ entry, onAction }: { entry: Conversat
 			case "pull_requests": return { icon: "git-pull-request" as const, label: "Pull requests", run: entry.onPullRequests };
 			case "map": return { icon: "list" as const, label: "Conversation history", run: entry.onMap };
 			case "refresh": return { icon: "refresh-cw" as const, label: entry.refreshing ? "Refreshing conversation…" : "Refresh conversation", disabled: entry.refreshing, run: entry.onRefresh };
-			case "settings": return { icon: "sliders" as const, label: "Turn settings", value: entry.snapshot.settings.model || "Default", run: entry.onSettings };
+			case "settings": return { icon: "sliders" as const, label: "Turn settings", value: snapshot.settings.model || "Default", run: entry.onSettings };
 			case "rename": return { icon: "edit-2" as const, label: "Rename conversation", run: entry.onRename };
 			case "pin": return { icon: "bookmark" as const, label: entry.pinned ? "Unpin worker" : "Pin worker", run: entry.onTogglePin };
 			case "compact": return { icon: "archive" as const, label: entry.compacting ? "Compacting history…" : "Compact history", disabled: turnInFlight || entry.compacting, run: entry.onCompact };
@@ -45,7 +46,7 @@ export function ConversationActionsSheet({ entry, onAction }: { entry: Conversat
 		keyExtractor={(section) => section.title}
 		nestedScrollEnabled
 		keyboardShouldPersistTaps="handled"
-		ListHeaderComponent={<SheetHeader title={entry.snapshot.title || "Untitled conversation"} subtitle={`Session · ${entry.sessionTitle}`} />}
+		ListHeaderComponent={<SheetHeader title={snapshot.title || "Untitled conversation"} subtitle={`Session · ${entry.sessionTitle}`} />}
 		renderItem={({ item: section }) => <View style={styles.section}>
 				<Text style={styles.sectionTitle}>{section.title}</Text>
 				<View style={styles.group}>{section.actions.map((action, index) => {
@@ -53,10 +54,11 @@ export function ConversationActionsSheet({ entry, onAction }: { entry: Conversat
 						return <ActionRow key={action} {...item} divider={index < section.actions.length - 1} onPress={() => onAction(item.run)} />;
 					})}</View>
 			</View>}
-		ListFooterComponent={entry.snapshot.usage || entry.snapshot.rateLimits ? <View style={styles.usage}>
+		ListFooterComponent={snapshot.usage || snapshot.rateLimits ? <View style={styles.usage}>
 				<Text style={styles.sectionTitle}>Context & usage</Text>
-				{entry.snapshot.usage ? <><Text style={styles.usageText}>{formatTokens(entry.snapshot.usage.contextUsed)} / {formatTokens(entry.snapshot.usage.contextWindow)} context · {formatTokens(entry.snapshot.usage.inputTokens)} in · {formatTokens(entry.snapshot.usage.outputTokens)} out{entry.snapshot.usage.cost != null ? ` · ${entry.snapshot.usage.currency || "$"}${entry.snapshot.usage.cost.toFixed(4)}` : ""}</Text>{context?.fillPercent !== undefined ? <View style={styles.contextTrack}><View style={[styles.contextFill, { width: `${context.fillPercent}%` }]} /></View> : null}</> : null}
-				{entry.snapshot.rateLimits ? <Text style={styles.usageText}>{entry.snapshot.rateLimits.planLabel || "Primary limit"} · {Math.round(entry.snapshot.rateLimits.primaryUsedPercent)}% used{formatReset(entry.snapshot.rateLimits.primaryResetsInSeconds)}</Text> : null}
+				<Text accessibilityLabel={contextUsageLabel(snapshot.usage)} style={styles.usageText}>{compactContextUsageLabel(snapshot.usage)}</Text>
+				{snapshot.usage ? <><Text style={styles.usageText}>{compactTokenCount(snapshot.usage.inputTokens)} in · {compactTokenCount(snapshot.usage.outputTokens)} out{snapshot.usage.cost != null ? ` · ${snapshot.usage.currency || "$"}${snapshot.usage.cost.toFixed(4)}` : ""}</Text>{context?.fillPercent !== undefined ? <View style={styles.contextTrack}><View style={[styles.contextFill, { width: `${context.fillPercent}%` }]} /></View> : null}</> : null}
+				{snapshot.rateLimits ? <Text style={styles.usageText}>{snapshot.rateLimits.planLabel || "Primary limit"} · {Math.round(snapshot.rateLimits.primaryUsedPercent)}% used{formatReset(snapshot.rateLimits.primaryResetsInSeconds)}</Text> : null}
 			</View> : null}
 	/>;
 }
@@ -65,31 +67,30 @@ function ActionRow({ icon, label, hint, value, disabled, destructive, divider, o
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	return <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={() => { destructive ? haptics.warning() : haptics.tap(); onPress(); }} style={({ pressed }) => [styles.row, divider && styles.rowDivider, pressed && styles.rowPressed, disabled && { opacity: 0.42 }]}>
-		<Feather name={icon} size={18} color={destructive ? t.red : t.textSecondary} style={styles.rowIcon} />
+		<Feather name={icon} size={17} color={destructive ? t.red : t.textSecondary} style={styles.rowIcon} />
 		<View style={{ flex: 1 }}><Text style={[styles.rowLabel, destructive && { color: t.red }]}>{label}</Text>{hint ? <Text style={styles.rowHint}>{hint}</Text> : null}</View>
 		{value ? <Text numberOfLines={1} style={styles.rowValue}>{value}</Text> : null}
-		<Feather name="chevron-right" size={16} color={t.textFaint} />
+		<Feather name="chevron-right" size={15} color={t.textFaint} />
 	</Pressable>;
 }
 
-function formatTokens(value: number): string { return value >= 1_000 ? `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k` : String(value); }
 function formatReset(seconds?: number): string { if (seconds === undefined || seconds < 0) return ""; if (seconds < 60) return ` · resets in ${Math.ceil(seconds)}s`; if (seconds < 3600) return ` · resets in ${Math.ceil(seconds / 60)}m`; return ` · resets in ${Math.ceil(seconds / 3600)}h`; }
 
 const makeStyles = (t: Theme) => StyleSheet.create({
 	list: { flex: 1, backgroundColor: t.bgBase },
-	content: { paddingHorizontal: 20, paddingTop: 22, paddingBottom: 32 },
-	section: { marginTop: 18 },
-	sectionTitle: { color: t.textTertiary, fontSize: 12, fontWeight: "600", marginBottom: 5 },
+	content: { paddingHorizontal: space.xl, paddingTop: space.xl, paddingBottom: space.xxxl },
+	section: { marginTop: space.lg },
+	sectionTitle: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.caption1.fontSize, fontWeight: "600", marginBottom: space.xxs },
 	group: { overflow: "hidden", borderRadius: 16, borderCurve: "continuous", backgroundColor: t.bgElevated },
-	row: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 11, paddingHorizontal: 14, paddingVertical: 9 },
+	row: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: space.md, paddingHorizontal: space.md, paddingVertical: space.sm },
 	rowDivider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: t.borderSubtle },
 	rowPressed: { opacity: 0.58 },
-	rowIcon: { width: 22, textAlign: "center" },
-	rowLabel: { color: t.textPrimary, fontSize: 15, fontWeight: "500" },
-	rowHint: { color: t.textTertiary, fontSize: 11, lineHeight: 15, marginTop: 2 },
-	rowValue: { maxWidth: 110, color: t.textTertiary, fontSize: 13 },
-	usage: { marginTop: 25, paddingTop: 16, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle, gap: 7 },
-	usageText: { color: t.textTertiary, fontSize: 11, lineHeight: 16 },
+	rowIcon: { fontFamily: "Geist_400Regular", width: 22, textAlign: "center" },
+	rowLabel: { fontFamily: "Geist_500Medium", color: t.textPrimary, fontSize: type.subheadline.fontSize, fontWeight: "500" },
+	rowHint: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, marginTop: space.hair },
+	rowValue: { fontFamily: "Geist_400Regular", maxWidth: 110, color: t.textTertiary, fontSize: type.footnote.fontSize },
+	usage: { marginTop: space.xxl, paddingTop: space.lg, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle, gap: space.xs },
+	usageText: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight },
 	contextTrack: { height: 4, borderRadius: 2, backgroundColor: t.bgSubtle, overflow: "hidden" },
-	contextFill: { height: 4, borderRadius: 2, backgroundColor: t.blue },
+	contextFill: { height: 4, borderRadius: 2, backgroundColor: t.accent },
 });

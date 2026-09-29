@@ -169,6 +169,22 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 		if rec.IsTerminated || !rec.TerminateOnPRMerge {
 			return nil
 		}
+		// A merge must not race the still-working agent (#2879). A session whose
+		// agent is still ActivityActive is genuinely mid-climb: with one PR merged
+		// it is very likely raising the next PR in the same session, and
+		// flag-terminating it now (#2811's flag-only lane) would drop it from the
+		// SCM observer roster — the follow-up PR would never be attributed,
+		// enriched, or nudged alert. Defer the completed-session teardown until the
+		// agent has actually quiesced: the observer keeps polling this live session
+		// regardless because it is still observed, so the next observation of the
+		// still-merged PR re-runs this reaction after the agent exits and lands the
+		// termination then. The is_terminated / needs-input dead-session gates that
+		// the rest of reactions.go consults (see ApplyRuntimeObservation) still
+		// bound this lane at each poll; only the "sessionComplete reads PR rows"
+		// bar must additionally wait on genuine agent quiescence.
+		if rec.Activity.State == domain.ActivityActive {
+			return nil
+		}
 		done, err := m.sessionComplete(ctx, id)
 		if err != nil {
 			return err
@@ -279,7 +295,9 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 				if sig == "" {
 					sig = string(o.Review)
 				}
-				nudges = append(nudges, pendingNudge{key: "comment:" + o.URL, sig: sig, msg: msg, maxAttempts: reviewMaxNudge})
+				// Per comment, like the review loop below: a shared key is a
+				// shared signature slot and a shared attempt budget.
+				nudges = append(nudges, pendingNudge{key: commentNudgeKey(o.URL, comment), sig: sig, msg: msg, maxAttempts: reviewMaxNudge})
 			}
 		}
 
@@ -381,6 +399,20 @@ func (m *Manager) sessionComplete(ctx context.Context, id domain.SessionID) (boo
 		}
 	}
 	return merged, nil
+}
+
+// commentNudgeKey identifies one review comment's nudge. It must be unique per
+// comment, not per thread: the observer expands a thread into one comment row
+// each (observer.go), all sharing the thread id, so keying on the thread would
+// put several comments with several signatures back in one dedup slot -- the
+// rotation this key exists to prevent. A comment with no id falls back to its
+// thread, which is still better than colliding with every other comment.
+func commentNudgeKey(prURL string, comment ports.PRCommentObservation) string {
+	id := strings.TrimSpace(comment.ID)
+	if id == "" {
+		id = strings.TrimSpace(comment.ThreadID)
+	}
+	return "comment:" + prURL + ":" + id
 }
 
 // mergeConflictKey is the reaction-dedup key for a PR's merge-conflict nudge.

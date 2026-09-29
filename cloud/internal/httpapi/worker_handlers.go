@@ -15,6 +15,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/githubapp"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/roleprompt"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
@@ -239,6 +240,21 @@ func launchContextFrom(launch domain.WorkerLaunch) (worker.LaunchContext, error)
 	if err != nil {
 		return worker.LaunchContext{}, err
 	}
+	// Extra repos are project-level (chosen at project setup, stored on the
+	// project config), so every session of the project clones the same set.
+	// Decoded before the prompt is built so both the project context (which
+	// makes every role aware the project is multi-repo) and the worker's clone
+	// list draw from the same source.
+	var extraRepos []worker.RepoRef
+	var promptExtras []roleprompt.RepoRef
+	if coderCfg, ok := domain.DecodeProjectCoderConfig(launch.ProjectConfig); ok && len(coderCfg.ExtraRepos) > 0 {
+		extraRepos = make([]worker.RepoRef, 0, len(coderCfg.ExtraRepos))
+		promptExtras = make([]roleprompt.RepoRef, 0, len(coderCfg.ExtraRepos))
+		for _, repo := range coderCfg.ExtraRepos {
+			extraRepos = append(extraRepos, worker.RepoRef{URL: repo.URL, Branch: repo.Branch})
+			promptExtras = append(promptExtras, roleprompt.RepoRef{URL: repo.URL, Branch: repo.Branch})
+		}
+	}
 	systemPrompt := roleprompt.Build(roleprompt.Config{
 		Role:              launch.Kind,
 		ProjectID:         launch.ProjectID,
@@ -248,16 +264,8 @@ func launchContextFrom(launch domain.WorkerLaunch) (worker.LaunchContext, error)
 		WorkspacePath:     "/workspace/repository",
 		AgentRules:        agentRules,
 		OrchestratorRules: orchestratorRules,
+		ExtraRepos:        promptExtras,
 	})
-	// Extra repos are project-level (chosen at project setup, stored on the
-	// project config), so every session of the project clones the same set.
-	var extraRepos []worker.RepoRef
-	if coderCfg, ok := domain.DecodeProjectCoderConfig(launch.ProjectConfig); ok && len(coderCfg.ExtraRepos) > 0 {
-		extraRepos = make([]worker.RepoRef, 0, len(coderCfg.ExtraRepos))
-		for _, repo := range coderCfg.ExtraRepos {
-			extraRepos = append(extraRepos, worker.RepoRef{URL: repo.URL, Branch: repo.Branch})
-		}
-	}
 	return worker.LaunchContext{
 		SessionID:       launch.SessionID,
 		ProjectID:       launch.ProjectID,
@@ -269,6 +277,7 @@ func launchContextFrom(launch domain.WorkerLaunch) (worker.LaunchContext, error)
 		AgentSessionID:  launch.AgentSessionID,
 		ParentSessionID: launch.ParentSessionID,
 		Mode:            launch.Mode,
+		Model:           launch.Model,
 		DeniedCommands:  launch.DeniedCommands,
 		RepositoryURL:   launch.RepositoryURL,
 		DefaultBranch:   launch.DefaultBranch,
@@ -426,32 +435,43 @@ func (s *Server) workerCheckoutGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
 		return
 	}
-	if grant, ok := s.workerGitHubPATGrant(r.Context(), claims); ok {
-		writeJSON(w, http.StatusOK, worker.CheckoutGrantResponse{CloneURL: grant.CloneURL, Token: grant.Token, ExpiresAt: grant.ExpiresAt})
-		return
-	}
-	if s.checkoutBroker == nil {
-		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Repository checkout is not available.")
-		return
-	}
-	grant, err := s.checkoutBroker.IssueCheckoutGrant(r.Context(), claims.OrgID, claims.SessionID)
-	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
-		writeError(w, r, http.StatusForbidden, "CHECKOUT_NOT_AUTHORIZED", "This session does not have an active repository grant.")
-		return
-	}
-	if err != nil {
-		s.logger.Error("issue worker checkout grant", "error", err, "request_id", requestID(r))
-		writeError(w, r, http.StatusBadGateway, "SCM_BROKER_FAILED", "A repository checkout grant could not be issued.")
-		return
-	}
-	if grant.Token == "" || grant.CloneURL == "" || !grant.ExpiresAt.After(time.Now()) {
+	// Prefer the GitHub App installation grant: it is minted fresh per request and
+	// never goes stale. A stored PAT is used only as a fallback when the App path
+	// cannot serve this project (no installation / not App-connected / mint
+	// failed). A PAT's validation_state is a cached snapshot, so preferring it
+	// could let a rotted PAT shadow a healthy App installation and fail every clone
+	// with "Invalid username or token"; the App-first order prevents that.
+	if s.checkoutBroker != nil {
+		grant, err := s.checkoutBroker.IssueCheckoutGrant(r.Context(), claims.OrgID, claims.SessionID)
+		if err == nil && grant.Token != "" && grant.CloneURL != "" && grant.ExpiresAt.After(time.Now()) {
+			writeJSON(w, http.StatusOK, worker.CheckoutGrantResponse{
+				CloneURL: grant.CloneURL, Token: grant.Token, ExpiresAt: grant.ExpiresAt,
+			})
+			return
+		}
+		if pat, ok := s.workerGitHubPATGrant(r.Context(), claims); ok {
+			writeJSON(w, http.StatusOK, pat)
+			return
+		}
+		if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
+			writeError(w, r, http.StatusForbidden, "CHECKOUT_NOT_AUTHORIZED", "This session does not have an active repository grant.")
+			return
+		}
+		if err != nil {
+			s.logger.Error("issue worker checkout grant", "error", err, "request_id", requestID(r))
+			writeError(w, r, http.StatusBadGateway, "SCM_BROKER_FAILED", "A repository checkout grant could not be issued.")
+			return
+		}
 		s.logger.Error("worker checkout broker returned an invalid grant", "request_id", requestID(r))
 		writeError(w, r, http.StatusBadGateway, "SCM_BROKER_FAILED", "A repository checkout grant could not be issued.")
 		return
 	}
-	writeJSON(w, http.StatusOK, worker.CheckoutGrantResponse{
-		CloneURL: grant.CloneURL, Token: grant.Token, ExpiresAt: grant.ExpiresAt,
-	})
+	// No App broker configured: fall back to a stored PAT.
+	if pat, ok := s.workerGitHubPATGrant(r.Context(), claims); ok {
+		writeJSON(w, http.StatusOK, pat)
+		return
+	}
+	writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Repository checkout is not available.")
 }
 
 func (s *Server) workerPushGrant(w http.ResponseWriter, r *http.Request) {
@@ -461,32 +481,40 @@ func (s *Server) workerPushGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
 		return
 	}
-	if grant, ok := s.workerGitHubPATGrant(r.Context(), claims); ok {
-		writeJSON(w, http.StatusOK, worker.CheckoutGrantResponse{CloneURL: grant.CloneURL, Token: grant.Token, ExpiresAt: grant.ExpiresAt})
-		return
-	}
-	if s.checkoutBroker == nil {
-		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Repository push is not available.")
-		return
-	}
-	grant, err := s.checkoutBroker.IssuePushGrant(r.Context(), claims.OrgID, claims.SessionID)
-	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
-		writeError(w, r, http.StatusForbidden, "PUSH_NOT_AUTHORIZED", "This session does not have an active repository grant.")
-		return
-	}
-	if err != nil {
-		s.logger.Error("issue worker push grant", "error", err, "request_id", requestID(r))
-		writeError(w, r, http.StatusBadGateway, "SCM_BROKER_FAILED", "A repository push grant could not be issued.")
-		return
-	}
-	if grant.Token == "" || grant.CloneURL == "" || !grant.ExpiresAt.After(time.Now()) {
+	// Prefer the App installation push grant; fall back to a stored PAT only when
+	// the App path cannot serve this project. Same rationale as workerCheckoutGrant:
+	// the App write token is minted fresh, while a cached-valid PAT may be stale.
+	if s.checkoutBroker != nil {
+		grant, err := s.checkoutBroker.IssuePushGrant(r.Context(), claims.OrgID, claims.SessionID)
+		if err == nil && grant.Token != "" && grant.CloneURL != "" && grant.ExpiresAt.After(time.Now()) {
+			writeJSON(w, http.StatusOK, worker.CheckoutGrantResponse{
+				CloneURL: grant.CloneURL, Token: grant.Token, ExpiresAt: grant.ExpiresAt,
+			})
+			return
+		}
+		if pat, ok := s.workerGitHubPATGrant(r.Context(), claims); ok {
+			writeJSON(w, http.StatusOK, pat)
+			return
+		}
+		if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
+			writeError(w, r, http.StatusForbidden, "PUSH_NOT_AUTHORIZED", "This session does not have an active repository grant.")
+			return
+		}
+		if err != nil {
+			s.logger.Error("issue worker push grant", "error", err, "request_id", requestID(r))
+			writeError(w, r, http.StatusBadGateway, "SCM_BROKER_FAILED", "A repository push grant could not be issued.")
+			return
+		}
 		s.logger.Error("worker push broker returned an invalid grant", "request_id", requestID(r))
 		writeError(w, r, http.StatusBadGateway, "SCM_BROKER_FAILED", "A repository push grant could not be issued.")
 		return
 	}
-	writeJSON(w, http.StatusOK, worker.CheckoutGrantResponse{
-		CloneURL: grant.CloneURL, Token: grant.Token, ExpiresAt: grant.ExpiresAt,
-	})
+	// No App broker configured: fall back to a stored PAT.
+	if pat, ok := s.workerGitHubPATGrant(r.Context(), claims); ok {
+		writeJSON(w, http.StatusOK, pat)
+		return
+	}
+	writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "Repository push is not available.")
 }
 
 // workerGitHubToken gives worker-local Git tooling the same short-lived,
@@ -499,32 +527,83 @@ func (s *Server) workerGitHubToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusForbidden, "SCOPE_REQUIRED", "The worker:git scope is required.")
 		return
 	}
-	if grant, ok := s.workerGitHubPATGrant(r.Context(), claims); ok {
-		writeJSON(w, http.StatusOK, worker.GitHubTokenResponse{Token: grant.Token, ExpiresAt: grant.ExpiresAt})
-		return
-	}
-	if s.checkoutBroker == nil {
-		writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "GitHub credentials are not available.")
-		return
-	}
-	grant, err := s.checkoutBroker.IssuePushGrant(r.Context(), claims.OrgID, claims.SessionID)
-	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
-		writeError(w, r, http.StatusForbidden, "PUSH_NOT_AUTHORIZED", "This session does not have an active repository grant.")
-		return
-	}
-	if err != nil {
-		s.logger.Error("issue worker GitHub token", "error", err, "request_id", requestID(r))
-		writeError(w, r, http.StatusBadGateway, "SCM_BROKER_FAILED", "A GitHub credential could not be issued.")
-		return
-	}
-	if grant.Token == "" || !grant.ExpiresAt.After(time.Now()) {
+	// Prefer the GitHub App installation grant, falling back to a stored PAT only
+	// when the App path cannot serve this project — the same precedence as
+	// workerCheckoutGrant / workerPushGrant. This endpoint backs the sandbox git
+	// credential helper, which git invokes for every fetch and push, so a PAT-first
+	// order here lets a cached-valid-but-rotted PAT shadow a healthy App
+	// installation and fail every git operation with "Authentication failed" even
+	// though the App can push. The App token is minted fresh per request and never
+	// goes stale, so it is the safe default; the broad PAT is the fallback for
+	// projects the App cannot serve (no installation / not App-connected / a remote
+	// broker that cannot push).
+	if s.checkoutBroker != nil {
+		// git invokes the credential helper with credential.useHttpPath=true, so
+		// it can name the exact repository it is fetching or pushing. When it does,
+		// mint an App token scoped to that repository (primary or a declared extra
+		// the App is installed on); an App-uninstalled extra returns ErrForbidden
+		// here and falls through to the PAT, giving the same App-first/PAT-fallback
+		// precedence per repository. Without a repository (older helpers, the gh
+		// CLI wrapper), fall back to the broad multi-repository push grant.
+		repo := workerRequestedRepository(r)
+		var (
+			grant githubapp.CheckoutGrant
+			err   error
+		)
+		if repo != "" {
+			grant, err = s.checkoutBroker.IssuePushGrantForRepo(r.Context(), claims.OrgID, claims.SessionID, repo)
+		} else {
+			grant, err = s.checkoutBroker.IssuePushGrant(r.Context(), claims.OrgID, claims.SessionID)
+		}
+		if err == nil && grant.Token != "" && grant.ExpiresAt.After(time.Now()) {
+			writeJSON(w, http.StatusOK, worker.GitHubTokenResponse{Token: grant.Token, ExpiresAt: grant.ExpiresAt})
+			return
+		}
+		if pat, ok := s.workerGitHubPATGrant(r.Context(), claims); ok {
+			writeJSON(w, http.StatusOK, worker.GitHubTokenResponse{Token: pat.Token, ExpiresAt: pat.ExpiresAt})
+			return
+		}
+		if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
+			writeError(w, r, http.StatusForbidden, "PUSH_NOT_AUTHORIZED", "This session does not have an active repository grant.")
+			return
+		}
+		if err != nil {
+			s.logger.Error("issue worker GitHub token", "error", err, "request_id", requestID(r))
+			writeError(w, r, http.StatusBadGateway, "SCM_BROKER_FAILED", "A GitHub credential could not be issued.")
+			return
+		}
 		s.logger.Error("worker GitHub broker returned an invalid grant", "request_id", requestID(r))
 		writeError(w, r, http.StatusBadGateway, "SCM_BROKER_FAILED", "A GitHub credential could not be issued.")
 		return
 	}
-	writeJSON(w, http.StatusOK, worker.GitHubTokenResponse{
-		Token: grant.Token, ExpiresAt: grant.ExpiresAt,
-	})
+	// No App broker configured: fall back to a stored PAT.
+	if grant, ok := s.workerGitHubPATGrant(r.Context(), claims); ok {
+		writeJSON(w, http.StatusOK, worker.GitHubTokenResponse{Token: grant.Token, ExpiresAt: grant.ExpiresAt})
+		return
+	}
+	writeError(w, r, http.StatusServiceUnavailable, "SCM_BROKER_UNAVAILABLE", "GitHub credentials are not available.")
+}
+
+// workerRequestedRepository extracts the "owner/repo" the git credential helper
+// named via the ?repo= query parameter (git supplies host+path because the
+// helper runs with credential.useHttpPath=true). It returns "" for a missing or
+// malformed value, so the caller falls back to the broad multi-repository push
+// grant rather than failing — the repository hint only ever narrows the grant's
+// scope, it is never a hard requirement.
+func workerRequestedRepository(r *http.Request) string {
+	raw := strings.TrimSpace(r.URL.Query().Get("repo"))
+	if raw == "" {
+		return ""
+	}
+	raw = strings.TrimSuffix(strings.Trim(raw, "/"), ".git")
+	owner, repo, ok := strings.Cut(raw, "/")
+	if !ok ||
+		owner == "" || repo == "" ||
+		strings.ContainsAny(owner, "/ \t") ||
+		strings.ContainsAny(repo, "/ \t") {
+		return ""
+	}
+	return owner + "/" + repo
 }
 
 func (s *Server) workerRaisePullRequest(w http.ResponseWriter, r *http.Request) {
@@ -559,20 +638,25 @@ func (s *Server) workerRaisePullRequest(w http.ResponseWriter, r *http.Request) 
 		HeadBranch: input.HeadBranch,
 		BaseBranch: input.BaseBranch,
 	}
-	// Prefer the user's PAT when one is configured: it can write back to GitHub
-	// even where the checkout broker is read-only (e.g. staging reaches GitHub
-	// through the remote capability broker, whose write methods are stubbed).
-	// This mirrors the PAT-first read/push grant path.
+	// Prefer the GitHub App (checkout broker) to open the PR: it uses a fresh
+	// installation token that can't go stale. Fall back to the user's PAT only when
+	// the broker cannot complete the write — a repository authorized through the
+	// remote capability broker returns errRemotePushNotSupported, and some projects
+	// are not App-connected. A PAT-first order let a cached-valid-but-rotted PAT
+	// (validation_state is a cached snapshot) shadow a healthy App installation and
+	// fail every PR with "pull request could not be opened", the same class of bug
+	// the credential-grant endpoints avoid by being App-first.
 	var (
 		pr  domain.PullRequest
 		err error
 	)
-	if grant, ok := s.patWriteGrant(r.Context(), claims); ok {
-		pr, err = s.patWrites.RaisePullRequest(
-			r.Context(), claims.OrgID, claims.SessionID, grant.CloneURL, grant.Token, raiseInput,
-		)
-	} else {
-		pr, err = s.checkoutBroker.RaisePullRequest(r.Context(), claims.OrgID, claims.SessionID, raiseInput)
+	pr, err = s.checkoutBroker.RaisePullRequest(r.Context(), claims.OrgID, claims.SessionID, raiseInput)
+	if err != nil {
+		if grant, ok := s.patWriteGrant(r.Context(), claims); ok {
+			pr, err = s.patWrites.RaisePullRequest(
+				r.Context(), claims.OrgID, claims.SessionID, grant.CloneURL, grant.Token, raiseInput,
+			)
+		}
 	}
 	if errors.Is(err, postgres.ErrForbidden) || errors.Is(err, postgres.ErrNotFound) {
 		writeError(w, r, http.StatusForbidden, "PULL_REQUEST_NOT_AUTHORIZED", "This session does not have an active repository grant.")
@@ -588,6 +672,7 @@ func (s *Server) workerRaisePullRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.appendSessionProjectionEvent(r.Context(), claims.OrgID, claims.SessionID, "pull_request.created", pr)
+	s.recordWorkerPullRequestOpened(r.Context(), claims.OrgID, pr)
 	writeJSON(w, http.StatusCreated, worker.RaisePullRequestResponse{
 		ID:         pr.ID,
 		Number:     pr.Number,
@@ -649,9 +734,21 @@ func (s *Server) workerClaimPullRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.appendSessionProjectionEvent(r.Context(), claims.OrgID, claims.SessionID, "pull_request.claimed", pr)
+	s.recordWorkerPullRequestOpened(r.Context(), claims.OrgID, pr)
 	writeJSON(w, http.StatusOK, worker.ClaimPullRequestResponse{
 		ID: pr.ID, Number: pr.Number, HTMLURL: pr.URL,
 	})
+}
+
+// The GitHub App webhook can be delivered to a different environment from the
+// worker that opened the PR. Record the bell notification at the worker write
+// boundary so it does not depend on webhook routing.
+func (s *Server) recordWorkerPullRequestOpened(ctx context.Context, orgID string, pr domain.PullRequest) {
+	if err := s.store.RecordPullRequestOpened(ctx, orgID, pr, "worker:"+pr.ID); err != nil {
+		// GitHub may already have created the PR, so do not report the operation as
+		// failed solely because its notification could not be written.
+		s.logger.Error("record worker pull request notification", "error", err, "pull_request_id", pr.ID)
+	}
 }
 
 func (s *Server) workerSubmitReview(w http.ResponseWriter, r *http.Request) {

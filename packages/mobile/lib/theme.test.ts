@@ -31,7 +31,7 @@ describe("palette parity", () => {
 	// A half-finished light palette is the likely failure mode: colours copied
 	// across unchanged look washed out on white, and nothing else would flag it.
 	it("darkens every semantic colour for light mode rather than reusing it", () => {
-		const semantic = ["blue", "orange", "amber", "red", "purple", "green"] as const;
+		const semantic = ["accent", "orange", "amber", "red", "green"] as const;
 		for (const token of semantic) {
 			expect(lightTheme[token], token).not.toBe(darkTheme[token]);
 		}
@@ -42,18 +42,36 @@ describe("palette parity", () => {
 		expect(lightTheme.textPrimary).not.toBe(darkTheme.textPrimary);
 	});
 
-	// The four call sites that used to hardcode #06101f would be invisible on the
-	// light accent.
+	// The accent flips polarity between themes — near-white ink on dark, near-black
+	// on light — so the ink has to flip with it.
 	it("flips the accent ink between themes", () => {
-		expect(darkTheme.onAccent).toBe("#06101f");
+		expect(darkTheme.onAccent).toBe("#0b0c0e");
 		expect(lightTheme.onAccent).toBe("#ffffff");
 	});
 
-	it("keeps the back-compat aliases in step with their real tokens", () => {
+	// Every hue in the palette means a state, and the interactive accent carries
+	// emphasis with contrast instead. Blue stays out — it meant nothing specific
+	// here, and the pin was carrying a stray one. Purple is in, meaning exactly
+	// one thing: a pull request that landed.
+	it("keeps blue out of the palette and purple to a single meaning", () => {
 		for (const t of [darkTheme, lightTheme]) {
-			expect(t.accent).toBe(t.blue);
-			expect(t.accentTint).toBe(t.tintBlue);
-			expect(t.attention).toBe(t.amber);
+			for (const gone of ["blue", "tintBlue", "attention"]) {
+				expect(t, gone).not.toHaveProperty(gone);
+			}
+			expect(t.purple, "purple").toBeTruthy();
+			// Not the accent, not the success hue: a merged PR must not read as
+			// either "selected" or "mergeable".
+			expect(t.purple).not.toBe(t.accent);
+			expect(t.purple).not.toBe(t.green);
+			expect(t.accent).not.toBe(t.orange);
+			expect(t.accentBorder).toBeTruthy();
+		}
+	});
+
+	it("marks a merged session with the purple, not the muted grey it used to share", () => {
+		for (const t of [darkTheme, lightTheme]) {
+			expect(statusVisual(t, "merged").color).toBe(t.purple);
+			expect(statusVisual(t, "merged").color).not.toBe(t.textSecondary);
 		}
 	});
 });

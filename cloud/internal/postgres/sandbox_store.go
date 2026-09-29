@@ -831,7 +831,7 @@ func (s *Store) WorkerLaunchSpec(
 			`SELECT session.id, session.project_id, project.display_name, project.config,
 				session.kind, session.harness,
 				session.display_name, session.branch, session.prompt,
-				session.agent_session_id, session.mode, session.denied_commands,
+				session.agent_session_id, session.mode, session.model, session.denied_commands,
 				COALESCE(session.parent_session_id::text, ''),
 				project.repository_url, project.default_branch
 			FROM ao_sessions session
@@ -851,6 +851,7 @@ func (s *Store) WorkerLaunchSpec(
 			&launch.Prompt,
 			&launch.AgentSessionID,
 			&launch.Mode,
+			&launch.Model,
 			&launch.DeniedCommands,
 			&launch.ParentSessionID,
 			&launch.RepositoryURL,

@@ -8,6 +8,7 @@ import {
 	readFile,
 	readdir,
 	realpath,
+	rename,
 	rmdir,
 	rm,
 	stat,
@@ -24,6 +25,7 @@ import {
 	BROWSER_IMPORT_MAX_SOURCE_PROFILES,
 	type BrowserImportCookieSupportReason,
 	type BrowserImportDiscovery,
+	type BrowserImportDiscoveryRequest,
 	type BrowserImportProgress,
 	type BrowserImportRequest,
 	type BrowserImportResult,
@@ -79,6 +81,11 @@ type InternalSource = {
 	descriptor: BrowserDescriptor;
 	root: string;
 	profiles: InternalSourceProfile[];
+};
+
+type InternalDiscoveryOptions = {
+	sourceId?: string;
+	includeProtectedSource?: boolean;
 };
 
 type ImportedCookie = CookiesSetDetails & {
@@ -541,18 +548,47 @@ export class BrowserProfileImportService {
 		return path.join(this.stagingBase(), this.stagingInstanceId);
 	}
 
-	async discover(): Promise<BrowserImportDiscovery> {
+	async discover(request: BrowserImportDiscoveryRequest = {}): Promise<BrowserImportDiscovery> {
 		const warnings: NonNullable<BrowserImportDiscovery["warnings"]> = [];
-		const sources = await this.discoverInternal(warnings);
+		const sourceId = typeof request.sourceId === "string" && SOURCE_ID_PATTERN.test(request.sourceId)
+			? request.sourceId
+			: undefined;
+		const sources = await this.discoverInternal(warnings, {
+			...(sourceId ? { sourceId, includeProtectedSource: true } : {}),
+		});
 		return { sources: sources.map((source) => source.public), ...(warnings.length ? { warnings } : {}) };
 	}
 
-	private async discoverInternal(warnings: NonNullable<BrowserImportDiscovery["warnings"]> = []): Promise<InternalSource[]> {
+	private async discoverInternal(
+		warnings: NonNullable<BrowserImportDiscovery["warnings"]> = [],
+		options: InternalDiscoveryOptions = {},
+	): Promise<InternalSource[]> {
 		const sources: InternalSource[] = [];
 		for (const descriptor of DESCRIPTORS) {
 			for (const candidate of descriptor.roots(this.context)) {
 				const root = await existingRealDirectory(candidate);
 				if (!root) continue;
+				const publicSourceId = opaqueSourceId(`${descriptor.id}:source`, root);
+				if (options.sourceId && publicSourceId !== options.sourceId) continue;
+				const capability = cookieCapability(descriptor.family, this.context.platform);
+				if (descriptor.family === "safari" && !options.includeProtectedSource) {
+					sources.push({
+						descriptor,
+						root,
+						profiles: [],
+						public: {
+							id: publicSourceId,
+							name: descriptor.name,
+							family: descriptor.family,
+							profiles: [],
+							profilesDeferred: true,
+							cookieSupport: capability.support,
+							cookieSupportReason: capability.reason,
+							historySupport: true,
+						},
+					});
+					break;
+				}
 				let profiles: InternalSourceProfile[];
 				try {
 					profiles = descriptor.family === "chromium"
@@ -566,13 +602,12 @@ export class BrowserProfileImportService {
 					continue;
 				}
 				if (profiles.length === 0) continue;
-				const capability = cookieCapability(descriptor.family, this.context.platform);
 				sources.push({
 					descriptor,
 					root,
 					profiles,
 					public: {
-						id: opaqueSourceId(`${descriptor.id}:source`, root),
+						id: publicSourceId,
 						name: descriptor.name,
 						family: descriptor.family,
 						profiles: profiles.map(({ id, name, default: isDefault }) => ({ id, name, default: isDefault })),
@@ -616,7 +651,12 @@ export class BrowserProfileImportService {
 		let sourceRoots: string[] = [];
 		try {
 			throwIfImportAborted(signal);
-			const sources = await this.discoverInternal();
+			const sourceId = isRecord(rawRequest) && typeof rawRequest.sourceId === "string" && SOURCE_ID_PATTERN.test(rawRequest.sourceId)
+				? rawRequest.sourceId
+				: undefined;
+			const sources = await this.discoverInternal(undefined, {
+				...(sourceId ? { sourceId, includeProtectedSource: true } : {}),
+			});
 			throwIfImportAborted(signal);
 			sourceRoots = sources.map((source) => source.root);
 			const request = validateRequest(rawRequest, sources, this.options.profileStore.profiles);
@@ -825,7 +865,7 @@ async function readProfileData(
 			const outcome = source.descriptor.family === "safari"
 				? readSafariCookies(await readFile(await snapshotFile(cookieDatabase, profile.root, staging, budget)), now)
 				: source.descriptor.family === "chromium"
-					? readChromiumCookies(await snapshotSQLite(cookieDatabase, profile.root, staging, budget), decryptor, now)
+					? readChromiumCookies(await snapshotSQLite(cookieDatabase, profile.root, staging, budget, source.public.name), decryptor, now)
 					: readFirefoxCookies(await snapshotSQLite(cookieDatabase, profile.root, staging, budget), now);
 			if (!outcome) {
 				warnings.push({ code: "cookie-database-missing" });
@@ -843,7 +883,13 @@ async function readProfileData(
 		if (!historyDatabase) {
 			warnings.push({ code: "history-database-missing" });
 		} else {
-			const snapshot = await snapshotSQLite(historyDatabase, profile.root, staging, budget);
+			const snapshot = await snapshotSQLite(
+				historyDatabase,
+				profile.root,
+				staging,
+				budget,
+				source.descriptor.family === "chromium" ? source.public.name : undefined,
+			);
 			const outcome = source.descriptor.family === "chromium"
 				? readChromiumHistory(snapshot)
 				: source.descriptor.family === "firefox"
@@ -909,6 +955,7 @@ async function snapshotSQLite(
 	profileRoot: string,
 	staging: string,
 	budget: SourceBudget,
+	browserName?: string,
 ): Promise<string> {
 	const destination = path.join(staging, `${randomUUID()}-${path.basename(database)}`);
 	const canonical = await preflightContainedFile(database, profileRoot, SOURCE_FILE_MAX_BYTES, budget);
@@ -920,26 +967,55 @@ async function snapshotSQLite(
 		}
 	}
 	const source = new Database(canonical, { readonly: true, fileMustExist: true, timeout: 5_000 });
+	const temporarySnapshots: string[] = [];
 	try {
 		source.pragma("query_only = ON");
-		await source.backup(destination);
-		const output = await stat(destination).catch((error) => {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-				throw new Error("AO's temporary browser data snapshot disappeared before it could be read. Restart AO and retry the import.");
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			await mkdir(staging, { recursive: true, mode: 0o700 });
+			const temporary = path.join(staging, `${randomUUID()}-${path.basename(database)}.tmp`);
+			temporarySnapshots.push(temporary);
+			try {
+				await source.backup(temporary);
+			} catch (error) {
+				await rm(temporary, { force: true }).catch(() => undefined);
+				if (attempt === 0) continue;
+				if (browserName) throw temporarySnapshotError(browserName);
+				throw error;
 			}
-			throw error;
-		});
-		if (!output.isFile() || output.size > SOURCE_FILE_MAX_BYTES + SOURCE_SIDECAR_MAX_BYTES) {
-			throw new Error("Browser source database exceeds the snapshot size limit.");
+			const output = await stat(temporary).catch((error) => {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+				throw error;
+			});
+			if (!output) {
+				await rm(temporary, { force: true }).catch(() => undefined);
+				continue;
+			}
+			if (!output.isFile() || output.size > SOURCE_FILE_MAX_BYTES + SOURCE_SIDECAR_MAX_BYTES) {
+				throw new Error("Browser source database exceeds the snapshot size limit.");
+			}
+			await chmod(temporary, 0o600);
+			await rename(temporary, destination);
+			return destination;
 		}
-		await chmod(destination, 0o600);
-		return destination;
+		if (browserName) throw temporarySnapshotError(browserName);
+		throw new Error("AO's temporary browser data snapshot disappeared before it could be read. Restart AO and retry the import.");
 	} catch (error) {
 		await rm(destination, { force: true }).catch(() => undefined);
 		throw error;
 	} finally {
+		for (const temporary of temporarySnapshots) {
+			await rm(temporary, { force: true }).catch(() => undefined);
+		}
 		source.close();
 	}
+}
+
+function temporarySnapshotError(browserName: string): Error {
+	return new Error(
+		`AO couldn't create a temporary copy of ${browserName}'s profile database. `
+		+ `Fully close ${browserName}, including background processes, then retry the import. `
+		+ "If this keeps happening, restart AO and try again.",
+	);
 }
 
 async function preflightContainedFile(

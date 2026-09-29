@@ -22,7 +22,7 @@ func TestLiveClaudeACP(t *testing.T) {
 		t.Skip("set AO_LIVE_CLAUDE_ACP=1 to run against the local Claude Code account")
 	}
 
-	driver := New(claudecode.New(), nil)
+	driver := New(claudecode.New(), nil, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if _, err := driver.Probe(ctx); err != nil {

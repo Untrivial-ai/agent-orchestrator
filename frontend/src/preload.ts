@@ -73,6 +73,7 @@ import type {
 import type {
 	BrowserHistorySuggestion,
 	BrowserImportDiscovery,
+	BrowserImportDiscoveryRequest,
 	BrowserImportProgress,
 	BrowserImportRequest,
 	BrowserImportResult,
@@ -99,9 +100,12 @@ if (typeof document !== "undefined") {
 
 export type BrowserBoundsInput = {
 	viewId: string;
+	revision: number;
 	rect: BrowserRect;
 	visible: boolean;
 };
+
+export type BrowserBoundsApplied = BrowserBoundsInput;
 
 export type BrowserNavigateInput = {
 	viewId: string;
@@ -383,6 +387,13 @@ const api = {
 		nativeCompositionEnabled: true,
 		ensure: (sessionId: string) => ipcRenderer.invoke("browser:ensure", sessionId) as Promise<BrowserNavState>,
 		setBounds: (input: BrowserBoundsInput) => ipcRenderer.send("browser:setBounds", input),
+		onBoundsApplied: (listener: (result: BrowserBoundsApplied) => void) => {
+			const wrapped = (_event: Electron.IpcRendererEvent, result: BrowserBoundsApplied) => listener(result);
+			ipcRenderer.on("browser:boundsApplied", wrapped);
+			return () => {
+				ipcRenderer.off("browser:boundsApplied", wrapped);
+			};
+		},
 		setOverlayOpen: (open: boolean) => ipcRenderer.send("browser:overlay", open),
 		navigate: (input: BrowserNavigateInput) =>
 			ipcRenderer.invoke("browser:navigate", input) as Promise<BrowserNavState>,
@@ -529,8 +540,10 @@ const api = {
 			ipcRenderer.invoke("browserProfiles:rename", input) as Promise<BrowserProfile>,
 		clear: (id: string) => ipcRenderer.invoke("browserProfiles:clear", { id }) as Promise<void>,
 		delete: (id: string) => ipcRenderer.invoke("browserProfiles:delete", { id }) as Promise<void>,
-		discoverImportSources: () =>
-			ipcRenderer.invoke("browserProfiles:import:discover") as Promise<BrowserImportDiscovery>,
+		discoverImportSources: (input?: BrowserImportDiscoveryRequest) =>
+			(input === undefined
+				? ipcRenderer.invoke("browserProfiles:import:discover")
+				: ipcRenderer.invoke("browserProfiles:import:discover", input)) as Promise<BrowserImportDiscovery>,
 		import: (input: BrowserImportRequest) =>
 			ipcRenderer.invoke("browserProfiles:import:start", input) as Promise<BrowserImportResult>,
 		onImportProgress: (listener: (progress: BrowserImportProgress) => void) => {
@@ -647,7 +660,7 @@ const api = {
 		signIn: () => ipcRenderer.invoke("cloud:signIn") as Promise<void>,
 		signOut: () => ipcRenderer.invoke("cloud:signOut") as Promise<void>,
 		cancelProviderAuth: () => ipcRenderer.invoke("cloud:cancelProviderAuth") as Promise<void>,
-		connectProviderAuth: (input: { baseUrl: string; orgId: string; provider: string }) =>
+		connectProviderAuth: (input: { baseUrl: string; orgId: string; provider: string; pushTarget?: "org" | "me"; persistLocalClaudeToken?: boolean }) =>
 			ipcRenderer.invoke("cloud:connectProviderAuth", input) as Promise<
 				| string
 				| { secret: string; refreshToken?: string; expiresIn?: number; refreshTokenExpiresIn?: number }

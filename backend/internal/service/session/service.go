@@ -78,9 +78,12 @@ type commander interface {
 	RetireForReplacement(ctx context.Context, id domain.SessionID) error
 	WaitForMessageDeliveryReady(ctx context.Context, id domain.SessionID) error
 	Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error
+	SendWithOptions(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment, options ports.MessageDeliveryOptions) error
 	Cleanup(ctx context.Context, project domain.ProjectID) (sessionmanager.CleanupResult, error)
 	RollbackSpawn(ctx context.Context, id domain.SessionID) (deleted, killed bool, err error)
 	StageAttachments(ctx context.Context, id domain.SessionID, attachments []ports.SpawnAttachment) ([]string, error)
+	PrepareTaskWorkspace(context.Context, domain.ProjectRecord) (domain.TaskPreparationToken, error)
+	CancelTaskPreparation(context.Context, domain.TaskPreparationToken) error
 }
 
 // interfaceTransitionCommander is an optional command capability. Keeping it
@@ -302,6 +305,18 @@ func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 			return domain.Session{}, 0, 0, err
 		}
 		if len(existing) > 0 {
+			if cfg.AutomationRunID != nil {
+				for _, candidate := range existing {
+					if candidate.AutomationRunID != nil && *candidate.AutomationRunID == *cfg.AutomationRunID {
+						return candidate, 0, 0, nil
+					}
+				}
+				return domain.Session{}, 0, 0, apierr.Conflict(
+					"ORCHESTRATOR_ALREADY_ACTIVE",
+					"Another orchestrator is already active for this project",
+					nil,
+				)
+			}
 			return newestSession(existing), 0, 0, nil
 		}
 	}
@@ -409,7 +424,12 @@ func (s *Service) isFirstSession(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return len(rows) == 0, nil
+	for _, row := range rows {
+		if !row.IsTaskPreparation {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (s *Service) emitSpawned(ctx context.Context, rec domain.SessionRecord, durationMs int64) {
@@ -813,6 +833,11 @@ func (s *Service) Send(ctx context.Context, id domain.SessionID, message string,
 	return toAPIError(s.manager.Send(ctx, id, message, attachment))
 }
 
+// SendWithOptions preserves authorship facts supplied by trusted UI surfaces.
+func (s *Service) SendWithOptions(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment, options ports.MessageDeliveryOptions) error {
+	return toAPIError(s.manager.SendWithOptions(ctx, id, message, attachment, options))
+}
+
 // Rename updates the user-facing session display name.
 func (s *Service) Rename(ctx context.Context, id domain.SessionID, displayName string) error {
 	displayName = strings.TrimSpace(displayName)
@@ -1172,6 +1197,9 @@ func (s *Service) listRecords(ctx context.Context, project domain.ProjectID) ([]
 }
 
 func matchesSessionFilter(rec domain.SessionRecord, filter ListFilter) bool {
+	if rec.IsTaskPreparation {
+		return false
+	}
 	if filter.Active != nil && rec.IsTerminated == *filter.Active {
 		return false
 	}
@@ -1193,6 +1221,9 @@ func (s *Service) Get(ctx context.Context, id domain.SessionID) (domain.Session,
 		return domain.Session{}, fmt.Errorf("get %s: %w", id, err)
 	}
 	if !ok {
+		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	}
+	if rec.IsTaskPreparation {
 		return domain.Session{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	}
 	sess, err := s.toSession(ctx, rec)
@@ -1396,6 +1427,8 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("CHAT_DRIVER_INCOMPATIBLE", err.Error(), nil)
 	case errors.Is(err, ports.ErrChatAuthRequired):
 		return apierr.Conflict("CHAT_AUTH_REQUIRED", "The agent is installed but not authenticated", nil)
+	case errors.Is(err, ports.ErrAgentAuthRequired):
+		return apierr.Conflict("AGENT_AUTH_REQUIRED", "The agent is installed but the project credential was rejected", nil)
 	case errors.Is(err, ports.ErrUnsupportedEffort):
 		return apierr.Invalid("UNSUPPORTED_EFFORT", err.Error(), nil)
 	case errors.Is(err, ports.ErrModelCapabilitiesUnavailable):

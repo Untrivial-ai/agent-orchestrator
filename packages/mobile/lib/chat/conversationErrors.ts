@@ -1,3 +1,5 @@
+import { daemonDetail, userFacingError } from "../connectionError";
+
 export function conversationErrorCode(error: unknown): string | undefined {
 	if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
 	const code = String(error.code ?? "").trim();
@@ -11,7 +13,7 @@ export function conversationActionError(error: unknown): string {
 		case "CHAT_NO_ACTIVE_TURN": return "The turn finished before this guidance landed. Queue it as a new message instead.";
 		case "CHAT_STEER_UNSUPPORTED": return "This agent cannot take guidance while it is working. Queue a new message instead.";
 		case "CHAT_STEER_TEXT_REQUIRED": return "Enter guidance before steering the running turn.";
-		case "CHAT_TURN_NOT_STEERABLE": return `${error instanceof Error ? error.message : "This turn cannot be steered right now."} Try again when it finishes, or queue a new message.`;
+		case "CHAT_TURN_NOT_STEERABLE": return `${daemonDetail(error) ?? "This turn cannot be steered right now."} Try again when it finishes, or queue a new message.`;
 		case "CHAT_COMPACTION_BUSY": return "Stop the current turn before compacting history.";
 		case "CHAT_COMPACTION_UNSUPPORTED": return "This agent cannot compact its history.";
 		case "CHAT_MCP_RELOAD_UNSUPPORTED": return "This agent cannot reload its MCP servers.";
@@ -34,8 +36,8 @@ export function conversationActionError(error: unknown): string {
 		case "CHAT_DRIVER_UNAVAILABLE": return "The agent CLI is unavailable on the AO host. Install it or open the worktree shell.";
 		case "CHAT_DRIVER_INCOMPATIBLE": return "The installed agent CLI is not compatible with AO Chat. Update it, then resume this session.";
 		case "CHAT_RESUME_FAILED": return "AO could not resume this agent. The conversation and worktree are preserved.";
-		case "CHAT_PROVIDER_REFUSED": return error instanceof Error ? error.message : "The provider refused this action.";
-		default: return error instanceof Error ? error.message : String(error);
+		case "CHAT_PROVIDER_REFUSED": return daemonDetail(error) ?? "The provider refused this action.";
+		default: return userFacingError(error);
 	}
 }
 

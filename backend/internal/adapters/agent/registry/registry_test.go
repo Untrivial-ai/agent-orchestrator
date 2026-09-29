@@ -13,6 +13,19 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
+func TestGeminiAdapterIsSelectable(t *testing.T) {
+	reg, err := Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Get("gemini"); !ok {
+		t.Fatal("Gemini CLI is not registered")
+	}
+	if !domain.AgentHarness("gemini").IsKnown() {
+		t.Fatal("Gemini is not selectable")
+	}
+}
+
 // TestGetAgentHooksFootprintIsGitignored enforces a contract every shipped
 // (and future) adapter must hold: any file GetAgentHooks writes into a session
 // worktree must be covered by a sibling AO-managed self-ignoring .gitignore
@@ -68,6 +81,27 @@ func TestEveryHarnessReportsAuthStatus(t *testing.T) {
 	}
 }
 
+func TestRegistryIncludesFX(t *testing.T) {
+	reg, err := Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := reg.Get("fx")
+	if !ok {
+		t.Fatal("registry does not contain fx")
+	}
+	if manifest := adapter.Manifest(); manifest.Name != "fx" {
+		t.Fatalf("fx manifest name = %q, want fx", manifest.Name)
+	}
+
+	for _, item := range Harnessed() {
+		if item.Harness == domain.HarnessFX {
+			return
+		}
+	}
+	t.Fatal("Harnessed does not contain fx")
+}
+
 func TestRegistryIncludesPrimeAgent(t *testing.T) {
 	reg, err := Build()
 	if err != nil {
@@ -110,6 +144,20 @@ func TestRegistryIncludesOMP(t *testing.T) {
 		}
 	}
 	t.Fatal("Harnessed does not contain omp")
+}
+
+func TestRegistryIncludesMiMoCode(t *testing.T) {
+	reg, err := Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, ok := reg.Get("mimo-code")
+	if !ok {
+		t.Fatal("registry does not contain mimo-code")
+	}
+	if got := adapter.Manifest().Name; got != "MiMo Code" {
+		t.Fatalf("mimo-code manifest name = %q", got)
+	}
 }
 
 func TestHarnessedExcludesFakeHarness(t *testing.T) {

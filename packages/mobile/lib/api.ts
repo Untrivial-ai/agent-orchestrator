@@ -1,6 +1,7 @@
 import { authHeaders, httpBase, normalizeServerHost, type ServerConfig } from "./config";
 import { cachedInstallId, getInstallId } from "./installId";
 import { captureMobileApiError, httpCategory } from "./sentry";
+import { UnreachableError } from "./connectionError";
 import type { AttentionLevel } from "./theme";
 
 // ---- Types (subset of AO's DashboardSession we use on the phone) ------------
@@ -89,6 +90,8 @@ export type DashboardSession = {
 	// finished status: a merged session whose agent is still running belongs on
 	// the board, only a terminated one belongs in the archive.
 	isTerminated?: boolean;
+	provisionState?: "provisioning" | "ready" | "failed";
+	provisionError?: string;
 	isPinned?: boolean;
 	pinnedAt?: string | null;
 };
@@ -178,6 +181,8 @@ type WireSession = {
 	displayName?: string;
 	activity?: unknown;
 	isTerminated?: boolean;
+	provisionState?: "provisioning" | "ready" | "failed";
+	provisionError?: string;
 	status?: string | null;
 	kanbanColumn?: string | null;
 	displayStatus?: string | null;
@@ -271,6 +276,8 @@ function mapSession(s: WireSession): DashboardSession {
 		prs,
 		previewUrl: s.previewUrl ?? null,
 		isTerminated: !!s.isTerminated,
+		provisionState: s.provisionState,
+		provisionError: s.provisionError,
 		isPinned: !!s.isPinned,
 		pinnedAt: s.pinnedAt ?? null,
 	};
@@ -296,6 +303,9 @@ function mapOrchestrator(s: WireSession, projectName: string): OrchestratorLink 
 // ---- Low-level fetch with friendly errors ----------------------------------
 
 const REQUEST_TIMEOUT_MS = 12000;
+const DISCONNECT_REQUEST_TIMEOUT_MS = 2000;
+// The daemon gives attachment uploads 10 minutes; allow time for its response.
+export const ATTACHMENT_REQUEST_TIMEOUT_MS = 11 * 60_000;
 
 // The server answered, but with an error status. Distinct from the errors fetch
 // itself throws (DNS/refused/timeout), which mean the server was never reached —
@@ -313,6 +323,9 @@ export class ApiError extends Error {
 		// Correlates a client-visible failure with daemon logs. The daemon's error
 		// envelope guarantees this field, so mobile must not discard it.
 		readonly requestId?: string,
+		// The daemon's human-readable message alone, without the status prefix.
+		// Screens render this (via userFacingError), never `message`.
+		readonly detail?: string,
 	) {
 		super(message);
 		this.name = "ApiError";
@@ -342,11 +355,11 @@ async function req(cfg: ServerConfig, path: string, init?: RequestInit, timeoutM
 		if ((e as { name?: string })?.name === "AbortError") {
 			// Timed out reaching the host (commonly a sleeping Tailscale peer).
 			captureMobileApiError(path, "timeout");
-			throw new Error("Request timed out - is the server reachable?", { cause: e });
+			throw new UnreachableError("timeout", { cause: e });
 		}
 		// fetch threw without reaching the server: DNS/refused/offline.
 		captureMobileApiError(path, "offline");
-		throw e;
+		throw new UnreachableError("offline", { cause: e });
 	} finally {
 		clearTimeout(timer);
 	}
@@ -371,6 +384,7 @@ async function req(cfg: ServerConfig, path: string, init?: RequestInit, timeoutM
 			`${res.status} ${res.statusText}${detail ? ` - ${detail}` : ""}`,
 			code,
 			requestId,
+			detail || undefined,
 		);
 	}
 	return res;
@@ -503,7 +517,7 @@ export function mobileReachablePreviewURL(raw: string | undefined, aoHost: strin
 export type AgentInfo = {
 	id: string;
 	label: string;
-	authStatus?: "authorized" | "unauthorized" | "unknown";
+	authStatus?: "authorized" | "unauthorized" | "unknown" | "configured";
 };
 
 export type AgentCatalog = {
@@ -618,7 +632,7 @@ export async function unregisterPushDevice(cfg: ServerConfig, token: string): Pr
 // Prefers the install id and falls back to the token so the call still works
 // from a build that predates install ids.
 export async function unpairFromDaemon(cfg: ServerConfig, id: string): Promise<void> {
-	await req(cfg, `${API}/push/pairings/${encodeURIComponent(id)}`, { method: "DELETE" });
+	await req(cfg, `${API}/push/pairings/${encodeURIComponent(id)}`, { method: "DELETE" }, DISCONNECT_REQUEST_TIMEOUT_MS);
 }
 
 // Mark a notification read (best-effort on notification tap) so unread counts
@@ -769,6 +783,7 @@ export async function spawnSession(
 ): Promise<DashboardSession> {
 	const res = await req(cfg, `${API}/sessions`, {
 		method: "POST",
+		headers: opts.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 		body: JSON.stringify({
 			projectId: opts.projectId,
 			prompt: opts.prompt,
@@ -783,7 +798,7 @@ export async function spawnSession(
 			kind: "worker",
 			attachments: opts.attachments?.length ? opts.attachments : undefined,
 		}),
-	});
+	}, opts.attachments?.length ? ATTACHMENT_REQUEST_TIMEOUT_MS : undefined);
 	const data = await res.json();
 	return mapSession(data?.session ?? data);
 }
@@ -805,6 +820,7 @@ export async function delegateTask(
 ): Promise<DashboardSession> {
 	const res = await req(cfg, `${API}/orchestrators/delegate`, {
 		method: "POST",
+		headers: opts.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 		body: JSON.stringify({
 			projectId: opts.projectId,
 			brief: opts.brief,
@@ -813,9 +829,9 @@ export async function delegateTask(
 			mode: opts.mode,
 			attachments: opts.attachments?.length ? opts.attachments : undefined,
 		}),
-	});
+	}, opts.attachments?.length ? ATTACHMENT_REQUEST_TIMEOUT_MS : undefined);
 	const data = await res.json();
-	if (!data?.workerId) throw new Error("The daemon did not return the new worker session");
+	if (!data?.workerId) throw new Error("Your desktop didn't return the new worker. Refresh the board to check whether it started.");
 	return getSession(cfg, data.workerId);
 }
 

@@ -53,4 +53,11 @@ describe("active turn controls", () => {
 		expect(screenSource).toContain("onRename: (next) => renameWorker(session.id, next)");
 		expect(screenSource).not.toContain("conversation.rename(next)");
 	});
+
+	it("shows a failed start's reason instead of only a stopped-agent banner", () => {
+		expect(screenSource).toContain('session.provisionState !== "failed"');
+		expect(screenSource).toContain('title="Session failed to start" message={failedStart}');
+		expect(screenSource).toContain('startFailure={failedStart}');
+		expect(screenSource).toContain('disabled={interfaceTransitionActive || Boolean(failedStart)}');
+	});
 });

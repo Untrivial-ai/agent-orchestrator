@@ -103,6 +103,7 @@ export const aoBridge: AoBridge =
 				isLoading: false,
 			}),
 			setBounds: () => undefined,
+			onBoundsApplied: () => () => undefined,
 			setOverlayOpen: () => undefined,
 			navigate: async ({ viewId, url }) => ({
 				viewId,

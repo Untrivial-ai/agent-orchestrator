@@ -7,7 +7,10 @@ const { MenuView, Feather, View } = vi.hoisted(() => ({
 }));
 
 vi.mock("@expo/ui/community/menu", () => ({ MenuView }));
-vi.mock("@expo/vector-icons", () => ({ Feather }));
+// The icon is a Lucide component now (see lib/icons), and Lucide's React Native
+// build is ESM that Vitest cannot parse in this environment — the component is
+// all this test needs to know about.
+vi.mock("../icons", () => ({ Feather }));
 vi.mock("react-native", () => ({
 	StyleSheet: { create: (styles: unknown) => styles },
 	View,

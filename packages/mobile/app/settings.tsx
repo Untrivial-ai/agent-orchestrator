@@ -1,5 +1,5 @@
 import { Host, Picker, Switch } from "@expo/ui";
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "../lib/icons";
 import * as Application from "expo-application";
 import * as Clipboard from "expo-clipboard";
 import * as Device from "expo-device";
@@ -11,15 +11,18 @@ import { ActivityIndicator, Alert, Linking, Platform, Pressable, ScrollView, Sty
 import { ApiError, pingServer } from "../lib/api";
 import { formatVersionLine, type BuildInfo } from "../lib/appInfo";
 import { bugReportClipboard, bugReportOpenUrl, bugReportUrl } from "../lib/bugReport";
-import { DEFAULT_CONFIG, isConfigured, loadConfig, type ServerConfig } from "../lib/config";
+import { isConfigured, type ServerConfig } from "../lib/config";
 import { classifyConnectionFailure, describeConnectionFailure } from "../lib/connectionError";
+import { describeDesktopStatus } from "../lib/desktopStatus";
 import { discordFeatureRequestURL } from "../lib/discord";
 import { forgetServer } from "../lib/disconnect";
 import { haptics } from "../lib/haptics";
+import { toggleLayoutGrid, useLayoutGrid } from "../lib/layoutGrid";
 import { checkStore, openOrStartUpdate } from "../lib/inAppUpdates";
 import { describePrompt } from "../lib/storeUpdate";
 import { NativeHeaderButton } from "../lib/native-header-button";
 import { openGitHub } from "../lib/openGitHub";
+import { tunnelMayHaveRotated } from "../lib/staleTunnel";
 import { getPushStatus, openNotificationSettings, registerForPush, unregisterFromPush } from "../lib/push";
 import { describePushToggle, describeRegisterFailure, type PushStatus } from "../lib/pushStatus";
 import { useApp } from "../lib/store";
@@ -45,6 +48,8 @@ const THEME_OPTIONS: { value: ThemePreference; icon: keyof typeof Feather.glyphM
 import { useTheme, useThemedStyles, useThemeState } from "../lib/ThemeProvider";
 import { checkAndDownload, describeUpdateRow, type UpdateOutcome } from "../lib/updates";
 import { VERSION_FLOOR } from "../lib/versionFloor";
+import { type, space } from "../lib/tokens";
+import { backOr } from "../lib/backNavigation";
 
 
 export { RouteErrorBoundary as ErrorBoundary } from "../lib/RouteErrorBoundary";
@@ -53,27 +58,21 @@ export default function SettingsScreen() {
 	const t = useTheme();
 	const styles = useThemedStyles(makeStyles);
 	const router = useRouter();
-	const { reloadConfig } = useApp();
+	// The store's config, not a second copy read from storage: that copy went
+	// stale whenever the store moved on (a failed disconnect, a re-race), and
+	// it knew nothing about whether the desktop was actually answering.
+	const { config, configured: paired, reloadConfig } = useApp();
 	const scrollRef = useRef<ScrollView>(null);
-	const [cfg, setCfg] = useState<ServerConfig>(DEFAULT_CONFIG);
-	const [loaded, setLoaded] = useState(false);
 
-	useFocusEffect(useCallback(() => {
-		loadConfig().then((saved) => {
-			setCfg(saved);
-			setLoaded(true);
-		});
-	}, []));
-
-	if (!loaded) return <View style={styles.center}><ActivityIndicator color={t.blue} /></View>;
-
-	const paired = isConfigured(cfg);
+	// Null only until the store's first resolve. Waiting keeps the pairing-
+	// dependent rows (Disconnect above all) from popping in after first paint.
+	if (!config) return <View style={styles.center}><ActivityIndicator color={t.accent} /></View>;
 	return (
 		<View style={styles.screen} collapsable={false}>
 			<View style={styles.header}>
 				<Text style={styles.headerTitle}>Settings</Text>
 				<View style={styles.closeButton}>
-					<NativeHeaderButton icon="close" label="Close settings" onPress={() => router.back()} />
+					<NativeHeaderButton icon="close" label="Close settings" onPress={() => backOr(router)} />
 				</View>
 			</View>
 			<ScrollView
@@ -82,17 +81,20 @@ export default function SettingsScreen() {
 				contentContainerStyle={styles.content}
 				keyboardShouldPersistTaps="handled"
 			>
-				<SettingsSection title="Desktop" footer={paired ? `${cfg.host}:${cfg.httpPort}` : "Pair this phone with AO on your computer."}>
+				<SettingsSection title="Desktop" footer={paired ? `${config.host}:${config.httpPort}` : "Pair this phone with AO on your computer."}>
 					<SettingsCard>
-						<CardRow
-							icon="monitor"
-							label="Connected desktop"
-							value={paired ? "Paired" : "Set up"}
-							onPress={() => router.navigate("/pair")}
-						/>
-						<ConnectionTestRow cfg={cfg} paired={paired} />
+						<DesktopStatusRow />
+						<ConnectionTestRow />
 					</SettingsCard>
 				</SettingsSection>
+
+				{__DEV__ ? (
+					<SettingsSection title="Developer" footer="Layout grid draws the app's 4pt steps, with the 44pt control lines emphasised.">
+						<SettingsCard>
+							<LayoutGridRow />
+						</SettingsCard>
+					</SettingsSection>
+				) : null}
 
 				<SettingsSection title="Preferences">
 					<SettingsCard>
@@ -112,13 +114,36 @@ export default function SettingsScreen() {
 					</SettingsCard>
 				</SettingsSection>
 
-				<DisconnectRow
-					onForget={async () => {
-						await forgetServer();
-						await reloadConfig();
-						router.replace("/onboarding");
-					}}
-				/>
+				{/* Keyed on the saved pairing, not the live connection: an offline
+				    desktop is exactly when people want to forget it. */}
+				{paired ? (
+					<DisconnectRow
+						onForget={async () => {
+							let failed = false;
+							try {
+								await forgetServer();
+							} catch {
+								failed = true;
+							}
+							// Always re-resolve, so the screen reflects whatever
+							// forgetServer managed to clear before it threw. Null when
+							// storage could not be read either.
+							let remaining: ServerConfig | null = null;
+							try {
+								remaining = await reloadConfig();
+							} catch {}
+							// Only a pairing that survived is worth retrying; if it is
+							// gone this row is too, and the leftovers are best-effort.
+							// Unknown counts as survived when the forget itself failed.
+							if (failed && (remaining === null || isConfigured(remaining))) {
+								haptics.error();
+								Alert.alert("Couldn't disconnect", "This desktop's saved connection couldn't be removed. Try again.");
+								return;
+							}
+							router.replace("/onboarding");
+						}}
+					/>
+				) : null}
 				<VersionFooter />
 			</ScrollView>
 		</View>
@@ -167,9 +192,9 @@ function ThemeChoices({ preference, onSelect }: { preference: ThemePreference; o
 						onPress={() => { haptics.select(); onSelect(option.value); }}
 						style={({ pressed }) => [styles.inlineChoice, pressed && { opacity: 0.6 }]}
 					>
-						<Feather name={option.icon} size={16} color={selected ? t.textPrimary : t.textTertiary} />
-						<Text style={[styles.inlineChoiceLabel, selected && { color: t.textPrimary, fontWeight: "700" }]}>{preferenceLabel(option.value)}</Text>
-						{selected ? <Feather name="check" size={16} color={t.textPrimary} /> : null}
+						<Feather name={option.icon} size={15} color={selected ? t.textPrimary : t.textTertiary} />
+						<Text style={[styles.inlineChoiceLabel, selected && { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontWeight: "600" }]}>{preferenceLabel(option.value)}</Text>
+						{selected ? <Feather name="check" size={15} color={t.textPrimary} /> : null}
 					</Pressable>
 				);
 			})}
@@ -200,12 +225,12 @@ function CardRow({
 	const styles = useThemedStyles(makeStyles);
 	const content = (
 		<>
-			<Feather name={icon} size={18} color={disabled ? t.textFaint : t.textSecondary} style={styles.rowIcon} />
+			<Feather name={icon} size={17} color={disabled ? t.textFaint : t.textSecondary} style={styles.rowIcon} />
 			<Text style={[styles.rowLabel, disabled && styles.disabled]} numberOfLines={1}>{label}</Text>
 			{right ?? (loading ? <ActivityIndicator size="small" color={t.textTertiary} /> : (
 				<>
 					{value ? <Text style={[styles.rowValue, valueColor ? { color: valueColor } : null]} numberOfLines={1}>{value}</Text> : null}
-					{onPress ? <Feather name="chevron-right" size={18} color={t.textFaint} /> : null}
+					{onPress ? <Feather name="chevron-right" size={17} color={t.textFaint} /> : null}
 				</>
 			))}
 		</>
@@ -214,30 +239,74 @@ function CardRow({
 	return <Pressable disabled={disabled || loading} onPress={() => { haptics.tap(); onPress(); }} style={({ pressed }) => [styles.row, pressed && styles.rowPressed, disabled && styles.disabled]}>{content}</Pressable>;
 }
 
-function ConnectionTestRow({ cfg, paired }: { cfg: ServerConfig; paired: boolean }) {
+function DesktopStatusRow() {
 	const t = useTheme();
+	const router = useRouter();
+	const { config, configured, connection, error, errorStatus, activeEndpoints } = useApp();
+	// Only a poll that actually failed is a failure. Before the first tick lands
+	// errorStatus is null too, which on its own would read as unreachable. Same
+	// gate as the board, which only shows its failure copy behind `error`.
+	const classified = error ? classifyConnectionFailure(errorStatus ?? undefined) : null;
+	// Same rule as the board's failure copy: a dead tunnel with nothing else to
+	// reach the machine by is a rotated address, not an unreachable machine.
+	const failure =
+		classified === "unreachable" && tunnelMayHaveRotated(activeEndpoints, config?.endpointKind, connection === "open")
+			? "tunnel-rotated"
+			: classified;
+	const status = describeDesktopStatus({ configured, connection, failure });
+	const color = status.tone === "ok" ? t.green : status.tone === "error" ? t.red : undefined;
+	return (
+		<CardRow
+			icon="monitor"
+			label="Connected desktop"
+			value={status.label}
+			valueColor={color}
+			onPress={() => router.navigate("/pair")}
+		/>
+	);
+}
+
+function ConnectionTestRow() {
+	const t = useTheme();
+	const { config, configured: paired, reloadConfig, refresh } = useApp();
 	const [testing, setTesting] = useState(false);
 	const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
-	useEffect(() => setResult(null), [cfg.host, cfg.httpPort]);
+	useEffect(() => setResult(null), [config?.host, config?.httpPort]);
 
 	async function test() {
 		setTesting(true);
 		setResult(null);
+		// Race every known path first, like the app itself does, rather than
+		// pinging only the last address that happened to win. Without the
+		// endpoint refresh: it is authenticated, so with a stale password it and
+		// the ping would spend two failed attempts per tap towards the lockout.
+		let target = config;
+		let rejected = false;
 		try {
-			await pingServer(cfg);
+			target = await reloadConfig({ refreshEndpoints: false });
+			await pingServer(target);
 			haptics.success();
 			setResult({ ok: true, msg: "Connected" });
 		} catch (error) {
 			haptics.error();
 			const status = error instanceof ApiError ? error.status : undefined;
-			const { title } = describeConnectionFailure(classifyConnectionFailure(status), {
-				host: cfg.host,
-				port: cfg.httpPort,
+			const failure = classifyConnectionFailure(status);
+			rejected = failure === "auth" || failure === "rate-limited";
+			const { title } = describeConnectionFailure(failure, {
+				host: target?.host ?? "",
+				port: target?.httpPort ?? "",
 				platform: Platform.OS,
 			});
 			setResult({ ok: false, msg: title });
 		} finally {
+			// Poll now so the status row above lands on the same answer instead
+			// of waiting out the poll interval — unless the desktop rejected the
+			// password: another request would spend a second failed attempt
+			// towards its lockout, and the poll already reports a rejection on its
+			// own. Not awaited: against a dead address it is another full request
+			// timeout.
+			if (!rejected) void refresh();
 			setTesting(false);
 		}
 	}
@@ -257,8 +326,24 @@ function ConnectionTestRow({ cfg, paired }: { cfg: ServerConfig; paired: boolean
 	);
 }
 
+function LayoutGridRow() {
+	const active = useLayoutGrid();
+	return (
+		<CardRow
+			icon="grid"
+			label="Layout grid"
+			value={active ? "On" : "Off"}
+			onPress={() => {
+				haptics.select();
+				toggleLayoutGrid();
+			}}
+		/>
+	);
+}
+
 function AppearanceRow() {
 	const t = useTheme();
+	const styles = useThemedStyles(makeStyles);
 	const { preference, scheme, setPreference } = useThemeState();
 	const [open, setOpen] = useState(false);
 	if (Platform.OS === "android") {
@@ -281,21 +366,23 @@ function AppearanceRow() {
 			icon="sun"
 			label="Appearance"
 			right={
-				<Host style={{ width: 96, height: 38 }} colorScheme={scheme} seedColor={t.blue}>
-					<Picker
-						selectedValue={preference}
-						onValueChange={(value) => {
-							haptics.select();
-							setPreference(String(value) as ThemePreference);
-						}}
-						appearance="menu"
-						testID="settings-appearance"
-					>
-						<Picker.Item label="System" value="system" />
-						<Picker.Item label="Light" value="light" />
-						<Picker.Item label="Dark" value="dark" />
-					</Picker>
-				</Host>
+				<View style={styles.appearancePicker}>
+					<Host matchContents={{ horizontal: true }} style={{ height: 38 }} colorScheme={scheme} seedColor={t.accent}>
+						<Picker
+							selectedValue={preference}
+							onValueChange={(value) => {
+								haptics.select();
+								setPreference(String(value) as ThemePreference);
+							}}
+							appearance="menu"
+							testID="settings-appearance"
+						>
+							<Picker.Item label="System" value="system" />
+							<Picker.Item label="Light" value="light" />
+							<Picker.Item label="Dark" value="dark" />
+						</Picker>
+					</Host>
+				</View>
 			}
 		/>
 	);
@@ -348,7 +435,7 @@ function NotificationsRow() {
 			disabled={toggle.disabled}
 			right={
 				busy ? <ActivityIndicator size="small" color={t.textTertiary} /> : (
-					<Host style={{ width: 54, height: 34 }} colorScheme={scheme} seedColor={t.blue}>
+					<Host style={{ width: 54, height: 34 }} colorScheme={scheme} seedColor={t.accent}>
 						<Switch value={toggle.value} disabled={toggle.disabled} onValueChange={onToggle} />
 					</Host>
 				)
@@ -536,7 +623,7 @@ function DisconnectRow({ onForget }: { onForget: () => Promise<void> }) {
 			onPress={() => { haptics.warning(); confirmForget(); }}
 			style={({ pressed }) => [styles.disconnect, pressed && styles.rowPressed]}
 		>
-			{forgetting ? <ActivityIndicator color={t.red} /> : <Feather name="log-out" size={18} color={t.red} />}
+			{forgetting ? <ActivityIndicator color={t.red} /> : <Feather name="log-out" size={17} color={t.red} />}
 			<Text style={styles.disconnectText}>{forgetting ? "Disconnecting…" : "Disconnect from desktop"}</Text>
 		</Pressable>
 	);
@@ -550,35 +637,36 @@ function VersionFooter() {
 const makeStyles = (t: Theme) => StyleSheet.create({
 	screen: { flex: 1, backgroundColor: t.bgBase },
 	center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: t.bgBase },
-	header: { height: 64, alignItems: "center", justifyContent: "center", paddingHorizontal: 16 },
-	headerTitle: { color: t.textPrimary, fontSize: 20, lineHeight: 26, fontWeight: "800", letterSpacing: -0.3 },
+	header: { height: 64, alignItems: "center", justifyContent: "center", paddingHorizontal: space.lg },
+	headerTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.title3.fontSize, lineHeight: type.title3.lineHeight, fontWeight: "600", letterSpacing: -0.3 },
 	closeButton: { position: "absolute", right: 14, top: 10 },
-	content: { paddingHorizontal: 16, paddingTop: 6, paddingBottom: 32, gap: 18 },
-	section: { gap: 7 },
-	sectionTitle: { color: t.textTertiary, fontSize: 12, lineHeight: 16, fontWeight: "600", paddingHorizontal: 10 },
-	sectionFooter: { color: t.textTertiary, fontSize: 11, lineHeight: 16, paddingHorizontal: 10 },
+	content: { paddingHorizontal: space.lg, paddingTop: space.xs, paddingBottom: space.xxxl, gap: space.lg },
+	section: { gap: space.xs },
+	sectionTitle: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight, fontWeight: "600", paddingHorizontal: space.sm },
+	sectionFooter: { fontFamily: "Geist_400Regular", color: t.textTertiary, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, paddingHorizontal: space.sm },
 	card: { backgroundColor: t.bgElevated, borderRadius: 16, borderCurve: "continuous", overflow: "hidden" },
 	separator: { height: StyleSheet.hairlineWidth, backgroundColor: t.borderSubtle, marginLeft: 50 },
 	// Choices that expand inside a row's own card, indented under its label so
 	// they read as belonging to the row above rather than as a new group.
-	inlineChoices: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle, backgroundColor: t.bgSubtle, paddingVertical: 2 },
-	inlineChoice: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: 50, paddingRight: 14 },
-	inlineChoiceLabel: { flex: 1, color: t.textSecondary, fontSize: 14, lineHeight: 19 },
-	inlinePanel: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle, backgroundColor: t.bgSubtle, paddingHorizontal: 14, paddingVertical: 12, gap: 10 },
-	inlinePanelTitle: { color: t.textPrimary, fontSize: 14, lineHeight: 19, fontWeight: "700" },
-	inlinePanelCopy: { color: t.textSecondary, fontSize: 12, lineHeight: 17 },
-	inlinePanelActions: { flexDirection: "row", gap: 8 },
-	inlinePanelAction: { minHeight: 38, justifyContent: "center", paddingHorizontal: 14, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault },
+	inlineChoices: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle, backgroundColor: t.bgSubtle, paddingVertical: space.hair },
+	inlineChoice: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: space.sm, paddingLeft: 50, paddingRight: space.md },
+	inlineChoiceLabel: { fontFamily: "Geist_400Regular", flex: 1, color: t.textSecondary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight },
+	inlinePanel: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: t.borderSubtle, backgroundColor: t.bgSubtle, paddingHorizontal: space.md, paddingVertical: space.md, gap: space.sm },
+	inlinePanelTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
+	inlinePanelCopy: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.caption1.fontSize, lineHeight: type.caption1.lineHeight },
+	inlinePanelActions: { flexDirection: "row", gap: space.sm },
+	inlinePanelAction: { minHeight: 38, justifyContent: "center", paddingHorizontal: space.md, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderDefault },
 	inlinePanelPrimary: { backgroundColor: t.textPrimary, borderColor: t.textPrimary },
-	inlinePanelActionLabel: { color: t.textPrimary, fontSize: 13, fontWeight: "600" },
-	inlinePanelPrimaryLabel: { color: t.bgBase, fontSize: 13, fontWeight: "700" },
-	row: { minHeight: 52, flexDirection: "row", alignItems: "center", paddingHorizontal: 14, gap: 10 },
+	inlinePanelActionLabel: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.footnote.fontSize, fontWeight: "600" },
+	inlinePanelPrimaryLabel: { fontFamily: "Geist_600SemiBold", color: t.bgBase, fontSize: type.footnote.fontSize, fontWeight: "600" },
+	row: { minHeight: 52, flexDirection: "row", alignItems: "center", paddingHorizontal: space.md, gap: space.sm },
 	rowPressed: { backgroundColor: t.bgElevatedHover },
-	rowIcon: { width: 26, textAlign: "center" },
-	rowLabel: { color: t.textPrimary, fontSize: 15, lineHeight: 20, fontWeight: "600", flex: 1 },
-	rowValue: { color: t.textSecondary, fontSize: 13, lineHeight: 18, maxWidth: "42%" },
+	rowIcon: { fontFamily: "Geist_400Regular", width: 26, textAlign: "center" },
+	rowLabel: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600", flex: 1 },
+	rowValue: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, maxWidth: "42%" },
+	appearancePicker: { width: 124, height: 38, alignItems: "flex-end", justifyContent: "center" },
 	disabled: { opacity: 0.45 },
-	disconnect: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, borderRadius: 16, borderCurve: "continuous" },
-	disconnectText: { color: t.red, fontSize: 15, lineHeight: 20, fontWeight: "600" },
-	versionFooter: { color: t.textFaint, fontSize: 10, lineHeight: 14, textAlign: "center", marginTop: -6 },
+	disconnect: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: space.sm, paddingHorizontal: space.md, borderRadius: 16, borderCurve: "continuous" },
+	disconnectText: { fontFamily: "Geist_600SemiBold", color: t.red, fontSize: type.subheadline.fontSize, lineHeight: type.subheadline.lineHeight, fontWeight: "600" },
+	versionFooter: { fontFamily: "Geist_400Regular", color: t.textFaint, fontSize: type.caption2.fontSize, lineHeight: type.caption2.lineHeight, textAlign: "center", marginTop: -6 },
 });

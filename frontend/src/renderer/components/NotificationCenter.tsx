@@ -47,6 +47,8 @@ import { cn } from "../lib/utils";
 import { TopbarButton } from "./TopbarButton";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { CloudNotificationList } from "./CloudNotificationList";
+import { useCloudNotifications } from "../hooks/useCloudNotifications";
 
 type NotificationCenterProps = {
 	style?: React.CSSProperties;
@@ -211,12 +213,13 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 	const [restoringSessionId, setRestoringSessionId] = useState<string | undefined>();
 	const unreadQuery = useNotificationsQuery("unread");
 	const allQuery = useNotificationsQuery("all", open);
+	const cloudUnreadQuery = useCloudNotifications("unread");
 	const markAllRead = useMarkAllNotificationsReadMutation();
 	const clearAll = useClearAllNotificationsMutation();
 	const clearOne = useClearNotificationMutation();
 	const restoreSession = useRestoreSession();
 	const notifications = useMemo(() => getCachedNotifications(allQuery.data), [allQuery.data]);
-	const unreadCount = getCachedUnreadCount(unreadQuery.data);
+	const unreadCount = getCachedUnreadCount(unreadQuery.data) + (cloudUnreadQuery.data?.unreadCount ?? 0);
 	const confirmedClearSnapshot = isNotificationsCacheFromClear(queryClient);
 	const { openSession } = useNotificationTargetNavigation();
 	const markAllMutate = markAllRead.mutateAsync;
@@ -423,8 +426,9 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 					<NotificationEmpty icon={Inbox} message={t("notify.loading")} />
 				) : isEmpty ? (
 					<NotificationEmpty icon={CheckCheck} message={t("notify.emptyAll")} />
-				) : (
-					<div
+					) : (
+						<>
+						<div
 						aria-busy={allQuery.isFetchingNextPage}
 						className="board-scrollbar max-h-notification-max-height overflow-y-auto overscroll-contain py-1.5"
 						onScroll={loadEarlierOnScroll}
@@ -484,10 +488,12 @@ export function NotificationCenter({ style }: NotificationCenterProps) {
 							</div>
 						) : null}
 					</div>
+						</>
 				)}
 						</>
 					)}
 				</NotificationWorkspaceState>
+				<CloudNotificationList />
 			</PopoverContent>
 		</Popover>
 	);

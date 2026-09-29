@@ -1,4 +1,5 @@
 import { authHeaders, muxUrl, type ServerConfig } from "./config";
+import { space } from "./tokens";
 
 // Mirrors AO's mux-protocol.ts (the bits we use).
 export type SessionPatch = {

@@ -27,7 +27,7 @@ Use these files to inspect the approved references. They show current behavior a
 | Home landing | [HomePage](frontend/src/renderer/components/HomePage.tsx), [NavRowHighlight](frontend/src/renderer/components/NavRowHighlight.tsx) |
 | Sidebar, sidebar buttons, project rows | [Sidebar](frontend/src/renderer/components/Sidebar.tsx), [sidebar primitive](frontend/src/renderer/components/ui/sidebar.tsx), [topbar button](frontend/src/renderer/components/TopbarButton.tsx), [NavRowHighlight](frontend/src/renderer/components/NavRowHighlight.tsx) |
 | Shell resize grips | [ResizeHandle](frontend/src/renderer/components/ResizeHandle.tsx), [useResizable](frontend/src/renderer/hooks/useResizable.ts) |
-| Tokens, themes, typography | [tokens](frontend/src/styles/tokens.css), [renderer semantic styles](frontend/src/renderer/styles.css), [site-theme tokens](frontend/src/site-theme/tokens.css) |
+| Tokens, themes, typography | [tokens](frontend/src/styles/tokens.css), [renderer semantic styles](frontend/src/renderer/styles.css), [docs tokens](frontend/src/docs/src/styles/tokens.css) |
 | Tooltips, icons, buttons | [Tooltip](frontend/src/renderer/components/ui/tooltip.tsx), [Button](frontend/src/renderer/components/ui/button.tsx), [icon usage](frontend/src/renderer/components/icons.tsx) |
 | Shared dialog and field primitives | [Dialog](frontend/src/renderer/components/ui/dialog.tsx), [Input](frontend/src/renderer/components/ui/input.tsx), [Label](frontend/src/renderer/components/ui/label.tsx) |
 | New Task and its selectors | [New Task dialog](frontend/src/renderer/components/NewTaskDialog.tsx), [Task composer](frontend/src/renderer/components/TaskComposer.tsx), [settings option menu](frontend/src/renderer/components/settings/SettingsOptionMenu.tsx) |

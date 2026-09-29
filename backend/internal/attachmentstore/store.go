@@ -10,12 +10,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
@@ -26,7 +28,7 @@ const (
 	durableDir   = "attachments"
 	// MaxFileBytes matches the HTTP attachment limit and also bounds legacy
 	// imports from agent-writable worktrees.
-	MaxFileBytes = 10 << 20
+	MaxFileBytes = 50 << 20
 )
 
 var (
@@ -39,6 +41,14 @@ var (
 // Store persists canonical attachment bytes beneath an AO data directory.
 type Store struct {
 	dataDir string
+	// ponytail: fixed stripes bound memory; use keyed locks if unrelated uploads contend.
+	projectionLocks [64]sync.Mutex
+}
+
+func (s *Store) projectionLock(id domain.SessionID) *sync.Mutex {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(id))
+	return &s.projectionLocks[h.Sum64()%uint64(len(s.projectionLocks))]
 }
 
 // New returns a store rooted at dataDir.
@@ -53,6 +63,35 @@ func New(dataDir string) *Store {
 // Returning success therefore means both the history copy and the agent-visible
 // copy exist.
 func (s *Store) Put(ctx context.Context, id domain.SessionID, workspacePath, name string, data []byte) error {
+	lock := s.projectionLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	if strings.TrimSpace(workspacePath) == "" {
+		return errors.New("attachment workspace path is empty")
+	}
+	if err := s.PutCanonical(ctx, id, name, data); err != nil {
+		return err
+	}
+	sessionRoot, err := s.openCanonicalSession(ctx, id, true)
+	if err != nil {
+		return fmt.Errorf("open canonical attachment directory: %w", err)
+	}
+	defer func() { _ = sessionRoot.Close() }()
+	if err := writeReaderAtomicUnder(ctx, workspacePath, filepath.FromSlash(WorkspaceDir), name, bytes.NewReader(data), false); err != nil {
+		if removeErr := sessionRoot.Remove(name); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			return errors.Join(fmt.Errorf("write workspace attachment: %w", err), fmt.Errorf("rollback canonical attachment: %w", removeErr))
+		}
+		return fmt.Errorf("write workspace attachment: %w", err)
+	}
+	return nil
+}
+
+// PutCanonical stores an attachment for a session that has no worktree yet.
+// An asynchronous spawn answers the API before its worktree exists, so a file
+// attached to a message typed in that window has nowhere to be written; the
+// canonical copy is already the durable source of truth, and
+// MaterializeWorkspace replays it once the worktree lands.
+func (s *Store) PutCanonical(ctx context.Context, id domain.SessionID, name string, data []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -68,9 +107,6 @@ func (s *Store) Put(ctx context.Context, id domain.SessionID, workspacePath, nam
 	if len(data) > MaxFileBytes {
 		return errTooLarge
 	}
-	if strings.TrimSpace(workspacePath) == "" {
-		return errors.New("attachment workspace path is empty")
-	}
 	if s.dataDir == "" {
 		return errors.New("attachment data directory is empty")
 	}
@@ -81,12 +117,6 @@ func (s *Store) Put(ctx context.Context, id domain.SessionID, workspacePath, nam
 	defer func() { _ = sessionRoot.Close() }()
 	if err := writeReaderAtomicRoot(ctx, sessionRoot, ".", name, bytes.NewReader(data), false); err != nil {
 		return fmt.Errorf("write canonical attachment: %w", err)
-	}
-	if err := writeReaderAtomicUnder(ctx, workspacePath, filepath.FromSlash(WorkspaceDir), name, bytes.NewReader(data), false); err != nil {
-		if removeErr := sessionRoot.Remove(name); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
-			return errors.Join(fmt.Errorf("write workspace attachment: %w", err), fmt.Errorf("rollback canonical attachment: %w", removeErr))
-		}
-		return fmt.Errorf("write workspace attachment: %w", err)
 	}
 	return nil
 }
@@ -178,10 +208,12 @@ func (s *Store) ImportWorkspace(ctx context.Context, id domain.SessionID, worksp
 }
 
 // MaterializeWorkspace projects every canonical attachment into a restored
-// worktree before its controller is relaunched. The boolean reports whether at
-// least one projection was written, so callers only add attachment-specific
-// workspace configuration when it is needed.
-func (s *Store) MaterializeWorkspace(ctx context.Context, id domain.SessionID, workspacePath string) (bool, error) {
+// worktree before its controller is relaunched. beforeWrite runs once, only
+// when a file exists, and must succeed before any file becomes visible there.
+func (s *Store) MaterializeWorkspace(ctx context.Context, id domain.SessionID, workspacePath string, beforeWrite func() error) (bool, error) {
+	lock := s.projectionLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -208,6 +240,7 @@ func (s *Store) MaterializeWorkspace(ctx context.Context, id domain.SessionID, w
 	}
 
 	materialized := false
+	prepared := false
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return false, err
@@ -221,6 +254,15 @@ func (s *Store) MaterializeWorkspace(ctx context.Context, id domain.SessionID, w
 		}
 		if openErr != nil {
 			return false, fmt.Errorf("open canonical attachment %q: %w", entry.Name(), openErr)
+		}
+		if !prepared {
+			if beforeWrite != nil {
+				if err := beforeWrite(); err != nil {
+					_ = file.Close()
+					return false, fmt.Errorf("prepare attachment workspace: %w", err)
+				}
+			}
+			prepared = true
 		}
 		copyErr := writeReaderAtomicUnder(ctx, workspacePath, filepath.FromSlash(WorkspaceDir), entry.Name(), file, true)
 		closeErr := file.Close()

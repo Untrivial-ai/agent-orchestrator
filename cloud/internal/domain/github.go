@@ -166,6 +166,7 @@ type GitHubWebhookDelivery struct {
 	Action               string
 	GitHubInstallationID int64
 	GitHubRepositoryID   int64
+	PullRequestNumber    int
 	Payload              []byte
 	AttemptCount         int
 }

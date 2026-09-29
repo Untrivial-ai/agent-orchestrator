@@ -7,7 +7,9 @@ import { sessionsAtRiskFromInstall } from "../lib/update-install-risk";
 import { useUpdateStatus } from "../hooks/useUpdateStatus";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import { useUiStore } from "../stores/ui-store";
+import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
+import { DesktopReleaseNotes } from "./DesktopReleaseNotes";
 import {
 	Dialog,
 	DialogContent,
@@ -144,16 +146,16 @@ function RestartToUpdateDialogBody() {
 					if (installing.current) event.preventDefault();
 				}}
 			>
-				<div className={settingsDialogHeaderClass}>
+				<div className={cn(settingsDialogHeaderClass, "py-4")}>
 					<DialogTitle>{t("update.restart.title")}</DialogTitle>
 					{buildLabel && <DialogDescription>{buildLabel}</DialogDescription>}
 				</div>
 
-				<div className={settingsDialogBodyClass}>
+				<div className={cn(settingsDialogBodyClass, "gap-3 pt-4")}>
 					{(workspace.isError || !workspace.data) && <p role="status">{t("update.restart.unknownWorkers", { defaultValue: "Current worker state could not be confirmed. Installing restarts AO and may interrupt current tasks." })}</p>}
 					{atRisk.length > 0 && (
 						<div
-							className="mb-4 rounded-md border border-warning/30 bg-warning/8 px-3 py-2.5"
+							className="rounded-md border border-warning/30 bg-warning/8 px-3 py-2.5"
 							data-testid="restart-sessions-warning"
 						>
 							<p className="flex items-start gap-2 text-xs font-medium leading-5 text-warning">
@@ -175,21 +177,24 @@ function RestartToUpdateDialogBody() {
 						</div>
 					)}
 
-					<p className="text-caption font-medium uppercase tracking-wide text-settings-muted">
-						{t("update.restart.whatsNew")}
-					</p>
-					{releaseNotes ? (
-						// Plain text on purpose. The notes are the remote release body,
-						// sanitized in the main process; nothing here injects markup.
-						<p className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-line text-pretty text-sm leading-5 text-settings-label">
-							{releaseNotes}
+					{/* The notes are the only region that shrinks, so they grow with their
+					    content up to the dialog's max height and scroll only past that. */}
+					<section className="flex min-h-0 flex-col gap-1.5">
+						<p className="text-caption font-medium uppercase tracking-wide text-settings-muted">
+							{t("update.restart.whatsNew")}
 						</p>
-					) : (
-						<p className="mt-1.5 text-sm leading-5 text-settings-muted">{t("update.restart.noNotes")}</p>
-					)}
+						{releaseNotes ? (
+							<DesktopReleaseNotes
+								notes={releaseNotes}
+								textClassName="settings-thin-scrollbar min-h-0 overflow-y-auto text-pretty text-sm leading-5 text-settings-label"
+							/>
+						) : (
+							<p className="text-sm leading-5 text-settings-muted">{t("update.restart.noNotes")}</p>
+						)}
+					</section>
 
 					{targetChanged && (
-						<p role="status" className="mt-3 text-sm text-settings-label">
+						<p role="status" className="text-sm text-settings-label">
 							{t("update.restart.targetChanged")}
 						</p>
 					)}
@@ -202,11 +207,11 @@ function RestartToUpdateDialogBody() {
 					{/* On failure the main process turns off install-on-quit, so hide
 					    this line rather than contradict the error above. */}
 					{failureDetail === null && (
-						<p className="mt-2 text-xs leading-4 text-settings-muted">{t("update.restart.installsOnQuit")}</p>
+						<p className="text-xs leading-4 text-settings-muted">{t("update.restart.installsOnQuit")}</p>
 					)}
 				</div>
 
-				<div className={settingsDialogFooterClass}>
+				<div className={cn(settingsDialogFooterClass, "py-4")}>
 					<Button type="button" variant="outline" size="sm" onClick={close} disabled={pending}>
 						{t("confirm.cancel")}
 					</Button>

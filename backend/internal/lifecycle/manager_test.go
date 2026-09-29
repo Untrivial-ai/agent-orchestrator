@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -490,6 +492,18 @@ func working(id domain.SessionID) domain.SessionRecord {
 	}
 }
 
+// exited seeds a session whose agent has genuinely QUIESCED (ActivityExited) —
+// the agent came down and is provably resting/idle, not mid-climb. This is the
+// fixture the merged-PR termination contract is meant to be exercised against:
+// flag-termination of a session is legitimate only when the agent has actually
+// stopped working (quiesced), NOT while it is still ActivityActive (#2879).
+// Here the merged lane's sessionComplete must still terminate an agent that
+// merged its PR and then genuinely exited.
+func exited(id domain.SessionID) domain.SessionRecord {
+	rec := working(id)
+	rec.Activity = domain.Activity{State: domain.ActivityExited, LastActivityAt: time.Now()}
+	return rec
+}
 func TestRuntimeObservation_ConfirmedRuntimeDeathTerminates(t *testing.T) {
 	m, st, _ := newManager()
 	rec := working("mer-1")
@@ -1622,6 +1636,7 @@ func TestActivity_CoordinationPromptFollowedByPromptlessStopDoesNotAdvanceCheckp
 		LaunchID: "terminal-generation", AgentSessionID: "native-1",
 		Timestamp:                    coordinationPromptAt,
 		ConversationCheckpointOrigin: domain.ConversationCheckpointOriginCoordination,
+		CoordinationID:               "report-batch:abc123",
 	}); err != nil {
 		t.Fatalf("apply coordination prompt boundary: %v", err)
 	}
@@ -1638,7 +1653,8 @@ func TestActivity_CoordinationPromptFollowedByPromptlessStopDoesNotAdvanceCheckp
 	if got.LatestUserPrompt != rec.Metadata.LatestUserPrompt ||
 		!got.LatestUserPromptAt.Equal(previousPromptAt) ||
 		got.LatestAssistantUpdate != rec.Metadata.LatestAssistantUpdate ||
-		got.ConversationCheckpointState != domain.ConversationCheckpointCoordination {
+		got.ConversationCheckpointState != domain.ConversationCheckpointCoordination ||
+		got.ConversationCheckpointTurnID != "report-batch:abc123" {
 		t.Fatalf("coordination turn advanced user checkpoint: got %+v, want prior human facts at %s",
 			got, previousPromptAt)
 	}
@@ -3498,7 +3514,7 @@ func TestPRObservation_MergedUsesConfiguredTerminator(t *testing.T) {
 	m, st, _ := newManager()
 	terminator := &fakeCompletionTerminator{}
 	m.SetCompletionTerminator(terminator)
-	rec := working("mer-1")
+	rec := exited("mer-1")
 	rec.TerminateOnPRMerge = true
 	st.sessions["mer-1"] = rec
 	st.prs["mer-1"] = []domain.PullRequest{{URL: "pr1", Merged: true}}
@@ -3508,6 +3524,35 @@ func TestPRObservation_MergedUsesConfiguredTerminator(t *testing.T) {
 	}
 	if terminator.calls != 1 {
 		t.Fatalf("terminator calls = %d, want 1", terminator.calls)
+	}
+}
+
+// TestPRObservation_MergedOnStillWorkingAgentDoesNotTerminate is the RED test
+// for #2879: an agent STILL CLIMBING (ActivityActive / `working`) with one PR
+// merged must NOT be flag-terminated. The merge may be PR #1 of several and
+// the agent is mid-traversal — likely about to push PR #2 in the same session.
+// Flag-terminating here (is_terminated=true, #2811) drops the session from the
+// SCM observer roster, so that follow-up PR is never attributed, never
+// enriched, never nudged. Termination must wait until the agent has actually
+// quiesced (ActivityExited or provably-idle). This test intentionally fails on
+// current code, which terminates on PR-state alone (≥1 merged ∧ none open).
+func TestPRObservation_MergedOnStillWorkingAgentDoesNotTerminate(t *testing.T) {
+	m, st, _ := newManager()
+	terminator := &fakeCompletionTerminator{}
+	m.SetCompletionTerminator(terminator)
+	rec := working("mer-1") // ActivityActive: agent is STILL climbing (#2879)
+	rec.TerminateOnPRMerge = true
+	st.sessions["mer-1"] = rec
+	st.prs["mer-1"] = []domain.PullRequest{{URL: "pr1", Merged: true}}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", ports.PRObservation{Fetched: true, URL: "pr1", Merged: true}); err != nil {
+		t.Fatal(err)
+	}
+	if st.sessions["mer-1"].IsTerminated {
+		t.Fatalf("merged PR must NOT terminate a session whose agent is still ActivityActive (working), got %+v", st.sessions["mer-1"])
+	}
+	if terminator.calls != 0 {
+		t.Fatalf("terminator calls = %d, want 0 while the agent is still working", terminator.calls)
 	}
 }
 
@@ -3533,7 +3578,7 @@ func TestPRObservation_MergedTeardownFailureStaysLiveForRetry(t *testing.T) {
 	m, st, _ := newManager()
 	terminator := &fakeCompletionTerminator{err: errors.New("transient teardown failure")}
 	m.SetCompletionTerminator(terminator)
-	rec := working("mer-1")
+	rec := exited("mer-1")
 	rec.TerminateOnPRMerge = true
 	st.sessions["mer-1"] = rec
 	st.prs["mer-1"] = []domain.PullRequest{{URL: "pr1", Merged: true}}
@@ -3549,7 +3594,7 @@ func TestPRObservation_MergedTeardownFailureStaysLiveForRetry(t *testing.T) {
 
 func TestPRObservation_MergedRequiresConfiguredTerminator(t *testing.T) {
 	m, st, _ := newManager()
-	rec := working("mer-1")
+	rec := exited("mer-1")
 	rec.TerminateOnPRMerge = true
 	st.sessions["mer-1"] = rec
 	st.prs["mer-1"] = []domain.PullRequest{{URL: "pr1", Merged: true}}
@@ -3592,7 +3637,7 @@ func TestPRObservation_LastMergeTerminatesSession(t *testing.T) {
 	m, st, _ := newManager()
 	terminator := &fakeCompletionTerminator{}
 	m.SetCompletionTerminator(terminator)
-	rec := working("mer-1")
+	rec := exited("mer-1")
 	rec.TerminateOnPRMerge = true
 	st.sessions["mer-1"] = rec
 	st.prs["mer-1"] = []domain.PullRequest{
@@ -5123,7 +5168,7 @@ func TestMarkSpawnedPersistsChatControllerFacts(t *testing.T) {
 // column, and is read back by the API — but mergeMetadata never copied it, so
 // every `ao spawn --model X` persisted an empty model and the session reported
 // no model at all.
-func TestMarkSpawnedPersistsResolvedModel(t *testing.T) {
+func TestMarkSpawnedPersistsResolvedModelAndEffort(t *testing.T) {
 	ctx := context.Background()
 	st := newFakeStore()
 	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer"}
@@ -5132,6 +5177,7 @@ func TestMarkSpawnedPersistsResolvedModel(t *testing.T) {
 	if err := m.MarkSpawned(ctx, "mer-1", domain.SessionMetadata{
 		WorkspacePath: "/ws",
 		Model:         "sonnet",
+		Effort:        "high",
 	}); err != nil {
 		t.Fatalf("MarkSpawned: %v", err)
 	}
@@ -5144,6 +5190,10 @@ func TestMarkSpawnedPersistsResolvedModel(t *testing.T) {
 		t.Fatalf("model = %q, want %q; a spawn's resolved model must survive the merge",
 			got.Metadata.Model, "sonnet")
 	}
+	if got.Metadata.Effort != "high" {
+		t.Fatalf("effort = %q, want %q; a spawn's resolved effort must survive the merge",
+			got.Metadata.Effort, "high")
+	}
 
 	// Merged rather than assigned: a relaunch that resolves no explicit model
 	// must leave the recorded one alone instead of blanking it.
@@ -5153,6 +5203,9 @@ func TestMarkSpawnedPersistsResolvedModel(t *testing.T) {
 	got, _, _ = st.GetSession(ctx, "mer-1")
 	if got.Metadata.Model != "sonnet" {
 		t.Fatalf("model = %q after a relaunch that resolved none, want it preserved", got.Metadata.Model)
+	}
+	if got.Metadata.Effort != "high" {
+		t.Fatalf("effort = %q after a relaunch that resolved none, want it preserved", got.Metadata.Effort)
 	}
 }
 
@@ -5379,5 +5432,49 @@ func TestEmitTelemetryStampsRequestID(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Each unresolved comment gets its own dedup slot. Sharing one key per PR made
+// every poll re-send whichever comments were not the most recent signature
+// written, and made them share the reviewMaxNudge budget so a PR with more
+// comments than that could never deliver the last of them.
+func TestPRObservation_ReviewCommentNudgesDedupPerComment(t *testing.T) {
+	m, st, msg := newManager()
+	st.sessions["mer-1"] = working("mer-1")
+	comments := make([]domain.PullRequestComment, 0, reviewMaxNudge+2)
+	for i := range reviewMaxNudge + 2 {
+		id := fmt.Sprintf("%d", i+1)
+		// Every comment shares one thread: the observer expands a thread into
+		// one row per comment, so this is the routine shape whenever a worker
+		// replies to a review comment without resolving it. Keying on the
+		// thread would collapse them all back into one dedup slot.
+		comments = append(comments, domain.PullRequestComment{
+			ID: id, ThreadID: "T1", Author: "alice", File: "foo.go", Line: i + 1,
+			Body: "finding " + id, AutoInjectReview: true,
+		})
+	}
+	st.comments["pr1"] = comments
+	o := ports.PRObservation{Fetched: true, URL: "pr1", Review: domain.ReviewChangesRequest}
+
+	if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != len(comments) {
+		t.Fatalf("first poll sent %d nudges, want one per comment (%d)", len(msg.msgs), len(comments))
+	}
+	for _, c := range comments {
+		if !slices.ContainsFunc(msg.msgs, func(m string) bool { return strings.Contains(m, "finding "+c.ID) }) {
+			t.Fatalf("comment %s never nudged; the attempt budget is shared", c.ID)
+		}
+	}
+
+	sent := len(msg.msgs)
+	if err := m.ApplyPRObservation(ctx, "mer-1", o); err != nil {
+		t.Fatal(err)
+	}
+	if len(msg.msgs) != sent {
+		t.Fatalf("second poll re-sent %d nudges for unchanged comments:\n%v",
+			len(msg.msgs)-sent, msg.msgs[sent:])
 	}
 }

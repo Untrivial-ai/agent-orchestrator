@@ -1,4 +1,4 @@
-import type { Feather } from "@expo/vector-icons";
+import type { Feather } from "../icons";
 import type { ConversationTurn } from "./types";
 
 export type ChatTone = "accent" | "attention" | "danger" | "muted" | "success" | "working";

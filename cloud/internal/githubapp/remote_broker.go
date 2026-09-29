@@ -194,6 +194,13 @@ func (b *RemoteCheckoutBroker) IssuePushGrant(
 	return CheckoutGrant{}, errRemotePushNotSupported
 }
 
+func (b *RemoteCheckoutBroker) IssuePushGrantForRepo(
+	context.Context,
+	string, string, string,
+) (CheckoutGrant, error) {
+	return CheckoutGrant{}, errRemotePushNotSupported
+}
+
 func (b *RemoteCheckoutBroker) RaisePullRequest(
 	context.Context,
 	string, string,

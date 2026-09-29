@@ -9,6 +9,7 @@ import {
 } from "@aoagents/product-ui";
 import { AlertTriangle, LayoutDashboard, RotateCw } from "lucide-react";
 import {
+	STANDALONE_WORKSPACE_ID,
 	type WorkspaceSession,
 	newestActiveOrchestrator,
 	orchestratorHealth,
@@ -84,7 +85,9 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	/** Bell lives in the board action row when the shell topbar does not host it. */
 	const boardOwnsNotificationCenter = isLinuxPlatform() || boardActionsInPanel;
 	const all = workspaceQuery.data ?? [];
-	const workspaces = projectId ? all.filter((workspace) => workspace.id === projectId) : all;
+	const workspaces = projectId
+		? all.filter((workspace) => workspace.id === projectId)
+		: all;
 	const workspace = projectId ? workspaces[0] : undefined;
 	// Board chrome stays route-oriented; project context remains in the sidebar.
 	const boardLabel = t("shell.board");
@@ -131,11 +134,16 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const activeProjectIdRef = useRef(projectId);
 	activeProjectIdRef.current = projectId;
 
-	const openSession = useCallback((session: WorkspaceSession) =>
+	const openSession = useCallback((session: WorkspaceSession) => {
+		if (session.workspaceId === STANDALONE_WORKSPACE_ID) {
+			void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
+			return;
+		}
 		void navigate({
 			to: "/projects/$projectId/sessions/$sessionId",
 			params: { projectId: session.workspaceId, sessionId: session.id },
-		}), [navigate]);
+		});
+	}, [navigate]);
 
 	const restartOrchestrator = async () => {
 		if (!projectId) return;
@@ -324,6 +332,10 @@ const BoardArchivePanel = memo(function BoardArchivePanel({
 			const result = await restoreSessionById(session.id);
 			if (!isStillActiveProject()) return;
 			if (result.status === "success") {
+				if (session.workspaceId === STANDALONE_WORKSPACE_ID) {
+					void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
+					return;
+				}
 				void navigate({
 					to: "/projects/$projectId/sessions/$sessionId",
 					params: { projectId: session.workspaceId, sessionId: session.id },

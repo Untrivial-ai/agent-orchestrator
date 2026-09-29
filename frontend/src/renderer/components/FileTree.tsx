@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useRef, useState, type HTMLAttributes, type RefObject } from "react";
+import { createContext, forwardRef, useCallback, useContext, useEffect, useRef, useState, type HTMLAttributes, type RefObject } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Tree, type NodeApi, type NodeRendererProps, type RowRendererProps, type TreeApi } from "react-arborist";
@@ -14,8 +14,9 @@ import {
 } from "../hooks/useSessionWorkspaceTree";
 import { sessionWorkspaceSearchQueryOptions } from "../hooks/useSessionWorkspaceFiles";
 
-const ROW_HEIGHT = 28;
-const INDENT = 14;
+const ROW_HEIGHT = 30;
+const INDENT = 16;
+const ROW_INSET = 8;
 
 const FileTreeScrollElement = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
 	function FileTreeScrollElement({ className, ...props }, ref) {
@@ -79,7 +80,10 @@ export function FileTree({
 	changedOnlyData,
 	selectedPath,
 	onSelectPath,
+	flushTop = false,
 }: {
+	/** Start the first row at the top edge (the Files split view's divider). */
+	flushTop?: boolean;
 	filterText: string;
 	sessionId: string;
 	changedOnly: boolean;
@@ -153,7 +157,7 @@ export function FileTree({
 	const isEmpty = data.length === 0 && (changedOnly || (!isPending && !activeError));
 
 	return (
-		<div className="flex h-full min-h-0 min-w-0 flex-col bg-background" ref={containerRef}>
+		<div className="flex h-full min-h-0 min-w-0 flex-col bg-background px-2" ref={containerRef}>
 			{isPending ? (
 				<p className="p-3 text-xs text-muted-foreground">{t("files.loading")}</p>
 			) : null}
@@ -162,30 +166,33 @@ export function FileTree({
 			) : null}
 			{isEmpty ? <p className="p-3 text-xs text-muted-foreground">{t("files.explorer.empty")}</p> : null}
 			{size.width > 0 && size.height > 0 ? (
-				<Tree<TreeNode>
-					data={data}
-					ref={treeApiRef}
-					idAccessor="path"
-					onToggle={handleToggle}
-					onActivate={handleActivate}
-					openByDefault={!changedOnly && normalizedFilter.length > 0}
-					selection={selectedPath ?? undefined}
-					disableDrag
-					disableDrop
-					disableEdit
-					disableMultiSelection
-					searchTerm={changedOnly ? filterText : ""}
-					rowHeight={ROW_HEIGHT}
-					indent={INDENT}
-					width={size.width}
-					height={size.height}
-					padding={4}
-					aria-label={t("files.explorer.tree")}
-					outerElementType={FileTreeScrollElement}
-					renderRow={FileTreeRowContainer}
-				>
-					{FileTreeRow}
-				</Tree>
+				<FlatTreeContext.Provider value={!data.some((node) => node.type === "dir")}>
+					<Tree<TreeNode>
+						data={data}
+						ref={treeApiRef}
+						idAccessor="path"
+						onToggle={handleToggle}
+						onActivate={handleActivate}
+						openByDefault={!changedOnly && normalizedFilter.length > 0}
+						selection={selectedPath ?? undefined}
+						disableDrag
+						disableDrop
+						disableEdit
+						disableMultiSelection
+						searchTerm={changedOnly ? filterText : ""}
+						rowHeight={ROW_HEIGHT}
+						indent={INDENT}
+						width={size.width}
+						height={size.height}
+						paddingBottom={4}
+						paddingTop={flushTop ? 0 : 4}
+						aria-label={t("files.explorer.tree")}
+						outerElementType={FileTreeScrollElement}
+						renderRow={FileTreeRowContainer}
+					>
+						{FileTreeRow}
+					</Tree>
+				</FlatTreeContext.Provider>
 			) : null}
 		</div>
 	);
@@ -213,40 +220,48 @@ function FileTreeRowContainer<T>({ node, attrs, innerRef, children }: RowRendere
 	);
 }
 
+// A tree with no folders anywhere (e.g. a flat list of changed files) has no
+// chevrons to line file icons up with, so rows drop the empty chevron slot.
+const FlatTreeContext = createContext(false);
+
 function FileTreeRow({ node, style, dragHandle }: NodeRendererProps<TreeNode>) {
 	const { t } = useTranslation();
+	const flat = useContext(FlatTreeContext);
 	const entry = node.data;
 	const isDir = entry.type === "dir";
 	return (
 		<div
 			className={cn(
-				"flex h-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md px-2 text-xs text-foreground",
+				"flex h-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 text-[length:var(--font-size-base)] text-foreground",
 				node.isSelected ? "bg-interactive-active" : "hover:bg-interactive-hover",
 			)}
 			onClick={() => (isDir ? node.toggle() : node.activate())}
 			ref={dragHandle}
-			style={style}
+			// react-arborist writes the indent as an inline paddingLeft, which
+			// overrides px-2; add the row inset back so the chevron never sits
+			// flush against the selection highlight.
+			style={{ ...style, paddingLeft: (Number.parseFloat(String(style.paddingLeft ?? 0)) || 0) + ROW_INSET }}
 		>
 			{isDir ? (
 				<ChevronRight
 					aria-hidden="true"
-					className={cn("size-3 shrink-0 text-passive transition-transform", node.isOpen && "rotate-90")}
+					className={cn("size-3.5 shrink-0 text-passive transition-transform", node.isOpen && "rotate-90")}
 				/>
-			) : (
-				<span aria-hidden="true" className="size-3 shrink-0" />
+			) : flat ? null : (
+				<span aria-hidden="true" className="size-3.5 shrink-0" />
 			)}
 			{isDir ? (
-				<WorkspaceEntryIcon kind="dir" name={entry.name} testId={`folder-icon-${entry.name}`} />
+				<WorkspaceEntryIcon className="size-icon-base" kind="dir" name={entry.name} testId={`folder-icon-${entry.name}`} />
 			) : (
-				<WorkspaceEntryIcon kind="file" name={entry.name} testId={`file-icon-${entry.name}`} />
+				<WorkspaceEntryIcon className="size-icon-base" kind="file" name={entry.name} testId={`file-icon-${entry.name}`} />
 			)}
-			<span className="min-w-0 flex-1 truncate font-mono">{entry.name}</span>
+			<span className="min-w-0 flex-1 truncate">{entry.name}</span>
 			{isDir && entry.hasChanges ? (
 				<span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-warning" />
 			) : null}
 			{!isDir && entry.status && entry.status !== "unmodified" ? (
 				<span
-					className={cn("shrink-0 font-mono text-caption font-medium", statusTone[entry.status])}
+					className={cn("shrink-0 text-xs font-medium", statusTone[entry.status])}
 					title={t(`files.status.${entry.status}`)}
 				>
 					{statusLabel[entry.status]}

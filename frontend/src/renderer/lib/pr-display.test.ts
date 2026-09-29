@@ -875,7 +875,7 @@ describe("prSummaryParts", () => {
 		});
 	});
 
-	it("links merge conflicts to GitHub's conflict resolution page", () => {
+	it("links merge conflicts to the PR page instead of the host's conflicts subpage", () => {
 		const parts = prSummaryParts(
 			summary({
 				url: "https://github.com/acme/repo/issues/7",
@@ -894,7 +894,7 @@ describe("prSummaryParts", () => {
 		});
 		expect(parts.find((part) => part.key === "merge")?.links[0]).toMatchObject({
 			label: "conflicts",
-			href: "https://github.com/acme/repo/pull/7/conflicts",
+			href: "https://github.com/acme/repo/pull/7",
 		});
 	});
 

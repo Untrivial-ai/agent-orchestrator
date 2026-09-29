@@ -27,14 +27,15 @@ const (
 // may be empty to open an idle worker that the user can instruct later. Empty
 // RequestedAgent means the spawn uses the project's worker-agent default.
 type DelegateTaskInput struct {
-	ProjectID      domain.ProjectID
-	Brief          string
-	RequestedAgent domain.AgentHarness
-	Model          string
-	Effort         *string
-	ApprovalMode   domain.PermissionMode
-	RequestedMode  domain.SessionMode
-	Attachments    []ports.SpawnAttachment
+	ProjectID       domain.ProjectID
+	Brief           string
+	RequestedAgent  domain.AgentHarness
+	Model           string
+	Effort          *string
+	ApprovalMode    domain.PermissionMode
+	RequestedMode   domain.SessionMode
+	Attachments     []ports.SpawnAttachment
+	TaskPreparation domain.TaskPreparationToken
 }
 
 // DelegateTaskOutcome identifies the spawned worker. OrchestratorID remains
@@ -42,6 +43,22 @@ type DelegateTaskInput struct {
 type DelegateTaskOutcome struct {
 	OrchestratorID domain.SessionID
 	WorkerID       domain.SessionID
+}
+
+// PrepareTask starts the reversible worktree-only half of task creation.
+func (s *Service) PrepareTask(ctx context.Context, projectID domain.ProjectID) (string, error) {
+	project, err := s.requireProject(ctx, projectID)
+	if err != nil {
+		return "", err
+	}
+	token, err := s.manager.PrepareTaskWorkspace(ctx, project)
+	return string(token), err
+}
+
+// CancelTaskPreparation releases an unclaimed speculative worktree. Unknown or
+// already-claimed tokens are intentionally idempotent.
+func (s *Service) CancelTaskPreparation(ctx context.Context, token string) error {
+	return s.manager.CancelTaskPreparation(ctx, domain.TaskPreparationToken(token))
 }
 
 // DelegateTask spawns the worker directly, matching `ao spawn`, with a
@@ -77,6 +94,11 @@ func (s *Service) DelegateTask(ctx context.Context, in DelegateTaskInput) (Deleg
 		EffortOverride: effortOverride,
 		RequestedMode:  in.RequestedMode,
 		Attachments:    in.Attachments,
+		// This is the desktop's new-task path: there is a UI waiting to navigate
+		// to the session. A Chat worker answers as soon as it is addressable and
+		// finishes starting in the background.
+		Async:           true,
+		TaskPreparation: in.TaskPreparation,
 	})
 	if err != nil {
 		return DelegateTaskOutcome{}, toSpawnAPIError(err)

@@ -2,6 +2,12 @@ import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useFileAnnotation } from "./useFileAnnotation";
 
+const { postMock } = vi.hoisted(() => ({ postMock: vi.fn().mockResolvedValue({ data: {} }) }));
+vi.mock("../lib/api-client", () => ({
+	apiClient: { POST: postMock },
+	apiErrorMessage: (_error: unknown, fallback: string) => fallback,
+}));
+
 describe("useFileAnnotation", () => {
 	it("closes feedback when the same trigger is clicked again", () => {
 		const { result } = renderHook(() => useFileAnnotation("sess-1"));
@@ -31,6 +37,18 @@ describe("useFileAnnotation", () => {
 		expect(sendMessage).toHaveBeenCalledOnce();
 		expect(sendMessage).toHaveBeenCalledWith(expect.stringContaining("Please simplify this file."));
 		expect(result.current.status).toBe("sent");
+	});
+
+	it("marks local inline feedback as user-authored", async () => {
+		const { result } = renderHook(() => useFileAnnotation("sess-1"));
+
+		act(() => result.current.begin({ path: "src/App.tsx", side: "new", line: 12, scope: "unstaged", surface: "focused" }));
+		await act(async () => result.current.submit("Move this control closer to the heading."));
+
+		expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
+			params: { path: { sessionId: "sess-1" } },
+			body: { message: expect.stringContaining("Move this control closer to the heading."), userAuthored: true },
+		});
 	});
 
 	it("cancels an open composer when the file source changes", () => {

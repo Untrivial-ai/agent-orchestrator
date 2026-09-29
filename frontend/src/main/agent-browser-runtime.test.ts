@@ -47,7 +47,24 @@ describe("AO action translation", () => {
 			"--interactive",
 			"--compact",
 		]);
+		expect(nativeArgumentsForAction("snapshot", { delta: true })).toEqual(["snapshot", "--compact", "--delta"]);
+		expect(nativeArgumentsForAction("snapshot", { interactive: true, delta: true, full: true })).toEqual([
+			"snapshot",
+			"--interactive",
+			"--compact",
+			"--delta",
+			"--full",
+		]);
+		expect(nativeArgumentsForAction("snapshot", { full: true })).toEqual(["snapshot", "--compact"]);
 		expect(nativeArgumentsForAction("click", { ref: "e2" })).toEqual(["click", "@e2"]);
+		expect(nativeArgumentsForAction("click", { ref: "e2", human: true })).toEqual(["click", "@e2", "--human"]);
+		expect(nativeArgumentsForAction("dblclick", { ref: "e2", human: true })).toEqual(["dblclick", "@e2"]);
+		expect(nativeArgumentsForAction("drag", { ref: "e2", targetRef: "@e5", human: true })).toEqual([
+			"drag",
+			"@e2",
+			"@e5",
+			"--human",
+		]);
 		expect(nativeArgumentsForAction("drag", { ref: "e2", targetRef: "@e5" })).toEqual([
 			"drag",
 			"@e2",
@@ -179,6 +196,70 @@ describe("agent-browser runtime lifecycle", () => {
 			await runtime.dispose();
 			await cleanup(dataDir);
 			vi.unstubAllEnvs();
+		}
+	});
+
+	it("passes --annotate through screenshot and returns the native annotations", async () => {
+		const png = Buffer.from(
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+			"base64",
+		);
+		const annotations = [{ number: 1, ref: "e1", role: "button", name: "Save", box: { x: 1, y: 2, width: 3, height: 4 } }];
+		const commands: string[][] = [];
+		let unreadableAnnotations = false;
+		let failAnnotations = false;
+		const { dataDir, runtime } = await fixture({
+			processRunner: async (...args) => {
+				const command = args[1] as string[];
+				commands.push(command);
+				if (command[0] !== "screenshot") return { stdout: "", stderr: "", exitCode: 0 };
+				if (failAnnotations) {
+					return {
+						stdout: JSON.stringify({ success: false, error: "annotation overlay injection failed" }),
+						stderr: "",
+						exitCode: 0,
+					};
+				}
+				await writeFile(command[1], png);
+				if (unreadableAnnotations) return { stdout: "not json", stderr: "", exitCode: 0 };
+				return {
+					stdout: JSON.stringify({
+						success: true,
+						_boundary: { nonce: "n1", origin: "http://localhost:3000/" },
+						data: { path: command[1], annotations },
+					}),
+					stderr: "",
+					exitCode: 0,
+				};
+			},
+		});
+		try {
+			const plain = await runtime.screenshot("session-1", provider);
+			expect(commands.at(-1)).not.toContain("--annotate");
+			expect(plain.annotations).toBeUndefined();
+
+			const annotated = await runtime.screenshot("session-1", provider, undefined, { annotate: true });
+			expect(commands.at(-1)).toContain("--annotate");
+			expect(annotated).toMatchObject({
+				width: 1,
+				height: 1,
+				annotations,
+				_boundary: { nonce: "n1", origin: "http://localhost:3000/" },
+			});
+
+			failAnnotations = true;
+			await expect(runtime.screenshot("session-1", provider, undefined, { annotate: true })).rejects.toThrow(
+				"annotation overlay injection failed",
+			);
+			failAnnotations = false;
+
+			unreadableAnnotations = true;
+			const unreadable = await runtime.screenshot("session-1", provider, undefined, { annotate: true });
+			expect(unreadable).toMatchObject({ width: 1, height: 1, annotationsUnavailable: true });
+			expect(unreadable.annotations).toBeUndefined();
+		} finally {
+			await runtime.dispose();
+			await cleanup(dataDir);
 		}
 	});
 
@@ -500,6 +581,19 @@ describe.skipIf(!nativeBinary)("agent-browser native compatibility", () => {
 				if (method === "Runtime.evaluate") {
 					return { result: { type: "string", value: "http://localhost:5173/" } };
 				}
+				if (method === "Accessibility.getFullAXTree") {
+					return {
+						nodes: [
+							{
+								nodeId: "1",
+								ignored: false,
+								role: { type: "role", value: "button" },
+								name: { type: "computedString", value: "Save" },
+								childIds: [],
+							},
+						],
+					};
+				}
 				if (method === "Page.captureScreenshot") {
 					return {
 						data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -548,6 +642,17 @@ describe.skipIf(!nativeBinary)("agent-browser native compatibility", () => {
 			expect(targets.map((target) => target.id)).toEqual(["t1"]);
 			const screenshot = await runtime.screenshot("native-fixture", provider);
 			expect(screenshot).toMatchObject({ width: 1, height: 1 });
+			const baseline = await runtime.runAction("native-fixture", "snapshot", { delta: true, full: true }, provider);
+			expect(baseline.snapshot).toMatchObject({ kind: "full", revision: expect.any(Number), tree: expect.any(String) });
+			const baselineRevision = (baseline.snapshot as { revision: number }).revision;
+			const next = (await runtime.runAction("native-fixture", "snapshot", { delta: true }, provider)).snapshot as {
+				kind: string;
+				revision: number;
+				baseRevision?: number;
+			};
+			expect(["full", "unchanged", "delta"]).toContain(next.kind);
+			expect(next.revision).toBeGreaterThan(baselineRevision);
+			if (next.kind !== "full") expect(next.baseRevision).toBe(baselineRevision);
 		} finally {
 			await runtime.dispose();
 		}

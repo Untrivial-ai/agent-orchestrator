@@ -100,9 +100,11 @@ describe("workerActionGlyph", () => {
 
 	// The swipe rail already offers pin and unpin with a pushpin; a menu that drew
 	// the same action differently would read as a different action.
-	it("pins with the same pushpin family the swipe rail uses", () => {
-		expect(workerActionGlyph("pin")).toEqual({ family: "material", name: "pin" });
-		expect(workerActionGlyph("unpin")).toEqual({ family: "material", name: "pin-outline" });
+	// The renderer pins with Lucide's Pin/PinOff, so the rail does too — the same
+	// pushpin the desktop shows, not a filled Material one.
+	it("pins with the same pushpin the desktop uses", () => {
+		expect(workerActionGlyph("pin")).toEqual({ family: "feather", name: "pin" });
+		expect(workerActionGlyph("unpin")).toEqual({ family: "feather", name: "pin-off" });
 	});
 
 	// Destructive and recovery actions are the ones you must not confuse.

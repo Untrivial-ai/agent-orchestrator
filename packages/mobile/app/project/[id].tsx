@@ -12,6 +12,7 @@ import { useTheme, useThemedStyles } from "../../lib/ThemeProvider";
 import { useOrchestratorLauncher } from "../../lib/useOrchestratorLauncher";
 import { Button, EmptyState, HeaderIconButton, ListSectionHeader, ScreenHeader } from "../../lib/ui";
 import { WorkerBoardList } from "../../lib/worker-board-list";
+import { backOr } from "../../lib/backNavigation";
 
 export { RouteErrorBoundary as ErrorBoundary } from "../../lib/RouteErrorBoundary";
 
@@ -66,7 +67,7 @@ export default function ProjectScreen() {
 						label="Back"
 						// A deep link can open this page as the only screen in the stack, with
 						// nothing beneath it to go back to. Land on Projects instead.
-						onPress={() => (router.canGoBack() ? router.back() : router.replace("/projects"))}
+						onPress={() => backOr(router, "/projects")}
 					/>
 				}
 			/>
@@ -75,7 +76,7 @@ export default function ProjectScreen() {
 			{!row ? (
 				loading ? (
 					<View style={styles.center}>
-						<ActivityIndicator color={t.blue} />
+						<ActivityIndicator color={t.accent} />
 					</View>
 				) : (
 					<EmptyState icon="folder" title="Project not found" message="It may have been removed from AO." />

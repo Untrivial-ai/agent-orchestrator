@@ -1,7 +1,9 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LoaderCircle, Repeat2, TriangleAlert, X } from "lucide-react";
 import { type FormEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import type { components } from "../../api/schema";
+import { agentModelsQueryOptions } from "../hooks/useAgentModelsQuery";
 import {
 	agentSwitchesQueryKey,
 	agentSwitchNeedsRecovery,
@@ -19,6 +21,8 @@ import {
 	useSwitchAgentState,
 } from "../hooks/useSwitchAgent";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { isConcreteModelID } from "../lib/agent-model-choices";
 import { AGENT_LABELS, AGENT_OPTIONS, agentLabel } from "../lib/agent-options";
 import type { AgentSwitchSummary, WorkspaceSession } from "../types/workspace";
 import { AgentAvatar } from "./AgentAvatar";
@@ -38,12 +42,19 @@ import { onMenuTeardownComplete } from "./ui/menu-focus";
 export const SWITCH_AGENT_OPTIONS = [
 	{ value: "claude-code", label: "Claude Code" },
 	{ value: "codex", label: "Codex" },
+	{ value: "fx", label: "fx" },
 ] as const satisfies ReadonlyArray<{ value: SwitchAgentHarness; label: string }>;
 
 const ALL_SWITCH_AGENT_OPTIONS = AGENT_OPTIONS.map((value) => ({ value, label: AGENT_LABELS[value] }));
 
-export function canSwitchAgentHarness(value: string): value is SwitchAgentHarness {
-	return SWITCH_AGENT_OPTIONS.some((option) => option.value === value);
+export function canSwitchAgentHarness(
+	value: string,
+	mode?: WorkspaceSession["mode"],
+): value is SwitchAgentHarness {
+	return (
+		SWITCH_AGENT_OPTIONS.some((option) => option.value === value) &&
+		(mode !== "chat" || value !== "fx")
+	);
 }
 
 // SwitchAgentDialog is opened from a DropdownMenuItem ("Switch agent" in the
@@ -122,18 +133,20 @@ function useSuppressOpeningRace(open: boolean) {
 function SwitchTargetPicker({
 	currentHarness,
 	disabled,
+	mode,
 	onChange,
 	value,
 }: {
 	currentHarness: string;
 	disabled: boolean;
+	mode?: WorkspaceSession["mode"];
 	onChange: (value: SwitchAgentHarness) => void;
 	value: SwitchAgentHarness;
 }) {
 	const { t } = useTranslation();
 	const options = ALL_SWITCH_AGENT_OPTIONS.map((option) => ({
 		...option,
-		disabled: !canSwitchAgentHarness(option.value) || option.value === currentHarness,
+		disabled: !canSwitchAgentHarness(option.value, mode) || option.value === currentHarness,
 	}));
 	const selected = options.find((option) => option.value === value);
 	return (
@@ -144,11 +157,11 @@ function SwitchTargetPicker({
 			menuClassName="settings-agent-menu-surface"
 			menuItemClassName="settings-agent-menu-item"
 			onChange={(nextValue) => {
-				if (canSwitchAgentHarness(nextValue) && nextValue !== currentHarness) onChange(nextValue);
+				if (canSwitchAgentHarness(nextValue, mode) && nextValue !== currentHarness) onChange(nextValue);
 			}}
 			options={options}
 			renderMenuItem={(option) => {
-				const supported = canSwitchAgentHarness(option.value);
+				const supported = canSwitchAgentHarness(option.value, mode);
 				const current = option.value === currentHarness;
 				return (
 					<span className="flex w-full min-w-0 items-center gap-2">
@@ -197,6 +210,33 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 	const [targetHarness, setTargetHarness] = useState<SwitchAgentHarness>(defaultTargetHarness);
 	const [model, setModel] = useState("");
 	const [mode, setMode] = useState("");
+	const [modelTouched, setModelTouched] = useState(false);
+	const projectQuery = useQuery({
+		queryKey: ["project", session.workspaceId],
+		enabled: open,
+		staleTime: 30_000,
+		queryFn: async () => {
+			const { data, error } = await apiClient.GET("/api/v1/projects/{id}", {
+				params: { path: { id: session.workspaceId } },
+			});
+			if (error) throw new Error(apiErrorMessage(error));
+			if (data?.status !== "ok" || !data.project) throw new Error(t("newTask.configUnavailable"));
+			return data.project as components["schemas"]["Project"];
+		},
+	});
+	const modelCatalog = useQuery(agentModelsQueryOptions(targetHarness, session.workspaceId)).data;
+	const projectKnown = Boolean(projectQuery.data);
+	const role = session.kind === "orchestrator" ? projectQuery.data?.config?.orchestrator : projectQuery.data?.config?.worker;
+	const roleMatches = !role?.agent || role.agent === targetHarness;
+	const projectModel = projectKnown ? (roleMatches ? role?.agentConfig?.model : "") || projectQuery.data?.config?.agentConfig?.model || "" : "";
+	// Agent switching passes Model to ChatStart; it does not pass the project's Mode.
+	const inheritedChoice = isConcreteModelID(projectModel) ? projectModel : "";
+	const catalogDefault = modelCatalog?.models?.find((item) => item.isDefault && isConcreteModelID(item.id))?.id || "";
+	const visibleChoice = modelTouched ? model || mode || catalogDefault || inheritedChoice : inheritedChoice;
+	const requestedModel = !projectKnown
+		? model || mode
+		: modelTouched && visibleChoice && visibleChoice !== inheritedChoice &&
+			(visibleChoice !== catalogDefault || Boolean(inheritedChoice)) ? visibleChoice : "";
 	const [modelWarning, setModelWarning] = useState<string | undefined>();
 	const switchAgent = useSwitchAgent();
 	const recoverAgentSwitch = useRecoverAgentSwitch();
@@ -240,6 +280,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 		setTargetHarness(session.provider === "claude-code" ? "codex" : "claude-code");
 		setModel("");
 		setMode("");
+		setModelTouched(false);
 		setModelWarning(undefined);
 	}, [session.provider]);
 	useEffect(() => {
@@ -255,6 +296,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 		setTargetHarness(nextTarget);
 		setModel("");
 		setMode("");
+		setModelTouched(false);
 		setModelWarning(undefined);
 	};
 
@@ -265,7 +307,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 			{
 				session,
 				targetHarness,
-				model: model.trim() || mode.trim(),
+				model: requestedModel.trim(),
 				idempotencyKey: createSwitchAgentIdempotencyKey(),
 			},
 			{ onSuccess: () => onOpenChange(false) },
@@ -380,14 +422,19 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 						</div>
 					) : (
 						<form className="flex flex-col gap-3 px-4 pb-4 pt-4" onSubmit={submit}>
-						{error || modelWarning ? (
+						{error || projectQuery.error || modelWarning ? (
 							<div>
 								{error ? (
 									<p className="text-caption leading-4 text-error" role="alert">
 										{error}
 									</p>
 								) : null}
-								{!error && modelWarning ? (
+								{!error && projectQuery.error ? (
+									<p className="text-caption leading-4 text-error" role="alert">
+										{projectQuery.error instanceof Error ? projectQuery.error.message : t("newTask.configUnavailable")}
+									</p>
+								) : null}
+								{!error && !projectQuery.error && modelWarning ? (
 									<p className="text-caption text-warning">{modelWarning}</p>
 								) : null}
 							</div>
@@ -399,6 +446,7 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 									<SwitchTargetPicker
 										currentHarness={session.provider}
 										disabled={admissionPending}
+										mode={session.mode}
 										onChange={changeTarget}
 										value={targetHarness}
 									/>
@@ -408,20 +456,22 @@ export function SwitchAgentDialog({ agentSwitch, container, open, session, onOpe
 										agentId={targetHarness}
 										agentLabel={agentLabel(targetHarness)}
 										disabled={admissionPending}
-										mode={mode}
+										mode={modelCatalog?.selectionMode === "mode" ? visibleChoice : ""}
 										onModeChange={(value) => {
 											clearFailedAttempt();
 											setMode(value);
 											setModel("");
+											setModelTouched(true);
 										}}
 										onModelChange={(value) => {
 											clearFailedAttempt();
 											setModel(value);
 											setMode("");
+											setModelTouched(true);
 										}}
 										onWarningChange={setModelWarning}
 										projectId={session.workspaceId}
-										value={model}
+										value={modelCatalog?.selectionMode === "mode" ? "" : visibleChoice}
 									/>
 								</div>
 							</div>

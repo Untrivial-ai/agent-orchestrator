@@ -8,21 +8,22 @@ import {
 	font,
 	foregroundStyle,
 	frame,
-	glassEffect,
 	multilineTextAlignment,
 	padding,
 	textFieldStyle,
 	tint,
 } from "@expo/ui/swift-ui/modifiers";
 import { useEffect } from "react";
+import { glassPanel } from "../glass";
 import { haptics } from "../haptics";
 import { useTheme, useThemeState } from "../ThemeProvider";
 import type { ElicitationActionProps, ElicitationChoiceListProps, ElicitationTextFieldProps } from "./elicitation-native-controls";
+import { iconSize, type } from "../tokens";
 
 export function ElicitationChoiceList({ choices, selected, multi, onChange }: ElicitationChoiceListProps) {
 	const t = useTheme();
 	const { scheme } = useThemeState();
-	return <Host matchContents={{ vertical: true }} style={{ width: "100%" }} colorScheme={scheme} seedColor={t.blue}>
+	return <Host matchContents={{ vertical: true }} style={{ width: "100%" }} colorScheme={scheme} seedColor={t.accent}>
 		<VStack alignment="leading" spacing={0} modifiers={[frame({ maxWidth: 1000, alignment: "leading" })]}>
 			{choices.map((choice, index) => {
 				const checked = selected(choice.value);
@@ -32,9 +33,9 @@ export function ElicitationChoiceList({ choices, selected, multi, onChange }: El
 						modifiers={[buttonStyle("plain"), frame({ maxWidth: 1000, minHeight: 56, alignment: "leading" })]}
 					>
 						<HStack alignment="top" spacing={10} modifiers={[frame({ maxWidth: 1000, alignment: "leading" }), padding({ vertical: 8, trailing: 4 })]}>
-							<Image systemName={checked ? (multi ? "checkmark.circle.fill" : "largecircle.fill.circle") : "circle"} size={18} color={checked ? t.blue : t.textTertiary} modifiers={[padding({ top: 1 })]} />
+							<Image systemName={checked ? (multi ? "checkmark.circle.fill" : "largecircle.fill.circle") : "circle"} size={iconSize.md} color={checked ? t.accent : t.textTertiary} modifiers={[padding({ top: 1 })]} />
 							<VStack alignment="leading" spacing={2} modifiers={[frame({ maxWidth: 1000, alignment: "leading" })]}>
-								<Text modifiers={[font({ size: 14, weight: "semibold" }), foregroundStyle(checked ? t.blue : t.textPrimary), multilineTextAlignment("leading"), fixedSize({ horizontal: false, vertical: true })]}>{choice.label}</Text>
+								<Text modifiers={[font({ size: 14, weight: "semibold" }), foregroundStyle(checked ? t.accent : t.textPrimary), multilineTextAlignment("leading"), fixedSize({ horizontal: false, vertical: true })]}>{choice.label}</Text>
 								{choice.description ? <Text modifiers={[font({ size: 12, weight: "regular" }), foregroundStyle({ type: "hierarchical", style: "secondary" }), multilineTextAlignment("leading"), fixedSize({ horizontal: false, vertical: true })]}>{choice.description}</Text> : null}
 							</VStack>
 							<Spacer minLength={0} />
@@ -55,7 +56,7 @@ export function ElicitationTextField({ value, label, numeric, maxLength, onChang
 		const next = value === undefined ? "" : String(value);
 		if (text.get() !== next) text.set(next);
 	}, [text, value]);
-	return <Host style={{ width: "100%", height: 46 }} colorScheme={scheme} seedColor={t.blue}>
+	return <Host style={{ width: "100%", height: 46 }} colorScheme={scheme} seedColor={t.accent}>
 		<TextField
 			text={text}
 			placeholder={label}
@@ -65,7 +66,7 @@ export function ElicitationTextField({ value, label, numeric, maxLength, onChang
 				textFieldStyle("plain"),
 				frame({ maxWidth: 1000, height: 44, alignment: "leading" }),
 				padding({ horizontal: 14 }),
-				glassEffect({ glass: { variant: "regular", interactive: true }, shape: "roundedRectangle", cornerRadius: 16 }),
+				glassPanel(),
 				font({ size: 16 }),
 			]}
 		/>
@@ -76,7 +77,7 @@ export function ElicitationAction({ label, primary, disabled, width, onPress }: 
 	const t = useTheme();
 	const { scheme } = useThemeState();
 	const resolvedWidth = width ?? (primary ? 76 : 58);
-	return <Host style={{ width: resolvedWidth, height: 36 }} colorScheme={scheme} seedColor={t.blue}>
+	return <Host style={{ width: resolvedWidth, height: 36 }} colorScheme={scheme} seedColor={t.accent}>
 		<Button
 			label={label}
 			onPress={() => { haptics.tap(); onPress(); }}
@@ -84,7 +85,7 @@ export function ElicitationAction({ label, primary, disabled, width, onPress }: 
 				buttonStyle(primary ? "borderedProminent" : "plain"),
 				controlSize("regular"),
 				frame({ width: resolvedWidth, height: 36 }),
-				tint(primary ? t.blue : t.textSecondary),
+				tint(primary ? t.accent : t.textSecondary),
 				disabledModifier(disabled),
 			]}
 		/>

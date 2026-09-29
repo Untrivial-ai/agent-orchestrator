@@ -233,6 +233,20 @@ func TestTerminalRelayWritesLiveOutputBeforeDurableWake(t *testing.T) {
 	if message.Type != "output" || message.Sequence != 1 {
 		t.Fatalf("got %+v, want live output sequence 1", message)
 	}
+	registry.relayNotification("term", terminalRelayNotification{
+		eventID: "evt-1", typeName: "needs_input", occurredAt: time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
+		payload: json.RawMessage(`{"message":"choose a direction"}`),
+	})
+	_, payload, err = connection.Read(ctx)
+	if err != nil {
+		t.Fatalf("read live notification hint: %v", err)
+	}
+	if err := json.Unmarshal(payload, &message); err != nil {
+		t.Fatalf("decode notification hint: %v", err)
+	}
+	if message.Type != "notification_hint" || message.EventID != "evt-1" || message.EventType != "needs_input" {
+		t.Fatalf("got %+v, want notification hint", message)
+	}
 	cancelRelay()
 	_ = connection.CloseNow()
 	select {

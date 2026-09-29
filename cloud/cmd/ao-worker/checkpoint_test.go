@@ -67,10 +67,6 @@ func TestCheckpointBridgeRunsOnPoke(t *testing.T) {
 // The coarse periodic safety net captures in-progress work even when no Stop
 // hook has fired (a long turn, or a delete/restore mid-first-turn).
 func TestCheckpointBridgeSafetyNetFires(t *testing.T) {
-	prev := checkpointSafetyNetInterval
-	checkpointSafetyNetInterval = 20 * time.Millisecond
-	t.Cleanup(func() { checkpointSafetyNetInterval = prev })
-
 	// A short temp dir: this test's long name makes t.TempDir() overflow the
 	// ~104-char unix-socket path limit, so the bind would fail spuriously.
 	dir, err := os.MkdirTemp("", "ao")
@@ -84,7 +80,7 @@ func TestCheckpointBridgeSafetyNetFires(t *testing.T) {
 
 	ran := make(chan struct{}, 8)
 	go func() {
-		_ = runCheckpointBridge(ctx, socket, func(context.Context) { ran <- struct{}{} }, discardLogger())
+		_ = runCheckpointBridgeWithInterval(ctx, socket, func(context.Context) { ran <- struct{}{} }, discardLogger(), 20*time.Millisecond)
 	}()
 
 	// No HTTP poke: the checkpoint must run from the periodic safety net alone.

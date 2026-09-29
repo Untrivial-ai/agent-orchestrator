@@ -10,14 +10,15 @@ describe("notificationVisual", () => {
 		expect(new Set(labels).size).toBe(4);
 	});
 
-	// The renderer draws these with GitHub's own vocabulary, and this theme's
-	// palette reserves purple for a merged PR: "terminal, not actionable". Merged
-	// was rendering as a blue tick, which reads as an action still open.
+	// The renderer draws these with GitHub's own vocabulary, and merged has its own
+	// hue rather than an action colour: it is settled, not still open — and it is
+	// no longer the grey it shared with a session that had merely switched off.
 	it("marks a merged PR the way the palette and the renderer both say", () => {
 		const merged = notificationVisual(darkTheme, "pr_merged");
 		expect(merged.icon).toBe("git-merge");
 		expect(merged.color).toBe(darkTheme.purple);
-		expect(merged.color).not.toBe(darkTheme.blue);
+		expect(merged.color).not.toBe(darkTheme.textSecondary);
+		expect(merged.color).not.toBe(darkTheme.accent);
 	});
 
 	it("uses pull-request glyphs for pull-request outcomes", () => {

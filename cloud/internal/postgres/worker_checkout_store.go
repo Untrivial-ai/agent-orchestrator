@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -69,6 +70,49 @@ func (s *Store) WorkerGitHubCheckoutContext(
 		return domain.GitHubCheckoutContext{}, err
 	}
 	return authorization, nil
+}
+
+// WorkerSessionExtraRepos returns the additional repositories a session's
+// project declares (the coder dev-kit "extraRepos"), if any. It is a
+// best-effort read used only to broaden a checkout token's repository scope, so
+// callers must tolerate an empty result and must never fail the primary checkout
+// on its account. Repository and installation authority still come exclusively
+// from WorkerGitHubCheckoutContext — this only tells the caller which additional
+// repositories the project asked to have cloned alongside the primary one.
+func (s *Store) WorkerSessionExtraRepos(
+	ctx context.Context,
+	orgID, sessionID string,
+) ([]domain.RepoRef, error) {
+	var config json.RawMessage
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx,
+			`SELECT project.config
+			FROM ao_sessions session
+			JOIN ao_projects project
+			  ON project.org_id = session.org_id AND project.id = session.project_id
+			WHERE session.org_id = $1 AND session.id = $2
+			  AND session.is_terminated = false`,
+			orgID, sessionID,
+		).Scan(&config)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("load session extra repositories: %w", err)
+		}
+		return nil
+	})
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	coder, ok := domain.DecodeProjectCoderConfig(config)
+	if !ok {
+		return nil, nil
+	}
+	return coder.ExtraRepos, nil
 }
 
 // WorkerGitHubPAT resolves the session creator's explicitly configured GitHub

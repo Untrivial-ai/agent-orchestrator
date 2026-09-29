@@ -30,13 +30,14 @@ import {
 import { isConfigured, loadConfig, machineIdentity, type ServerConfig } from "./config";
 import { resolveActiveConfig, runtimeResolveDeps } from "./resolveConfig";
 import { pollIntervalFor } from "./pollInterval";
+import type { ConnectOptions } from "./connectRuntime";
 import type { Endpoint } from "./endpoints";
 import { activeHost, loadHosts } from "./hosts";
 import { shouldReRace } from "./reRace";
 import { shouldRaceForUpgrade, UPGRADE_RACE_CHECK_MS } from "./upgradeRace";
 import { pollResultIsCurrent, sameServerConfig } from "./sameConfig";
 import { shouldShowLoading } from "./configLoading";
-import { shouldKeepPolling } from "./connectionError";
+import { isDesktopUnreachable, shouldKeepPolling, userFacingError } from "./connectionError";
 import { primeInstallId } from "./installId";
 import { collectPRs } from "./prView";
 import { ALL_PROJECTS, NO_PROJECTS_KNOWN, projectsForMachine, resolveActiveProject, retainProjects, type KnownProjects } from "./projectFilter";
@@ -66,6 +67,9 @@ export type SpawnOptions = {
 type AppState = {
 	config: ServerConfig | null;
 	configured: boolean;
+	/** Whether the first config resolution has finished. Until it has, an
+	 *  unconfigured store means "still finding the machine", not "unpaired". */
+	configResolved: boolean;
 	/** Every way the active machine says it can be reached, for telling a
 	 *  rotated tunnel hostname apart from being simply out of range. */
 	activeEndpoints: Endpoint[];
@@ -85,6 +89,11 @@ type AppState = {
 	// HTTP status behind `error`, or null when the server was never reached.
 	errorStatus: number | null;
 	/**
+	 * The last poll failed because nothing answered, so a reconnect can clear it.
+	 * False for rejections (401/403/429), which stop the poll, and for 5xx.
+	 */
+	unreachable: boolean;
+	/**
 	 * When the last successful poll landed, in epoch milliseconds. 0 if none has.
 	 *
 	 * Deliberately a getter rather than a value: a timestamp that changed on every
@@ -93,7 +102,11 @@ type AppState = {
 	 */
 	getLastSyncAt: () => number;
 	// actions
-	reloadConfig: () => Promise<void>;
+	/**
+	 * Races the active machine again and resolves to the config it settled on.
+	 * Rejects only if local storage cannot be read.
+	 */
+	reloadConfig: (options?: ConnectOptions) => Promise<ServerConfig>;
 	refresh: () => Promise<void>;
 	setActiveProject: (id: string) => void;
 	spawn: (opts: SpawnOptions) => Promise<DashboardSession>;
@@ -224,16 +237,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 	// Set when the app returns to the foreground, consumed by the upgrade check.
 	const resumedRef = useRef(false);
 
-	const reloadConfig = useCallback(async () => {
+	const reloadConfig = useCallback(async (options?: ConnectOptions): Promise<ServerConfig> => {
 		// Races the active machine's endpoints rather than reading one stored
 		// address, so the app lands on LAN at home and the tunnel from anywhere
-		// else without the user choosing. Always resolves to something: every
-		// failure path inside falls back to the last stored config.
+		// else without the user choosing. An unreachable machine falls back to
+		// the last stored config; only a failed storage read rejects.
 		// Marked resolved whatever happens below. An unhandled failure here would
 		// otherwise leave the loader up forever, which is a worse failure than
 		// the blank screen this flag exists to prevent.
 		try {
-			const c = (await resolveActiveConfig(runtimeResolveDeps())) ?? (await loadConfig());
+			const c = (await resolveActiveConfig(runtimeResolveDeps(options))) ?? (await loadConfig());
 		// Keep the previous object when the endpoint has not actually changed.
 		// Resolution builds a fresh one every time, and the live conversation
 		// stream, the poll loop and the terminal mux all key on this value's
@@ -252,6 +265,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			// tunnel that no longer answers is a rotated hostname, not a machine
 			// that is merely out of range.
 			setActiveEndpoints((await activeHost())?.endpoints ?? []);
+			return next;
 		} finally {
 			setConfigResolved(true);
 		}
@@ -363,7 +377,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		} catch (e) {
 			if (!pollResultIsCurrent(c, cfgRef.current)) return false;
 			lastTickOkRef.current = false;
-			const msg = e instanceof Error ? e.message : "Failed to load";
+			const msg = userFacingError(e, "Failed to load");
 			setError(msg);
 			// Keep the HTTP status alongside the raw message so screens can render
 			// human copy via describeConnectionFailure instead of surfacing strings
@@ -578,6 +592,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		() => ({
 			config,
 			configured: !!config && isConfigured(config),
+			configResolved,
 			activeEndpoints,
 			projects,
 			projectsKnown,
@@ -591,6 +606,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 			loading,
 			error,
 			errorStatus,
+			unreachable: isDesktopUnreachable({ connection, error, errorStatus }),
 			getLastSyncAt,
 			reloadConfig,
 			refresh,
@@ -607,6 +623,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 		}),
 		[
 			config,
+			configResolved,
 			projects,
 			projectsKnown,
 			sessions,

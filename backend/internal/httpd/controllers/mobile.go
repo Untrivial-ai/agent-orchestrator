@@ -21,6 +21,7 @@ type mobileBridge interface {
 	Regenerate() (MobileStatusResponse, error)
 	StartRemoteAccess() (MobileStatusResponse, error)
 	SetSecurePairing(on bool) (MobileStatusResponse, error)
+	SetKeepAwake(on bool) (MobileStatusResponse, error)
 }
 
 // MobileController exposes the Connect Mobile bridge control endpoints
@@ -97,6 +98,21 @@ func (c *MobileController) SecurePairing(w http.ResponseWriter, r *http.Request)
 	envelope.WriteJSON(w, http.StatusOK, withWarning(res))
 }
 
+// KeepAwake turns the keep-this-Mac-awake option on or off.
+func (c *MobileController) KeepAwake(w http.ResponseWriter, r *http.Request) {
+	var body SetKeepAwakeRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "invalid_request", "MOBILE_KEEP_AWAKE", "invalid body", nil)
+		return
+	}
+	res, err := c.Bridge.SetKeepAwake(body.Enabled)
+	if err != nil {
+		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "MOBILE_KEEP_AWAKE", err.Error(), nil)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, withWarning(res))
+}
+
 // LANController is the runtime hook set the concrete bridge needs. httpd's
 // LANManager + authState satisfy it (adapter wired in daemon.go).
 type LANController interface {
@@ -118,6 +134,15 @@ type TunnelController interface {
 	// settling, or down.
 	Endpoint() *mobilebridge.TunnelEndpoint
 	Status() mobilebridge.TunnelStatus
+}
+
+// KeepAwakeController holds the machine awake while the bridge is on. Start and
+// Stop are idempotent.
+type KeepAwakeController interface {
+	Start() error
+	Stop()
+	Active() bool
+	HasBattery() bool
 }
 
 // BridgeService is the production mobileBridge. It persists state and drives
@@ -159,6 +184,11 @@ type BridgeService struct {
 	// at boot, so a cloudflared installed from Connect Mobile stayed invisible
 	// until AO was restarted. Nil in tests that set Tunnel directly.
 	ResolveTunnel func() TunnelController
+
+	// KeepAwake holds the machine awake while the bridge is on and the user has
+	// opted in. Nil where the platform has no way to do it (everything but
+	// macOS), which Status reports as unsupported.
+	KeepAwake KeepAwakeController
 
 	// transitionMu serializes every operation that changes persisted bridge
 	// state, listener state, or connector state. Status deliberately does not
@@ -227,6 +257,7 @@ func (b *BridgeService) Status() MobileStatusResponse {
 		res.Password = st.Password
 	}
 	res.SecurePairing = b.securePairingStatus(st.SecurePairing, enabled)
+	res.KeepAwake = b.keepAwakeStatus(st.KeepAwake)
 	return res
 }
 
@@ -371,6 +402,51 @@ func (b *BridgeService) securePairingStatus(on, bridgeUp bool) SecurePairingStat
 	return sp
 }
 
+func (b *BridgeService) keepAwakeStatus(on bool) KeepAwakeStatus {
+	if b.KeepAwake == nil {
+		return KeepAwakeStatus{}
+	}
+	return KeepAwakeStatus{
+		Supported:  true,
+		Enabled:    on,
+		Active:     b.KeepAwake.Active(),
+		HasBattery: b.KeepAwake.HasBattery(),
+	}
+}
+
+// applyKeepAwakeLocked holds the machine awake only while the user opted in
+// and the bridge is actually serving: there is no phone to stay reachable for
+// otherwise. The caller owns transitionMu.
+func (b *BridgeService) applyKeepAwakeLocked(on bool) error {
+	if b.KeepAwake == nil {
+		return nil
+	}
+	if on && b.LAN.Running() {
+		return b.KeepAwake.Start()
+	}
+	b.KeepAwake.Stop()
+	return nil
+}
+
+// SetKeepAwake persists the keep-awake choice and applies it immediately.
+func (b *BridgeService) SetKeepAwake(on bool) (MobileStatusResponse, error) {
+	b.transitionMu.Lock()
+	defer b.transitionMu.Unlock()
+
+	if b.KeepAwake == nil {
+		return MobileStatusResponse{}, errors.New("keeping this machine awake is only supported on macOS")
+	}
+	st, _ := mobilebridge.Load(b.ConfigPath)
+	st.KeepAwake = on
+	if err := mobilebridge.Save(b.ConfigPath, st); err != nil {
+		return MobileStatusResponse{}, err
+	}
+	if err := b.applyKeepAwakeLocked(on); err != nil {
+		return MobileStatusResponse{}, err
+	}
+	return b.Status(), nil
+}
+
 // SetSecurePairing turns TLS-over-Tailscale pairing on or off, persisting the
 // choice. Turning it on applies the proxy immediately when the bridge is
 // already running; turning it off always tears the proxy down.
@@ -415,9 +491,9 @@ func (b *BridgeService) enableWithPasswordLocked(pw string) (MobileStatusRespons
 		b.LAN.SetPasswordHash(prevHash) // Start failed: undo the hash swap.
 		return MobileStatusResponse{}, err
 	}
-	// Preserve the persisted SecurePairing flag — this Save is not the place a
-	// user's secure-pairing choice changes, only where enabled/password/port do.
-	if err := mobilebridge.Save(b.ConfigPath, mobilebridge.State{Enabled: true, Password: pw, LastPort: port, SecurePairing: prevSt.SecurePairing}); err != nil {
+	// Preserve the persisted SecurePairing and KeepAwake flags — this Save is not
+	// the place those choices change, only where enabled/password/port do.
+	if err := mobilebridge.Save(b.ConfigPath, mobilebridge.State{Enabled: true, Password: pw, LastPort: port, SecurePairing: prevSt.SecurePairing, KeepAwake: prevSt.KeepAwake}); err != nil {
 		// Persist failed after the listener came up. Roll back so reality matches
 		// the unchanged persisted state (and the UI's "enable failed"). A rotate on
 		// an already-running listener (wasRunning) keeps serving on the prior hash;
@@ -437,17 +513,20 @@ func (b *BridgeService) enableWithPasswordLocked(pw string) (MobileStatusRespons
 	// method (it has no password to rotate); see RestoreOnBoot, which mirrors
 	// this same post-Start apply. A failure is recorded, never fatal: the
 	// bridge stays up in plaintext mode and Status reports serve_failed.
-	b.startConnectorsLocked(port, prevSt.SecurePairing)
+	b.startConnectorsLocked(port, prevSt)
 	return b.Status(), nil
 }
 
 // startConnectorsLocked is the shared post-Start step for fresh enables,
 // password rotations, and boot restoration. The caller owns transitionMu.
-func (b *BridgeService) startConnectorsLocked(port int, securePairing bool) {
+func (b *BridgeService) startConnectorsLocked(port int, st mobilebridge.State) {
 	b.setServeError(nil)
-	if securePairing {
+	if st.SecurePairing {
 		b.setServeError(b.applyServe(port))
 	}
+	// Best-effort like the proxy: a failed caffeinate leaves the bridge up and
+	// Status reports the assertion as inactive.
+	_ = b.applyKeepAwakeLocked(st.KeepAwake)
 	// Point the connector at the port Start actually bound, not DefaultPort:
 	// Start falls back to an ephemeral port when the default is taken, and a
 	// connector aimed at the wrong port tunnels nothing. Start is idempotent
@@ -481,7 +560,7 @@ func (b *BridgeService) RestoreOnBoot(state mobilebridge.State) error {
 		b.LAN.SetPasswordHash(prevHash)
 		return err
 	}
-	b.startConnectorsLocked(port, state.SecurePairing)
+	b.startConnectorsLocked(port, state)
 	return nil
 }
 
@@ -553,6 +632,11 @@ func (b *BridgeService) Disable() error {
 	if t := b.tunnel(); t != nil {
 		t.Stop()
 	}
+	// No phone to stay reachable for once the bridge is off. The preference
+	// itself is kept, so turning the bridge back on resumes it.
+	if b.KeepAwake != nil {
+		b.KeepAwake.Stop()
+	}
 	stopErr := b.LAN.Stop(ctx)
 	if stopErr != nil && b.LAN.Running() {
 		return stopErr
@@ -593,6 +677,18 @@ func (b *BridgeService) ShutdownTunnel() {
 		return // Remote access is optional; nothing to stop without cloudflared.
 	}
 	t.Stop()
+}
+
+// ShutdownKeepAwake releases the sleep assertion on the way out. caffeinate
+// also exits on its own when the daemon does (-w), so this only makes a clean
+// quit release it without waiting on that. The preference stays set.
+func (b *BridgeService) ShutdownKeepAwake() {
+	b.transitionMu.Lock()
+	defer b.transitionMu.Unlock()
+
+	if b.KeepAwake != nil {
+		b.KeepAwake.Stop()
+	}
 }
 
 // ShutdownServe removes the tailnet proxy this bridge installed, for use on

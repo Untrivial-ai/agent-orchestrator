@@ -417,6 +417,7 @@ func TestLinuxRuntimeDestroyReapsTermIgnoringProcessTreeEndToEnd(t *testing.T) {
 	}
 	if sess == nil {
 		t.Fatal("session not found in runtime")
+		return
 	}
 	hostPID := sess.pid
 

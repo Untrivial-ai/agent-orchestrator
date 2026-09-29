@@ -130,21 +130,21 @@ const MAX_HISTORY_SUGGESTIONS = 4;
 const MIN_DEVICE_FRAME_WIDTH = 240;
 const MAX_DEVICE_FRAME_WIDTH = 2560;
 
-const restrictBrowserTopTabDragToHorizontalAxis: Modifier = ({
+export const restrictBrowserTopTabDragToTabStrip: Modifier = ({
 	activeNodeRect,
+	containerNodeRect,
 	transform,
-	windowRect,
 }) => {
-	if (!activeNodeRect || !windowRect) return { ...transform, y: 0 };
-	const minX = windowRect.left - activeNodeRect.left;
-	const maxX = windowRect.right - activeNodeRect.right;
+	if (!activeNodeRect || !containerNodeRect) return { ...transform, y: 0 };
+	const minX = containerNodeRect.left - activeNodeRect.left;
+	const maxX = containerNodeRect.right - activeNodeRect.right;
 	return {
 		...transform,
 		x: Math.min(maxX, Math.max(minX, transform.x)),
 		y: 0,
 	};
 };
-const browserTopTabDragModifiers = [restrictBrowserTopTabDragToHorizontalAxis];
+const browserTopTabDragModifiers = [restrictBrowserTopTabDragToTabStrip];
 
 function clampDeviceFrameWidth(width: number): number | undefined {
 	if (!Number.isFinite(width)) return undefined;
@@ -243,7 +243,7 @@ export function useBrowserAnnotationQueue({
 				const message = formatBrowserAnnotationMessage(payload, { screenshotPaths });
 				const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/send", {
 					params: { path: { sessionId: sendSessionId } },
-					body: { message },
+					body: { message, userAuthored: true },
 				});
 				if (error) {
 					failureMessage = apiErrorMessage(error, appI18n.t("browser.unableSendAnnotation"));
@@ -596,14 +596,26 @@ export function BrowserPanelView({
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const browserDownloads = useBrowserDownloads();
 	const [downloadsOpen, setDownloadsOpen] = useState(false);
-	const previousDownloadCount = useRef(0);
+	const knownDownloadIds = useRef<Set<string> | null>(null);
+	const observedInitialDownloads = useRef(false);
 	const hasActiveDownload = browserDownloads.downloads.some(
 		(download) => download.status === "progressing" || download.status === "paused",
 	);
 	useEffect(() => {
-		if (browserDownloads.downloads.length > previousDownloadCount.current) setDownloadsOpen(true);
-		previousDownloadCount.current = browserDownloads.downloads.length;
-	}, [browserDownloads.downloads.length]);
+		if (!browserDownloads.initialized) return;
+		const nextIds = new Set(browserDownloads.downloads.map((download) => download.id));
+		if (!observedInitialDownloads.current) {
+			observedInitialDownloads.current = true;
+			knownDownloadIds.current = nextIds;
+			return;
+		}
+		const previousIds = knownDownloadIds.current;
+		const hasNewDownload = previousIds
+			? browserDownloads.downloads.some((download) => !previousIds.has(download.id))
+			: false;
+		if (active && hasNewDownload) setDownloadsOpen(true);
+		knownDownloadIds.current = nextIds;
+	}, [active, browserDownloads.downloads, browserDownloads.initialized]);
 
 	const takeScreenshot = useCallback(async () => {
 		if (!viewId || !window.ao?.browser) return;
@@ -1034,6 +1046,7 @@ export function BrowserPanelView({
 				</BrowserControlTooltip>
 		</div>
 	);
+	const annotationIdle = annotationState.count === 0 && !annotationState.hasDraft;
 	const annotationToolbar = (
 		<div className="browser-panel__toolbar browser-panel__toolbar--annotation">
 			<div className="browser-panel__annotation-actions browser-panel__annotation-actions--leading">
@@ -1042,6 +1055,7 @@ export function BrowserPanelView({
 						<Button
 							aria-label={t("browser.annotationDiscardAllComments")}
 							className="browser-panel__annotation-discard"
+							disabled={annotationIdle && annotationState.screenshotCount === 0}
 							onClick={() => void annotationAction("discard-all")}
 							size="icon-sm"
 							type="button"
@@ -1056,10 +1070,18 @@ export function BrowserPanelView({
 				</Tooltip>
 			</div>
 			<div className="browser-panel__annotation-context">
-				<span aria-hidden="true" className="browser-panel__annotation-status-dot" />
-				<span className="browser-panel__annotation-count">
-					{t("browser.annotationCount", { count: annotationState.count })}
-				</span>
+				{annotationIdle ? (
+					<span className="browser-panel__annotation-hint">{t("browser.annotationEmptyHint")}</span>
+				) : (
+					<>
+						{annotationState.count > 0 ? (
+							<span aria-hidden="true" className="browser-panel__annotation-status-dot" />
+						) : null}
+						<span className="browser-panel__annotation-count">
+							{t("browser.annotationCount", { count: annotationState.count })}
+						</span>
+					</>
+				)}
 			</div>
 			<div className="browser-panel__annotation-actions browser-panel__annotation-actions--trailing">
 				<Tooltip>
@@ -1085,6 +1107,7 @@ export function BrowserPanelView({
 					<TooltipTrigger asChild>
 						<Button
 							aria-label={t("browser.annotationOriginalPage")}
+							disabled={annotationIdle}
 							onBlur={() => void annotationAction("restore-preview")}
 							onPointerCancel={() => void annotationAction("restore-preview")}
 							onPointerDown={() => void annotationAction("preview-original")}
@@ -1105,11 +1128,11 @@ export function BrowserPanelView({
 				<Button
 					aria-label={t("browser.annotationSendAll")}
 					className="browser-panel__annotation-send"
-					disabled={annotationState.count === 0 && !annotationState.hasDraft}
+					disabled={annotationIdle}
 					onClick={() => void annotationAction("submit")}
 					size="sm"
 					type="button"
-					variant="primary"
+					variant={annotationIdle ? "ghost" : "primary"}
 				>
 					{t("browser.annotationSend")}
 					{annotationState.count > 0 ? (
@@ -1299,6 +1322,19 @@ export function BrowserPanelView({
 							/>
 						</DropdownMenuContent>
 					</DropdownMenu>
+				) : null}
+				{poppedOut ? (
+					<BrowserControlTooltip label={t("browser.returnToPanel")}>
+						<Button
+							aria-label={t("browser.returnToPanel")}
+							onClick={() => onTogglePopOut(false)}
+							size="icon-sm"
+							type="button"
+							variant="ghost"
+						>
+							<Minimize2 aria-hidden="true" className="size-icon-base" />
+						</Button>
+					</BrowserControlTooltip>
 				) : null}
 				<DropdownMenu
 					onOpenChange={(open) => {

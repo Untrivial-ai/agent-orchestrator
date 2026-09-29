@@ -97,6 +97,16 @@ export async function probeIdentity(cfg: {
 }
 
 /**
+ * How long the post-race endpoint refresh may take.
+ *
+ * The refresh runs inside the launch resolution, so without a bound a slow
+ * network held the app in "connecting" for as long as the OS let a request
+ * hang — after the race had already found a working endpoint. A refresh that
+ * does not land in time is simply skipped; the stored endpoints still work.
+ */
+export const ENDPOINT_REFRESH_TIMEOUT_MS = 5_000;
+
+/**
  * Re-reads what the daemon advertises now.
  *
  * Deliberately GET /api/v1/endpoints and not /api/v1/mobile/status: the mobile
@@ -104,24 +114,45 @@ export async function probeIdentity(cfg: {
  * phone can reach.
  */
 async function fetchAdvertisedEndpoints(base: string, token: string): Promise<Endpoint[]> {
-	const res = await fetch(`${base}/api/v1/endpoints`, {
-		headers: token ? { Authorization: `Bearer ${token}` } : {},
-	});
-	if (!res.ok) throw new Error(`endpoint refresh returned ${res.status}`);
-	const body = (await res.json()) as { endpoints?: Endpoint[] };
-	return body.endpoints ?? [];
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), ENDPOINT_REFRESH_TIMEOUT_MS);
+	try {
+		const res = await fetch(`${base}/api/v1/endpoints`, {
+			headers: token ? { Authorization: `Bearer ${token}` } : {},
+			signal: controller.signal,
+		});
+		if (!res.ok) throw new Error(`endpoint refresh returned ${res.status}`);
+		const body = (await res.json()) as { endpoints?: Endpoint[] };
+		return body.endpoints ?? [];
+	} finally {
+		clearTimeout(timeout);
+	}
 }
 
+export type ConnectOptions = {
+	/**
+	 * Whether to re-read the daemon's advertised endpoints after the race. On by
+	 * default. The refresh is authenticated, so a stale password spends a failed
+	 * attempt towards the daemon's lockout; a caller about to send its own
+	 * authenticated request (Settings' Test connection) turns it off so one tap
+	 * costs one attempt.
+	 */
+	refreshEndpoints?: boolean;
+};
+
 /** The production dependency set for connectHost. */
-export function runtimeConnectDeps(): ConnectDeps {
+export function runtimeConnectDeps(options: ConnectOptions = {}): ConnectDeps {
 	return {
 		findHost,
 		race: (host) => raceEndpoints(host.endpoints, host.id, probeEndpoint),
+		// Skipped as nothing advertised: merged, that leaves the stored list as is.
 		refreshEndpoints: (config) =>
-			fetchAdvertisedEndpoints(
-				`${config.secure ? "https" : "http"}://${config.host}:${config.httpPort}`,
-				config.password,
-			),
+			options.refreshEndpoints === false
+				? Promise.resolve([])
+				: fetchAdvertisedEndpoints(
+						`${config.secure ? "https" : "http"}://${config.host}:${config.httpPort}`,
+						config.password,
+					),
 		saveEndpoints: updateHostEndpoints,
 		adoptIdentity: adoptHostIdentity,
 		touch: touchHost,
@@ -129,6 +160,6 @@ export function runtimeConnectDeps(): ConnectDeps {
 }
 
 /** Connects to a paired machine using the real network and storage. */
-export function connectToHost(hostId: string): Promise<ConnectResult> {
-	return connectHost(hostId, runtimeConnectDeps());
+export function connectToHost(hostId: string, options?: ConnectOptions): Promise<ConnectResult> {
+	return connectHost(hostId, runtimeConnectDeps(options));
 }

@@ -215,7 +215,7 @@ export function interfaceSwitchAlert(
 				};
 			default:
 				return {
-					title: "Could not reach AO",
+					title: "Couldn't reach AO",
 					message: `This phone could not reach AO to check whether this session can switch to Chat. ${recheck.error}`,
 				};
 		}

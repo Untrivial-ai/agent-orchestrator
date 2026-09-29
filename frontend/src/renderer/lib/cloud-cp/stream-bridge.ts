@@ -10,13 +10,23 @@ import type { CloudCpProxyRequestInit, CloudCpStreamEvent } from "../../../main/
 import { aoBridge } from "../bridge";
 import { CloudCpAuthError, CloudCpError } from "./errors";
 import { createSseFrameParser } from "./sse";
-import type { CloudCpClientEvent } from "./types";
+import type { CloudCpClientEvent, CloudCpNotificationEvent } from "./types";
 
 /** The slice of the preload cloudCp bridge this adapter needs. */
 export interface CloudCpStreamBridge {
 	openStream(init: CloudCpProxyRequestInit): Promise<{ streamId: string }>;
 	closeStream(streamId: string): void;
 	onStreamEvent(streamId: string, listener: (event: CloudCpStreamEvent) => void): () => void;
+}
+
+export interface SubscribeNotificationEventsBridgedOptions {
+	baseUrl: string;
+	orgId: string;
+	after?: number;
+	onEvent: (event: CloudCpNotificationEvent) => void;
+	onError?: (error: CloudCpError) => void;
+	signal?: AbortSignal;
+	bridge?: CloudCpStreamBridge;
 }
 
 export interface SubscribeSessionEventsBridgedOptions {
@@ -154,5 +164,37 @@ export async function subscribeSessionEventsBridged(options: SubscribeSessionEve
 			// Raced with the subscription setup above.
 			if (isAborted(signal)) onAbort();
 		}
+	});
+}
+
+/** The org-level durable notification stream, kept on the Electron proxy so
+ * renderer code never sees the cloud bearer credential. */
+export async function subscribeNotificationEventsBridged(options: SubscribeNotificationEventsBridgedOptions): Promise<void> {
+	const { baseUrl, orgId, after, onEvent, onError, signal } = options;
+	const bridge = options.bridge ?? aoBridge.cloudCp;
+	if (isAborted(signal)) return;
+	const fail = (error: CloudCpError): void => { if (!isAborted(signal)) onError?.(error); };
+	const query = after === undefined ? "" : `?after=${encodeURIComponent(String(after))}`;
+	let streamId: string;
+	try {
+		({ streamId } = await bridge.openStream({ baseUrl: baseUrl.replace(/\/+$/, ""), path: `/api/cloud/v1/orgs/${encodeURIComponent(orgId)}/notification-events${query}`, method: "GET", headers: { Accept: "text/event-stream" } }));
+	} catch (error) { fail(errorFromOpenFailure(error)); return; }
+	if (isAborted(signal)) { bridge.closeStream(streamId); return; }
+	const parser = createSseFrameParser();
+	await new Promise<void>((resolve) => {
+		let settled = false;
+		let unsubscribe: () => void = () => undefined;
+		const finish = () => { if (settled) return; settled = true; unsubscribe(); signal?.removeEventListener("abort", abort); resolve(); };
+		const abort = () => { bridge.closeStream(streamId); finish(); };
+		function deliver(data: string): void {
+			try { onEvent(JSON.parse(data) as CloudCpNotificationEvent); } catch { fail(new CloudCpError("The notification stream sent a frame with malformed JSON.", { status: 200 })); }
+		}
+		unsubscribe = bridge.onStreamEvent(streamId, (event) => {
+			if (settled) return;
+			if (event.type === "chunk") { for (const frame of parser.push(event.data)) deliver(frame.data); return; }
+			if (event.type === "end") { for (const frame of parser.flush()) deliver(frame.data); finish(); return; }
+			fail(new CloudCpError(event.message, { status: 0 })); finish();
+		});
+		if (signal !== undefined) signal.addEventListener("abort", abort, { once: true });
 	});
 }

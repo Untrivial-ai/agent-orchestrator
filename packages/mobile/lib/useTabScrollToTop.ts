@@ -2,7 +2,7 @@ import { usePathname } from "expo-router";
 import { useScrollToTop } from "expo-router/react-navigation";
 import { type RefObject, useEffect, useRef } from "react";
 import { activeSidebarDestination, scrollSidebarRefToTop } from "./sidebar-navigation";
-import { useSidebarNavigation } from "./sidebar-navigation-shell";
+import { useSidebarNavigation } from "./sidebar-navigation-context";
 
 // The ref shape the hook accepts (ScrollView, FlatList, SectionList, ...).
 // It isn't exported, so derive it from the hook itself.

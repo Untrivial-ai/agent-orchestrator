@@ -41,10 +41,10 @@ export function notificationVisual(t: Theme, type: string): NotificationVisual {
 		case "ready_to_merge":
 			return { icon: "git-pull-request-arrow", color: t.green, label: "Ready to merge" };
 		case "pr_merged":
-			// Purple, as this theme's own palette says: "purple = merged (terminal,
-			// not actionable)". It was rendering blue with a generic tick, which
-			// read as an action still open and matched neither desktop nor the
-			// palette's own rule.
+			// Not an action colour: merged is settled and not actionable. It went from
+			// blue (an action still open) to the grey shared with "done" and "killed",
+			// which undersold the one thing that did happen. Purple is merged's own
+			// hue now, here and on the row and the card, so the word means one colour.
 			return { icon: "git-merge", color: t.purple, label: "Merged" };
 		case "pr_closed_unmerged":
 			return { icon: "git-pull-request-closed", color: t.red, label: "Closed" };

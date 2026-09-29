@@ -1,6 +1,6 @@
-import { Feather } from "@expo/vector-icons";
+import { Feather } from "./icons";
 import { useEffect, useState } from "react";
-import { Linking, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { Linking, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { ApiError, pingServer } from "./api";
 import { DEFAULT_CONFIG, loadConfig, saveConfig, type ServerConfig } from "./config";
 import { saveHost, setActiveHost } from "./hosts";
@@ -18,6 +18,7 @@ import { Button, SHEET_SCROLL_CONTENT, SheetHeader, SheetScreen } from "./ui";
 import { useTheme, useThemedStyles } from "./ThemeProvider";
 import { MOBILE_EVENTS } from "./telemetry/events";
 import { mobileTelemetry } from "./telemetry/runtime";
+import { iconSize, space, touchTarget, type } from "./tokens";
 
 // The typing fallback behind the QR scanner: Tailscale users and anyone whose
 // desktop isn't in front of them. Deliberately narrower than the Settings form —
@@ -31,6 +32,7 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 	const [cfg, setCfg] = useState<ServerConfig>(DEFAULT_CONFIG);
 	const [busy, setBusy] = useState(false);
 	const [failure, setFailure] = useState<ConnectionErrorCopy | null>(null);
+	const [showPassword, setShowPassword] = useState(false);
 
 	// Load whatever is already saved when the sheet opens, so a user who closes it
 	// to re-try the scanner doesn't lose what they typed. Mount is the open now
@@ -98,38 +100,57 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 				keyboardType="url"
 			/>
 			<Field label="API PORT" value={cfg.httpPort} onChangeText={set("httpPort")} keyboardType="number-pad" />
-			<Field
-				label="PASSWORD"
-				value={cfg.password}
-				onChangeText={set("password")}
-				placeholder="Connection password"
-				autoCapitalize="none"
-				secureTextEntry
-			/>
+			<View style={styles.field}>
+				<Text style={styles.fieldLabel}>PASSWORD</Text>
+				<View style={styles.passwordRow}>
+					<TextInput
+						value={cfg.password}
+						onChangeText={set("password")}
+						placeholder="Connection password"
+						placeholderTextColor={t.textFaint}
+						selectionColor={t.accent}
+						autoCapitalize="none"
+						autoCorrect={false}
+						secureTextEntry={!showPassword}
+						style={[styles.input, styles.passwordInput]}
+					/>
+					<Pressable
+						accessibilityRole="button"
+						accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+						onPress={() => {
+							haptics.tap();
+							setShowPassword((visible) => !visible);
+						}}
+						style={({ pressed }) => [styles.passwordToggle, pressed && styles.passwordTogglePressed]}
+					>
+						<Feather name={showPassword ? "eye-off" : "eye"} size={iconSize.lg} color={t.textSecondary} />
+					</Pressable>
+				</View>
+			</View>
 
 			<View style={styles.toggleRow}>
 				<Text style={styles.toggleLabel}>Use TLS (https / wss)</Text>
 				<Switch
 					value={!!cfg.secure}
 					onValueChange={(v) => setCfg((prev) => ({ ...prev, secure: v }))}
-					trackColor={{ true: t.blue, false: t.borderStrong }}
+					trackColor={{ true: t.green, false: t.borderStrong }}
 				/>
 			</View>
 
 			{failure ? (
 				<View style={styles.errorBox}>
-					<Feather name="alert-circle" size={15} color={t.red} />
+					<Feather name="alert-circle" size={iconSize.sm} color={t.red} />
 					<View style={{ flex: 1 }}>
 						<Text style={styles.errorText}>{failure.message}</Text>
 						{failure.showLocalNetworkHint ? (
 							<>
-								<Text style={[styles.errorText, { marginTop: 6 }]}>{LOCAL_NETWORK_HINT}</Text>
+								<Text style={[styles.errorText, { marginTop: space.xs }]}>{LOCAL_NETWORK_HINT}</Text>
 								<Button
 									title="Open settings"
 									variant="ghost"
 									icon="settings"
 									onPress={() => Linking.openSettings()}
-									style={{ marginTop: 10 }}
+									style={{ marginTop: space.sm }}
 								/>
 							</>
 						) : null}
@@ -143,7 +164,7 @@ export function ManualConnectSheet({ onConnected }: { onConnected: () => void })
 				loading={busy}
 				disabled={!cfg.host.trim()}
 				onPress={connect}
-				style={{ marginTop: 16 }}
+				style={{ marginTop: space.lg }}
 			/>
 		</>
 	);
@@ -182,7 +203,7 @@ function Field({ label, ...input }: { label: string } & React.ComponentProps<typ
 	return (
 		<View style={styles.field}>
 			<Text style={styles.fieldLabel}>{label}</Text>
-			<TextInput {...input} style={styles.input} placeholderTextColor={t.textFaint} selectionColor={t.blue} />
+			<TextInput {...input} style={styles.input} placeholderTextColor={t.textFaint} selectionColor={t.accent} />
 		</View>
 	);
 }
@@ -190,39 +211,55 @@ function Field({ label, ...input }: { label: string } & React.ComponentProps<typ
 const makeStyles = (t: Theme) =>
 	StyleSheet.create({
 		screen: { flex: 1, backgroundColor: t.bgSurface },
-		field: { marginTop: 16 },
-		fieldLabel: {
+		field: { marginTop: space.lg },
+		fieldLabel: { fontFamily: "Geist_600SemiBold",
 			color: t.textTertiary,
-			fontSize: 10,
-			fontWeight: "700",
+			fontSize: type.caption2.fontSize,
+			fontWeight: "600",
 			letterSpacing: 1.1,
-			marginBottom: 7,
+			marginBottom: space.xs,
 		},
-		input: {
+		input: { fontFamily: "Geist_400Regular",
 			backgroundColor: t.bgElevated,
 			borderWidth: 1,
 			borderColor: t.borderDefault,
-			borderRadius: 10,
-			paddingHorizontal: 13,
-			paddingVertical: 12,
+			borderRadius: 8, borderCurve: "continuous",
+			paddingHorizontal: space.md,
+			paddingVertical: space.md,
 			color: t.textPrimary,
-			fontSize: 15,
+			fontSize: type.subheadline.fontSize,
 		},
+		passwordRow: {
+			flexDirection: "row",
+			alignItems: "center",
+			backgroundColor: t.bgElevated,
+			borderWidth: 1,
+			borderColor: t.borderDefault,
+			borderRadius: 8, borderCurve: "continuous",
+		},
+		passwordInput: { flex: 1, backgroundColor: "transparent", borderWidth: 0, paddingRight: 0 },
+		passwordToggle: {
+			width: touchTarget,
+			minHeight: touchTarget,
+			alignItems: "center",
+			justifyContent: "center",
+		},
+		passwordTogglePressed: { opacity: 0.6 },
 		toggleRow: {
 			flexDirection: "row",
 			alignItems: "center",
 			justifyContent: "space-between",
-			marginTop: 18,
+			marginTop: space.lg,
 		},
-		toggleLabel: { color: t.textSecondary, fontSize: 14, flex: 1 },
+		toggleLabel: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.subheadline.fontSize, flex: 1 },
 		errorBox: {
 			flexDirection: "row",
-			gap: 9,
+			gap: space.sm,
 			alignItems: "flex-start",
 			backgroundColor: t.tintRed,
-			borderRadius: 10,
-			padding: 12,
-			marginTop: 16,
+			borderRadius: 8, borderCurve: "continuous",
+			padding: space.md,
+			marginTop: space.lg,
 		},
-		errorText: { color: t.red, fontSize: 13, lineHeight: 19 },
+		errorText: { fontFamily: "Geist_400Regular", color: t.red, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight },
 	});

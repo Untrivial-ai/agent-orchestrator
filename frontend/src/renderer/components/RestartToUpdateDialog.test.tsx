@@ -72,6 +72,99 @@ it("shows what the build changes", async () => {
 	expect(screen.queryByText(/Leave AO closed until it reopens/)).toBeNull();
 });
 
+it("shows stable notes without contributor handles and retains linked PR numbers", async () => {
+	useUiStore.setState({ updateInstallPromptOpen: true });
+	renderDialog({
+		state: "downloaded",
+		version: "0.13.1",
+		releaseNotes: [
+			"### Added",
+			"",
+			"- Add useful workflows by @person in [#123](https://github.com/Untrivial-ai/agent-orchestrator/pull/123)",
+			"",
+			"**Full Changelog**: https://github.com/Untrivial-ai/agent-orchestrator/compare/v0.13.0...v0.13.1",
+		].join("\n"),
+	});
+
+	expect(await screen.findByText(/Add useful workflows/)).toBeVisible();
+	expect(screen.queryByText(/@person|v0\.13\.0\.\.\.v0\.13\.1|View changelog/)).toBeNull();
+	expect(screen.getByRole("link", { name: "#123" })).toHaveAttribute(
+		"href",
+		"https://github.com/Untrivial-ai/agent-orchestrator/pull/123",
+	);
+});
+
+it("renders complete nightly changes without contributor handles or formatting syntax", async () => {
+	useUiStore.setState({ updateInstallPromptOpen: true });
+	const commitUrl = "https://github.com/Untrivial-ai/agent-orchestrator/commit/5994692db97410cb36e8c6725fc7789905d04dae";
+	renderDialog({
+		state: "downloaded",
+		version: "0.13.2-nightly.202609271025",
+		releaseNotes: [
+			"**Changes in this nightly**",
+			"",
+			"- Add durable scheduled automations by @Vaibhaav-Tiwari in [#4459](https://github.com/Untrivial-ai/agent-orchestrator/pull/4459)",
+			"- Remove Last updated line from model picker by @nikhilachale in [#5930](https://github.com/Untrivial-ai/agent-orchestrator/pull/5930)",
+			"- Pass terminal theme hints to every agent by @AgentWrapper in [#5934](https://github.com/Untrivial-ai/agent-orchestrator/pull/5934)",
+			"- Revert: simplify pull request summary cards (#4383) by @AgentWrapper in [#5943](https://github.com/Untrivial-ai/agent-orchestrator/pull/5943)",
+			"",
+			"**Build details**",
+			"",
+			`- Commit: [5994692](${commitUrl})`,
+			"- Built: `2026-09-27 10:25 UTC`",
+			"",
+			"> Nightly builds contain the newest changes for testing and may be unstable.",
+		].join("\n"),
+	});
+
+	expect(await screen.findByText("Changes in this nightly")).toBeVisible();
+	expect(screen.getByText("Changes in this nightly").closest("strong")).not.toBeNull();
+	expect(screen.getByText("Build details").closest("strong")).not.toBeNull();
+	expect(screen.getByText("2026-09-27 10:25 UTC").closest("code")).not.toBeNull();
+	expect(screen.getByRole("link", { name: "#4459" })).toHaveAttribute(
+		"href",
+		"https://github.com/Untrivial-ai/agent-orchestrator/pull/4459",
+	);
+	expect(screen.getByRole("link", { name: "#5943" })).toHaveAttribute(
+		"href",
+		"https://github.com/Untrivial-ai/agent-orchestrator/pull/5943",
+	);
+	expect(screen.getByRole("link", { name: "5994692" })).toHaveAttribute("href", commitUrl);
+	expect(screen.getByText(/may be unstable/).closest("blockquote")).not.toBeNull();
+	expect(screen.queryByText(/@Vaibhaav-Tiwari|@nikhilachale|@AgentWrapper/)).toBeNull();
+	expect(screen.queryByText(/\*\*Changes in this nightly\*\*|\[5994692\]|^>/)).toBeNull();
+});
+
+it("renders unrelated release-note links as plain text", async () => {
+	useUiStore.setState({ updateInstallPromptOpen: true });
+	renderDialog({
+		state: "downloaded",
+		version: "0.13.2-nightly.202609271025",
+		releaseNotes: "See [external notes](https://example.com/release) before updating.",
+	});
+
+	expect(await screen.findByText((_, element) => (
+		element?.tagName === "P" && element.textContent === "See external notes before updating."
+	))).toBeVisible();
+	expect(screen.queryByRole("link", { name: "external notes" })).toBeNull();
+});
+
+it("links the generated nightly comparison without allowing arbitrary compare URLs", async () => {
+	useUiStore.setState({ updateInstallPromptOpen: true });
+	const comparisonUrl = "https://github.com/Untrivial-ai/agent-orchestrator/compare/v0.13.1...v0.13.2-nightly.202609271025";
+	renderDialog({
+		state: "downloaded",
+		version: "0.13.2-nightly.202609271025",
+		releaseNotes: [
+			`- 2 more linked changes are included in the [full comparison](${comparisonUrl}).`,
+			"- Do not trust [another comparison](https://github.com/another/repo/compare/v1.0.0...v1.1.0).",
+		].join("\n"),
+	});
+
+	expect(await screen.findByRole("link", { name: "full comparison" })).toHaveAttribute("href", comparisonUrl);
+	expect(screen.queryByRole("link", { name: "another comparison" })).toBeNull();
+});
+
 it("renders the nightly build date from the UTC instant", async () => {
 	// The stamp 202609070300 encodes 03:00 UTC. Near the UTC day boundary the
 	// date-only dialog label must show the device-local calendar day of the

@@ -115,7 +115,7 @@ export default function MobileSessionRoute() {
 		case "loading":
 			return (
 				<View style={styles.center}>
-					<ActivityIndicator color={t.blue} />
+					<ActivityIndicator color={t.accent} />
 				</View>
 			);
 		case "unpaired":
@@ -123,9 +123,8 @@ export default function MobileSessionRoute() {
 			return (
 				<View style={styles.center}>
 					<EmptyState
-						icon="server"
+						icon="monitor-smartphone"
 						title="No desktop paired"
-						message="Scan the pairing code from AO → Settings → Connect Mobile to drive your agents from here."
 						action={<Button title="Scan pairing code" icon="maximize" onPress={() => router.push("/pair")} />}
 					/>
 				</View>
@@ -134,9 +133,8 @@ export default function MobileSessionRoute() {
 			return (
 				<View style={styles.center}>
 					<EmptyState
-						icon="wifi-off"
+						icon="unplug"
 						title="Not connected to your desktop"
-						message="This session loads once the app reconnects."
 						action={<Button title="Open board" icon="activity" variant="ghost" onPress={() => router.navigate("/")} />}
 					/>
 				</View>
@@ -144,13 +142,22 @@ export default function MobileSessionRoute() {
 		case "ended":
 			return (
 				<View style={styles.center}>
-					<EmptyState icon="archive" title="This session has ended" />
+					<EmptyState
+						icon="archive"
+						title="This session has ended"
+						action={<Button title="Open board" icon="activity" variant="ghost" onPress={() => router.navigate("/")} />}
+					/>
 				</View>
 			);
 		case "missing":
 			return (
 				<View style={styles.center}>
-					<EmptyState icon="search" title="Session not found" />
+					<EmptyState
+						icon="search"
+						title="Session not found"
+						message="It may have been deleted on your desktop."
+						action={<Button title="Open board" icon="activity" variant="ghost" onPress={() => router.navigate("/")} />}
+					/>
 				</View>
 			);
 		case "failed":

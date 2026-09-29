@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createCloudTerminalMux } from "./cloud-terminal-mux";
+import { subscribeCloudNotificationHints } from "./cloud-notification-hints";
 
 // Minimal fake WebSocket: records its URL and every frame it sends, lets the
 // test deliver frames, and reports OPEN so sendJSON works.
@@ -103,6 +104,40 @@ describe("createCloudTerminalMux direct open", () => {
 		expect(sentJSON(ws)).toEqual([{ type: "resize", columns: 100, rows: 30 }]);
 		mux.dispose();
 	});
+
+	it("ignores an implausibly small grid so a mis-measured fit never reaches the PTY", async () => {
+		FakeWebSocket.instances = [];
+		const mux = makeMux();
+		await settle();
+		const ws = FakeWebSocket.instances[0];
+		ws.sent.length = 0;
+		// A fit measured before font metrics / the pane box settle can propose a
+		// couple columns; forwarding that wraps the agent TUI to ~2 chars, and it
+		// would be cached in pendingResize and replayed on every reconnect. It must
+		// be dropped, never sent and never cached.
+		mux.resize("agent", 2, 2);
+		mux.resize("agent", 8, 30);
+		expect(ws.sent).toHaveLength(0);
+		// A settled, plausible grid sends normally.
+		mux.resize("agent", 120, 40);
+		expect(sentJSON(ws)).toEqual([{ type: "resize", columns: 120, rows: 40 }]);
+		mux.dispose();
+	});
+
+	it("does not cache an implausibly small pre-open resize for replay on connect", async () => {
+		FakeWebSocket.instances = [];
+		const mux = makeMux();
+		// Resize BEFORE the socket is dialed — the pending-resize caching path that is
+		// flushed on (re)connect. A mis-fit here must not be cached, so it is never
+		// replayed when the socket opens; a plausible one is.
+		mux.resize("agent", 2, 2);
+		mux.resize("agent", 110, 44);
+		await settle();
+		const ws = FakeWebSocket.instances[0];
+		ws.emit("open", {}); // drive the on-open replay of the cached resize
+		expect(sentJSON(ws)).toEqual([{ type: "resize", columns: 110, rows: 44 }]);
+		mux.dispose();
+	});
 });
 
 describe("createCloudTerminalMux cursor resume", () => {
@@ -138,6 +173,21 @@ describe("createCloudTerminalMux cursor resume", () => {
 		expect(cursor.value).toBe(0);
 		// A clear-screen + scrollback-wipe sequence is emitted to the pane.
 		expect(chunks.join("")).toContain("\x1b[2J");
+		mux.dispose();
+	});
+});
+
+describe("createCloudTerminalMux cloud notification hints", () => {
+	it("forwards a structured notification hint without writing terminal bytes", async () => {
+		FakeWebSocket.instances = [];
+		const mux = makeMux();
+		await settle();
+		const ws = FakeWebSocket.instances[0];
+		const hints: string[] = [];
+		const unsubscribe = subscribeCloudNotificationHints((hint) => hints.push(hint.eventId));
+		ws.deliver({ type: "notification_hint", eventId: "evt-1", eventType: "needs_input", occurredAt: "2026-09-21T00:00:00Z", payload: { message: "Need a choice" } });
+		expect(hints).toEqual(["evt-1"]);
+		unsubscribe();
 		mux.dispose();
 	});
 });

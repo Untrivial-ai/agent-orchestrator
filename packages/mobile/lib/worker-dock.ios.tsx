@@ -1,30 +1,34 @@
 import { Host } from "@expo/ui";
-import { Button, HStack, Menu, Section, Spacer, TextField, useNativeState } from "@expo/ui/swift-ui";
+import { Button, GlassEffectContainer, Group, HStack, Image, Menu, Section, Spacer, TextField, useNativeState } from "@expo/ui/swift-ui";
 import {
 	accessibilityIdentifier,
+	accessibilityLabel,
 	Animation,
 	animation,
 	buttonBorderShape,
 	buttonStyle,
 	controlSize,
 	frame,
-	glassEffect,
 	labelStyle,
+	menuOrder,
 	opacity,
 	padding,
 	scaleEffect,
 	textFieldStyle,
 	tint,
 } from "@expo/ui/swift-ui/modifiers";
-import { useEffect } from "react";
+import { memo, useEffect } from "react";
+import { glassCircle, glassField } from "./glass";
+import { GLASS_CIRCLE_SIZE } from "./native-header-button.ios";
 import { haptics } from "./haptics";
+import { duration } from "./tokens";
 import { useTheme, useThemeState } from "./ThemeProvider";
 import { workerProjectLabel, workerProjectOptions } from "./worker-controls";
 import type { WorkerDockProps } from "./worker-dock";
 import { workerDockVisibility } from "./worker-dock-layout";
 import { workerSearchClearState } from "./worker-search";
 
-export function WorkerDock({
+export const WorkerDock = memo(function WorkerDock({
 	query,
 	onQueryChange,
 	onSpawn,
@@ -49,21 +53,42 @@ export function WorkerDock({
 	}, [query, text]);
 
 	return (
-		<Host style={{ flex: 1, height: 52 }} colorScheme={scheme} seedColor={t.blue}>
+		<Host style={{ flex: 1, height: 52 }} colorScheme={scheme} seedColor={t.accent}>
+			{/* The filter, the search field and spawn are three pieces of one dock.
+			    A single container lets the system blend their glass as they meet. */}
+			<GlassEffectContainer spacing={10}>
 			<HStack spacing={10} modifiers={[frame({ height: 52, maxWidth: 1000 })]}>
-				{visibility.showControls ? <Menu
-					label="Worker options"
-					systemImage="line.3.horizontal.decrease"
+				{visibility.showControls ? <Group
 					modifiers={[
-						buttonStyle("glass"),
-						controlSize("extraLarge"),
-						buttonBorderShape("circle"),
-						labelStyle("iconOnly"),
-						tint(projectFiltered ? t.blue : t.textPrimary),
+						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
+						glassCircle(),
+					]}
+				><Menu
+					// The label is the hit target for a plain control, so it is drawn at the
+					// circle's full size with the glyph centred inside it. Sized any smaller,
+					// only taps that landed on the glyph opened the menu.
+					label={
+						<Image
+							systemName="line.3.horizontal.decrease"
+							size={18}
+							color={projectFiltered ? t.accent : t.textSecondary}
+							modifiers={[frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE })]}
+						/>
+					}
+					modifiers={[
+						buttonStyle("plain"),
+						controlSize("large"),
+						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
+						// The dock sits at the bottom of the screen, so both of its menus
+						// open upward — and a menu that opens upward draws its items in
+						// reverse under the default `automatic` order. That is what put
+						// "All projects" last and the project list above Search.
+						menuOrder("fixed"),
+						accessibilityLabel("Worker options"),
 						accessibilityIdentifier("worker-controls"),
 					]}
 				>
-					<Section title="Worker list options">
+					<Section>
 						<Button
 							label="Search"
 							systemImage="magnifyingglass"
@@ -72,7 +97,10 @@ export function WorkerDock({
 								onSearchOpen();
 							}}
 						/>
-						<Menu label={`Projects · ${selectedProjectLabel}`} systemImage="folder">
+						{/* The label is the selection on its own: naming the menu in front
+						    of it pushed the row past the width the menu reserves, and it
+						    wrapped. */}
+						<Menu label={selectedProjectLabel} systemImage="folder" modifiers={[menuOrder("fixed")]}>
 							{projectOptions.map((project) => (
 								<Button
 									key={project.id}
@@ -86,14 +114,14 @@ export function WorkerDock({
 							))}
 						</Menu>
 					</Section>
-				</Menu> : null}
+				</Menu></Group> : null}
 				{visibility.showSearch ? (
 					<HStack
 						spacing={0}
 						modifiers={[
-							frame({ height: 48, maxWidth: 1000 }),
-							glassEffect({ glass: { variant: "regular", interactive: true }, shape: "roundedRectangle", cornerRadius: 18 }),
-							animation(Animation.spring({ duration: 0.3, bounce: 0.08 }), searchOpen),
+							frame({ height: 44, maxWidth: 1000 }),
+							glassField(44),
+							animation(Animation.spring({ duration: duration.slow / 1000, bounce: 0 }), searchOpen),
 						]}
 					>
 						<TextField
@@ -125,7 +153,7 @@ export function WorkerDock({
 								tint(t.textSecondary),
 								opacity(clear.disabled ? 0.7 : clear.opacity),
 								scaleEffect(clear.disabled ? 1 : clear.scale),
-								animation(Animation.spring({ duration: 0.24, bounce: 0.12 }), !clear.disabled),
+								animation(Animation.spring({ duration: duration.base / 1000, bounce: 0 }), !clear.disabled),
 								accessibilityIdentifier("worker-search-clear"),
 							]}
 						/>
@@ -133,20 +161,30 @@ export function WorkerDock({
 				) : visibility.showControls && visibility.showSpawn ? (
 					<Spacer />
 				) : null}
-				{visibility.showSpawn ? <Button
-					label="Spawn worker"
-					systemImage="plus"
+				{visibility.showSpawn ? <Group
+					modifiers={[
+						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
+						glassCircle(),
+					]}
+				><Button
 					onPress={onSpawn}
 					modifiers={[
-						buttonStyle("glass"),
-						controlSize("extraLarge"),
-						buttonBorderShape("circle"),
-						labelStyle("iconOnly"),
-						tint(t.textPrimary),
+						buttonStyle("plain"),
+						controlSize("large"),
+						frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE }),
+						accessibilityLabel("Spawn worker"),
 						accessibilityIdentifier("spawn-worker"),
 					]}
-				/> : null}
+				>
+					<Image
+						systemName="plus"
+						size={18}
+						color={t.textPrimary}
+						modifiers={[frame({ width: GLASS_CIRCLE_SIZE, height: GLASS_CIRCLE_SIZE })]}
+					/>
+				</Button></Group> : null}
 			</HStack>
+			</GlassEffectContainer>
 		</Host>
 	);
-}
+});

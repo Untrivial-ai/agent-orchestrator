@@ -43,6 +43,25 @@ func TestStartRejectsUnstartablePlans(t *testing.T) {
 	}
 }
 
+func TestStartOpensFXNativeLogin(t *testing.T) {
+	t.Parallel()
+
+	opener := &recordingTerminalOpener{}
+	svc := New(foundExecutable("fx"), opener)
+
+	_, err := svc.Start(context.Background(), "fx")
+	if err != nil {
+		t.Fatalf("Start(fx): %v", err)
+	}
+	want := shellterm.OpenCommandTerminalInput{
+		Argv:  []string{"/test/bin/fx", "login"},
+		Title: "Log in to fx",
+	}
+	if !reflect.DeepEqual(opener.input, want) {
+		t.Fatalf("OpenCommandTerminal input = %#v, want %#v", opener.input, want)
+	}
+}
+
 func TestStartOpensDevinNativeLogin(t *testing.T) {
 	t.Parallel()
 

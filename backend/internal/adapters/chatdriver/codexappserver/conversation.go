@@ -829,44 +829,66 @@ func (c *conversation) refuseDynamicToolCall(params json.RawMessage) error {
 // provider re-announces every server's startup state as notifications afterwards, so
 // the returned list is a convenience for the caller that asked, not the only path by
 // which AO learns the outcome.
-func (c *conversation) ReloadMCPServers(ctx context.Context) ([]ports.ChatMCPServer, error) {
+func (c *conversation) ReloadMCPServers(ctx context.Context) (ports.ChatMCPReloadResult, error) {
 	// config/mcpServer/reload takes no params, verified against a live app-server.
 	if err := c.conn.request(ctx, codexproto.MethodConfigMcpServerReload, map[string]any{}, nil); err != nil {
-		return nil, fmt.Errorf("%s: %w", codexproto.MethodConfigMcpServerReload, err)
+		return ports.ChatMCPReloadResult{}, fmt.Errorf("%s: %w", codexproto.MethodConfigMcpServerReload, err)
 	}
 
-	var resp struct {
-		Data []struct {
-			Name       string `json:"name"`
-			AuthStatus string `json:"authStatus"`
-		} `json:"data"`
-	}
-	if err := c.conn.request(ctx, codexproto.MethodMcpServerStatusList, map[string]any{
-		// The summary form: the full one returns every tool's JSON Schema, which for a
-		// handful of servers is hundreds of kilobytes AO would immediately discard.
-		"detail":   "summary",
-		"threadId": c.threadID,
-	}, &resp); err != nil {
-		// The reload itself succeeded, and that is the part the caller asked for. The
-		// pushed notifications will report the outcome regardless.
-		c.log.Debug("mcp server list after reload failed", "error", err)
-		return nil, nil
-	}
-
-	servers := make([]ports.ChatMCPServer, 0, len(resp.Data))
-	for _, entry := range resp.Data {
-		if entry.Name == "" {
-			continue
+	// toolsAndAuthOnly avoids the resource schemas from the full response while
+	// using the provider-declared enum value. "summary" was never part of the app
+	// server protocol and made an otherwise successful reload look unenumerated.
+	detail := codexproto.McpServerStatusDetailToolsAndAuthOnly
+	threadID := c.threadID
+	var cursor *string
+	servers := make([]ports.ChatMCPServer, 0)
+	seen := make(map[string]struct{})
+	seenCursors := make(map[string]struct{})
+	for {
+		var resp codexproto.ListMcpServerStatusResponse
+		params := codexproto.ListMcpServerStatusParams{
+			Cursor:   cursor,
+			Detail:   &detail,
+			ThreadID: &threadID,
 		}
-		// A server that answers the inventory call is running. Its startup state is
-		// reported separately by mcpServer/startupStatus/updated, which is the
-		// authoritative source; this list only says who came back.
-		servers = append(servers, ports.ChatMCPServer{
-			Name:   entry.Name,
-			Status: string(codexproto.McpServerStartupStateReady),
-		})
+		if err := c.conn.request(ctx, codexproto.MethodMcpServerStatusList, params, &resp); err != nil {
+			// The reload itself succeeded. Mark the inventory unavailable so the
+			// controller retains known state rather than mistaking failure for an
+			// authoritative empty configuration.
+			c.log.Debug("mcp server list after reload failed", "error", err)
+			return ports.ChatMCPReloadResult{}, nil
+		}
+		for _, entry := range resp.Data {
+			// serverInfo is supplied by the MCP initialize handshake. A configured
+			// server whose startup failed can still have a status-list row, but it
+			// must remain failed via its startup notification rather than being
+			// promoted to ready merely because configuration knows its name.
+			if entry.Name == "" || entry.ServerInfo == nil {
+				continue
+			}
+			if _, duplicate := seen[entry.Name]; duplicate {
+				continue
+			}
+			seen[entry.Name] = struct{}{}
+			// A server that answers the inventory call is running. Failed enabled
+			// servers arrive through startup-status notifications and are reconciled
+			// by the controller with this complete ready-server inventory.
+			servers = append(servers, ports.ChatMCPServer{
+				Name:   entry.Name,
+				Status: string(codexproto.McpServerStartupStateReady),
+			})
+		}
+		if resp.NextCursor == nil || *resp.NextCursor == "" {
+			break
+		}
+		if _, repeated := seenCursors[*resp.NextCursor]; repeated {
+			c.log.Debug("mcp server list after reload repeated its cursor", "cursor", *resp.NextCursor)
+			return ports.ChatMCPReloadResult{}, nil
+		}
+		seenCursors[*resp.NextCursor] = struct{}{}
+		cursor = resp.NextCursor
 	}
-	return servers, nil
+	return ports.ChatMCPReloadResult{Servers: servers, Authoritative: true}, nil
 }
 
 func (c *conversation) discardPending(requestID string) {

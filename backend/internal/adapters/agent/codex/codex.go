@@ -46,6 +46,10 @@ func New() *Plugin {
 // launch. See ports.SubmitActivitySignaler.
 func (p *Plugin) EmitsSubmitActivity() bool { return true }
 
+// EmitsSemanticMessageAcceptance reports that the Codex prompt hook includes
+// the accepted prompt, allowing AO delivery ids to be correlated semantically.
+func (p *Plugin) EmitsSemanticMessageAcceptance() bool { return true }
+
 // EmitsBlockedActivity is false: codex reports permission prompts as
 // waiting_input — it installs no post-tool-use hook, so a blocked state could
 // never be cleared mid-turn. confirmActive must not nudge it (an Enter could

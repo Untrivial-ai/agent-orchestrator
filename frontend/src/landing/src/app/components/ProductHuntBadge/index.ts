@@ -1,1 +1,0 @@
-export { ProductHuntBadge } from "./ProductHuntBadge";

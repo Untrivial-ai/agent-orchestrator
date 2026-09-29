@@ -152,6 +152,35 @@ describe("FileContentPane", () => {
 		expect(await screen.findByText((_, element) => element?.tagName === "CODE" && element.textContent === "export const next = 2;\n")).toBeInTheDocument();
 	});
 
+	it("uses a breadcrumb and icon mode switches in the compact Files-panel toolbar", async () => {
+		getMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				path: "src/App.tsx",
+				status: "modified",
+				additions: 1,
+				deletions: 1,
+				size: 18,
+				binary: false,
+				deleted: false,
+				content: "export const next = 2;\n",
+				contentTruncated: false,
+				diff: "@@ -1,1 +1,1 @@\n-export const next = 1;\n+export const next = 2;\n",
+				diffTruncated: false,
+			},
+		});
+
+		renderWithQuery(<FileContentPane annotation={noopAnnotation()} path="src/App.tsx" sessionId="sess-1" split={false} toolbar="compact" />);
+
+		const breadcrumb = await screen.findByRole("navigation", { name: "File path" });
+		expect(breadcrumb).toHaveTextContent("src/App.tsx");
+		// Status and change counts live beside the name, replacing the diff's own header row.
+		expect(breadcrumb).toHaveTextContent("M+1−1");
+		expect(screen.getByRole("tab", { name: "Diff" })).toHaveAttribute("aria-selected", "true");
+		await userEvent.click(screen.getByRole("tab", { name: "File" }));
+		expect(await screen.findByText((_, element) => element?.tagName === "CODE" && element.textContent === "export const next = 2;\n")).toBeInTheDocument();
+	});
+
 	it("opens a changed markdown file directly in rendered mode while retaining its status", async () => {
 		getMock.mockResolvedValue({
 			data: {
@@ -353,7 +382,9 @@ describe("FileContentPane", () => {
 		renderWithQuery(<FileContentPane annotation={model} path="src/App.tsx" sessionId="sess-1" split={false} />);
 
 		const composer = await screen.findByRole("textbox", { name: /Feedback for src\/App\.tsx/ });
-		expect(composer.closest(".absolute.top-full")?.parentElement).toHaveClass("sticky", "top-0");
+		// In the page flow right under the sticky toolbar, not floating over the code.
+		expect(composer.closest(".absolute")).toBeNull();
+		expect(screen.getByRole("navigation", { name: "File path" }).closest(".sticky")?.nextElementSibling).toContainElement(composer);
 	});
 
 	it("loads the PR before revision when opening the complete view of a deleted file", async () => {
@@ -393,6 +424,24 @@ describe("FileContentPane", () => {
 		expect(await screen.findByText("removed text")).toBeInTheDocument();
 		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/pr/{prNumber}/file/revision", expect.objectContaining({
 			params: expect.objectContaining({ path: { sessionId: "sess-1", prNumber: 42 }, query: expect.objectContaining({ path: "removed.txt", side: "before", sourceUrl: "https://example.test/acme/repo/pull/42" }) }),
+		}));
+	});
+
+	it("reads one PR commit's file and revision when a commit is picked", async () => {
+		getMock.mockImplementation(async (path: string) => path.endsWith("/revision") ? {
+			data: { sessionId: "sess-1", path: "README.md", side: "after", revision: "after-1", size: 2000000, exists: true, binary: false, truncated: false, content: "complete commit content\n" },
+		} : {
+			data: { sessionId: "sess-1", path: "README.md", status: "modified", additions: 1, deletions: 1, size: 2000000, binary: false, deleted: false, content: "", contentTruncated: true, diff: "@@ -1 +1 @@\n-hello\n+first\n", diffTruncated: false, historical: true },
+		});
+
+		renderWithQuery(<FileContentPane annotation={noopAnnotation()} commitSha="abc123" initialMode="file" path="README.md" sessionId="sess-1" source={{ kind: "pull_request", number: 42, url: "https://example.test/acme/repo/pull/42", label: "PR #42 · files" }} split={false} />);
+
+		expect(await screen.findByText("complete commit content")).toBeInTheDocument();
+		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/pr/{prNumber}/file", expect.objectContaining({
+			params: expect.objectContaining({ query: expect.objectContaining({ commitSha: "abc123", path: "README.md" }) }),
+		}));
+		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/pr/{prNumber}/file/revision", expect.objectContaining({
+			params: expect.objectContaining({ query: expect.objectContaining({ commitSha: "abc123", path: "README.md", side: "after" }) }),
 		}));
 	});
 

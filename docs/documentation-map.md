@@ -9,7 +9,7 @@ so the split is intentional rather than incidental.
 
 | Layer                     | Audience                      | Examples                                                        | How it stays correct                                    |
 | ------------------------- | ----------------------------- | --------------------------------------------------------------- | ------------------------------------------------------- |
-| Human-facing docs         | Contributors, users           | `README.md`, `CONTRIBUTING.md`, `docs/`, https://orchestrator.inc/docs | Review. Prose describes code; it can lag behind it.     |
+| Human-facing docs         | Contributors, users           | `README.md`, `CONTRIBUTING.md`, `docs/`, https://docs.aoagents.dev | Review. Prose describes code; it can lag behind it.     |
 | Machine-readable contract | Coding agents, CI, generators | `openapi.yaml`, `AGENTS.md`, `skills/`, sqlc `gen/`             | Generated from source and/or checked by CI drift gates. |
 
 The rule of thumb: **if an artifact in the contract layer disagrees with prose,
@@ -28,8 +28,7 @@ in CI. Fix the prose.
 | [docs/development.md](development.md)                       | Prerequisites, build, test, and troubleshooting for local development.       |
 | [docs/STATUS.md](STATUS.md)                                 | What ships on `main` today and what is in flight.                            |
 | [docs/adr/](adr/)                                           | Architecture decision records: why a boundary exists, not just what it is.   |
-| https://orchestrator.inc/docs                                      | Published product documentation for end users.                               |
-| https://orchestrator.inc/llms.txt                                  | Index of the published docs for LLM consumption. Navigation, not a contract. |
+| https://docs.aoagents.dev                                          | Published product documentation for end users.                               |
 
 These documents explain intent and rationale. They are reviewed by people and
 are not machine-checked, so treat them as the _why_ and confirm the _what_
@@ -67,8 +66,8 @@ covered by tests rather than a generator. See "API contract changes" in
 
 ## Where to add new documentation
 
-- A user needs it to use the product: https://orchestrator.inc/docs (source under
-  `frontend/src/landing/content/docs/`).
+- A user needs it to use the product: https://docs.aoagents.dev (source under
+  `frontend/src/docs/content/`).
 - A contributor needs it to change the code: `docs/`, and add a row to
   [docs/README.md](README.md).
 - An agent needs it to operate safely in the repo: `AGENTS.md`.

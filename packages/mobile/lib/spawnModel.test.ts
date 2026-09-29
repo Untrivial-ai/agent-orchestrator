@@ -28,27 +28,43 @@ describe("spawn model resolution", () => {
 			selectedAgent: "codex",
 			projectWorkerAgent: "codex",
 			projectWorkerModel: "gpt-5",
-			catalogDefault: "gpt-5.4",
 		})).toBe("gpt-5");
 	});
 
-	it("uses the selected agent catalog default instead of another agent's project model", () => {
+	// The catalog's `isDefault` entry is not a source here. It says what the
+	// provider *claims* it will pick, and codex claimed `gpt-6-astra` while a new
+	// thread came up on `gpt-5.6-sol` — the sheet named one model and the chat
+	// named the other.
+	it("ignores another agent's project model", () => {
 		expect(resolveSpawnModel({
 			selectedAgent: "claude-code",
 			projectWorkerAgent: "codex",
 			projectWorkerModel: "gpt-5",
-			catalogDefault: "sonnet",
-		})).toBe("sonnet");
+		})).toBe("");
 	});
 
-	it("leaves automatic selection empty when neither source names a model", () => {
+	it("leaves automatic selection empty when the project pins nothing", () => {
 		expect(resolveSpawnModel({ selectedAgent: "codex" })).toBe("");
+		expect(resolveSpawnModel({
+			selectedAgent: "codex",
+			projectWorkerAgent: "codex",
+			projectWorkerModel: "  ",
+		})).toBe("");
 	});
 
-	it("sends only a touched value that differs from the resolved default", () => {
-		expect(modelOverride("opus", "sonnet", true)).toBe("opus");
-		expect(modelOverride("sonnet", "sonnet", true)).toBeUndefined();
-		expect(modelOverride("opus", "sonnet", false)).toBeUndefined();
+	// Sending the pick even when it matches the project's own pin is the point:
+	// the old rule dropped it, the session stored no model, and the chat then had
+	// nothing to resolve and showed whatever the thread was running.
+	it("sends a touched value, including one that matches the project's pin", () => {
+		expect(modelOverride("opus", true)).toBe("opus");
+		expect(modelOverride("sonnet", true)).toBe("sonnet");
+		expect(modelOverride("  opus  ", true)).toBe("opus");
+	});
+
+	it("sends nothing for the untouched Automatic state", () => {
+		expect(modelOverride("opus", false)).toBeUndefined();
+		expect(modelOverride("", true)).toBeUndefined();
+		expect(modelOverride("__auto__", true)).toBeUndefined();
 	});
 
 	it("reloads the model catalog only when its project or agent source changes", () => {

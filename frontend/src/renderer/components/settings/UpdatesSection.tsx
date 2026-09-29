@@ -13,6 +13,7 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
 import { ConfirmDialog } from "../ConfirmDialog";
+import { DesktopReleaseNotes } from "../DesktopReleaseNotes";
 import { SettingsOptionMenu } from "./SettingsOptionMenu";
 import { SettingsRow } from "./SettingsRow";
 import { SettingsSection } from "./SettingsSection";
@@ -567,17 +568,17 @@ function UpdateActions({
 
 			{/* Release notes used to live only in the restart confirmation, so
 			    skipping that dialog when nothing is at risk would have hidden them
-			    entirely. The panel has room the dialog never did. Plain text on
-			    purpose: these are the remote release body, sanitized in the main
-			    process, and nothing here injects markup. */}
+			    entirely. The panel has room the dialog never did. The shared renderer
+			    keeps contributor handles out while preserving linked PR numbers. */}
 			{(status.state === "downloaded" || status.staged) && status.releaseNotes ? (
 				<div className="mt-3" data-testid="update-release-notes">
 					<p className="text-caption font-medium uppercase tracking-wide text-settings-muted">
 						{t("update.restart.whatsNew")}
 					</p>
-					<p className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-line text-pretty text-sm leading-5 text-settings-label">
-						{status.releaseNotes}
-					</p>
+					<DesktopReleaseNotes
+						notes={status.releaseNotes}
+						textClassName="mt-1.5 max-h-40 overflow-y-auto text-pretty text-sm leading-5 text-settings-label"
+					/>
 				</div>
 			) : null}
 

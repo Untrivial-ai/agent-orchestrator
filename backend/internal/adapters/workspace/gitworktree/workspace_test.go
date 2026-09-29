@@ -451,6 +451,8 @@ func workspaceProjectRepoFake(t *testing.T, ws *Workspace, output, worktreeList 
 			return []byte("origin/main\n"), nil
 		case strings.Contains(joined, "rev-parse --verify --quiet origin/feature/test"):
 			return nil, commandError{args: append([]string{binary}, args...), err: exitErr}
+		case strings.Contains(joined, "rev-parse --verify --quiet refs/heads/feature/test"):
+			return nil, commandError{args: append([]string{binary}, args...), err: exitErr}
 		case strings.Contains(joined, "rev-parse --verify --quiet origin/main"):
 			return nil, nil
 		case strings.Contains(joined, "rev-parse --verify origin/main"):

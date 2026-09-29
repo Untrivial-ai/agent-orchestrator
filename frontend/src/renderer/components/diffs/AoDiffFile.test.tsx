@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -52,14 +53,16 @@ describe("AoDiffFile", () => {
 	it("starts line feedback using Pierre's hovered-side contract", () => {
 		const model = annotation();
 		render(
-			<AoDiffFile
-				annotation={model}
-				detail={detail()}
-				fallback={null}
-				onActiveSelectionChange={vi.fn()}
-				sessionId="sess-1"
-				split={false}
-			/>,
+			<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+				<AoDiffFile
+					annotation={model}
+					detail={detail()}
+					fallback={null}
+					onActiveSelectionChange={vi.fn()}
+					sessionId="sess-1"
+					split={false}
+				/>
+			</QueryClientProvider>,
 		);
 
 		expect(screen.getByRole("button", { name: "Add feedback" }).parentElement).toHaveAttribute("data-gutter-enabled", "true");

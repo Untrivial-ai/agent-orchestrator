@@ -303,6 +303,9 @@ func migrate(db *sql.DB) error {
 	if err := repairRenumberedChatMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered chat migration history: %w", err)
 	}
+	if err := repairRenumberedTaskProvisioningMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered task-provisioning migration history: %w", err)
+	}
 	if err := repairRenumberedUsageCostMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered usage-cost migration history: %w", err)
 	}
@@ -330,6 +333,9 @@ func migrate(db *sql.DB) error {
 	if err := repairRenumberedPRReviewPartialMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered PR review-partial migration history: %w", err)
 	}
+	if err := repairBurnedAutomationsMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair burned automations migration history: %w", err)
+	}
 	if err := prepareBurnedSchemaRepairs(db); err != nil {
 		return fmt.Errorf("prepare burned schema repairs: %w", err)
 	}
@@ -353,6 +359,164 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	return reconcileSchema(db)
+}
+
+// repairRenumberedTaskProvisioningMigrationHistory preserves development
+// databases that applied this branch's migrations at 0149/0150, 0150/0151,
+// or 0155/0156/0157. Main owns those numbers now; map the physical schema to
+// 0156/0157/0158 before Goose replays the missing main migrations.
+func repairRenumberedTaskProvisioningMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var provisionColumns, taskPreparationColumn, creationSHAColumn, reviewerColumn, catalogColumn, unrealHarness int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('provision_state', 'provision_error')`,
+	).Scan(&provisionColumns); err != nil {
+		return err
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'is_task_preparation'`,
+	).Scan(&taskPreparationColumn); err != nil {
+		return err
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('session_worktrees') WHERE name = 'creation_sha'`,
+	).Scan(&creationSHAColumn); err != nil {
+		return err
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('review') WHERE name = 'interface_mode'`,
+	).Scan(&reviewerColumn); err != nil {
+		return err
+	}
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_model_catalog') WHERE name = 'metadata_json'`,
+	).Scan(&catalogColumn); err != nil {
+		return err
+	}
+	if provisionColumns != 2 && taskPreparationColumn == 0 {
+		return nil
+	}
+	if err := db.QueryRow(
+		`SELECT instr(sql, 'unreal-agent') FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`,
+	).Scan(&unrealHarness); err != nil {
+		return err
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	applied := func(version int64) (bool, error) {
+		var applied int
+		if err := tx.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = ? ORDER BY id DESC LIMIT 1
+), 0)`, version).Scan(&applied); err != nil {
+			return false, err
+		}
+		return applied == 1, nil
+	}
+	mapVersion := func(legacyVersion, canonicalVersion int64) (bool, error) {
+		legacyApplied, err := applied(legacyVersion)
+		if err != nil || !legacyApplied {
+			return false, err
+		}
+		if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (?, 1)`, canonicalVersion); err != nil {
+			return false, err
+		}
+		if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = ?`, legacyVersion); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	oldProvision155, err := applied(155)
+	if err != nil {
+		return err
+	}
+	if oldProvision155 && provisionColumns == 2 && unrealHarness == 0 {
+		// This branch used 0155 before main shipped the Unreal Agent migration
+		// at that number. Shift highest first so each applied marker survives.
+		if creationSHAColumn != 0 {
+			if _, err := mapVersion(157, 158); err != nil {
+				return err
+			}
+		}
+		if taskPreparationColumn != 0 {
+			if _, err := mapVersion(156, 157); err != nil {
+				return err
+			}
+		}
+		if _, err := mapVersion(155, 156); err != nil {
+			return err
+		}
+	}
+
+	provisionMappedFrom150 := false
+	canonicalProvisionApplied, err := applied(156)
+	if err != nil {
+		return err
+	}
+	if provisionColumns == 2 && !canonicalProvisionApplied {
+		legacyVersion := int64(149)
+		if reviewerColumn != 0 {
+			// Once main's catalog column exists, 0150 belongs to main.
+			if catalogColumn == 0 {
+				legacyVersion = 150
+			} else {
+				legacyVersion = 0
+			}
+		}
+		if legacyVersion != 0 {
+			mapped, err := mapVersion(legacyVersion, 156)
+			if err != nil {
+				return err
+			}
+			provisionMappedFrom150 = mapped && legacyVersion == 150
+		}
+	}
+
+	canonicalPreparationApplied, err := applied(157)
+	if err != nil {
+		return err
+	}
+	released150 := provisionMappedFrom150
+	if taskPreparationColumn != 0 && !canonicalPreparationApplied {
+		legacyVersion := int64(150)
+		if catalogColumn != 0 || provisionMappedFrom150 {
+			legacyVersion = 151
+		}
+		mapped, err := mapVersion(legacyVersion, 157)
+		if err != nil {
+			return err
+		}
+		released150 = released150 || mapped && legacyVersion == 150
+	}
+	if released150 && catalogColumn == 0 {
+		// Main's 0151 may already have installed global catalog triggers. Drop
+		// them before replaying 0150, then replay 0151 to restore global CDC.
+		if _, err := tx.Exec(`DROP TRIGGER IF EXISTS agent_model_catalog_cdc_insert`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DROP TRIGGER IF EXISTS agent_model_catalog_cdc_update`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = 151`); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // repairRenumberedAgentInstallJobsMigrationHistory preserves development
@@ -1531,6 +1695,91 @@ SELECT COALESCE((
 	return tx.Commit()
 }
 
+// repairBurnedAutomationsMigrationHistory preserves development databases that
+// applied automations at an earlier version, including 159, which now belongs
+// to main's PR discussion migration. The physical schemas determine whether
+// Goose should apply PR discussion at 159 and automations at canonical 161.
+// An older automation build also used 156; release it only when the canonical
+// session-provisioning columns are absent. Once 162 has dropped the PR
+// discussion columns, their absence no longer says anything about 159.
+func repairBurnedAutomationsMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`,
+	).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+
+	var automationsTable, automationRunID, provisionColumns, discussionColumn int
+	if err := db.QueryRow(`SELECT
+		(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'automations'),
+		(SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'automation_run_id'),
+		(SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('provision_state', 'provision_error')),
+		(SELECT COUNT(*) FROM pragma_table_info('pr') WHERE name = 'discussion_comment_count')`).Scan(
+		&automationsTable, &automationRunID, &provisionColumns, &discussionColumn,
+	); err != nil {
+		return err
+	}
+	applied := func(version int64) (bool, error) {
+		var value int
+		if err := db.QueryRow(`
+SELECT COALESCE((
+    SELECT is_applied FROM goose_db_version
+    WHERE version_id = ? ORDER BY id DESC LIMIT 1
+), 0)`, version).Scan(&value); err != nil {
+			return false, err
+		}
+		return value == 1, nil
+	}
+	applied159, err := applied(159)
+	if err != nil {
+		return err
+	}
+	applied161, err := applied(161)
+	if err != nil {
+		return err
+	}
+	applied156, err := applied(156)
+	if err != nil {
+		return err
+	}
+	applied162, err := applied(162)
+	if err != nil {
+		return err
+	}
+	if automationsTable > 0 && automationRunID > 0 {
+		if applied156 && provisionColumns != 2 {
+			if _, err := db.Exec(`DELETE FROM goose_db_version WHERE version_id = 156`); err != nil {
+				return err
+			}
+		}
+		if !applied161 {
+			if _, err := db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (161, 1)`); err != nil {
+				return err
+			}
+		}
+	} else if applied161 {
+		if _, err := db.Exec(`DELETE FROM goose_db_version WHERE version_id = 161`); err != nil {
+			return err
+		}
+	}
+	if applied162 {
+		return nil
+	}
+	if discussionColumn > 0 && !applied159 {
+		_, err = db.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (159, 1)`)
+		return err
+	}
+	if discussionColumn == 0 && applied159 {
+		_, err = db.Exec(`DELETE FROM goose_db_version WHERE version_id = 159`)
+		return err
+	}
+	return nil
+}
+
 // schemaRepairs lists the column-level effects of migrations that real
 // installs are known to skip. Issue #3475/#3476: profiles exist whose
 // goose_db_version already records versions 40 through 46 (written by a
@@ -1664,6 +1913,10 @@ BEGIN
 	// matches the migration: unknown historical certainty stays partial.
 	{version: 130, table: "pr", column: "review_partial",
 		addDDL: `ALTER TABLE pr ADD COLUMN review_partial BOOLEAN NOT NULL DEFAULT TRUE`},
+	// 0132_conversation_opencode_mode.sql. Generated conversation reads select
+	// this column, so repair field databases that recorded 0132 without adding it.
+	{version: 132, table: "conversations", column: "opencode_mode",
+		addDDL: `ALTER TABLE conversations ADD COLUMN opencode_mode TEXT NOT NULL DEFAULT ''`},
 }
 
 // reconcileSchema verifies that the columns in schemaRepairs physically exist
@@ -1728,6 +1981,17 @@ const (
 	sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'qm', 'fake'))`
 )
 
+const (
+	sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnreal         = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'fake'))`
+	sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnreal       = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'qm', 'fake'))`
+	sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnrealMiMo     = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'mimo-code', 'fake'))`
+	sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnrealMiMo   = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'mimo-code', 'qm', 'fake'))`
+	sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnrealFX       = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'fx', 'fake'))`
+	sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnrealFX     = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'fx', 'qm', 'fake'))`
+	sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnrealFXMiMo   = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'fx', 'mimo-code', 'fake'))`
+	sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnrealFXMiMo = `CHECK (harness IN ('', 'claude-code', 'codex', 'aider', 'opencode', 'grok', 'droid', 'amp', 'agy', 'crush', 'cursor', 'qwen', 'copilot', 'goose', 'auggie', 'continue', 'devin', 'cline', 'kimi', 'muse', 'kiro', 'kilocode', 'vibe', 'pi', 'kimchi', 'prime-agent', 'autohand', 'omp', 'unreal-agent', 'fx', 'mimo-code', 'qm', 'fake'))`
+)
+
 func reconcileHarnessConstraint(db *sql.DB) error {
 	var schema string
 	if err := db.QueryRow(
@@ -1739,7 +2003,10 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 	needsKimchi := !strings.Contains(schema, "'kimchi'")
 	needsPrimeAgent := !strings.Contains(schema, "'prime-agent'")
 	needsOMP := !strings.Contains(schema, "'omp'")
-	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP {
+	needsGemini := !strings.Contains(schema, "'gemini'")
+	needsUnreal := !strings.Contains(schema, "'unreal-agent'")
+	needsMiMo := !strings.Contains(schema, "'mimo-code'")
+	if !needsMuse && !needsKimchi && !needsPrimeAgent && !needsOMP && !needsGemini && !needsUnreal && !needsMiMo {
 		return nil
 	}
 	if _, err := db.Exec(`PRAGMA writable_schema = ON`); err != nil {
@@ -1780,6 +2047,49 @@ func reconcileHarnessConstraint(db *sql.DB) error {
 			replacement{sessionsHarnessCheckWithMuseQMKimchiPrimeAgent, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP},
 		)
 	}
+	if needsGemini {
+		// Goose runs before reconciliation. A legacy constraint can therefore
+		// miss migration 0163, then reach the OMP shape through repairs above.
+		// Widen both known variants here without dropping the legacy QM value.
+		for _, old := range []string{
+			sessionsHarnessCheckWithMuseKimchiPrimeAgentOMP,
+			sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP,
+			sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnreal,
+			sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnreal,
+			sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnrealFX,
+			sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnrealFX,
+			sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnrealMiMo,
+			sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnrealMiMo,
+			sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnrealFXMiMo,
+			sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnrealFXMiMo,
+		} {
+			repairs = append(repairs, replacement{old, strings.Replace(old, "'omp'", "'gemini', 'omp'", 1)})
+		}
+	}
+	if needsUnreal {
+		repairs = append(repairs,
+			replacement{sessionsHarnessCheckWithMuseKimchiPrimeAgentOMP, sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnreal},
+			replacement{sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnreal},
+		)
+		for _, old := range []string{sessionsHarnessCheckWithMuseKimchiPrimeAgentOMP, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMP} {
+			withGemini := strings.Replace(old, "'omp'", "'gemini', 'omp'", 1)
+			repairs = append(repairs, replacement{withGemini, strings.Replace(withGemini, "'omp'", "'omp', 'unreal-agent'", 1)})
+		}
+	}
+	if needsMiMo {
+		withoutGemini := []replacement{
+			replacement{sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnreal, sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnrealMiMo},
+			replacement{sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnreal, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnrealMiMo},
+			replacement{sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnrealFX, sessionsHarnessCheckWithMuseKimchiPrimeAgentOMPUnrealFXMiMo},
+			replacement{sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnrealFX, sessionsHarnessCheckWithMuseQMKimchiPrimeAgentOMPUnrealFXMiMo},
+		}
+		for _, r := range withoutGemini {
+			repairs = append(repairs, r, replacement{
+				strings.Replace(r.old, "'omp'", "'gemini', 'omp'", 1),
+				strings.Replace(r.new, "'omp'", "'gemini', 'omp'", 1),
+			})
+		}
+	}
 	for _, r := range repairs {
 		if _, err := db.Exec(
 			`UPDATE sqlite_master
@@ -1810,6 +2120,15 @@ WHERE type = 'table' AND name = 'sessions'`,
 	}
 	if !strings.Contains(schema, "'omp'") {
 		return fmt.Errorf("schema repair: sessions harness constraint is missing OMP and did not match known pre-OMP schema")
+	}
+	if !strings.Contains(schema, "'gemini'") {
+		return fmt.Errorf("schema repair: sessions harness constraint is missing Gemini and did not match known pre-Gemini schema")
+	}
+	if !strings.Contains(schema, "'unreal-agent'") {
+		return fmt.Errorf("schema repair: sessions harness constraint is missing Unreal Agent and did not match known pre-Unreal-Agent schema")
+	}
+	if !strings.Contains(schema, "'mimo-code'") {
+		return fmt.Errorf("schema repair: sessions harness constraint is missing MiMo Code and did not match known pre-MiMo-Code schema")
 	}
 	return nil
 }

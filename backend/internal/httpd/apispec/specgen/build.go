@@ -65,12 +65,16 @@ func Build() ([]byte, error) {
 			"Project registry, configuration, and lifecycle administration"),
 		*(&openapi31.Tag{Name: "sessions"}).WithDescription(
 			"Agent session lifecycle and messaging"),
+		*(&openapi31.Tag{Name: "automations"}).WithDescription(
+			"Recurring daemon-owned session schedules and durable run history"),
 		*(&openapi31.Tag{Name: "prs"}).WithDescription(
 			"Pull-request actions (SCM lane)"),
 		*(&openapi31.Tag{Name: "reviews"}).WithDescription(
 			"Code-review runs and findings"),
 		*(&openapi31.Tag{Name: "notifications"}).WithDescription(
 			"Durable dashboard notifications"),
+		*(&openapi31.Tag{Name: "reports"}).WithDescription(
+			"Durable worker reports"),
 		*(&openapi31.Tag{Name: "usage"}).WithDescription(
 			"Token usage telemetry for AO sessions"),
 		*(&openapi31.Tag{Name: "push"}).WithDescription(
@@ -200,6 +204,17 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersSteerConversationResponse":                 "SteerConversationResponse",
 	"ControllersSteerOrSendConversationResponse":           "SteerOrSendConversationResponse",
 	"ControllersPromoteQueuedTurnResponse":                 "PromoteQueuedTurnResponse",
+	"ControllersAutomationIDParam":                         "AutomationIDParam",
+	"ControllersListAutomationsQuery":                      "ListAutomationsQuery",
+	"ControllersListAutomationRunsQuery":                   "ListAutomationRunsQuery",
+	"ControllersCreateAutomationRequest":                   "CreateAutomationRequest",
+	"ControllersUpdateAutomationRequest":                   "UpdateAutomationRequest",
+	"ControllersAutomationRunSummaryResponse":              "AutomationRunSummaryResponse",
+	"ControllersAutomationResponse":                        "AutomationResponse",
+	"ControllersAutomationEnvelope":                        "AutomationEnvelope",
+	"ControllersListAutomationsResponse":                   "ListAutomationsResponse",
+	"ControllersAutomationRunResponse":                     "AutomationRunResponse",
+	"ControllersListAutomationRunsResponse":                "ListAutomationRunsResponse",
 	// httpd/envelope
 	"EnvelopeAPIError": "APIError",
 	// observe/ownership
@@ -323,6 +338,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersSendSessionMessageResponse":               "SendSessionMessageResponse",
 	"ControllersDelegateTaskRequest":                      "DelegateTaskRequest",
 	"ControllersDelegateTaskResponse":                     "DelegateTaskResponse",
+	"ControllersPrepareTaskResponse":                      "PrepareTaskResponse",
 	"ControllersClaimPRResponse":                          "ClaimPRResponse",
 	"ControllersClaimPRRequest":                           "ClaimPRRequest",
 	"ControllersSessionPRFacts":                           "SessionPRFacts",
@@ -382,6 +398,12 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersNotificationEnvelope":             "NotificationEnvelope",
 	"ControllersMarkAllNotificationsReadRequest":  "MarkAllNotificationsReadRequest",
 	"ControllersMarkAllNotificationsReadResponse": "MarkAllNotificationsReadResponse",
+	"ControllersCreateReportRequest":              "CreateReportRequest",
+	"ControllersReportOutputRequest":              "ReportOutputRequest",
+	"ControllersCreateReportResponse":             "CreateReportResponse",
+	"ControllersReportOutputResponse":             "ReportOutputResponse",
+	"ControllersReportResponse":                   "ReportResponse",
+	"ControllersListReportsResponse":              "ListReportsResponse",
 	"ControllersClearNotificationsResponse":       "ClearNotificationsResponse",
 	"ControllersUsageHookMetadata":                "UsageHookMetadata",
 	"ControllersListUsageSessionsQuery":           "ListUsageSessionsQuery",
@@ -569,9 +591,11 @@ func operations() []operation {
 	ops = append(ops, agentOperations()...)
 	ops = append(ops, projectOperations()...)
 	ops = append(ops, sessionOperations()...)
+	ops = append(ops, automationOperations()...)
 	ops = append(ops, prOperations()...)
 	ops = append(ops, reviewOperations()...)
 	ops = append(ops, notificationOperations()...)
+	ops = append(ops, reportOperations()...)
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)
@@ -586,6 +610,24 @@ func operations() []operation {
 	ops = append(ops, endpointsOperations()...)
 	ops = append(ops, linkPreviewOperations()...)
 	return ops
+}
+
+func automationOperations() []operation {
+	id := []any{controllers.AutomationIDParam{}}
+	commonErrors := []respUnit{
+		{http.StatusBadRequest, envelope.APIError{}},
+		{http.StatusNotFound, envelope.APIError{}},
+		{http.StatusInternalServerError, envelope.APIError{}},
+		{http.StatusNotImplemented, envelope.APIError{}},
+	}
+	return []operation{
+		{method: http.MethodGet, path: "/api/v1/automations", id: "listAutomations", tag: "automations", summary: "List recurring automations", pathParams: []any{controllers.ListAutomationsQuery{}}, resps: append([]respUnit{{http.StatusOK, controllers.ListAutomationsResponse{}}}, commonErrors...)},
+		{method: http.MethodPost, path: "/api/v1/automations", id: "createAutomation", tag: "automations", summary: "Create a recurring automation", reqBody: controllers.CreateAutomationRequest{}, resps: append([]respUnit{{http.StatusCreated, controllers.AutomationEnvelope{}}}, commonErrors...)},
+		{method: http.MethodGet, path: "/api/v1/automations/{automationId}", id: "getAutomation", tag: "automations", summary: "Get one recurring automation", pathParams: id, resps: append([]respUnit{{http.StatusOK, controllers.AutomationEnvelope{}}}, commonErrors...)},
+		{method: http.MethodPatch, path: "/api/v1/automations/{automationId}", id: "updateAutomation", tag: "automations", summary: "Update a recurring automation", pathParams: id, reqBody: controllers.UpdateAutomationRequest{}, resps: append([]respUnit{{http.StatusOK, controllers.AutomationEnvelope{}}}, commonErrors...)},
+		{method: http.MethodDelete, path: "/api/v1/automations/{automationId}", id: "deleteAutomation", tag: "automations", summary: "Delete an automation and its run history", pathParams: id, resps: append([]respUnit{{http.StatusNoContent, nil}}, commonErrors...)},
+		{method: http.MethodGet, path: "/api/v1/automations/{automationId}/runs", id: "listAutomationRuns", tag: "automations", summary: "List durable automation run history", pathParams: []any{controllers.AutomationIDParam{}, controllers.ListAutomationRunsQuery{}}, resps: append([]respUnit{{http.StatusOK, controllers.ListAutomationRunsResponse{}}}, commonErrors...)},
+	}
 }
 
 // linkPreviewOperations declares the server-side link unfurl. Must stay 1:1
@@ -639,6 +681,31 @@ func identityOperations() []operation {
 			},
 		},
 	}
+}
+
+func reportOperations() []operation {
+	return []operation{{
+		method: http.MethodGet, path: "/api/v1/reports", id: "listReports", tag: "reports",
+		summary:    "List persisted project reports without changing delivery state",
+		pathParams: []any{controllers.ListReportsQuery{}},
+		resps: []respUnit{
+			{http.StatusOK, controllers.ListReportsResponse{}},
+			{http.StatusBadRequest, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}, {
+		method: http.MethodPost, path: "/api/v1/reports", id: "createReport", tag: "reports",
+		summary: "Persist a worker report for later orchestrator delivery",
+		reqBody: controllers.CreateReportRequest{},
+		resps: []respUnit{
+			{http.StatusCreated, controllers.CreateReportResponse{}},
+			{http.StatusBadRequest, envelope.APIError{}},
+			{http.StatusNotFound, envelope.APIError{}},
+			{http.StatusInternalServerError, envelope.APIError{}},
+			{http.StatusNotImplemented, envelope.APIError{}},
+		},
+	}}
 }
 
 // systemOperations declares the startup requirements gate the desktop loading
@@ -1442,6 +1509,17 @@ func mobileOperations() []operation {
 			method: http.MethodPost, path: "/api/v1/mobile/secure-pairing", id: "setMobileSecurePairing", tag: "mobile",
 			summary: "Turn TLS-over-Tailscale secure pairing on or off",
 			reqBody: controllers.SetSecurePairingRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.MobileStatusResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusForbidden, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/mobile/keep-awake", id: "setMobileKeepAwake", tag: "mobile",
+			summary: "Keep this Mac from idle-sleeping while Connect Mobile is on",
+			reqBody: controllers.SetKeepAwakeRequest{},
 			resps: []respUnit{
 				{http.StatusOK, controllers.MobileStatusResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
@@ -2610,6 +2688,27 @@ func sessionOperations() []operation {
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusConflict, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPost, path: "/api/v1/projects/{id}/tasks/prepare", id: "prepareTask", tag: "projects",
+			summary:    "Speculatively create the next task's worktree",
+			pathParams: []any{controllers.ProjectIDParam{}},
+			resps: []respUnit{
+				{http.StatusAccepted, controllers.PrepareTaskResponse{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodDelete, path: "/api/v1/task-preparations/{token}", id: "cancelTaskPreparation", tag: "projects",
+			summary:    "Cancel an unclaimed speculative task worktree",
+			pathParams: []any{controllers.TaskPreparationTokenParam{}},
+			resps: []respUnit{
+				{http.StatusNoContent, nil},
 				{http.StatusInternalServerError, envelope.APIError{}},
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},

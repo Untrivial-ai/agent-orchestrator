@@ -1,3 +1,4 @@
+import type { FeatherIconName } from "./icons";
 /**
  * What the worker row's long-press menu offers, given one session's facts.
  *
@@ -108,14 +109,14 @@ export const WORKER_ACTION_DRAWABLES: readonly WorkerActionId[] = ["pin", "unpin
  * this module stays free of React Native.
  */
 export type WorkerActionGlyph =
-	| { family: "feather"; name: "message-square" | "edit-2" | "play" | "rotate-ccw" | "git-pull-request" | "trash-2" }
-	| { family: "material"; name: "pin" | "pin-outline" };
+	| { family: "feather"; name: FeatherIconName }
+
 
 export function workerActionGlyph(id: WorkerActionId): WorkerActionGlyph {
 	switch (id) {
 		case "open": return { family: "feather", name: "message-square" };
-		case "pin": return { family: "material", name: "pin" };
-		case "unpin": return { family: "material", name: "pin-outline" };
+		case "pin": return { family: "feather", name: "pin" };
+		case "unpin": return { family: "feather", name: "pin-off" };
 		case "rename": return { family: "feather", name: "edit-2" };
 		case "resume": return { family: "feather", name: "play" };
 		case "restore": return { family: "feather", name: "rotate-ccw" };

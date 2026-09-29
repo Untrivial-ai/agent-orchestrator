@@ -1,5 +1,5 @@
 import { fetch as expoFetch } from "expo/fetch";
-import { ApiError, apiRequest } from "../api";
+import { ApiError, ATTACHMENT_REQUEST_TIMEOUT_MS, apiRequest } from "../api";
 import { authHeaders, httpBase, type ServerConfig } from "../config";
 import type {
 	ActivityDetail,
@@ -142,8 +142,9 @@ export async function sendConversationMessage(
 ): Promise<SendMessageResult> {
 	const res = await apiRequest(cfg, conversationPath(sessionId, "/messages"), {
 		method: "POST",
+		headers: input.attachments?.length ? { "X-AO-Attachment-Upload": "1" } : undefined,
 		body: JSON.stringify(input),
-	});
+	}, input.attachments?.length ? ATTACHMENT_REQUEST_TIMEOUT_MS : undefined);
 	return (await res.json()) as SendMessageResult;
 }
 
@@ -256,7 +257,7 @@ export async function stageConversationAttachments(
 	const res = await apiRequest(cfg, `${API}/sessions/${encodeURIComponent(sessionId)}/attachments`, {
 		method: "POST",
 		body: JSON.stringify({ attachments }),
-	}, 60_000);
+	}, ATTACHMENT_REQUEST_TIMEOUT_MS);
 	const body = (await res.json()) as { paths?: string[] };
 	return body.paths ?? [];
 }
@@ -341,7 +342,7 @@ export async function streamGlobalConversationEvents(
 		signal,
 	});
 	if (!res.ok) throw await streamError(res);
-	if (!res.body) throw new Error("The mobile network stack did not provide an event stream");
+	if (!res.body) throw new Error("Couldn't open live updates from your desktop.");
 	const advertisedAfterHeader = res.headers.get("X-AO-Event-After");
 	const advertisedAfter = advertisedAfterHeader === null ? Number.NaN : Number(advertisedAfterHeader);
 	const effectiveAfter = Number.isSafeInteger(advertisedAfter) && advertisedAfter >= 0
@@ -441,13 +442,16 @@ function readDecisions(detail: ActivityDetail): DecisionOption[] | undefined {
 async function streamError(res: Response): Promise<ApiError> {
 	let message = `${res.status} ${res.statusText}`;
 	let code: string | undefined;
+	let detail: string | undefined;
+	let requestId: string | undefined;
 	try {
-		const body = (await res.json()) as { message?: string; error?: string; code?: string };
-		const detail = body.message ?? body.error;
+		const body = (await res.json()) as { message?: string; error?: string; code?: string; requestId?: string };
+		detail = body.message ?? body.error;
 		if (detail) message += ` - ${detail}`;
 		code = body.code;
+		requestId = typeof body.requestId === "string" ? body.requestId : undefined;
 	} catch {
 		// A proxy may answer HTML; the status remains enough to classify it.
 	}
-	return new ApiError(res.status, message, code);
+	return new ApiError(res.status, message, code, requestId, detail || undefined);
 }

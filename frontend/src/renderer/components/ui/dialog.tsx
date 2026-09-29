@@ -117,8 +117,10 @@ export {
 // confirmation modals (ConfirmDialog) so they all share the same frame,
 // spacing, and typography. Every value resolves to a
 // design token; no raw pixel values here.
-export const settingsDialogContentClass =
-	"z-overlay flex max-h-[min(var(--size-settings-dialog-max-h),calc(100svh-var(--space-8)))] w-[min(var(--size-settings-dialog),calc(100vw-var(--space-8)))] max-w-none flex-col gap-0 overflow-hidden rounded-(--radius-settings-dialog-lg) border border-[var(--color-border-settings-dialog)] bg-popover p-0 text-settings-label shadow-[var(--shadow-settings-dialog)]";
+export const settingsDialogSurfaceClass =
+	"flex max-h-[min(var(--size-settings-dialog-max-h),calc(100svh-var(--space-8)))] w-[min(var(--size-settings-dialog),calc(100vw-var(--space-8)))] max-w-none flex-col gap-0 overflow-hidden rounded-(--radius-settings-dialog-lg) border border-[var(--color-border-settings-dialog)] bg-popover p-0 text-settings-label shadow-[var(--shadow-settings-dialog)]";
+
+export const settingsDialogContentClass = `z-overlay ${settingsDialogSurfaceClass}`;
 
 export const settingsDialogHeaderClass =
 	"flex shrink-0 flex-col gap-1 border-b border-(--color-border-settings-dialog-header) p-(--size-modal-padding)";

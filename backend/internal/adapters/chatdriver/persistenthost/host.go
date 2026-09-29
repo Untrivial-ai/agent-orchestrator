@@ -43,6 +43,9 @@ const (
 	ProtocolRaw Protocol = ""
 	// ProtocolACP enables the host-owned ACP correlation and replay profile.
 	ProtocolACP Protocol = "acp"
+	// ProtocolUnreal preserves Unreal Agent's AO-private JSONL stream while
+	// fencing ownership with the same stable launch identity used by ACP hosts.
+	ProtocolUnreal Protocol = "unreal"
 
 	// ACPPromptResultMethod is an AO-private notification emitted when an ACP
 	// prompt finishes after the daemon attachment that issued it has gone away.

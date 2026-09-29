@@ -1,0 +1,29 @@
+---
+title: GitHub issue intake
+description: Opt-in, assignee-scoped worker creation from GitHub issues.
+---
+
+GitHub is the only tracker provider supported by the current backend. The adapter reads issues using the user's existing GitHub authentication.
+
+## Configure intake
+
+Tracker intake needs two separate opt-ins, and both default to off. The daemon must be started with `AO_TRACKER_INTAKE=on`, and the project must carry an assignee rule. The assignee rule keeps one project from draining its whole backlog. The daemon flag exists because intake starts one worker session per eligible issue with nothing bounding how many run at once, so the decision belongs to whoever runs the daemon rather than to each project.
+
+Configure the project:
+
+```bash
+ao project set-config my-app \
+  --tracker-intake \
+  --tracker-repo owner/repo \
+  --tracker-assignee alice
+```
+
+The provider defaults to `github`. When the repository is omitted, AO can derive it from the project's Git remote. Use `ao project get my-app --json` to inspect the stored configuration.
+
+With `AO_TRACKER_INTAKE` unset, that configuration is still stored and validated, but no sessions are spawned. The daemon logs a warning at startup naming how many projects are in that state.
+
+On the desktop app you do not start the daemon yourself, so set the variable where your login shell will export it, for example in `~/.zshrc`, then relaunch the app. AO probes the login shell and passes its environment through to the daemon it spawns. Note that the warning above is only written at daemon startup, so enabling intake on a project while the app is already running produces no notice until the next launch.
+
+## Current boundary
+
+Matching issues may create sessions and provide issue context. The current intake path is read-only: it does not post comments, assign workflow states, or close issues after a session finishes. PR and CI observation belongs to AO's separate [GitHub SCM capability](/plugins/scm/github).

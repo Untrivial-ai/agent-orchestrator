@@ -57,6 +57,9 @@ type Store interface {
 	CreateSession(context.Context, domain.Principal, string, string, int, domain.CreateSession) (domain.Session, error)
 	ListSessions(context.Context, domain.Principal, string, string, *domain.Cursor, int) ([]domain.Session, bool, error)
 	GetSession(context.Context, domain.Principal, string, string) (domain.Session, error)
+	SetCloudSessionAutoInjectCI(context.Context, domain.Principal, string, string, bool) (domain.Session, error)
+	SetCloudSessionAutoInjectReview(context.Context, domain.Principal, string, string, bool) (domain.Session, error)
+	SetCloudSessionTerminateOnPRMerge(context.Context, domain.Principal, string, string, bool) (domain.Session, error)
 	SendMessage(context.Context, domain.Principal, string, string, string, string) (domain.ClientEvent, error)
 	ListClientEvents(context.Context, domain.Principal, string, string, int64, int) ([]domain.ClientEvent, bool, error)
 	SetSandboxDesiredState(ctx context.Context, principal domain.Principal, orgID, sessionID, desiredState string) error
@@ -71,6 +74,7 @@ type Store interface {
 	MarkWorkerSeen(ctx context.Context, orgID, sessionID, workerID, version string, epoch int64, capabilities []string) error
 	SetWorkerActivity(ctx context.Context, orgID, sessionID, workerID string, epoch int64, activity worker.ActivityEvent) error
 	AppendSessionEvent(ctx context.Context, orgID, sessionID, eventType string, payload json.RawMessage) (domain.ClientEvent, error)
+	RecordPullRequestOpened(ctx context.Context, orgID string, pr domain.PullRequest, deliveryID string) error
 	ClaimWorkerTurn(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (domain.WorkerTurn, bool, error)
 	RequestTurnCancellation(ctx context.Context, principal domain.Principal, orgID, sessionID, turnID string) error
 	WorkerTurnCancellationRequested(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int) (bool, error)
@@ -102,6 +106,8 @@ type Store interface {
 	EnsureWorkerAgentTerminal(context.Context, string, string, string, int64, time.Duration) (domain.TerminalSession, error)
 	ListTerminalOutput(context.Context, domain.TerminalSession, int64, int) ([]domain.TerminalOutput, string, error)
 	ListPullRequestsBySession(context.Context, domain.Principal, string, string) ([]domain.PullRequest, error)
+	PullRequestForMerge(context.Context, domain.Principal, string, string, int, string) (domain.PullRequest, error)
+	PullRequestSnapshot(context.Context, string, string) (domain.PullRequestSnapshot, error)
 	ListReviewRunsBySession(context.Context, domain.Principal, string, string) ([]domain.ReviewRunPullRequest, error)
 	PRFactsBySession(ctx context.Context, orgID string, sessionIDs []string) (map[string][]contract.PRFacts, error)
 	PullRequestsBySessions(ctx context.Context, orgID string, sessionIDs []string) (map[string][]domain.PullRequest, error)
@@ -114,6 +120,10 @@ type Store interface {
 	RedeemProjectShareLink(context.Context, domain.Principal, string, string) (domain.SharedProject, error)
 	ListSharedProjects(context.Context, domain.Principal) ([]domain.SharedProject, error)
 	ListSharedProjectSessions(context.Context, domain.Principal, string, string) ([]domain.Session, error)
+	AcceptNotificationEvent(context.Context, string, string, string, int64, domain.AgentNotificationEvent) (domain.NotificationAcceptance, error)
+	ListNotifications(context.Context, domain.Principal, string, domain.NotificationFilter) (domain.NotificationPage, error)
+	ListNotificationEvents(context.Context, domain.Principal, string, int64, int) ([]domain.NotificationEvent, bool, error)
+	MarkNotificationsRead(context.Context, domain.Principal, string, []string) (int64, error)
 }
 
 // WorkerTokens issues and verifies the short-lived credentials sandbox workers
@@ -127,6 +137,7 @@ type WorkerTokens interface {
 type CheckoutBroker interface {
 	IssueCheckoutGrant(context.Context, string, string) (githubapp.CheckoutGrant, error)
 	IssuePushGrant(context.Context, string, string) (githubapp.CheckoutGrant, error)
+	IssuePushGrantForRepo(context.Context, string, string, string) (githubapp.CheckoutGrant, error)
 	RaisePullRequest(context.Context, string, string, domain.RaisePullRequest) (domain.PullRequest, error)
 	ClaimPullRequest(context.Context, string, string, string) (domain.PullRequest, error)
 	SubmitReview(context.Context, string, string, string, domain.SubmitReviewResult) (domain.ReviewRun, error)
@@ -176,6 +187,8 @@ type Server struct {
 	terminalRelayEnabled    bool
 	terminalStreams         *terminalStreams
 	workWaiters             *workWaiters
+	notificationWake        func()
+	notificationWaiters     *notificationWaiters
 	// workerBinariesBySHA serves the content-addressed worker/helper binaries
 	// so a worker with a stale baked copy can heal itself to this exact build.
 	workerBinariesBySHA map[string][]byte
@@ -191,8 +204,7 @@ type Options struct {
 	SandboxProvider           string
 	AvailableSandboxProviders []string
 	CapabilityGatedProviders  []string
-	// CoderTemplates lists the Coder templates a client may pick from. Nil when
-	// the deployment does not offer the coder provider.
+	// CoderTemplates lists templates available from the configured Coder provider.
 	CoderTemplates          CoderTemplateLister
 	Provisioning            sandbox.ProvisioningDefaults
 	WorkerTokens            WorkerTokens
@@ -215,6 +227,7 @@ type Options struct {
 	WebhookMaxBody          int64
 	TerminalStreamEnabled   bool
 	TerminalRelayEnabled    bool
+	NotificationWake        func()
 }
 
 func New(options Options) *Server {
@@ -297,6 +310,8 @@ func New(options Options) *Server {
 		terminalRelayEnabled:      options.TerminalRelayEnabled,
 		terminalStreams:           newTerminalStreams(),
 		workWaiters:               newWorkWaiters(),
+		notificationWake:          options.NotificationWake,
+		notificationWaiters:       newNotificationWaiters(),
 	}
 	server.workerBinariesBySHA = indexWorkerBinaries(options.WorkerBinary, options.WorkerHelperBinary)
 	if server.credentialValidator == nil {
@@ -376,6 +391,7 @@ func New(options Options) *Server {
 			// ticket for a sandbox it is already registered on.
 			router.Get("/worker/reconnect", server.workerReconnect)
 			router.Post("/worker/events", server.workerEvent)
+			router.Post("/worker/notification-events", server.workerNotificationEvent)
 			router.Post("/worker/turns/claim", server.workerClaimTurn)
 			router.Get("/worker/turns/{turnId}/cancellation", server.workerTurnCancellation)
 			router.Post("/worker/turns/{turnId}/complete", server.workerCompleteTurn)
@@ -420,6 +436,10 @@ func New(options Options) *Server {
 				router.Post("/projects/scratch", server.createGitHubScratchProject)
 			}
 			router.Get("/projects", server.listProjects)
+			router.Get("/notifications", server.listNotifications)
+			router.Get("/notification-events", server.notificationEvents)
+			router.Patch("/notifications/{notificationId}", server.markNotificationRead)
+			router.Post("/notifications/read-all", server.markAllNotificationsRead)
 			router.Post("/projects", server.createProject)
 			router.Patch("/projects/{projectId}", server.updateProject)
 			router.Delete("/projects/{projectId}", server.deleteProject)
@@ -438,6 +458,9 @@ func New(options Options) *Server {
 			router.Post("/sessions", server.createSession)
 			router.Get("/sandbox/coder/templates", server.listCoderTemplates)
 			router.Get("/sessions/{sessionId}", server.getSession)
+			router.Patch("/sessions/{sessionId}/auto-inject-ci", server.setCloudSessionAutoInjectCI)
+			router.Patch("/sessions/{sessionId}/auto-inject-review", server.setCloudSessionAutoInjectReview)
+			router.Patch("/sessions/{sessionId}/merge-policy", server.setCloudSessionMergePolicy)
 			router.Post("/sessions/wake", server.wakePausedSessions)
 			router.Post("/sessions/{sessionId}/resume", server.resumeSession)
 			router.Post("/sessions/{sessionId}/restore", server.restoreSession)
@@ -465,6 +488,7 @@ func New(options Options) *Server {
 			router.Get("/sessions/{sessionId}/workspace/review/revision", server.getWorkspaceReviewRevision)
 			router.Put("/sessions/{sessionId}/workspace/review/file", server.putWorkspaceReviewFile)
 			router.Get("/sessions/{sessionId}/pull-requests", server.listSessionPullRequests)
+			router.Post("/sessions/{sessionId}/pull-requests/{number}/merge", server.mergeSessionPullRequest)
 			router.Get("/sessions/{sessionId}/reviews", server.getSessionReviewState)
 			router.Get("/members", server.listOrgMembers)
 			router.Patch("/members/{userId}", server.updateOrgMemberRole)
@@ -534,6 +558,15 @@ func (w *statusResponseWriter) Write(body []byte) (int, error) {
 
 func (w *statusResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
+}
+
+func (w *statusResponseWriter) Flush() {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func (s *Server) requestLog(next http.Handler) http.Handler {

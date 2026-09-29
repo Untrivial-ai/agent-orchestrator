@@ -577,6 +577,9 @@ const githubAuthFlow: ProviderAuthFlow = {
 	},
 };
 
+// opencode has no browser-capture flow: its interactive login writes to a local
+// sqlite db (not a portable file), so its cloud credential is a provider API key
+// entered via the credential dialog (like cursor) -- not a ProviderAuthFlow.
 const flows = new Map<string, ProviderAuthFlow>([
 	[codexAuthFlow.provider, codexAuthFlow],
 	[claudeAuthFlow.provider, claudeAuthFlow],

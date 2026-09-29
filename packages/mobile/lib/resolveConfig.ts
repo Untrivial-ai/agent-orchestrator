@@ -2,7 +2,7 @@ import type { ConnectResult } from "./connect";
 import { loadConfig, saveConfig, type ServerConfig } from "./config";
 import type { Host } from "./hosts";
 import { activeHost, migrateLegacyConfig } from "./hosts";
-import { connectToHost } from "./connectRuntime";
+import { connectToHost, type ConnectOptions } from "./connectRuntime";
 
 export type ResolveDeps = {
 	migrate: () => Promise<void>;
@@ -55,11 +55,11 @@ export async function resolveActiveConfig(deps: ResolveDeps): Promise<ServerConf
 }
 
 /** The production dependency set. */
-export function runtimeResolveDeps(): ResolveDeps {
+export function runtimeResolveDeps(options?: ConnectOptions): ResolveDeps {
 	return {
 		migrate: migrateLegacyConfig,
 		activeHost,
-		connect: connectToHost,
+		connect: (hostId) => connectToHost(hostId, options),
 		loadLegacyConfig: loadConfig,
 		persist: saveConfig,
 	};

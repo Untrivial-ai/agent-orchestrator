@@ -35,6 +35,10 @@ type State struct {
 	// — pointed at whatever port the restarted LAN listener actually bound, not
 	// this struct's LastPort, since Start can fall back to an ephemeral port.
 	SecurePairing bool `json:"securePairing"`
+	// KeepAwake is the user's choice to keep this Mac from idle-sleeping while
+	// the bridge is on. Kept separate from Enabled so turning the bridge off and
+	// on again does not forget it.
+	KeepAwake bool `json:"keepAwake"`
 }
 
 // Path returns the Connect Mobile config file location under the data dir

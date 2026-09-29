@@ -12,21 +12,27 @@ const tunnel: Endpoint = { kind: "tunnel", host: "old.trycloudflare.com", port: 
 // Nothing in the app can fix that; what it can do is stop showing a bare
 // "can't connect" and say the code needs rescanning.
 describe("recognising a rotated tunnel", () => {
-	it("suspects rotation when the only remote path is a tunnel that failed", () => {
-		expect(tunnelMayHaveRotated([lan, tunnel], false)).toBe(true);
+	it("suspects rotation when the active tunnel failed", () => {
+		expect(tunnelMayHaveRotated([lan, tunnel], "tunnel", false)).toBe(true);
+	});
+
+	// Turning off Wi-Fi makes the active LAN address unreachable. A tunnel in
+	// the saved endpoint list is not evidence that its hostname rotated.
+	it("does not blame a saved tunnel when the active LAN endpoint failed", () => {
+		expect(tunnelMayHaveRotated([lan, tunnel], "lan", false)).toBe(false);
 	});
 
 	// Nothing to rotate: a machine with no tunnel is simply out of range.
 	it("does not suspect rotation when no tunnel was ever advertised", () => {
-		expect(tunnelMayHaveRotated([lan, tailscale], false)).toBe(false);
+		expect(tunnelMayHaveRotated([lan, tailscale], "lan", false)).toBe(false);
 	});
 
 	// If anything answered, the machine is reachable and the hostname is fine.
 	it("does not suspect rotation while something is still reachable", () => {
-		expect(tunnelMayHaveRotated([lan, tunnel], true)).toBe(false);
+		expect(tunnelMayHaveRotated([lan, tunnel], "tunnel", true)).toBe(false);
 	});
 
 	it("has nothing to suspect with no endpoints at all", () => {
-		expect(tunnelMayHaveRotated([], false)).toBe(false);
+		expect(tunnelMayHaveRotated([], "tunnel", false)).toBe(false);
 	});
 });

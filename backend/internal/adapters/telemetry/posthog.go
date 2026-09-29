@@ -479,10 +479,13 @@ func (s *PostHogSink) properties(ev ports.TelemetryEvent) map[string]any {
 	// activity breakdowns stay complete.
 	if actor, ok := props["github_actor"]; ok && s.personProfileSet.CompareAndSwap(false, true) {
 		props["$set"] = map[string]any{"github_actor": actor}
+		props["$unset"] = stalePersonProperties
 		props["$process_person_profile"] = true
 	}
 	return props
 }
+
+var stalePersonProperties = []string{"ao_version", "app_version", "build_mode", "platform", "surface"}
 
 func remoteEventName(name string) string {
 	if alias, ok := remoteEventNameAliases[name]; ok {

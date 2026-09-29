@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -20,6 +21,7 @@ type UsageSummaryService interface {
 // UsageController owns compact dashboard usage routes.
 type UsageController struct {
 	Svc UsageSummaryService
+	Log *slog.Logger
 }
 
 // Register mounts usage routes on the supplied router.
@@ -35,6 +37,7 @@ func (c *UsageController) listSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := c.Svc.ListCompact(r.Context(), domain.ProjectID(r.URL.Query().Get("projectId")))
 	if err != nil {
+		c.Log.WarnContext(r.Context(), "failed to list compact session usage", "error", err)
 		envelope.WriteError(w, r, err)
 		return
 	}
@@ -60,6 +63,7 @@ func (c *UsageController) getSession(w http.ResponseWriter, r *http.Request) {
 	}
 	summary, err := c.Svc.Get(r.Context(), domain.SessionID(chi.URLParam(r, "sessionId")))
 	if err != nil {
+		c.Log.WarnContext(r.Context(), "failed to get session usage", "error", err)
 		envelope.WriteError(w, r, err)
 		return
 	}

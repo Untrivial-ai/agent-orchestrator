@@ -87,7 +87,7 @@ describe("DiffSelectionMenu", () => {
 		expect(await screen.findByText("Sending")).toBeInTheDocument();
 		expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
 			params: { path: { sessionId: "sess-1" } },
-			body: { message: expect.stringContaining("Explain what these lines do and why.") },
+			body: { message: expect.stringContaining("Explain what these lines do and why."), userAuthored: true },
 		});
 		const body = postMock.mock.calls[0][1].body as { message: string };
 		expect(body.message).toContain("File: src/app.ts");
@@ -205,7 +205,7 @@ describe("DiffSelectionMenu", () => {
 		expect(await screen.findByText("Sent")).toBeInTheDocument();
 		expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/send", {
 			params: { path: { sessionId: "sess-1" } },
-			body: { message: expect.stringContaining("Rename this to bar") },
+			body: { message: expect.stringContaining("Rename this to bar"), userAuthored: true },
 		});
 		const body = postMock.mock.calls[0][1].body as { message: string };
 		expect(body.message).not.toContain("Explain what these lines do and why.");

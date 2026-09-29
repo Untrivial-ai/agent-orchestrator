@@ -41,9 +41,9 @@ function tokenColor(kind: SyntaxTokenKind, t: ReturnType<typeof useTheme>): stri
 		case "string":
 		case "addition": return t.green;
 		case "number": return t.orange;
-		case "keyword": return t.purple;
+		case "keyword": return t.amber;
 		case "type":
-		case "meta": return t.blue;
+		case "meta": return t.textSecondary;
 		case "deletion": return t.red;
 		default: return t.textPrimary;
 	}

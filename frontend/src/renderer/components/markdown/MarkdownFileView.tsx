@@ -158,7 +158,10 @@ export function MarkdownFileView({
 						{t("files.contentTruncated")}
 					</div>
 				) : null}
-				<div className="markdown-body p-4" ref={bodyRef}>
+				{/* github-markdown-css hangs each heading's `.anchor` link icon 20px
+				    into the left gutter (`margin-left: -20px`), so the inline padding
+				    must be wider than that or the scroll container clips the icon. */}
+				<div className="markdown-body px-6 py-4" ref={bodyRef}>
 					<Markdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={components}>
 						{content}
 					</Markdown>

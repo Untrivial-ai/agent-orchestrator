@@ -30,6 +30,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { NotificationCenter } from "./NotificationCenter";
 import { ResizeHandle } from "./ResizeHandle";
 import { SessionFileExplorer } from "./SessionFileExplorer";
+import { FilesTopbarHostContext } from "./files-topbar-host";
 import { CloudFileContentPane, CloudWorkspaceDiff } from "./CloudWorkspaceDiff";
 import { SessionFileTab } from "./SessionFileTabs";
 import { SessionFileWorkspace } from "./SessionFileWorkspace";
@@ -70,6 +71,7 @@ import { cloudLifecycleStage } from "../lib/cloud-lifecycle";
 import { useTerminalResetStore } from "../stores/terminal-reset-store";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
+import { useSettings } from "../hooks/useSettings";
 import { clearSwitchAgentState } from "../hooks/useSwitchAgent";
 import { useWindowFullScreen } from "../hooks/useWindowFullScreen";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
@@ -123,6 +125,9 @@ const CHAT_READABLE_MIN_PX = 560;
 // canvas workflow. This is still wide enough for the timeline and composer, and
 // is separate from the roomier utility-view floor above.
 const BROWSER_CHAT_MIN_PX = 440;
+// Files sizes like the other utility views (same default, cap and remembered
+// width); it only keeps a wider floor so its tree + preview stay usable.
+const FILES_WORKSPACE_MIN_PX = 460;
 type CenterFileOpenRequest = { commitSha?: string; editing: boolean; key: number; mode: FileViewMode; scope?: FileOpenOptions["scope"] };
 const EMPTY_AUXILIARY_TAB_ORDER: string[] = [];
 // The inspector tab labels respond to the tablist's remaining width. The
@@ -225,7 +230,7 @@ function inspectorSizing(view: InspectorView): InspectorSizing {
 	return {
 		chatMinWidth: CHAT_READABLE_MIN_PX,
 		defaultWidth: WORKSPACE_DEFAULT_PX,
-		minWidth: WORKSPACE_MIN_PX,
+		minWidth: view === "files" ? FILES_WORKSPACE_MIN_PX : WORKSPACE_MIN_PX,
 		maxPercent: WORKSPACE_MAX_PERCENT,
 		mode: view === "files" ? "files" : "utility",
 		storageKey: inspectorWidthStorageKey,
@@ -439,7 +444,14 @@ function CloudSessionLifecycleLoader() {
 	], [t]);
 	return (
 		<div
-			className="absolute inset-0 z-[200] grid place-items-center bg-background"
+			// Sits at the session-pane chrome level: it must cover the loading
+			// pane's content (topbar/terminal) but MUST stay below the app overlay
+			// layer (`z-overlay`, dialogs/dropdowns). A raw high z (this was `z-[200]`)
+			// painted over any shell modal opened while a cloud session loads — the
+			// New Task dialog, the project three-dots menu — leaving it invisible
+			// behind the loader while Radix still applied `body{pointer-events:none}`,
+			// which froze the whole UI (sidebar included). Keep this <= z-overlay.
+			className="absolute inset-0 z-chrome grid place-items-center bg-background"
 			data-testid="cloud-session-loader-screen"
 		>
 			<MultiStepLoader
@@ -592,6 +604,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		phase: "docked",
 	});
 	const [filesPoppedOut, setFilesPoppedOut] = useState(false);
+	const [filesPopoutTopbarHost, setFilesPopoutTopbarHost] = useState<HTMLDivElement | null>(null);
 	const [filesSplit, setFilesSplit] = useState(() => window.localStorage.getItem("ao.files.diffStyle") === "split");
 	const [filePreviewRequestsBySession, setFilePreviewRequestsBySession] = useState<
 		Record<string, { path: string; key: number }>
@@ -1474,8 +1487,19 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[beginInterfaceSwitch, interfaceBusy, interfaceSwitch, interfaceTarget, session],
 	);
 	// Adapters without a Chat driver cannot offer a switch into Chat UI; hide
-	// the button entirely rather than showing a permanently disabled control.
-	const interfaceSwitchUnsupported = interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED";
+	// the switch entirely rather than showing a permanently disabled control.
+	// The daemon's Chat harness list knows this before the session's status
+	// loads, and for terminated sessions, whose status only reports
+	// SESSION_TERMINATED. An empty list (settings still loading, or Chat off
+	// entirely) proves nothing, so the status decides then.
+	const { settings } = useSettings();
+	const chatHarnesses = settings?.chatHarnesses ?? [];
+	const interfaceSwitchUnsupported =
+		interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED" ||
+		(interfaceTarget === "chat" &&
+			session !== undefined &&
+			chatHarnesses.length > 0 &&
+			!chatHarnesses.includes(session.provider));
 	// Harnesses without a TUI/Chat handoff cannot convert a running terminal
 	// session. Say so plainly instead of showing the daemon's reason.
 	const interfaceSwitchBlockedReason =
@@ -1698,12 +1722,15 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			switchError={handoffSwitchError}
 		/>
 	) : null, [handoffAgentSwitch, handoffControlPresentation, handoffDialogOpen, handoffSwitchError, handleHandoffDialogOpenChange, session]);
-	const sessionTabActions = useMemo(() => (
+	// The ⋮ only holds the Chat/Terminal switch and Switch agent, and agent
+	// switching is limited to Claude Code and Codex, which both have Chat. A
+	// harness without Chat therefore gets no ⋮ instead of an empty menu.
+	const sessionTabActions = useMemo(() => interfaceSwitchUnsupported ? null : (
 		<SessionActionsMenu inlineStatus={interfaceSwitchInlineStatus}>
 			{interfaceSwitchMenuItem}
 			{handoffMenuItem}
 		</SessionActionsMenu>
-	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem]);
+	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem, interfaceSwitchUnsupported]);
 	// Spinner replaces the ⋮ at the same size, so the tab title does not need a
 	// wider action slot while switching.
 	const sessionTabActionWide = false;
@@ -2280,6 +2307,10 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					if (!open) settleUnsafeDraftLeave(false);
 				}}
 			/>
+			{/* Maximized files wear the maximized browser's chrome: a backdrop, the
+          filter pinned in the titlebar band where the browser's address bar
+          sits, and an inset frame for the explorer. The explorer mounts once
+          the band exists so the filter never renders inline first. */}
 			{filesPoppedOut && session
 				? createPortal(
 						<div
@@ -2288,17 +2319,32 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								shellTopbarHiddenByPlatform && !isNativeFullScreen && "files-popout-overlay--mac-windowed",
 							)}
 						>
-							{session.cloud ? (
-								<CloudWorkspaceDiff annotation={fileAnnotation} isMaximized onOpenFile={openCenterFile} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
-							) : (
-								<SessionFileExplorer
-									isMaximized
-									onSplitChange={setFilesSplit}
-									onToggleMaximized={handleToggleFilesPopOut}
-									sessionId={session.id}
-									split={filesSplit}
-								/>
-							)}
+							<div aria-hidden="true" className="files-popout-backdrop" />
+							<div
+								className={cn(
+									"files-popout-titlebar",
+									shellTopbarHiddenByPlatform && !isNativeFullScreen && "files-popout-titlebar--mac-windowed",
+								)}
+								data-testid="files-popout-topbar"
+								ref={setFilesPopoutTopbarHost}
+							/>
+							<div className="files-popout-frame">
+								{filesPopoutTopbarHost ? (
+									<FilesTopbarHostContext.Provider value={filesPopoutTopbarHost}>
+										{session.cloud ? (
+											<CloudWorkspaceDiff annotation={fileAnnotation} isMaximized onOpenFile={openCenterFile} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
+										) : (
+											<SessionFileExplorer
+												isMaximized
+												onSplitChange={setFilesSplit}
+												onToggleMaximized={handleToggleFilesPopOut}
+												sessionId={session.id}
+												split={filesSplit}
+											/>
+										)}
+									</FilesTopbarHostContext.Provider>
+								) : null}
+							</div>
 						</div>,
 						document.body,
 					)

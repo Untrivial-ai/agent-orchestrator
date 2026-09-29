@@ -20,3 +20,15 @@ export function shouldShowLoading(s: { resolved: boolean; configured: boolean })
 	// would hide the connect prompt the user actually needs.
 	return s.configured;
 }
+
+/**
+ * What a screen with no usable config should show.
+ *
+ * Same distinction as above, for the screens that branch on `configured`
+ * before they ever look at the loader: until resolution has finished, a
+ * missing config is a machine still being found — showing the pairing prompt
+ * then tells a paired user to re-scan seconds before the app connects anyway.
+ */
+export function unconfiguredView(s: { resolved: boolean }): "resolving" | "unpaired" {
+	return s.resolved ? "unpaired" : "resolving";
+}

@@ -1,3 +1,5 @@
+import { daemonDetail } from "./connectionError";
+
 const CHAT_PREFLIGHT_CODES = new Set([
 	"SESSION_MODE_UNSUPPORTED",
 	"CHAT_DRIVER_UNAVAILABLE",
@@ -13,5 +15,5 @@ export function isChatPreflightError(error: unknown): error is ChatAPIError {
 
 /** Remove the HTTP envelope prefix while preserving the daemon's useful detail. */
 export function chatErrorCopy(error: ChatAPIError): string {
-	return error.message.replace(/^\d+\s+[^-]+\s+-\s+/, "");
+	return daemonDetail(error) ?? error.message.replace(/^\d+\s+[^-]+\s+-\s+/, "");
 }

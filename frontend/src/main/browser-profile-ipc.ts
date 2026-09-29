@@ -171,9 +171,9 @@ export function registerBrowserProfileIpc(options: BrowserProfileIpcOptions): Br
 			await options.store.deleteProfile(profileId);
 		});
 	});
-	handle("browserProfiles:import:discover", async (event) => {
+	handle("browserProfiles:import:discover", async (event, input: unknown) => {
 		if (!trustedShellSender(event, options.shellWebContents)) return { sources: [] };
-		return options.importer.discover();
+		return options.importer.discover(isRecord(input) && typeof input.sourceId === "string" ? { sourceId: input.sourceId } : undefined);
 	});
 	handle("browserProfiles:import:start", async (event, input: unknown) => {
 		if (!trustedShellSender(event, options.shellWebContents)) throw invalid("Untrusted browser profile sender.");

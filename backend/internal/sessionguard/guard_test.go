@@ -372,6 +372,35 @@ func TestGuard_DeliverUnderMutationBypassesInputGateButKeepsSafetyChecks(t *test
 	}
 }
 
+func TestGuard_DeliverUnderMutationCheckedRunsGenerationProofBeforePaneWrite(t *testing.T) {
+	messenger := &fakeMessenger{}
+	rec := record(domain.ActivityWaitingInput, false)
+	rec.Harness = domain.HarnessFX
+	g := New(&fakeStore{rec: rec, ok: true}, messenger, nil)
+	g.SetInputLease(fixedInputLease(false))
+	staleGeneration := errors.New("target generation changed")
+
+	got, err := g.DeliverUnderMutationChecked(context.Background(), "s1", "continuation", func(_ context.Context, current domain.SessionRecord) error {
+		if current.Harness != domain.HarnessFX {
+			t.Fatalf("pre-write harness = %q, want fx", current.Harness)
+		}
+		return staleGeneration
+	})
+	if !errors.Is(err, staleGeneration) || got != SuppressedUnknown {
+		t.Fatalf("stale DeliverUnderMutationChecked = (%v, %v), want (SuppressedUnknown, stale generation)", got, err)
+	}
+	if len(messenger.sent) != 0 {
+		t.Fatalf("stale generation reached messenger: %#v", messenger.sent)
+	}
+
+	got, err = g.DeliverUnderMutationChecked(context.Background(), "s1", "continuation", func(context.Context, domain.SessionRecord) error {
+		return nil
+	})
+	if err != nil || got != Sent || len(messenger.sent) != 1 {
+		t.Fatalf("current DeliverUnderMutationChecked = (%v, %v), sends=%v", got, err, messenger.sent)
+	}
+}
+
 func TestGuard_CoordinationUnderMutationRechecksActivityAndBypassesInputGate(t *testing.T) {
 	steersCodex := func(h domain.AgentHarness) bool { return h == domain.HarnessCodex }
 	acceptsClaudeWaiting := func(h domain.AgentHarness) bool { return h == domain.HarnessClaudeCode }

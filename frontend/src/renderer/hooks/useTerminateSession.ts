@@ -105,7 +105,7 @@ export function useTerminateSession(options: TerminateSessionOptions = {}) {
 		mutationKey: terminateSessionMutationKey,
 		mutationFn: async (session: WorkspaceSession) => {
 			void captureRendererEvent("ao.renderer.session_kill_requested", { project_id: session.workspaceId });
-			const toastTitle = appI18n.t("shell.killingNamed", { title: session.branch || session.workspaceName || "Session" });
+			const toastTitle = appI18n.t("shell.archivingNamed", { title: session.branch || session.workspaceName || "Session" });
 			useUiStore.getState().showGlobalToast(toastTitle, undefined, "info");
 
 			await terminateSession(queryClient, session);

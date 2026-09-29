@@ -9,8 +9,7 @@ import { Button } from "../ui/button";
 // Public App Store listing for the Agent Orchestrator iOS app. No storefront
 // segment ("/us/") on purpose: Apple redirects a bare /app/ link to the
 // visitor's own storefront, while a pinned one sends everyone outside that
-// country to a "not available" page. The landing site holds the same two URLs
-// (frontend/src/landing/packages/shared/src/constants.ts) — change both.
+// country to a "not available" page.
 export const IOS_APP_STORE_URL = "https://apps.apple.com/app/ao-mobile/id6792552173";
 
 /** Public Google Play listing for the Agent Orchestrator Android app. */

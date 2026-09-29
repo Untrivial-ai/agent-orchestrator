@@ -63,23 +63,27 @@ type UpdateProject struct {
 }
 
 type Session struct {
-	ID               string
-	OrgID            string
-	ProjectID        string
-	Kind             string
-	Harness          string
-	DisplayName      string
-	Branch           string
-	Mode             string
-	DeniedCommands   []string
-	ActivityState    contract.ActivityState
-	IsTerminated     bool
-	RuntimeConnected bool
-	SandboxProvider  string
-	DesiredState     string
-	ObservedState    string
-	RuntimeState     string
-	RuntimeError     string
+	ID                 string
+	OrgID              string
+	ProjectID          string
+	Kind               string
+	Harness            string
+	DisplayName        string
+	Branch             string
+	Mode               string
+	Model              string
+	DeniedCommands     []string
+	ActivityState      contract.ActivityState
+	IsTerminated       bool
+	RuntimeConnected   bool
+	SandboxProvider    string
+	DesiredState       string
+	ObservedState      string
+	RuntimeState       string
+	RuntimeError       string
+	AutoInjectCI       bool
+	AutoInjectReview   bool
+	TerminateOnPRMerge bool
 	// WorkerEpoch is the highest worker epoch the session has minted for its
 	// agent terminal. It advances every time a fresh worker connects (a resume
 	// from idle-pause, a restore, or any re-provision), so a client can key its
@@ -108,6 +112,7 @@ type CreateSession struct {
 	DisplayName    string
 	Prompt         string
 	Mode           string
+	Model          string
 	DeniedCommands []string
 	Provider       string
 	// SandboxConnectionID names a bring-your-own provider credential. It is

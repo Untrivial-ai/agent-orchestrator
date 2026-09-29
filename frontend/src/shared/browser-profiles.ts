@@ -48,7 +48,7 @@ export type BrowserProfileViewState = {
 	viewId: string;
 	profileId: BrowserProfileId | null;
 	profileName?: string;
-	/** True when the selection is the per-worker memory-only profile. */
+	/** True when the selection is the per-worker temporary profile. */
 	temporary: boolean;
 };
 

@@ -404,8 +404,16 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 		// Local panes are loopback PTYs with ~0 latency and stay byte-exact
 		// untouched. Shell panes carry no session, so they are never wrapped —
 		// today the renderer only dials cloud sockets for agent panes anyway.
+		// opencode's OpenTUI repaints the whole screen on every keystroke and polls
+		// the terminal color-scheme protocol (CSI ? 996/997 n) every frame, whose
+		// replies ride the same input path. That fights the line-buffered
+		// prediction/rollback (tuned for codex/claude), corrupting the input line
+		// (e.g. a typed prefix followed by a runaway character run). opencode draws
+		// its own input authoritatively, so skip local prediction for it — direct,
+		// server-authoritative input like a local pane (the pre-#4763 behavior).
+		const localEchoSafeHarness = sessionRef.current?.provider !== "opencode";
 		const mux =
-			LOCAL_ECHO_ENABLED && sessionRef.current?.cloud
+			LOCAL_ECHO_ENABLED && sessionRef.current?.cloud && localEchoSafeHarness
 				? withLineBufferedLocalInput(baseMux, {})
 				: baseMux;
 		r.mux = mux;

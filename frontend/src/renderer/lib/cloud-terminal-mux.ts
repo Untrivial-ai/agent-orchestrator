@@ -25,6 +25,7 @@
 //             {type:"output",data:<base64>,sequence}
 
 import { base64ToBytes, type MuxConnectionState, type TerminalMux } from "./terminal-mux";
+import { publishCloudNotificationHint } from "./cloud-notification-hints";
 
 export interface CloudTerminalMuxOptions {
 	/** WebSocket base including the API mount, e.g. "wss://host/api/cloud/v1". */
@@ -107,7 +108,7 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 
 	const handleMessage = (event: MessageEvent) => {
 		if (typeof event.data !== "string") return;
-		let message: { type?: string; data?: string; sequence?: number };
+		let message: { type?: string; data?: string; sequence?: number; eventId?: string; eventType?: string; occurredAt?: string; payload?: unknown };
 		try {
 			message = JSON.parse(event.data);
 		} catch {
@@ -135,6 +136,12 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 				{
 					const clear = new TextEncoder().encode("\x1b[3J\x1b[H\x1b[2J");
 					dataListeners.forEach((listener) => listener(clear));
+				}
+				break;
+			case "notification_hint":
+				if (typeof message.eventId === "string" && typeof message.eventType === "string" &&
+					typeof message.occurredAt === "string" && message.payload !== null && typeof message.payload === "object" && !Array.isArray(message.payload)) {
+					publishCloudNotificationHint({ source: "cloud", eventId: message.eventId, type: message.eventType, occurredAt: message.occurredAt, payload: message.payload as Record<string, unknown> });
 				}
 				break;
 			// starting / replay_complete / input_ack carry no terminal output the
@@ -218,8 +225,18 @@ export function createCloudTerminalMux(options: CloudTerminalMuxOptions): Termin
 	// (which would loop a parked reconnect), so a 0×0 open/resize sends nothing;
 	// the real size follows from the first visible fit (open for a visible pane,
 	// or resize() when the pane becomes visible).
+	// A real terminal grid is never a handful of columns. A fit measured before the
+	// font metrics or the pane box have settled can propose e.g. 2 columns, and
+	// forwarding that to the remote PTY makes the agent TUI wrap every token to ~2
+	// chars — and because the value is cached in pendingResize and replayed on every
+	// reconnect (worker-epoch flips), it stays broken until an unrelated fit fires.
+	// Ignore an implausibly small grid so only a settled fit ever reaches the PTY.
+	// (This also subsumes the old cols<=0 guard: a parked 0×0 pane still sends
+	// nothing, so the shared PTY is never resized from an off-screen grid.)
+	const MIN_RESIZE_COLS = 20;
+	const MIN_RESIZE_ROWS = 4;
 	const sendResize = (cols: number, rows: number) => {
-		if (cols <= 0 || rows <= 0) return;
+		if (cols < MIN_RESIZE_COLS || rows < MIN_RESIZE_ROWS) return;
 		pendingResize = { cols, rows };
 		sendJSON({ type: "resize", columns: cols, rows });
 	};

@@ -26,6 +26,11 @@ export type BrowserImportSource = {
 	cookieSupport: BrowserImportCookieSupport;
 	cookieSupportReason: BrowserImportCookieSupportReason;
 	historySupport: true;
+	profilesDeferred?: true;
+};
+
+export type BrowserImportDiscoveryRequest = {
+	sourceId?: string;
 };
 
 export type BrowserImportDiscovery = {

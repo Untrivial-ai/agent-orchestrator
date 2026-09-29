@@ -64,6 +64,7 @@ export const DISPLAY_STATUSES = [
 	"Needs review",
 	"Review scheduled",
 	"Reviewing",
+	"Review failed",
 	"Review pending",
 	"Draft",
 	"CI failing",

@@ -37,8 +37,11 @@ type fakeSessionService struct {
 	sessions                   map[domain.SessionID]domain.Session
 	sent                       string
 	sentAttachment             *ports.SpawnAttachment
+	sentDeliveryOptions        ports.MessageDeliveryOptions
 	delegationInput            sessionsvc.DelegateTaskInput
 	delegationErr              error
+	preparedProject            domain.ProjectID
+	canceledPreparation        string
 	cleanupProjects            []domain.ProjectID
 	cleanupResult              []domain.SessionID
 	cleanupSkipped             []sessionsvc.CleanupSkipped
@@ -57,6 +60,9 @@ type fakeSessionService struct {
 	workspaceRevisionVersion   string
 	workspaceExpectedRevision  string
 	workspaceRevisionCommitSHA string
+	prFiles                    sessionsvc.PRFiles
+	prFileCommitSHA            string
+	prRevisionCommitSHA        string
 	workspaceSearch            sessionsvc.WorkspaceFileSearch
 	workspaceSearchQuery       string
 	workspaceSearchCursor      string
@@ -481,12 +487,29 @@ func (f *fakeSessionService) Send(_ context.Context, _ domain.SessionID, message
 	return nil
 }
 
+func (f *fakeSessionService) SendWithOptions(_ context.Context, _ domain.SessionID, message string, attachment *ports.SpawnAttachment, options ports.MessageDeliveryOptions) error {
+	f.sent = message
+	f.sentAttachment = attachment
+	f.sentDeliveryOptions = options
+	return nil
+}
+
 func (f *fakeSessionService) DelegateTask(_ context.Context, in sessionsvc.DelegateTaskInput) (sessionsvc.DelegateTaskOutcome, error) {
 	f.delegationInput = in
 	if f.delegationErr != nil {
 		return sessionsvc.DelegateTaskOutcome{}, f.delegationErr
 	}
 	return sessionsvc.DelegateTaskOutcome{WorkerID: "ao-worker", OrchestratorID: "ao-orch"}, nil
+}
+
+func (f *fakeSessionService) PrepareTask(_ context.Context, projectID domain.ProjectID) (string, error) {
+	f.preparedProject = projectID
+	return "prep-token", nil
+}
+
+func (f *fakeSessionService) CancelTaskPreparation(_ context.Context, token string) error {
+	f.canceledPreparation = token
+	return nil
 }
 
 func (f *fakeSessionService) ListPRs(_ context.Context, id domain.SessionID) ([]domain.PRFacts, error) {
@@ -588,6 +611,9 @@ func (f *fakeSessionService) ListPRFiles(_ context.Context, id domain.SessionID,
 	if _, ok := f.sessions[id]; !ok {
 		return sessionsvc.PRFiles{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	}
+	if f.prFiles.SessionID != "" {
+		return f.prFiles, nil
+	}
 	return sessionsvc.PRFiles{SessionID: id}, nil
 }
 
@@ -596,6 +622,11 @@ func (f *fakeSessionService) GetPRFile(_ context.Context, id domain.SessionID, _
 		return sessionsvc.WorkspaceFileDetail{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
 	}
 	return sessionsvc.WorkspaceFileDetail{SessionID: id, Path: path}, nil
+}
+
+func (f *fakeSessionService) GetPRFileAtCommit(ctx context.Context, id domain.SessionID, number int, sourceURL, path, commitSHA string) (sessionsvc.WorkspaceFileDetail, error) {
+	f.prFileCommitSHA = commitSHA
+	return f.GetPRFile(ctx, id, number, sourceURL, path, nil)
 }
 
 func (f *fakeSessionService) WorkspaceWatchPaths(_ context.Context, id domain.SessionID) ([]string, error) {
@@ -689,6 +720,11 @@ func (f *fakeSessionService) GetWorkspaceFileRevision(_ context.Context, id doma
 
 func (f *fakeSessionService) GetPRFileRevision(ctx context.Context, id domain.SessionID, number int, _ string, path string, side sessionsvc.WorkspaceFileBlobSide) (sessionsvc.WorkspaceFileRevision, error) {
 	return f.GetWorkspaceFileRevision(ctx, id, path, sessionsvc.WorkspaceDiffCommitted, side, "", "")
+}
+
+func (f *fakeSessionService) GetPRFileRevisionAtCommit(ctx context.Context, id domain.SessionID, number int, sourceURL, path string, side sessionsvc.WorkspaceFileBlobSide, commitSHA string) (sessionsvc.WorkspaceFileRevision, error) {
+	f.prRevisionCommitSHA = commitSHA
+	return f.GetPRFileRevision(ctx, id, number, sourceURL, path, side)
 }
 
 func (f *fakeSessionService) GetWorkspaceFileRevisionAtCommit(ctx context.Context, id domain.SessionID, path string, side sessionsvc.WorkspaceFileBlobSide, workspaceVersion, expectedRevision, commitSHA string) (sessionsvc.WorkspaceFileRevision, error) {
@@ -1451,18 +1487,36 @@ func TestSessionsAPI_SpawnRejectsOversizedBody(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
 
-	// A body past the ~35 MiB maxSpawnBodyBytes cap is rejected while decoding
+	// A body past the ~135 MiB maxSpawnBodyBytes cap is rejected while decoding
 	// (MaxBytesReader), before the attachment size caps and without materializing
 	// the whole body. The oversized bytes live in an *attachment* payload (not the
 	// prompt, which has its own much smaller PROMPT_TOO_LONG cap), so this pins the
 	// body cap specifically: MaxBytesReader makes the read/decode fail with
 	// INVALID_JSON. If that line were removed the body would decode fully and be
 	// rejected later with an attachment-specific code (ATTACHMENT_TOO_LARGE),
-	// failing this test. 40 MiB of base64 comfortably exceeds the ~35 MiB cap.
+	// failing this test. 150 MiB of base64 comfortably exceeds the ~135 MiB cap.
 	oversized := `{"projectId":"ao","attachments":[{"mimeType":"image/png","data":"` +
-		strings.Repeat("A", 40<<20) + `"}]}`
+		strings.Repeat("A", 150<<20) + `"}]}`
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions", oversized)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
+}
+
+func TestSessionsAPI_SpawnAcceptsVideoAbovePreviousLimit(t *testing.T) {
+	const size = 11 << 20
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	video := base64.StdEncoding.EncodeToString(make([]byte, size))
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions",
+		`{"projectId":"ao","kind":"worker","harness":"codex","prompt":"inspect the video","attachments":[{"mimeType":"video/quicktime","data":"`+video+`"}]}`)
+	if status != http.StatusCreated {
+		t.Fatalf("spawn with 11 MiB video = %d, want 201; body=%s", status, body)
+	}
+	if len(svc.lastSpawn.Attachments) != 1 {
+		t.Fatalf("spawn attachments = %d, want one", len(svc.lastSpawn.Attachments))
+	}
+	if got := svc.lastSpawn.Attachments[0]; got.Ext != ".mov" || len(got.Data) != size {
+		t.Fatalf("spawn attachment extension = %q, bytes = %d; want .mov and %d", got.Ext, len(got.Data), size)
+	}
 }
 
 func TestSessionsAPI_SpawnRejectsUnknownExplicitMode(t *testing.T) {
@@ -1505,6 +1559,20 @@ func TestSessionsAPI_SpawnsStandaloneWorkerWithoutProjectID(t *testing.T) {
 	}
 }
 
+func TestSessionsAPI_SpawnsStandaloneUnrealChatWithApprovalMode(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions",
+		`{"kind":"worker","harness":"unreal-agent","mode":"chat","approvalMode":"bypass-permissions","prompt":"hello"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("spawn Unreal Chat = %d, want 201; body=%s", status, body)
+	}
+	if svc.lastSpawn.Harness != domain.HarnessUnreal || svc.lastSpawn.RequestedMode != domain.SessionModeChat || svc.lastSpawn.AgentConfig.Permissions != domain.PermissionModeBypassPermissions {
+		t.Fatalf("spawn config = %#v, want Unreal Chat with bypass permissions", svc.lastSpawn)
+	}
+}
+
 func TestSessionsAPI_SpawnsQwenChat(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
@@ -1530,6 +1598,20 @@ func TestSessionsAPI_SpawnPassesModelToService(t *testing.T) {
 	}
 	if svc.lastSpawn.AgentConfig.Model != "sonnet" {
 		t.Fatalf("service AgentConfig.Model = %q, want sonnet", svc.lastSpawn.AgentConfig.Model)
+	}
+}
+
+func TestSessionsAPI_SpawnPassesEffortToService(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions",
+		`{"kind":"worker","harness":"codex","prompt":"fix","displayName":"my worker","effort":"high"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("POST session = %d, want 201; body=%s", status, body)
+	}
+	if svc.lastSpawn.AgentConfig.Effort != "high" {
+		t.Fatalf("service AgentConfig.Effort = %q, want high", svc.lastSpawn.AgentConfig.Effort)
 	}
 }
 
@@ -2566,6 +2648,16 @@ func TestSessionsAPI_ListWorkspaceFiles(t *testing.T) {
 
 func TestSessionsAPI_ListPRFiles(t *testing.T) {
 	svc := newFakeSessionService()
+	svc.prFiles = sessionsvc.PRFiles{
+		SessionID: "ao-1",
+		Files:     []sessionsvc.WorkspaceFileSummary{{Path: "README.md", Status: sessionsvc.WorkspaceFileModified, Additions: 1}},
+		Commits: []sessionsvc.CommitSummary{{
+			SHA:     "abc123",
+			Subject: "docs: update readme",
+			Author:  "Ada",
+			Files:   []sessionsvc.WorkspaceFileSummary{{Path: "README.md", Status: sessionsvc.WorkspaceFileModified, Additions: 1}},
+		}},
+	}
 	srv := newSessionTestServer(t, svc)
 	body, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/pr/42/files", "")
 	if status != http.StatusOK {
@@ -2577,6 +2669,32 @@ func TestSessionsAPI_ListPRFiles(t *testing.T) {
 	}
 	if got.SessionID != "ao-1" {
 		t.Fatalf("response = %+v", got)
+	}
+	if len(got.Commits) != 1 || got.Commits[0].SHA != "abc123" || len(got.Commits[0].Files) != 1 || got.Commits[0].Files[0].Path != "README.md" {
+		t.Fatalf("commits = %+v, want abc123 changing README.md", got.Commits)
+	}
+}
+
+func TestSessionsAPI_GetPRFileAtCommit(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/pr/42/file?path=README.md", "")
+	if status != http.StatusOK || svc.prFileCommitSHA != "" {
+		t.Fatalf("GET PR file = %d, commitSha %q; want 200 and the whole-PR read; body=%s", status, svc.prFileCommitSHA, body)
+	}
+	body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/pr/42/file?path=README.md&commitSha=abc123", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET PR commit file = %d, want 200; body=%s", status, body)
+	}
+	if svc.prFileCommitSHA != "abc123" {
+		t.Fatalf("commitSha = %q, want abc123", svc.prFileCommitSHA)
+	}
+	body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/pr/42/file/revision?path=README.md&side=before&commitSha=abc123", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET PR commit revision = %d, want 200; body=%s", status, body)
+	}
+	if svc.prRevisionCommitSHA != "abc123" || svc.workspaceRevisionSide != sessionsvc.WorkspaceBlobBefore {
+		t.Fatalf("commit revision args = sha:%q side:%q", svc.prRevisionCommitSHA, svc.workspaceRevisionSide)
 	}
 }
 
@@ -3006,7 +3124,7 @@ func TestSessionsAPI_DelegateTask(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
 
-	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators/delegate", `{"projectId":"ao","brief":"Fix\u0000 it","agent":"cursor","model":" sonnet-custom ","effort":" high ","mode":"chat","approvalMode":"bypass-permissions","attachments":[{"mimeType":"image/png","data":"AQID"}]}`)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators/delegate", `{"projectId":"ao","brief":"Fix\u0000 it","agent":"cursor","model":" sonnet-custom ","effort":" high ","mode":"chat","approvalMode":"bypass-permissions","taskPreparation":" prep-token ","attachments":[{"mimeType":"image/png","data":"AQID"}]}`)
 	if status != http.StatusAccepted {
 		t.Fatalf("delegate = %d, want 202; body=%s", status, body)
 	}
@@ -3019,7 +3137,7 @@ func TestSessionsAPI_DelegateTask(t *testing.T) {
 	if !got.OK || got.WorkerID != "ao-worker" || got.OrchestratorID != "ao-orch" {
 		t.Fatalf("response = %#v", got)
 	}
-	if svc.delegationInput.ProjectID != "ao" || svc.delegationInput.Brief != "Fix it" || svc.delegationInput.RequestedAgent != domain.HarnessCursor || svc.delegationInput.Model != "sonnet-custom" || svc.delegationInput.Effort == nil || *svc.delegationInput.Effort != "high" || svc.delegationInput.RequestedMode != domain.SessionModeChat || svc.delegationInput.ApprovalMode != domain.PermissionModeBypassPermissions {
+	if svc.delegationInput.ProjectID != "ao" || svc.delegationInput.Brief != "Fix it" || svc.delegationInput.RequestedAgent != domain.HarnessCursor || svc.delegationInput.Model != "sonnet-custom" || svc.delegationInput.Effort == nil || *svc.delegationInput.Effort != "high" || svc.delegationInput.RequestedMode != domain.SessionModeChat || svc.delegationInput.ApprovalMode != domain.PermissionModeBypassPermissions || svc.delegationInput.TaskPreparation != "prep-token" {
 		t.Fatalf("delegation input = %#v", svc.delegationInput)
 	}
 	if len(svc.delegationInput.Attachments) != 1 {
@@ -3027,6 +3145,20 @@ func TestSessionsAPI_DelegateTask(t *testing.T) {
 	}
 	if got := svc.delegationInput.Attachments[0]; got.Ext != ".png" || string(got.Data) != "\x01\x02\x03" {
 		t.Fatalf("attachment = %#v, want decoded png", got)
+	}
+}
+
+func TestSessionsAPI_PreparesAndCancelsTaskWorkspace(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/projects/ao/tasks/prepare", "")
+	if status != http.StatusAccepted || svc.preparedProject != "ao" || !strings.Contains(string(body), `"taskPreparation":"prep-token"`) {
+		t.Fatalf("prepare = %d %s, project %q", status, body, svc.preparedProject)
+	}
+	_, status, _ = doRequest(t, srv, http.MethodDelete, "/api/v1/task-preparations/prep-token", "")
+	if status != http.StatusNoContent || svc.canceledPreparation != "prep-token" {
+		t.Fatalf("cancel = %d, token %q", status, svc.canceledPreparation)
 	}
 }
 
@@ -3162,7 +3294,7 @@ func TestSessionsAPI_DelegateTaskRejectsInvalidAttachments(t *testing.T) {
 		{
 			name: "too large",
 			body: `{"projectId":"ao","brief":"Fix it","attachments":[{"mimeType":"image/png","data":"` +
-				base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", (10<<20)+1))) + `"}]}`,
+				base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", (50<<20)+1))) + `"}]}`,
 			code: "ATTACHMENT_TOO_LARGE",
 		},
 	}
@@ -3180,11 +3312,11 @@ func TestSessionsAPI_DelegateTaskRejectsOversizedBody(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
 
-	// A body past the spawn attachment cap is rejected while decoding
+	// A body past the ~135 MiB spawn attachment cap is rejected while decoding
 	// (MaxBytesReader), before attachment size validation and without
-	// materializing the whole body.
+	// materializing the whole body. 150 MiB of base64 comfortably exceeds the cap.
 	oversized := `{"projectId":"ao","brief":"Fix it","attachments":[{"mimeType":"image/png","data":"` +
-		strings.Repeat("A", 40<<20) + `"}]}`
+		strings.Repeat("A", 150<<20) + `"}]}`
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/orchestrators/delegate", oversized)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
 	if svc.delegationInput.ProjectID != "" {
@@ -3210,6 +3342,22 @@ func TestSessionsAPI_SendWithAttachment(t *testing.T) {
 	if svc.sentAttachment.Ext != ".png" || string(svc.sentAttachment.Data) != "snapshot" {
 		t.Fatalf("sentAttachment = %+v, want Ext=.png Data=snapshot", svc.sentAttachment)
 	}
+	if svc.sentDeliveryOptions.AuthoredByUser {
+		t.Fatal("ordinary automation send was marked user-authored")
+	}
+}
+
+func TestSessionsAPI_SendCarriesUserAuthorshipSeparatelyFromDelivery(t *testing.T) {
+	svc := newFakeSessionService()
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/send", `{"message":"Move this control.","userAuthored":true}`)
+	if status != http.StatusOK {
+		t.Fatalf("send = %d, want 200; body=%s", status, body)
+	}
+	if !svc.sentDeliveryOptions.AuthoredByUser {
+		t.Fatal("send dropped user-authored delivery fact")
+	}
 }
 
 func TestSessionsAPI_SendRejectsUnsupportedAttachmentType(t *testing.T) {
@@ -3224,11 +3372,11 @@ func TestSessionsAPI_SendRejectsOversizedBody(t *testing.T) {
 	svc := newFakeSessionService()
 	srv := newSessionTestServer(t, svc)
 
-	// A body past the send attachment cap is rejected while decoding
+	// A body past the ~69 MiB send attachment cap is rejected while decoding
 	// (MaxBytesReader), before attachment size validation and without
-	// materializing the whole body.
+	// materializing the whole body. 80 MiB of base64 comfortably exceeds the cap.
 	oversized := `{"message":"Make the button blue.","attachment":{"mimeType":"image/png","data":"` +
-		strings.Repeat("A", 20<<20) + `"}}`
+		strings.Repeat("A", 80<<20) + `"}}`
 	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/ao-1/send", oversized)
 	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_JSON")
 	if svc.sent != "" {

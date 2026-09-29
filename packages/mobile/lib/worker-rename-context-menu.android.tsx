@@ -50,7 +50,7 @@ export function WorkerRowContextMenu({
 		id: action.id,
 		title: action.title,
 		...(hasWorkerActionDrawable(action.id)
-			? { image: DRAWABLES[action.id], imageColor: action.destructive ? t.red : t.blue }
+			? { image: DRAWABLES[action.id], imageColor: action.destructive ? t.red : t.accent }
 			: {}),
 		titleColor: action.destructive ? t.red : t.textPrimary,
 		attributes: action.destructive ? { destructive: true } : undefined,

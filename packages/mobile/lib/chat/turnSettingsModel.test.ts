@@ -60,7 +60,7 @@ describe("turnSettingsRows", () => {
 			{ id: "fast", name: "Fast mode", type: "boolean", currentBoolean: true, choices: [] },
 			{ id: "effort", name: "Effort", category: "thought_level", type: "select", currentValue: "high", choices: [{ value: "high", name: "High" }] },
 			{ id: "model", name: "Model", category: "model", type: "select", currentValue: "gpt", choices: [{ value: "gpt", name: "GPT" }] },
-			{ id: "mode", name: "Mode", category: "mode", type: "select", currentValue: "agent", choices: [{ value: "agent", name: "Agent" }] },
+			{ id: "mode", name: "Mode", category: "mode", type: "select", currentValue: "agent", choices: [{ value: "agent", name: "Agent" }, { value: "bypass", name: "Bypass permissions" }] },
 		];
 
 		expect(turnSettingsRows(snapshot(), [], options).map((row) => row.label)).toEqual([
@@ -70,6 +70,15 @@ describe("turnSettingsRows", () => {
 			"Mode",
 			"Sandbox",
 		]);
+	});
+
+	it("keeps its own approvals row when the provider's mode catalog is execution modes", () => {
+		const options: ChatConfigOption[] = [
+			{ id: "mode", name: "Mode", category: "mode", type: "select", currentValue: "build", choices: [{ value: "build", name: "build" }, { value: "plan", name: "plan" }] },
+		];
+		const rows = turnSettingsRows(snapshot({ settings: { approvalMode: "bypass-permissions" } }), [], options);
+		expect(rows.map((row) => row.label)).toContain("Approvals");
+		expect(rows.find((row) => row.label === "Approvals")?.value).toBe("Never ask");
 	});
 
 	it("builds model, effort, and approvals drill-down rows when provider controls are unavailable", () => {

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,10 +19,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/notificationoutbox"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 )
 
@@ -152,8 +156,74 @@ func runHook(ctx context.Context, c *client, args []string, input io.Reader) err
 		false,
 		nil,
 	)
+	if event, ok := notificationFromActivity(
+		strings.TrimSpace(os.Getenv("AO_SESSION_ID")),
+		workerEpochFromEnvironment(),
+		activity,
+	); ok {
+		dataDir := strings.TrimSpace(os.Getenv("AO_DATA_DIR"))
+		if dataDir != "" {
+			if outbox, err := notificationoutbox.Open(filepath.Join(dataDir, "notification-outbox.db")); err == nil {
+				_ = outbox.Enqueue(hookCtx, event)
+				_ = outbox.Close()
+			}
+		}
+	}
 	// Hook delivery is best-effort and must never break the coding agent.
 	return nil
+}
+
+func workerEpochFromEnvironment() int64 {
+	epoch, _ := strconv.ParseInt(strings.TrimSpace(os.Getenv("AO_CLOUD_WORKER_EPOCH")), 10, 64)
+	return epoch
+}
+
+func notificationFromActivity(sessionID string, epoch int64, activity worker.ActivityEvent) (notificationoutbox.Event, bool) {
+	if sessionID == "" || epoch <= 0 {
+		return notificationoutbox.Event{}, false
+	}
+	eventType := ""
+	activityID := strings.TrimSpace(activity.ToolUseID)
+	if activityID == "" {
+		activityID = strings.TrimSpace(activity.AgentSessionID)
+	}
+	message := ""
+	switch {
+	case activity.State == contract.ActivityWaitingInput || activity.State == contract.ActivityBlocked:
+		eventType = "needs_input"
+		if activityID == "" {
+			activityID = hookNotificationID(activity.Harness, activity.Event, activity.AgentSessionID)
+		}
+		message = "Agent needs your input"
+		if activity.ToolName != "" {
+			message = activity.ToolName + " requires your input"
+		}
+	case activity.Event == "session-end" && activity.State == contract.ActivityExited:
+		eventType = "agent_failed"
+		message = "Agent session ended unexpectedly"
+	default:
+		return notificationoutbox.Event{}, false
+	}
+	payload, err := json.Marshal(map[string]string{
+		"activityId": activityID,
+		"message":    message,
+		"harness":    activity.Harness,
+		"event":      activity.Event,
+	})
+	if err != nil {
+		return notificationoutbox.Event{}, false
+	}
+	identity := strings.Join([]string{sessionID, strconv.FormatInt(epoch, 10), eventType, activity.Harness, activity.Event, activityID}, "\x00")
+	hash := sha256.Sum256([]byte(identity))
+	return notificationoutbox.Event{
+		EventID: "evt_" + hex.EncodeToString(hash[:16]), EventType: eventType,
+		Payload: payload, OccurredAt: time.Now().UTC(), WorkerEpoch: epoch,
+	}, true
+}
+
+func hookNotificationID(values ...string) string {
+	hash := sha256.Sum256([]byte(strings.Join(values, "\x00")))
+	return hex.EncodeToString(hash[:16])
 }
 
 // pokeCheckpoint signals the worker's checkpoint bridge (a unix socket at

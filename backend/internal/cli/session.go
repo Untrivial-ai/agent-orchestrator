@@ -266,7 +266,7 @@ func newSessionRestoreCommand(ctx *commandContext) *cobra.Command {
 	var opts sessionOptions
 	cmd := &cobra.Command{
 		Use:   "restore <id>",
-		Short: "Relaunch a terminated session",
+		Short: "Restore a terminated session or resume an exited agent",
 		Args:  oneSessionIDArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := normalizeSessionID(args[0])
@@ -623,10 +623,12 @@ func (c *commandContext) killSession(ctx context.Context, cmd *cobra.Command, id
 }
 
 func (c *commandContext) restoreSession(ctx context.Context, cmd *cobra.Command, id string, opts sessionOptions) error {
-	if opts.project != "" {
-		if _, err := c.fetchScopedSession(ctx, id, opts.project); err != nil {
-			return err
-		}
+	sess, err := c.fetchScopedSession(ctx, id, opts.project)
+	if err != nil {
+		return err
+	}
+	if !sess.IsTerminated && sess.Activity.State == "exited" {
+		return c.resumeSessionAgent(ctx, cmd, id, sessionOptions{})
 	}
 	var res restoreSessionResponse
 	if err := c.postJSON(ctx, "sessions/"+url.PathEscape(id)+"/restore", struct{}{}, &res); err != nil {
@@ -922,12 +924,12 @@ func writeSessionList(cmd *cobra.Command, sessions []sessionDTO, summaries map[s
 				if _, err := fmt.Fprintf(table, "%s:\n", currentProject); err != nil {
 					return err
 				}
-				if _, err := fmt.Fprintln(table, "  SESSION\tBRANCH\tPR\tCI\tREVIEW\tTHREADS\tACTIVITY\tAGE"); err != nil {
+				if _, err := fmt.Fprintln(table, "  SESSION\tROLE\tBRANCH\tPR\tCI\tREVIEW\tTHREADS\tACTIVITY\tAGE"); err != nil {
 					return err
 				}
 			}
 			pr, ci, review, threads := sessionPRColumns(sess, summaries[sess.ID])
-			if _, err := fmt.Fprintf(table, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sess.ID, emptyDash(sess.Branch), pr, ci, review, threads, emptyDash(sess.Activity.State), sessionAge(now, sess.Activity.LastActivityAt)); err != nil {
+			if _, err := fmt.Fprintf(table, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", sess.ID, sessionRole(sess), emptyDash(sess.Branch), pr, ci, review, threads, emptyDash(sess.Activity.State), sessionAge(now, sess.Activity.LastActivityAt)); err != nil {
 				return err
 			}
 		}

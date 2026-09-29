@@ -3,150 +3,81 @@ package githubapp
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 )
 
+const (
+	// mergeabilityRetryDelay must stay comfortably above the fallback scan interval
+	// (default 30s) so a re-armed PR is not re-claimed on the very next tick — that
+	// would tight-loop a single PR and, with a one-row-per-tick claim, starve every
+	// other refresh. Webhooks and on-demand refreshes are the fast path; this is
+	// only the backstop for the brief window where GitHub is still computing.
+	mergeabilityRetryDelay = 90 * time.Second
+	// mergeabilityRetryWindow bounds the retry. GitHub settles mergeability within
+	// seconds, so an open PR still unknown this long after its last provider update
+	// is a GitHub anomaly, not a pending computation — stop re-arming and leave it
+	// to the next webhook / on-demand refresh instead of looping.
+	mergeabilityRetryWindow = 15 * time.Minute
+)
+
 // RefreshPullRequestStatus refreshes a pull request's durable GitHub status.
 func (s *Service) RefreshPullRequestStatus(
 	ctx context.Context,
 	ref domain.PullRequestRef,
+	refresh domain.PullRequestRefreshContext,
 ) (domain.PullRequest, error) {
-	owner, repo, ok := strings.Cut(ref.Repository, "/")
-	if !ok || owner == "" || repo == "" {
+	if _, _, ok := strings.Cut(ref.Repository, "/"); !ok {
 		return domain.PullRequest{}, postgres.ErrInvalid
 	}
-	installationID, repositoryID, err := s.store.GitHubInstallationForRepository(ctx, ref.OrgID, ref.Repository)
+	snapshot, err := s.FetchPullRequestSnapshot(ctx, ref)
 	if err != nil {
 		return domain.PullRequest{}, err
 	}
-	access, err := s.client.statusReadToken(ctx, installationID, repositoryID)
+	transition, err := s.store.ApplyPullRequestSnapshot(ctx, ref.OrgID, ref.ID, snapshot, refresh)
 	if err != nil {
 		return domain.PullRequest{}, err
 	}
-	detail, err := s.client.GetPullRequest(ctx, access.Token, owner, repo, ref.Number)
-	if err != nil {
-		return domain.PullRequest{}, err
-	}
-	var checks []CheckRun
-	if detail.Head.SHA != "" {
-		checks, err = s.client.ListCheckRuns(ctx, access.Token, owner, repo, detail.Head.SHA)
-		if err != nil {
-			return domain.PullRequest{}, err
-		}
-	}
-	reviews, err := s.client.ListPullRequestReviews(ctx, access.Token, owner, repo, ref.Number)
-	if err != nil {
-		return domain.PullRequest{}, err
-	}
-	observation := domain.PullRequestObservation{
-		State:        pullRequestLifecycleState(detail),
-		Draft:        detail.Draft,
-		HeadSHA:      detail.Head.SHA,
-		Additions:    detail.Additions,
-		Deletions:    detail.Deletions,
-		ChangedFiles: detail.ChangedFiles,
-		CIState:      aggregateCIState(checks),
-		ReviewState:  aggregateReviewState(reviews),
-		Mergeability: mapMergeability(detail),
-	}
-	return s.store.UpdatePullRequestObservation(ctx, ref.OrgID, ref.ID, observation)
+	s.scheduleMergeabilityRetry(ctx, ref, transition.Current)
+	return transition.Current, nil
 }
 
-func pullRequestLifecycleState(detail PullRequestDetail) contract.PRState {
-	switch {
-	case detail.Merged:
-		return contract.PRStateMerged
-	case detail.State == "closed":
-		return contract.PRStateClosed
-	case detail.Draft:
-		return contract.PRStateDraft
-	default:
-		return contract.PRStateOpen
+// scheduleMergeabilityRetry re-arms the fallback refresh when an open PR's
+// mergeability is still unknown. GitHub computes mergeability asynchronously, and
+// even the REST fallback can return null on the first read right after a push, so
+// one refresh is not always enough. Scheduling a near-term follow-up makes the PR
+// resolve quickly and — because the scanner claims by due_at ascending — jump the
+// queue. It self-terminates: once mergeability resolves, ApplyPullRequestSnapshot
+// clears the fallback and this stops re-arming. Bounded by PR age so a
+// permanently-unknown PR is left to normal silence polling instead of looping.
+func (s *Service) scheduleMergeabilityRetry(ctx context.Context, ref domain.PullRequestRef, current domain.PullRequest) {
+	if current.State != contract.PRStateOpen || current.Mergeability != contract.MergeUnknown {
+		return
 	}
-}
-
-func aggregateCIState(checks []CheckRun) contract.CIState {
-	if len(checks) == 0 {
-		return contract.CIUnknown
+	// Fail closed: without a provider timestamp we cannot bound the retry window, so
+	// do NOT re-arm (a nil timestamp must never open an unbounded loop). Fall back to
+	// the creation time when the update time is missing.
+	last := current.UpdatedAtProvider
+	if last == nil {
+		last = current.CreatedAtProvider
 	}
-	pending := false
-	for _, check := range checks {
-		if check.Status != "completed" {
-			pending = true
-			continue
-		}
-		switch check.Conclusion {
-		case "failure", "timed_out", "action_required", "startup_failure":
-			return contract.CIFailing
-		case "success", "neutral", "skipped":
-			continue
-		default:
-			pending = true
-		}
+	if last == nil || time.Since(*last) > mergeabilityRetryWindow {
+		return
 	}
-	if pending {
-		return contract.CIPending
+	dueAt := time.Now().UTC().Add(mergeabilityRetryDelay)
+	if err := s.store.SchedulePullRequestRefresh(
+		ctx, ref.OrgID, ref.ID, domain.PullRequestRefreshWebhookSilent, dueAt, "mergeability pending",
+	); err != nil {
+		s.logger.Warn("schedule mergeability retry",
+			"org_id", ref.OrgID, "pull_request_id", ref.ID,
+			"repository", ref.Repository, "number", ref.Number, "error", err)
+		return
 	}
-	return contract.CIPassing
-}
-
-// aggregateReviewState uses each reviewer's latest decisive or dismissed review.
-func aggregateReviewState(reviews []PullRequestReview) contract.ReviewDecision {
-	latest := map[string]PullRequestReview{}
-	for _, review := range reviews {
-		switch review.State {
-		case "APPROVED", "CHANGES_REQUESTED", "DISMISSED":
-		default:
-			continue
-		}
-		reviewer := strings.TrimSpace(review.User.Login)
-		if reviewer == "" {
-			reviewer = "unknown"
-		}
-		current, ok := latest[reviewer]
-		if !ok || reviewAfter(review, current) {
-			latest[reviewer] = review
-		}
-	}
-	approved := false
-	for _, review := range latest {
-		switch review.State {
-		case "CHANGES_REQUESTED":
-			return contract.ReviewChangesRequest
-		case "APPROVED":
-			approved = true
-		}
-	}
-	if approved {
-		return contract.ReviewApproved
-	}
-	return contract.ReviewNone
-}
-
-func reviewAfter(a, b PullRequestReview) bool {
-	if a.SubmittedAt.IsZero() || b.SubmittedAt.IsZero() {
-		return a.SubmittedAt.IsZero() == b.SubmittedAt.IsZero() && a.ID > b.ID
-	}
-	if a.SubmittedAt.Equal(b.SubmittedAt) {
-		return a.ID > b.ID
-	}
-	return a.SubmittedAt.After(b.SubmittedAt)
-}
-
-func mapMergeability(detail PullRequestDetail) contract.Mergeability {
-	switch detail.MergeableState {
-	case "dirty":
-		return contract.MergeConflicting
-	case "blocked", "behind":
-		return contract.MergeBlocked
-	case "unstable":
-		return contract.MergeUnstable
-	case "clean":
-		return contract.MergeMergeable
-	default:
-		return contract.MergeUnknown
-	}
+	// Surface the retry so a PR that never resolves is observable rather than silent.
+	s.logger.Debug("mergeability still unknown; scheduled retry",
+		"org_id", ref.OrgID, "pull_request_id", ref.ID,
+		"repository", ref.Repository, "number", ref.Number, "due_at", dueAt)
 }

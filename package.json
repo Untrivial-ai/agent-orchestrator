@@ -2,7 +2,7 @@
 	"name": "agent-orchestrator",
 	"private": true,
 	"scripts": {
-		"lint": "cd backend && go test ./... && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run --path-mode=abs",
+		"lint": "cd backend && go test ./... && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run --path-mode=abs",
 		"frontend:typecheck": "npm --prefix frontend run typecheck",
 		"cloud:check": "npm --prefix packages/cloud-client run generate && git diff --exit-code -- packages/cloud-client/src/schema.ts && npm --prefix packages/cloud-client run typecheck && npm --prefix packages/cloud-client test && npm --prefix packages/cloud-client run build",
 		"cloud:local": "bash cloud/scripts/cloud-local-up.sh",

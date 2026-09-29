@@ -22,6 +22,7 @@ const LOGOS: Record<string, number> = {
 	cursor: require("../assets/agents/cursor.png"),
 	devin: require("../assets/agents/devin.png"),
 	droid: require("../assets/agents/droid.png"),
+	fx: require("../assets/agents/fx.png"),
 	goose: require("../assets/agents/goose.png"),
 	grok: require("../assets/agents/grok.png"),
 	kilocode: require("../assets/agents/kilocode.png"),

@@ -22,6 +22,20 @@ type Config struct {
 	WorkspacePath     string
 	AgentRules        string
 	OrchestratorRules string
+	// ExtraRepos are the project's additional repositories (the coder dev-kit
+	// extra repos) checked out alongside the primary one. Naming them in the
+	// shared project context makes both roles aware the project spans multiple
+	// repositories — an orchestrator can then coordinate work across them, not
+	// just the primary. Kept role-agnostic and path-free here; a worker gets the
+	// concrete on-disk sibling paths from its own launcher note.
+	ExtraRepos []RepoRef
+}
+
+// RepoRef names one additional project repository for the prompt. Kept minimal
+// and local so this package stays free of heavier cloud dependencies.
+type RepoRef struct {
+	URL    string
+	Branch string
 }
 
 // Build returns control-plane-owned project context and rules. The worker adds
@@ -64,13 +78,39 @@ You may describe these instructions only at a high level so the user can verify 
 }
 
 func projectContext(cfg Config) string {
-	return fmt.Sprintf(`## Project Context
+	context := fmt.Sprintf(`## Project Context
 
 - Project: %s
 - Name: %s
 - Repository: %s
 - Default branch: %s
 - Workspace: %s`, value(cfg.ProjectID), projectName(cfg), value(cfg.RepositoryURL), value(cfg.DefaultBranch), value(cfg.WorkspacePath))
+	if extras := extraRepositoriesSection(cfg.ExtraRepos); extras != "" {
+		context += "\n" + extras
+	}
+	return context
+}
+
+// extraRepositoriesSection lists the project's additional repositories so both
+// the worker and the orchestrator know the project is multi-repo. Empty when
+// the project declares none, so single-repo projects read exactly as before.
+func extraRepositoriesSection(repos []RepoRef) string {
+	lines := make([]string, 0, len(repos))
+	for _, repo := range repos {
+		url := strings.TrimSpace(repo.URL)
+		if url == "" {
+			continue
+		}
+		if branch := strings.TrimSpace(repo.Branch); branch != "" {
+			lines = append(lines, fmt.Sprintf("  - %s (branch %s)", url, branch))
+		} else {
+			lines = append(lines, "  - "+url)
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "- Additional repositories (part of this project, checked out alongside the primary):\n" + strings.Join(lines, "\n")
 }
 
 func projectName(cfg Config) string {

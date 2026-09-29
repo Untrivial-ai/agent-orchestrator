@@ -135,6 +135,7 @@ type WorkerLaunch struct {
 	// guidance in the worker prompt.
 	ParentSessionID string
 	Mode            string
+	Model           string
 	DeniedCommands  []string
 	RepositoryURL   string
 	DefaultBranch   string

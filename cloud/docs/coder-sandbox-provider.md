@@ -109,9 +109,22 @@ one-time launch environment; a missing or stale binary uses the full PTY upload
 so template and control-plane rollouts do not have to be perfectly atomic.
 
 Because the worker runs as a separate OS user, bootstrap preserves the durable
-root's existing mode bits while adding traversal-only (`o+x`) access to that
-mount point. It does not make the root listable or readable. Only the derived
-`repository` and `.ao` subdirectories are assigned to `ao-worker`.
+root's existing owner and mode bits while adding others traversal-only (`o+x`)
+access to that mount point, so the root stays non-readable and non-listable to
+other users. Only the derived `repository` and `.ao` subdirectories are assigned
+to `ao-worker`.
+
+The dev-kit multi-repo feature clones each extra repository as a sibling of the
+primary checkout, directly under the durable root, so the worker's group is also
+granted write+traverse (`g+wx`, deliberately not read) on the root entry itself.
+This is applied non-recursively and without transferring ownership, so the root
+owner keeps full access and existing entries keep their modes; it lets the
+worker create and enter `<root>/<name>` without being able to list the root.
+Because directory write governs unlink/rename, the worker can also remove or
+rename the root's top-level entries (there is no sticky bit); when the root is a
+dedicated AO volume this is inert, and when it is a shared home only that user's
+own tooling shares the space. Confining extra clones to a worker-owned sub-root
+would remove even that and is a possible future hardening.
 
 The normal workspace user must have passwordless `sudo` for the pilot
 bootstrap. AO uses it to:

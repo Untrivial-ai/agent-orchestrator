@@ -101,8 +101,8 @@ func TestAgentPlansCoverEveryHarnessOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plans) != 27 {
-		t.Fatalf("got %d plans, want 27", len(plans))
+	if len(plans) != 31 {
+		t.Fatalf("got %d plans, want 31", len(plans))
 	}
 	seen := make(map[string]bool, len(plans))
 	for _, plan := range plans {
@@ -140,6 +140,23 @@ func TestAgentPlanSelectsAvailableFallback(t *testing.T) {
 				t.Fatalf("plan = %+v, want method %q command %q", plan, tt.wantMethod, tt.wantCommand)
 			}
 		})
+	}
+}
+
+func TestGeminiMacInstallUsesSupportedNPMRelease(t *testing.T) {
+	s := newTestService("darwin", "brew", "npm")
+	s.installCapabilities = installCapabilitiesStub{prefix: "/Users/test/.npm", writable: true}
+	planner, err := s.newRequestPlanner(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans := planner.agentMethodPlans(TargetGemini, AgentOperationInstall)
+	if len(plans) != 1 || plans[0].Method != "npm" || plans[0].Unsupported ||
+		strings.Join(plans[0].Command, " ") != "npm install -g @google/gemini-cli@latest" {
+		t.Fatalf("Gemini install plans = %+v, want supported npm release only", plans)
+	}
+	if _, err := planner.resolveAgentMethod(TargetGemini, "homebrew", AgentOperationInstall); err == nil {
+		t.Fatal("Homebrew method should not be offered while its Gemini CLI formula is below the required version")
 	}
 }
 

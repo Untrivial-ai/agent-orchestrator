@@ -596,6 +596,7 @@ export function ProjectGeneralSettingsView({
 	labels,
 	onDisplayNameChange,
 	project,
+	showTitle = false,
 }: {
 	displayName: string;
 	externalLink?: ProjectExternalLink;
@@ -612,6 +613,7 @@ export function ProjectGeneralSettingsView({
 		editName: string;
 	};
 	onDisplayNameChange: (value: string) => void;
+	showTitle?: boolean;
 	project: {
 		id: string;
 		kindLabel: string;
@@ -624,7 +626,7 @@ export function ProjectGeneralSettingsView({
 }) {
 	return (
 		<>
-			<ProjectSettingsSection title={labels.title} titleHidden grouped>
+			<ProjectSettingsSection title={labels.title} titleHidden={!showTitle} grouped>
 				<ProjectSettingsInputRow
 					editIcon={icons?.edit}
 					editLabel={labels.editName}
@@ -634,8 +636,6 @@ export function ProjectGeneralSettingsView({
 					value={displayName}
 					onChange={onDisplayNameChange}
 				/>
-				<ProjectSettingsValueRow icon={icons?.id} label={labels.id} value={project.id} />
-				<ProjectSettingsValueRow icon={icons?.kind} label={labels.kind} value={project.kindLabel} />
 				<ProjectSettingsValueRow externalLink={externalLink} href={project.pathHref} icon={icons?.path} label={labels.path} value={project.path} />
 				<ProjectSettingsValueRow externalLink={externalLink} href={project.repoHref} icon={icons?.repo} label={labels.repo} value={project.repo || "—"} />
 			</ProjectSettingsSection>

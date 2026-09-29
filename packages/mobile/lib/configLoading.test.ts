@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldShowLoading } from "./configLoading";
+import { shouldShowLoading, unconfiguredView } from "./configLoading";
 
 describe("whether to show the loader while the config settles", () => {
 	// The bug this exists for. `config` starts null and stays null until the
@@ -26,5 +26,18 @@ describe("whether to show the loader while the config settles", () => {
 	// means "we have somewhere to talk to" — not a reason to blank the screen.
 	it("shows the loader when a config exists but a race is still running", () => {
 		expect(shouldShowLoading({ resolved: false, configured: true })).toBe(true);
+	});
+});
+
+describe("what an unconfigured screen shows", () => {
+	// The tabs check `configured` before `loading`, so without this a paired
+	// phone on a slow network showed "No desktop paired / Scan pairing code" for
+	// the whole launch race, then connected on its own.
+	it("shows a connecting state while the config is still being resolved", () => {
+		expect(unconfiguredView({ resolved: false })).toBe("resolving");
+	});
+
+	it("shows the pairing prompt once resolution finds no machine", () => {
+		expect(unconfiguredView({ resolved: true })).toBe("unpaired");
 	});
 });

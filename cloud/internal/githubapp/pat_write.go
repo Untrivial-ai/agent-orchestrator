@@ -48,6 +48,14 @@ func NewPATWriteService(client *Client, store PATWriteStore) *PATWriteService {
 	return &PATWriteService{client: client, store: store}
 }
 
+func (p *PATWriteService) MergePullRequest(ctx context.Context, token, owner, repo string, number int, expectedHeadSHA string) error {
+	return p.client.MergePullRequest(ctx, token, owner, repo, number, expectedHeadSHA)
+}
+
+func (p *PATWriteService) FetchPullRequestSnapshot(ctx context.Context, token, owner, repo string, number int) (domain.PullRequestSnapshot, error) {
+	return p.client.FetchPullRequestSnapshotWithToken(ctx, token, owner, repo, number)
+}
+
 // RaisePullRequest opens a PR with the PAT and durably records it. When no base
 // branch is given it resolves the repository's default branch through the same
 // PAT, matching Service.RaisePullRequest's behavior.

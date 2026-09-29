@@ -76,11 +76,58 @@ beforeEach(() => {
 		if (path === "/api/v1/agents/codex/accounts/ensure") return { data: { accountRevision: 0, accounts: [], capabilities: {}, deviceReconciliation: { status: "verified", activeAccountVerified: false, reasonCode: "verified", retryable: false } } } as never;
 		throw new Error(`Unexpected POST ${path}`);
 	});
+	vi.spyOn(apiClient, "PUT").mockResolvedValue({ data: { project } } as never);
 });
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("Settings recovery modal integration", () => {
+	it("closes clean project settings without writing", async () => {
+		const put = vi.spyOn(apiClient, "PUT");
+		useUiStore.getState().openProjectSettings("proj-1");
+		renderDialogs();
+		await screen.findByRole("button", { name: "Edit Project name" });
+		expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+
+		await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
+		await waitFor(() => expect(useUiStore.getState().settingsModal).toBeNull());
+		expect(put).not.toHaveBeenCalled();
+	});
+
+	it.each(["close button", "Escape"])("saves edited project settings on %s", async (dismiss) => {
+		const put = vi.spyOn(apiClient, "PUT").mockResolvedValue({ data: { status: "ok" } } as never);
+		useUiStore.getState().openProjectSettings("proj-1");
+		renderDialogs();
+		await userEvent.click(await screen.findByRole("button", { name: "Edit Project name" }));
+		const name = screen.getByRole("textbox", { name: "Project name" });
+		await userEvent.clear(name);
+		await userEvent.type(name, "Renamed project");
+
+		if (dismiss === "Escape") await userEvent.keyboard("{Escape}");
+		else await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
+
+		await waitFor(() => expect(put).toHaveBeenCalledWith(
+			"/api/v1/projects/{id}",
+			expect.objectContaining({ body: expect.objectContaining({ displayName: "Renamed project" }) }),
+		));
+		await waitFor(() => expect(useUiStore.getState().settingsModal).toBeNull());
+	});
+
+	it("keeps edited project settings open when saving fails", async () => {
+		vi.spyOn(apiClient, "PUT").mockResolvedValue({ error: { message: "Save rejected" } } as never);
+		useUiStore.getState().openProjectSettings("proj-1");
+		renderDialogs();
+		await userEvent.click(await screen.findByRole("button", { name: "Edit Project name" }));
+		const name = screen.getByRole("textbox", { name: "Project name" });
+		await userEvent.clear(name);
+		await userEvent.type(name, "Renamed project");
+		await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
+
+		expect(await screen.findByRole("alert")).toHaveTextContent("Save rejected");
+		expect(name).toHaveValue("Renamed project");
+		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "proj-1" });
+	});
+
 	it("leaves focus on the targeted Harness action when readiness is already cached", async () => {
 		requireCodexLogin();
 		const client = renderDialogs();
@@ -105,8 +152,8 @@ describe("Settings recovery modal integration", () => {
 		const client = renderDialogs();
 		await userEvent.click(await screen.findByRole("button", { name: "Agents" }));
 		const projectDialog = screen.getByRole("dialog");
-		const trigger = await screen.findByLabelText("Default worker agent");
-		await openAgentManagement("Default worker agent");
+		const trigger = await screen.findByLabelText("Worker agent");
+		await openAgentManagement("Worker agent");
 		await screen.findByRole("textbox", { name: "Search harnesses" });
 
 		act(() => client.setQueryData(agentReadinessQueryKey, {
@@ -164,6 +211,7 @@ describe("Settings recovery modal integration", () => {
 	});
 
 	it.each(["close button", "Escape"])("keeps the real project form mounted beneath recovery and returns to its draft via %s", async (dismiss) => {
+		const put = vi.spyOn(apiClient, "PUT").mockResolvedValue({ data: { status: "ok" } } as never);
 		requireCodexLogin();
 		useUiStore.getState().openProjectSettings("proj-1");
 		renderDialogs();
@@ -173,20 +221,24 @@ describe("Settings recovery modal integration", () => {
 		await userEvent.type(name, "Unsaved project name");
 		await userEvent.click(screen.getByRole("button", { name: "Agents" }));
 		const form = document.getElementById("project-settings-form");
-		await openAgentManagement("Default worker agent");
+		await openAgentManagement("Worker agent");
 		await screen.findByRole("textbox", { name: "Search harnesses" });
 
 		expect(form).toBeInTheDocument();
 		if (dismiss === "Escape") await userEvent.keyboard("{Escape}");
 		else await userEvent.click(screen.getByRole("button", { name: "Close settings" }));
 
-		expect(await screen.findByRole("button", { name: "Default worker agent" })).toHaveTextContent("Codex");
+		expect(await screen.findByRole("button", { name: "Worker agent" })).toHaveTextContent("Codex");
 		expect(screen.getByRole("button", { name: "Agents" })).toHaveAttribute("aria-current", "page");
 		expect(document.getElementById("project-settings-form")).toBe(form);
-		await userEvent.click(screen.getByRole("button", { name: "Identity" }));
+		await userEvent.click(screen.getByRole("button", { name: "General" }));
 		expect(await screen.findByRole("button", { name: "Edit Project name" })).toHaveTextContent("Unsaved project name");
 		expect(useUiStore.getState().settingsModal).toEqual({ scope: "project", projectId: "proj-1" });
 		await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close settings" }));
+		await waitFor(() => expect(put).toHaveBeenCalledWith(
+			"/api/v1/projects/{id}",
+			expect.objectContaining({ body: expect.objectContaining({ displayName: "Unsaved project name" }) }),
+		));
 		await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 	});
 });

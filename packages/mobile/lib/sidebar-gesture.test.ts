@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { sidebarGestureTarget, shouldCaptureSidebarGesture } from "./sidebar-gesture";
+import {
+	sidebarGestureProgress,
+	sidebarGestureTarget,
+	shouldCaptureSidebarGesture,
+} from "./sidebar-gesture";
 
 describe("sidebar edge gesture", () => {
 	it("captures an inward horizontal drag that begins at the left edge", () => {
@@ -19,6 +23,28 @@ describe("sidebar edge gesture", () => {
 		expect(shouldCaptureSidebarGesture({ open: true, startX: 280, dx: -14, dy: 2 })).toBe(true);
 	});
 
+	it("captures either horizontal direction while an open drawer is settling", () => {
+			expect(shouldCaptureSidebarGesture({
+			open: true,
+			settling: true,
+			startX: 280,
+			dx: 14,
+			dy: 2,
+		})).toBe(true);
+		expect(shouldCaptureSidebarGesture({
+			open: true,
+			settling: true,
+			startX: 280,
+			dx: -14,
+			dy: 2,
+		})).toBe(true);
+	});
+
+	it("moves an interrupted drawer from its live position", () => {
+		expect(sidebarGestureProgress({ startProgress: 0.15, dx: 68, drawerWidth: 340 })).toBeCloseTo(0.35);
+		expect(sidebarGestureProgress({ startProgress: 0.85, dx: -68, drawerWidth: 340 })).toBeCloseTo(0.65);
+	});
+
 	it("opens after a committed drag or quick inward flick", () => {
 		expect(sidebarGestureTarget({ open: false, dx: 170, velocityX: 0.1, drawerWidth: 340 })).toBe(true);
 		expect(sidebarGestureTarget({ open: false, dx: 45, velocityX: 0.8, drawerWidth: 340 })).toBe(true);
@@ -27,5 +53,22 @@ describe("sidebar edge gesture", () => {
 	it("closes after a committed drag or quick outward flick", () => {
 		expect(sidebarGestureTarget({ open: true, dx: -190, velocityX: -0.1, drawerWidth: 340 })).toBe(false);
 		expect(sidebarGestureTarget({ open: true, dx: -35, velocityX: -0.8, drawerWidth: 340 })).toBe(false);
+	});
+
+	it("settles an interrupted animation from its current position", () => {
+		expect(sidebarGestureTarget({
+			open: true,
+			startProgress: 0.15,
+			dx: 20,
+			velocityX: 0.1,
+			drawerWidth: 340,
+		})).toBe(false);
+		expect(sidebarGestureTarget({
+			open: false,
+			startProgress: 0.85,
+			dx: -20,
+			velocityX: -0.1,
+			drawerWidth: 340,
+		})).toBe(true);
 	});
 });
