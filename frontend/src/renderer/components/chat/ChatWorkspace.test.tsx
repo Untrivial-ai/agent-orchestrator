@@ -1312,8 +1312,8 @@ describe("ChatWorkspace timeline", () => {
 
 		expect(screen.getByRole("alert")).toHaveTextContent("The agent controller stopped");
 		expect(screen.getByText("The controller is not connected")).toBeInTheDocument();
-		await user.click(screen.getByRole("button", { name: "Resume agent" }));
-		await user.click(screen.getByRole("button", { name: "Open shell" }));
+		await user.click(screen.getByRole("button", { name: "Try resuming" }));
+		await user.click(screen.getByRole("button", { name: "Try in shell" }));
 		expect(resume).toHaveBeenCalledOnce();
 		expect(openShell).toHaveBeenCalledOnce();
 	});
@@ -1344,7 +1344,7 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getByText("Starting Codex…")).toBeInTheDocument();
 		expect(screen.queryByText(/^Working for /)).not.toBeInTheDocument();
 		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Try resuming" })).not.toBeInTheDocument();
 		expect(screen.getByTestId("chat-conversation-panel")).not.toHaveAttribute("inert");
 	});
 
@@ -1385,8 +1385,8 @@ describe("ChatWorkspace timeline", () => {
 		);
 
 		expect(screen.getByRole("alert")).toHaveTextContent("worktree is no longer available");
-		expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: "Open shell" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Try resuming" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Try in shell" })).not.toBeInTheDocument();
 	});
 
 	it("shows connecting during the controller gap, then restores the composer when ready", () => {
@@ -1403,7 +1403,7 @@ describe("ChatWorkspace timeline", () => {
 		);
 
 		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Try resuming" })).not.toBeInTheDocument();
 		expect(screen.getByTestId("chat-conversation-panel")).toHaveAttribute("inert");
 		// Progress is the topbar spinner; the composer stays empty rather than
 		// painting a second "Connecting…" / "Switching…" label over the editor.
