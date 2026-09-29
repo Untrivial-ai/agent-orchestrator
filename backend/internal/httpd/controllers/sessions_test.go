@@ -1558,6 +1558,95 @@ func TestSessionsAPI_GetExposesArtifactFilesAndServesHTMLArtifact(t *testing.T) 
 	}
 }
 
+// TestSessionsAPI_ArtifactRawURLIsUnambiguousUnderWorkspaceCollision covers
+// the raw-content fetch the artifact file viewer uses for non-HTML artifacts
+// (markdown/generic files, opened inline in the Files inspector rather than
+// the Browser panel). Unlike the legacy __ao_artifacts__/ path-prefix route,
+// rawUrl is built on the artifact preview origin — a distinct host from the
+// workspace preview origin — so a real workspace file at the same literal
+// path cannot shadow it.
+func TestSessionsAPI_ArtifactRawURLIsUnambiguousUnderWorkspaceCollision(t *testing.T) {
+	artifactDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(artifactDir, "report.md"), []byte("artifact report content"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+
+	// A real workspace file at the literal path the legacy marker scheme
+	// would have used for this same artifact.
+	workspace := t.TempDir()
+	collidingPath := filepath.Join(workspace, "__ao_artifacts__", "report.md")
+	if err := os.MkdirAll(filepath.Dir(collidingPath), 0o755); err != nil {
+		t.Fatalf("mkdir workspace collision dir: %v", err)
+	}
+	if err := os.WriteFile(collidingPath, []byte("workspace collision content"), 0o644); err != nil {
+		t.Fatalf("write colliding workspace file: %v", err)
+	}
+
+	svc := newFakeSessionService()
+	s := svc.sessions["ao-1"]
+	s.OutputType = domain.SessionOutputArtifact
+	s.Metadata.ArtifactDir = artifactDir
+	s.Metadata.WorkspacePath = workspace
+	s.ArtifactFiles = []domain.SessionArtifactFile{
+		{
+			Path:      "report.md",
+			Name:      "report.md",
+			Kind:      domain.SessionArtifactMarkdown,
+			Size:      24,
+			UpdatedAt: time.Now().UTC().Truncate(time.Second),
+		},
+	}
+	svc.sessions["ao-1"] = s
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET session = %d, want 200; body=%s", status, body)
+	}
+	var resp struct {
+		Session struct {
+			ArtifactFiles []struct {
+				Path   string `json:"path"`
+				RawURL string `json:"rawUrl"`
+			} `json:"artifactFiles"`
+		} `json:"session"`
+	}
+	mustJSON(t, body, &resp)
+	if len(resp.Session.ArtifactFiles) != 1 {
+		t.Fatalf("artifactFiles = %+v, want 1", resp.Session.ArtifactFiles)
+	}
+	rawURL := resp.Session.ArtifactFiles[0].RawURL
+	if !strings.Contains(rawURL, "ao-preview-artifact.") || !strings.HasSuffix(rawURL, "/report.md?raw=true") {
+		t.Fatalf("rawUrl = %q, want an ao-preview-artifact origin with no path marker", rawURL)
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse rawUrl: %v", err)
+	}
+	directBody, directStatus, _ := doPreviewOriginRequest(t, srv, rawURL, parsed.EscapedPath()+"?"+parsed.RawQuery)
+	if directStatus != http.StatusOK {
+		t.Fatalf("GET rawUrl = %d, want 200; body=%s", directStatus, directBody)
+	}
+	if !bytes.Contains(directBody, []byte("artifact report content")) {
+		t.Fatalf("rawUrl body = %q, want artifact content, not the colliding workspace file's", directBody)
+	}
+
+	// The colliding workspace file, addressed on the ordinary (non-artifact)
+	// preview origin at its own literal path, is unaffected.
+	workspacePreviewURL, err := previewutil.FileURL(srv.URL, "ao-1", "__ao_artifacts__/report.md")
+	if err != nil {
+		t.Fatalf("build workspace preview URL: %v", err)
+	}
+	collisionBody, collisionStatus, _ := doPreviewOriginRequest(t, srv, workspacePreviewURL, "/__ao_artifacts__/report.md")
+	if collisionStatus != http.StatusOK {
+		t.Fatalf("GET colliding workspace file = %d, want 200; body=%s", collisionStatus, collisionBody)
+	}
+	if !bytes.Contains(collisionBody, []byte("workspace collision content")) {
+		t.Fatalf("colliding workspace body = %q, want the workspace file's own content", collisionBody)
+	}
+}
+
 // TestSessionsAPI_PreviewFileWorkspaceFileWinsOverArtifactNamespaceCollision
 // covers the legacy /preview/files/* route directly: __ao_artifacts__/ is a
 // reserved marker AO prepends itself, but it was a valid workspace-relative

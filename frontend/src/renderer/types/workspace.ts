@@ -65,12 +65,16 @@ export type ArtifactKind = "html" | "markdown" | "file";
  * SessionArtifact wire shape. `previewUrl` is only set for `html` artifacts,
  * which route through the existing Browser preview flow; `markdown`/`file`
  * artifacts have no preview URL and open in the Files inspector instead.
+ * `rawUrl` is set for every kind: it is the artifact preview origin's raw
+ * byte fetch, a distinct host from the workspace preview origin, so it can
+ * never resolve to a workspace-relative file of the same path.
  */
 export type SessionArtifact = {
 	kind: ArtifactKind;
 	name: string;
 	path: string;
 	previewUrl?: string;
+	rawUrl?: string;
 	size: number;
 	updatedAt: string;
 };

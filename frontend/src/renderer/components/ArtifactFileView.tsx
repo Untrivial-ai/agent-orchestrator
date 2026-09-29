@@ -1,8 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useFileAnnotation } from "../hooks/useFileAnnotation";
 import { FileContentPane, type FileViewMode } from "./FileContentPane";
-
-const ARTIFACT_SOURCE = { kind: "artifact" as const };
 
 // Mirrors FileContentPane's own canRenderMarkdown extension check: a markdown
 // artifact should open already rendered, the same way GitHub opens a README,
@@ -14,8 +12,10 @@ function initialModeFor(path: string): FileViewMode {
 /**
  * Content view for one file in a session's artifact directory, reusing the
  * same `FileContentPane` the workspace/PR Files flow uses (source-agnostic:
- * dispatches on `source.kind`). Artifacts fetch raw content straight from the
- * preview-files route rather than the workspace-diff machinery, since they
+ * dispatches on `source.kind`). Artifacts fetch raw content from `rawUrl`,
+ * the artifact preview origin's raw-bytes URL (a distinct host from the
+ * workspace preview origin, so it can never resolve to a workspace file of
+ * the same path), rather than the workspace-diff machinery, since artifacts
  * live outside the git workspace and have no diff/status.
  *
  * Read-only for now: `WorkspaceFileDetail.editable`/`fileFingerprint` are
@@ -29,15 +29,18 @@ export function ArtifactFileView({
 	feedbackRequestKey,
 	onFeedbackRequestConsumed,
 	path,
+	rawUrl,
 	sessionId,
 }: {
 	artifactName: string;
 	feedbackRequestKey?: number;
 	onFeedbackRequestConsumed?: (key: number) => void;
 	path: string;
+	rawUrl?: string;
 	sessionId: string;
 }) {
 	const annotation = useFileAnnotation(sessionId, { source: artifactName });
+	const source = useMemo(() => ({ kind: "artifact" as const, rawUrl }), [rawUrl]);
 
 	useEffect(() => {
 		if (feedbackRequestKey === undefined) return;
@@ -51,7 +54,7 @@ export function ArtifactFileView({
 	return (
 		<div className="flex h-full min-h-0 flex-col bg-background">
 			<div className="board-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
-				<FileContentPane annotation={annotation} initialMode={initialModeFor(path)} path={path} sessionId={sessionId} source={ARTIFACT_SOURCE} split={false} />
+				<FileContentPane annotation={annotation} initialMode={initialModeFor(path)} path={path} sessionId={sessionId} source={source} split={false} />
 			</div>
 		</div>
 	);

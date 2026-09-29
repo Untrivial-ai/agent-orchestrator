@@ -377,6 +377,12 @@ type SessionArtifactView struct {
 	Size       int64                      `json:"size"`
 	UpdatedAt  time.Time                  `json:"updatedAt"`
 	PreviewURL string                     `json:"previewUrl,omitempty"`
+	// RawURL fetches this artifact's raw bytes on the artifact preview
+	// origin — a distinct host from the workspace preview origin, so a
+	// workspace-relative path can never collide with an artifact-relative
+	// one. Set for every kind, unlike PreviewURL (html only, meant for
+	// Browser navigation rather than a raw fetch).
+	RawURL string `json:"rawUrl,omitempty"`
 }
 
 // ListSessionsResponse is the body of GET /api/v1/sessions.

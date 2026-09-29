@@ -2299,17 +2299,39 @@ func sessionArtifactFiles(r *http.Request, s domain.Session) []SessionArtifactVi
 			Size:      artifact.Size,
 			UpdatedAt: artifact.UpdatedAt,
 		}
+		// A distinct host (not a shared path-prefix marker) gives every
+		// artifact link an unambiguous source identity: it can never collide
+		// with a real workspace file, unlike the legacy __ao_artifacts__/
+		// path-prefix form previewFile/previewOriginEntry still accept for
+		// backward compatibility.
+		if rawURL, ok := artifactRawURL(r, s.ID, artifact.Path); ok {
+			view.RawURL = rawURL
+		}
 		if artifact.Kind == domain.SessionArtifactHTML {
-			// A distinct host (not a shared path-prefix marker) gives this
-			// link an unambiguous source identity: it can never collide with
-			// a real workspace file, unlike the legacy __ao_artifacts__/
-			// path-prefix form previewFile/previewOriginEntry still accept
-			// for backward compatibility.
 			view.PreviewURL, _ = previewutil.ArtifactFileURL("http://"+r.Host, s.ID, artifact.Path)
 		}
 		out = append(out, view)
 	}
 	return out
+}
+
+// artifactRawURL builds the raw-bytes fetch URL for one artifact file on the
+// artifact preview origin, with ?raw=true so a markdown artifact returns its
+// source text rather than server-rendered HTML (matching the ?raw=true
+// behavior serveOpenedPreviewFile already applies on every preview route).
+func artifactRawURL(r *http.Request, id domain.SessionID, path string) (string, bool) {
+	raw, err := previewutil.ArtifactFileURL("http://"+r.Host, id, path)
+	if err != nil {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	q := u.Query()
+	q.Set("raw", "true")
+	u.RawQuery = q.Encode()
+	return u.String(), true
 }
 
 func sessionPRFacts(prs []domain.PRFacts) []SessionPRFacts {

@@ -53,47 +53,45 @@ describe("ArtifactFileView", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("fetches a .txt artifact through the artifact-scoped preview route and renders its content", async () => {
+	const RAW_URL = "http://ao-preview-artifact.abc123.localhost:3001/notes.txt?raw=true";
+
+	it("fetches a .txt artifact through its rawUrl and renders its content", async () => {
 		fetchMock.mockResolvedValue(new Response("hello world", { status: 200 }));
 
-		renderWithQuery(<ArtifactFileView artifactName="notes.txt" path="notes.txt" sessionId="sess-1" />);
+		renderWithQuery(<ArtifactFileView artifactName="notes.txt" path="notes.txt" rawUrl={RAW_URL} sessionId="sess-1" />);
 
 		await waitFor(() => expect(screen.getByText("hello world")).toBeInTheDocument());
 		expect(scrollContainer()).toHaveClass("overflow-y-auto", "min-h-0");
 
-		expect(fetchMock).toHaveBeenCalledWith(
-			"http://127.0.0.1:3001/api/v1/sessions/sess-1/preview/files/__ao_artifacts__/notes.txt?raw=true",
-		);
+		expect(fetchMock).toHaveBeenCalledWith(RAW_URL);
 	});
 
 	it("opens a .md artifact already rendered, not as raw markdown source", async () => {
 		fetchMock.mockResolvedValue(new Response("# Notes\n\nhello", { status: 200 }));
+		const rawUrl = "http://ao-preview-artifact.abc123.localhost:3001/notes.md?raw=true";
 
-		renderWithQuery(<ArtifactFileView artifactName="notes.md" path="notes.md" sessionId="sess-1" />);
+		renderWithQuery(<ArtifactFileView artifactName="notes.md" path="notes.md" rawUrl={rawUrl} sessionId="sess-1" />);
 
 		await waitFor(() => expect(screen.getByRole("heading", { name: "Notes" })).toBeInTheDocument());
-		expect(fetchMock).toHaveBeenCalledWith(
-			"http://127.0.0.1:3001/api/v1/sessions/sess-1/preview/files/__ao_artifacts__/notes.md?raw=true",
-		);
+		expect(fetchMock).toHaveBeenCalledWith(rawUrl);
 		expect(screen.getByText("hello")).toBeInTheDocument();
 		expect(screen.queryByText(/^# Notes/)).not.toBeInTheDocument();
 	});
 
-	it("URL-encodes nested artifact paths per segment", async () => {
+	it("fetches whatever rawUrl the session provided, unmodified", async () => {
 		fetchMock.mockResolvedValue(new Response("content", { status: 200 }));
+		const rawUrl = "http://ao-preview-artifact.abc123.localhost:3001/sub%20dir/report.txt?raw=true";
 
-		renderWithQuery(<ArtifactFileView artifactName="report.txt" path="sub dir/report.txt" sessionId="sess-1" />);
+		renderWithQuery(<ArtifactFileView artifactName="report.txt" path="sub dir/report.txt" rawUrl={rawUrl} sessionId="sess-1" />);
 
 		await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-		expect(fetchMock).toHaveBeenCalledWith(
-			"http://127.0.0.1:3001/api/v1/sessions/sess-1/preview/files/__ao_artifacts__/sub%20dir/report.txt?raw=true",
-		);
+		expect(fetchMock).toHaveBeenCalledWith(rawUrl);
 	});
 
 	it("marks binary artifacts as binary instead of decoding them as text", async () => {
 		fetchMock.mockResolvedValue(new Response("prefix\0suffix", { status: 200 }));
 
-		renderWithQuery(<ArtifactFileView artifactName="data.bin" path="data.bin" sessionId="sess-1" />);
+		renderWithQuery(<ArtifactFileView artifactName="data.bin" path="data.bin" rawUrl={RAW_URL} sessionId="sess-1" />);
 
 		await waitFor(() => expect(screen.getByTestId("artifact-binary")).toHaveTextContent("true"));
 		expect(screen.getByTestId("artifact-truncated")).toHaveTextContent("false");
@@ -103,7 +101,7 @@ describe("ArtifactFileView", () => {
 	it("bounds oversized artifact reads and marks the content truncated", async () => {
 		fetchMock.mockResolvedValue(new Response("a".repeat(256 * 1024 + 1), { status: 200 }));
 
-		renderWithQuery(<ArtifactFileView artifactName="large.txt" path="large.txt" sessionId="sess-1" />);
+		renderWithQuery(<ArtifactFileView artifactName="large.txt" path="large.txt" rawUrl={RAW_URL} sessionId="sess-1" />);
 
 		await waitFor(() => expect(screen.getByTestId("artifact-truncated")).toHaveTextContent("true"));
 		expect(screen.getByTestId("artifact-binary")).toHaveTextContent("false");
@@ -113,7 +111,7 @@ describe("ArtifactFileView", () => {
 	it("does not show an edit affordance (no write endpoint for artifacts yet)", async () => {
 		fetchMock.mockResolvedValue(new Response("content", { status: 200 }));
 
-		renderWithQuery(<ArtifactFileView artifactName="notes.txt" path="notes.txt" sessionId="sess-1" />);
+		renderWithQuery(<ArtifactFileView artifactName="notes.txt" path="notes.txt" rawUrl={RAW_URL} sessionId="sess-1" />);
 
 		await waitFor(() => expect(screen.getByText("content")).toBeInTheDocument());
 		expect(screen.queryByRole("button", { name: "Edit file" })).not.toBeInTheDocument();
@@ -122,16 +120,23 @@ describe("ArtifactFileView", () => {
 	it("shows a retry option when the fetch fails", async () => {
 		fetchMock.mockResolvedValue(new Response("nope", { status: 404 }));
 
+		renderWithQuery(<ArtifactFileView artifactName="notes.txt" path="notes.txt" rawUrl={RAW_URL} sessionId="sess-1" />);
+
+		await waitFor(() => expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument());
+	});
+
+	it("shows a retry option when no rawUrl is available", async () => {
 		renderWithQuery(<ArtifactFileView artifactName="notes.txt" path="notes.txt" sessionId="sess-1" />);
 
 		await waitFor(() => expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument());
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	it("opens whole-artifact feedback from a reveal request and sends it to the worker", async () => {
 		fetchMock.mockResolvedValue(new Response("content", { status: 200 }));
 		postMock.mockResolvedValue({ data: { status: "ok" } });
 
-		renderWithQuery(<ArtifactFileView artifactName="notes.txt" feedbackRequestKey={1} path="notes.txt" sessionId="sess-1" />);
+		renderWithQuery(<ArtifactFileView artifactName="notes.txt" feedbackRequestKey={1} path="notes.txt" rawUrl={RAW_URL} sessionId="sess-1" />);
 
 		const textbox = await screen.findByRole("textbox", { name: /Feedback for notes\.txt/ });
 		await userEvent.type(textbox, "Please tighten this artifact.");

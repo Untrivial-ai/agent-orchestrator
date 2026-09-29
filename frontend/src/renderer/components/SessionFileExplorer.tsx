@@ -568,6 +568,7 @@ function ArtifactFilesPanel({
 							feedbackRequestKey={feedbackRequestKey}
 							onFeedbackRequestConsumed={onFeedbackRequestConsumed}
 							path={artifact.path}
+							rawUrl={artifact.rawUrl}
 							sessionId={sessionId}
 						/>
 					) : (
@@ -597,6 +598,7 @@ function ArtifactFilesPanel({
 					feedbackRequestKey={feedbackRequestKey}
 					onFeedbackRequestConsumed={onFeedbackRequestConsumed}
 					path={artifact.path}
+					rawUrl={artifact.rawUrl}
 					sessionId={sessionId}
 				/>
 			</div>

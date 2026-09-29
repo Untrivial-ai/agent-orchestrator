@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient, UseQueryOptions } from "@tanstack/react-query";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import type { components } from "../../api/schema";
-import { apiClient, apiErrorMessage, getApiBaseUrl } from "../lib/api-client";
+import { apiClient, apiErrorMessage } from "../lib/api-client";
 import {
 	getWorkspaceFileConnectionState,
 	subscribeWorkspaceFileChanges,
@@ -46,7 +46,7 @@ export type WorkspaceFileSearchResponse = components["schemas"]["WorkspaceFileSe
 export type FilesSource =
 	| { kind: "workspace" }
 	| { kind: "pull_request"; number: number; url: string; label: string; snapshot?: string }
-	| { kind: "artifact" };
+	| { kind: "artifact"; rawUrl?: string };
 
 export const sessionWorkspaceFilesQueryKey = (sessionId: string) => ["session-workspace-files", sessionId] as const;
 const WORKSPACE_FILES_DEGRADED_REFETCH_MS = 30_000;
@@ -108,17 +108,13 @@ async function fetchSessionPRFile(sessionId: string, number: number, sourceUrl: 
 
 // Artifact files live in the session's artifact directory, outside the git
 // workspace, so they have no diff/status and aren't reachable through the
-// workspace-files endpoint. `/preview/files/*` already serves any file rooted
-// under either the workspace or the artifact dir (the `__ao_artifacts__/`
-// prefix picks the latter) as raw bytes — the same route the Browser preview
-// uses for HTML artifacts, just fetched directly here instead of navigated to.
-function artifactPreviewFileUrl(sessionId: string, path: string): string {
-	const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-	return `${getApiBaseUrl()}/api/v1/sessions/${encodeURIComponent(sessionId)}/preview/files/__ao_artifacts__/${encodedPath}?raw=true`;
-}
-
-async function fetchSessionArtifactFile(sessionId: string, path: string, errorMessage: string): Promise<WorkspaceFileDetail> {
-	const response = await fetch(artifactPreviewFileUrl(sessionId, path));
+// workspace-files endpoint. rawUrl (from the artifact list response) fetches
+// raw bytes on the artifact preview origin, a distinct host from the
+// workspace preview origin — unlike the legacy __ao_artifacts__/ path-prefix
+// form, a workspace-relative path of the same name can never resolve there.
+async function fetchSessionArtifactFile(sessionId: string, path: string, rawUrl: string | undefined, errorMessage: string): Promise<WorkspaceFileDetail> {
+	if (!rawUrl) throw new Error(errorMessage);
+	const response = await fetch(rawUrl);
 	if (!response.ok) throw new Error(errorMessage);
 	const { binary, content, size, truncated } = await readArtifactTextResponse(response);
 	return {
@@ -204,10 +200,10 @@ function decodeArtifactText(bytes: Uint8Array, truncated: boolean): { binary: bo
 	}
 }
 
-export function sessionArtifactFileQueryOptions(sessionId: string, path: string, errorMessage = "Unable to load artifact"): UseQueryOptions<WorkspaceFileDetail> {
+export function sessionArtifactFileQueryOptions(sessionId: string, path: string, rawUrl: string | undefined, errorMessage = "Unable to load artifact"): UseQueryOptions<WorkspaceFileDetail> {
 	return {
 		queryKey: ["session-artifact-file", sessionId, path],
-		queryFn: () => fetchSessionArtifactFile(sessionId, path, errorMessage),
+		queryFn: () => fetchSessionArtifactFile(sessionId, path, rawUrl, errorMessage),
 	};
 }
 
@@ -222,7 +218,7 @@ export function sessionWorkspaceFileQueryOptions(sessionId: string, path: string
 
 export function sessionSourceFileQueryOptions(sessionId: string, source: FilesSource, path: string, errorMessage = "Unable to load file", scope: WorkspaceDiffScope = "combined", commitSha?: string, previousPath = ""): UseQueryOptions<WorkspaceFileDetail> {
 	if (source.kind === "workspace") return sessionWorkspaceFileQueryOptions(sessionId, path, errorMessage, scope, commitSha);
-	if (source.kind === "artifact") return sessionArtifactFileQueryOptions(sessionId, path, errorMessage);
+	if (source.kind === "artifact") return sessionArtifactFileQueryOptions(sessionId, path, source.rawUrl, errorMessage);
 	return { queryKey: ["session-source-file", sessionId, "pull_request", source.url, source.snapshot ?? "", commitSha ?? "", path], queryFn: () => fetchSessionPRFile(sessionId, source.number, source.url, path, previousPath, errorMessage, commitSha) };
 }
 

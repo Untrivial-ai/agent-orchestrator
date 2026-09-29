@@ -4459,6 +4459,7 @@ export interface components {
             name: string;
             path: string;
             previewUrl?: string;
+            rawUrl?: string;
             /** Format: int64 */
             size: number;
             /** Format: date-time */

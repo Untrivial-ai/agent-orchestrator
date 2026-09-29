@@ -12780,6 +12780,8 @@ components:
           type: string
         previewUrl:
           type: string
+        rawUrl:
+          type: string
         size:
           format: int64
           type: integer

@@ -78,6 +78,7 @@ function toSessionArtifact(artifact: components["schemas"]["SessionArtifact"]): 
 		name: artifact.name,
 		path: artifact.path,
 		previewUrl: artifact.previewUrl,
+		rawUrl: artifact.rawUrl,
 		size: artifact.size,
 		updatedAt: artifact.updatedAt,
 	};
