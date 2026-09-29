@@ -805,6 +805,27 @@ func TestResumeExitedChatSessionDoesNotRequireTerminalRuntimeHandle(t *testing.T
 	}
 }
 
+func TestChatResumeRunsAgentPreLaunchForWorkspaceTrust(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, store, _ := newChatManager(launcher)
+	agent := &recordingPreLauncherAgent{}
+	mgr.agents = singleAgent{agent: agent}
+	seedChatResumeSession(store, domain.ActivityExited)
+	rec := store.sessions["mer-1"]
+	rec.Harness = domain.HarnessClaudeCode
+	store.sessions[rec.ID] = rec
+
+	if _, err := mgr.ResumeAgentWithMode(context.Background(), rec.ID); err != nil {
+		t.Fatalf("ResumeAgentWithMode: %v", err)
+	}
+	if len(agent.launches) != 1 {
+		t.Fatalf("PreLaunch calls = %d, want 1", len(agent.launches))
+	}
+	if got := agent.launches[0].WorkspacePath; got != rec.Metadata.WorkspacePath {
+		t.Fatalf("PreLaunch workspace = %q, want %q", got, rec.Metadata.WorkspacePath)
+	}
+}
+
 func TestResumeChatRotatesBrowserCapabilityBeforeControllerStart(t *testing.T) {
 	launcher := &recordingLauncher{}
 	mgr, store, _ := newChatManager(launcher)
@@ -1249,6 +1270,39 @@ func TestChatSpawnStartsControllerAndNoRuntime(t *testing.T) {
 
 	if len(launcher.turns) != 1 || launcher.turns[0] == "" {
 		t.Fatalf("initial prompt was not delivered as a turn: %v", launcher.turns)
+	}
+}
+
+type recordingPreLauncherAgent struct {
+	fakeAgent
+	launches []ports.LaunchConfig
+}
+
+func (a *recordingPreLauncherAgent) PreLaunch(_ context.Context, cfg ports.LaunchConfig) error {
+	a.launches = append(a.launches, cfg)
+	return nil
+}
+
+func TestChatSpawnRunsAgentPreLaunchForWorkspaceTrust(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, _, _ := newChatManager(launcher)
+	agent := &recordingPreLauncherAgent{}
+	mgr.agents = singleAgent{agent: agent}
+
+	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID:     chatTestProject,
+		Kind:          domain.KindWorker,
+		Harness:       domain.HarnessClaudeCode,
+		RequestedMode: domain.SessionModeChat,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if len(agent.launches) != 1 {
+		t.Fatalf("PreLaunch calls = %d, want 1", len(agent.launches))
+	}
+	if got := agent.launches[0].WorkspacePath; got == "" || got != rec.Metadata.WorkspacePath {
+		t.Fatalf("PreLaunch workspace = %q, want spawned workspace %q", got, rec.Metadata.WorkspacePath)
 	}
 }
 

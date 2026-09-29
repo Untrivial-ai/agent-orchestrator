@@ -405,6 +405,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	var configOptions []acpsdk.SessionConfigOption
 	var modes *acpsdk.SessionModeState
 	var historyConversation *refreshableConversation
+	historylessResume := false
 	if init.AgentCapabilities.LoadSession {
 		historyConversation = newRefreshableConversation(conv, acpsdk.LoadSessionRequest{
 			Meta:                  meta,
@@ -415,11 +416,33 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		})
 		resp, err := historyConversation.loadHistory(resumeCtx)
 		if err != nil {
-			conv.discard()
-			return nil, fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, normalizeACPLoadError("ACP session/load", err))
+			loadErr := normalizeACPLoadError("ACP session/load", err)
+			if !cfg.AllowResumeWithoutHistory || init.AgentCapabilities.SessionCapabilities.Resume == nil {
+				conv.discard()
+				return nil, fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, loadErr)
+			}
+			resumed, resumeErr := conv.conn.ResumeSession(resumeCtx, acpsdk.ResumeSessionRequest{
+				Meta:                  meta,
+				SessionId:             acpsdk.SessionId(cfg.ProviderConversationID),
+				Cwd:                   cfg.WorkspacePath,
+				AdditionalDirectories: additional,
+				McpServers:            mcpServers,
+			})
+			if resumeErr != nil {
+				conv.discard()
+				return nil, errors.Join(
+					fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, loadErr),
+					fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, normalizeACPError("ACP session/resume", resumeErr)),
+				)
+			}
+			configOptions = resumed.ConfigOptions
+			modes = resumed.Modes
+			historyConversation = nil
+			historylessResume = true
+		} else {
+			configOptions = resp.ConfigOptions
+			modes = resp.Modes
 		}
-		configOptions = resp.ConfigOptions
-		modes = resp.Modes
 	} else {
 		resp, err := conv.conn.ResumeSession(resumeCtx, acpsdk.ResumeSessionRequest{
 			Meta:                  meta,
@@ -435,8 +458,14 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		configOptions = resp.ConfigOptions
 		modes = resp.Modes
 	}
+	capabilities := conversationCapabilities(d.cfg.Capabilities, init)
+	if historylessResume {
+		// ACP session/resume restores the provider's model context but does not
+		// replay transcript events. AO keeps showing its durable conversation rows.
+		capabilities[ports.ChatCapabilityHistory] = false
+	}
 	conv.start(
-		cfg.ProviderConversationID, conversationCapabilities(d.cfg.Capabilities, init),
+		cfg.ProviderConversationID, capabilities,
 		d.cfg.SessionMode, d.cfg.SessionOptions, d.cfg.PermissionPolicy,
 		cfg.Permissions, d.cfg.ValidateTurnSettings, configOptions,
 		conv.legacyWire.modelState(), modes,

@@ -8655,6 +8655,30 @@ func TestRestoreAll_RestoresLegacyShutdownMarkerWithoutState(t *testing.T) {
 	}
 }
 
+func TestRestoreAll_PromptlessUnresumableWorkerFinishesNeutral(t *testing.T) {
+	m, st, rt, _ := newLifecycleManager()
+	rec := domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		IsTerminated: true,
+		Metadata:     domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1/root"},
+		Activity:     domain.Activity{State: domain.ActivityExited},
+	}
+	st.sessions[rec.ID] = rec
+	st.worktrees[rec.ID] = []domain.SessionWorktreeRecord{{
+		SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName, WorktreePath: rec.Metadata.WorkspacePath,
+	}}
+
+	if err := m.RestoreAll(ctx); err != nil {
+		t.Fatalf("RestoreAll: %v", err)
+	}
+	if got := m.SessionStatusReadiness(st.sessions[rec.ID]); got != "ready" {
+		t.Fatalf("readiness = %q, want neutral ready for intentionally terminated promptless worker", got)
+	}
+	if rt.created != 0 || !st.sessions[rec.ID].IsTerminated {
+		t.Fatalf("promptless worker changed: runtime creates=%d terminated=%v", rt.created, st.sessions[rec.ID].IsTerminated)
+	}
+}
+
 // TestRestoreAll_SkipsSessionsKilledBeforeShutdown verifies (c): a session
 // the user killed BEFORE shutdown has no session_worktrees row and must NOT
 // be resurrected.

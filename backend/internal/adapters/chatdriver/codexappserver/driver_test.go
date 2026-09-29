@@ -768,6 +768,47 @@ func TestResumeFailureDoesNotFallBackToStart(t *testing.T) {
 	}
 }
 
+func TestResumeGenericInternalErrorIsConclusiveFailure(t *testing.T) {
+	d, srv := newTestDriver(t)
+	srv.mu.Lock()
+	delete(srv.responses, "thread/resume")
+	srv.mu.Unlock()
+
+	go func() {
+		f := srv.awaitFrame(func(f frame) bool { return f.Method == "thread/resume" })
+		srv.push(`{"id":` + string(*f.ID) + `,"error":{"code":-32603,"message":"internal error"}}`)
+	}()
+
+	_, err := d.Resume(context.Background(), ports.ChatResumeConfig{
+		SessionID: "ao-1", ProviderConversationID: "thread-gone", WorkspacePath: "/tmp/ws",
+	})
+	if !errors.Is(err, ports.ErrChatResumeFailed) {
+		t.Fatalf("err = %v, want ErrChatResumeFailed", err)
+	}
+	if errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+		t.Fatalf("generic internal error must not be classified as competing-writer ambiguity: %v", err)
+	}
+}
+
+func TestResumeActiveWriterRemainsInconclusive(t *testing.T) {
+	d, srv := newTestDriver(t)
+	srv.mu.Lock()
+	delete(srv.responses, "thread/resume")
+	srv.mu.Unlock()
+
+	go func() {
+		f := srv.awaitFrame(func(f frame) bool { return f.Method == "thread/resume" })
+		srv.push(`{"id":` + string(*f.ID) + `,"error":{"code":-32603,"message":"thread already has an active writer"}}`)
+	}()
+
+	_, err := d.Resume(context.Background(), ports.ChatResumeConfig{
+		SessionID: "ao-1", ProviderConversationID: "thread-live", WorkspacePath: "/tmp/ws",
+	})
+	if !errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+		t.Fatalf("err = %v, want ErrChatRecoveryInconclusive", err)
+	}
+}
+
 func TestResumeReappliesWorkspaceAndStandingInstructions(t *testing.T) {
 	d, srv := newTestDriver(t)
 	conv, err := d.Resume(context.Background(), ports.ChatResumeConfig{

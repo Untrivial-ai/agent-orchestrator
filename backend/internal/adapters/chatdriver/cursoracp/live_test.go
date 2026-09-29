@@ -3,6 +3,7 @@ package cursoracp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,9 +11,29 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/cursor"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestMain(m *testing.M) {
+	if len(os.Args) >= 8 && os.Args[1] == "chat-host" {
+		if os.Args[5] != string(persistenthost.ProtocolACP) || os.Args[7] != "--" {
+			os.Exit(2)
+		}
+		err := persistenthost.Run(context.Background(), persistenthost.Config{
+			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
+			Env: os.Environ(), Argv: os.Args[8:], Protocol: persistenthost.ProtocolACP,
+			OwnershipFingerprint: os.Args[6],
+		})
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 // Run explicitly with AO_LIVE_CURSOR_ACP=1. It uses the user's existing Cursor
 // executable, account, and AO-managed Cursor profile; CI never depends on them.
@@ -100,6 +121,61 @@ func TestLiveCursorACP(t *testing.T) {
 	questionAnswer := waitForLiveTurn(ctx, t, resumed, questionRef.ProviderTurnID, false, false)
 	if !strings.Contains(strings.ToLower(questionAnswer), "alpha") {
 		t.Fatalf("answer after cursor/ask_question = %q, want selected alpha", questionAnswer)
+	}
+}
+
+// TestLiveCursorACPResumeContext isolates the restart/resume contract from the
+// longer tool, permission, and prompt-rule smoke test above. It uses a unique
+// temporary workspace and session id, sends no workspace-mutating instructions,
+// and proves that a fresh Cursor ACP process retains the conversation context.
+func TestLiveCursorACPResumeContext(t *testing.T) {
+	if os.Getenv("AO_LIVE_CURSOR_ACP") != "1" {
+		t.Skip("set AO_LIVE_CURSOR_ACP=1 to run against the local Cursor account")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	driver := New(cursor.New(), nil)
+	if _, err := driver.Probe(ctx); err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	workspace := t.TempDir()
+	dataDir := liveDataDir(t)
+	env := liveEnvMap()
+	const sessionID = "live-cursor-resume-context"
+	conv, err := driver.Start(ctx, ports.ChatStartConfig{
+		SessionID: sessionID, DataDir: dataDir, WorkspacePath: workspace, Env: env,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	providerID := conv.ProviderConversationID()
+	if providerID == "" {
+		t.Fatal("Start returned an empty provider session id")
+	}
+	first := sendLiveTurn(ctx, t, conv,
+		"Remember the exact token RESUME_CONTEXT_731 and reply only READY.")
+	waitForLiveTurn(ctx, t, conv, first.ProviderTurnID, false, false)
+	if err := conv.(ports.ChatProviderTerminator).Terminate(); err != nil {
+		t.Fatalf("Terminate fresh host: %v", err)
+	}
+
+	resumed, err := driver.Resume(ctx, ports.ChatResumeConfig{
+		SessionID: sessionID, ProviderConversationID: providerID,
+		DataDir: dataDir, WorkspacePath: workspace, Env: env,
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	defer resumed.(ports.ChatProviderTerminator).Terminate()
+	if got := resumed.ProviderConversationID(); got != providerID {
+		t.Fatalf("resumed provider id = %q, want original %q", got, providerID)
+	}
+	second := sendLiveTurn(ctx, t, resumed,
+		"What exact token did I ask you to remember? Reply with the token only.")
+	answer := waitForLiveTurn(ctx, t, resumed, second.ProviderTurnID, false, false)
+	if !strings.Contains(answer, "RESUME_CONTEXT_731") {
+		t.Fatalf("resumed answer = %q, want original conversation context", answer)
 	}
 }
 

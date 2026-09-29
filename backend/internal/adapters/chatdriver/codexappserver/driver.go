@@ -412,6 +412,13 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		_ = conv.Terminate()
 		// Deliberately not falling back to thread/start: silently opening a new
 		// conversation would present unrelated history as continuous.
+		// Another live app-server can temporarily own the same native thread
+		// during an app restart. That is a liveness ambiguity, not proof that the
+		// saved conversation is gone; keep the AO session in recovery and retry.
+		resumeErrText := strings.ToLower(err.Error())
+		if strings.Contains(resumeErrText, "already has an active writer") {
+			return nil, fmt.Errorf("%w: %w", ports.ErrChatRecoveryInconclusive, err)
+		}
 		return nil, fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, err)
 	}
 

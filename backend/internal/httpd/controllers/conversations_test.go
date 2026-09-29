@@ -267,6 +267,9 @@ func TestConversationSnapshotExposesSafeEditContentAndBranchMetadata(t *testing.
 	if messages[2].(map[string]any)["editAvailable"] != false {
 		t.Fatalf("malformed message is editable: %#v", messages[2])
 	}
+	if got := messages[3].(map[string]any)["clientMessageId"]; got != "retry/turn-source" {
+		t.Fatalf("clientMessageId = %#v, want retry/turn-source", got)
+	}
 	turns := body["turns"].([]any)
 	if turns[0].(map[string]any)["hasRetryAttempt"] != true {
 		t.Fatalf("consumed retry source = %#v", turns[0])

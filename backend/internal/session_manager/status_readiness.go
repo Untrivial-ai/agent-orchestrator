@@ -36,15 +36,21 @@ func (m *Manager) SessionStatusReadiness(rec domain.SessionRecord) string {
 		if result.pending {
 			return "checking"
 		}
-		if result.failed != nil && !rec.IsTerminated && rec.Activity.State != domain.ActivityExited &&
-			rec.ControllerOwner() == result.failed.ControllerOwner() && rec.Activity == result.failed.Activity {
+		if result.failed != nil && rec.ControllerOwner() == result.failed.ControllerOwner() && rec.Activity == result.failed.Activity {
 			return "unavailable"
 		}
 		return "ready"
 	}
 	select {
 	case <-m.startupBackgroundReconcileDone:
+		if m.statusRecoveryPending {
+			return "checking"
+		}
 		if m.statusRecoveryFailed {
+			// A discovery failure says nothing about any one controller, so it
+			// remains neutral while bounded retries run. Once those retries are
+			// exhausted, surface an actionable retry state instead of loading
+			// forever.
 			return "unavailable"
 		}
 		return "ready"

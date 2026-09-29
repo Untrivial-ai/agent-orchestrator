@@ -2,16 +2,34 @@ package codexappserver
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestMain(m *testing.M) {
+	if len(os.Args) >= 6 && os.Args[1] == "chat-host" && os.Args[5] == "--" {
+		err := persistenthost.Run(context.Background(), persistenthost.Config{
+			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
+			Env: os.Environ(), Argv: os.Args[6:], Protocol: persistenthost.ProtocolRaw,
+		})
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 // TestLiveCodexAppServer drives a real `codex app-server`. It is skipped unless
 // AO_CODEX_LIVE=1, because it needs a local Codex install, working auth, and it
@@ -48,10 +66,33 @@ func TestLiveCodexAppServer(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
+	models, err := d.DiscoverModels(ctx, workspace, envMap())
+	if err != nil {
+		t.Fatalf("DiscoverModels: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatal("Codex account returned no visible models")
+	}
+	model := strings.TrimSpace(os.Getenv("AO_LIVE_CODEX_MODEL"))
+	if model == "" {
+		for _, available := range models {
+			if available.Default {
+				model = available.ID
+				break
+			}
+		}
+	}
+	if model == "" {
+		model = models[0].ID
+	}
+	t.Logf("using provider-listed model %s", model)
+	dataDir := t.TempDir()
 
 	conv, err := d.Start(ctx, ports.ChatStartConfig{
 		SessionID:     "ao-live",
+		DataDir:       dataDir,
 		WorkspacePath: workspace,
+		Model:         model,
 		Env:           envMap(),
 		Permissions:   ports.PermissionModeDefault,
 		SystemPrompt:  "You are in an automated test. Answer in one short sentence.",
@@ -78,6 +119,7 @@ func TestLiveCodexAppServer(t *testing.T) {
 	var (
 		sawDelta bool
 		state    domain.TurnState
+		turnErr  error
 	)
 collect:
 	for {
@@ -96,6 +138,7 @@ collect:
 				_ = conv.ResolveRequest(ctx, ev.RequestID, ports.ChatDecision{ID: "accept"})
 			case ports.ChatEventTurnCompleted:
 				state = ev.TurnState
+				turnErr = ev.Err
 				break collect
 			case ports.ChatEventControllerState:
 				if ev.ControllerState == ports.ChatControllerStopped {
@@ -111,7 +154,7 @@ collect:
 		t.Error("no streaming deltas observed")
 	}
 	if state != domain.TurnStateCompleted {
-		t.Errorf("turn state = %q, want completed", state)
+		t.Errorf("turn state = %q, want completed; error=%v", state, turnErr)
 	}
 
 	// Resume on a fresh process must recover the same thread — this is the
@@ -123,7 +166,9 @@ collect:
 	resumed, err := d.Resume(ctx, ports.ChatResumeConfig{
 		SessionID:              "ao-live",
 		ProviderConversationID: threadID,
+		DataDir:                dataDir,
 		WorkspacePath:          workspace,
+		Model:                  model,
 		Env:                    envMap(),
 		Permissions:            ports.PermissionModeDefault,
 	})
@@ -136,6 +181,38 @@ collect:
 		t.Fatalf("resumed thread = %q, want %q", got, threadID)
 	}
 	t.Logf("resumed thread %s on a fresh app-server process", threadID)
+	if _, err := resumed.SendTurn(ctx, ports.ChatUserMessage{
+		Text:            "What exact word did I ask you to reply with?",
+		ClientMessageID: "live-resume-check",
+		Origin:          domain.MessageOriginHuman,
+	}); err != nil {
+		t.Fatalf("SendTurn after resume: %v", err)
+	}
+	var resumedAnswer strings.Builder
+	var resumedErr error
+	for {
+		select {
+		case event, ok := <-resumed.Events():
+			if !ok {
+				t.Fatalf("event stream closed before resumed turn completed; answer=%q", resumedAnswer.String())
+			}
+			switch event.Kind {
+			case ports.ChatEventMessageDelta:
+				resumedAnswer.WriteString(event.Delta)
+			case ports.ChatEventTurnCompleted:
+				if event.TurnState != domain.TurnStateCompleted {
+					resumedErr = event.Err
+					t.Fatalf("resumed turn state = %q; error=%v; answer=%q", event.TurnState, resumedErr, resumedAnswer.String())
+				}
+				if !strings.Contains(strings.ToLower(resumedAnswer.String()), "acknowledged") {
+					t.Fatalf("resumed answer = %q, want prior conversation context", resumedAnswer.String())
+				}
+				return
+			}
+		case <-ctx.Done():
+			t.Fatalf("resumed turn timed out: %v; answer=%q", ctx.Err(), resumedAnswer.String())
+		}
+	}
 }
 
 // livePlugin stands in for AO's Codex agent plugin so this test exercises the
