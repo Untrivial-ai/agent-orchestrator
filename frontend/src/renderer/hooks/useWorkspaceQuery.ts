@@ -80,7 +80,16 @@ function toWorkspaceSession(
 		statusReadiness === "ready" ? toSessionStatus(session.status, session.isTerminated) : "unknown";
 	const scmStatus = session.scmStatus ? toSessionStatus(session.scmStatus) : undefined;
 	const kanbanColumn = toKanbanColumn(session.kanbanColumn, status);
-	const activity = statusReadiness === "ready" ? toSessionActivity(session.activity) : undefined;
+	// While recovery is still checking, activity is deliberately neutral: the
+	// persisted value may describe the controller from before the restart. Once
+	// recovery has settled as unavailable, however, an exited activity is the
+	// actionable fact that powers Resume Agent and must not be hidden behind an
+	// endless startup surface.
+	const activity =
+		statusReadiness === "ready" ||
+		(statusReadiness === "unavailable" && session.activity?.state === "exited")
+			? toSessionActivity(session.activity)
+			: undefined;
 	if (statusReadiness === "ready" && status === "unknown") reportUnknownSessionField("status", session.status);
 	if (statusReadiness === "ready" && (!activity || activity.state === "unknown")) {
 		reportUnknownSessionField("activity", session.activity?.state);

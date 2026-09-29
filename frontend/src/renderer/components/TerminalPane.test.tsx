@@ -1016,7 +1016,13 @@ describe("terminal restore", () => {
 
 		it("does not show startup copy when an exited session has no terminal handle", () => {
 			terminalState.value = "idle";
-			const view = renderPane({ ...worker, ...exited, terminalHandleId: undefined });
+			const view = renderPane({
+				...worker,
+				...exited,
+				status: "unknown",
+				statusReadiness: "unavailable",
+				terminalHandleId: undefined,
+			});
 			try {
 				expect(screen.getByRole("button", { name: "Resume agent" })).toBeInTheDocument();
 				expect(screen.queryByText("Starting session")).not.toBeInTheDocument();
