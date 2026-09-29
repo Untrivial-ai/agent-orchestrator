@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -86,6 +87,7 @@ type reviewSubmitOptions struct {
 	runID        string
 	verdict      string
 	body         string
+	bodyFile     string
 	reviewID     string
 	reviews      string
 	commentPaths []string
@@ -164,6 +166,7 @@ func newReviewSubmitCommand(ctx *commandContext) *cobra.Command {
 	cmd.Flags().StringVar(&opts.runID, "run", "", "Review run id (required)")
 	cmd.Flags().StringVar(&opts.verdict, "verdict", "", "Review verdict: approved or changes_requested (required)")
 	cmd.Flags().StringVar(&opts.body, "body", "", "Review body: - to read the Markdown from stdin (so nothing is written into the worktree)")
+	cmd.Flags().StringVar(&opts.bodyFile, "body-file", "", "Review body: read the Markdown from this file (operators and scripts; reviewers pipe from stdin with --body -)")
 	cmd.Flags().StringArrayVar(&opts.commentPaths, "comment-path", nil, "Inline finding path; repeat together with --comment-line and --comment-body, one occurrence group per finding")
 	cmd.Flags().IntSliceVar(&opts.commentLines, "comment-line", nil, "Inline finding line; repeat together with --comment-path and --comment-body")
 	cmd.Flags().StringArrayVar(&opts.commentBodys, "comment-body", nil, "Single-line inline finding body; repeat together with --comment-path and --comment-line")
@@ -199,25 +202,39 @@ func (c *commandContext) submitReview(cmd *cobra.Command, args []string, opts re
 		return usageError{errors.New("usage: --verdict is required (approved or changes_requested)")}
 	}
 	var body string
-	switch bodyArg := strings.TrimSpace(opts.body); bodyArg {
-	case "":
-	case "-":
-		// Read the review from stdin so the reviewer never has to write a file
-		// into its checkout (where it could be committed onto the worker branch).
-		raw, err := io.ReadAll(cmd.InOrStdin())
+	if opts.bodyFile != "" {
+		if strings.TrimSpace(opts.body) != "" {
+			return usageError{errors.New("use either --body or --body-file, not both")}
+		}
+		// Operators and scripts stage the body with an editor and pass the path;
+		// reviewers cannot (their sandbox has no write tools), so their path
+		// stays stdin. See #6021.
+		raw, err := os.ReadFile(opts.bodyFile)
 		if err != nil {
-			return usageError{fmt.Errorf("read review body: %w", err)}
+			return usageError{fmt.Errorf("--body-file: %w", err)}
 		}
 		body = string(raw)
-	default:
-		return usageError{errors.New("--body only accepts - (stdin): pipe the review Markdown from stdin instead of passing a file path")}
+	} else {
+		switch bodyArg := strings.TrimSpace(opts.body); bodyArg {
+		case "":
+		case "-":
+			// Read the review from stdin so the reviewer never has to write a file
+			// into its checkout (where it could be committed onto the worker branch).
+			raw, err := io.ReadAll(cmd.InOrStdin())
+			if err != nil {
+				return usageError{fmt.Errorf("read review body: %w", err)}
+			}
+			body = string(raw)
+		default:
+			return usageError{errors.New("--body only accepts - (stdin): pipe the review Markdown from stdin, or pass a staged file with --body-file <path>")}
+		}
 	}
 	findings, err := pairReviewFindings(opts.commentPaths, opts.commentLines, opts.commentBodys)
 	if err != nil {
 		return err
 	}
 	if verdict == "changes_requested" && strings.TrimSpace(body) == "" {
-		return usageError{errors.New("a changes_requested review requires a body: pipe the Markdown from stdin with --body -")}
+		return usageError{errors.New("a changes_requested review requires a body: pipe the Markdown from stdin with --body -, or pass a staged file with --body-file <path>")}
 	}
 	path := "sessions/" + url.PathEscape(session) + "/reviews/submit"
 	var res reviewRunResponse

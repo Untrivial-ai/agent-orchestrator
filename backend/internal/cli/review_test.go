@@ -63,6 +63,59 @@ func TestReviewSubmitRejectsFileBody(t *testing.T) {
 	}
 }
 
+func TestReviewSubmitReadsBodyFile(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-1","verdict":"changes_requested"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	bodyFile := filepath.Join(t.TempDir(), "review.md")
+	want := "# Review\n\nThe handler drops the error; it's wrong here.\n\n```go\nif err != nil {\n\treturn err\n}\n```\n"
+	if err := os.WriteFile(bodyFile, []byte(want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, errOut, err := executeCLI(t, aliveDeps(),
+		"review", "submit", "mer-1", "--run", "run-1", "--verdict", "changes_requested",
+		"--comment-path", "a/b.go", "--comment-line", "3", "--comment-body", "guard the error",
+		"--body-file", bodyFile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var req submitReviewRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if req.Body != want {
+		t.Fatalf("body = %q, want the file bytes verbatim", req.Body)
+	}
+}
+
+func TestReviewSubmitRejectsDoubleBodySource(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-1","verdict":"changes_requested"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	bodyFile := filepath.Join(t.TempDir(), "review.md")
+	if err := os.WriteFile(bodyFile, []byte("please fix"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := aliveDeps()
+	deps.In = strings.NewReader("from stdin")
+	_, _, err := executeCLI(t, deps,
+		"review", "submit", "mer-1", "--run", "run-1", "--verdict", "changes_requested",
+		"--body", "-", "--body-file", bodyFile)
+	if err == nil {
+		t.Fatal("--body and --body-file together must fail")
+	}
+	if !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("err = %v, want the mutual-exclusion message", err)
+	}
+	if strings.Contains(capture.path, "/reviews/submit") {
+		t.Fatalf("no request may be sent, got %s %s", capture.method, capture.path)
+	}
+}
+
 func TestReviewSubmitReadsBodyFromStdin(t *testing.T) {
 	cfg := setConfigEnv(t)
 	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-1","verdict":"changes_requested"}}`)
