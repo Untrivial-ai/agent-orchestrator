@@ -810,7 +810,7 @@ func discoveryConfigInputs(ctx context.Context, agentID, workingDir string, env 
 		return "provider=" + provider + ";model=" + selected
 	}
 	if agentID == "claude-code" {
-		return "config=" + claudeCodeDiscoveryFingerprint(ctx, workingDir, env)
+		return "order=" + claudeCatalogOrderRevision + ";config=" + claudeCodeDiscoveryFingerprint(ctx, workingDir, env)
 	}
 	if agentID == "deepseek-harness" {
 		// Not routed through configDiscoveryFingerprint: the profile is what the
@@ -1194,6 +1194,17 @@ func normalize(models []ports.AgentModelInfo) []ports.AgentModelInfo {
 	})
 	return out
 }
+
+// claudeCatalogOrderRevision invalidates cached Claude catalogs when the
+// picker's ordering rule changes. The order is baked into the model list the
+// daemon persisted, so without this a catalog discovered by an older build
+// keeps its old order until something unrelated happens to invalidate it.
+// Folding it into the claude-code discovery fingerprint costs exactly one
+// rediscovery, the same one a binary upgrade already triggers, and leaves
+// every other agent's fingerprint byte-identical.
+//
+// Bump this whenever SortClaudeNewestFirst or claudeFamilyOrder changes.
+const claudeCatalogOrderRevision = "2"
 
 // claudeFamilyOrder lists the Claude model families newest-first. The picker
 // groups Claude models by family in this order and sorts each group by version,

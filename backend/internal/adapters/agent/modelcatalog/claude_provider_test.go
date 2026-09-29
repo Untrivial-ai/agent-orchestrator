@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -371,5 +372,20 @@ func assertClaudeOrder(t *testing.T, models []ports.AgentModelInfo, want []strin
 		if got[index] != want[index] {
 			t.Fatalf("order = %v, want %v", got, want)
 		}
+	}
+}
+
+// The picker order is persisted inside the cached catalog, so it has to be part
+// of what the fingerprint covers: a daemon upgrade that changes the ordering
+// rule must invalidate the catalogs an older build wrote. Non-Claude agents
+// keep their fingerprint unchanged so the upgrade does not rediscover the world.
+func TestClaudeDiscoveryFingerprintCoversTheOrderRevision(t *testing.T) {
+	dir := t.TempDir()
+	claude := discoveryConfigInputs(context.Background(), "claude-code", dir, nil)
+	if !strings.Contains(claude, "order="+claudeCatalogOrderRevision) {
+		t.Fatalf("claude discovery inputs = %q, want the order revision folded in", claude)
+	}
+	if other := discoveryConfigInputs(context.Background(), "codex", dir, nil); strings.Contains(other, "order=") {
+		t.Fatalf("codex discovery inputs = %q, want no Claude order revision", other)
 	}
 }
