@@ -85,6 +85,7 @@ func TestPiExtensionStopEventOrderingFollowsProbedSupport(t *testing.T) {
 				`import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";`+"\n", "",
 				`function callHookSync(hookName: string, payload: Record<string, unknown>)`, `function callHookSync(hookName, payload)`,
 				`function sessionID(ctx: any): string`, `function sessionID(ctx)`,
+				`function usagePayload(ctx: any, payload: Record<string, unknown> = {}): Record<string, unknown>`, `function usagePayload(ctx, payload = {})`,
 				`export default function (pi: ExtensionAPI)`, `export default function (pi)`,
 			).Replace(piActivityExtensionSource(tc.settledSupported))
 			if err := os.WriteFile(modulePath, []byte(source), 0o600); err != nil {
@@ -107,7 +108,10 @@ process.stdin.on("end", () => {
 const handlers = new Map();
 const loaded = await import(pathToFileURL(process.argv[2]).href);
 loaded.default({ on(name, handler) { handlers.set(name, handler); } });
-const ctx = { sessionManager: { getSessionId() { return "pi-session-1"; } } };
+const ctx = { sessionManager: {
+  getSessionId() { return "pi-session-1"; },
+  getSessionFile() { return "/ao/data/pi/sessions/pi-session-1.jsonl"; }
+} };
 process.env.PI_EVENT_SOURCE = "session_start";
 await handlers.get("session_start")({}, ctx);
 process.env.PI_EVENT_SOURCE = "before_agent_start";
@@ -142,6 +146,9 @@ await handlers.get("session_shutdown")({ reason: "quit" }, ctx);
 			}
 			if !strings.Contains(text, `["hooks","pi","session-start"]`) || !strings.Contains(text, `["hooks","pi","user-prompt-submit"]`) || !strings.Contains(text, `["hooks","pi","session-end"]`) {
 				t.Fatalf("expected lifecycle hook calls missing:\n%s", text)
+			}
+			if !strings.Contains(text, `\"transcript_path\":\"/ao/data/pi/sessions/pi-session-1.jsonl\"`) {
+				t.Fatalf("Pi transcript path missing from hook payloads:\n%s", text)
 			}
 		})
 	}

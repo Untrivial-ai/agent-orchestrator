@@ -137,6 +137,29 @@ func TestActiveKimiBindingRemainsDiscoverable(t *testing.T) {
 	}
 }
 
+func TestSourceLessPiBindingRemainsDiscoverable(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	sess := seedUsageSession(t, s, domain.HarnessPi)
+	now := time.Unix(1700000000, 0).UTC()
+	binding := mustUpsertUsageBinding(t, s, sess, now, domain.UsageBindingRecord{
+		NativeRootID:  "pi-late-transcript",
+		State:         domain.UsageBindingActive,
+		LastErrorCode: domain.UsageErrorSourceDiscoveryPending,
+	})
+
+	pending, err := s.HasPendingUsageDiscovery(ctx)
+	mustNoError(t, err)
+	if !pending {
+		t.Fatal("source-less Pi binding did not request discovery retry")
+	}
+	discovery, err := s.ListUsageDiscoveryBindings(ctx, 8)
+	mustNoError(t, err)
+	if len(discovery) != 1 || discovery[0].ID != binding.ID {
+		t.Fatalf("discovery bindings = %+v, want Pi binding %d", discovery, binding.ID)
+	}
+}
+
 func TestListLatestRetiredCodexReplacementClaimsByPath(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -209,6 +232,30 @@ func TestListLatestRetiredCodexReplacementClaimsByPath(t *testing.T) {
 		State:           domain.UsageSourcePending,
 	})
 	assertClaims()
+}
+
+func TestCurrentPiNativeIdentityWithoutBindingKeepsDiscoveryPending(t *testing.T) {
+	s := newTestStore(t)
+	session := seedUsageSession(t, s, domain.HarnessPi)
+	session.Metadata.AgentSessionID = "pi-current"
+	session.Metadata.RuntimeLaunchID = "launch-current"
+	session.Metadata.AgentSessionIDLaunchID = "launch-current"
+	session.Activity.State = domain.ActivityIdle
+	mustNoError(t, s.UpdateSession(context.Background(), session))
+
+	pending, err := s.HasPendingUsageDiscovery(context.Background())
+	mustNoError(t, err)
+	if !pending {
+		t.Fatal("live Pi session with a current native identity did not request discovery")
+	}
+
+	session.Metadata.AgentSessionIDLaunchID = "launch-stale"
+	mustNoError(t, s.UpdateSession(context.Background(), session))
+	pending, err = s.HasPendingUsageDiscovery(context.Background())
+	mustNoError(t, err)
+	if pending {
+		t.Fatal("stale Pi native identity requested discovery for the current launch")
+	}
 }
 
 func TestUsageBindingUpsertDoesNotRegressSettledLifecycle(t *testing.T) {
@@ -1761,6 +1808,39 @@ func TestKimiUsageEventRoundTrip(t *testing.T) {
 		usageTokenValue(models[0].Tokens.UncachedInputTokens) != 21 ||
 		usageTokenValue(models[0].Tokens.OutputTokens) != 5 {
 		t.Fatalf("Kimi aggregate = %+v", models)
+	}
+}
+
+func TestPiUsageEventRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	session := seedUsageSession(t, s, domain.HarnessPi)
+	binding := mustUpsertUsageBinding(t, s, session, now, domain.UsageBindingRecord{
+		NativeRootID: "pi-session",
+		State:        domain.UsageBindingActive,
+	})
+	source := mustInsertUsageSource(t, s, now, domain.UsageSourceRecord{
+		BindingID:       binding.ID,
+		Kind:            domain.UsageSourcePiSession,
+		NativeSessionID: "pi-session",
+		ArtifactPath:    "/tmp/pi/session.jsonl",
+		FileIdentity:    "dev:ino",
+		State:           domain.UsageSourcePending,
+	})
+	event := usageEvent("pi-event", canonicalUsageTokens(19, 5, 14, 7))
+	event.ModelID = "zai-glm/glm-4.5"
+	anthropicEvent := anthropicUsageEvent("pi-anthropic-event", 11, 3, 5, 7)
+	anthropicEvent.ModelID = "anthropic/claude-sonnet"
+	if err := s.ApplyUsageChunk(context.Background(), source.ID, 0, source.UpdatedAt, domain.SourceCursorState{
+		ByteOffset: 100, State: domain.UsageSourceActive, ParserStateJSON: `{}`, UpdatedAt: now,
+	}, []domain.ModelUsageEvent{event, anthropicEvent}); err != nil {
+		t.Fatalf("apply Pi usage: %v", err)
+	}
+	models, err := s.ListUsageModelAggregates(context.Background(), session.ID)
+	mustNoError(t, err)
+	if len(models) != 2 || models[0].Harness != domain.HarnessPi ||
+		models[1].Harness != domain.HarnessPi {
+		t.Fatalf("Pi aggregate = %+v", models)
 	}
 }
 

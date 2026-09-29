@@ -990,7 +990,12 @@ func validateUsageEvent(harness domain.AgentHarness, event domain.ModelUsageEven
 	if harness == domain.HarnessCodex {
 		expectedProvider = domain.UsageProviderOpenAI
 	}
-	if event.ProviderID != expectedProvider || event.ModelID == "" || event.SourceEventKey == "" {
+	validProvider := event.ProviderID == expectedProvider
+	if harness == domain.HarnessPi {
+		validProvider = event.ProviderID == domain.UsageProviderOpenAI ||
+			event.ProviderID == domain.UsageProviderAnthropic
+	}
+	if !validProvider || event.ModelID == "" || event.SourceEventKey == "" {
 		return fmt.Errorf("invalid usage event identity for %s", harness)
 	}
 	switch event.MeasurementKind {

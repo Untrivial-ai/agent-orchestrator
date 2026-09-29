@@ -35,9 +35,7 @@ func TestMigration0165AllowsDeepSeekAndReversesBothHistoricalSchemas(t *testing.
 			if legacyQM {
 				mustExec(t, db, insert, "existing-qm", 2, "qm")
 			}
-			if err := migrate(db); err != nil {
-				t.Fatal(err)
-			}
+			upTo(t, db, 166)
 			if _, err := db.Exec(insert, "deepseek-session", 3, "deepseek-harness"); err != nil {
 				t.Fatalf("insert deepseek session after migration: %v", err)
 			}

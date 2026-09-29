@@ -5591,7 +5591,10 @@ func TestRestore_OrchestratorRederivesSystemPrompt(t *testing.T) {
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: cfg}
 	st.sessions["mer-1"] = domain.SessionRecord{
 		ID: "mer-1", ProjectID: "mer", Kind: domain.KindOrchestrator, IsTerminated: true,
-		Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "b", AgentSessionID: "agent-x"},
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/mer-1", Branch: "b", AgentSessionID: "agent-x",
+			NativeTranscriptPath: "/ao/data/pi/sessions/agent-x.jsonl",
+		},
 	}
 	agent := &recordingAgent{}
 	dataDir := t.TempDir()
@@ -5606,6 +5609,9 @@ func TestRestore_OrchestratorRederivesSystemPrompt(t *testing.T) {
 	}
 	if !strings.Contains(agent.lastRestore.SystemPrompt, "Use workers for implementation.") {
 		t.Fatalf("restore system prompt missing project rules:\n%s", agent.lastRestore.SystemPrompt)
+	}
+	if got := agent.lastRestore.Session.Metadata[ports.MetadataKeyNativeTranscriptPath]; got != "/ao/data/pi/sessions/agent-x.jsonl" {
+		t.Fatalf("restore transcript path = %q", got)
 	}
 	wantPath := filepath.Join(dataDir, "prompts", "mer-1", "system.md")
 	if agent.lastRestore.SystemPromptFile != wantPath {

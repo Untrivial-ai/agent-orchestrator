@@ -1059,6 +1059,32 @@ func TestHooks_CodexSessionStartReportsAgentSessionID(t *testing.T) {
 	assertActivityRequest(t, req, want)
 }
 
+func TestHooks_PiSessionStartReportsUsageTranscriptPath(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "ao-7")
+	cfg := setConfigEnv(t)
+	srv, capture := activityServer(t, http.StatusOK, `{"ok":true}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{
+		In: strings.NewReader(`{
+			"session_id":"pi-native-1",
+			"transcript_path":"/ao/data/pi/sessions/pi-native-1.jsonl"
+		}`),
+		ProcessAlive: func(int) bool { return true },
+	}, "hooks", "pi", "session-start")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var req setActivityAPIRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v\nbody=%s", err, capture.body)
+	}
+	if req.AgentSessionID != "pi-native-1" || req.TranscriptPath != "/ao/data/pi/sessions/pi-native-1.jsonl" || req.Usage == nil ||
+		req.Usage.Harness != "pi" || req.Usage.TranscriptPath != "/ao/data/pi/sessions/pi-native-1.jsonl" {
+		t.Fatalf("body = %+v", req)
+	}
+}
+
 func TestHooks_CodexBlankSessionIDIsIgnored(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "ao-7")
 	cfg := setConfigEnv(t)
