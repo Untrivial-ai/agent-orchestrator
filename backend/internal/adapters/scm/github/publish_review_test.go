@@ -2,6 +2,7 @@ package github
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -108,10 +109,75 @@ func TestPublishReviewRejectsResponseWithoutID(t *testing.T) {
 	})
 	p := newProviderForTest(t, f)
 
+	// A 2xx response means GitHub created the review even when its handle is
+	// unreadable: the outcome is unknown, never a definitive failure a rerun
+	// would turn into a duplicate review.
 	if _, err := p.PublishReview(ctx(), ports.SCMReviewPublishRequest{
 		PR:   ports.SCMPRRef{Number: 42, Repo: ports.SCMRepo{Owner: "octo", Name: "hello"}},
 		Body: "body",
-	}); err == nil || !strings.Contains(err.Error(), "no id") {
-		t.Fatalf("err = %v, want missing-id error", err)
+	}); err == nil || !strings.Contains(err.Error(), "no id") || !errors.Is(err, ports.ErrSCMPublishOutcomeUnknown) {
+		t.Fatalf("err = %v, want missing-id error wrapping ErrSCMPublishOutcomeUnknown", err)
+	}
+}
+
+func TestPublishReviewWrapsUndecodableBodyAsUnknownOutcome(t *testing.T) {
+	f := newFakeGH(t)
+	f.on(http.MethodPost, "/repos/octo/hello/pulls/42/reviews", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("<html>gateway garbage</html>"))
+	})
+	p := newProviderForTest(t, f)
+
+	if _, err := p.PublishReview(ctx(), ports.SCMReviewPublishRequest{
+		PR:   ports.SCMPRRef{Number: 42, Repo: ports.SCMRepo{Owner: "octo", Name: "hello"}},
+		Body: "body",
+	}); err == nil || !strings.Contains(err.Error(), "decode created review") || !errors.Is(err, ports.ErrSCMPublishOutcomeUnknown) {
+		t.Fatalf("err = %v, want decode error wrapping ErrSCMPublishOutcomeUnknown", err)
+	}
+}
+
+func TestFindPublishedReviewMatchesBodyMarker(t *testing.T) {
+	f := newFakeGH(t)
+	f.on(http.MethodGet, "/repos/octo/hello/pulls/42/reviews", func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Query().Get("per_page") != "100" {
+			t.Errorf("per_page = %q, want 100", req.URL.Query().Get("per_page"))
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "body": "an unrelated human review"},
+			{"id": 9001, "body": "findings...\n\n<!-- ao-review-run:run-1 -->", "html_url": "https://github.com/octo/hello/pull/42#review-9001"},
+		})
+	})
+	p := newProviderForTest(t, f)
+
+	result, found, err := p.FindPublishedReview(ctx(), ports.SCMPRRef{Number: 42, Repo: ports.SCMRepo{Owner: "octo", Name: "hello"}}, "<!-- ao-review-run:run-1 -->")
+	if err != nil || !found {
+		t.Fatalf("found = %v, err = %v, want the marked review", found, err)
+	}
+	if result.ReviewID != "9001" || result.HTMLURL != "https://github.com/octo/hello/pull/42#review-9001" {
+		t.Fatalf("result = %+v, want review 9001", result)
+	}
+}
+
+func TestFindPublishedReviewReportsAbsence(t *testing.T) {
+	f := newFakeGH(t)
+	f.on(http.MethodGet, "/repos/octo/hello/pulls/42/reviews", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 1, "body": "an unrelated human review"}})
+	})
+	p := newProviderForTest(t, f)
+
+	result, found, err := p.FindPublishedReview(ctx(), ports.SCMPRRef{Number: 42, Repo: ports.SCMRepo{Owner: "octo", Name: "hello"}}, "<!-- ao-review-run:run-1 -->")
+	if err != nil || found || result != (ports.SCMReviewPublishResult{}) {
+		t.Fatalf("found = %v, result = %+v, err = %v, want clean not-found", found, result, err)
+	}
+}
+
+func TestFindPublishedReviewTreatsServerErrorsAsUnknown(t *testing.T) {
+	f := newFakeGH(t)
+	f.on(http.MethodGet, "/repos/octo/hello/pulls/42/reviews", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	})
+	p := newProviderForTest(t, f)
+
+	if _, _, err := p.FindPublishedReview(ctx(), ports.SCMPRRef{Number: 42, Repo: ports.SCMRepo{Owner: "octo", Name: "hello"}}, "<!-- ao-review-run:run-1 -->"); !errors.Is(err, ports.ErrSCMPublishOutcomeUnknown) {
+		t.Fatalf("err = %v, want ErrSCMPublishOutcomeUnknown", err)
 	}
 }

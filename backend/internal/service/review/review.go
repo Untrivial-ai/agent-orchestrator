@@ -882,13 +882,28 @@ func (s *Service) publishOne(ctx context.Context, workerID domain.SessionID, run
 		// The provider already holds this run's review; its id is recorded.
 		return
 	case domain.ReviewPublishPublishing, domain.ReviewPublishUncertain:
-		// The publish mutex guarantees no in-process attempt is running, so a
-		// publishing state here survived a daemon restart. The provider may or
-		// may not have received the review — report the uncertainty instead of
-		// blindly reposting a possible duplicate.
+		// The publish mutex guarantees no in-process attempt is running, so
+		// this state predates the current process: either the daemon restarted
+		// mid-publish or the final store write was lost. Ask the provider
+		// whether the review actually landed before deciding anything — the
+		// run's marker in a published review body is proof of publication.
+		result, found, lookupErr := s.findPublishedReview(ctx, workerID, run)
+		if lookupErr == nil && found {
+			s.recordPublishState(ctx, run, domain.ReviewPublishPublished, result.ReviewID, "")
+			return
+		}
+		if run.PublishState == domain.ReviewPublishPublishing && lookupErr == nil {
+			// Definitive "not found": the interrupted attempt never created a
+			// review, so completing the publication now cannot duplicate one.
+			break
+		}
 		if run.PublishState == domain.ReviewPublishPublishing {
+			// No proof either way; keep reporting the interruption instead of
+			// reposting on a guess.
 			s.recordPublishState(ctx, run, domain.ReviewPublishUncertain, "", "publication interrupted by a daemon restart; outcome unknown")
 		}
+		// An unconfirmed uncertain outcome stays reported: recovery only ever
+		// upgrades to published on proof, never reposts blindly.
 		return
 	}
 	pr, ok := s.publishTarget(ctx, workerID, run.PRURL)
@@ -916,7 +931,7 @@ func (s *Service) publishOne(ctx context.Context, workerID domain.SessionID, run
 	for _, finding := range run.Findings {
 		comments = append(comments, ports.SCMReviewComment{Path: finding.Path, Line: finding.Line, Body: finding.Body})
 	}
-	result, err := s.publisher.PublishReview(ctx, ports.SCMReviewPublishRequest{PR: ref, CommitSHA: run.TargetSHA, Body: run.Body, Comments: comments})
+	result, err := s.publisher.PublishReview(ctx, ports.SCMReviewPublishRequest{PR: ref, CommitSHA: run.TargetSHA, Body: run.Body + "\n\n" + reviewPublishMarker(run), Comments: comments})
 	if err != nil {
 		// An unknown-outcome failure (transport outage, 5xx — the adapter
 		// classifies them) or a cancelled call means the review may or may not
@@ -941,6 +956,37 @@ func (s *Service) recordPublishState(ctx context.Context, run *domain.ReviewRun,
 	if githubReviewID != "" {
 		run.GithubReviewID = githubReviewID
 	}
+}
+
+// reviewPublishMarker is the invisible marker the daemon embeds in every
+// published review body. FindPublishedReview matches on it, so a publication
+// whose outcome was lost can be reconciled with the provider instead of being
+// guessed or duplicated.
+func reviewPublishMarker(run *domain.ReviewRun) string {
+	return fmt.Sprintf("<!-- ao-review-run:%s -->", run.ID)
+}
+
+// findPublishedReview asks the provider whether this run's review already
+// exists. An error means "no information" — the lookup capability is optional
+// and the lookup itself can fail — never "not found"; callers must keep
+// treating the run's outcome as unknown in that case.
+func (s *Service) findPublishedReview(ctx context.Context, workerID domain.SessionID, run *domain.ReviewRun) (ports.SCMReviewPublishResult, bool, error) {
+	finder, ok := s.publisher.(ports.SCMReviewPublicationFinder)
+	if !ok {
+		return ports.SCMReviewPublishResult{}, false, fmt.Errorf("review publication lookup is not supported by the configured provider")
+	}
+	pr, ok := s.publishTarget(ctx, workerID, run.PRURL)
+	if !ok {
+		return ports.SCMReviewPublishResult{}, false, fmt.Errorf("the run's pull request is not tracked for this worker session")
+	}
+	if pr.Closed || pr.Merged {
+		return ports.SCMReviewPublishResult{}, false, fmt.Errorf("pull request is not open")
+	}
+	ref, err := reviewRequestRef(pr)
+	if err != nil {
+		return ports.SCMReviewPublishResult{}, false, err
+	}
+	return finder.FindPublishedReview(ctx, ref, reviewPublishMarker(run))
 }
 
 // publishTarget resolves the tracked PR a run's publication goes to.

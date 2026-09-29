@@ -92,3 +92,13 @@ type SCMReviewPublishResult struct {
 type SCMReviewPublisher interface {
 	PublishReview(ctx context.Context, request SCMReviewPublishRequest) (SCMReviewPublishResult, error)
 }
+
+// SCMReviewPublicationFinder locates a review the daemon previously published,
+// by the marker the service embeds in the review body. It is the recovery path
+// for publications whose outcome was recorded as uncertain or interrupted: a
+// found review proves the publication happened. The capability is optional —
+// providers that cannot search published reviews do not implement it, and the
+// service falls back to keeping the run's outcome unknown.
+type SCMReviewPublicationFinder interface {
+	FindPublishedReview(ctx context.Context, ref SCMPRRef, bodyMarker string) (SCMReviewPublishResult, bool, error)
+}

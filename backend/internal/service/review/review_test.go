@@ -366,6 +366,24 @@ func (p *fakePublisher) PublishReview(_ context.Context, request ports.SCMReview
 	return p.result, nil
 }
 
+// lookupPublisher layers the publication-lookup capability onto fakePublisher
+// so reconciliation tests control what the provider reports about a prior
+// attempt. Publishers without this type keep exercising the fallback path.
+type lookupPublisher struct {
+	*fakePublisher
+	result     ports.SCMReviewPublishResult
+	found      bool
+	err        error
+	calls      int
+	lastMarker string
+}
+
+func (p *lookupPublisher) FindPublishedReview(_ context.Context, _ ports.SCMPRRef, bodyMarker string) (ports.SCMReviewPublishResult, bool, error) {
+	p.calls++
+	p.lastMarker = bodyMarker
+	return p.result, p.found, p.err
+}
+
 type fakeReducer struct {
 	outcome    lifecycle.ReviewDeliveryOutcome
 	err        error
@@ -1180,7 +1198,7 @@ func TestReusedOrSkippedAutoPassStillCountsAsTriggered(t *testing.T) {
 
 // --- Publication state machine (issue #5701) ---
 
-func publicationTestService(t *testing.T, st *fakeStore, pub *fakePublisher) *Service {
+func publicationTestService(t *testing.T, st *fakeStore, pub ports.SCMReviewPublisher) *Service {
 	t.Helper()
 	st.prs = []domain.PullRequest{{
 		URL: "https://github.com/acme/app/pull/9", Provider: "github", Host: "github.com",
@@ -1205,7 +1223,7 @@ func TestSubmitPublishesReviewOnceAndReturnsRecordedId(t *testing.T) {
 	if pub.calls != 1 {
 		t.Fatalf("publisher calls = %d, want 1", pub.calls)
 	}
-	if pub.last.CommitSHA != "sha1" || pub.last.Body != "needs auth" || len(pub.last.Comments) != 1 || pub.last.Comments[0].Path != "src/auth.go" || pub.last.Comments[0].Line != 42 {
+	if pub.last.CommitSHA != "sha1" || pub.last.Body != "needs auth\n\n<!-- ao-review-run:run-1 -->" || len(pub.last.Comments) != 1 || pub.last.Comments[0].Path != "src/auth.go" || pub.last.Comments[0].Line != 42 {
 		t.Fatalf("publish request = %+v", pub.last)
 	}
 	if run.PublishState != domain.ReviewPublishPublished || run.GithubReviewID != "9001" {
@@ -1309,6 +1327,133 @@ func TestSubmitInterruptedPublicationStaysUncertainUntilConfirmed(t *testing.T) 
 	}
 	if st.run.PublishState != domain.ReviewPublishUncertain {
 		t.Fatalf("persisted state = %q, want uncertain", st.run.PublishState)
+	}
+}
+
+func TestSubmitPublishingRunRecoversToPublishedWhenProviderHasReview(t *testing.T) {
+	// The publication succeeded but the final store write was lost, leaving
+	// the run in publishing. The provider lookup finds the run's marker in the
+	// published review, so the run is upgraded to published — no repost, no
+	// guess.
+	st := &fakeStore{ok: true, run: domain.ReviewRun{
+		ID: "run-1", SessionID: "worker-1", PRURL: "https://github.com/acme/app/pull/9",
+		TargetSHA: "sha1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictChangesRequested,
+		Body: "fix it", PublishState: domain.ReviewPublishPublishing,
+	}}
+	pub := &lookupPublisher{fakePublisher: &fakePublisher{}, found: true, result: ports.SCMReviewPublishResult{ReviewID: "9001", HTMLURL: "https://github.com/acme/app/pull/9#review-9001"}}
+	svc := publicationTestService(t, st, pub)
+
+	run, err := svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictChangesRequested, "fix it", nil)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if pub.calls != 1 {
+		t.Fatalf("lookup calls = %d, want 1", pub.calls)
+	}
+	if !strings.Contains(pub.lastMarker, "ao-review-run:run-1") {
+		t.Fatalf("lookup marker = %q, want the run's publication marker", pub.lastMarker)
+	}
+	if pub.fakePublisher.calls != 0 {
+		t.Fatalf("publisher calls = %d, want 0 for a recovered publication", pub.fakePublisher.calls)
+	}
+	if run.PublishState != domain.ReviewPublishPublished || run.GithubReviewID != "9001" {
+		t.Fatalf("run = %q/%q, want published/9001", run.PublishState, run.GithubReviewID)
+	}
+	if st.run.PublishState != domain.ReviewPublishPublished {
+		t.Fatalf("persisted state = %q, want published", st.run.PublishState)
+	}
+}
+
+func TestSubmitPublishingRunRepublishesWhenProviderHasNoReview(t *testing.T) {
+	// A publishing state with a definitive "not found" from the provider
+	// proves the interrupted attempt never created a review, so the submission
+	// completes the publication instead of parking the run in uncertain.
+	st := &fakeStore{ok: true, run: domain.ReviewRun{
+		ID: "run-1", SessionID: "worker-1", PRURL: "https://github.com/acme/app/pull/9",
+		TargetSHA: "sha1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictChangesRequested,
+		Body: "fix it", PublishState: domain.ReviewPublishPublishing,
+	}}
+	pub := &lookupPublisher{fakePublisher: &fakePublisher{}}
+	svc := publicationTestService(t, st, pub)
+
+	run, err := svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictChangesRequested, "fix it", nil)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if pub.fakePublisher.calls != 1 {
+		t.Fatalf("publisher calls = %d, want 1 after a definitive not-found", pub.fakePublisher.calls)
+	}
+	if run.PublishState != domain.ReviewPublishPublished {
+		t.Fatalf("run = %q, want published", run.PublishState)
+	}
+}
+
+func TestSubmitUncertainRunRecoversToPublishedWhenProviderHasReview(t *testing.T) {
+	// An uncertain run is upgraded to published the moment the provider
+	// proves the review exists — recovery on evidence, never on a guess.
+	st := &fakeStore{ok: true, run: domain.ReviewRun{
+		ID: "run-1", SessionID: "worker-1", PRURL: "https://github.com/acme/app/pull/9",
+		TargetSHA: "sha1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictChangesRequested,
+		Body: "fix it", PublishState: domain.ReviewPublishUncertain,
+	}}
+	pub := &lookupPublisher{fakePublisher: &fakePublisher{}, found: true, result: ports.SCMReviewPublishResult{ReviewID: "9001"}}
+	svc := publicationTestService(t, st, pub)
+
+	run, err := svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictChangesRequested, "fix it", nil)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if pub.fakePublisher.calls != 0 {
+		t.Fatalf("publisher calls = %d, want 0 for a recovered publication", pub.fakePublisher.calls)
+	}
+	if run.PublishState != domain.ReviewPublishPublished || run.GithubReviewID != "9001" {
+		t.Fatalf("run = %q/%q, want published/9001", run.PublishState, run.GithubReviewID)
+	}
+}
+
+func TestSubmitUncertainRunStaysUncertainWhenProviderHasNoReview(t *testing.T) {
+	// Without proof the review exists, an uncertain run keeps its absorbing
+	// contract: reported, never blindly reposted.
+	st := &fakeStore{ok: true, run: domain.ReviewRun{
+		ID: "run-1", SessionID: "worker-1", PRURL: "https://github.com/acme/app/pull/9",
+		TargetSHA: "sha1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictChangesRequested,
+		Body: "fix it", PublishState: domain.ReviewPublishUncertain,
+	}}
+	pub := &lookupPublisher{fakePublisher: &fakePublisher{}}
+	svc := publicationTestService(t, st, pub)
+
+	run, err := svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictChangesRequested, "fix it", nil)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if pub.fakePublisher.calls != 0 {
+		t.Fatalf("publisher calls = %d, want 0 for an unconfirmed uncertain run", pub.fakePublisher.calls)
+	}
+	if run.PublishState != domain.ReviewPublishUncertain {
+		t.Fatalf("run = %q, want uncertain", run.PublishState)
+	}
+}
+
+func TestSubmitPublishingRunStaysUncertainWhenLookupFails(t *testing.T) {
+	// A failed provider lookup carries no information: the interrupted
+	// publication keeps the conservative downgrade to uncertain.
+	st := &fakeStore{ok: true, run: domain.ReviewRun{
+		ID: "run-1", SessionID: "worker-1", PRURL: "https://github.com/acme/app/pull/9",
+		TargetSHA: "sha1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictChangesRequested,
+		Body: "fix it", PublishState: domain.ReviewPublishPublishing,
+	}}
+	pub := &lookupPublisher{fakePublisher: &fakePublisher{}, err: errors.New("lookup unavailable")}
+	svc := publicationTestService(t, st, pub)
+
+	run, err := svc.Submit(context.Background(), "worker-1", "run-1", domain.VerdictChangesRequested, "fix it", nil)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if pub.fakePublisher.calls != 0 {
+		t.Fatalf("publisher calls = %d, want 0 when the lookup fails", pub.fakePublisher.calls)
+	}
+	if run.PublishState != domain.ReviewPublishUncertain {
+		t.Fatalf("run = %q, want uncertain", run.PublishState)
 	}
 }
 

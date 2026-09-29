@@ -245,6 +245,25 @@ func (m *Provider) PublishReview(ctx context.Context, request ports.SCMReviewPub
 	return publisher.PublishReview(ctx, request)
 }
 
+// FindPublishedReview delegates to the sub-provider matching ref.Repo.Provider
+// when that provider can search its published reviews. A provider without the
+// capability reports an error rather than "not found": absence of a lookup
+// must never read as evidence that a review does not exist.
+func (m *Provider) FindPublishedReview(ctx context.Context, ref ports.SCMPRRef, bodyMarker string) (ports.SCMReviewPublishResult, bool, error) {
+	if m == nil {
+		return ports.SCMReviewPublishResult{}, false, fmt.Errorf("%w: review publisher is unavailable", ports.ErrSCMUnsupported)
+	}
+	p, err := m.resolve(ref.Repo.Provider)
+	if err != nil {
+		return ports.SCMReviewPublishResult{}, false, err
+	}
+	finder, ok := p.(ports.SCMReviewPublicationFinder)
+	if !ok {
+		return ports.SCMReviewPublishResult{}, false, fmt.Errorf("%w: review publication lookup for provider %q", ports.ErrSCMUnsupported, ref.Repo.Provider)
+	}
+	return finder.FindPublishedReview(ctx, ref, bodyMarker)
+}
+
 type credentialChecker interface {
 	SCMCredentialsAvailable(ctx context.Context) (bool, error)
 }

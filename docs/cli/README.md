@@ -228,8 +228,10 @@ every occurrence of the three flags forms one finding and the bodies must stay
 on one line. The command reports the publication outcome: on failure the same
 command can be rerun verbatim to retry publication; when the outcome is unknown
 (e.g. the daemon restarted mid-publish), check the pull request before
-resubmitting. The legacy batched `--reviews` input, file-path `--body`, and
-caller-supplied `--review-id` are no longer accepted.
+resubmitting — a resubmission first reconciles with GitHub, and a review it
+recognizes as this run's (matched by an embedded marker) upgrades the run to
+published instead of reposting. The legacy batched `--reviews` input, file-path
+`--body`, and caller-supplied `--review-id` are no longer accepted.
 
 ## Configuration
 

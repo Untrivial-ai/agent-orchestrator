@@ -95,8 +95,12 @@ type ReviewRun struct {
 	// PublishState tracks the daemon-side GitHub publication attempt:
 	// pending → publishing → published | failed, with uncertain marking an
 	// attempt whose outcome could not be confirmed (for example a daemon
-	// restart mid-publish). It exists so retries and restarts can neither lose
-	// a recorded result nor silently duplicate a published review.
+	// restart mid-publish). A later submission reconciles an interrupted or
+	// uncertain attempt against the provider — a found published review
+	// upgrades the run to published, a definitively absent one lets an
+	// interrupted publication complete. It exists so retries and restarts can
+	// neither lose a recorded result nor silently duplicate a published
+	// review.
 	PublishState ReviewRunPublishState `json:"publishState"`
 	// PublishError carries the last publication failure, for the CLI and UI.
 	PublishError string     `json:"publishError,omitempty"`
@@ -133,7 +137,8 @@ const (
 	ReviewPublishFailed ReviewRunPublishState = "failed"
 	// ReviewPublishUncertain means an attempt's outcome is unknown: it must be
 	// reported, never blindly reposted, because the provider may already hold
-	// the review.
+	// the review. A later submission may upgrade it to published when the
+	// provider lookup proves the review exists.
 	ReviewPublishUncertain ReviewRunPublishState = "uncertain"
 )
 
