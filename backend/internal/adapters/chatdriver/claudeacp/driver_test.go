@@ -345,3 +345,54 @@ func TestClaudeAuthRejectionNotifiesDaemon(t *testing.T) {
 		t.Fatalf("daemon callback calls = %d, want 1", called)
 	}
 }
+
+// The chat picker must read like the session-launch catalog: newest family
+// first, newest version within it. Claude Code advertises availableModels in
+// its own picker order, so without this the two lists disagree.
+func TestClaudeOrderChoicesGroupsModelsByFamily(t *testing.T) {
+	choices := []ports.ChatConfigOptionChoice{
+		{Value: "haiku", Name: "Haiku"},
+		{Value: "claude-sonnet-4-5-20250929", Name: "Claude Sonnet 4.5"},
+		{Value: "opus", Name: "Opus"},
+		{Value: "claude-opus-4-1", Name: "Claude Opus 4.1"},
+		{Value: "fable", Name: "Fable 5.1"},
+		{Value: "opus[1m]", Name: "Opus (1M context)"},
+	}
+	claudeOrderChoices("model", choices)
+	assertChoiceOrder(t, choices, []string{
+		"fable", "opus", "opus[1m]", "claude-opus-4-1", "claude-sonnet-4-5-20250929", "haiku",
+	})
+}
+
+// "Default" is the agent's own lead entry, not a member of the family order.
+func TestClaudeOrderChoicesKeepsDefaultFirst(t *testing.T) {
+	choices := []ports.ChatConfigOptionChoice{
+		{Value: "haiku", Name: "Haiku"},
+		{Value: "default", Name: "Default (recommended)"},
+		{Value: "opus", Name: "Opus"},
+	}
+	claudeOrderChoices("model", choices)
+	assertChoiceOrder(t, choices, []string{"default", "opus", "haiku"})
+}
+
+// Approval modes, output styles and the rest carry meaning in the order the
+// agent reports them, so only the model option is touched.
+func TestClaudeOrderChoicesLeavesOtherOptionsAlone(t *testing.T) {
+	choices := []ports.ChatConfigOptionChoice{
+		{Value: "plan", Name: "Plan"},
+		{Value: "acceptEdits", Name: "Accept edits"},
+	}
+	claudeOrderChoices("mode", choices)
+	assertChoiceOrder(t, choices, []string{"plan", "acceptEdits"})
+}
+
+func assertChoiceOrder(t *testing.T, choices []ports.ChatConfigOptionChoice, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(choices))
+	for _, choice := range choices {
+		got = append(got, choice.Value)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}

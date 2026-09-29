@@ -1,6 +1,8 @@
 package acp
 
 import (
+	"reflect"
+	"sort"
 	"testing"
 
 	acpsdk "github.com/coder/acp-go-sdk"
@@ -136,3 +138,31 @@ func TestApplyAcceptedConfigOptionIgnoresUnknownID(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// The provider binding owns how its model list is presented, so an authoritative
+// catalog replacement must go through the same ordering as session setup —
+// otherwise the picker reverts to the agent's order on the first model switch.
+func TestReplaceConfigOptionsAppliesChoiceOrder(t *testing.T) {
+	c := &conversation{capabilities: make(ports.ChatCapabilities)}
+	c.orderChoices = func(optionID string, choices []ports.ChatConfigOptionChoice) {
+		if optionID != "model" {
+			return
+		}
+		sort.Slice(choices, func(i, j int) bool { return choices[i].Value < choices[j].Value })
+	}
+
+	c.replaceConfigOptions([]acpsdk.SessionConfigOption{
+		selectOption("model", "Model", "sonnet", "sonnet", "haiku", "opus"),
+	})
+
+	if len(c.configOptions) != 1 {
+		t.Fatalf("got %d options, want 1", len(c.configOptions))
+	}
+	got := make([]string, 0, 3)
+	for _, choice := range c.configOptions[0].Choices {
+		got = append(got, choice.Value)
+	}
+	if !reflect.DeepEqual(got, []string{"haiku", "opus", "sonnet"}) {
+		t.Fatalf("choices = %v, want the binding's order", got)
+	}
+}

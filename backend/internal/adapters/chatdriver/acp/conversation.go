@@ -108,6 +108,7 @@ type conversation struct {
 	turnDiffTurnID     string
 	providerFailure    *ports.ChatEvent
 	configOptions      []ports.ChatConfigOption
+	orderChoices       func(string, []ports.ChatConfigOptionChoice)
 	skills             []ports.ChatSkill
 	skillsKnown        bool
 	closed             bool
@@ -286,7 +287,7 @@ func (c *conversation) start(
 	// the catalog when the response actually carries one, so an early update is
 	// not lost to an empty response snapshot.
 	if len(configOptions) > 0 || models != nil || modes != nil {
-		c.configOptions = normalizeSessionOptions(configOptions, models, modes)
+		c.configOptions = c.orderedOptions(normalizeSessionOptions(configOptions, models, modes))
 	}
 	if len(c.configOptions) > 0 {
 		c.capabilities[ports.ChatCapabilityConfigOptions] = true

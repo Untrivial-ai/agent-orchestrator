@@ -343,7 +343,7 @@ func discoverClaudeCatalog(
 		}
 		normalized := normalize(models)
 		if len(normalized) > 0 {
-			base.Models = sortClaudeNewestFirst(applyClaudeConfiguredDefault(normalized, settings.Model))
+			base.Models = SortClaudeNewestFirst(applyClaudeConfiguredDefault(normalized, settings.Model))
 			base.Source = "provider"
 			return base, nil
 		}
@@ -356,9 +356,9 @@ func discoverClaudeCatalog(
 }
 
 func claudeFallbackModels(settings agentcreds.ClaudeSettings) []ports.AgentModelInfo {
-	static := sortClaudeNewestFirst(normalize(claudeCodeModels()))
+	static := SortClaudeNewestFirst(normalize(claudeCodeModels()))
 	if strings.TrimSpace(settings.Env["ANTHROPIC_BASE_URL"]) == "" {
-		return sortClaudeNewestFirst(applyClaudeConfiguredDefault(static, settings.Model))
+		return SortClaudeNewestFirst(applyClaudeConfiguredDefault(static, settings.Model))
 	}
 
 	configured := []string{
@@ -1222,12 +1222,12 @@ type claudeSortKey struct {
 	version []int
 }
 
-// sortClaudeNewestFirst orders the Claude catalog so the newest model of each
+// SortClaudeNewestFirst orders the Claude catalog so the newest model of each
 // family leads its group, with the families themselves in claudeFamilyOrder.
 // The configured default stays pinned at the top, and a bare alias (opus,
 // sonnet) outranks every pinned snapshot in its family because Claude Code
 // resolves the alias to the newest build by definition.
-func sortClaudeNewestFirst(models []ports.AgentModelInfo) []ports.AgentModelInfo {
+func SortClaudeNewestFirst(models []ports.AgentModelInfo) []ports.AgentModelInfo {
 	keys := make(map[string]claudeSortKey, len(models))
 	for _, item := range models {
 		keys[item.ID] = claudeModelSortKey(item)

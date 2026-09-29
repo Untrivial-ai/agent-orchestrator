@@ -89,6 +89,12 @@ type Config struct {
 	// raw value on the ACP wire.
 	EncodeProviderConversationID func(string) string
 	DecodeProviderConversationID func(string) (string, error)
+	// OrderChoices optionally reorders the choices of a session config option
+	// before AO publishes the catalog. ACP agents report their model list in
+	// their own order, which is not the order AO wants to present; the generic
+	// driver has no basis to reorder it, so the provider binding supplies one.
+	// Called with the option id and the choice slice to sort in place.
+	OrderChoices func(optionID string, choices []ports.ChatConfigOptionChoice)
 	// OnAuthRejected is called when the provider rejects the credential during
 	// a live turn. It is how a cached "this credential works" verdict is
 	// corrected the moment the provider says otherwise, and it is the only
@@ -480,6 +486,7 @@ func (d *Driver) initialize(
 		proc, d.log, cfg.ProviderScopeID, d.cfg.ClientExtension, d.cfg.ClientExtensionAliases,
 	)
 	conv.onAuthRejected = d.cfg.OnAuthRejected
+	conv.orderChoices = d.cfg.OrderChoices
 	conv.promptResponseFailure = d.cfg.PromptResponseFailure
 	if proc.reconnected {
 		state := proc.acpState
