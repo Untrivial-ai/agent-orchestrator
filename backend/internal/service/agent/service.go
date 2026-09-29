@@ -322,7 +322,19 @@ func (s *Service) monitorModelCatalogFreshness(ctx context.Context) {
 // Models returns one normalized model catalog. Cached values survive daemon
 // restarts; refresh forces a new documented CLI discovery attempt. Discovery
 // failures degrade to the last cached catalog or a custom model input.
+// Models returns the picker catalog for one agent, ordered with the models this
+// user actually runs first. See withModelUsage for why recency leads.
 func (s *Service) Models(ctx context.Context, agentID, projectID string, refresh bool) (ports.AgentModelCatalog, error) {
+	catalog, err := s.modelCatalog(ctx, agentID, projectID, refresh)
+	if err != nil {
+		return catalog, err
+	}
+	// Usage is keyed by the caller's real project, not the credential scope the
+	// catalog lookup may substitute for it.
+	return s.withModelUsage(ctx, agentID, projectID, catalog), nil
+}
+
+func (s *Service) modelCatalog(ctx context.Context, agentID, projectID string, refresh bool) (ports.AgentModelCatalog, error) {
 	if s.discoverer == nil {
 		return ports.AgentModelCatalog{}, apierr.Internal("MODEL_DISCOVERY_UNAVAILABLE", "Model discovery is unavailable")
 	}
@@ -485,12 +497,17 @@ func (s *Service) globalModelDiscoveryRequest(request ports.AgentModelDiscoveryR
 // RevalidateModels rediscovers a cache-first catalog after the normal read path
 // marks it old enough to refresh in the background.
 func (s *Service) RevalidateModels(ctx context.Context, agentID, projectID string) (ports.AgentModelCatalog, error) {
+	requestedProject := projectID
 	var err error
 	projectID, err = s.modelCatalogScope(ctx, projectID)
 	if err != nil {
 		return ports.AgentModelCatalog{}, err
 	}
-	return s.coalesceModelLoad(ctx, agentID, projectID, modelLoadRevalidate)
+	catalog, err := s.coalesceModelLoad(ctx, agentID, projectID, modelLoadRevalidate)
+	if err != nil {
+		return catalog, err
+	}
+	return s.withModelUsage(ctx, agentID, requestedProject, catalog), nil
 }
 
 // InvalidateModelCatalogs marks existing scopes due and schedules cache-first

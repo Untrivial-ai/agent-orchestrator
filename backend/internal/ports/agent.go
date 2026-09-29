@@ -218,6 +218,12 @@ type AgentModelInfo struct {
 	// must render no effort control at all rather than an empty one.
 	Efforts       []string `json:"efforts,omitempty"`
 	DefaultEffort string   `json:"defaultEffort,omitempty"`
+	// LastUsedAt is when a session in scope last ran this model. It is derived
+	// from session history rather than persisted on the catalog, so it is absent
+	// for a model the user has never picked. Pickers order by it first: what
+	// someone ran last is the strongest signal available about what they want
+	// next, stronger than any static ordering of families and versions.
+	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
 }
 
 // AgentModelCatalog is AO's normalized model-picker response.
