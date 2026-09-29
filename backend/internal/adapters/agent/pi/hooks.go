@@ -72,6 +72,24 @@ func appendPiExtensionFlag(cmd *[]string, workspacePath string) {
 	*cmd = append(*cmd, "--extension", piExtensionPath(workspacePath))
 }
 
+func appendPiSessionDirFlag(cmd *[]string, dataDir string) {
+	if strings.TrimSpace(dataDir) == "" {
+		return
+	}
+	*cmd = append(*cmd, "--session-dir", filepath.Join(dataDir, "pi", "sessions"))
+}
+
+func piTranscriptInManagedDir(transcriptPath, dataDir string) bool {
+	transcriptPath = strings.TrimSpace(transcriptPath)
+	dataDir = strings.TrimSpace(dataDir)
+	if transcriptPath == "" || dataDir == "" {
+		return false
+	}
+	root := filepath.Join(dataDir, "pi", "sessions")
+	rel, err := filepath.Rel(root, filepath.Clean(transcriptPath))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func (p *Plugin) piAgentSettledSupported(ctx context.Context) (bool, error) {
 	binary, err := p.piBinary(ctx)
 	if err != nil {
@@ -150,25 +168,33 @@ function sessionID(ctx: any): string {
   return ctx.sessionManager.getSessionId() ?? "";
 }
 
+function usagePayload(ctx: any, payload: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    session_id: sessionID(ctx),
+    transcript_path: ctx.sessionManager.getSessionFile?.() ?? "",
+    ...payload,
+  };
+}
+
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
-    callHookSync("session-start", { session_id: sessionID(ctx) });
+    callHookSync("session-start", usagePayload(ctx));
   });
   pi.on("before_agent_start", async (event, ctx) => {
-    callHookSync("user-prompt-submit", { session_id: sessionID(ctx), prompt: event.prompt });
+    callHookSync("user-prompt-submit", usagePayload(ctx, { prompt: event.prompt }));
   });
   // agent_end is the completion event in Pi 0.80.x. Newer releases may retry,
   // compact, or queue follow-up work after it; a subsequent start immediately
   // reactivates AO, while agent_settled below confirms the final idle state.
   pi.on("agent_end", async (_event, ctx) => {
-	    if (!AGENT_SETTLED_SUPPORTED) callHookSync("stop", { session_id: sessionID(ctx) });
+	    if (!AGENT_SETTLED_SUPPORTED) callHookSync("stop", usagePayload(ctx));
   });
   pi.on("agent_settled", async (_event, ctx) => {
-	    if (AGENT_SETTLED_SUPPORTED) callHookSync("stop", { session_id: sessionID(ctx) });
+	    if (AGENT_SETTLED_SUPPORTED) callHookSync("stop", usagePayload(ctx));
   });
   pi.on("session_shutdown", async (event, ctx) => {
 	    if (event.reason === "quit") {
-	      callHookSync("session-end", { session_id: sessionID(ctx), reason: event.reason });
+	      callHookSync("session-end", usagePayload(ctx, { reason: event.reason }));
 	    }
   });
 }

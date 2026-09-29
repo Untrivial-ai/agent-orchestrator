@@ -5626,7 +5626,10 @@ func restoreArgv(ctx context.Context, agent ports.Agent, id domain.SessionID, wo
 	ref := ports.SessionRef{
 		ID:            string(id),
 		WorkspacePath: workspacePath,
-		Metadata:      map[string]string{ports.MetadataKeyAgentSessionID: meta.AgentSessionID},
+		Metadata: map[string]string{
+			ports.MetadataKeyAgentSessionID:       meta.AgentSessionID,
+			ports.MetadataKeyNativeTranscriptPath: meta.NativeTranscriptPath,
+		},
 	}
 	cmd, ok, err := agent.GetRestoreCommand(ctx, ports.RestoreConfig{Session: ref, Kind: kind, DataDir: dataDir, SystemPrompt: systemPrompt, SystemPromptFile: systemPromptFile, Config: agentConfig, Permissions: agentConfig.Permissions})
 	if err != nil {

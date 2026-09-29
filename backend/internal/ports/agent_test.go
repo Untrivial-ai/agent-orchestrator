@@ -22,3 +22,14 @@ func TestMetadataKeyAgentSessionIDMatchesDomainJSONTag(t *testing.T) {
 		t.Fatalf("json tag %q != ports.MetadataKeyAgentSessionID %q", name, ports.MetadataKeyAgentSessionID)
 	}
 }
+
+func TestMetadataKeyNativeTranscriptPathMatchesDomainJSONTag(t *testing.T) {
+	field, ok := reflect.TypeOf(domain.SessionMetadata{}).FieldByName("NativeTranscriptPath")
+	if !ok {
+		t.Fatalf("domain.SessionMetadata has no NativeTranscriptPath field")
+	}
+	name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+	if name != ports.MetadataKeyNativeTranscriptPath {
+		t.Fatalf("json tag %q != ports.MetadataKeyNativeTranscriptPath %q", name, ports.MetadataKeyNativeTranscriptPath)
+	}
+}
