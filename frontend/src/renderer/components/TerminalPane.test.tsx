@@ -1014,6 +1014,18 @@ describe("terminal restore", () => {
 			}
 		});
 
+		it("does not show startup copy when an exited session has no terminal handle", () => {
+			terminalState.value = "idle";
+			const view = renderPane({ ...worker, ...exited, terminalHandleId: undefined });
+			try {
+				expect(screen.getByRole("button", { name: "Resume agent" })).toBeInTheDocument();
+				expect(screen.queryByText("Starting session")).not.toBeInTheDocument();
+				expect(screen.queryByText(/Preparing the worker terminal/)).not.toBeInTheDocument();
+			} finally {
+				view.restore();
+			}
+		});
+
 		it.each([
 			["shell", { kind: "shell", handleId: "shell-1", generation: "2026-06-10T00:00:00Z", sessionId: worker.id, title: "Terminal 1" }],
 			["reviewer", { kind: "reviewer", handleId: "reviewer-1", harness: "codex", sessionId: worker.id }],
