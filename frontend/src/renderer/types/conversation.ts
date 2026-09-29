@@ -165,6 +165,8 @@ export interface ConversationMessage {
 	kind: "message";
 	id: string;
 	turnId?: string;
+	/** Stable renderer-to-daemon send identity used to reconcile optimistic prompts. */
+	clientMessageId?: string;
 	/** Conversation-scoped, immutable. The only ordering key. */
 	sequence: number;
 	/** Bumped on each streaming rewrite so a gap is detectable. */

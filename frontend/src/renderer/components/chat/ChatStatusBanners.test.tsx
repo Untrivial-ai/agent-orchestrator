@@ -1,7 +1,7 @@
-import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpServerBanner, ReauthBanner, ThreadStateBanner } from "./ChatStatusBanners";
+import { TooltipProvider } from "../ui/tooltip";
 
 // Each of these answers a question the timeline structurally cannot, so the tests are
 // about what is said and when it is withheld — a banner for an ordinary state is noise
@@ -88,6 +88,8 @@ describe("ThreadStateBanner", () => {
 });
 
 describe("McpServerBanner", () => {
+	afterEach(() => vi.useRealTimers());
+
 	const broken = [
 		{
 			name: "playwright",
@@ -96,78 +98,52 @@ describe("McpServerBanner", () => {
 			error: "did not report ready within 30s",
 		},
 	];
-
-	it("says the agent will work around the missing tools silently", () => {
-		render(<McpServerBanner sessionId="ao-1" servers={broken} />);
-		expect(screen.getByText("A tool server did not start")).toBeInTheDocument();
-		expect(screen.getByText(/works around them\s+silently/)).toBeInTheDocument();
-	});
-
-	it("names the server, its classification and the provider's own text", () => {
-		render(<McpServerBanner sessionId="ao-1" servers={broken} />);
-		expect(screen.getByText("playwright")).toBeInTheDocument();
-		expect(screen.getByText(/startup_timeout/)).toBeInTheDocument();
-		expect(screen.getByText(/did not report ready within 30s/)).toBeInTheDocument();
-	});
-
-	it("offers a reload", async () => {
-		const onReload = vi.fn();
-		render(<McpServerBanner sessionId="ao-1" servers={broken} onReload={onReload} />);
-		await userEvent.click(screen.getByRole("button", { name: /Reload/ }));
-		expect(onReload).toHaveBeenCalledOnce();
-	});
-
-	it("centers the reload and close controls in one action row", () => {
-		render(<McpServerBanner sessionId="ao-1" servers={broken} onReload={vi.fn()} />);
-		const reload = screen.getByRole("button", { name: /Reload/ });
-		const close = screen.getByRole("button", { name: "Close tool server warning" });
-		expect(reload.parentElement).toBe(close.parentElement);
-		expect(close.parentElement).toHaveClass("h-control-md", "items-center");
-		expect(close).toHaveClass("size-10");
-	});
-
-	// The daemon refuses a reload mid-turn, so the control explains itself rather than
-	// being allowed to fail.
-	it("disables the reload mid-turn and says why", () => {
-		render(<McpServerBanner sessionId="ao-1" servers={broken} onReload={vi.fn()} turnInFlight />);
-		const button = screen.getByRole("button", { name: /Reload/ });
-		expect(button).toBeDisabled();
-		expect(button).toHaveAttribute(
-			"title",
-			expect.stringContaining("Finish or stop the current turn"),
+	const renderBanner = (servers: Parameters<typeof McpServerBanner>[0]["servers"]) =>
+		render(
+			<TooltipProvider>
+				<McpServerBanner servers={servers} />
+			</TooltipProvider>,
 		);
+
+	it("shows a compact, non-actionable notice for three seconds", async () => {
+		vi.useFakeTimers();
+		renderBanner(broken);
+
+		expect(screen.getByRole("status")).toHaveTextContent("Playwright MCP unavailable");
+		expect(screen.getByRole("status")).not.toHaveTextContent("1 tool server unavailable");
+		expect(screen.queryByText(/startup_timeout/)).not.toBeInTheDocument();
+		expect(screen.queryByRole("button")).not.toBeInTheDocument();
+		expect(screen.getByRole("status").parentElement).toHaveClass(
+			"absolute",
+			"bottom-full",
+			"w-fit",
+			"origin-center",
+		);
+
+		act(() => vi.advanceTimersByTime(3_000));
+		vi.useRealTimers();
+		await new Promise((resolve) => window.setTimeout(resolve, 250));
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
 	});
 
-	it("draws no control at all when the harness cannot reload", () => {
-		render(<McpServerBanner sessionId="ao-1" servers={broken} />);
-		expect(screen.queryByRole("button", { name: /Reload/ })).not.toBeInTheDocument();
+	it("lists affected server names as titled MCPs", () => {
+		renderBanner([...broken, { name: "notion", status: "failed" }]);
+		expect(screen.getByRole("status")).toHaveTextContent("Playwright, Notion MCPs unavailable");
 	});
 
-	it("surfaces a failed reload", () => {
-		render(<McpServerBanner sessionId="ao-1" servers={broken} onReload={vi.fn()} error="controller not ready" />);
-		expect(screen.getByText("controller not ready")).toBeInTheDocument();
+	it("can place the notice below the composer", () => {
+		render(
+			<TooltipProvider>
+				<McpServerBanner servers={broken} placement="below" />
+			</TooltipProvider>,
+		);
+		expect(screen.getByRole("status").parentElement).toHaveClass("top-full");
 	});
 
 	// A healthy server is not news. The caller filters, and an empty list must not
 	// leave a permanent bar above the conversation saying nothing is wrong.
 	it("says nothing when no server is broken", () => {
-		const { container } = render(<McpServerBanner sessionId="ao-1" servers={[]} />);
+		const { container } = render(<McpServerBanner servers={[]} />);
 		expect(container).toBeEmptyDOMElement();
-	});
-
-	it("dismisses only the current session warning until its failed set changes", async () => {
-		const view = render(<McpServerBanner sessionId="ao-1" servers={broken} />);
-		await userEvent.click(screen.getByRole("button", { name: "Close tool server warning" }));
-		expect(screen.queryByRole("status")).not.toBeInTheDocument();
-
-		view.rerender(<McpServerBanner sessionId="ao-1" servers={broken} />);
-		expect(screen.queryByRole("status")).not.toBeInTheDocument();
-
-		view.rerender(<McpServerBanner sessionId="ao-1" servers={[...broken, { name: "github", status: "failed" }]} />);
-		expect(screen.getByRole("status")).toBeInTheDocument();
-
-		await userEvent.click(screen.getByRole("button", { name: "Close tool server warning" }));
-		view.rerender(<McpServerBanner sessionId="ao-2" servers={broken} />);
-		expect(screen.getByRole("status")).toBeInTheDocument();
 	});
 });

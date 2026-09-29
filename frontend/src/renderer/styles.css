@@ -2402,8 +2402,13 @@ html.sidebar-reordering * {
 	transform: none;
 }
 
+/* Worked is a disclosure row, not a tactile button: keep its geometry and
+   scale stable while the accordion opens. */
+.cursor-chat-surface .chat-worked-trigger:not(:disabled):active {
+	transform: none;
+}
+
 .activity-run-toggle {
-	border-bottom: 1px solid color-mix(in oklch, var(--color-border) 48%, transparent);
 	color: var(--color-text-muted);
 }
 
@@ -2427,6 +2432,45 @@ html.sidebar-reordering * {
 
 .activity-subgroup {
 	min-width: 0;
+}
+
+/* Keep Worked disclosure motion in lockstep with tool-call accordions. Radix
+   exposes the measured content height through this variable. */
+@keyframes chat-worked-accordion-down {
+	from {
+		height: 0;
+		opacity: 0;
+	}
+	to {
+		height: var(--radix-accordion-content-height);
+		opacity: 1;
+	}
+}
+
+@keyframes chat-worked-accordion-up {
+	from {
+		height: var(--radix-accordion-content-height);
+		opacity: 1;
+	}
+	to {
+		height: 0;
+		opacity: 0;
+	}
+}
+
+.chat-worked-accordion-content[data-state="open"] {
+	animation: chat-worked-accordion-down 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chat-worked-accordion-content[data-state="closed"] {
+	animation: chat-worked-accordion-up 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.chat-worked-accordion-content[data-state="open"],
+	.chat-worked-accordion-content[data-state="closed"] {
+		animation: none;
+	}
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2534,16 +2578,13 @@ html.sidebar-reordering * {
 	}
 }
 
-/* Every state is a custom property read by the rules below, so a theme only
-   restates the four colors instead of repeating the state selectors — and the
-   drag highlight cannot be outranked by a theme's plain border-color. */
+/* The composer border is deliberately static. Focus remains visible on the
+   keyboard-focusable controls inside it, without making the whole composer
+   surface appear to jump between states. */
 .cursor-chat-composer {
 	/* Same fill as a kanban session card (`bg-surface` → `--color-bg-secondary`). */
 	--composer-bg: var(--color-bg-secondary);
-	--composer-bg-active: var(--color-bg-secondary);
 	--composer-border: color-mix(in oklch, var(--color-border-strong) 36%, transparent);
-	--composer-border-hover: color-mix(in oklch, var(--color-border-strong) 100%, var(--color-text-muted) 15%);
-	--composer-border-focus: color-mix(in oklch, var(--color-border-strong) 100%, var(--color-text-muted) 15%);
 
 	border-radius: var(--radius-chat-composer);
 	border-color: var(--composer-border);
@@ -2557,6 +2598,11 @@ html.sidebar-reordering * {
 	border-top: none;
 	border-top-left-radius: 0;
 	border-top-right-radius: 0;
+}
+
+/* Dragging remains visible without changing the composer's structural edge. */
+.cursor-chat-composer[data-dragging] {
+	background: color-mix(in oklch, var(--composer-bg) 94%, var(--color-logo-accent));
 }
 
 @keyframes queue-dock-in {
@@ -2744,23 +2790,6 @@ html.sidebar-reordering * {
 	}
 }
 
-.cursor-chat-composer:hover:not(:focus-within) {
-	border-color: var(--composer-border-hover);
-	background: var(--composer-bg-active);
-}
-
-.cursor-chat-composer:focus-within,
-.cursor-chat-composer:has([data-state="open"]) {
-	border-color: var(--composer-border-focus);
-	background: var(--composer-bg-active);
-	box-shadow: none;
-}
-
-.cursor-chat-composer[data-dragging] {
-	border-color: var(--color-logo-accent);
-	background: var(--composer-bg-active);
-}
-
 /* The draft grows to seven lines before it becomes its own scroll surface. A
    narrow inset thumb keeps long prompts legible without the platform scrollbar
    competing with the composer controls. */
@@ -2881,10 +2910,7 @@ html.sidebar-reordering * {
 
 :root[data-theme="light"] .cursor-chat-composer {
 	--composer-bg: var(--color-bg-secondary);
-	--composer-bg-active: var(--color-bg-secondary);
 	--composer-border: color-mix(in oklch, var(--color-text-primary) 10%, transparent);
-	--composer-border-hover: color-mix(in oklch, var(--color-text-primary) 20%, transparent);
-	--composer-border-focus: color-mix(in oklch, var(--color-text-primary) 32%, transparent);
 
 	box-shadow: none;
 }
@@ -5764,6 +5790,23 @@ html[data-native-browser-composition="true"] .browser-popout-frame {
 	}
 }
 
+@keyframes chat-working-shimmer {
+	from {
+		background-position: 200% 0;
+	}
+	to {
+		background-position: -200% 0;
+	}
+}
+
+.chat-working-shimmer {
+	background: linear-gradient(90deg, var(--color-muted-foreground) 20%, var(--color-foreground) 50%, var(--color-muted-foreground) 80%);
+	background-size: 200% 100%;
+	background-clip: text;
+	color: transparent;
+	animation: chat-working-shimmer 1400ms linear infinite;
+}
+
 .ao-qr-decoy {
 	opacity: 0;
 	animation: ao-qr-decoy-cycle 4800ms linear infinite;
@@ -5794,4 +5837,11 @@ html[data-native-browser-composition="true"] .browser-popout-frame {
 	.ao-qr-resolved {
 		animation: none;
 	}
+
+	.chat-working-shimmer {
+		animation: none;
+		background: none;
+		color: var(--color-muted-foreground);
+	}
+
 }

@@ -24,8 +24,24 @@ function setup(text = "inspect this", content: ConversationContentSummary[] = []
 	const cancel = vi.fn().mockResolvedValue(undefined);
 	const snapshot: ConversationSnapshot = {
 		...chatFixture,
-		turns: [{ id: "q1", state: "queued" as const, requestedAt: "2026-09-06T10:00:00Z" }],
+		turns: [
+			{ id: "active", state: "running" as const, requestedAt: "2026-09-06T09:59:00Z", startedAt: "2026-09-06T09:59:00Z" },
+			{ id: "q1", state: "queued" as const, requestedAt: "2026-09-06T10:00:00Z" },
+		],
 		items: [
+			{
+				kind: "message" as const,
+				id: "m0",
+				turnId: "completed-before-queue",
+				sequence: 0,
+				revision: 0,
+				role: "user" as const,
+				origin: "human" as const,
+				text: "Earlier prompt",
+				content: [],
+				streaming: false,
+				createdAt: "2026-09-06T09:58:00Z",
+			},
 			{
 				kind: "message" as const,
 				id: "m1",

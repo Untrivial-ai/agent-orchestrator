@@ -1,10 +1,11 @@
 import userEvent from "@testing-library/user-event";
-import { render as rtlRender, screen } from "@testing-library/react";
+import { fireEvent, render as rtlRender, screen } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatWorkspace } from "./ChatWorkspace";
 import {
 	chatFixture,
+	chatFixtureEmpty,
 	chatFixtureMcpFailed,
 	chatFixtureReauth,
 	chatFixtureRerouted,
@@ -188,6 +189,9 @@ describe("provider state chrome", () => {
 			});
 		}
 		const { rerender } = render(<ChatWorkspace snapshot={snapshot} />);
+		for (const trigger of screen.getAllByRole("button", { name: /Worked for/ })) {
+			fireEvent.click(trigger);
+		}
 		expect(screen.getByRole("alert")).toHaveTextContent("Sign in again to keep going");
 		expect(screen.getByRole("alert")).toHaveTextContent("login");
 		expect(screen.getByRole("alert")).not.toHaveTextContent("Provider access denied");
@@ -222,9 +226,20 @@ describe("provider state chrome", () => {
 		expect(screen.queryByText(/agent controller stopped/i)).not.toBeInTheDocument();
 	});
 
-	it("surfaces a tool server that will never answer", () => {
-		render(<ChatWorkspace snapshot={chatFixtureMcpFailed} />);
-		expect(screen.getByText("2 tool servers did not start")).toBeInTheDocument();
+	it("places a brief tool-server notice immediately above the composer", () => {
+		render(<ChatWorkspace snapshot={{ ...chatFixtureMcpFailed, controller: { state: "ready" } }} />);
+		const notice = screen.getAllByRole("status").find((element) =>
+			element.textContent?.includes("Playwright, Postgres MCPs unavailable"),
+		)!;
+		const composer = notice.parentElement?.nextElementSibling;
+		expect(notice).toHaveTextContent("Playwright, Postgres MCPs unavailable");
+		expect(document.querySelector(".cursor-chat-composer-dock")).toContainElement(notice);
+		expect(composer?.querySelector(".cursor-chat-composer")).not.toBeNull();
+	});
+
+	it("shows the tool-server notice in an empty chat", () => {
+		render(<ChatWorkspace snapshot={{ ...chatFixtureEmpty, mcpServers: chatFixtureMcpFailed.mcpServers }} />);
+		expect(screen.getByRole("status")).toHaveTextContent("Playwright, Postgres MCPs unavailable");
 	});
 
 	it("says nothing about tool servers when they all started", () => {
@@ -232,10 +247,6 @@ describe("provider state chrome", () => {
 		expect(screen.queryByText(/did not start/)).not.toBeInTheDocument();
 	});
 
-	it("disables the tool-server reload while a turn is running", () => {
-		render(<ChatWorkspace snapshot={chatFixtureMcpFailed} onReloadMcpServers={vi.fn()} />);
-		expect(screen.getByRole("button", { name: /Reload/ })).toBeDisabled();
-	});
 });
 
 describe("model reroute", () => {
@@ -266,6 +277,9 @@ describe("model reroute", () => {
 				onChooseSettings={vi.fn()}
 			/>,
 		);
+		for (const trigger of screen.getAllByRole("button", { name: /Worked for/ })) {
+			fireEvent.click(trigger);
+		}
 		expect(
 			screen.getByText(/The requested model is at capacity for this account tier/),
 		).toBeInTheDocument();
