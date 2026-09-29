@@ -64,6 +64,7 @@ type SourceRoots struct {
 	CodexSessions  string
 	CodexArchived  string
 	KimiHome       string
+	QwenUsage      string
 }
 
 // DefaultSourceRoots resolves provider-owned transcript directories. dataDir
@@ -83,12 +84,79 @@ func DefaultSourceRoots(ctx context.Context, dataDir string) (SourceRoots, error
 	if strings.TrimSpace(dataDir) == "" {
 		dataDir = filepath.Join(home, ".ao", "data")
 	}
+	qwenRuntime, err := qwenRuntimeBaseDir(ctx, home, "")
+	if err != nil {
+		return SourceRoots{}, err
+	}
 	return SourceRoots{
 		ClaudeProjects: filepath.Join(home, ".claude", "projects"),
 		CodexSessions:  filepath.Join(codexHome, "sessions"),
 		CodexArchived:  filepath.Join(codexHome, "archived_sessions"),
 		KimiHome:       filepath.Join(dataDir, "kimi"),
+		QwenUsage:      filepath.Join(qwenRuntime, "usage"),
 	}, nil
+}
+
+func qwenRuntimeBaseDir(ctx context.Context, home, workspace string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if runtimeDir := strings.TrimSpace(os.Getenv("QWEN_RUNTIME_DIR")); runtimeDir != "" {
+		return resolveQwenStoragePath(runtimeDir, home, workspace), nil
+	}
+	qwenHome := filepath.Join(home, ".qwen")
+	if configuredHome := strings.TrimSpace(os.Getenv("QWEN_HOME")); configuredHome != "" {
+		qwenHome = resolveQwenStoragePath(configuredHome, home, workspace)
+	}
+	runtimeDir := ""
+	settingsPaths := []string{filepath.Join(qwenHome, "settings.json")}
+	if workspace != "" {
+		settingsPaths = append(settingsPaths, filepath.Join(workspace, ".qwen", "settings.json"))
+	}
+	for _, path := range settingsPaths {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return "", err
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		var settings struct {
+			Advanced struct {
+				RuntimeOutputDir string `json:"runtimeOutputDir"`
+			} `json:"advanced"`
+		}
+		if json.Unmarshal(data, &settings) == nil && strings.TrimSpace(settings.Advanced.RuntimeOutputDir) != "" {
+			runtimeDir = settings.Advanced.RuntimeOutputDir
+		}
+	}
+	if runtimeDir != "" {
+		return resolveQwenStoragePath(runtimeDir, home, workspace), nil
+	}
+	return qwenHome, nil
+}
+
+func resolveQwenStoragePath(path, home, workspace string) string {
+	path = strings.TrimSpace(path)
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+		return filepath.Join(home, path[2:])
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	if workspace == "" {
+		workspace = home
+	}
+	return filepath.Join(workspace, path)
 }
 
 type collectorStore interface {
@@ -124,6 +192,36 @@ type Collector struct {
 	mu                      sync.Mutex
 	// Guarded separately from mu, which RecordHook holds across the whole hook.
 	routeMu sync.RWMutex
+}
+
+func (c *Collector) qwenUsageRoot(ctx context.Context, sessionID domain.SessionID) (string, error) {
+	session, ok, err := c.store.GetSession(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("%w: %s", ErrUsageSessionNotFound, sessionID)
+	}
+	workspace := strings.TrimSpace(session.Metadata.WorkspacePath)
+	if workspace == "" {
+		return c.roots.QwenUsage, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	runtimeDir, err := qwenRuntimeBaseDir(ctx, home, workspace)
+	if err != nil {
+		return "", err
+	}
+	globalRuntime, err := qwenRuntimeBaseDir(ctx, home, "")
+	if err != nil {
+		return "", err
+	}
+	if runtimeDir == globalRuntime {
+		return c.roots.QwenUsage, nil
+	}
+	return filepath.Join(runtimeDir, "usage"), nil
 }
 
 // OnRouteResolved registers the handler called the first time a binding learns
@@ -284,19 +382,19 @@ func (c *Collector) RecordHook(ctx context.Context, sessionID domain.SessionID, 
 		}
 	}
 	if signal.NativeSessionID != "" && mainPath == "" &&
-		(session.Harness == domain.HarnessCodex || session.Harness == domain.HarnessKimi ||
+		(session.Harness == domain.HarnessCodex || session.Harness == domain.HarnessKimi || session.Harness == domain.HarnessQwen ||
 			finalizing && !existsForDiscovery) {
-		mainPath, err = c.discoverPath(ctx, session.Harness, signal.NativeSessionID)
+		mainPath, err = c.discoverPath(ctx, session.Harness, signal.NativeSessionID, session.ID)
 		if err != nil {
 			return err
 		}
 	}
 	subagentPath := strings.TrimSpace(signal.SubagentTranscriptPath)
-	mainArtifact, err := c.validateHookArtifact(ctx, session.Harness, mainPath)
+	mainArtifact, err := c.validateHookArtifact(ctx, session.Harness, session.ID, mainPath)
 	if err != nil {
 		return err
 	}
-	subagentArtifact, err := c.validateHookArtifact(ctx, session.Harness, subagentPath)
+	subagentArtifact, err := c.validateHookArtifact(ctx, session.Harness, session.ID, subagentPath)
 	if err != nil {
 		return err
 	}
@@ -515,12 +613,13 @@ func (c *Collector) hookSession(
 func (c *Collector) validateHookArtifact(
 	ctx context.Context,
 	harness domain.AgentHarness,
+	sessionID domain.SessionID,
 	path string,
 ) (*validatedSourceArtifact, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, nil
 	}
-	resolved, identity, size, err := c.validateSourcePath(ctx, harness, path)
+	resolved, identity, size, err := c.validateSourcePath(ctx, harness, sessionID, path)
 	if err != nil {
 		return nil, err
 	}
@@ -574,7 +673,7 @@ func (c *Collector) backfillSession(ctx context.Context, session domain.SessionR
 	if err != nil {
 		return err
 	}
-	path, err := c.discoverPath(ctx, session.Harness, nativeID)
+	path, err := c.discoverPath(ctx, session.Harness, nativeID, session.ID)
 	if err != nil {
 		return err
 	}
@@ -689,7 +788,7 @@ func (c *Collector) ReconcilePath(ctx context.Context, path string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	resolved, _, _, err := c.validateSourcePath(ctx, domain.HarnessCodex, path)
+	resolved, _, _, err := c.validateSourcePath(ctx, domain.HarnessCodex, "", path)
 	if err != nil {
 		return nil
 	}
@@ -861,7 +960,7 @@ func (c *Collector) reconcileBinding(ctx context.Context, binding domain.UsageBi
 		targetState = domain.UsageBindingFinalizing
 	}
 
-	path, err := c.discoverPath(ctx, binding.Harness, binding.NativeRootID)
+	path, err := c.discoverPath(ctx, binding.Harness, binding.NativeRootID, binding.SessionID)
 	if err != nil {
 		return err
 	}
@@ -1174,7 +1273,7 @@ func (c *Collector) registerSourceWithExpectedParent(
 	reactivateExisting bool,
 	expectedParentID string,
 ) (bool, error) {
-	resolved, identity, size, err := c.validateSourcePath(ctx, binding.Harness, path)
+	resolved, identity, size, err := c.validateSourcePath(ctx, binding.Harness, binding.SessionID, path)
 	if err != nil {
 		return false, err
 	}
@@ -1220,7 +1319,7 @@ func (c *Collector) registerSourceWithInventory(
 	inventory *bindingSourceInventory,
 	expectedParentID string,
 ) (bool, error) {
-	resolved, identity, size, err := c.validateSourcePath(ctx, binding.Harness, path)
+	resolved, identity, size, err := c.validateSourcePath(ctx, binding.Harness, binding.SessionID, path)
 	if err != nil {
 		return false, err
 	}
@@ -1449,7 +1548,7 @@ func (c *Collector) discoverClaudeContinuations(
 		}
 		// registerSource re-validates authoritatively; this pre-check only
 		// keeps one unreadable candidate from aborting the whole scan.
-		resolved, _, _, err := c.validateSourcePath(ctx, domain.HarnessClaudeCode, candidate)
+		resolved, _, _, err := c.validateSourcePath(ctx, domain.HarnessClaudeCode, "", candidate)
 		if err != nil {
 			continue
 		}
@@ -1894,7 +1993,7 @@ func (c *Collector) finalizeSession(ctx context.Context, sessionID domain.Sessio
 	return nil
 }
 
-func (c *Collector) validateSourcePath(ctx context.Context, harness domain.AgentHarness, path string) (string, string, int64, error) {
+func (c *Collector) validateSourcePath(ctx context.Context, harness domain.AgentHarness, sessionID domain.SessionID, path string) (string, string, int64, error) {
 	if err := ctx.Err(); err != nil {
 		return "", "", 0, err
 	}
@@ -1916,6 +2015,13 @@ func (c *Collector) validateSourcePath(ctx context.Context, harness domain.Agent
 		return "", "", 0, errors.New(domain.UsageErrorArtifactMissing)
 	}
 	roots := c.allowedRoots(harness)
+	if harness == domain.HarnessQwen {
+		root, rootErr := c.qwenUsageRoot(ctx, sessionID)
+		if rootErr != nil {
+			return "", "", 0, rootErr
+		}
+		roots = []string{root}
+	}
 	allowed := false
 	for _, root := range roots {
 		if root == "" {
@@ -1994,6 +2100,11 @@ func validateSourceAttribution(
 			filepath.Base(sessionDir) != binding.NativeRootID || subagentID != wantSubagent {
 			return rejected()
 		}
+	case domain.UsageSourceQwenMonthly:
+		if binding.Harness != domain.HarnessQwen || nativeSessionID != binding.NativeRootID ||
+			subagentID != "" || !qwenUsageFilename(filepath.Base(resolved)) {
+			return rejected()
+		}
 	default:
 		return rejected()
 	}
@@ -2041,6 +2152,8 @@ func (c *Collector) allowedRoots(harness domain.AgentHarness) []string {
 		return []string{c.roots.CodexSessions, c.roots.CodexArchived}
 	case domain.HarnessKimi:
 		return []string{c.roots.KimiHome}
+	case domain.HarnessQwen:
+		return []string{c.roots.QwenUsage}
 	default:
 		return nil
 	}
@@ -2054,6 +2167,8 @@ func sourceKindForHarness(harness domain.AgentHarness) (domain.UsageSourceKind, 
 		return domain.UsageSourceCodexRollout, true
 	case domain.HarnessKimi:
 		return domain.UsageSourceKimiWire, true
+	case domain.HarnessQwen:
+		return domain.UsageSourceQwenMonthly, true
 	default:
 		return "", false
 	}
@@ -2091,7 +2206,7 @@ func pathWithinRoot(ctx context.Context, path, root string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func (c *Collector) discoverPath(ctx context.Context, harness domain.AgentHarness, nativeID string) (string, error) {
+func (c *Collector) discoverPath(ctx context.Context, harness domain.AgentHarness, nativeID string, sessionID domain.SessionID) (string, error) {
 	if !nativeUsageIDPattern.MatchString(nativeID) {
 		return "", nil
 	}
@@ -2103,6 +2218,8 @@ func (c *Collector) discoverPath(ctx context.Context, harness domain.AgentHarnes
 		return c.discoverCodexPath(ctx, nativeID, "")
 	case domain.HarnessKimi:
 		return c.discoverKimiPath(ctx, nativeID)
+	case domain.HarnessQwen:
+		return c.discoverQwenPath(ctx, sessionID)
 	}
 	type candidate struct {
 		path string
@@ -2134,6 +2251,46 @@ func (c *Collector) discoverPath(ctx context.Context, harness domain.AgentHarnes
 		return "", nil
 	}
 	return matches[0].path, nil
+}
+
+func qwenUsageFilename(name string) bool {
+	if !strings.HasPrefix(name, "token-usage-") || !strings.HasSuffix(name, ".jsonl") {
+		return false
+	}
+	month := strings.TrimSuffix(strings.TrimPrefix(name, "token-usage-"), ".jsonl")
+	if len(month) != 7 || month[4] != '-' {
+		return false
+	}
+	_, err := time.Parse("2006-01", month)
+	return err == nil
+}
+
+func (c *Collector) discoverQwenPath(ctx context.Context, sessionID domain.SessionID) (string, error) {
+	root, err := c.qwenUsageRoot(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	paths, err := filepath.Glob(filepath.Join(root, "token-usage-*.jsonl"))
+	if err != nil {
+		return "", err
+	}
+	valid := paths[:0]
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if !qwenUsageFilename(filepath.Base(path)) {
+			continue
+		}
+		if info, statErr := os.Stat(path); statErr == nil && info.Mode().IsRegular() {
+			valid = append(valid, path)
+		}
+	}
+	if len(valid) == 0 {
+		return "", nil
+	}
+	sort.Strings(valid)
+	return valid[len(valid)-1], nil
 }
 
 type kimiIndexRecord struct {
@@ -2209,7 +2366,7 @@ func (c *Collector) discoverCodexPath(ctx context.Context, nativeID, parentID st
 			if err := ctx.Err(); err != nil {
 				return "", err
 			}
-			resolved, _, _, err := c.validateSourcePath(ctx, domain.HarnessCodex, path)
+			resolved, _, _, err := c.validateSourcePath(ctx, domain.HarnessCodex, "", path)
 			if err != nil || !codexSessionMetaMatches(resolved, nativeID, parentID) {
 				continue
 			}

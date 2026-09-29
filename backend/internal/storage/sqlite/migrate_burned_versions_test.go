@@ -170,6 +170,7 @@ var shippedMigrations = map[int64]string{
 	164: "0164_allow_gemini_harness.sql",
 	165: "0165_allow_mimo_code_harness.sql",
 	166: "0166_allow_deepseek_harness.sql",
+	167: "0167_allow_qwen_usage.sql",
 }
 
 // burnedVersion reports version numbers that must never be (re)used: they
