@@ -8,6 +8,7 @@ function setup(platform: NodeJS.Platform = "win32") {
 	const removeChildView = vi.fn();
 	const removeListener = vi.fn();
 	const close = vi.fn();
+	let webPreferences: Electron.WebPreferences | undefined;
 	const view = {
 		webContents: { close },
 		setBackgroundColor: vi.fn(),
@@ -26,7 +27,8 @@ function setup(platform: NodeJS.Platform = "win32") {
 		},
 		isDestroyed: () => false,
 	};
-	function FakeWebContentsView() {
+	function FakeWebContentsView(options: { webPreferences: Electron.WebPreferences }) {
+		webPreferences = options.webPreferences;
 		return view;
 	}
 	const composition = createWindowComposition({
@@ -48,10 +50,17 @@ function setup(platform: NodeJS.Platform = "win32") {
 			bounds = next;
 		},
 		view,
+		webPreferences: () => webPreferences,
 	};
 }
 
 describe("createWindowComposition", () => {
+	it("passes backgroundThrottling: false to the shell view (configuration only; does not test Chromium runtime behavior)", () => {
+		const { webPreferences } = setup();
+
+		expect(webPreferences()?.backgroundThrottling).toBe(false);
+	});
+
 	it("creates a transparent shell at window bounds and reorders it for overlays", () => {
 		const { addChildView, composition, view } = setup();
 

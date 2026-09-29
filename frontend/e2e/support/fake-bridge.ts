@@ -358,6 +358,7 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 export type FakeWorker = {
 	id: string;
 	title: string;
+	createdAt?: string;
 	mode?: "chat" | "tui";
 	provider?: string;
 	branch?: string;
@@ -376,21 +377,35 @@ export type FakeAgentOptions = {
 	platform?: string;
 	/** Worker sessions present at first paint. */
 	workers?: FakeWorker[];
+	/** Persist the fixture project's disclosure as expanded before the app mounts. */
+	expandProject?: boolean;
 };
 
 /**
  * The in-page fake-agent controller, callable from specs via `page.evaluate`.
- * Every mutator changes the snapshot AND pushes the matching SSE frame, so the
- * renderer repaints through its real invalidation path.
+ * Normal mutations change the snapshot and push the matching SSE frame, so the
+ * renderer repaints through its real invalidation path. Diagnostic controls
+ * can deliberately defer or omit a frame to inspect the cache boundary.
  */
 export type FakeAgentController = {
 	snapshot: () => unknown[];
 	createWorker: (worker: FakeWorker) => void;
+	createWorkerWithoutEvent: (worker: FakeWorker) => void;
+	createWorkerDuringNextSnapshot: (worker: FakeWorker) => void;
+	createWorkerDuringReplay: (worker: FakeWorker) => void;
 	removeWorker: (id: string) => void;
 	setStatus: (id: string, status: string, activity?: string) => void;
 	setTerminalHandle: (id: string, handleId: string) => void;
 	setPreview: (id: string, previewUrl: string, previewRevision?: number) => void;
 	setBrowserError: (message: string | null) => void;
+	disconnectEventsWithReplayBacklog: (count: number) => void;
+	signalEventsReopened: () => void;
+	replayBacklogRemaining: () => number;
+	startContinuousWorkspaceEvents: (intervalMs: number, eventsPerTick?: number) => void;
+	stopContinuousWorkspaceEvents: () => void;
+	continuousWorkspaceEventCount: () => number;
+	setSnapshotFailures: (count: number) => void;
+	snapshotCallCount: () => number;
 	notify: (n: { id: string; type: string; title: string; body?: string; sessionId?: string }) => void;
 };
 
@@ -417,11 +432,23 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 	const projectName = opts.projectName ?? "fake-proj";
 	const platform = opts.platform ?? null;
 	const workers = opts.workers ?? [];
+	const expandProject = opts.expandProject ?? false;
 	// Renderer reload does not create a new daemon session incarnation.
 	const nowIso = new Date().toISOString();
 
 	await page.addInitScript(
-		({ version, daemonPort, projectId, projectName, platform, workers, nowIso }) => {
+		({ version, daemonPort, projectId, projectName, platform, workers, nowIso, expandProject }) => {
+			try {
+				if (expandProject) {
+					const key = "ao.sidebar.expanded-projects";
+					const expanded = JSON.parse(localStorage.getItem(key) ?? "[]");
+					if (Array.isArray(expanded) && !expanded.includes(projectId)) {
+						localStorage.setItem(key, JSON.stringify([...expanded, projectId]));
+					}
+				}
+			} catch {
+				/* storage can be unavailable in restricted browser contexts */
+			}
 			if (platform) {
 				try {
 					Object.defineProperty(navigator, "platform", { get: () => platform, configurable: true });
@@ -467,7 +494,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				branch: w.branch ?? `session/${w.id}`,
 				status: w.status ?? "working",
 				kanbanColumn: kanbanColumnFor(w.status ?? "working"),
-				createdAt: nowIso,
+				createdAt: w.createdAt ?? nowIso,
 				updatedAt: new Date().toISOString(),
 				activity: { state: w.activity ?? "active", lastActivityAt: new Date().toISOString() },
 				previewUrl: w.previewUrl,
@@ -518,9 +545,20 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				browserError: null as string | null,
 				eventSources: [] as FakeEventSourceLike[],
 				workspaces: [project],
+				replayBacklogOnNextConnection: 0,
+				replayBacklogRemaining: 0,
+				workerToEmitAfterReplay: null as Session | null,
+				raceWorker: null as (typeof workers)[number] | null,
+				continuousWorkspaceEvents: 0,
+				continuousEventTimer: undefined as number | undefined,
+				snapshotCalls: 0,
+			snapshotFailures: 0,
 			};
 
 			const findSession = (id: string) => (project.sessions as Session[]).find((s) => s.id === id);
+			const addWorker = (worker: (typeof workers)[number]) => {
+				if (!findSession(worker.id)) (project.sessions as Session[]).push(makeWorker(worker));
+			};
 			const touch = (s: Session) => {
 				s.updatedAt = new Date().toISOString();
 			};
@@ -542,9 +580,36 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 					this.url = String(url);
 					state.eventSources.push(this);
 					// event-transport assigns `.onopen` right after construction; fire on
-					// the next tick so it is already wired.
+					// the next tick so it is already wired. A reconnect can replay a large
+					// CDC backlog in bounded batches while the renderer remains responsive.
+					const replayCount = this.url.endsWith("/api/v1/events") ? state.replayBacklogOnNextConnection : 0;
+					if (replayCount > 0) state.replayBacklogOnNextConnection = 0;
 					setTimeout(() => {
-						if (this.readyState === 1 && this.onopen) this.onopen({ type: "open" });
+						if (this.readyState !== 1) return;
+						if (replayCount > 0) {
+							state.replayBacklogRemaining = replayCount;
+							const drainBatch = () => {
+								if (this.readyState !== 1) return;
+								const batch = Math.min(2_000, state.replayBacklogRemaining);
+								// The historical backlog includes unrelated CDC event names. This
+								// synthetic frame is deliberately unhandled by event-transport so the
+								// harness can model queue depth without issuing 378k refetches.
+								for (let i = 0; i < batch; i++) this._dispatch("replay_backlog", "{}");
+								state.replayBacklogRemaining -= batch;
+								if (state.replayBacklogRemaining > 0) {
+									setTimeout(drainBatch, 0);
+									return;
+								}
+								if (state.workerToEmitAfterReplay) {
+									this._dispatch("session_created", JSON.stringify({ sessionId: state.workerToEmitAfterReplay.id }));
+									state.workerToEmitAfterReplay = null;
+								}
+								if (this.onopen) this.onopen({ type: "open" });
+							};
+							drainBatch();
+							return;
+						}
+						if (this.onopen) this.onopen({ type: "open" });
 					}, 0);
 				}
 				addEventListener(t: string, cb: (ev: unknown) => void) {
@@ -583,10 +648,30 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 			const pushWorkspaces = (type = "session_updated") => emit("/api/v1/events", type);
 
 			const controller: FakeAgentController = {
-				snapshot: () => JSON.parse(JSON.stringify(state.workspaces)),
+				snapshot: () => {
+					state.snapshotCalls += 1;
+					if (state.snapshotFailures > 0) {
+						state.snapshotFailures -= 1;
+						throw new Error("simulated workspace sessions response failure");
+					}
+					const snapshot = JSON.parse(JSON.stringify(state.workspaces));
+					const raceWorker = state.raceWorker;
+					if (raceWorker) {
+						state.raceWorker = null;
+						addWorker(raceWorker);
+						pushWorkspaces("session_created");
+					}
+					return snapshot;
+				},
 				createWorker: (w) => {
-					if (!findSession(w.id)) (project.sessions as Session[]).push(makeWorker(w));
+					addWorker(w);
 					pushWorkspaces("session_created");
+				},
+				createWorkerWithoutEvent: addWorker,
+				createWorkerDuringNextSnapshot: (w) => { state.raceWorker = w; },
+				createWorkerDuringReplay: (w) => {
+					addWorker(w);
+					state.workerToEmitAfterReplay = findSession(w.id) ?? null;
 				},
 				removeWorker: (id) => {
 					const sessions = project.sessions as Session[];
@@ -622,6 +707,37 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 				setBrowserError: (message) => {
 					state.browserError = message;
 				},
+				disconnectEventsWithReplayBacklog: (count) => {
+					state.replayBacklogOnNextConnection = Math.max(0, Math.floor(count));
+					const source = [...state.eventSources].reverse().find((candidate) => candidate.url.endsWith("/api/v1/events") && candidate.readyState !== 2);
+					if (source) {
+						source.readyState = 2;
+						source.onerror?.({ type: "error" });
+					}
+				},
+				signalEventsReopened: () => {
+					const source = [...state.eventSources].reverse().find((candidate) => candidate.url.endsWith("/api/v1/events") && candidate.readyState !== 2);
+					source?.onopen?.({ type: "open" });
+				},
+				replayBacklogRemaining: () => state.replayBacklogRemaining,
+				startContinuousWorkspaceEvents: (intervalMs, eventsPerTick = 1) => {
+					if (state.continuousEventTimer !== undefined) window.clearInterval(state.continuousEventTimer);
+					state.continuousWorkspaceEvents = 0;
+					state.continuousEventTimer = window.setInterval(() => {
+						const count = Math.max(1, Math.floor(eventsPerTick));
+						for (let i = 0; i < count; i += 1) {
+							state.continuousWorkspaceEvents += 1;
+							pushWorkspaces("session_updated");
+						}
+					}, Math.max(1, Math.floor(intervalMs)));
+				},
+				stopContinuousWorkspaceEvents: () => {
+					if (state.continuousEventTimer !== undefined) window.clearInterval(state.continuousEventTimer);
+					state.continuousEventTimer = undefined;
+				},
+				continuousWorkspaceEventCount: () => state.continuousWorkspaceEvents,
+				setSnapshotFailures: (count) => { state.snapshotFailures = Math.max(0, Math.floor(count)); },
+				snapshotCallCount: () => state.snapshotCalls,
 				notify: (n) => {
 					const payload = JSON.stringify({
 						id: n.id,
@@ -890,6 +1006,6 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 			} satisfies AoBridge;
 			(window as unknown as { ao: unknown }).ao = ao;
 		},
-		{ version, daemonPort, projectId, projectName, platform, workers, nowIso },
+		{ version, daemonPort, projectId, projectName, platform, workers, nowIso, expandProject },
 	);
 }
