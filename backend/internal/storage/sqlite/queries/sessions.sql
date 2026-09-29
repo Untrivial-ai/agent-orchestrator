@@ -47,6 +47,11 @@ UPDATE sessions
 SET model = sqlc.arg(model)
 WHERE id = sqlc.arg(id);
 
+-- name: UpdateSessionCardSummary :execrows
+UPDATE sessions
+SET latest_assistant_update = sqlc.arg(summary), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND is_terminated = 0;
+
 -- name: UpdateBrowserCapabilityVerifier :execrows
 -- Rotate only the browser credential for the exact controller owner observed by
 -- the launcher. This must not replay a stale SessionRecord over newer lifecycle,

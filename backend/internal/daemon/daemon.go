@@ -77,6 +77,85 @@ import (
 // are healed on this cadence even when no event or hook fires.
 const usageReconcileTick = 3 * time.Minute
 
+// ponytail: the title anchors the subject because arbitrary tool output is not
+// reliable prose. Add model inference only if measured quality justifies its cost.
+func liveProgressSummary(title, evidence string) string {
+	subject, action := cardSubject(title)
+	if subject == "" || strings.TrimSpace(evidence) == "" {
+		return ""
+	}
+	for _, line := range strings.Split(evidence, "\n") {
+		line = strings.ToLower(strings.TrimSpace(line))
+		if strings.HasPrefix(line, "the agent is currently ") {
+			line = strings.TrimPrefix(line, "the agent is currently ")
+		} else if len(line) > 160 {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "go test "), strings.HasPrefix(line, "npm test"),
+			strings.HasPrefix(line, "pytest"), strings.HasPrefix(line, "running test"),
+			strings.HasPrefix(line, "testing "):
+			action = "Testing"
+		case strings.HasPrefix(line, "apply_patch"), strings.HasPrefix(line, "edit "),
+			strings.HasPrefix(line, "editing "), strings.HasPrefix(line, "write "),
+			strings.HasPrefix(line, "updating "):
+			action = "Editing"
+		case strings.HasPrefix(line, "create "), strings.HasPrefix(line, "creating "),
+			strings.HasPrefix(line, "add "), strings.HasPrefix(line, "adding "):
+			action = "Creating"
+		case strings.HasPrefix(line, "read "), strings.HasPrefix(line, "reading "),
+			strings.HasPrefix(line, "rg "), strings.HasPrefix(line, "grep "):
+			action = "Inspecting"
+		}
+	}
+	return action + " " + subject
+}
+
+func cardSubject(title string) (string, string) {
+	words := strings.Fields(strings.TrimSpace(title))
+	if len(words) == 0 || strings.EqualFold(title, "Untitled Task") {
+		return "", ""
+	}
+	action := "Reviewing"
+	switch strings.ToLower(words[0]) {
+	case "inspect", "audit":
+		action = "Inspecting"
+		words = words[1:]
+	case "trace":
+		action = "Tracing"
+		words = words[1:]
+	case "review":
+		words = words[1:]
+	case "explain", "summarize", "describe":
+		action = "Summarizing"
+		words = words[1:]
+	case "create", "add":
+		action = "Creating"
+		words = words[1:]
+	case "build", "implement":
+		action = "Building"
+		words = words[1:]
+	case "fix", "debug":
+		action = "Fixing"
+		words = words[1:]
+	case "edit", "update", "redesign", "improve":
+		action = "Editing"
+		words = words[1:]
+	}
+	if len(words) == 0 {
+		return "", ""
+	}
+	if len(words) > 7 {
+		words = words[:7]
+	}
+	for i, word := range words {
+		if word != strings.ToUpper(word) || len(word) > 5 {
+			words[i] = strings.ToLower(word)
+		}
+	}
+	return strings.Join(words, " "), action
+}
+
 // sentryEnvironment maps the daemon's app version to a Sentry environment so a
 // nightly/edge build's issues do not mix with stable release health.
 func sentryEnvironment(version string) string {
@@ -400,6 +479,7 @@ func Run() error {
 	// registered driver cannot start in chat mode, so an unsupported request fails
 	// loudly instead of silently becoming a TUI session.
 	var sessMgr sessionLifecycle
+	var cardSummaryMu sync.Mutex
 	chatSvc := chatsvc.New(chatsvc.Options{
 		Store:    store,
 		Sessions: store,
@@ -480,6 +560,21 @@ func Run() error {
 					"sessionID", sessionID, "model", model, "error", err)
 			}
 		},
+		OnAssistantMessage: func(msgCtx context.Context, sessionID domain.SessionID, evidence string) {
+			cardSummaryMu.Lock()
+			defer cardSummaryMu.Unlock()
+			rec, ok, err := store.GetSession(msgCtx, sessionID)
+			if err != nil || !ok || rec.IsTerminated {
+				return
+			}
+			summary := liveProgressSummary(rec.DisplayName, evidence)
+			if summary == "" || rec.Metadata.LatestAssistantUpdate == domain.CardSummaryMetadataPrefix+summary {
+				return
+			}
+			if _, err := store.UpdateSessionCardSummary(msgCtx, sessionID, domain.CardSummaryMetadataPrefix+summary, time.Now().UTC()); err != nil {
+				log.Warn("update card summary failed", "sessionID", sessionID, "error", err)
+			}
+		},
 	})
 
 	codexModelDriver := codexappserver.New(codexagent.New(), log)
@@ -548,6 +643,15 @@ func Run() error {
 		}
 		return fmt.Errorf("wire session service: %w", err)
 	}
+	// Direct TUI spawns do not pass through DelegateTask's orchestrator title
+	// refinement. Generate their title through the same configured harness/model
+	// in a detached read-only conversation.
+	sessionSvc.SetCardTitleGenerator(func(titleCtx context.Context, rec domain.SessionRecord) (string, error) {
+		return chatSvc.GenerateCardTitleWithConfig(titleCtx, rec.Harness, ports.ChatStartConfig{
+			SessionID: rec.ID, DataDir: cfg.DataDir, WorkspacePath: rec.Metadata.WorkspacePath,
+			Model: rec.Metadata.Model, Permissions: ports.PermissionModeAuto,
+		}, rec.Metadata.Prompt)
+	})
 	sessionSvc.SetChatProviderPreserver(chatSvc.PreservesProviderOnRestart)
 	sessMgr = wiredSessMgr
 	if tunable, ok := sessMgr.(interface {

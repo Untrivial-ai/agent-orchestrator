@@ -1,0 +1,35 @@
+package session
+
+import (
+	"strings"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
+)
+
+// deriveSummary builds the generic Kanban card line from server-owned PR and
+// lifecycle facts. Conversation text is intentionally not included: prompts,
+// assistant replies, and tool protocol messages are not card summaries.
+func deriveSummary(rec domain.SessionRecord, prs []domain.PRFacts, displayStatus contract.DisplayStatus) string {
+	// AO-owned card text is prefixed so raw provider checkpoints cannot leak
+	// into the UI. Lifecycle and PR facts are the fallback before activity arrives.
+	if generated := strings.TrimPrefix(strings.TrimSpace(rec.Metadata.LatestAssistantUpdate), domain.CardSummaryMetadataPrefix); generated != strings.TrimSpace(rec.Metadata.LatestAssistantUpdate) && generated != "" {
+		return generated
+	}
+	open, failing := 0, false
+	for _, pr := range prs {
+		if pr.Merged || pr.Closed {
+			continue
+		}
+		open++
+		if pr.CI == domain.CIFailing {
+			failing = true
+		}
+	}
+	return contract.SummarizeSession(contract.SummaryFacts{
+		IsTerminated:  rec.IsTerminated,
+		OpenPRs:       open,
+		CIFailing:     failing,
+		DisplayStatus: displayStatus,
+	})
+}

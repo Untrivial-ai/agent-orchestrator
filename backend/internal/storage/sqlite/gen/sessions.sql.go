@@ -1590,6 +1590,26 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) er
 	return err
 }
 
+const updateSessionCardSummary = `-- name: UpdateSessionCardSummary :execrows
+UPDATE sessions
+SET latest_assistant_update = ?1, updated_at = ?2
+WHERE id = ?3 AND is_terminated = 0
+`
+
+type UpdateSessionCardSummaryParams struct {
+	Summary   string
+	UpdatedAt time.Time
+	ID        domain.SessionID
+}
+
+func (q *Queries) UpdateSessionCardSummary(ctx context.Context, arg UpdateSessionCardSummaryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateSessionCardSummary, arg.Summary, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateSessionModel = `-- name: UpdateSessionModel :execrows
 UPDATE sessions
 SET model = ?1
