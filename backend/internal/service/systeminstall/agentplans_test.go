@@ -101,8 +101,8 @@ func TestAgentPlansCoverEveryHarnessOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plans) != 30 {
-		t.Fatalf("got %d plans, want 30", len(plans))
+	if len(plans) != 31 {
+		t.Fatalf("got %d plans, want 31", len(plans))
 	}
 	seen := make(map[string]bool, len(plans))
 	for _, plan := range plans {
@@ -140,6 +140,19 @@ func TestAgentPlanSelectsAvailableFallback(t *testing.T) {
 				t.Fatalf("plan = %+v, want method %q command %q", plan, tt.wantMethod, tt.wantCommand)
 			}
 		})
+	}
+}
+
+func TestZCodeInstallIsManualOfficialDistribution(t *testing.T) {
+	plan := newTestService("linux", "npm").planAgent(TargetZCode)
+	if !plan.Unsupported || plan.Method != "manual" || plan.Script != nil || len(plan.Command) != 0 {
+		t.Fatalf("ZCode plan = %+v, want instructions-only manual plan", plan)
+	}
+	if !strings.Contains(plan.Reason, "zai-org/ZCode") {
+		t.Fatalf("ZCode reason = %q, want a pointer at the official repo", plan.Reason)
+	}
+	if plan.DocsURL == "" || !strings.Contains(plan.DocsURL, "zai-org/ZCode") {
+		t.Fatalf("ZCode docs URL = %q, want the official repo", plan.DocsURL)
 	}
 }
 
