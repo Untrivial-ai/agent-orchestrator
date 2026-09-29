@@ -245,7 +245,7 @@ function BoardColumnView<TSession extends BoardSessionPresentation>({
 				</span>
 				<span className="ml-auto tabular-nums text-xs leading-none text-passive">{sessions.length}</span>
 			</div>
-			<div className="scrollbar-none min-h-0 flex-1 overflow-y-auto pl-3 pr-2 pt-3">
+			<div className="scrollbar-none min-h-0 flex-1 overflow-y-auto px-3 pt-3">
 				<div className="flex min-h-full flex-col gap-2.5 pb-24">
 					{sessions.map((session) => (
 						<Fragment key={session.id}>{renderSessionCard(session)}</Fragment>

@@ -163,6 +163,9 @@ describe("SessionsBoardView", () => {
 				.map((card) => card.textContent),
 		).toEqual(["later task", "portable task"]);
 		expect(buildingLane.querySelectorAll(".overflow-y-auto")).toHaveLength(1);
+		for (const lane of screen.getAllByTestId("board-column")) {
+			expect(lane.querySelector(".overflow-y-auto")).toHaveClass("px-3");
+		}
 
 		expect(within(screen.getByRole("region", { name: "Ready sessions" })).getByTestId("card-ready")).toBeInTheDocument();
 		// Empty lanes still render, so the four-column grid never collapses.

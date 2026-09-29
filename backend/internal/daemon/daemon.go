@@ -126,6 +126,9 @@ func cardSubject(title string) (string, string) {
 		words = words[1:]
 	case "review":
 		words = words[1:]
+	case "explain", "summarize", "describe":
+		action = "Summarizing"
+		words = words[1:]
 	case "create", "add":
 		action = "Creating"
 		words = words[1:]

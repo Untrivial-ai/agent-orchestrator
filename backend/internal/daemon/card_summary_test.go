@@ -12,6 +12,7 @@ func TestLiveProgressSummaryStaysScopedToTheCard(t *testing.T) {
 		{"Review Database Migrations", "Running tests for migration changes", "Testing database migrations"},
 		{"Create Wishlist Page", "The agent is currently Edit app/wishlist/page.tsx", "Editing wishlist page"},
 		{"Fix API Errors", "apply_patch app/api/errors.ts", "Editing API errors"},
+		{"Explain This Repository’s Purpose", "I’ll inspect the README and top-level files", "Summarizing this repository’s purpose"},
 		{"Inspect Event Streaming", "", ""},
 		{"Untitled Task", "Read server.go", ""},
 	}
