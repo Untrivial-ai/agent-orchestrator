@@ -11,9 +11,8 @@ import (
 // lifecycle facts. Conversation text is intentionally not included: prompts,
 // assistant replies, and tool protocol messages are not card summaries.
 func deriveSummary(rec domain.SessionRecord, prs []domain.PRFacts, displayStatus contract.DisplayStatus) string {
-	// Model-generated card text is stored with an AO-owned prefix so raw provider
-	// checkpoints can never leak into the UI. Lifecycle/PR facts remain the safe
-	// fallback until the first configured-model refresh completes.
+	// AO-owned card text is prefixed so raw provider checkpoints cannot leak
+	// into the UI. Lifecycle and PR facts are the fallback before activity arrives.
 	if generated := strings.TrimPrefix(strings.TrimSpace(rec.Metadata.LatestAssistantUpdate), domain.CardSummaryMetadataPrefix); generated != strings.TrimSpace(rec.Metadata.LatestAssistantUpdate) && generated != "" {
 		return generated
 	}

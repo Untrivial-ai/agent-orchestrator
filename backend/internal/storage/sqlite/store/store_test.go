@@ -105,6 +105,13 @@ func TestCardSummaryUpdatePreservesNewerSessionState(t *testing.T) {
 	if got.DisplayName != "New title" || got.Metadata.LatestAssistantUpdate != domain.CardSummaryMetadataPrefix+"Inspecting navigation routes" {
 		t.Fatalf("summary update changed unrelated state: title=%q summary=%q", got.DisplayName, got.Metadata.LatestAssistantUpdate)
 	}
+	events, err := s.EventsAfter(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 || string(events[len(events)-1].Type) != "session_updated" || events[len(events)-1].SessionID != string(rec.ID) {
+		t.Fatalf("summary update did not emit a session invalidation: %+v", events)
+	}
 }
 
 func TestTaskPreparationPromotionPreservesWorkspace(t *testing.T) {

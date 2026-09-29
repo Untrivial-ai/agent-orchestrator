@@ -49,7 +49,7 @@ func (c *cardTextTestConversation) Capabilities() ports.ChatCapabilities {
 }
 func (c *cardTextTestConversation) SendTurn(_ context.Context, _ ports.ChatUserMessage) (ports.ChatTurnRef, error) {
 	turn := ports.ChatTurnRef{ProviderTurnID: "turn-1"}
-	c.events <- ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: turn.ProviderTurnID, Text: `{"summary":"Inspecting the navigation flow"}`}
+	c.events <- ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: turn.ProviderTurnID, Text: `{"title":"Navigation Flow Audit"}`}
 	return turn, nil
 }
 func (c *cardTextTestConversation) Interrupt(context.Context, string) error { return nil }
@@ -76,18 +76,15 @@ func TestCardTextRequestsUseIsolatedProviderHosts(t *testing.T) {
 		return conv, nil
 	}}
 	service := New(Options{Drivers: cardTextTestRegistry{driver: driver}})
-	id := domain.SessionID("worker-1")
-	service.startConfigs[domain.SessionConversationOwner(id)] = StartConfig{
-		SessionID: id, Harness: domain.HarnessCodex, DataDir: t.TempDir(), WorkspacePath: t.TempDir(),
-	}
+	base := ports.ChatStartConfig{SessionID: domain.SessionID("worker-1"), DataDir: t.TempDir(), WorkspacePath: t.TempDir()}
 
 	var wg sync.WaitGroup
 	for range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := service.GenerateCardSummary(context.Background(), id, "Audit dashboard navigation", "Inspecting dashboard routes"); err != nil {
-				t.Errorf("GenerateCardSummary: %v", err)
+			if _, err := service.GenerateCardTitleWithConfig(context.Background(), domain.HarnessCodex, base, "Audit dashboard navigation"); err != nil {
+				t.Errorf("GenerateCardTitleWithConfig: %v", err)
 			}
 		}()
 	}
@@ -104,29 +101,6 @@ func TestCardTextRequestsUseIsolatedProviderHosts(t *testing.T) {
 	for i, conv := range conversations {
 		if !conv.terminated.Load() {
 			t.Errorf("conversation %d was detached instead of terminated", i)
-		}
-	}
-}
-
-func TestSafeCardSummaryRejectsCombinedPromptExamples(t *testing.T) {
-	bad := "Inspecting the authentication flow, editing the topbar component, validating the wishlist implementation"
-	if safeCardSummary(bad) {
-		t.Fatalf("accepted copied multi-action summary %q", bad)
-	}
-	if !safeCardSummary("Inspecting authentication callback behavior") {
-		t.Fatal("rejected a clean single-action summary")
-	}
-	for _, generic := range []string{"Working on the task", "Implementing the requested changes", "Investigating an implementation issue"} {
-		if safeCardSummary(generic) {
-			t.Errorf("accepted generic summary %q", generic)
-		}
-	}
-	for _, unsuitable := range []string{
-		"Reconsidering to install dependencies for type-check and lint in a read-only worktree",
-		"Planning the next implementation steps",
-	} {
-		if safeCardSummary(unsuitable) {
-			t.Errorf("accepted verbose deliberation %q", unsuitable)
 		}
 	}
 }
@@ -170,33 +144,32 @@ func TestCardRefreshBoundsToolOutputEvidence(t *testing.T) {
 	}
 }
 
-func TestCardRefreshKeepsLatestEvidenceFreshDuringQuietWork(t *testing.T) {
+func TestCardRefreshDoesNotRepeatQuietEvidence(t *testing.T) {
 	oldFirst, oldRefresh := cardFirstRefreshDelay, cardRefreshDelay
-	oldHeartbeat, oldWindow := cardHeartbeatRefreshDelay, cardSummaryFreshWindow
 	cardFirstRefreshDelay, cardRefreshDelay = 10*time.Millisecond, 10*time.Millisecond
-	cardHeartbeatRefreshDelay, cardSummaryFreshWindow = 20*time.Millisecond, 70*time.Millisecond
 	t.Cleanup(func() {
 		cardFirstRefreshDelay, cardRefreshDelay = oldFirst, oldRefresh
-		cardHeartbeatRefreshDelay, cardSummaryFreshWindow = oldHeartbeat, oldWindow
 	})
 
-	result := make(chan string, 4)
+	result := make(chan string, 2)
 	service := New(Options{
-		KeepCardSummaryFresh: true,
 		OnAssistantMessage: func(_ context.Context, _ domain.SessionID, evidence string) {
 			result <- evidence
 		},
 	})
 	service.scheduleCardRefresh(context.Background(), domain.SessionID("worker-1"), "Running the verification suite")
 
-	for range 2 {
-		select {
-		case evidence := <-result:
-			if evidence != "Running the verification suite" {
-				t.Fatalf("heartbeat evidence = %q", evidence)
-			}
-		case <-time.After(150 * time.Millisecond):
-			t.Fatal("quiet active work did not receive another card refresh")
+	select {
+	case evidence := <-result:
+		if evidence != "Running the verification suite" {
+			t.Fatalf("card evidence = %q", evidence)
 		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("initial activity did not refresh the card")
+	}
+	select {
+	case evidence := <-result:
+		t.Fatalf("quiet worker produced duplicate card evidence %q", evidence)
+	case <-time.After(80 * time.Millisecond):
 	}
 }

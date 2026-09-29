@@ -314,7 +314,7 @@ type Session struct {
 	// renderable form so clients print it without a mapping table of their own.
 	DisplayStatus DisplayStatus `json:"displayStatus" enum:"Working,Blocked,Exited,No signal,Awaiting PR,Fixing CI failures,Addressing comments,Needs review,Review scheduled,Reviewing,Review failed,Review pending,Draft,CI failing,Commented,Changes requested,Needs human review,Mergeable,Approved,Merged,Closed without merge,Terminated"`
 	// Summary is the generic activity line for the Kanban card. It is derived at
-	// read time from lifecycle/PR facts, or from an AO-prefixed model-generated
+	// read time from lifecycle/PR facts, or from an AO-prefixed activity-derived
 	// card summary stored in Metadata. Empty means the card renders no line.
 	Summary           string       `json:"summary,omitempty"`
 	TerminalHandleID  string       `json:"terminalHandleId,omitempty"`

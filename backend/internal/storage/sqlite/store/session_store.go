@@ -214,7 +214,7 @@ func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) err
 }
 
 // UpdateSessionCardSummary changes only card text and recency, preserving
-// session state that may have advanced while the summary model was running.
+// session state that may have advanced while the worker was running.
 func (s *Store) UpdateSessionCardSummary(ctx context.Context, id domain.SessionID, summary string, updatedAt time.Time) (bool, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

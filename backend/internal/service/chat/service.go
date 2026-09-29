@@ -54,20 +54,17 @@ type Service struct {
 	stopProviderHost func(context.Context, domain.SessionID) error
 	reports          *reportsvc.Coordinator
 
-	mu                   sync.RWMutex
-	controllers          map[domain.SessionID]*Controller
-	ownerControllers     map[domain.ConversationOwner]*Controller
-	startConfigs         map[domain.ConversationOwner]StartConfig
-	gateMu               sync.Mutex
-	gates                map[domain.ConversationOwner]controllerGate
-	probeMu              sync.Mutex
-	probed               map[domain.AgentHarness]ports.ChatCapabilities
-	assistantTimers      map[domain.SessionID]*time.Timer
-	assistantSeen        map[domain.SessionID]bool
-	assistantEvidence    map[domain.SessionID][]string
-	assistantLatest      map[domain.SessionID]string
-	assistantFreshUntil  map[domain.SessionID]time.Time
-	keepCardSummaryFresh bool
+	mu                sync.RWMutex
+	controllers       map[domain.SessionID]*Controller
+	ownerControllers  map[domain.ConversationOwner]*Controller
+	startConfigs      map[domain.ConversationOwner]StartConfig
+	gateMu            sync.Mutex
+	gates             map[domain.ConversationOwner]controllerGate
+	probeMu           sync.Mutex
+	probed            map[domain.AgentHarness]ports.ChatCapabilities
+	assistantTimers   map[domain.SessionID]*time.Timer
+	assistantSeen     map[domain.SessionID]bool
+	assistantEvidence map[domain.SessionID][]string
 }
 
 // SetReportCoordinator installs the report piggyback hook after daemon wiring
@@ -123,10 +120,6 @@ type Options struct {
 	OnCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
 	// OnAssistantMessage receives batched prose and activity for the card summary.
 	OnAssistantMessage func(context.Context, domain.SessionID, string)
-	// KeepCardSummaryFresh continues rendering the latest real activity batch
-	// for a brief active window. It is enabled by the daemon so a long-running
-	// command does not leave a card stale while its provider emits no deltas.
-	KeepCardSummaryFresh bool
 	// OnModelChanged syncs ChatUI's model override to session metadata before
 	// the next prompt routes. Nil leaves session metadata unchanged.
 	OnModelChanged func(domain.SessionID, string)
@@ -158,7 +151,6 @@ func New(opts Options) *Service {
 		onAccountChanged:       opts.OnAccountChanged,
 		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
 		onAssistantMessage:     opts.OnAssistantMessage,
-		keepCardSummaryFresh:   opts.KeepCardSummaryFresh,
 		onModelChanged:         opts.OnModelChanged,
 		stopProviderHost:       opts.StopProviderHost,
 		controllers:            make(map[domain.SessionID]*Controller),
@@ -169,8 +161,6 @@ func New(opts Options) *Service {
 		assistantTimers:        make(map[domain.SessionID]*time.Timer),
 		assistantSeen:          make(map[domain.SessionID]bool),
 		assistantEvidence:      make(map[domain.SessionID][]string),
-		assistantLatest:        make(map[domain.SessionID]string),
-		assistantFreshUntil:    make(map[domain.SessionID]time.Time),
 	}
 }
 
