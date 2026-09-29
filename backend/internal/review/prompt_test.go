@@ -44,3 +44,17 @@ func TestReviewTextsIncludesMultiPRQueue(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewSystemPromptOverridesInheritedHygieneRules(t *testing.T) {
+	system := reviewSystemPrompt()
+	for _, want := range []string{
+		"there is no human in this session to approve anything",
+		"those rules do not apply in this sandbox",
+		"emit it exactly as the task shows",
+		"it is the only channel that can deliver the review",
+	} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("system prompt missing %q:\n%s", want, system)
+		}
+	}
+}
