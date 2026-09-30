@@ -26,6 +26,7 @@ type browserStatusDTO struct {
 
 type browserCommandRequestDTO struct {
 	SessionID string         `json:"sessionId"`
+	Surface   string         `json:"surface,omitempty"`
 	Action    string         `json:"action"`
 	Args      map[string]any `json:"args,omitempty"`
 }
@@ -57,22 +58,24 @@ const (
 
 func newBrowserCommand(ctx *commandContext) *cobra.Command {
 	var jsonOutput bool
+	var surface string
 	cmd := &cobra.Command{
 		Use:   "browser",
-		Short: "Inspect and control this AO session's shared desktop browser",
+		Short: "Inspect and control this AO session's shared browser",
 		Long: "Inspect and control the target-isolated browser owned by the current AO session.\n\n" +
-			"The desktop app must be open. Commands operate the same live page the user sees,\n" +
-			"including while the Browser panel is hidden.",
+			"Auto mode prefers a foreground mobile Preview browser and otherwise uses desktop.\n" +
+			"Commands operate the same live page the user sees.",
 		Args: noArgs,
 	}
 	cmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "print the structured response as JSON")
+	cmd.PersistentFlags().StringVar(&surface, "surface", "auto", "browser surface: auto, desktop, or mobile")
 
 	cmd.AddCommand(&cobra.Command{
 		Use:   "status",
 		Short: "Show whether the desktop browser runtime is connected",
 		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			status, err := ctx.browserStatus(cmd.Context())
+			status, err := ctx.browserStatus(cmd.Context(), surface)
 			if err != nil {
 				return err
 			}
@@ -486,7 +489,7 @@ func newBrowserCommand(ctx *commandContext) *cobra.Command {
 			if screenshotAnnotate {
 				actionArgs = map[string]any{"annotate": true}
 			}
-			resp, err := ctx.browserAction(cmd.Context(), "screenshot", actionArgs)
+			resp, err := ctx.browserAction(cmd.Context(), surface, "screenshot", actionArgs)
 			if err != nil {
 				return err
 			}
@@ -625,7 +628,7 @@ func currentBrowserIdentity() (string, string, error) {
 	return sessionID, capability, nil
 }
 
-func (c *commandContext) browserStatus(ctx context.Context) (browserStatusDTO, error) {
+func (c *commandContext) browserStatus(ctx context.Context, surface string) (browserStatusDTO, error) {
 	sessionID, capability, err := currentBrowserIdentity()
 	if err != nil {
 		return browserStatusDTO{}, err
@@ -634,7 +637,7 @@ func (c *commandContext) browserStatus(ctx context.Context) (browserStatusDTO, e
 	err = c.doJSONPathWithHeaders(
 		ctx,
 		http.MethodGet,
-		"/api/v1/browser/status?sessionId="+url.QueryEscape(sessionID),
+		"/api/v1/browser/status?sessionId="+url.QueryEscape(sessionID)+"&surface="+url.QueryEscape(surface),
 		nil,
 		&out,
 		map[string]string{browserCapabilityHeader: capability},
@@ -642,7 +645,7 @@ func (c *commandContext) browserStatus(ctx context.Context) (browserStatusDTO, e
 	return out, err
 }
 
-func (c *commandContext) browserAction(ctx context.Context, action string, args map[string]any) (browserCommandResponseDTO, error) {
+func (c *commandContext) browserAction(ctx context.Context, surface, action string, args map[string]any) (browserCommandResponseDTO, error) {
 	sessionID, capability, err := currentBrowserIdentity()
 	if err != nil {
 		return browserCommandResponseDTO{}, err
@@ -652,7 +655,7 @@ func (c *commandContext) browserAction(ctx context.Context, action string, args 
 		ctx,
 		http.MethodPost,
 		"/api/v1/browser/commands",
-		browserCommandRequestDTO{SessionID: sessionID, Action: action, Args: args},
+		browserCommandRequestDTO{SessionID: sessionID, Surface: surface, Action: action, Args: args},
 		&out,
 		map[string]string{browserCapabilityHeader: capability},
 	)
@@ -660,7 +663,8 @@ func (c *commandContext) browserAction(ctx context.Context, action string, args 
 }
 
 func (c *commandContext) runBrowserAction(cmd *cobra.Command, action string, args map[string]any, jsonOutput bool) error {
-	resp, err := c.browserAction(cmd.Context(), action, args)
+	surface, _ := cmd.Flags().GetString("surface")
+	resp, err := c.browserAction(cmd.Context(), surface, action, args)
 	if err != nil {
 		return err
 	}

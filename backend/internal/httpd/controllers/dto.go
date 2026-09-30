@@ -757,6 +757,7 @@ type PreviewServerStatusResponse struct {
 // BrowserStatusQuery selects the session whose logical browser is inspected.
 type BrowserStatusQuery struct {
 	SessionID domain.SessionID `query:"sessionId" description:"AO session identifier."`
+	Surface   string           `query:"surface,omitempty" enum:"auto,desktop,mobile" description:"Browser surface selection. Auto prefers a connected foreground mobile target."`
 }
 
 // BrowserCapabilityHeader proves that the caller owns the target session.
@@ -779,6 +780,7 @@ type BrowserStatusResponse struct {
 // require a new transport or Electron IPC surface.
 type BrowserCommandRequest struct {
 	SessionID domain.SessionID       `json:"sessionId"`
+	Surface   string                 `json:"surface,omitempty" enum:"auto,desktop,mobile"`
 	Action    string                 `json:"action"`
 	Args      map[string]interface{} `json:"args,omitempty"`
 }

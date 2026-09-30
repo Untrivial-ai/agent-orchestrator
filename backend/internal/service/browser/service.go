@@ -26,8 +26,8 @@ type sessionReader interface {
 }
 
 type runtime interface {
-	Status() browserruntime.Status
-	Execute(ctx context.Context, sessionID domain.SessionID, action string, args map[string]interface{}) (browserruntime.Result, error)
+	Status(sessionID domain.SessionID, surface string) (browserruntime.Status, string)
+	Execute(ctx context.Context, sessionID domain.SessionID, surface, action string, args map[string]interface{}) (browserruntime.Result, error)
 }
 
 // Service validates worker ownership and lifecycle state before dispatching to
@@ -44,11 +44,16 @@ func New(sessions sessionReader, runtime runtime, authority *Authority) *Service
 }
 
 // Status returns transport state after validating the session owner.
-func (s *Service) Status(ctx context.Context, sessionID domain.SessionID, capability string) (browserruntime.Status, error) {
+func (s *Service) Status(ctx context.Context, sessionID domain.SessionID, capability, surface string) (browserruntime.Status, string, error) {
 	if err := s.authorize(ctx, sessionID, capability); err != nil {
-		return browserruntime.Status{}, err
+		return browserruntime.Status{}, "", err
 	}
-	return s.runtime.Status(), nil
+	surface, err := normalizeSurface(surface)
+	if err != nil {
+		return browserruntime.Status{}, "", err
+	}
+	status, transport := s.runtime.Status(sessionID, surface)
+	return status, transport, nil
 }
 
 // Execute validates ownership and dispatches one supported action.
@@ -56,11 +61,16 @@ func (s *Service) Execute(
 	ctx context.Context,
 	sessionID domain.SessionID,
 	capability string,
+	surface string,
 	action string,
 	args map[string]interface{},
 ) (browserruntime.Result, string, error) {
 	action = strings.ToLower(strings.TrimSpace(action))
 	if err := s.authorize(ctx, sessionID, capability); err != nil {
+		return browserruntime.Result{}, action, err
+	}
+	surface, err := normalizeSurface(surface)
+	if err != nil {
 		return browserruntime.Result{}, action, err
 	}
 	if _, ok := actions[action]; !ok {
@@ -70,8 +80,19 @@ func (s *Service) Execute(
 			nil,
 		)
 	}
-	result, err := s.runtime.Execute(ctx, sessionID, action, args)
+	result, err := s.runtime.Execute(ctx, sessionID, surface, action, args)
 	return result, action, err
+}
+
+func normalizeSurface(surface string) (string, error) {
+	surface = strings.ToLower(strings.TrimSpace(surface))
+	if surface == "" {
+		return "auto", nil
+	}
+	if surface != "auto" && surface != "desktop" && surface != "mobile" {
+		return "", apierr.Invalid("BROWSER_SURFACE_INVALID", "Browser surface must be auto, desktop, or mobile", nil)
+	}
+	return surface, nil
 }
 
 func (s *Service) authorize(ctx context.Context, sessionID domain.SessionID, capability string) error {

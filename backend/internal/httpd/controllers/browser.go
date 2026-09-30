@@ -18,8 +18,8 @@ const browserCapabilityHeader = "X-AO-Browser-Capability"
 
 // BrowserService authorizes and executes session-scoped browser operations.
 type BrowserService interface {
-	Status(ctx context.Context, sessionID domain.SessionID, capability string) (browserruntime.Status, error)
-	Execute(ctx context.Context, sessionID domain.SessionID, capability, action string, args map[string]interface{}) (browserruntime.Result, string, error)
+	Status(ctx context.Context, sessionID domain.SessionID, capability, surface string) (browserruntime.Status, string, error)
+	Execute(ctx context.Context, sessionID domain.SessionID, capability, surface, action string, args map[string]interface{}) (browserruntime.Result, string, error)
 }
 
 // BrowserController exposes the loopback-only browser command API.
@@ -43,7 +43,7 @@ func (c *BrowserController) status(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "SESSION_ID_REQUIRED", "sessionId is required", nil)
 		return
 	}
-	status, err := c.Svc.Status(r.Context(), sessionID, r.Header.Get(browserCapabilityHeader))
+	status, transport, err := c.Svc.Status(r.Context(), sessionID, r.Header.Get(browserCapabilityHeader), r.URL.Query().Get("surface"))
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
@@ -52,7 +52,7 @@ func (c *BrowserController) status(w http.ResponseWriter, r *http.Request) {
 		SessionID:   sessionID,
 		Connected:   status.Connected,
 		ConnectedAt: status.ConnectedAt,
-		Transport:   "electron-webcontents-debugger",
+		Transport:   transport,
 	})
 }
 
@@ -74,6 +74,7 @@ func (c *BrowserController) execute(w http.ResponseWriter, r *http.Request) {
 		r.Context(),
 		in.SessionID,
 		r.Header.Get(browserCapabilityHeader),
+		in.Surface,
 		in.Action,
 		in.Args,
 	)
@@ -91,7 +92,7 @@ func (c *BrowserController) execute(w http.ResponseWriter, r *http.Request) {
 
 func writeBrowserError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, browserruntime.ErrUnavailable) {
-		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "BROWSER_RUNTIME_UNAVAILABLE", "Desktop browser runtime is not connected", nil)
+		envelope.WriteAPIError(w, r, http.StatusServiceUnavailable, "unavailable", "BROWSER_RUNTIME_UNAVAILABLE", "Requested browser surface is not connected", nil)
 		return
 	}
 	var commandErr browserruntime.CommandError

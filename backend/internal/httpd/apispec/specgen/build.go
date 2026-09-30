@@ -781,7 +781,7 @@ func browserOperations() []operation {
 	return []operation{
 		{
 			method: http.MethodGet, path: "/api/v1/browser/status", id: "getBrowserStatus", tag: "browser",
-			summary:    "Check whether the desktop browser runtime is connected for a session",
+			summary:    "Check whether the selected browser runtime is connected for a session",
 			pathParams: []any{controllers.BrowserStatusQuery{}, controllers.BrowserCapabilityHeader{}},
 			resps: []respUnit{
 				{http.StatusOK, controllers.BrowserStatusResponse{}},
@@ -794,7 +794,7 @@ func browserOperations() []operation {
 		},
 		{
 			method: http.MethodPost, path: "/api/v1/browser/commands", id: "executeBrowserCommand", tag: "browser",
-			summary:    "Execute a target-scoped command in a session's desktop browser",
+			summary:    "Execute a target-scoped command in a session browser",
 			pathParams: []any{controllers.BrowserCapabilityHeader{}},
 			reqBody:    controllers.BrowserCommandRequest{},
 			resps: []respUnit{

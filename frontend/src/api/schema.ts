@@ -493,7 +493,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Execute a target-scoped command in a session's desktop browser */
+        /** Execute a target-scoped command in a session browser */
         post: operations["executeBrowserCommand"];
         delete?: never;
         options?: never;
@@ -508,7 +508,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Check whether the desktop browser runtime is connected for a session */
+        /** Check whether the selected browser runtime is connected for a session */
         get: operations["getBrowserStatus"];
         put?: never;
         post?: never;
@@ -3121,6 +3121,8 @@ export interface components {
                 [key: string]: unknown;
             };
             sessionId: string;
+            /** @enum {string} */
+            surface?: "auto" | "desktop" | "mobile";
         };
         BrowserCommandResponse: {
             action: string;
@@ -6984,6 +6986,8 @@ export interface operations {
             query?: {
                 /** @description AO session identifier. */
                 sessionId?: string;
+                /** @description Browser surface selection. Auto prefers a connected foreground mobile target. */
+                surface?: "auto" | "desktop" | "mobile";
             };
             header?: {
                 /** @description Opaque browser capability injected into the owning AO worker. */

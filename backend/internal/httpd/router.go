@@ -10,13 +10,18 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/browserruntime"
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
 	"github.com/aoagents/agent-orchestrator/backend/internal/daemonmeta"
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	agentswitchobs "github.com/aoagents/agent-orchestrator/backend/internal/observe/agentswitch"
@@ -78,6 +83,7 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 
 	mountHealth(r, cfg)
 	mountTerminalMux(r, termMgr, log)
+	mountMobileBrowserRuntime(r, deps.MobileBrowser, log)
 	mountControl(r, control)
 	mountAgentSwitchPolicyControl(r, control.AgentSwitchPolicy)
 	mountTelemetry(r, cfg, deps.Telemetry)
@@ -86,6 +92,50 @@ func NewRouterWithControl(cfg config.Config, log *slog.Logger, termMgr *terminal
 	api.Register(r)
 
 	return r
+}
+
+const mobileBrowserReadLimit = 2 << 20
+
+func mountMobileBrowserRuntime(r chi.Router, hub *browserruntime.MobileHub, log *slog.Logger) {
+	if hub == nil {
+		return
+	}
+	r.Get("/mobile-browser-runtime", func(w http.ResponseWriter, req *http.Request) {
+		// This runtime may register only through the password-authenticated LAN
+		// listener. The same shared router is also mounted on unauthenticated
+		// loopback, so checking the middleware marker is load-bearing.
+		if !isMobileAuthenticated(req) {
+			notFoundJSON(w, req)
+			return
+		}
+		sessionID := domain.SessionID(strings.TrimSpace(req.URL.Query().Get("sessionId")))
+		deviceID := strings.TrimSpace(req.URL.Query().Get("deviceId"))
+		if sessionID == "" || deviceID == "" || len(deviceID) > 200 {
+			envelope.WriteAPIError(w, req, http.StatusBadRequest, "bad_request", "MOBILE_BROWSER_IDENTITY_REQUIRED", "sessionId and deviceId are required", nil)
+			return
+		}
+		conn, err := websocket.Accept(w, req, &websocket.AcceptOptions{InsecureSkipVerify: true})
+		if err != nil {
+			log.Warn("mobile browser: websocket upgrade failed", "err", err)
+			return
+		}
+		conn.SetReadLimit(mobileBrowserReadLimit)
+		if err := hub.Serve(req.Context(), sessionID, deviceID, &mobileBrowserConn{conn: conn}); err != nil && req.Context().Err() == nil {
+			log.Info("mobile browser disconnected", "sessionId", sessionID, "deviceId", deviceID, "err", err)
+		}
+	})
+}
+
+type mobileBrowserConn struct{ conn *websocket.Conn }
+
+func (c *mobileBrowserConn) ReadJSON(ctx context.Context, value any) error {
+	return wsjson.Read(ctx, c.conn, value)
+}
+func (c *mobileBrowserConn) WriteJSON(ctx context.Context, value any) error {
+	return wsjson.Write(ctx, c.conn, value)
+}
+func (c *mobileBrowserConn) Close(reason string) error {
+	return c.conn.Close(websocket.StatusNormalClosure, reason)
 }
 
 type applyAgentSwitchPolicyRequest struct {
