@@ -10,6 +10,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
+	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
 func cueTestShell(t *testing.T) string {
@@ -235,6 +236,21 @@ func TestCueCommandDoesNotSendWhenCanceledDuringReadiness(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("canceled cue did not stop waiting")
+	}
+}
+
+func TestCueShellReadinessPrefersCanceledCaller(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rt := newFakeShellRuntime()
+	rt.aliveByHandle["shell"] = true
+	svc := &Service{runtime: rt}
+	file := filepath.Join(t.TempDir(), "not-ready")
+	for range 20 {
+		err := svc.waitForCueShellReady(ctx, ports.RuntimeHandle{ID: "shell"}, file)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled caller got %v", err)
+		}
 	}
 }
 
