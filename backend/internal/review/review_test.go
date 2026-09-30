@@ -1268,8 +1268,17 @@ func TestTerminateReviewerCancelsRunningRunsWithoutReviewerHandle(t *testing.T) 
 	if err != nil {
 		t.Fatalf("TerminateReviewer: %v", err)
 	}
-	if launcher.destroyed {
-		t.Fatal("destroy should not run without a reviewer handle")
+	// The review row exists but its handle was cleared (teardown on terminal
+	// state). The pane is addressed by its stable per-worker id, so kill must
+	// still reach it (#6064).
+	if !launcher.destroyed {
+		t.Fatal("destroy should run against the deterministic reviewer handle")
+	}
+	if launcher.destroyedHandle != "review-mer-1" {
+		t.Fatalf("destroyed handle = %q, want review-mer-1", launcher.destroyedHandle)
+	}
+	if res.ReviewerHandleID != "review-mer-1" {
+		t.Fatalf("result handle = %q, want review-mer-1", res.ReviewerHandleID)
 	}
 	if len(res.CancelledRuns) != 1 {
 		t.Fatalf("cancelled runs = %d, want 1", len(res.CancelledRuns))
@@ -1289,6 +1298,63 @@ func TestTerminateReviewerNoopsWhenNoReviewHistory(t *testing.T) {
 	}
 	if launcher.destroyed {
 		t.Fatal("destroy should not run without a reviewer handle")
+	}
+}
+
+func TestListReportsAliveDeterministicHandleWhenDBHandleCleared(t *testing.T) {
+	store := &fakeStore{
+		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex},
+	}
+	launcher := &fakeLauncher{alive: true}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	res, err := eng.List(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if !launcher.aliveChecked {
+		t.Fatal("List should probe the deterministic reviewer pane")
+	}
+	if res.ReviewerHandleID != "review-mer-1" {
+		t.Fatalf("handle = %q, want review-mer-1", res.ReviewerHandleID)
+	}
+}
+
+func TestListKeepsEmptyHandleWhenDeterministicPaneIsDead(t *testing.T) {
+	store := &fakeStore{
+		review: &domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex},
+	}
+	launcher := &fakeLauncher{}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	res, err := eng.List(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if res.ReviewerHandleID != "" {
+		t.Fatalf("handle = %q, want empty for a dead pane", res.ReviewerHandleID)
+	}
+}
+
+func TestListDoesNotProbeDeterministicPaneForChatReviewer(t *testing.T) {
+	store := &fakeStore{
+		review: &domain.Review{
+			ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex,
+			InterfaceMode: domain.ReviewerInterfaceChat,
+		},
+	}
+	launcher := &fakeLauncher{alive: true}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	res, err := eng.List(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if launcher.aliveChecked {
+		t.Fatal("chat-mode rows must not probe the deterministic terminal pane")
+	}
+	if res.ReviewerHandleID != "" {
+		t.Fatalf("handle = %q, want empty for chat mode", res.ReviewerHandleID)
 	}
 }
 
