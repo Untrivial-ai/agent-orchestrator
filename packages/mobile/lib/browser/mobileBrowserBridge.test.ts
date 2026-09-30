@@ -124,6 +124,58 @@ describe("mobile browser bridge protocol", () => {
 		});
 	});
 
+	it("types at the input selection and replaces selected text", () => {
+		let posted: string | undefined;
+		class FakeInput {
+			tagName = "INPUT";
+			type = "text";
+			isConnected = true;
+			selectionStart = 1;
+			selectionEnd = 4;
+			private currentValue = "hello";
+			get value() { return this.currentValue; }
+			set value(value: string) { this.currentValue = value; }
+			focus() {}
+			setSelectionRange(start: number, end: number) {
+				this.selectionStart = start;
+				this.selectionEnd = end;
+			}
+			dispatchEvent() { return true; }
+			getBoundingClientRect() { return { width: 100, height: 24 }; }
+			getAttribute() { return null; }
+			matches() { return true; }
+		}
+		class FakeTextArea extends FakeInput {}
+		const element = new FakeInput();
+		const window = {
+			getComputedStyle: () => ({ visibility: "visible", display: "block" }),
+			ReactNativeWebView: {
+				postMessage(raw: string) {
+					posted = raw;
+				},
+			},
+		};
+		const document = {
+			querySelectorAll: () => [element],
+		};
+		vi.stubGlobal("HTMLInputElement", FakeInput);
+		vi.stubGlobal("HTMLTextAreaElement", FakeTextArea);
+		try {
+			const run = (action: string, args: Record<string, unknown>) => {
+				const script = browserCommandScript({ type: "command", requestId: action, sessionId: "s1", action, args });
+				new Function("window", "document", "location", script)(window, document, { href: "https://example.com" });
+			};
+			run("snapshot", { interactive: true });
+			run("type", { ref: "e1", text: "X" });
+
+			expect(element.value).toBe("hXo");
+			expect([element.selectionStart, element.selectionEnd]).toEqual([2, 2]);
+			expect(parseBrowserBridgeMessage(posted ?? "")?.result).toEqual({ typed: "e1" });
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
 	it("resets the DOM-stable quiet interval whenever the document mutates", async () => {
 		vi.useFakeTimers();
 		let posted: string | undefined;

@@ -100,6 +100,19 @@ export const MOBILE_BROWSER_BOOTSTRAP = `
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
+  function typeAtSelection(el, value) {
+    if ((el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') ||
+        typeof el.selectionStart !== 'number' || typeof el.selectionEnd !== 'number' ||
+        typeof el.setSelectionRange !== 'function') {
+      var unsupported = new Error('Typing at the current cursor position is not available for this element.');
+      unsupported.code = 'BROWSER_ACTION_UNSUPPORTED';
+      throw unsupported;
+    }
+    var start = el.selectionStart, end = el.selectionEnd, current = String(el.value || '');
+    inputValue(el, current.slice(0, start) + value + current.slice(end));
+    var caret = start + value.length;
+    el.setSelectionRange(caret, caret);
+  }
   function wait(args) {
     var timeout = Math.min(Number(args.timeoutMs || 10000), 55000), started = Date.now();
     var stableFor = Math.max(Number(args.stableMs || 0), 0), lastMutation = started, observer = null;
@@ -145,7 +158,7 @@ export const MOBILE_BROWSER_BOOTSTRAP = `
           case 'focus': target(a.ref).focus(); result = { focused: a.ref }; break;
           case 'hover': target(a.ref).dispatchEvent(new MouseEvent('mouseover', { bubbles:true, cancelable:true, view:window })); result = { hovered:a.ref }; break;
           case 'fill': var f=target(a.ref); f.focus(); inputValue(f, String(a.text || a.value || '')); result={ filled:a.ref }; break;
-          case 'type': var t=target(a.ref); t.focus(); inputValue(t, String(t.value || '') + String(a.text || a.value || '')); result={ typed:a.ref }; break;
+          case 'type': var t=target(a.ref); t.focus(); typeAtSelection(t, String(a.text || a.value || '')); result={ typed:a.ref }; break;
           case 'check': var c=target(a.ref); if(!c.checked)c.click(); result={ checked:a.ref }; break;
           case 'uncheck': var u=target(a.ref); if(u.checked)u.click(); result={ unchecked:a.ref }; break;
           case 'press':
