@@ -349,9 +349,7 @@ describe("accepted conversation sends", () => {
 
 		expect(secondMount.result.current.pendingAcceptedTurnId).toBeUndefined();
 		expect(secondMount.result.current.busy).toBe(false);
-		expect(secondMount.result.current.localEchos).toMatchObject([
-			{ text: "idempotent retry", clientMessageId: "duplicate-client-id", delivery: "accepted" },
-		]);
+		expect(secondMount.result.current.localEchos).toEqual([]);
 		act(() => secondMount.result.current.acknowledgeLocalEcho("duplicate-client-id"));
 		await waitFor(() => expect(secondMount.result.current.localEchos).toEqual([]));
 	});
@@ -397,9 +395,11 @@ describe("accepted conversation sends", () => {
 		postMock
 			.mockResolvedValueOnce({ data: undefined, error: { code: "CHAT_SEND_FAILED" } })
 			.mockResolvedValueOnce({ data: undefined, error: { code: "CHAT_CONTROLLER_NOT_READY" } });
-		apiErrorCodeMock
-			.mockReturnValueOnce("CHAT_SEND_FAILED")
-			.mockReturnValueOnce("CHAT_CONTROLLER_NOT_READY");
+		apiErrorCodeMock.mockImplementation((error) =>
+			typeof error === "object" && error !== null && "code" in error
+				? String(error.code)
+				: undefined,
+		);
 		const { result } = renderHook(() => useConversationCommands("ao-uncertain-retry"), { wrapper });
 		const input = { text: "deliver once", clientMessageId: "stable-delivery-id" };
 

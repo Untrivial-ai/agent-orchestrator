@@ -38,6 +38,7 @@ export type EditorHandoffState = {
 	preferredEditorId: EditorId;
 	workspaceAvailable: boolean;
 	unavailableReason?: string;
+	unavailableCode?: string;
 };
 
 export type OpenSessionTargetInput = {

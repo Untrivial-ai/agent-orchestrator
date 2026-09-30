@@ -168,6 +168,7 @@ export const ChatComposer = memo(function ChatComposer({
 	draftSessionId,
 	draftSessionIncarnation,
 	acceptedClientMessageIds,
+	visibleClientMessageIds,
 	onAbandonDelivery,
 	emptyPlaceholder,
 }: {
@@ -258,6 +259,8 @@ export const ChatComposer = memo(function ChatComposer({
 	draftSessionIncarnation?: string;
 	/** Client ids already present in daemon-authoritative conversation history. */
 	acceptedClientMessageIds?: ReadonlySet<string>;
+	/** Client ids currently visible either durably or as renderer-local echoes. */
+	visibleClientMessageIds?: ReadonlySet<string>;
 	/** Release renderer-only state when recovery for an uncertain send is abandoned. */
 	onAbandonDelivery?: (clientMessageId: string) => void;
 }) {
@@ -314,6 +317,9 @@ export const ChatComposer = memo(function ChatComposer({
 	// before React commits durableDelivery. Keep the send journal's exact draft out
 	// of the ordinary draft writer until delivery settles.
 	const durableDeliveryRef = useRef(durableDelivery);
+	const volatileDeliveryRef = useRef<{ requestText: string; clientMessageId: string } | undefined>(undefined);
+	const visibleClientMessageIdsRef = useRef(visibleClientMessageIds);
+	visibleClientMessageIdsRef.current = visibleClientMessageIds;
 	const [steerNextRequest, setSteerNextRequest] = useState(0);
 	// The DOM event is the source of truth while React catches up with the draft
 	// transition. This keeps Enter-after-fast-typing from observing stale state.
@@ -531,7 +537,11 @@ export const ChatComposer = memo(function ChatComposer({
 	// agent accepted it. Never rehydrate that same payload into the editable surface
 	// on a remount: that makes a message appear unsent (and can invite a duplicate).
 	const draftSeedText = durableDelivery?.kind === "send"
-		? ""
+		? visibleClientMessageIds
+			? visibleClientMessageIds.has(durableDelivery.clientMessageId)
+				? ""
+				: durableDelivery.requestText
+			: persistedDraft?.composer.text ?? durableDelivery.requestText
 		: (draftSeed?.text ?? persistedText);
 	const draftPersistenceError =
 		textDraftPersistenceError ?? attachmentDraftPersistenceError;
@@ -760,10 +770,13 @@ export const ChatComposer = memo(function ChatComposer({
 				})),
 			);
 		}
+		const visibleDeliveryIds = visibleClientMessageIdsRef.current;
 		const committedSeedText = durableDelivery?.kind === "send"
-			? committedDraft?.composer.revision === durableDelivery.revision
-				? ""
-				: committedDraft?.composer.text ?? ""
+			? visibleDeliveryIds
+				? visibleDeliveryIds.has(durableDelivery.clientMessageId)
+					? ""
+					: durableDelivery.requestText
+				: committedDraft?.composer.text ?? durableDelivery.requestText
 			: draftSeed?.text ??
 				(committedDraft ? committedDraft.composer.text : draftSeedText);
 		if (committedSeedText === undefined) {
@@ -782,7 +795,9 @@ export const ChatComposer = memo(function ChatComposer({
 		highlightedRef.current = 0;
 		setHighlighted(0);
 		setSendError(null);
-		setSteerOutcomeNotice(null);
+		setSteerOutcomeNotice((current) =>
+			current === "chat.draft.abandonedSteer" ? current : null,
+		);
 		// A history action intentionally creates a new draft and must be persisted.
 		// A session restore is already durable; writing it again here needlessly
 		// changes the accepted-send revision during mount.
@@ -817,10 +832,8 @@ export const ChatComposer = memo(function ChatComposer({
 			setDurableDelivery(delivery);
 			return;
 		}
-		const observedSteer =
-			delivery.kind === "steer" &&
-			acceptedClientMessageIds?.has(delivery.clientMessageId);
-		if (delivery.state !== "accepted" && !observedSteer) return;
+		const observedDelivery = acceptedClientMessageIds?.has(delivery.clientMessageId);
+		if (delivery.state !== "accepted" && !observedDelivery) return;
 		if (automaticDeliveryRecoveryAttempted.current === delivery.clientMessageId) return;
 		automaticDeliveryRecoveryAttempted.current = delivery.clientMessageId;
 		acceptAndClearDurableDelivery(delivery);
@@ -853,6 +866,15 @@ export const ChatComposer = memo(function ChatComposer({
 
 	const onEditorChange = useCallback((snapshot: ComposerEditorSnapshot) => {
 		textRef.current = snapshot.text;
+		const volatileDelivery = volatileDeliveryRef.current;
+		if (
+			volatileDelivery &&
+			snapshot.text.trim() !== "" &&
+			snapshot.text !== volatileDelivery.requestText
+		) {
+			onAbandonDelivery?.(volatileDelivery.clientMessageId);
+			volatileDeliveryRef.current = undefined;
+		}
 		onQueuedDraftChange?.(snapshot.text);
 		if (draftScope && !durableDeliveryRef.current) {
 			const result = writeChatComposerText(draftScope, snapshot.text);
@@ -891,7 +913,7 @@ export const ChatComposer = memo(function ChatComposer({
 			dismissedKeyRef.current = null;
 			setDismissedKey(null);
 		}
-	}, [draftScope, onQueuedDraftChange]);
+	}, [draftScope, onAbandonDelivery, onQueuedDraftChange]);
 
 	const pick = useCallback((value: string) => {
 		const currentTrigger = triggerRef.current;
@@ -1132,7 +1154,16 @@ export const ChatComposer = memo(function ChatComposer({
 				} else if (nativePayloads.length > 0) {
 					await onSend(message, nativePayloads);
 				} else {
-					await onSend(message);
+					if (onAbandonDelivery) {
+						const volatileDelivery = volatileDeliveryRef.current?.requestText === message
+							? volatileDeliveryRef.current
+							: { requestText: message, clientMessageId: crypto.randomUUID() };
+						volatileDeliveryRef.current = volatileDelivery;
+						await onSend(message, undefined, volatileDelivery.clientMessageId);
+						volatileDeliveryRef.current = undefined;
+					} else {
+						await onSend(message);
+					}
 				}
 				if (!clearForLocalEcho) clearEditorView();
 				fileAttachments.clear();

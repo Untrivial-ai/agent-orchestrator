@@ -178,7 +178,7 @@ const EMPTY_CHAT_PLACEHOLDERS = [
 	"Fix a failing test in this project",
 	"Explain how this project is structured",
 	"Plan the next step for this feature",
-	"Find and fix a bug in the chat UI",
+	"Find and fix a bug in this project",
 ] as const;
 
 // Reviewer panes share the terminal font-size preference with CenterPane, so a
@@ -672,6 +672,7 @@ function ChatWorkspaceContent({
 	draftPersistenceAvailable?: boolean;
 	draftRecoveryWarning?: "obsolete" | "storage";
 }) {
+	const { t } = useTranslation();
 	const draftScopeKey = chatDraftScopeKey(draftScope);
 	const turn = activeTurn(snapshot);
 	const hasPendingInteraction = snapshot.items.some(
@@ -958,15 +959,23 @@ function ChatWorkspaceContent({
 		() =>
 			new Set(
 				snapshot.items.flatMap((item) => {
-					if (
-						item.kind !== "activity" ||
-						item.detail?.event !== "steer" ||
-						!item.detail.clientMessageId
-					) return [];
-					return [item.detail.clientMessageId];
+					if (item.kind === "message" && item.role === "user" && item.clientMessageId) {
+						return [item.clientMessageId];
+					}
+					if (item.kind === "activity" && item.detail?.event === "steer" && item.detail.clientMessageId) {
+						return [item.detail.clientMessageId];
+					}
+					return [];
 				}),
 			),
 		[snapshot.items],
+	);
+	const visibleClientMessageIds = useMemo(
+		() => new Set([
+			...acceptedClientMessageIds,
+			...(localEchos ?? []).map((echo) => echo.clientMessageId),
+		]),
+		[acceptedClientMessageIds, localEchos],
 	);
 	// The turn a confirmation is open for. Undo is not reversible and it changes what
 	// the agent knows, so it is never one click.
@@ -1470,7 +1479,7 @@ function ChatWorkspaceContent({
 							<p>
 								{draftRecoveryWarning === "obsolete"
 									? "This Chat view is out of date. The conversation is still available, but unsent drafts cannot be restored or saved here."
-									: "Saved Chat state could not be restored. The conversation is still available, but unsent drafts will not be saved in this view."}
+									: t("chat.draft.storageUnavailable")}
 							</p>
 						</div>
 					) : null}
@@ -1532,7 +1541,7 @@ function ChatWorkspaceContent({
 								{discarded > 0 ? <RolledBackNotice count={discarded} /> : null}
 								{conversationEmpty ? (
 									<h1 className="mb-5 text-center text-2xl font-normal tracking-tight text-foreground sm:text-3xl">
-										What do you want to work on?
+										{t("chat.welcome.heading")}
 									</h1>
 								) : null}
 								<div className="relative">
@@ -1541,6 +1550,7 @@ function ChatWorkspaceContent({
 										sessionId={snapshot.sessionId}
 										servers={brokenServers}
 										placement={conversationEmpty ? "below" : "above"}
+										active={!reviewerActive && !shellActive}
 									/>
 									<ChatComposer
 									key={`${draftScopeKey}:${queueEdit ? `${queueEdit.turnId}:${queueEdit.ownerId ?? queueEdit.expectedRevision ?? "legacy"}` : "composer"}`}
@@ -1574,7 +1584,7 @@ function ChatWorkspaceContent({
 									// task can have non-message activity (for example MCP status) before
 									// its first visible chat message, and the generic placeholder makes
 									// that still-empty composer look like a regression.
-									emptyPlaceholder={emptyChatPlaceholder}
+									emptyPlaceholder={conversationEmpty ? emptyChatPlaceholder : undefined}
 									skills={skills}
 									filePaths={filePaths}
 									filePathsTruncated={filePathsTruncated}
@@ -1601,6 +1611,7 @@ function ChatWorkspaceContent({
 										draftPersistenceAvailable ? draftScope.incarnation : undefined
 									}
 									acceptedClientMessageIds={acceptedClientMessageIds}
+									visibleClientMessageIds={visibleClientMessageIds}
 									onAbandonDelivery={onAbandonLocalEcho}
 									/>
 								</div>
@@ -2810,10 +2821,16 @@ function Timeline({
 	);
 	const grouped = useMemo(() => {
 		const hiddenTurns = hiddenTimelineTurnIds(snapshot);
+		// The queue dock deliberately stays out of the welcome-state flow. Keep a
+		// first queued prompt in the timeline instead, otherwise both surfaces hide
+		// the only user message while an asynchronously spawned controller starts.
+		if (!hasEarlierHumanMessage) {
+			for (const turnId of queued) hiddenTurns.delete(turnId);
+		}
 		return groupByTurn({ ...snapshot, items: timelineItems }).filter(
 			(group) => !group.turnId || !hiddenTurns.has(group.turnId),
 		);
-	}, [snapshot, timelineItems]);
+	}, [hasEarlierHumanMessage, queued, snapshot, timelineItems]);
 	const groups = useStableList(grouped, groupKey, sameGroup);
 	const streamingContentRevision = timelineItems
 		.filter((item): item is ConversationMessage =>
@@ -3492,15 +3509,11 @@ const TurnGroup = memo(function TurnGroup({
 			}
 		}
 	}
-	const workedRuns = group.outcome
-		? runs.filter((run, index) => {
-			const item = run.items[0];
-			return index !== finalAssistantRunIndex && !isHumanRun(item);
-		})
-		: [];
-	const humanRuns = group.outcome
-		? runs.filter((run) => isHumanRun(run.items[0]))
-		: [];
+	const workedRuns = runs.filter((run, index) => {
+		const item = run.items[0];
+		return index !== finalAssistantRunIndex && !isHumanRun(item);
+	});
+	const humanRuns = runs.filter((run) => isHumanRun(run.items[0]));
 	const finalRun = finalAssistantRunIndex >= 0 ? runs[finalAssistantRunIndex] : undefined;
 	const [showSettledStatus, setShowSettledStatus] = useState(!group.live);
 	useEffect(() => {
@@ -3560,64 +3573,11 @@ const TurnGroup = memo(function TurnGroup({
 		);
 	return (
 		<div className="flex min-w-0 flex-col gap-2.5">
-			{(group.outcome ? humanRuns : runs.filter((run) => {
-				const item = run.items[0];
-				return item?.kind === "message" && item.role === "user";
-			})).map(renderRun)}
+			{humanRuns.map(renderRun)}
 			{group.live || !showSettledStatus ? (
 				<LiveResponseStatus startedAt={group.liveStartedAt} settling={!group.live} />
 			) : null}
-			{!group.outcome && runs.filter((run) => {
-				const item = run.items[0];
-				return !(item?.kind === "message" && item.role === "user");
-			}).map((run) =>
-				run.kind === "activities" ? (
-					<ActivityRun
-						key={run.key}
-						activities={run.items.filter(
-							(item): item is ConversationActivity => item.kind === "activity",
-						)}
-					/>
-				) : (
-					<TimelineItem
-						key={run.key}
-						item={run.items[0]!}
-						sessionId={sessionId}
-						apiBaseUrl={apiBaseUrl}
-						onDecide={onDecide}
-						onEditHumanMessage={onEditHumanMessage}
-						messageEdit={messageEdit}
-						onStartMessageEdit={onStartMessageEdit}
-						onUpdateMessageEdit={onUpdateMessageEdit}
-						onCancelMessageEdit={onCancelMessageEdit}
-						onAbandonEditRecovery={onAbandonEditRecovery}
-						onSubmitMessageEdit={onSubmitMessageEdit}
-						editPending={editPending}
-						editSendBlocked={editSendBlocked}
-						editRecoveryLabel={editRecoveryLabel}
-						editBusy={editBusy}
-						editError={editError}
-						branchPoints={branchPoints}
-						editableTurns={editableTurns}
-						onActivateBranch={onActivateBranch}
-						activateBranchPending={activateBranchPending}
-						activateBranchError={activateBranchError}
-						busy={busy}
-						queued={queued}
-						newHumanMessageIds={newHumanMessageIds}
-						localEchoClientMessageIds={localEchoClientMessageIds}
-						showCopy={run.items[0]?.id === copyableMessageId}
-									live={group.live}
-									liveStatus={false}
-									onRollback={
-							canRollback && run.items[0]?.id === copyableMessageId
-								? () => onRollback(group.turnId as string)
-								: undefined
-						}
-									rollbackDisabled={rollbackDisabled}
-					/>
-				),
-			)}
+			{!group.outcome ? workedRuns.map(renderRun) : null}
 			{group.outcome && showSettledStatus && workedRuns.length > 0 ? (
 				<Accordion type="single" collapsible className="-mx-1 border-b border-border" defaultValue="">
 					<AccordionItem value="worked" className="border-0">
@@ -3639,14 +3599,14 @@ const TurnGroup = memo(function TurnGroup({
 				</Accordion>
 			) : null}
 			{group.outcome && showSettledStatus && workedRuns.length === 0 ? (
-				<div className="flex h-7 items-center border-b border-border px-0 py-0 text-sm font-medium text-muted-foreground">
+				<div className="-mx-1 flex h-7 items-center border-b border-border px-0 py-0 text-sm font-medium text-muted-foreground">
 					<span className="inline-flex w-fit items-center gap-1">
 						Worked for
 						{group.outcome.durationMs !== undefined ? <TurnDuration durationMs={group.outcome.durationMs} inline /> : null}
 					</span>
 				</div>
 			) : null}
-			{group.outcome ? (finalRun ? renderRun(finalRun) : null) : null}
+			{finalRun ? renderRun(finalRun) : null}
 			{/* Both of these are current state of the turn rather than steps in it, which
 			    is why they sit at its end: a checklist that ticks itself off and a file
 			    list that grows both change while the reader watches, and at the end of a

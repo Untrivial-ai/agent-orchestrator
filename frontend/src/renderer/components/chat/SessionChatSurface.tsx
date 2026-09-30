@@ -203,7 +203,9 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 		sessionCreatedAt: session.createdAt,
 		sessionTerminated: session.isTerminated,
 	});
-	const workspaceUnavailable = workspaceHandoff.data?.workspaceAvailable === false;
+	const workspaceUnavailable =
+		workspaceHandoff.data?.workspaceAvailable === false &&
+		workspaceHandoff.data.unavailableCode === "SESSION_WORKSPACE_NOT_FOUND";
 	const {
 		snapshot: queriedSnapshot,
 		isLoading,
@@ -218,6 +220,16 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	// boundary that decides whether switching to Terminal needs user consent.
 	const snapshot = queriedSnapshot?.sessionId === session.id ? queriedSnapshot : undefined;
 	const commands = useConversationCommands(session.id);
+	useEffect(() => {
+		if (
+			workspaceHandoff.data?.workspaceAvailable === true ||
+			(snapshot !== undefined && snapshot.controller.state !== "stopped")
+		) {
+			// Some embedded/test command adapters predate this recovery helper. A
+			// missing reset must not take down the entire Chat surface.
+			commands.resetResumeError?.();
+		}
+	}, [commands.resetResumeError, snapshot?.controller.state, workspaceHandoff.data?.workspaceAvailable]);
 	const projectPermissions = useRememberProjectPermissions(session.workspaceId, snapshot?.harness);
 	const {
 		acknowledgeAcceptedTurn,

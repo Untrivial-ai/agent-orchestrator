@@ -936,7 +936,9 @@ async function resolveSessionWorkspaceForDesktop(sessionId: string): Promise<str
 		const body = await response.json() as Record<string, unknown>;
 		if (!response.ok) {
 			const message = typeof body.message === "string" ? body.message : "Session workspace is not available.";
-			throw new Error(message);
+			const error = new Error(message) as Error & { code?: string };
+			if (typeof body.code === "string" && body.code) error.code = body.code;
+			throw error;
 		}
 		const workspacePath = body.workspacePath;
 		if (typeof workspacePath !== "string" || !path.isAbsolute(workspacePath)) {

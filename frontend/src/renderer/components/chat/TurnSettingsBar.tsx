@@ -388,9 +388,10 @@ function ModelEffortPicker({
 					    events do not reliably reach an outer overflow on nested submenus. */}
 					<OptionMenuSubContent scrollable className={CHAT_MENU_CLASS} onFocus={focusModelSearch}>
 						<ModelMenuChoices models={catalog}>
-							{(matches, searchActiveID) => matches.map((model) => (
+							{(matches, searchActiveID, optionID) => matches.map((model) => (
 								<OptionMenuItem
 									key={model.id}
+									id={optionID?.(model.id)}
 									active={model.id === settings.model}
 									searchActive={model.id === searchActiveID}
 									radio
@@ -729,11 +730,12 @@ function ConfigModelChoices({
 	})), [option.choices]);
 	return (
 		<ModelMenuChoices models={models}>
-			{(matches, searchActiveID) => (
+			{(matches, searchActiveID, optionID) => (
 				<ConfigOptionChoices
 					option={{ ...option, choices: matches }}
 					onChange={onChange}
 					searchActiveID={searchActiveID}
+					optionID={optionID}
 				/>
 			)}
 		</ModelMenuChoices>
@@ -744,10 +746,12 @@ function ConfigOptionChoices({
 	option,
 	onChange,
 	searchActiveID,
+	optionID,
 }: {
 	option: ChatConfigOption;
 	onChange: (value: ChatConfigOptionValue) => void;
 	searchActiveID?: string;
+	optionID?: (id: string) => string;
 }) {
 	if (option.type === "boolean") {
 		return (
@@ -787,6 +791,7 @@ function ConfigOptionChoices({
 							</OptionMenuLabel>
 						) : null}
 						<OptionMenuItem
+							id={optionID?.(choice.value)}
 							active={choice.value === option.currentValue}
 							searchActive={choice.value === searchActiveID}
 							radio

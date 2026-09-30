@@ -569,6 +569,7 @@ describe("ChatWorkspace steering", () => {
 
 		render(<ChatWorkspace snapshot={snapshot} />);
 		expect(screen.queryByTestId("queued-message-dock")).not.toBeInTheDocument();
+		expect(screen.getByRole("log")).toHaveTextContent("first prompt");
 	});
 
 	it("keeps queued messages docked after the conversation branches", () => {

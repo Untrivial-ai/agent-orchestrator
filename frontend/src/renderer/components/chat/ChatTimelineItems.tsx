@@ -122,7 +122,9 @@ const STREAM_TARGET_CATCHUP_MS = 500;
 const STREAM_SETTLED_CATCHUP_MS = 220;
 const STREAM_MAX_CHARACTERS_PER_SECOND = 20_000;
 const STREAM_MAX_FRAME_DELTA_MS = 100;
+const STREAM_BACKGROUND_FRAME_PAUSE_MS = 1_000;
 const STREAM_MIN_UPDATE_INTERVAL_MS = 32;
+const STREAM_SETTLED_MAX_LAG_MS = 200;
 const STREAM_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 function streamGraphemes(text: string): string[] {
@@ -215,15 +217,12 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 				fractionalCharactersRef.current = 0;
 				return;
 			}
-			// Do not turn a background-tab RAF pause into a full-response flush. Resume
-			// from the displayed grapheme boundary and let the ordinary drain catch up.
 			const elapsedSincePrevious = now - previousFrameAt;
-			if (elapsedSincePrevious > STREAM_MAX_FRAME_DELTA_MS) {
+			if (elapsedSincePrevious > STREAM_BACKGROUND_FRAME_PAUSE_MS) {
 				fractionalCharactersRef.current = 0;
 				frameRef.current = window.requestAnimationFrame(tick);
 				return;
 			}
-
 			// Keep a small, intentional buffer for smoothness. As it grows, increase
 			// throughput instead of letting a long response fall further behind.
 			const catchup = Math.max(0, backlog - STREAM_TARGET_BACKLOG_CHARACTERS);
@@ -323,6 +322,21 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 		}
 		if (visibleGraphemeCountRef.current < targetGraphemesRef.current.length) scheduleDrain();
 	}, [cancelDrain, message.id, message.text, message.streaming, reducedMotion, scheduleDrain, targetGraphemes]);
+
+	useEffect(() => {
+		if (message.streaming || visibleGraphemeCountRef.current >= targetGraphemesRef.current.length) {
+			return;
+		}
+		// Once the provider is done, smoothing may finish the short tail but must not
+		// leave completion controls waiting forever on throttled RAF callbacks.
+		const timeout = window.setTimeout(() => {
+			cancelDrain();
+			visibleRef.current = message.text;
+			visibleGraphemeCountRef.current = targetGraphemesRef.current.length;
+			setVisibleText(message.text);
+		}, STREAM_SETTLED_MAX_LAG_MS);
+		return () => window.clearTimeout(timeout);
+	}, [cancelDrain, message.streaming, message.text]);
 
 	useEffect(
 		() => cancelDrain,
@@ -523,10 +537,12 @@ function formatDuration(ms: number): string {
 }
 
 function formatDecisionDuration(ms: number): string {
-	return `${Math.max(0, Math.round(ms))}ms`;
+	if (ms < 1_000) return `${Math.max(0, Math.round(ms))}ms`;
+	return `${(ms / 1_000).toFixed(1)}s`;
 }
 
 export function ResponseSpinner() {
+	const reducedMotion = useReducedMotion();
 	return (
 		<span
 			role="status"
@@ -548,17 +564,19 @@ export function ResponseSpinner() {
 					<line opacity="0.167" x1="2152.6" y1="650" x2="1719.6" y2="900" />
 					<line opacity="0.583" x1="900" y1="1719.6" x2="650" y2="2152.6" />
 					<line opacity="0.083" x1="1750" y1="247.4" x2="1500" y2="680.4" />
-					<animateTransform
-						attributeName="transform"
-						attributeType="XML"
-						type="rotate"
-						keyTimes="0;0.08333;0.16667;0.25;0.33333;0.41667;0.5;0.58333;0.66667;0.75;0.83333;0.91667"
-						values="0 1199 1199;30 1199 1199;60 1199 1199;90 1199 1199;120 1199 1199;150 1199 1199;180 1199 1199;210 1199 1199;240 1199 1199;270 1199 1199;300 1199 1199;330 1199 1199"
-						dur="0.83333s"
-						begin="0s"
-						repeatCount="indefinite"
-						calcMode="discrete"
-					/>
+					{reducedMotion ? null : (
+						<animateTransform
+							attributeName="transform"
+							attributeType="XML"
+							type="rotate"
+							keyTimes="0;0.08333;0.16667;0.25;0.33333;0.41667;0.5;0.58333;0.66667;0.75;0.83333;0.91667"
+							values="0 1199 1199;30 1199 1199;60 1199 1199;90 1199 1199;120 1199 1199;150 1199 1199;180 1199 1199;210 1199 1199;240 1199 1199;270 1199 1199;300 1199 1199;330 1199 1199"
+							dur="0.83333s"
+							begin="0s"
+							repeatCount="indefinite"
+							calcMode="discrete"
+						/>
+					)}
 				</g>
 			</svg>
 		</span>
@@ -2933,7 +2951,6 @@ export function TurnDuration({ durationMs, inline = false }: { durationMs: numbe
 				inline && "group-hover/row:text-foreground",
 				!inline && "px-1",
 			)}
-			aria-label={`Time spent: ${formatDuration(durationMs)}`}
 		>
 			{formatDuration(durationMs)}
 		</span>

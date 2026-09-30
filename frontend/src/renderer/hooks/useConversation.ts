@@ -574,12 +574,30 @@ export function useConversationCommands(sessionId: string | undefined) {
 					variables.clientMessageId,
 					"accepted",
 				);
+				void invalidateSession(variables.targetSessionId).then(() => {
+					const refreshed = queryClient.getQueryData<InfiniteData<ConversationSnapshot>>(
+						conversationQueryKey(variables.targetSessionId),
+					);
+					const observed = refreshed?.pages.some((page) =>
+						page.items.some((item) =>
+							item.kind === "message" &&
+							item.clientMessageId === variables.clientMessageId,
+						),
+					);
+					if (!observed) {
+						releaseConversationLocalEcho(
+							queryClient,
+							variables.targetSessionId,
+							variables.clientMessageId,
+						);
+					}
+				}).catch(() => {});
 			}
 			// Delivery is already authoritative at this point. Refresh in the
 			// background so a slow conversation refetch cannot keep send.isPending
 			// true and leave the composer disabled or spinning after the daemon
 			// accepted the message.
-			void refreshSessionInBackground(variables.targetSessionId);
+			if (acceptedTurnId) refreshSessionInBackground(variables.targetSessionId);
 		},
 		onError: (error, variables, context) => {
 			releaseConversationDispatch(
@@ -1029,6 +1047,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 		resumingAgent: resume.isPending,
 		resumeError: resume.error ? apiErrorMessage(resume.error) : undefined,
 		resumeWorkspaceUnavailable: apiErrorCode(resume.error) === "SESSION_WORKSPACE_NOT_FOUND",
+		resetResumeError: resume.reset,
 		compact: () => compact.mutateAsync(),
 		choosingSettings: chooseSettings.isPending && chooseSettings.variables?.targetSessionId === sessionId,
 		chooseSettings: (settings: TurnSettings) => chooseSettings.mutate({ targetSessionId: sessionId as string, settings }),

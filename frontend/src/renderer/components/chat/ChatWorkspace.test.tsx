@@ -2399,7 +2399,7 @@ describe("ChatWorkspace message actions", () => {
 		try {
 			render(<ChatWorkspace snapshot={snapshot} session={session} onSend={onSend} />);
 			expect(await screen.findByRole("status")).toHaveTextContent(
-				"Saved Chat state could not be restored",
+				"Draft storage is unavailable",
 			);
 			const composer = await screen.findByLabelText("Message the agent");
 			await typeInLexicalEditor(composer, "send without draft storage");
@@ -2429,7 +2429,7 @@ describe("ChatWorkspace message actions", () => {
 
 		const retryView = render(<ChatWorkspace snapshot={snapshot} onSend={onSend} />);
 		const restored = screen.getByLabelText("Message the agent");
-		expect(restored).not.toHaveTextContent("retry this exact draft");
+		expect(restored).toHaveTextContent("retry this exact draft");
 		expect(screen.getByRole("button", { name: "Retry message safely" })).toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Retry message safely" }));
 		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
@@ -2462,7 +2462,7 @@ describe("ChatWorkspace message actions", () => {
 
 		render(<ChatWorkspace snapshot={snapshot} onSend={onSend} />);
 		const replacement = screen.getByLabelText("Message the agent");
-		expect(replacement).not.toHaveTextContent("send exactly once");
+		expect(replacement).toHaveTextContent("send exactly once");
 		expect(replacement).toHaveAttribute("contenteditable", "false");
 		fireEvent.keyDown(replacement, { key: "Enter" });
 		expect(onSend).toHaveBeenCalledTimes(1);

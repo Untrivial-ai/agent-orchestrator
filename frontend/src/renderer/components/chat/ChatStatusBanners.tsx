@@ -11,7 +11,7 @@
  * below the composer so it does not displace the conversation.
  */
 
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { KeyRound, Plug, TriangleAlert } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import type { ConversationAccount, ConversationThreadState, McpServer } from "../../types/conversation";
@@ -180,42 +180,53 @@ export const McpServerBanner = memo(function McpServerBanner({
 	servers,
 	placement = "above",
 	sessionId,
+	active = true,
 }: {
 	/** Only the broken ones. The caller filters, so an empty list means nothing to say. */
 	servers: McpServer[];
 	placement?: "above" | "below";
 	sessionId?: string;
+	/** Hidden chat panels must not consume the session's one notice. */
+	active?: boolean;
 }) {
 	const fingerprint = servers
 		.map((server) => `${server.name}:${server.status}:${server.failureReason ?? ""}:${server.error ?? ""}`)
 		.join("|");
-	const [dismissedFingerprint, setDismissedFingerprint] = useState<string | null>(null);
-	const [dismissingFingerprint, setDismissingFingerprint] = useState<string | null>(null);
+	const [dismissed, setDismissed] = useState(false);
+	const [dismissing, setDismissing] = useState(false);
 	// MCP status can change as the welcome composer becomes a timeline composer.
 	// Do not treat that UI transition as a second server-spawn event.
-	const [shownFingerprint, setShownFingerprint] = useState<string | null>(null);
+	const [shown, setShown] = useState(false);
+	const started = useRef(false);
+	const dismissTimer = useRef<number | undefined>(undefined);
 	const reducedMotion = useReducedMotion();
 
 	useEffect(() => {
-		if (!fingerprint) return;
+		if (!active || !fingerprint || started.current) return;
 		if (sessionId && mcpNoticeWasShown(sessionId)) return;
+		started.current = true;
 		if (sessionId) rememberMcpNotice(sessionId);
-		setShownFingerprint((current) => current ?? fingerprint);
-		const timeout = window.setTimeout(() => setDismissingFingerprint(fingerprint), 3_000);
-		return () => window.clearTimeout(timeout);
-	}, [fingerprint, sessionId]);
+		setShown(true);
+		dismissTimer.current = window.setTimeout(() => setDismissing(true), 3_000);
+	}, [active, fingerprint, sessionId]);
+
+	useEffect(
+		() => () => {
+			if (dismissTimer.current !== undefined) window.clearTimeout(dismissTimer.current);
+		},
+		[],
+	);
 
 	useEffect(() => {
-		if (dismissingFingerprint !== fingerprint) return;
-		const timeout = window.setTimeout(() => setDismissedFingerprint(fingerprint), reducedMotion ? 0 : 200);
+		if (!dismissing) return;
+		const timeout = window.setTimeout(() => setDismissed(true), reducedMotion ? 0 : 200);
 		return () => window.clearTimeout(timeout);
-	}, [dismissingFingerprint, fingerprint, reducedMotion]);
+	}, [dismissing, reducedMotion]);
 
 	const visible =
 		servers.length > 0 &&
-		shownFingerprint === fingerprint &&
-		dismissedFingerprint !== fingerprint;
-	const dismissing = dismissingFingerprint === fingerprint;
+		shown &&
+		!dismissed;
 	const serverNames = servers
 		.map((server) => `${server.name.slice(0, 1).toUpperCase()}${server.name.slice(1)}`)
 		.join(", ");

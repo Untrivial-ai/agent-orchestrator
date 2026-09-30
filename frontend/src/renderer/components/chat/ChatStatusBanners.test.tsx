@@ -153,6 +153,51 @@ describe("McpServerBanner", () => {
 		expect(container).toBeEmptyDOMElement();
 	});
 
+	it("does not consume a session notice while the chat panel is hidden", () => {
+		vi.useFakeTimers();
+		const { rerender } = render(
+			<TooltipProvider>
+				<McpServerBanner servers={broken} sessionId="hidden-session" active={false} />
+			</TooltipProvider>,
+		);
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+		expect(window.localStorage.getItem("ao:mcp-notice-shown:hidden-session")).toBeNull();
+
+		rerender(
+			<TooltipProvider>
+				<McpServerBanner servers={broken} sessionId="hidden-session" active />
+			</TooltipProvider>,
+		);
+		expect(screen.getByRole("status")).toBeInTheDocument();
+		expect(window.localStorage.getItem("ao:mcp-notice-shown:hidden-session")).toBe("1");
+	});
+
+	it("keeps its original dismissal timer when the failure set changes", () => {
+		vi.useFakeTimers();
+		const { rerender } = render(
+			<TooltipProvider>
+				<McpServerBanner servers={broken} sessionId="changing-session" />
+			</TooltipProvider>,
+		);
+		act(() => vi.advanceTimersByTime(1_000));
+		rerender(
+			<TooltipProvider>
+				<McpServerBanner
+					servers={[{ name: "notion", status: "failed" }]}
+					sessionId="changing-session"
+				/>
+			</TooltipProvider>,
+		);
+		act(() => vi.advanceTimersByTime(1_000));
+		rerender(
+			<TooltipProvider>
+				<McpServerBanner servers={broken} sessionId="changing-session" />
+			</TooltipProvider>,
+		);
+		act(() => vi.advanceTimersByTime(1_000));
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
+	});
+
 	// A healthy server is not news. The caller filters, and an empty list must not
 	// leave a permanent bar above the conversation saying nothing is wrong.
 	it("says nothing when no server is broken", () => {
