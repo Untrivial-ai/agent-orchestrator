@@ -3,6 +3,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { editorHandoffQueryKey } from "../hooks/useEditorHandoff";
 import { shellTerminalsQueryKey, type ShellTerminal } from "../hooks/useShellTerminals";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import type { AttachableTerminal } from "../hooks/useTerminalSession";
@@ -258,21 +259,17 @@ function renderPane(
 	onInputRequestResult?: (id: number, accepted: boolean) => void,
 	terminalTarget?: TerminalTarget,
 	onTerminalContentReadyChange?: (ready: boolean) => void,
+	workspaceAvailable = true,
 ) {
 	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-	const previousAO = window.ao;
-	if (!previousAO) throw new Error("AO bridge is required to render the terminal pane");
-	window.ao = {
-		...previousAO,
-		editorHandoff: {
-		getState: vi.fn().mockResolvedValue({
+	if (!window.ao) throw new Error("AO bridge is required to render the terminal pane");
+	const getEditorHandoffState = vi
+		.spyOn(window.ao.editorHandoff, "getState")
+		.mockResolvedValue({
 			targets: [],
 			preferredEditorId: "cursor",
-			workspaceAvailable: true,
-		}),
-		open: vi.fn().mockResolvedValue({ id: "cursor", name: "Cursor", kind: "editor" }),
-		},
-	};
+			workspaceAvailable,
+		});
 	const result = render(
 		<QueryClientProvider client={queryClient}>
 			<TooltipProvider>
@@ -291,9 +288,10 @@ function renderPane(
 	);
 	return {
 		...result,
+		getEditorHandoffState,
 		queryClient,
 		restore: () => {
-			window.ao = previousAO;
+			getEditorHandoffState.mockRestore();
 		},
 	};
 }
@@ -1062,7 +1060,7 @@ describe("terminal restore", () => {
 
 		// Cloud sessions recover through the control plane; the local daemon has
 		// never heard of them, so this button must not appear for one.
-		it("does not offer resume for a cloud session", () => {
+		it("does not offer resume for a cloud session", async () => {
 			terminalState.value = "exited";
 			const view = renderPane({
 				...worker,
@@ -1070,13 +1068,18 @@ describe("terminal restore", () => {
 				cloud: { orgId: "org-1" },
 			});
 			try {
+				await waitFor(() =>
+					expect(view.queryClient.getQueryData(editorHandoffQueryKey(worker.id))).toMatchObject({
+						workspaceAvailable: true,
+					}),
+				);
 				expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
 			} finally {
 				view.restore();
 			}
 		});
 
-		it("offers restore and not resume once the row is terminated", () => {
+		it("offers restore and not resume once the row is terminated", async () => {
 			terminalState.value = "exited";
 			const view = renderPane({
 				...worker,
@@ -1087,6 +1090,26 @@ describe("terminal restore", () => {
 			});
 			try {
 				expect(screen.getByRole("button", { name: "Restore session" })).toBeInTheDocument();
+				await waitFor(() =>
+					expect(view.queryClient.getQueryData(editorHandoffQueryKey(worker.id))).toMatchObject({
+						workspaceAvailable: true,
+					}),
+				);
+				expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+			} finally {
+				view.restore();
+			}
+		});
+
+		it("does not offer resume when the session worktree is unavailable", async () => {
+			terminalState.value = "exited";
+			const view = renderPane({ ...worker, ...exited }, undefined, undefined, undefined, false);
+			try {
+				await waitFor(() =>
+					expect(view.queryClient.getQueryData(editorHandoffQueryKey(worker.id))).toMatchObject({
+						workspaceAvailable: false,
+					}),
+				);
 				expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
 			} finally {
 				view.restore();
