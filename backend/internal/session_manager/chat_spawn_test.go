@@ -64,6 +64,7 @@ func (d fixedSessionModeDefaults) DefaultSessionMode(context.Context) domain.Ses
 type recordingLauncher struct {
 	preflightErr     error
 	startErr         error
+	stopErr          error
 	turnErr          error
 	live             bool
 	beforeStart      func(ChatStart)
@@ -214,10 +215,9 @@ func (l *recordingLauncher) RelayChatTurnWithID(_ context.Context, _ domain.Sess
 	return "turn-relay", l.turnErr
 }
 
-func (l *recordingLauncher) StopChat(_ context.Context, id domain.SessionID) error { //nolint:unparam
-
+func (l *recordingLauncher) StopChat(_ context.Context, id domain.SessionID) error {
 	l.stopped = append(l.stopped, id)
-	return nil
+	return l.stopErr
 }
 
 func (l *recordingLauncher) HasLiveChatController(domain.SessionID) bool {
@@ -1439,6 +1439,41 @@ func TestKillClosesTheChatControllerAndTouchesNoRuntime(t *testing.T) {
 	}
 	if runtime.destroyed != 0 {
 		t.Errorf("kill destroyed %d runtimes for a session that never had one", runtime.destroyed)
+	}
+}
+
+func TestKillChatStopFailurePreservesWorkspace(t *testing.T) {
+	launcher := &recordingLauncher{stopErr: errors.New("chat process still running")}
+	mgr, store, _ := newChatManager(launcher)
+	seedChatResumeSession(store, domain.ActivityActive)
+	ws := mgr.workspace.(*fakeWorkspace)
+
+	if _, err := mgr.Kill(ctx, "mer-1"); err == nil || !strings.Contains(err.Error(), "chat process still running") {
+		t.Fatalf("Kill error = %v, want chat stop failure", err)
+	}
+	if len(ws.calls) != 0 || store.sessions["mer-1"].IsTerminated {
+		t.Fatalf("unproven chat process must retain workspace and live row: calls=%v row=%+v", ws.calls, store.sessions["mer-1"])
+	}
+}
+
+func TestForceTeardownProjectChatStopFailurePreservesWorkspace(t *testing.T) {
+	for _, terminated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("terminated=%t", terminated), func(t *testing.T) {
+			launcher := &recordingLauncher{stopErr: errors.New("chat process still running")}
+			mgr, store, _ := newChatManager(launcher)
+			seedChatResumeSession(store, domain.ActivityActive)
+			rec := store.sessions["mer-1"]
+			rec.IsTerminated = terminated
+			store.sessions[rec.ID] = rec
+			ws := mgr.workspace.(*fakeWorkspace)
+
+			if err := mgr.ForceTeardownProject(ctx, "mer"); err == nil || !strings.Contains(err.Error(), "chat process still running") {
+				t.Fatalf("ForceTeardownProject error = %v, want chat stop failure", err)
+			}
+			if len(ws.calls) != 0 {
+				t.Fatalf("unproven chat process must retain workspace: %v", ws.calls)
+			}
+		})
 	}
 }
 

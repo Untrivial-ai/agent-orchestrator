@@ -4565,6 +4565,34 @@ func TestForceTeardownProject_RuntimeDestroyFailureStopsBeforeForceDestroy(t *te
 	}
 }
 
+func TestForceTeardownProject_TerminatedRowStillRequiresRuntimeShutdown(t *testing.T) {
+	m, st, rt, ws := newManager()
+	rec := mkLive("mer-1")
+	rec.IsTerminated = true
+	st.sessions[rec.ID] = rec
+	rt.destroyErr = errors.New("runtime still running")
+
+	if err := m.ForceTeardownProject(ctx, "mer"); err == nil || !strings.Contains(err.Error(), "runtime still running") {
+		t.Fatalf("ForceTeardownProject error = %v, want runtime destroy failure", err)
+	}
+	if ws.callsHasPrefix("ForceDestroy:") {
+		t.Fatalf("terminated row does not prove runtime stopped; calls=%v", ws.calls)
+	}
+}
+
+func TestForceTeardownProject_StaleWorkspaceSkipsDestructiveRemoval(t *testing.T) {
+	m, st, _, ws := newManager()
+	seedTerminal(st, "mer-1", domain.SessionMetadata{WorkspacePath: "/ws/mer-1"})
+	ws.stashErr = ports.ErrWorkspaceStale
+
+	if err := m.ForceTeardownProject(ctx, "mer"); err != nil {
+		t.Fatalf("ForceTeardownProject: %v", err)
+	}
+	if ws.callsHasPrefix("ForceDestroy:") {
+		t.Fatalf("unregistered/replaced workspace must not be deleted without preservation: %v", ws.calls)
+	}
+}
+
 // An open shell terminal must gate force teardown the same way Kill/Cleanup
 // gate normal teardown: deleting the directory under a live shell is unsafe.
 func TestForceTeardownProject_ShellTerminalFailureStopsBeforeForceDestroy(t *testing.T) {
