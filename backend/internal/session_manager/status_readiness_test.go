@@ -236,11 +236,10 @@ func TestStatusReadinessDiscoveryFailureDoesNotMarkSessionsUnavailable(t *testin
 func TestStatusReadinessDiscoveryRetryCanRecover(t *testing.T) {
 	m, st, _, _ := newManager()
 	configureFastRecoveryRetries(m)
-	st.listAllErr = errors.New("storage unavailable")
+	st.listAllErrs = []error{errors.New("storage unavailable"), nil}
 	if err := m.ReconcileBackground(context.Background()); err == nil {
 		t.Fatal("expected discovery failure")
 	}
-	st.listAllErr = nil
 	if !waitForStatusReadiness(t, m, domain.SessionRecord{ID: "s1"}, "ready") {
 		t.Fatal("successful discovery retry did not restore ready status")
 	}
@@ -285,9 +284,25 @@ func waitForStatusReadiness(t *testing.T, m *Manager, rec domain.SessionRecord, 
 
 func TestStatusReadinessFreshSpawnAfterDiscoveryFailureIsReady(t *testing.T) {
 	m, st, _, _ := newManager()
-	configureFastRecoveryRetries(m)
+	// Keep the retry pending without letting it concurrently touch fakeStore,
+	// which is intentionally a lightweight, non-thread-safe test double. The
+	// production store is concurrency-safe; this test only needs to exercise a
+	// spawn inside the pending-recovery window.
+	m.statusRecoveryRetryInitial = time.Hour
+	m.statusRecoveryRetryMax = time.Hour
+	m.statusRecoveryRetryAttempts = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	m.backgroundContext = ctx
+	defer func() {
+		cancel()
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+		defer waitCancel()
+		if err := m.WaitBackgroundWorkers(waitCtx); err != nil {
+			t.Errorf("wait for recovery worker: %v", err)
+		}
+	}()
 	st.listAllErr = errors.New("storage unavailable")
-	if err := m.ReconcileBackground(context.Background()); err == nil {
+	if err := m.ReconcileBackground(ctx); err == nil {
 		t.Fatal("expected discovery failure")
 	}
 	st.listAllErr = nil

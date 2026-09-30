@@ -53,6 +53,7 @@ type fakeStore struct {
 	deleteErr        error
 	upsertWTErr      error
 	listAllErr       error
+	listAllErrs      []error
 	getProjectErr    error
 	getSessionErr    error
 	updateSessionErr error
@@ -241,6 +242,13 @@ func (f *fakeStore) ListSessions(_ context.Context, p domain.ProjectID) ([]domai
 	return out, nil
 }
 func (f *fakeStore) ListAllSessions(context.Context) ([]domain.SessionRecord, error) {
+	if len(f.listAllErrs) > 0 {
+		err := f.listAllErrs[0]
+		f.listAllErrs = f.listAllErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if f.listAllErr != nil {
 		return nil, f.listAllErr
 	}
@@ -9186,7 +9194,7 @@ func TestReconcileLive_RuntimeFailureAfterCapabilityUpdateLeavesSessionResumable
 		Activity:  domain.Activity{State: domain.ActivityActive, LastActivityAt: bootUpdatedAt},
 		UpdatedAt: bootUpdatedAt,
 		Metadata: domain.SessionMetadata{
-			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "old",
+			Branch: "ao/s1/root", WorkspacePath: t.TempDir(), RuntimeHandleID: "old",
 			RuntimeLaunchID: "old-launch", AgentSessionID: "native-conversation-1",
 		},
 	}
@@ -9206,7 +9214,7 @@ func TestReconcileLive_RuntimeFailureAfterCapabilityUpdateLeavesSessionResumable
 	if !failed.UpdatedAt.Equal(bootUpdatedAt) {
 		t.Fatalf("UpdatedAt = %v, want preserved recency %v", failed.UpdatedAt, bootUpdatedAt)
 	}
-	if failed.Metadata.AgentSessionID != "native-conversation-1" || failed.Metadata.WorkspacePath != "/wt/s1" {
+	if failed.Metadata.AgentSessionID != "native-conversation-1" || failed.Metadata.WorkspacePath != rec.Metadata.WorkspacePath {
 		t.Fatalf("native identity/worktree changed after failed relaunch: %+v", failed.Metadata)
 	}
 
