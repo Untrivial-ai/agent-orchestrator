@@ -22,7 +22,7 @@ function SelectTrigger({
 	children,
 	...props
 }: React.ComponentProps<typeof SelectPrimitive.Trigger> & {
-	size?: "sm" | "default";
+	size?: "sm" | "default" | "auto";
 }) {
 	return (
 		<SelectPrimitive.Trigger
@@ -47,15 +47,16 @@ function SelectContent({
 	children,
 	position = "item-aligned",
 	align = "center",
+	showScrollButtons = true,
 	...props
-}: React.ComponentProps<typeof SelectPrimitive.Content>) {
+}: React.ComponentProps<typeof SelectPrimitive.Content> & { showScrollButtons?: boolean }) {
 	return (
 		<SelectPrimitive.Portal>
 			<SelectPrimitive.Content
 				data-slot="select-content"
-		className={cn(
-				"relative z-overlay max-h-(--radix-select-content-available-height) min-w-[8rem] origin-(--radix-select-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-lg border border-border bg-card text-popover-foreground outline-none",
-				"data-[state=open]:animate-popover-in data-[state=closed]:animate-popover-out",
+				className={cn(
+					"relative z-overlay max-h-(--radix-select-content-available-height) min-w-[8rem] origin-(--radix-select-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-lg border border-border bg-card text-popover-foreground outline-none",
+					"data-[state=open]:animate-popover-in data-[state=closed]:animate-popover-out",
 					position === "popper" &&
 						"data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1",
 					className,
@@ -64,13 +65,13 @@ function SelectContent({
 				align={align}
 				{...props}
 			>
-				<SelectScrollUpButton />
-		<SelectPrimitive.Viewport
-				className={cn("p-1", position === "popper" && "w-full min-w-(--radix-select-trigger-width) scroll-my-1")}
-			>
+				{showScrollButtons ? <SelectScrollUpButton /> : null}
+				<SelectPrimitive.Viewport
+					className={cn("p-1", position === "popper" && "w-full min-w-(--radix-select-trigger-width) scroll-my-1")}
+				>
 					{children}
 				</SelectPrimitive.Viewport>
-				<SelectScrollDownButton />
+				{showScrollButtons ? <SelectScrollDownButton /> : null}
 			</SelectPrimitive.Content>
 		</SelectPrimitive.Portal>
 	);

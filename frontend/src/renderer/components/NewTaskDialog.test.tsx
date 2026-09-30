@@ -17,6 +17,20 @@ vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
 	return { ...actual, useEnsureAgentReadiness: ensureAgentReadinessMock };
 });
 
+vi.mock("../hooks/useWorkspaceQuery", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../hooks/useWorkspaceQuery")>();
+	return {
+		...actual,
+		useWorkspaceQuery: () => ({
+			data: [
+				{ id: "proj-1", name: "careerops", kind: "local" },
+				{ id: "proj-2", name: "agent-orchestrator", kind: "local" },
+				{ id: "__standalone__", name: "Scratchpad", kind: "standalone" },
+			],
+		}),
+	};
+});
+
 vi.mock("../lib/api-client", () => ({
 	apiClient: {
 		DELETE: (...args: unknown[]) => deleteMock(...args),
@@ -37,15 +51,21 @@ vi.mock("../lib/api-client", () => ({
 			: undefined,
 }));
 
-function renderDialog() {
+function renderDialog({ onProjectChange = vi.fn() }: { onProjectChange?: (projectId: string) => void } = {}) {
 	const onCreated = vi.fn();
 	const onOpenChange = vi.fn();
 	const view = render(
 		<QueryClientProvider client={new QueryClient()}>
-			<NewTaskDialog open projectId="proj-1" onCreated={onCreated} onOpenChange={onOpenChange} />
+			<NewTaskDialog
+				open
+				projectId="proj-1"
+				onProjectChange={onProjectChange}
+				onCreated={onCreated}
+				onOpenChange={onOpenChange}
+			/>
 		</QueryClientProvider>,
 	);
-	return { ...view, onCreated, onOpenChange };
+	return { ...view, onCreated, onOpenChange, onProjectChange };
 }
 
 function requestBody() {
@@ -130,9 +150,9 @@ describe("NewTaskDialog", () => {
 			}),
 		);
 
-		const dialog = screen.getByRole("dialog", { name: "Create a new task" });
+		const dialog = screen.getByRole("dialog");
 		expect(dialog.querySelector(".composer-prompt-surface")).not.toBeNull();
-		expect(screen.getByText("Create a new task")).toHaveClass("settings-dialog-title");
+		expect(screen.getByRole("heading", { level: 2 })).toHaveClass("settings-dialog-title");
 		expect(screen.queryByText("Runs with")).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Close new task dialog" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
@@ -143,6 +163,25 @@ describe("NewTaskDialog", () => {
 		expect(screen.getByLabelText("Task").getAttribute("placeholder")).toBeTruthy();
 		expect(screen.queryByLabelText("Title")).not.toBeInTheDocument();
 		expect(screen.queryByLabelText("Branch")).not.toBeInTheDocument();
+	});
+
+	it("puts Scratchpad first and switches the task destination from the selector", async () => {
+		const { onProjectChange } = renderDialog();
+		const user = userEvent.setup();
+
+		await user.click(screen.getByRole("combobox", { name: "Project" }));
+
+		const options = await screen.findAllByRole("option");
+		expect(options.map((option) => option.textContent?.trim())).toEqual([
+			"Scratchpad",
+			"careerops",
+			"agent-orchestrator",
+		]);
+		expect(document.querySelector('[data-slot="select-scroll-up-button"]')).not.toBeInTheDocument();
+		expect(document.querySelector('[data-slot="select-scroll-down-button"]')).not.toBeInTheDocument();
+
+		await user.click(options[0]);
+		expect(onProjectChange).toHaveBeenCalledWith("__standalone__");
 	});
 
 	it("dismisses the chrome-free card with Escape", async () => {
