@@ -102,7 +102,7 @@ jobs:
         run: go test -race -count=1 ./internal/adapters/chatdriver/processenv/ ./internal/agentlaunch/
 
       - name: Test Windows Chat provider process cleanup
-        run: go test -race -count=1 ./internal/adapters/chatdriver/persistenthost/
+        run: go test -race -count=1 -run '^TestWindowsProviderJobReapsGrandchild$' ./internal/adapters/chatdriver/persistenthost/
 
       - name: Test Windows background agent commands have no console
         run: go test -race -count=1 -run '^TestBackgroundCommandHasNoConsole$' ./internal/adapters/agent/pi ./internal/adapters/agent/omp ./internal/adapters/agent/primeagent

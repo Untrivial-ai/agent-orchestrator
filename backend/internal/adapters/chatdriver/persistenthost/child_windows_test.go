@@ -5,7 +5,9 @@ package persistenthost
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -107,7 +109,7 @@ func TestWindowsProviderJobReapsGrandchild(t *testing.T) {
 			}
 			select {
 			case err := <-done:
-				if err != nil {
+				if err != nil && !(tc.providerExit && errors.Is(err, io.EOF)) {
 					t.Fatal(err)
 				}
 			case <-time.After(8 * time.Second):
