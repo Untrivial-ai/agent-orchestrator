@@ -44,13 +44,14 @@ const (
 // onExit fires at most once, when the attach loop gives up (runtime dead,
 // attach failure cap) — never on close().
 type attachment struct {
-	id     string
-	handle ports.RuntimeHandle
-	src    Source
-	log    *slog.Logger
-	onOpen func()
-	onData func(data []byte)
-	onExit func()
+	id      string
+	handle  ports.RuntimeHandle
+	src     Source
+	log     *slog.Logger
+	onOpen  func()
+	onData  func(data []byte)
+	onError func(reason string)
+	onExit  func()
 
 	maxReattach int
 	resetGrace  time.Duration
@@ -72,7 +73,7 @@ type pendingInput struct {
 	release func()
 }
 
-func newAttachment(id string, handle ports.RuntimeHandle, src Source, onOpen func(), onData func([]byte), onExit func(), log *slog.Logger) *attachment {
+func newAttachment(id string, handle ports.RuntimeHandle, src Source, onOpen func(), onData func([]byte), onError func(string), onExit func(), log *slog.Logger) *attachment {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -86,6 +87,7 @@ func newAttachment(id string, handle ports.RuntimeHandle, src Source, onOpen fun
 		log:         log,
 		onOpen:      onOpen,
 		onData:      onData,
+		onError:     onError,
 		onExit:      onExit,
 		maxReattach: defaultMaxReattach,
 		resetGrace:  defaultReattachResetTime,
@@ -121,6 +123,10 @@ func (a *attachment) run(ctx context.Context) {
 			return
 		}
 		if err != nil {
+			if errors.Is(err, ports.ErrRuntimeCompatibleClientUnavailable) {
+				a.failExplicit("liveness probe: " + err.Error())
+				return
+			}
 			failures++
 			if failures > a.maxReattach {
 				a.fail("liveness probe: " + err.Error())
@@ -148,6 +154,10 @@ func (a *attachment) run(ctx context.Context) {
 			return
 		}
 		if err != nil {
+			if errors.Is(err, ports.ErrRuntimeCompatibleClientUnavailable) {
+				a.failExplicit("attach: " + err.Error())
+				return
+			}
 			failures++
 			if failures > a.maxReattach {
 				a.fail("attach: " + err.Error())
@@ -419,6 +429,27 @@ func (a *attachment) markExited() {
 func (a *attachment) fail(reason string) {
 	a.log.Warn("terminal attachment failed", "id", a.id, "reason", reason)
 	a.markExited()
+}
+
+// failExplicit reports a non-retryable recovery condition to the mux client.
+// It does not also emit exited: the runtime may still be alive behind an
+// unavailable compatible client, so presenting pane death would be false.
+func (a *attachment) failExplicit(reason string) {
+	a.mu.Lock()
+	if a.exited {
+		a.mu.Unlock()
+		return
+	}
+	a.exited = true
+	pending := a.pendingInput
+	a.pendingInput = nil
+	onError := a.onError
+	a.mu.Unlock()
+	releasePendingInput(pending)
+	a.log.Warn("terminal attachment requires recovery", "id", a.id, "reason", reason)
+	if onError != nil {
+		onError(reason)
+	}
 }
 
 func (a *attachment) releasePendingInput() {

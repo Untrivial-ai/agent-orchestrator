@@ -61,7 +61,7 @@ import {
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -115,7 +115,12 @@ import {
 	type ShellRunner,
 } from "./shared/shell-env";
 import { DEFAULT_TERMINAL_SHELL, type TerminalShellPreference } from "./shared/ui-locale";
-import { bundledTmuxBinaryPath, stableBundledTmuxBinaryPath } from "./shared/bundled-tmux";
+import {
+	bundledTmuxBinaryPath,
+	retainedBundledTmuxBinaryPath,
+	stableBundledTmuxBinaryPath,
+	stageBundledTmuxBinary,
+} from "./shared/bundled-tmux";
 import {
 	handleCloudDeepLink,
 	installCloudIPC,
@@ -1110,19 +1115,7 @@ async function ensureBundledTmuxStaged(): Promise<void> {
 		stagedBundledTmuxBinary = null;
 		return;
 	}
-	if (existsSync(destination)) {
-		stagedBundledTmuxBinary = destination;
-		return;
-	}
-	await mkdir(path.dirname(destination), { recursive: true, mode: 0o750 });
-	const temporary = `${destination}.tmp-${process.pid}-${randomUUID()}`;
-	try {
-		await copyFile(source, temporary);
-		await chmod(temporary, 0o755);
-		await rename(temporary, destination);
-	} finally {
-		await rm(temporary, { force: true });
-	}
+	await stageBundledTmuxBinary(source, destination);
 	stagedBundledTmuxBinary = destination;
 }
 
@@ -1160,7 +1153,13 @@ function daemonEnv(forceKeep = keepDaemonAlive(process.env)): NodeJS.ProcessEnv 
 			(app.isPackaged
 				? path.join(process.resourcesPath, "acp-runtime")
 				: path.join(app.getAppPath(), "resources", "acp-runtime")),
-		...(bundledTmuxBinary ? { AO_TMUX_BINARY: bundledTmuxBinary, AO_TMUX_SOCKET_NAME: "ao" } : {}),
+		...(bundledTmuxBinary
+			? {
+					AO_TMUX_BINARY: bundledTmuxBinary,
+					AO_TMUX_RETAINED_BINARY: retainedBundledTmuxBinaryPath(bundledTmuxBinary),
+					AO_TMUX_SOCKET_NAME: "ao",
+				}
+			: {}),
 	};
 	// In dev mode, inject isolation defaults so the dev daemon never collides with
 	// the installed app. User-set env vars take priority (checked first).

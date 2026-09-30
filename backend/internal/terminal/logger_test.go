@@ -12,7 +12,7 @@ func TestNilLoggerFallsBackToDefault(t *testing.T) {
 	if mgr.log == nil {
 		t.Fatal("manager logger is nil")
 	}
-	a := newAttachment("t1", ports.RuntimeHandle{ID: "t1"}, &fakeSource{}, nil, nil, nil, nil)
+	a := newAttachment("t1", ports.RuntimeHandle{ID: "t1"}, &fakeSource{}, nil, nil, nil, nil, nil)
 	if a.log == nil {
 		t.Fatal("attachment logger is nil")
 	}

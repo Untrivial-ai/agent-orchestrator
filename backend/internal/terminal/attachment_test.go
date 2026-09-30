@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,7 +19,43 @@ func newTestAttachment(src Source, onData func([]byte), onExit func()) *attachme
 }
 
 func newTestAttachmentWithOpen(src Source, onOpen func(), onData func([]byte), onExit func()) *attachment {
-	return newAttachment("t1", ports.RuntimeHandle{ID: "t1"}, src, onOpen, onData, onExit, testLogger())
+	return newAttachment("t1", ports.RuntimeHandle{ID: "t1"}, src, onOpen, onData, nil, onExit, testLogger())
+}
+
+func TestAttachmentSurfacesMissingCompatibleClientWithoutRetry(t *testing.T) {
+	src := &fakeSource{aliveErr: ports.ErrRuntimeCompatibleClientUnavailable}
+	reported := make(chan string, 1)
+	a := newAttachment("t1", ports.RuntimeHandle{ID: "t1"}, src, nil, nil, func(reason string) {
+		reported <- reason
+	}, nil, testLogger())
+
+	go a.run(context.Background())
+	select {
+	case reason := <-reported:
+		if !strings.Contains(reason, ports.ErrRuntimeCompatibleClientUnavailable.Error()) {
+			t.Fatalf("error = %q, want compatible-client recovery condition", reason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("compatible-client recovery condition was silently retried")
+	}
+}
+
+func TestAttachmentSurfacesCompatibleClientFailureDuringAttachWithoutRetry(t *testing.T) {
+	src := &fakeSource{alive: true, attachErr: ports.ErrRuntimeCompatibleClientUnavailable}
+	reported := make(chan string, 1)
+	a := newAttachment("t1", ports.RuntimeHandle{ID: "t1"}, src, nil, nil, func(reason string) {
+		reported <- reason
+	}, nil, testLogger())
+
+	go a.run(context.Background())
+	select {
+	case reason := <-reported:
+		if !strings.Contains(reason, ports.ErrRuntimeCompatibleClientUnavailable.Error()) {
+			t.Fatalf("error = %q, want compatible-client recovery condition", reason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("attach compatible-client recovery condition was silently retried")
+	}
 }
 
 func currentPTY(a *attachment) ports.Stream {

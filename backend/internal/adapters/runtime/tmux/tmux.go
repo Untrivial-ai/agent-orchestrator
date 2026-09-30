@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,31 +52,49 @@ var getenv = os.Getenv
 // Options configures a tmux Runtime. Every field has a sensible default (see
 // New), so the zero value is usable.
 type Options struct {
-	Binary       string        // default configured/bundled/system tmux resolution
-	LegacyBinary string        // default system tmux from PATH when SocketName is set; used only for pre-private-socket sessions
-	SocketName   string        // default $AO_TMUX_SOCKET_NAME; empty uses tmux's machine-wide default socket
-	Shell        string        // default $SHELL else /bin/sh
-	Timeout      time.Duration // default 5s
-	ChunkSize    int           // default 16*1024
-	EnterDelay   time.Duration // pause after pasting a non-empty message before pressing Enter; default defaultEnterDelay. Conpty already does this (ptyInputEnterDelay); tmux lacked it, so a large multiline paste could absorb the trailing Enter and leave the prompt unsubmitted (issue #2342).
-	ReapGrace    time.Duration // grace between SIGTERM and SIGKILL when reaping a pane's leftover background processes on Destroy; default defaultReapGrace.
+	Binary                string                // default configured/bundled/system tmux resolution
+	LegacyBinary          string                // default system tmux from PATH when SocketName is set; used only for pre-private-socket sessions
+	RetainedBinary        string                // default $AO_TMUX_RETAINED_BINARY; captured client from before an in-place bundled-binary replacement
+	SocketName            string                // default $AO_TMUX_SOCKET_NAME; empty uses tmux's machine-wide default socket
+	Shell                 string                // default $SHELL else /bin/sh
+	Timeout               time.Duration         // default 5s
+	ChunkSize             int                   // default 16*1024
+	EnterDelay            time.Duration         // pause after pasting a non-empty message before pressing Enter; default defaultEnterDelay. Conpty already does this (ptyInputEnterDelay); tmux lacked it, so a large multiline paste could absorb the trailing Enter and leave the prompt unsubmitted (issue #2342).
+	ReapGrace             time.Duration         // grace between SIGTERM and SIGKILL when reaping a pane's leftover background processes on Destroy; default defaultReapGrace.
+	CompatibleClientStore CompatibleClientStore // durable client-to-private-server association; nil disables persistence
+	Logger                *slog.Logger
+}
+
+// CompatibleClientStore persists the exact client last proven compatible with
+// an AO-owned named tmux server. Primitive fields keep the runtime adapter from
+// depending on SQLite or another concrete storage package.
+type CompatibleClientStore interface {
+	GetTmuxServerClient(ctx context.Context, socketName string) (binaryPath, binarySHA256 string, managedRetained, found bool, err error)
+	UpsertTmuxServerClient(ctx context.Context, socketName, binaryPath, binarySHA256 string, managedRetained bool, confirmedAt time.Time) error
+	DeleteTmuxServerClient(ctx context.Context, socketName string) error
 }
 
 // Runtime runs agent sessions inside tmux sessions, driving them via the tmux
 // CLI. It implements ports.Runtime.
 type Runtime struct {
-	binary         string
-	legacyBinary   string
-	socketName     string
-	shell          string
-	timeout        time.Duration
-	chunkSize      int
-	enterDelay     time.Duration
-	reapGrace      time.Duration
-	runner         runner
-	reapSessions   func(ctx context.Context, pids []int, grace time.Duration)
-	socketMu       sync.RWMutex
-	sessionSockets map[string]string
+	binary           string
+	legacyBinary     string
+	retainedBinary   string
+	socketName       string
+	shell            string
+	timeout          time.Duration
+	chunkSize        int
+	enterDelay       time.Duration
+	reapGrace        time.Duration
+	runner           runner
+	reapSessions     func(ctx context.Context, pids []int, grace time.Duration)
+	clientStore      CompatibleClientStore
+	log              *slog.Logger
+	clientMu         sync.RWMutex
+	compatibleClient string
+	confirmedClient  string
+	socketMu         sync.RWMutex
+	sessionSockets   map[string]string
 }
 
 var _ ports.Runtime = (*Runtime)(nil)
@@ -322,9 +341,18 @@ func New(opts Options) *Runtime {
 			legacyBinary = systemTmux
 		}
 	}
+	retainedBinary := strings.TrimSpace(opts.RetainedBinary)
+	if retainedBinary == "" {
+		retainedBinary = strings.TrimSpace(getenv("AO_TMUX_RETAINED_BINARY"))
+	}
+	log := opts.Logger
+	if log == nil {
+		log = slog.Default()
+	}
 	return &Runtime{
 		binary:         binary,
 		legacyBinary:   legacyBinary,
+		retainedBinary: retainedBinary,
 		socketName:     socketName,
 		shell:          shellPath,
 		timeout:        timeout,
@@ -333,6 +361,8 @@ func New(opts Options) *Runtime {
 		reapGrace:      reapGrace,
 		runner:         execRunner{},
 		reapSessions:   killSessionsByPID,
+		clientStore:    opts.CompatibleClientStore,
+		log:            log,
 		sessionSockets: make(map[string]string),
 	}
 }
@@ -585,10 +615,12 @@ func (r *Runtime) paneSessionIDs(ctx context.Context, id string) []int {
 // session as missing is a definitive false, nil. A conclusively absent server
 // — tmux ≥ 3.4 words it "error connecting … (No such file or directory)"
 // rather than "no server running" — wraps ports.ErrRuntimeUnavailable so
-// recovery may recreate it. A transient connection or protocol/client failure
-// wraps ErrRuntimeProbeInconclusive so no caller can treat a possibly-live
-// session as absent. Any other non-zero exit is a plain probe error, which is
-// likewise never per-session death.
+// recovery may recreate it. A protocol mismatch is retried with the retained
+// client and returns ErrRuntimeCompatibleClientUnavailable if neither client
+// can inspect the server. Other transient connection failures wrap
+// ErrRuntimeProbeInconclusive so no caller can treat a possibly-live session as
+// absent. Any other non-zero exit is a plain probe error, which is likewise
+// never per-session death.
 func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
 	id, err := handleID(handle)
 	if err != nil {
@@ -596,6 +628,12 @@ func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool
 	}
 	out, err := r.runForSession(ctx, id, hasSessionArgs(id)...)
 	if err != nil {
+		if errors.Is(err, ports.ErrRuntimeCompatibleClientUnavailable) {
+			return false, fmt.Errorf("tmux runtime: probe session %s: %w", id, err)
+		}
+		if errors.Is(err, ports.ErrRuntimeProtocolMismatch) {
+			return false, fmt.Errorf("tmux runtime: probe session %s: %w", id, err)
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			if sessionMissingOutput(string(out)) {
@@ -604,6 +642,10 @@ func (r *Runtime) IsAlive(ctx context.Context, handle ports.RuntimeHandle) (bool
 			if serverNotRunningOutput(string(out)) || serverSocketAbsentOutput(string(out)) {
 				return false, fmt.Errorf("tmux runtime: probe session %s: %w: %s",
 					id, ports.ErrRuntimeUnavailable, strings.TrimSpace(string(out)))
+			}
+			if protocolVersionMismatchOutput(string(out)) {
+				return false, fmt.Errorf("tmux runtime: probe session %s: %w: %s",
+					id, ports.ErrRuntimeProtocolMismatch, strings.TrimSpace(string(out)))
 			}
 			if transientServerFailureOutput(string(out)) {
 				return false, fmt.Errorf("tmux runtime: probe session %s: %w: %s",
@@ -877,6 +919,11 @@ func (r *Runtime) Attach(ctx context.Context, handle ports.RuntimeHandle, rows, 
 	if err != nil {
 		return nil, fmt.Errorf("tmux runtime: attach session %s: %w", id, err)
 	}
+	if socketName == r.socketName && socketName != "" {
+		if _, err := r.runOnSocket(ctx, socketName, hasSessionArgs(id)...); err != nil {
+			return nil, fmt.Errorf("tmux runtime: select compatible client for attach session %s: %w", id, err)
+		}
+	}
 	argv := r.attachCommandForSocket(id, socketName)
 	return ptyexec.Spawn(ctx, argv, attachEnv(os.Environ()), rows, cols)
 }
@@ -911,7 +958,7 @@ func (r *Runtime) attachCommandForSocket(id, socketName string) []string {
 	// The embedded xterm renderer supports 24-bit SGR colors. Tell this tmux
 	// client explicitly so tmux forwards RGB instead of quantizing it to the
 	// xterm-256color palette. -T is available in AO's minimum tmux version (3.2).
-	argv := []string{r.binaryForSocket(socketName)}
+	argv := []string{r.compatibleBinaryForSocket(socketName)}
 	if socketName != "" {
 		argv = append(argv, "-L", socketName)
 	} else if r.socketName != "" {
@@ -956,6 +1003,7 @@ func (r *Runtime) run(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 func (r *Runtime) runOnSocket(ctx context.Context, socketName string, args ...string) ([]byte, error) {
+	rawArgs := args
 	if socketName != "" {
 		args = append([]string{"-L", socketName}, args...)
 	} else if r.socketName != "" {
@@ -964,12 +1012,287 @@ func (r *Runtime) runOnSocket(ctx context.Context, socketName string, args ...st
 		// nested server whose session name happens to collide with AO's handle.
 		args = append([]string{"-L", "default"}, args...)
 	}
-	return r.runCommand(ctx, r.binaryForSocket(socketName), args...)
+	binary := r.compatibleBinaryForSocket(socketName)
+	// Compatibility probes always try the newly staged client first so a
+	// replacement server can retire an older retained client. Ordinary runtime
+	// operations use the client already confirmed for this live server.
+	if isCompatibilityProbe(rawArgs) {
+		binary = r.binaryForSocket(socketName)
+	}
+	out, err := r.runCommand(ctx, binary, args...)
+	if socketName != r.socketName || socketName == "" {
+		return out, err
+	}
+
+	if isCompatibilityProbe(rawArgs) && (err == nil || sessionMissingOutput(string(out))) {
+		r.confirmCompatibleClient(ctx, binary, "", false)
+		return out, err
+	}
+	if protocolVersionMismatchOutput(string(out)) || serverExitedUnexpectedlyOutput(string(out)) {
+		return r.runWithRetainedClient(ctx, socketName, args, binary, out, err)
+	}
+	if isCompatibilityProbe(rawArgs) &&
+		(serverNotRunningOutput(string(out)) || serverSocketAbsentOutput(string(out))) {
+		r.clearRetainedClientsAfterServerAbsence(ctx)
+	}
+	return out, err
 }
 
 func (r *Runtime) binaryForSocket(socketName string) string {
 	if socketName == "" && r.socketName != "" {
 		return r.legacyBinary
+	}
+	return r.binary
+}
+
+type retainedClientCandidate struct {
+	path    string
+	sha256  string
+	managed bool
+}
+
+func isCompatibilityProbe(args []string) bool {
+	return len(args) > 0 && (args[0] == "has-session" || args[0] == "new-session")
+}
+
+func (r *Runtime) runWithRetainedClient(ctx context.Context, socketName string, args []string, failedBinary string, currentOut []byte, currentErr error) ([]byte, error) {
+	candidates, candidateErrs := r.retainedClientCandidates(ctx, failedBinary)
+	protocolMismatch := protocolVersionMismatchOutput(string(currentOut))
+	unexpectedExit := serverExitedUnexpectedlyOutput(string(currentOut))
+	for _, candidate := range candidates {
+		out, err := r.runCommand(ctx, candidate.path, args...)
+		switch {
+		case err == nil || sessionMissingOutput(string(out)):
+			r.confirmCompatibleClient(ctx, candidate.path, candidate.sha256, candidate.managed)
+			return out, err
+		case serverNotRunningOutput(string(out)) || serverSocketAbsentOutput(string(out)):
+			r.clearRetainedAssociation(ctx, candidate)
+			return out, err
+		default:
+			protocolMismatch = protocolMismatch || protocolVersionMismatchOutput(string(out))
+			unexpectedExit = unexpectedExit || serverExitedUnexpectedlyOutput(string(out))
+			candidateErrs = append(candidateErrs, fmt.Errorf("retained tmux client %q: %w", candidate.path, err))
+		}
+	}
+
+	if unexpectedExit && !protocolMismatch {
+		causes := make([]error, 0, 2+len(candidateErrs))
+		causes = append(causes, ports.ErrRuntimeProbeInconclusive, currentErr)
+		causes = append(causes, candidateErrs...)
+		return currentOut, fmt.Errorf("tmux runtime: no client could inspect private server %q after unexpected server exit: %w", socketName, errors.Join(causes...))
+	}
+
+	mismatch := fmt.Errorf("%w: %s", ports.ErrRuntimeProtocolMismatch, strings.TrimSpace(string(currentOut)))
+	causes := make([]error, 0, 3+len(candidateErrs))
+	causes = append(causes, ports.ErrRuntimeCompatibleClientUnavailable, mismatch, currentErr)
+	causes = append(causes, candidateErrs...)
+	return currentOut, fmt.Errorf("tmux runtime: no compatible client for private server %q: %w", socketName, errors.Join(causes...))
+}
+
+func (r *Runtime) retainedClientCandidates(ctx context.Context, failedBinary string) ([]retainedClientCandidate, []error) {
+	var candidates []retainedClientCandidate
+	var candidateErrs []error
+	seen := make(map[string]struct{})
+	add := func(path, expectedSHA string, managed bool) {
+		path = strings.TrimSpace(path)
+		if path == "" || path == failedBinary {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		actualSHA, err := fileSHA256(path)
+		if err != nil {
+			candidateErrs = append(candidateErrs, fmt.Errorf("inspect retained tmux client %q: %w", path, err))
+			return
+		}
+		if expectedSHA != "" && actualSHA != expectedSHA {
+			candidateErrs = append(candidateErrs, fmt.Errorf("retained tmux client %q checksum changed: got %s, want %s", path, actualSHA, expectedSHA))
+			return
+		}
+		candidates = append(candidates, retainedClientCandidate{
+			path: path, sha256: actualSHA, managed: managed || path == r.retainedBinary,
+		})
+	}
+
+	// A retained client may have been selected for the previous server, then
+	// fail after the shared socket was replaced by a server started with the
+	// current staged binary. Try that current binary before older retained rows.
+	if failedBinary != r.binary {
+		add(r.binary, "", false)
+	}
+	if r.clientStore != nil {
+		path, hash, managed, found, err := r.clientStore.GetTmuxServerClient(ctx, r.socketName)
+		if err != nil {
+			candidateErrs = append(candidateErrs, err)
+		} else if found {
+			add(path, hash, managed)
+		}
+	}
+	// The fixed capture path is also the first-release bootstrap: no association
+	// exists yet, but the pre-overwrite binary was durably published here.
+	add(r.retainedBinary, "", true)
+	return candidates, candidateErrs
+}
+
+func fileSHA256(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func (r *Runtime) confirmCompatibleClient(ctx context.Context, path, hash string, managed bool) {
+	r.clientMu.Lock()
+	defer r.clientMu.Unlock()
+	r.compatibleClient = path
+	if r.confirmedClient == path {
+		if path != r.binary || r.retainedBinary == "" {
+			return
+		}
+		if _, err := os.Stat(r.retainedBinary); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				r.log.Warn("tmux: inspect retained client after current-client success", "socket", r.socketName, "binary", r.retainedBinary, "err", err)
+			}
+			return
+		}
+	}
+	if hash == "" {
+		var err error
+		hash, err = fileSHA256(path)
+		if err != nil {
+			r.log.Warn("tmux: hash compatible client", "socket", r.socketName, "binary", path, "err", err)
+			return
+		}
+	}
+
+	if path == r.binary {
+		// A current-client success proves the old incompatible server is gone.
+		// Remove the old managed copy before recording current compatibility so a
+		// crash can never leave a stale file blocking capture of the next outgoing
+		// client.
+		if err := r.removeManagedRetainedClients(ctx); err != nil {
+			r.log.Warn("tmux: remove obsolete retained client", "socket", r.socketName, "err", err)
+			return
+		}
+		managed = false
+	}
+	if r.clientStore != nil {
+		if err := r.clientStore.UpsertTmuxServerClient(ctx, r.socketName, path, hash, managed, time.Now().UTC()); err != nil {
+			r.log.Warn("tmux: persist compatible client", "socket", r.socketName, "binary", path, "err", err)
+			return
+		}
+	}
+	r.confirmedClient = path
+}
+
+func (r *Runtime) removeManagedRetainedClients(ctx context.Context) error {
+	paths := make(map[string]struct{})
+	if r.retainedBinary != "" {
+		paths[r.retainedBinary] = struct{}{}
+	}
+	if r.clientStore != nil {
+		path, _, managed, found, err := r.clientStore.GetTmuxServerClient(ctx, r.socketName)
+		if err != nil {
+			return err
+		}
+		if found && managed {
+			paths[path] = struct{}{}
+		}
+	}
+	for path := range paths {
+		if err := removeDurableFile(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeDurableFile(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer func() { _ = dir.Close() }()
+	return dir.Sync()
+}
+
+func (r *Runtime) clearRetainedAssociation(ctx context.Context, candidate retainedClientCandidate) {
+	if r.clientStore != nil {
+		if err := r.clientStore.DeleteTmuxServerClient(ctx, r.socketName); err != nil {
+			r.log.Warn("tmux: clear compatible client after server absence", "socket", r.socketName, "err", err)
+			return
+		}
+	}
+	// Clear the durable pointer first. If removal is interrupted, the fixed
+	// retained path remains discoverable on the next launch and can be retried;
+	// the inverse order could leave a committed association to a missing file.
+	if candidate.managed {
+		if err := removeDurableFile(candidate.path); err != nil {
+			r.log.Warn("tmux: remove retained client after server absence", "socket", r.socketName, "binary", candidate.path, "err", err)
+			return
+		}
+	}
+	r.clientMu.Lock()
+	if r.compatibleClient == candidate.path {
+		r.compatibleClient = ""
+	}
+	if r.confirmedClient == candidate.path {
+		r.confirmedClient = ""
+	}
+	r.clientMu.Unlock()
+}
+
+func (r *Runtime) clearRetainedClientsAfterServerAbsence(ctx context.Context) {
+	paths := make(map[string]struct{})
+	if r.retainedBinary != "" {
+		paths[r.retainedBinary] = struct{}{}
+	}
+	if r.clientStore != nil {
+		path, _, managed, found, err := r.clientStore.GetTmuxServerClient(ctx, r.socketName)
+		if err != nil {
+			r.log.Warn("tmux: read compatible client after server absence", "socket", r.socketName, "err", err)
+			return
+		}
+		if found && managed {
+			paths[path] = struct{}{}
+		}
+		if err := r.clientStore.DeleteTmuxServerClient(ctx, r.socketName); err != nil {
+			r.log.Warn("tmux: clear compatible client after server absence", "socket", r.socketName, "err", err)
+			return
+		}
+	}
+	for path := range paths {
+		if err := removeDurableFile(path); err != nil {
+			r.log.Warn("tmux: remove retained client after server absence", "socket", r.socketName, "binary", path, "err", err)
+		}
+	}
+	r.clientMu.Lock()
+	r.compatibleClient = ""
+	r.confirmedClient = ""
+	r.clientMu.Unlock()
+}
+
+func (r *Runtime) compatibleBinaryForSocket(socketName string) string {
+	if socketName != r.socketName || socketName == "" {
+		return r.binaryForSocket(socketName)
+	}
+	r.clientMu.RLock()
+	defer r.clientMu.RUnlock()
+	if r.compatibleClient != "" {
+		return r.compatibleClient
 	}
 	return r.binary
 }
@@ -1000,6 +1323,10 @@ func (r *Runtime) socketForSession(ctx context.Context, id string) (string, erro
 	if err == nil {
 		r.rememberSessionSocket(id, r.socketName)
 		return r.socketName, nil
+	}
+	if errors.Is(err, ports.ErrRuntimeCompatibleClientUnavailable) ||
+		errors.Is(err, ports.ErrRuntimeProtocolMismatch) {
+		return "", err
 	}
 	// Only cross the migration boundary when the private server definitively
 	// lacks this session. An ambiguous probe stays on the private socket so a
@@ -1285,17 +1612,24 @@ func serverSocketAbsentOutput(out string) bool {
 		strings.Contains(s, "no such file or directory")
 }
 
+func protocolVersionMismatchOutput(out string) bool {
+	return strings.Contains(strings.ToLower(out), "protocol version mismatch")
+}
+
+func serverExitedUnexpectedlyOutput(out string) bool {
+	return strings.Contains(strings.ToLower(out), "server exited unexpectedly")
+}
+
 func transientServerFailureOutput(out string) bool {
 	s := strings.ToLower(out)
 	return strings.Contains(s, "error connecting") ||
-		strings.Contains(s, "protocol version mismatch") ||
-		strings.Contains(s, "server exited unexpectedly")
+		serverExitedUnexpectedlyOutput(s)
 }
 
 // confirmedAbsentOutput reports whether a non-zero tmux exit definitively
 // means the session or its server is gone, as opposed to a merely transient
-// failure (transientServerFailureOutput's "connection refused" / protocol-
-// mismatch / unexpected-exit cases) that leaves the session's actual state
+// failure (transientServerFailureOutput's "connection refused" /
+// unexpected-exit cases, plus a separately classified protocol mismatch) that leaves the session's actual state
 // unknown. Every caller that decides whether it is safe to treat a tmux
 // failure as "already gone" — Destroy's own kill-session result, its pre-kill
 // detach-on-destroy reassertion, and enforceDetachOnDestroy's legacy-adoption

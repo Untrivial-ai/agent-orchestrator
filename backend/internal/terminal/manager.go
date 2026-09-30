@@ -449,6 +449,15 @@ func (c *connState) openTerminal(id string, rows, cols uint16, role string) {
 				Data: base64.StdEncoding.EncodeToString(data),
 			})
 		},
+		func(reason string) {
+			c.mu.Lock()
+			if c.terms[id] == a {
+				delete(c.terms, id)
+			}
+			c.mu.Unlock()
+			c.mgr.leaveTerminal(id, c)
+			c.enqueue(serverMsg{Ch: chTerminal, ID: id, Type: msgError, Error: reason})
+		},
 		func() {
 			// Clear the connection's entry for this id before sending exited so
 			// a client that reopens the moment it sees exited finds no stale

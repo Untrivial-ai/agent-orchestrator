@@ -747,6 +747,14 @@ type TelemetryEvent struct {
 	PayloadJson string
 }
 
+type TmuxServerClient struct {
+	SocketName      string
+	BinaryPath      string
+	BinarySha256    string
+	ManagedRetained bool
+	ConfirmedAt     time.Time
+}
+
 type UsageBinding struct {
 	ID             int64
 	SessionID      domain.SessionID

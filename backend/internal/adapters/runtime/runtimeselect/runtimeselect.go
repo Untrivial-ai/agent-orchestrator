@@ -35,25 +35,26 @@ var _ Runtime = (*conpty.Runtime)(nil)
 
 // New returns the platform runtime. runFilePath is this daemon instance's
 // running.json path and scopes detached-host recovery to that AO instance.
-func New(log *slog.Logger, runFilePath string) Runtime {
+func New(log *slog.Logger, runFilePath string, compatibleClients tmux.CompatibleClientStore) Runtime {
+	tmuxOptions := tmux.Options{CompatibleClientStore: compatibleClients, Logger: log}
 	switch runtime.GOOS {
 	case "windows":
 		return conpty.New(conpty.Options{RunFilePath: runFilePath})
 	case "darwin":
 		return newHybridRuntime(
-			tmux.New(tmux.Options{}),
+			tmux.New(tmuxOptions),
 			conpty.New(conpty.Options{RunFilePath: runFilePath}),
 			log,
 			"macOS",
 		)
 	case "linux":
 		return newHybridRuntime(
-			tmux.New(tmux.Options{}),
+			tmux.New(tmuxOptions),
 			conpty.New(conpty.Options{RunFilePath: runFilePath}),
 			log,
 			"Linux",
 		)
 	default:
-		return tmux.New(tmux.Options{})
+		return tmux.New(tmuxOptions)
 	}
 }

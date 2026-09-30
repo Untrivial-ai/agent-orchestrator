@@ -9520,6 +9520,41 @@ func TestReconcileLive_InconclusiveRuntimeProbeDoesNotRelaunch(t *testing.T) {
 	}
 }
 
+func TestReconcileLive_ProtocolMismatchPreservesSessionWithoutRelaunch(t *testing.T) {
+	st := newFakeStore()
+	st.projects["p1"] = domain.ProjectRecord{ID: "p1", Config: testRoleAgents()}
+	mismatch := errors.Join(ports.ErrRuntimeCompatibleClientUnavailable, ports.ErrRuntimeProtocolMismatch)
+	rt := &fakeRuntime{aliveErr: fmt.Errorf("probe retained tmux client: %w", mismatch)}
+	ws := &fakeWorkspace{}
+	lcm := &fakeLCM{store: st}
+	m := New(Deps{
+		Runtime: rt, Agents: fakeAgents{}, Workspace: ws, Store: st,
+		Messenger: &fakeMessenger{}, Lifecycle: lcm,
+		LookPath: func(string) (string, error) { return "/bin/true", nil },
+	})
+	rec := domain.SessionRecord{
+		ID: "s-protocol-mismatch", ProjectID: "p1", Harness: domain.HarnessClaudeCode,
+		Metadata: domain.SessionMetadata{
+			Branch: "ao/s-protocol-mismatch/root", WorkspacePath: "/wt/s-protocol-mismatch", RuntimeHandleID: "s-protocol-mismatch",
+		},
+	}
+	st.sessions[rec.ID] = rec
+
+	err := m.reconcileLive(context.Background(), rec)
+	if !errors.Is(err, ports.ErrRuntimeCompatibleClientUnavailable) || !errors.Is(err, ports.ErrRuntimeProtocolMismatch) {
+		t.Fatalf("reconcileLive err = %v, want compatible-client-unavailable and protocol-mismatch", err)
+	}
+	if errors.Is(err, ports.ErrRuntimeProbeInconclusive) {
+		t.Fatalf("protocol mismatch unexpectedly satisfies ErrRuntimeProbeInconclusive: %v", err)
+	}
+	if rt.created != 0 || rt.destroyed != 0 {
+		t.Fatalf("protocol mismatch changed runtime: created=%d destroyed=%d", rt.created, rt.destroyed)
+	}
+	if ws.stashCalls != 0 || lcm.terminated[rec.ID] != 0 {
+		t.Fatalf("protocol mismatch changed lifecycle: stash=%d terminated=%d", ws.stashCalls, lcm.terminated[rec.ID])
+	}
+}
+
 func TestRestartRuntime_InconclusiveProbeDoesNotCreateReplacement(t *testing.T) {
 	rt := &fakeRuntime{aliveErr: fmt.Errorf("legacy client unavailable: %w", ports.ErrRuntimeProbeInconclusive)}
 	m := New(Deps{Runtime: rt})

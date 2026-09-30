@@ -483,9 +483,18 @@ var (
 	// conclusively absent (for example tmux reports "no server running"). Some
 	// recovery callers intentionally use that evidence to recreate a runtime.
 	ErrRuntimeUnavailable = errors.New("runtime: infrastructure unavailable")
+	// ErrRuntimeProtocolMismatch reports that a tmux client reached a server but
+	// their wire protocols are incompatible. It is distinct from an ordinary
+	// inconclusive probe so the tmux adapter can try a retained compatible client.
+	ErrRuntimeProtocolMismatch = errors.New("runtime: tmux protocol version mismatch")
+	// ErrRuntimeCompatibleClientUnavailable reports that the current tmux client
+	// mismatched the live private server and no retained client could reach it.
+	// Callers must surface this recovery condition without killing or replacing
+	// the possibly-live shared server.
+	ErrRuntimeCompatibleClientUnavailable = errors.New("runtime: compatible tmux client unavailable")
 	// ErrRuntimeProbeInconclusive reports that a liveness probe could not inspect
-	// a possibly-live runtime (for example a transient socket error, missing
-	// compatible client, or client/server protocol mismatch). Callers must
+	// a possibly-live runtime (for example a transient socket error or unexpected
+	// server exit). Callers must
 	// preserve the existing controller and must not recreate, destroy, archive,
 	// or otherwise treat the session as dead. Adapters wrap this sentinel via
 	// fmt.Errorf so callers can match it with errors.Is.
