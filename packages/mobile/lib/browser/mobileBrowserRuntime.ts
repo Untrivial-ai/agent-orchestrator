@@ -63,13 +63,21 @@ export class MobileBrowserRuntimeClient {
 			});
 			this.ws = ws;
 			ws.onopen = () => {
+				if (this.ws !== ws) return;
 				this.reconnectDelay = 750;
 				this.handlers.onStatus?.(true);
 			};
-			ws.onmessage = (event) => this.receive(typeof event.data === "string" ? event.data : "");
-			ws.onerror = () => this.handlers.onStatus?.(false);
+			ws.onmessage = (event) => {
+				if (this.ws !== ws) return;
+				this.receive(typeof event.data === "string" ? event.data : "");
+			};
+			ws.onerror = () => {
+				if (this.ws !== ws) return;
+				this.handlers.onStatus?.(false);
+			};
 			ws.onclose = () => {
-				if (this.ws === ws) this.ws = null;
+				if (this.ws !== ws) return;
+				this.ws = null;
 				this.handlers.onStatus?.(false);
 				this.scheduleReconnect();
 			};
