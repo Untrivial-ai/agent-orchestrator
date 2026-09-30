@@ -182,6 +182,23 @@ func triggerResultReason(prs []domain.PullRequest, result reviewcore.TriggerResu
 }
 
 func existingHeadReason(runs []domain.ReviewRun, prURL, targetSHA string) string {
+	// The newest cancel for this SHA decides its veto: a reviewer kill is an
+	// explicit force-restart — the user destroyed a (typically hung) pane
+	// expecting a fresh pass — so it must not block auto-review for this SHA.
+	// User cancels and worker teardowns keep their veto (#3338).
+	newestCancelled := -1
+	for i := range runs {
+		run := &runs[i]
+		if run.PRURL != prURL || run.TargetSHA != targetSHA || run.Status != domain.ReviewRunCancelled {
+			continue
+		}
+		if newestCancelled < 0 || run.CreatedAt.After(runs[newestCancelled].CreatedAt) {
+			newestCancelled = i
+		}
+	}
+	if newestCancelled >= 0 && runs[newestCancelled].Body != domain.ReviewRunCancelledByKill {
+		return "cancelled_same_sha"
+	}
 	failedAutoRuns := 0
 	for _, run := range runs {
 		if run.PRURL != prURL || run.TargetSHA != targetSHA {
@@ -191,7 +208,7 @@ func existingHeadReason(runs []domain.ReviewRun, prURL, targetSHA string) string
 			return "review_running"
 		}
 		if run.Status == domain.ReviewRunCancelled {
-			return "cancelled_same_sha"
+			continue
 		}
 		if run.Verdict == domain.VerdictApproved {
 			return "already_approved"

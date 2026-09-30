@@ -2329,9 +2329,11 @@ describe("SessionInspector summary reviews", () => {
     expect(
       screen.getByRole("button", { name: "Stop review" }),
     ).toBeInTheDocument();
+    // Kill stays available with auto-review on: a hung reviewer must be
+    // killable, and the coordinator re-arms a fresh pass after the kill.
     expect(
       screen.getByRole("button", { name: "Kill review session" }),
-    ).toBeDisabled();
+    ).toBeEnabled();
     expect(
       screen.queryByRole("button", { name: "Re-run review" }),
     ).not.toBeInTheDocument();

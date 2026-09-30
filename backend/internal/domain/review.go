@@ -13,6 +13,12 @@ import (
 // instead of surfacing a raw storage error after a reviewer may have launched.
 var ErrDuplicateReviewRun = errors.New("domain: review run already exists for session and target sha")
 
+// ReviewRunCancelledByKill is the cancel body written when a reviewer session
+// is hard-killed through POST /reviews/kill. Unlike a user cancel it does not
+// block auto-review: the kill is an explicit request to re-run the pass, so
+// the coordinator re-arms the same target SHA.
+const ReviewRunCancelledByKill = "cancelled because reviewer session was killed"
+
 // Review is the per-worker, per-reviewer-harness code-review record. A repeat
 // trigger for the same harness reuses this row; the per-pass facts live on
 // ReviewRun.
