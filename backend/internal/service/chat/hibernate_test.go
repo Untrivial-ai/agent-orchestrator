@@ -196,11 +196,11 @@ func TestOpeningViewWakesNativeConversation(t *testing.T) {
 	wakeService.SetWakeCallback(func(ctx context.Context, id domain.SessionID) error {
 		rec, found, err := h.st.GetSession(ctx, id)
 		if err != nil || !found || rec.HibernatedAt == nil {
-			return fmt.Errorf("read hibernated session: found=%v marker=%v err=%v", found, rec.HibernatedAt, err)
+			return fmt.Errorf("read hibernated session: found=%v marker=%v err=%w", found, rec.HibernatedAt, err)
 		}
 		cleared, err := h.st.SetSessionHibernated(ctx, id, rec.Revision, nil)
 		if err != nil || !cleared {
-			return fmt.Errorf("clear hibernation: applied=%v err=%v", cleared, err)
+			return fmt.Errorf("clear hibernation: applied=%v err=%w", cleared, err)
 		}
 		_, err = wakeService.Start(ctx, chatsvc.StartConfig{
 			SessionID: id, ProjectID: testProject, Harness: domain.HarnessCodex,
@@ -232,7 +232,7 @@ func TestOpeningViewWaitsForHibernationThenWakes(t *testing.T) {
 	h.svc.SetWakeCallback(func(ctx context.Context, id domain.SessionID) error {
 		rec, found, err := h.st.GetSession(ctx, id)
 		if err != nil || !found || rec.HibernatedAt == nil {
-			return fmt.Errorf("wake saw unfinished hibernation: found=%v marker=%v err=%v", found, rec.HibernatedAt, err)
+			return fmt.Errorf("wake saw unfinished hibernation: found=%v marker=%v err=%w", found, rec.HibernatedAt, err)
 		}
 		wakeCalled <- struct{}{}
 		return errors.New("wake reached native provider")
