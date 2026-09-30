@@ -2204,6 +2204,12 @@ type UnregisterPushDeviceResponse struct {
 
 /* ---- chat conversations ------------------------------------------------ */
 
+// SetChatViewRequest renews or releases one renderer's Chat view lease.
+type SetChatViewRequest struct {
+	ViewID string `json:"viewId"`
+	Active bool   `json:"active"`
+}
+
 // SendConversationMessageRequest is a message for a Chat session's agent.
 type SendConversationMessageRequest struct {
 	Text string `json:"text"`

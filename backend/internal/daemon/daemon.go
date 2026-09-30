@@ -572,6 +572,11 @@ func Run() error {
 	}); ok {
 		chatSvc.SetWakeCallback(wake.WakeHibernatedChat)
 	}
+	if hibernate, ok := sessMgr.(interface {
+		HibernateChatIfIdle(context.Context, domain.SessionID) error
+	}); ok {
+		chatSvc.SetHibernateCallback(hibernate.HibernateChatIfIdle)
+	}
 	if tunable, ok := sessMgr.(interface {
 		SetModelCatalog(interface {
 			Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error)

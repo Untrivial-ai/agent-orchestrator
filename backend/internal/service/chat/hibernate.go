@@ -10,8 +10,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// HibernateAfter is the minimum quiet period after a completed user turn.
-const HibernateAfter = 5 * time.Minute
+// View leases survive a missed renderer heartbeat but expire after a crash.
+const chatViewLease = 30 * time.Second
 
 type hibernationStore interface {
 	SetSessionHibernated(context.Context, domain.SessionID, int64, *time.Time) (bool, error)
@@ -21,6 +21,114 @@ type hibernationStore interface {
 // resume path. It is installed after both services have been constructed.
 func (s *Service) SetWakeCallback(wake func(context.Context, domain.SessionID) error) {
 	s.wakeChat = wake
+}
+
+// SetHibernateCallback connects a closed Chat view to Session Manager's
+// operation gate. The periodic sweep also catches turns that finish later.
+func (s *Service) SetHibernateCallback(hibernate func(context.Context, domain.SessionID) error) {
+	s.hibernateChat = hibernate
+}
+
+// SetChatView records a short-lived view lease. Registration and the final
+// hibernation check use the same controller gate, so opening a view either
+// prevents shutdown or waits for shutdown and then wakes the native session.
+func (s *Service) SetChatView(ctx context.Context, id domain.SessionID, viewID string, active bool) error {
+	gate := s.controllerGate(domain.SessionConversationOwner(id))
+	if err := gate.lock(ctx); err != nil {
+		return err
+	}
+	if !active {
+		remaining := s.setViewLease(id, viewID, false)
+		gate.unlock()
+		if !remaining && s.hibernateChat != nil {
+			return s.hibernateChat(context.WithoutCancel(ctx), id)
+		}
+		return nil
+	}
+	rec, err := s.requireChatSession(ctx, id)
+	if err != nil {
+		gate.unlock()
+		return err
+	}
+	if rec.IsTerminated {
+		s.viewMu.Lock()
+		delete(s.viewLeases, id)
+		s.viewMu.Unlock()
+		gate.unlock()
+		return nil
+	}
+	s.setViewLease(id, viewID, true)
+	gate.unlock()
+	if !s.hasChatView(id) {
+		return nil
+	}
+	if rec.ProvisionState.WithDefault() != domain.SessionProvisionReady ||
+		rec.Metadata.ProviderConversationID == "" ||
+		(rec.HibernatedAt == nil && s.HasLiveChatController(id)) {
+		return nil
+	}
+	err = s.wakeHibernated(ctx, id)
+	// A slow native reconnect can outlive one lease interval. Extend this
+	// viewer's lease only if a concurrent leave has not removed it.
+	s.viewMu.Lock()
+	if views := s.viewLeases[id]; views != nil {
+		if _, present := views[viewID]; present {
+			views[viewID] = s.now().Add(chatViewLease)
+		}
+	}
+	s.viewMu.Unlock()
+	// A leave may have raced with the provider reconnect. If this was the
+	// final view, close it now rather than keeping an unused process warm.
+	if !s.hasChatView(id) && s.hibernateChat != nil {
+		_ = s.hibernateChat(context.WithoutCancel(ctx), id)
+	}
+	return err
+}
+
+func (s *Service) setViewLease(id domain.SessionID, viewID string, active bool) bool {
+	s.viewMu.Lock()
+	defer s.viewMu.Unlock()
+	views := s.liveViewLeasesLocked(id)
+	if active {
+		if views == nil {
+			views = make(map[string]time.Time)
+			if s.viewLeases == nil {
+				s.viewLeases = make(map[domain.SessionID]map[string]time.Time)
+			}
+			s.viewLeases[id] = views
+		}
+		views[viewID] = s.now().Add(chatViewLease)
+	} else {
+		delete(views, viewID)
+	}
+	if len(views) == 0 {
+		delete(s.viewLeases, id)
+		return false
+	}
+	return true
+}
+
+func (s *Service) hasChatView(id domain.SessionID) bool {
+	s.viewMu.Lock()
+	defer s.viewMu.Unlock()
+	return len(s.liveViewLeasesLocked(id)) != 0
+}
+
+// Callers hold viewMu. Expired leases cannot keep a provider alive after a
+// renderer crash or a missed release request.
+func (s *Service) liveViewLeasesLocked(id domain.SessionID) map[string]time.Time {
+	views := s.viewLeases[id]
+	now := s.now()
+	for key, expiry := range views {
+		if !expiry.After(now) {
+			delete(views, key)
+		}
+	}
+	if len(views) == 0 {
+		delete(s.viewLeases, id)
+		return nil
+	}
+	return views
 }
 
 // HibernateChat stops a quiescent provider without ending its AO session. A
@@ -41,7 +149,7 @@ func (s *Service) HibernateChat(ctx context.Context, id domain.SessionID) (bool,
 	if err != nil {
 		return false, err
 	}
-	if !hibernateSessionEligible(rec, s.now()) {
+	if !hibernateSessionEligible(rec) || s.hasChatView(id) {
 		return false, nil
 	}
 	controller, err := s.Controller(id)
@@ -96,7 +204,7 @@ func (s *Service) HibernateChat(ctx context.Context, id domain.SessionID) (bool,
 		controller.sendMu.Unlock()
 		return false, fmt.Errorf("check latest chat turn: %w", err)
 	}
-	if !latestPrimaryTurnCompleted(rows, id, s.now().Add(-HibernateAfter)) {
+	if !latestPrimaryTurnCompleted(rows, id) {
 		controller.sendMu.Unlock()
 		return false, nil
 	}
@@ -107,7 +215,7 @@ func (s *Service) HibernateChat(ctx context.Context, id domain.SessionID) (bool,
 		controller.sendMu.Unlock()
 		return false, err
 	}
-	if !hibernateSessionEligible(fresh, s.now()) {
+	if !hibernateSessionEligible(fresh) {
 		controller.sendMu.Unlock()
 		return false, nil
 	}
@@ -145,7 +253,7 @@ func (s *Service) HibernateChat(ctx context.Context, id domain.SessionID) (bool,
 		if err != nil {
 			return false, err
 		}
-		if !hibernateSessionEligible(fresh, s.now()) {
+		if !hibernateSessionEligible(fresh) {
 			return false, nil
 		}
 		at := s.now()
@@ -162,13 +270,12 @@ func (s *Service) HibernateChat(ctx context.Context, id domain.SessionID) (bool,
 	return false, errors.New("chat hibernation marker changed concurrently")
 }
 
-func hibernateSessionEligible(rec domain.SessionRecord, now time.Time) bool {
+func hibernateSessionEligible(rec domain.SessionRecord) bool {
 	return !rec.IsTerminated && !rec.IsTaskPreparation && rec.HibernatedAt == nil &&
 		domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat &&
 		rec.ProvisionState.WithDefault() == domain.SessionProvisionReady &&
 		rec.Activity.State == domain.ActivityIdle &&
 		!rec.Activity.LastActivityAt.IsZero() &&
-		!rec.Activity.LastActivityAt.After(now.Add(-HibernateAfter)) &&
 		rec.Metadata.ProviderConversationID != ""
 }
 
@@ -199,9 +306,9 @@ func (s *Service) clearHibernation(ctx context.Context, id domain.SessionID) err
 }
 
 // The most recent user prompt must belong to this controller, have a durable
-// successful completion, and be older than the quiet period. An idle status
-// following a failed or interrupted turn is deliberately insufficient.
-func latestPrimaryTurnCompleted(rows ConversationRows, id domain.SessionID, cutoff time.Time) bool {
+// successful completion. An idle status following a failed or interrupted turn
+// is deliberately insufficient.
+func latestPrimaryTurnCompleted(rows ConversationRows, id domain.SessionID) bool {
 	turns := make(map[string]domain.ConversationTurn, len(rows.Turns))
 	for _, turn := range rows.Turns {
 		turns[turn.ID] = turn
@@ -213,7 +320,7 @@ func latestPrimaryTurnCompleted(rows ConversationRows, id domain.SessionID, cuto
 		}
 		turn, ok := turns[message.TurnID]
 		return ok && turn.HandledBySessionID == id && turn.State == domain.TurnStateCompleted &&
-			turn.CompletedAt != nil && !turn.CompletedAt.After(cutoff)
+			turn.CompletedAt != nil
 	}
 	return false
 }

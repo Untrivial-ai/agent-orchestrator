@@ -53,6 +53,9 @@ type Service struct {
 	stopProviderHost func(context.Context, domain.SessionID) error
 	reports          *reportsvc.Coordinator
 	wakeChat         func(context.Context, domain.SessionID) error
+	hibernateChat    func(context.Context, domain.SessionID) error
+	viewMu           sync.Mutex
+	viewLeases       map[domain.SessionID]map[string]time.Time
 
 	mu               sync.RWMutex
 	controllers      map[domain.SessionID]*Controller

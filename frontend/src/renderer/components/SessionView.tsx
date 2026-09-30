@@ -67,6 +67,7 @@ import {
 	useSessionInterfaceTransition,
 } from "../hooks/useSessionInterfaceTransition";
 import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
+import { conversationQueryKey } from "../hooks/useConversation";
 import {
 	toCloudWorkspaceSession,
 	useCloudSessionQuery,
@@ -1847,6 +1848,42 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 		session !== undefined &&
 		renderedSessionMode === "chat" &&
 		(chatTargetKind === "worker" || chatTargetKind === "reviewer" || chatTargetKind === "shell");
+	const chatViewActive =
+		session?.mode === "chat" &&
+		!session.cloud &&
+		daemonStatus.state === "ready" &&
+		routedTerminalTarget.kind === "worker" &&
+		!reviewerChatId &&
+		!fileTabs.activePath;
+	useEffect(() => {
+		if (!chatViewActive) return;
+		const viewId = crypto.randomUUID();
+		let left = false;
+		let refreshed = false;
+		let pending = Promise.resolve();
+		const setViewActive = (active: boolean) => {
+			pending = pending.catch(() => {}).then(async () => {
+				const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/chat-view", {
+					params: { path: { sessionId } },
+					body: { viewId, active },
+				});
+				if (error) throw error;
+				if (active && !left && !refreshed) {
+					refreshed = true;
+					void queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId) });
+					void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+				}
+			});
+			return pending;
+		};
+		void setViewActive(true).catch(() => {});
+		const renewal = window.setInterval(() => { void setViewActive(true).catch(() => {}); }, 10_000);
+		return () => {
+			left = true;
+			window.clearInterval(renewal);
+			void setViewActive(false).catch(() => {});
+		};
+	}, [chatViewActive, queryClient, sessionId]);
 	const {
 		agentSwitch: handoffAgentSwitch,
 		switchControlPresentation: handoffControlPresentation,

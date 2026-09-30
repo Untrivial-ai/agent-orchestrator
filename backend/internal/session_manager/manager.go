@@ -2648,45 +2648,19 @@ func (m *Manager) recordAgentExited(ctx context.Context, rec domain.SessionRecor
 	return m.lcm.ApplyActivitySignal(ctx, rec.ID, signal)
 }
 
-const chatIdleHibernateAfter = 5 * time.Minute
-
 // HibernateIdleChats releases eligible Chat provider processes. The chat
 // service rechecks turn completion and controller quiescence under its send lock.
 func (m *Manager) HibernateIdleChats(ctx context.Context) error {
-	hibernator, ok := m.chat.(interface {
-		HibernateChat(context.Context, domain.SessionID) (bool, error)
-	})
-	if !ok {
-		return nil
-	}
 	records, err := m.store.ListAllSessions(ctx)
 	if err != nil {
 		return fmt.Errorf("list chats for hibernation: %w", err)
 	}
-	now := m.clock()
 	var errs []error
 	for _, candidate := range records {
-		if !eligibleChatHibernation(candidate, now) {
+		if !eligibleChatHibernation(candidate) {
 			continue
 		}
-		operationCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := m.beginAgentOperation(operationCtx, candidate.ID, agentOperationHibernate)
-		if errors.Is(err, errAgentOperationInProgress) {
-			cancel()
-			continue
-		}
-		if err == nil {
-			err = func() error {
-				defer m.endAgentOperation(candidate.ID, agentOperationHibernate)
-				active, transitionErr := m.hasActiveInterfaceTransition(operationCtx, candidate.ID)
-				if transitionErr != nil || active {
-					return transitionErr
-				}
-				_, hibernateErr := hibernator.HibernateChat(operationCtx, candidate.ID)
-				return hibernateErr
-			}()
-		}
-		cancel()
+		err := m.hibernateEligibleChat(ctx, candidate.ID)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("hibernate chat %s: %w", candidate.ID, err))
 		}
@@ -2694,11 +2668,45 @@ func (m *Manager) HibernateIdleChats(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func eligibleChatHibernation(rec domain.SessionRecord, now time.Time) bool {
+// HibernateChatIfIdle handles a view closing without waiting for the next
+// sweep. It shares the same operation and transition gates as the sweep.
+func (m *Manager) HibernateChatIfIdle(ctx context.Context, id domain.SessionID) error {
+	rec, found, err := m.store.GetSession(ctx, id)
+	if err != nil || !found || !eligibleChatHibernation(rec) {
+		return err
+	}
+	return m.hibernateEligibleChat(ctx, id)
+}
+
+func (m *Manager) hibernateEligibleChat(ctx context.Context, id domain.SessionID) error {
+	hibernator, ok := m.chat.(interface {
+		HibernateChat(context.Context, domain.SessionID) (bool, error)
+	})
+	if !ok {
+		return nil
+	}
+	operationCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := m.beginAgentOperation(operationCtx, id, agentOperationHibernate); err != nil {
+		if errors.Is(err, errAgentOperationInProgress) {
+			return nil
+		}
+		return err
+	}
+	defer m.endAgentOperation(id, agentOperationHibernate)
+	active, err := m.hasActiveInterfaceTransition(operationCtx, id)
+	if err != nil || active {
+		return err
+	}
+	_, err = hibernator.HibernateChat(operationCtx, id)
+	return err
+}
+
+func eligibleChatHibernation(rec domain.SessionRecord) bool {
 	return domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat &&
 		!rec.IsTerminated && !rec.IsTaskPreparation && rec.ProvisionState.WithDefault() == domain.SessionProvisionReady &&
 		rec.HibernatedAt == nil && rec.Activity.State == domain.ActivityIdle &&
-		!rec.Activity.LastActivityAt.IsZero() && now.Sub(rec.Activity.LastActivityAt) >= chatIdleHibernateAfter &&
+		!rec.Activity.LastActivityAt.IsZero() &&
 		strings.TrimSpace(rec.Metadata.ProviderConversationID) != ""
 }
 

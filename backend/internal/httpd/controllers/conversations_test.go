@@ -35,6 +35,10 @@ func conversationTestServer(t *testing.T, service *fakeConversationService) *htt
 // JSON a client actually parses is what is checked.
 
 type fakeConversationService struct {
+	viewID            string
+	viewActive        bool
+	viewSessionID     domain.SessionID
+	viewCalls         int
 	snapshot          chatsvc.Snapshot
 	skills            []ports.ChatSkill
 	skillErr          error
@@ -57,6 +61,39 @@ type fakeConversationService struct {
 	reviewOwner       domain.ConversationOwner
 	reviewRequestID   string
 	reviewInterrupted bool
+}
+
+func (f *fakeConversationService) SetChatView(_ context.Context, sessionID domain.SessionID, viewID string, active bool) error {
+	f.viewSessionID = sessionID
+	f.viewID = viewID
+	f.viewActive = active
+	f.viewCalls++
+	return nil
+}
+
+func TestChatViewRouteValidatesAndForwardsLease(t *testing.T) {
+	service := &fakeConversationService{}
+	server := conversationTestServer(t, service)
+	for _, tc := range []struct {
+		body   string
+		status int
+	}{
+		{`{"viewId":"","active":true}`, http.StatusBadRequest},
+		{`{"viewId":"viewer-1","active":true}`, http.StatusNoContent},
+		{`{"viewId":"viewer-1","active":false}`, http.StatusNoContent},
+	} {
+		resp, err := http.Post(server.URL+"/api/v1/sessions/p1-1/chat-view", "application/json", bytes.NewBufferString(tc.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != tc.status {
+			t.Fatalf("POST %s status = %d, want %d", tc.body, resp.StatusCode, tc.status)
+		}
+	}
+	if service.viewCalls != 2 || service.viewSessionID != "p1-1" || service.viewID != "viewer-1" || service.viewActive {
+		t.Fatalf("forwarded view = %+v", service)
+	}
 }
 
 func (f *fakeConversationService) EditMessage(context.Context, domain.SessionID, string, ports.ChatUserMessage) (chatsvc.EditMessageResult, error) {

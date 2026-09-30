@@ -82,12 +82,11 @@ func settledHibernationHarness(t *testing.T, state domain.TurnState) (*harness, 
 			return len(s.Turns) == 1 && s.Turns[0].State == state
 		})
 	}
-	h.advance(6 * time.Minute)
 	rec, found, err := h.st.GetSession(ctx, testSession)
 	if err != nil || !found {
 		t.Fatalf("get session = %v, %v", found, err)
 	}
-	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: h.now().Add(-6 * time.Minute)}
+	rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: h.now()}
 	rec.Metadata.ProviderConversationID = conv.ProviderConversationID()
 	if err := h.st.UpdateSession(ctx, rec); err != nil {
 		t.Fatal(err)
@@ -114,6 +113,148 @@ func TestHibernateChatKeepsCompletedIdleSessionResumable(t *testing.T) {
 	snapshot, err := h.svc.Snapshot(ctx, testSession)
 	if err != nil || snapshot.Controller != ports.ChatControllerHibernated {
 		t.Fatalf("cold snapshot controller = %q, %v", snapshot.Controller, err)
+	}
+}
+
+func TestChatViewKeepsCompletedSessionWarmUntilReleasedOrExpired(t *testing.T) {
+	t.Run("released", func(t *testing.T) {
+		h, conv := settledHibernationHarness(t, domain.TurnStateCompleted)
+		ctx := context.Background()
+		h.svc.SetHibernateCallback(func(ctx context.Context, id domain.SessionID) error {
+			_, err := h.svc.HibernateChat(ctx, id)
+			return err
+		})
+		if err := h.svc.SetChatView(ctx, testSession, "viewer-1", true); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.svc.SetChatView(ctx, testSession, "viewer-2", true); err != nil {
+			t.Fatal(err)
+		}
+		if hibernated, err := h.svc.HibernateChat(ctx, testSession); err != nil || hibernated {
+			t.Fatalf("hibernate viewed chat = %v, %v", hibernated, err)
+		}
+		if err := h.svc.SetChatView(ctx, testSession, "viewer-1", false); err != nil || conv.calls.Load() != 0 {
+			t.Fatalf("release view = %v; provider hibernations = %d", err, conv.calls.Load())
+		}
+		if err := h.svc.SetChatView(ctx, testSession, "viewer-2", false); err != nil || conv.calls.Load() != 1 {
+			t.Fatalf("release final view = %v; provider hibernations = %d", err, conv.calls.Load())
+		}
+		if err := h.svc.SetChatView(ctx, testSession, "viewer-1", false); err != nil {
+			t.Fatalf("repeat release = %v", err)
+		}
+	})
+	t.Run("expired", func(t *testing.T) {
+		h, _ := settledHibernationHarness(t, domain.TurnStateCompleted)
+		ctx := context.Background()
+		if err := h.svc.SetChatView(ctx, testSession, "viewer-1", true); err != nil {
+			t.Fatal(err)
+		}
+		h.advance(31 * time.Second)
+		if hibernated, err := h.svc.HibernateChat(ctx, testSession); err != nil || !hibernated {
+			t.Fatalf("hibernate after expired lease = %v, %v", hibernated, err)
+		}
+	})
+}
+
+func TestChatViewRetriesFailedWakeWithoutLosingLease(t *testing.T) {
+	h, _ := settledHibernationHarness(t, domain.TurnStateCompleted)
+	ctx := context.Background()
+	if hibernated, err := h.svc.HibernateChat(ctx, testSession); err != nil || !hibernated {
+		t.Fatalf("hibernate = %v, %v", hibernated, err)
+	}
+	wakeErr := errors.New("provider temporarily unavailable")
+	var calls atomic.Int32
+	h.svc.SetWakeCallback(func(context.Context, domain.SessionID) error {
+		calls.Add(1)
+		return wakeErr
+	})
+	for range 2 {
+		if err := h.svc.SetChatView(ctx, testSession, "viewer-1", true); !errors.Is(err, wakeErr) {
+			t.Fatalf("wake = %v, want %v", err, wakeErr)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("wake calls = %d, want 2", calls.Load())
+	}
+}
+
+func TestOpeningViewWakesNativeConversation(t *testing.T) {
+	h, old := settledHibernationHarness(t, domain.TurnStateCompleted)
+	ctx := context.Background()
+	if hibernated, err := h.svc.HibernateChat(ctx, testSession); err != nil || !hibernated {
+		t.Fatalf("hibernate = %v, %v", hibernated, err)
+	}
+	resumed := newFakeConversation()
+	var resumeConfig ports.ChatResumeConfig
+	wakeService := chatsvc.New(chatsvc.Options{
+		Store: h.st, Reader: fullSnapshotReader(h.st), Sessions: h.st,
+		Drivers:  fakeRegistry{driver: fakeDriver{conv: resumed, resumeCfg: &resumeConfig}},
+		Activity: h.activity, Log: slog.New(slog.DiscardHandler), Now: h.now,
+		NewID: func() string { return "view-wake" },
+	})
+	t.Cleanup(func() { _ = wakeService.Stop(context.Background(), testSession) })
+	wakeService.SetWakeCallback(func(ctx context.Context, id domain.SessionID) error {
+		rec, found, err := h.st.GetSession(ctx, id)
+		if err != nil || !found || rec.HibernatedAt == nil {
+			return fmt.Errorf("read hibernated session: found=%v marker=%v err=%v", found, rec.HibernatedAt, err)
+		}
+		cleared, err := h.st.SetSessionHibernated(ctx, id, rec.Revision, nil)
+		if err != nil || !cleared {
+			return fmt.Errorf("clear hibernation: applied=%v err=%v", cleared, err)
+		}
+		_, err = wakeService.Start(ctx, chatsvc.StartConfig{
+			SessionID: id, ProjectID: testProject, Harness: domain.HarnessCodex,
+			WorkspacePath: t.TempDir(), ProviderConversationID: rec.Metadata.ProviderConversationID,
+		})
+		return err
+	})
+	if err := wakeService.SetChatView(ctx, testSession, "viewer-1", true); err != nil {
+		t.Fatal(err)
+	}
+	if resumeConfig.ProviderConversationID != old.ProviderConversationID() || !wakeService.HasLiveChatController(testSession) {
+		t.Fatalf("native wake = %q, live=%v", resumeConfig.ProviderConversationID, wakeService.HasLiveChatController(testSession))
+	}
+}
+
+func TestOpeningViewWaitsForHibernationThenWakes(t *testing.T) {
+	h, conv := settledHibernationHarness(t, domain.TurnStateCompleted)
+	ctx := context.Background()
+	conv.started = make(chan struct{})
+	release := make(chan struct{})
+	conv.release = release
+	hibernated := make(chan error, 1)
+	go func() {
+		_, err := h.svc.HibernateChat(ctx, testSession)
+		hibernated <- err
+	}()
+	<-conv.started
+	wakeCalled := make(chan struct{}, 1)
+	h.svc.SetWakeCallback(func(ctx context.Context, id domain.SessionID) error {
+		rec, found, err := h.st.GetSession(ctx, id)
+		if err != nil || !found || rec.HibernatedAt == nil {
+			return fmt.Errorf("wake saw unfinished hibernation: found=%v marker=%v err=%v", found, rec.HibernatedAt, err)
+		}
+		wakeCalled <- struct{}{}
+		return errors.New("wake reached native provider")
+	})
+	viewResult := make(chan error, 1)
+	go func() { viewResult <- h.svc.SetChatView(ctx, testSession, "viewer-1", true) }()
+	select {
+	case err := <-viewResult:
+		t.Fatalf("view opened before hibernation finished: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	if err := <-hibernated; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-viewResult; err == nil {
+		t.Fatal("opening view did not invoke native wake")
+	}
+	select {
+	case <-wakeCalled:
+	default:
+		t.Fatal("native wake did not observe durable hibernation marker")
 	}
 }
 

@@ -799,10 +799,9 @@ func TestHibernateIdleChatsSkipsUnfinishedAndUnavailableSessions(t *testing.T) {
 	mgr.clock = func() time.Time { return now }
 	seedChatResumeSession(store, domain.ActivityIdle)
 	old := store.sessions["mer-1"]
-	old.Activity.LastActivityAt = now.Add(-6 * time.Minute)
+	old.Activity.LastActivityAt = now
 	store.sessions[old.ID] = old
 	for name, change := range map[string]func(*domain.SessionRecord){
-		"recent":       func(rec *domain.SessionRecord) { rec.Activity.LastActivityAt = now.Add(-time.Minute) },
 		"new":          func(rec *domain.SessionRecord) { rec.Activity.LastActivityAt = time.Time{} },
 		"working":      func(rec *domain.SessionRecord) { rec.Activity.State = domain.ActivityActive },
 		"approval":     func(rec *domain.SessionRecord) { rec.Activity.State = domain.ActivityBlocked },

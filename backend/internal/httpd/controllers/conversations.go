@@ -68,6 +68,10 @@ type reviewerConversationService interface {
 	InterruptForOwner(ctx context.Context, owner domain.ConversationOwner) error
 }
 
+type chatViewService interface {
+	SetChatView(context.Context, domain.SessionID, string, bool) error
+}
+
 // ConversationsController owns the Chat routes for a session.
 //
 // Every route dispatches from the session's persisted mode inside the service, so
@@ -79,6 +83,7 @@ type ConversationsController struct {
 
 // Register mounts the conversation routes under a session.
 func (c *ConversationsController) Register(r chi.Router) {
+	r.Post("/sessions/{sessionId}/chat-view", c.setChatView)
 	r.Get("/sessions/{sessionId}/conversation", c.snapshot)
 	r.Post("/sessions/{sessionId}/conversation/messages", c.send)
 	r.Post("/sessions/{sessionId}/conversation/approvals/{requestId}/resolve", c.resolve)
@@ -107,6 +112,27 @@ func (c *ConversationsController) Register(r chi.Router) {
 	r.Post("/reviews/{reviewId}/conversation/approvals/{requestId}/resolve", c.reviewResolve)
 	r.Post("/reviews/{reviewId}/conversation/inputs/{requestId}/resolve", c.reviewResolveInput)
 	r.Post("/reviews/{reviewId}/conversation/interrupt", c.reviewInterrupt)
+}
+
+func (c *ConversationsController) setChatView(w http.ResponseWriter, r *http.Request) {
+	svc, ok := c.Svc.(chatViewService)
+	if !ok {
+		apispec.NotImplemented(w, r, http.MethodPost, "/api/v1/sessions/{sessionId}/chat-view")
+		return
+	}
+	var req SetChatViewRequest
+	if !decodeConversationBody(w, r, &req) {
+		return
+	}
+	if req.ViewID == "" || len(req.ViewID) > 128 || strings.TrimSpace(req.ViewID) != req.ViewID {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "CHAT_VIEW_ID_INVALID", "viewId must be a nonempty identifier of at most 128 bytes", nil)
+		return
+	}
+	if err := svc.SetChatView(r.Context(), sessionID(r), req.ViewID, req.Active); err != nil {
+		writeConversationError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (c *ConversationsController) reviewService(w http.ResponseWriter, r *http.Request) (reviewerConversationService, bool) {
