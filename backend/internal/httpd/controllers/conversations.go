@@ -911,6 +911,11 @@ func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 			"CHAT_CONTROLLER_NOT_READY",
 			"the agent controller for this session is not running", nil)
 
+	case errors.Is(err, ports.ErrChatRecoveryInconclusive):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_RECOVERY_INCONCLUSIVE",
+			"AO could not safely reconnect to this agent; it may still be running elsewhere", nil)
+
 	case errors.Is(err, chatsvc.ErrControllerHandoff):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
 			"CHAT_INTERFACE_TRANSITION",

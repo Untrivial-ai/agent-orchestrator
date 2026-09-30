@@ -421,6 +421,11 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 				conv.discard()
 				return nil, fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, loadErr)
 			}
+			if ctxErr := resumeCtx.Err(); ctxErr != nil {
+				conv.discard()
+				return nil, fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, ctxErr)
+			}
+			d.log.Warn("ACP session/load failed; resuming without history", "error", loadErr)
 			resumed, resumeErr := conv.conn.ResumeSession(resumeCtx, acpsdk.ResumeSessionRequest{
 				Meta:                  meta,
 				SessionId:             acpsdk.SessionId(cfg.ProviderConversationID),

@@ -277,7 +277,7 @@ export const workspaceQueryOptions = {
 	retry: 1,
 	staleTime: 10_000,
 	refetchInterval: (query: Query<WorkspaceSummary[]>) =>
-		workspaceStatusesChecking(query.state.data) ? 300 : 15_000,
+		workspaceStatusesChecking(query.state.data) ? 1_000 : 15_000,
 };
 
 // Cloud projects are a separate query so a control-plane failure can never

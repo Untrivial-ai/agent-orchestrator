@@ -2066,6 +2066,7 @@ func TestExitAgentStopsOnlyControllerAndPreservesSessionIdentity(t *testing.T) {
 
 func newExitedResumeManager(t *testing.T, runtime runtimeController, agent ports.Agent) (*Manager, *fakeStore, *fakeWorkspace) {
 	t.Helper()
+	workspacePath := t.TempDir()
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
 	st.sessions["mer-1"] = domain.SessionRecord{
@@ -2075,7 +2076,7 @@ func newExitedResumeManager(t *testing.T, runtime runtimeController, agent ports
 		Harness:   domain.HarnessCodex,
 		Activity:  domain.Activity{State: domain.ActivityExited},
 		Metadata: domain.SessionMetadata{
-			WorkspacePath:   "/ws/mer-1",
+			WorkspacePath:   workspacePath,
 			Branch:          "ao/mer-1",
 			RuntimeHandleID: "tmux-mer-1",
 			RuntimeLaunchID: "launch-old",
@@ -2181,6 +2182,40 @@ func TestResumeAgent_RequiresLiveExitedSession(t *testing.T) {
 	}
 	if runtime.created != 0 || runtime.destroyed != 0 {
 		t.Fatalf("invalid resume touched runtime: created=%d destroyed=%d", runtime.created, runtime.destroyed)
+	}
+}
+
+func TestResumeAgent_UnavailableExitedSessionRelaunchesInsteadOfAdoptingPane(t *testing.T) {
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-mer-1": true}}
+	runtime := &fakeRestartRuntime{fakeRuntime: baseRuntime}
+	agent := supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex", "resume", "agent-x"}}}
+	m, st, _ := newExitedResumeManager(t, runtime, agent)
+	rec := st.sessions["mer-1"]
+	m.finishStatusRecovery(context.Background(), rec, errors.New("startup probe failed"))
+
+	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.restarted != 1 {
+		t.Fatalf("runtime restarts = %d, want 1", runtime.restarted)
+	}
+}
+
+func TestResumeAgent_MissingWorkspaceIsCheckedAfterLifecycleState(t *testing.T) {
+	runtime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-mer-1": true}}
+	agent := supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex", "resume", "agent-x"}}}
+	m, st, _ := newExitedResumeManager(t, runtime, agent)
+	rec := st.sessions["mer-1"]
+	rec.Metadata.WorkspacePath = filepath.Join(t.TempDir(), "missing")
+	st.sessions[rec.ID] = rec
+	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); !errors.Is(err, ErrSessionWorkspaceUnavailable) {
+		t.Fatalf("missing workspace error = %v, want ErrSessionWorkspaceUnavailable", err)
+	}
+
+	rec.IsTerminated = true
+	st.sessions[rec.ID] = rec
+	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); !errors.Is(err, ErrTerminated) {
+		t.Fatalf("terminated missing-workspace error = %v, want ErrTerminated", err)
 	}
 }
 

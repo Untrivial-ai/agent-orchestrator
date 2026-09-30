@@ -76,7 +76,7 @@ func (m *Manager) markFreshSessionStatusReady(id domain.SessionID) {
 	case <-m.startupBackgroundReconcileDone:
 		// After a successful startup, an untracked session already reads as ready;
 		// avoid turning ordinary spawns into recovery-revision changes.
-		if !m.statusRecoveryFailed {
+		if !m.statusRecoveryPending && !m.statusRecoveryFailed {
 			return
 		}
 	default:

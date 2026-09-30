@@ -159,8 +159,8 @@ collect:
 
 	// Resume on a fresh process must recover the same thread — this is the
 	// daemon-restart path.
-	if err := conv.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if err := conv.(ports.ChatProviderTerminator).Terminate(); err != nil {
+		t.Fatalf("Terminate: %v", err)
 	}
 
 	resumed, err := d.Resume(ctx, ports.ChatResumeConfig{
@@ -175,7 +175,7 @@ collect:
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	defer func() { _ = resumed.Close() }()
+	defer func() { _ = resumed.(ports.ChatProviderTerminator).Terminate() }()
 
 	if got := resumed.ProviderConversationID(); got != threadID {
 		t.Fatalf("resumed thread = %q, want %q", got, threadID)

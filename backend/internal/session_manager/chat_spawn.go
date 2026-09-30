@@ -453,9 +453,6 @@ func (m *Manager) resumeChatController(
 	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
 	if agent, ok := m.agents.Agent(rec.Harness); ok {
 		m.augmentAgentRuntimeEnv(agent, env)
-		if err := m.prepareAgentPreLaunch(ctx, agent, rec.ID, ws.Path); err != nil {
-			return RestoreResult{}, fmt.Errorf("%s %s: %w", operation, rec.ID, err)
-		}
 	}
 	historyMode := ports.ChatHistoryImport
 	var providerHandoff *domain.ChatProviderHandoff
@@ -492,6 +489,9 @@ func (m *Manager) resumeChatController(
 			}
 			if agent, ok := m.agents.Agent(rec.Harness); ok {
 				m.augmentAgentRuntimeEnv(agent, launchEnv)
+				if prepareErr := m.prepareAgentPreLaunch(launchCtx, agent, rec.ID, ws.Path); prepareErr != nil {
+					return nil, fmt.Errorf("%s %s: %w", operation, rec.ID, prepareErr)
+				}
 			}
 			rec = prepared
 			return launchEnv, nil

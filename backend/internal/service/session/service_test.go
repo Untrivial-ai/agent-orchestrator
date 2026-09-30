@@ -3888,7 +3888,7 @@ func TestResumeAgentMapsManagerModeToServiceView(t *testing.T) {
 	}
 }
 
-func TestResumeAgentRejectsMissingWorkspaceBeforeCallingManager(t *testing.T) {
+func TestResumeAgentMapsManagerMissingWorkspaceSentinel(t *testing.T) {
 	st := newFakeStore()
 	rec := domain.SessionRecord{
 		ID:        "mer-1",
@@ -3899,12 +3899,12 @@ func TestResumeAgentRejectsMissingWorkspaceBeforeCallingManager(t *testing.T) {
 		Metadata:  domain.SessionMetadata{WorkspacePath: t.TempDir() + "/missing"},
 	}
 	st.sessions[rec.ID] = rec
-	fc := &fakeCommander{}
+	fc := &fakeCommander{restoreErr: sessionmanager.ErrSessionWorkspaceUnavailable}
 
 	_, err := (&Service{manager: fc, store: st}).ResumeAgent(context.Background(), rec.ID)
 	assertAPIErrorCode(t, err, "SESSION_WORKSPACE_NOT_FOUND")
-	if len(fc.resumed) != 0 {
-		t.Fatalf("manager resume calls = %v, want none", fc.resumed)
+	if len(fc.resumed) != 1 || fc.resumed[0] != rec.ID {
+		t.Fatalf("manager resume calls = %v, want [%s]", fc.resumed, rec.ID)
 	}
 }
 

@@ -686,20 +686,6 @@ func (s *Service) ExitAgent(ctx context.Context, id domain.SessionID) (ExitAgent
 // ResumeAgent relaunches an exited agent without restoring a terminated
 // session or recreating its workspace.
 func (s *Service) ResumeAgent(ctx context.Context, id domain.SessionID) (ResumeAgentOutcome, error) {
-	// An exited agent can only be resumed in its original workspace. Checking it
-	// before reconnecting to a detached Chat host avoids turning a deleted
-	// worktree into an opaque agent-host failure (or a generic 500). A failed
-	// asynchronous Chat provision is the exception: Retry Start owns workspace
-	// creation and may legitimately begin before a worktree exists.
-	rec, ok, err := s.store.GetSession(ctx, id)
-	if err != nil {
-		return ResumeAgentOutcome{}, fmt.Errorf("get session %s before resume: %w", id, err)
-	}
-	if !ok || rec.ProvisionState != domain.SessionProvisionFailed {
-		if _, err := s.WorkspaceLocation(ctx, id); err != nil {
-			return ResumeAgentOutcome{}, err
-		}
-	}
 	res, err := s.manager.ResumeAgentWithMode(ctx, id)
 	if err != nil {
 		return ResumeAgentOutcome{}, toAPIError(err)
@@ -1338,6 +1324,8 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("WORKSPACE_CWD_MISMATCH", err.Error(), nil)
 	case errors.Is(err, ports.ErrWorkspaceLocked):
 		return apierr.Conflict("WORKSPACE_LOCKED", err.Error(), nil)
+	case errors.Is(err, sessionmanager.ErrSessionWorkspaceUnavailable):
+		return apierr.NotFound("SESSION_WORKSPACE_NOT_FOUND", "Session workspace is not available")
 	default:
 		return err
 	}

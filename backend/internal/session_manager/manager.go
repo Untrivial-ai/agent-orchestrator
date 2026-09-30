@@ -144,6 +144,11 @@ var (
 	// ErrResumeInProgress prevents concurrent resume requests from replacing the
 	// same runtime twice.
 	ErrResumeInProgress = errors.New("session: agent resume already in progress")
+	// ErrSessionWorkspaceUnavailable means an exited agent cannot be relaunched
+	// because its recorded workspace no longer exists. Other filesystem errors
+	// remain distinct so temporary mount and permission failures are not reported
+	// as a permanently missing workspace.
+	ErrSessionWorkspaceUnavailable = errors.New("session: workspace is not available")
 	// ErrAwaitingDecision means the session is paused on a pending
 	// permission/approval dialog. Send refuses to paste into it: the runtime
 	// appends Enter after every paste, and an Enter into a decision dialog
@@ -2701,7 +2706,7 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 		}
 		return result, err
 	}
-	if m.SessionStatusReadiness(rec) == "unavailable" {
+	if m.SessionStatusReadiness(rec) == "unavailable" && rec.Activity.State != domain.ActivityExited {
 		m.beginStatusRecovery(id)
 		recoveryCtx, cancel := context.WithTimeout(ctx, m.statusVerificationLimit)
 		defer cancel()
@@ -2711,7 +2716,13 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 			return RestoreResult{}, err
 		}
 		current, err := m.getRecord(ctx, id)
-		return RestoreResult{Session: current, Mode: RestoreModeNative}, err
+		if err != nil {
+			return RestoreResult{}, err
+		}
+		if current.Activity.State != domain.ActivityExited {
+			return RestoreResult{Session: current, Mode: RestoreModeNative}, nil
+		}
+		rec = current
 	}
 	mode := domain.NormalizeSessionMode(rec.Mode)
 	if mode == domain.SessionModeChat && m.chat != nil && m.chat.HasLiveChatController(id) {
@@ -2726,6 +2737,20 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 		if mode != domain.SessionModeChat || m.chat == nil {
 			return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrAgentNotExited)
 		}
+	}
+	workspacePath := strings.TrimSpace(rec.Metadata.WorkspacePath)
+	if workspacePath == "" {
+		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrSessionWorkspaceUnavailable)
+	}
+	workspaceInfo, statErr := os.Stat(workspacePath)
+	if statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
+			return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrSessionWorkspaceUnavailable)
+		}
+		return RestoreResult{}, fmt.Errorf("resume agent %s: inspect workspace: %w", id, statErr)
+	}
+	if !workspaceInfo.IsDir() {
+		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrSessionWorkspaceUnavailable)
 	}
 	return m.resumeAgentRecordWithPolicy(ctx, "resume agent", rec, false, false)
 }
@@ -3440,7 +3465,7 @@ func (m *Manager) ReconcileBackground(ctx context.Context) error {
 	m.statusRecoveryMu.Unlock()
 	m.startupBackgroundReconcileOnce.Do(func() { close(m.startupBackgroundReconcileDone) })
 	if retry {
-		go m.retryBackgroundReconcile(m.backgroundContext)
+		m.runInBackground(func() { m.retryBackgroundReconcile(m.backgroundContext) })
 	}
 	return err
 }
@@ -3489,9 +3514,7 @@ func (m *Manager) reconcileBackgroundPass(ctx context.Context) error {
 			m.logger.Error("reconcile: reap pass failed, skipping", "sessionID", rec.ID, "error", err)
 		}
 	}
-	if err := m.RestoreAll(ctx); err != nil {
-		return err
-	}
+	m.restoreAllRecords(ctx, recs)
 	if err := m.deliverAllTransitionMessages(ctx); err != nil {
 		m.logger.Error("reconcile: transition-message delivery deferred for retry", "error", err)
 	}
@@ -3534,7 +3557,7 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 				m.finishStatusRecovery(ctx, rec, err)
 			} else {
 				m.beginStatusRecovery(rec.ID)
-				go m.retryLiveRecovery(ctx, rec.ID)
+				m.runInBackground(func() { m.retryLiveRecovery(ctx, rec.ID) })
 			}
 		}
 		m.logger.Warn("reconcile: could not fence live sessions", "error", err)
@@ -3548,7 +3571,7 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 	for _, rec := range candidates {
 		if _, ok := acquiredSet[rec.ID]; !ok {
 			m.beginStatusRecovery(rec.ID)
-			go m.retryLiveRecovery(ctx, rec.ID)
+			m.runInBackground(func() { m.retryLiveRecovery(ctx, rec.ID) })
 			m.logger.Warn("reconcile: session remains input-gated pending unambiguous agent-switch recovery", "sessionID", rec.ID)
 			continue
 		}
@@ -3578,7 +3601,7 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 				if err != nil {
 					m.logger.Error("reconcile: live pass failed, skipping", "sessionID", rec.ID, "error", err)
 					if !isUnrecoverableStartupRecoveryError(err) {
-						go m.retryLiveRecovery(ctx, rec.ID)
+						m.runInBackground(func() { m.retryLiveRecovery(ctx, rec.ID) })
 						continue
 					}
 				}
@@ -3652,6 +3675,10 @@ func (m *Manager) retryStatusRecovery(ctx context.Context, attempt func(context.
 // Unclassified errors stay eligible for background recovery instead of
 // painting the session red on a transient startup race.
 func isUnrecoverableStartupRecoveryError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
+		errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+		return false
+	}
 	return errors.Is(err, ErrIncompleteHandle) ||
 		errors.Is(err, ErrNotResumable) ||
 		errors.Is(err, ports.ErrAgentAuthRequired) ||
@@ -3680,6 +3707,11 @@ func (m *Manager) RestoreAll(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("restore-all: list sessions: %w", err)
 	}
+	m.restoreAllRecords(ctx, recs)
+	return nil
+}
+
+func (m *Manager) restoreAllRecords(ctx context.Context, recs []domain.SessionRecord) {
 	for _, rec := range recs {
 		if !rec.IsTerminated {
 			continue
@@ -3695,24 +3727,25 @@ func (m *Manager) RestoreAll(ctx context.Context) error {
 			continue
 		}
 		m.logger.Warn("restore-all: session remains in recovery; retrying in background", "sessionID", rec.ID, "error", err)
-		go m.retryRestoredRecovery(ctx, rec.ID)
+		m.runInBackground(func() { m.retryRestoredRecovery(ctx, rec.ID) })
 	}
-	return nil
 }
 
 func (m *Manager) attemptRestoreAllSession(ctx context.Context, id domain.SessionID) error {
-	if err := m.beginAgentOperation(ctx, id, agentOperationReconcile); err != nil {
+	recoveryCtx, cancel := context.WithTimeout(ctx, m.statusVerificationLimit)
+	defer cancel()
+	if err := m.beginAgentOperation(recoveryCtx, id, agentOperationReconcile); err != nil {
 		return err
 	}
 	defer m.endAgentOperation(id, agentOperationReconcile)
-	rec, ok, err := m.store.GetSession(ctx, id)
+	rec, ok, err := m.store.GetSession(recoveryCtx, id)
 	if err != nil {
 		return err
 	}
 	if !ok || !rec.IsTerminated {
 		return nil
 	}
-	return m.restoreAllSession(ctx, rec)
+	return m.restoreAllSession(recoveryCtx, rec)
 }
 
 func (m *Manager) retryRestoredRecovery(ctx context.Context, id domain.SessionID) {
