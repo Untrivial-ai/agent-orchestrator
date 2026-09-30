@@ -174,6 +174,7 @@ const (
 	controllerHandoffInterfaceDrain
 	controllerHandoffInterfaceInterrupt
 	controllerHandoffIdleBranch
+	controllerHandoffHibernate
 )
 
 func interfaceHandoff(policy domain.SessionInterfaceTransitionPolicy) controllerHandoff {
@@ -220,6 +221,11 @@ type Controller struct {
 	// Eager providers can emit turn/started before SendTurn returns with the
 	// provider id; that event must bind this row instead of adopting a duplicate.
 	dispatchingTurnID string
+	// A compact request can be accepted before its provider turn starts.
+	compactionPending bool
+	// A successful rename is not durable in AO until the provider's matching
+	// notification has projected. Keep the provider alive across that gap.
+	pendingTitle string
 	// ackedTurnID is the turn the PROVIDER has confirmed it started, which lags
 	// pendingTurnID by the round trip between turn/start returning and the
 	// turn-started notification arriving. Interrupt needs the distinction: a
@@ -1658,7 +1664,7 @@ func (c *Controller) mergeUsage(update ports.ChatUsage) domain.ConversationUsage
 func (c *Controller) busy() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.pendingTurnID != ""
+	return c.pendingTurnID != "" || c.compactionPending
 }
 
 // dispatch hands a recorded turn to the provider. Callers must hold sendMu.
@@ -2105,11 +2111,8 @@ var ErrCompactionWhileBusy = errors.New("cannot compact while a turn is in fligh
 // arriving in between would start a turn that the compaction then destroys — the
 // exact outcome the check exists to prevent.
 //
-// The lock is released as soon as the provider accepts. The compaction itself runs
-// as a provider turn for the next ten seconds or so, and holding sendMu across that
-// would make the whole conversation unresponsive; the provider's own single-turn
-// rule is what keeps a send from landing mid-compaction, and a send that arrives
-// then queues behind the compaction turn like any other.
+// The lock is released as soon as the provider accepts. Until its turn-started
+// event commits, compactionPending keeps sends queued and idle hibernation out.
 func (c *Controller) Compact(ctx context.Context) (ports.ChatCompactionResult, error) {
 	compactor, ok := c.conv.(ports.ChatCompactor)
 	if !ok || !c.Capabilities().Has(ports.ChatCapabilityCompaction) {
@@ -2125,7 +2128,13 @@ func (c *Controller) Compact(ctx context.Context) (ports.ChatCompactionResult, e
 	if c.busy() {
 		return ports.ChatCompactionResult{}, ErrCompactionWhileBusy
 	}
-	return compactor.Compact(ctx)
+	result, err := compactor.Compact(ctx)
+	if err == nil {
+		c.mu.Lock()
+		c.compactionPending = true
+		c.mu.Unlock()
+	}
+	return result, err
 }
 
 // turnAckWait bounds how long Interrupt waits for the provider to acknowledge a
@@ -2683,6 +2692,7 @@ func (c *Controller) applyCommittedTurnLifecycle(event ports.ChatEvent) bool {
 			return false
 		}
 		c.pendingTurnID = event.ProviderTurnID
+		c.compactionPending = false
 		c.ackedTurnID = event.ProviderTurnID
 		c.state = ports.ChatControllerBusy
 		return true
@@ -3160,6 +3170,12 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		if event.ControllerState == ports.ChatControllerStopped && !suppressStoppedActivity {
 			c.reportActivity(ctx, domain.ActivityExited, "chat.controller.stopped", now)
 		}
+	case ports.ChatEventThreadRenamed:
+		c.mu.Lock()
+		if c.pendingTitle == NormalizeTitle(event.Title) {
+			c.pendingTitle = ""
+		}
+		c.mu.Unlock()
 	case ports.ChatEventAccountChanged:
 		if event.Account != nil && event.Account.ReauthRequired {
 			c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.account.reauth", now)

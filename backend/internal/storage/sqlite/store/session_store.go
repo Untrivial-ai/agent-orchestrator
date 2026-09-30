@@ -213,6 +213,22 @@ func (s *Store) UpdateSession(ctx context.Context, rec domain.SessionRecord) err
 	return s.qw.UpdateSession(ctx, recordToUpdate(rec))
 }
 
+// SetSessionHibernated changes only the durable sleep marker if the caller's
+// session snapshot is still current. Passing nil clears the marker on wake.
+func (s *Store) SetSessionHibernated(ctx context.Context, id domain.SessionID, expectedRevision int64, at *time.Time) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	rows, err := s.qw.SetSessionHibernated(ctx, gen.SetSessionHibernatedParams{
+		HibernatedAt:     timePtrToNullTime(at),
+		ID:               id,
+		ExpectedRevision: expectedRevision,
+	})
+	if err != nil {
+		return false, fmt.Errorf("set session hibernation for %s: %w", id, err)
+	}
+	return rows > 0, nil
+}
+
 // UpdateSessionModel changes only the selected model, leaving concurrent
 // lifecycle and controller ownership updates intact.
 func (s *Store) UpdateSessionModel(ctx context.Context, id domain.SessionID, model string) (bool, error) {
@@ -679,6 +695,7 @@ func rowToRecord(row gen.GetSessionRow) domain.SessionRecord {
 		},
 		FirstSignalAt:      nullTimeToTime(row.FirstSignalAt),
 		IsTerminated:       row.IsTerminated,
+		HibernatedAt:       nullTimeToTimePtr(row.HibernatedAt),
 		IsPinned:           row.IsPinned,
 		PinnedAt:           nullTimeToTimePtr(row.PinnedAt),
 		TerminateOnPRMerge: row.TerminateOnPRMerge,

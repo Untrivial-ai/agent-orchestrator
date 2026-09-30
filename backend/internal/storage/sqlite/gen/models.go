@@ -674,6 +674,7 @@ type Session struct {
 	IsTaskPreparation                bool
 	AutomationRunID                  *domain.AutomationRunID
 	AutomationLaunchCompleted        bool
+	HibernatedAt                     sql.NullTime
 }
 
 type SessionCleanupFact struct {

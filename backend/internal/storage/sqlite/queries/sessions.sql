@@ -47,6 +47,13 @@ UPDATE sessions
 SET model = sqlc.arg(model)
 WHERE id = sqlc.arg(id);
 
+-- name: SetSessionHibernated :execrows
+-- Revision fencing keeps an idle decision from overwriting a later send,
+-- controller change, or lifecycle write. Generic updates leave this fact alone.
+UPDATE sessions
+SET hibernated_at = sqlc.narg(hibernated_at)
+WHERE id = sqlc.arg(id) AND revision = sqlc.arg(expected_revision);
+
 -- name: UpdateBrowserCapabilityVerifier :execrows
 -- Rotate only the browser credential for the exact controller owner observed by
 -- the launcher. This must not replay a stale SessionRecord over newer lifecycle,
@@ -181,7 +188,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
-    provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed
+    provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed,
+    hibernated_at
 FROM sessions WHERE id = ?;
 
 -- name: GetSessionByAutomationRunID :one
@@ -197,7 +205,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
-    provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed
+    provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed,
+    hibernated_at
 FROM sessions WHERE automation_run_id = ?;
 
 -- name: ListSessionsByProject :many
@@ -213,7 +222,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
-    provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed
+    provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed,
+    hibernated_at
 FROM sessions WHERE project_id IS ? ORDER BY num;
 
 -- name: ListAllSessions :many
@@ -229,7 +239,8 @@ SELECT id, project_id, num, issue_id, kind, harness,
     conversation_checkpoint_state, conversation_checkpoint_generation, conversation_checkpoint_native_id,
     conversation_checkpoint_unsettled, conversation_checkpoint_turn_id, native_checkpoint_evidence,
     native_transcript_path, auto_inject_review, auto_inject_ci, auto_review_enabled, model, effort, session_permissions,
-    provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed
+    provision_state, provision_error, is_task_preparation, automation_run_id, automation_launch_completed,
+    hibernated_at
 FROM sessions ORDER BY project_id, num;
 
 -- name: PromoteTaskPreparation :execrows

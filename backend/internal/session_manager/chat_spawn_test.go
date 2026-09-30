@@ -782,6 +782,100 @@ func seedChatResumeSession(store *fakeStore, state domain.ActivityState) {
 	}
 }
 
+type recordingHibernator struct {
+	*recordingLauncher
+	calls []domain.SessionID
+}
+
+func (h *recordingHibernator) HibernateChat(_ context.Context, id domain.SessionID) (bool, error) {
+	h.calls = append(h.calls, id)
+	return true, nil
+}
+
+func TestHibernateIdleChatsSkipsUnfinishedAndUnavailableSessions(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	hibernator := &recordingHibernator{recordingLauncher: &recordingLauncher{live: true}}
+	mgr, store, _ := newChatManager(hibernator)
+	mgr.clock = func() time.Time { return now }
+	seedChatResumeSession(store, domain.ActivityIdle)
+	old := store.sessions["mer-1"]
+	old.Activity.LastActivityAt = now.Add(-6 * time.Minute)
+	store.sessions[old.ID] = old
+	for name, change := range map[string]func(*domain.SessionRecord){
+		"recent":       func(rec *domain.SessionRecord) { rec.Activity.LastActivityAt = now.Add(-time.Minute) },
+		"new":          func(rec *domain.SessionRecord) { rec.Activity.LastActivityAt = time.Time{} },
+		"working":      func(rec *domain.SessionRecord) { rec.Activity.State = domain.ActivityActive },
+		"approval":     func(rec *domain.SessionRecord) { rec.Activity.State = domain.ActivityBlocked },
+		"starting":     func(rec *domain.SessionRecord) { rec.ProvisionState = domain.SessionProvisionProvisioning },
+		"preparation":  func(rec *domain.SessionRecord) { rec.IsTaskPreparation = true },
+		"no-native-id": func(rec *domain.SessionRecord) { rec.Metadata.ProviderConversationID = "" },
+		"tui":          func(rec *domain.SessionRecord) { rec.Mode = domain.SessionModeTUI },
+		"terminated":   func(rec *domain.SessionRecord) { rec.IsTerminated = true },
+		"asleep":       func(rec *domain.SessionRecord) { rec.HibernatedAt = &now },
+	} {
+		rec := old
+		rec.ID = domain.SessionID(name)
+		change(&rec)
+		store.sessions[rec.ID] = rec
+	}
+	if err := mgr.HibernateIdleChats(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(hibernator.calls) != 1 || hibernator.calls[0] != old.ID {
+		t.Fatalf("hibernated %v, want only %s", hibernator.calls, old.ID)
+	}
+}
+
+func TestWakeHibernatedChatClearsMarkerBeforeNativeResume(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, store, _ := newChatManager(launcher)
+	seedChatResumeSession(store, domain.ActivityIdle)
+	rec := store.sessions["mer-1"]
+	at := time.Now().UTC().Add(-time.Hour)
+	rec.HibernatedAt = &at
+	store.sessions[rec.ID] = rec
+	store.hibernationCASConflicts = 1
+	launcher.beforeStart = func(cfg ChatStart) {
+		if store.sessions[cfg.SessionID].HibernatedAt != nil {
+			t.Fatal("native resume started before durable hibernation marker cleared")
+		}
+	}
+	if err := mgr.WakeHibernatedChat(context.Background(), rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(launcher.started) != 1 || launcher.started[0].ProviderConversationID != rec.Metadata.ProviderConversationID {
+		t.Fatalf("native resume did not reuse provider id: %+v", launcher.started)
+	}
+	if store.sessions[rec.ID].HibernatedAt != nil {
+		t.Fatal("successful wake left durable hibernation marker set")
+	}
+}
+
+func TestWakeHibernatedChatRetriesFailedNativeResumeAfterMarkerCleared(t *testing.T) {
+	providerErr := errors.New("provider failed to start")
+	launcher := &recordingLauncher{startErr: providerErr}
+	mgr, store, _ := newChatManager(launcher)
+	seedChatResumeSession(store, domain.ActivityIdle)
+	rec := store.sessions["mer-1"]
+	at := time.Now().UTC().Add(-time.Hour)
+	rec.HibernatedAt = &at
+	store.sessions[rec.ID] = rec
+
+	if err := mgr.WakeHibernatedChat(context.Background(), rec.ID); !errors.Is(err, providerErr) {
+		t.Fatalf("first wake error = %v, want provider failure", err)
+	}
+	if got := store.sessions[rec.ID]; got.HibernatedAt != nil || got.IsTerminated || got.Metadata.ProviderConversationID != rec.Metadata.ProviderConversationID {
+		t.Fatalf("failed wake lost retryable native identity: %+v", got)
+	}
+	launcher.startErr = nil
+	if err := mgr.WakeHibernatedChat(context.Background(), rec.ID); err != nil {
+		t.Fatalf("retry wake: %v", err)
+	}
+	if len(launcher.started) != 2 || launcher.started[1].ProviderConversationID != rec.Metadata.ProviderConversationID {
+		t.Fatalf("native resume attempts = %+v, want two with same provider id", launcher.started)
+	}
+}
+
 func TestResumeExitedChatSessionDoesNotRequireTerminalRuntimeHandle(t *testing.T) {
 	launcher := &recordingLauncher{}
 	mgr, store, runtime := newChatManager(launcher)

@@ -163,6 +163,7 @@ var _ ports.ChatSteerer = (*conversation)(nil)
 var _ ports.ChatInputResponder = (*conversation)(nil)
 var _ ports.ChatProviderPreserver = (*conversation)(nil)
 var _ ports.ChatProviderTerminator = (*conversation)(nil)
+var _ ports.ChatProviderHibernator = (*conversation)(nil)
 var _ ports.ChatLiveReconnector = (*conversation)(nil)
 var _ ports.ChatLiveReconnectActivator = (*conversation)(nil)
 var _ ports.ChatProviderEventAcknowledger = (*conversation)(nil)
@@ -937,16 +938,22 @@ func (c *conversation) discard() {
 }
 
 func (c *conversation) Close() error {
-	return c.closeProvider(false)
+	return c.closeProvider(false, false)
 }
 
 // Terminate destroys the provider host. Close deliberately only detaches during
 // daemon shutdown or updater replacement.
 func (c *conversation) Terminate() error {
-	return c.closeProvider(true)
+	return c.closeProvider(true, true)
 }
 
-func (c *conversation) closeProvider(terminate bool) error {
+// Hibernate releases the bridge and its provider without closing the native
+// ACP session. session/close can delete the resume state on some agents.
+func (c *conversation) Hibernate() error {
+	return c.closeProvider(true, false)
+}
+
+func (c *conversation) closeProvider(terminate, closeSession bool) error {
 	var closeErr error
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
@@ -965,7 +972,7 @@ func (c *conversation) closeProvider(terminate bool) error {
 		}
 		c.failPendingPermissions()
 		c.failPendingInputs()
-		if sessionID != "" {
+		if closeSession && sessionID != "" {
 			closeCtx, cancelClose := context.WithTimeout(context.Background(), 2*time.Second)
 			_, _ = c.conn.CloseSession(closeCtx, acpsdk.CloseSessionRequest{SessionId: acpsdk.SessionId(sessionID)})
 			cancelClose()

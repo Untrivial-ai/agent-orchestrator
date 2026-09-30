@@ -29,7 +29,7 @@ import {
 	type ReactNode,
 	type WheelEvent as ReactWheelEvent,
 } from "react";
-import { ArrowDown, Loader2, TriangleAlert, Undo2 } from "lucide-react";
+import { ArrowDown, Loader2, Moon, TriangleAlert, Undo2 } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
@@ -171,6 +171,8 @@ function latestPendingInteraction(
 }
 
 const CHAT_FONT_SIZE_DEFAULT = 14;
+// ponytail: A 30-second edit window covers a late hibernation event; use a daemon epoch if this wakes stale drafts.
+const RECENT_DRAFT_EDIT_MS = 30_000;
 
 // Reviewer panes share the terminal font-size preference with CenterPane, so a
 // reviewer opened inside the Chat surface matches a reviewer opened in TUI mode.
@@ -329,7 +331,7 @@ export interface ChatWorkspaceProps {
 	) => Promise<unknown> | void;
 	onInterrupt?: () => void;
 	commandError?: string;
-	onResumeAgent?: () => void;
+	onResumeAgent?: () => void | Promise<unknown>;
 	resumingAgent?: boolean;
 	resumeError?: string;
 	onOpenShell?: () => void;
@@ -638,6 +640,41 @@ function ChatWorkspaceContent({
 }: ChatWorkspaceProps & { draftScope: ChatDraftScope }) {
 	const draftScopeKey = chatDraftScopeKey(draftScope);
 	const turn = activeTurn(snapshot);
+	const wakeRequested = useRef(false);
+	const wakeAttempt = useRef(0);
+	const lastDraftEditAt = useRef<number | undefined>(undefined);
+	const previousControllerState = useRef(snapshot.controller.state);
+	const requestWake = useCallback(() => {
+		if (!onResumeAgent || wakeRequested.current) return;
+		wakeRequested.current = true;
+		lastDraftEditAt.current = undefined;
+		const attempt = ++wakeAttempt.current;
+		const finish = () => {
+			if (wakeAttempt.current === attempt) wakeRequested.current = false;
+		};
+		try {
+			void Promise.resolve(onResumeAgent()).then(finish, finish);
+		} catch {
+			finish();
+		}
+	}, [onResumeAgent]);
+	useEffect(() => {
+		const previous = previousControllerState.current;
+		previousControllerState.current = snapshot.controller.state;
+		if (snapshot.controller.state === "ready" || snapshot.controller.state === "busy") {
+			wakeRequested.current = false;
+		}
+		if (
+			snapshot.controller.state === "hibernated" &&
+			previous !== "hibernated" &&
+			lastDraftEditAt.current !== undefined &&
+			Date.now() - lastDraftEditAt.current <= RECENT_DRAFT_EDIT_MS
+		) requestWake();
+	}, [requestWake, snapshot.controller.state]);
+	const wakeOnInput = useCallback(() => {
+		lastDraftEditAt.current = Date.now();
+		if (snapshot.controller.state === "hibernated") requestWake();
+	}, [requestWake, snapshot.controller.state]);
 	const hasPendingInteraction = snapshot.items.some(
 		(item) =>
 			item.kind === "activity" &&
@@ -1124,7 +1161,10 @@ function ChatWorkspaceContent({
 
 	// Offered only while the agent is idle. The daemon refuses a rollback mid-turn,
 	// and a control that exists to be refused is worse than one that waits.
-	const rollbackTarget = onRollback && !turn && !newWorkDisabled ? (id: string) => setConfirming(id) : undefined;
+	const rollbackTarget =
+		onRollback && !turn && !newWorkDisabled && snapshot.controller.state !== "hibernated"
+			? (id: string) => setConfirming(id)
+			: undefined;
 	const discarded = snapshot.turns.filter((t) => t.rolledBack).length;
 
 	const brokenServers = useMemo(() => brokenMcpServers(snapshot), [snapshot]);
@@ -1168,7 +1208,11 @@ function ChatWorkspaceContent({
 					configPending={configOptionPending}
 					error={configOptionError}
 					disabled={
-						snapshot.controller.state === "stopped" || controllerTransitioning || configOptionPending || newWorkDisabled
+						snapshot.controller.state === "stopped" ||
+						snapshot.controller.state === "hibernated" ||
+						controllerTransitioning ||
+						configOptionPending ||
+						newWorkDisabled
 					}
 				/>
 			) : null,
@@ -1423,7 +1467,7 @@ function ChatWorkspaceContent({
 						provisionState={session?.provisionState}
 						provisionError={session?.provisionError}
 						transitioning={controllerTransitioning}
-						onResume={newWorkDisabled ? undefined : onResumeAgent}
+						onResume={newWorkDisabled ? undefined : snapshot.controller.state === "hibernated" ? requestWake : onResumeAgent}
 						resuming={resumingAgent}
 						resumeError={resumeError}
 						onOpenShell={onOpenShell}
@@ -1501,7 +1545,7 @@ function ChatWorkspaceContent({
 									settings={<><ContextMeter usage={snapshot.usage} />{composerSettings}</>}
 									busy={busy}
 									willQueue={Boolean(turn) || session?.provisionState === "provisioning"}
-									disabled={(snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}
+									disabled={((snapshot.controller.state === "stopped" && (!resumingAgent || session?.provisionState === "failed")) || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}
 									// Switch/reconnect status is the topbar spinner beside ⋮ — not composer text.
 									disabledPlaceholder={
 										controllerTransitioning || newWorkDisabled ? "" : undefined
@@ -1521,13 +1565,14 @@ function ChatWorkspaceContent({
 									sendPending={sendPending}
 									steerPending={steerPending}
 									steerRefusal={steerRefusal}
-									onCompact={newWorkDisabled ? undefined : onCompact}
+									onCompact={newWorkDisabled || snapshot.controller.state === "hibernated" ? undefined : onCompact}
 									compacting={compacting}
 									compactUnavailable={compactUnavailable}
 									compactBlocked={Boolean(turn)}
 									draftSessionId={queueEdit ? undefined : snapshot.sessionId}
 									draftSessionIncarnation={draftScope.incarnation}
 									acceptedClientMessageIds={acceptedClientMessageIds}
+									onDraftInput={wakeOnInput}
 								/>
 							</div>
 						</div>
@@ -1880,8 +1925,8 @@ function ChatHeader({
 }
 
 /**
- * Controller health. A stopped or recovering controller is announced, because a
- * silent surface is indistinguishable from an agent that is simply thinking.
+ * Controller health and hibernation. A silent surface is indistinguishable from
+ * an agent that is simply thinking.
  */
 function ControllerBanner({
 	controller,
@@ -1901,7 +1946,7 @@ function ControllerBanner({
 	provisionState?: WorkspaceSession["provisionState"];
 	provisionError?: string;
 	transitioning?: boolean;
-	onResume?: () => void;
+	onResume?: () => void | Promise<unknown>;
 	resuming?: boolean;
 	resumeError?: string;
 	onOpenShell?: () => void;
@@ -1911,6 +1956,7 @@ function ControllerBanner({
 	const provisioning = provisionState === "provisioning";
 	const failed = provisionState === "failed";
 	const starting = provisioning || failed;
+	const waking = Boolean(resuming && (controller.state === "hibernated" || controller.state === "stopped"));
 
 	// The transition coordinator intentionally stops one controller before it
 	// starts the other. The top-bar handoff state already explains that interval;
@@ -1928,8 +1974,12 @@ function ControllerBanner({
 			tone: "text-warning",
 		},
 		stopped: {
-			title: "The agent controller stopped",
-			tone: "text-destructive",
+			title: waking ? "Waking agent…" : "The agent controller stopped",
+			tone: waking ? "text-muted-foreground" : "text-destructive",
+		},
+		hibernated: {
+			title: resuming ? "Waking agent…" : "Agent hibernated",
+			tone: "text-muted-foreground",
 		},
 	};
 	const shown = provisioning
@@ -1938,11 +1988,14 @@ function ControllerBanner({
 			? { title: "This session could not be started", tone: "text-destructive" }
 			: copy[controller.state];
 	if (!shown) return null;
-	const loading = provisioning || (!failed && controller.state === "connecting");
+	const loading = provisioning || (!failed && (controller.state === "connecting" || waking));
+	const resumeClick = () => {
+		void Promise.resolve().then(() => onResume?.()).catch(() => {});
+	};
 
 	return (
 		<div
-			role={failed || controller.state === "stopped" ? "alert" : "status"}
+			role={failed || (controller.state === "stopped" && !waking) ? "alert" : "status"}
 			aria-atomic="true"
 			className="flex shrink-0 items-start gap-2.5 border-b border-border bg-surface px-4 py-2.5"
 		>
@@ -1951,6 +2004,8 @@ function ControllerBanner({
 					aria-hidden="true"
 					className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted-foreground"
 				/>
+			) : controller.state === "hibernated" ? (
+				<Moon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
 			) : (
 				<TriangleAlert aria-hidden="true" className={cn("mt-0.5 size-3.5 shrink-0", shown.tone)} />
 			)}
@@ -1975,15 +2030,27 @@ function ControllerBanner({
 							<span className="text-[11px] leading-snug text-destructive">{resumeError}</span>
 						) : null}
 						{onResume ? (
-							<Button type="button" size="sm" variant="outline" onClick={onResume} disabled={resuming}>
+							<Button type="button" size="sm" variant="outline" onClick={resumeClick} disabled={resuming}>
 								{resuming ? "Retrying…" : "Retry start"}
+							</Button>
+						) : null}
+					</>
+				) : controller.state === "stopped" && waking ? (
+					<span className="text-[11px] leading-snug text-muted-foreground">Restoring the agent. You can keep typing.</span>
+				) : controller.state === "hibernated" ? (
+					<>
+						<span className="text-[11px] leading-snug text-muted-foreground">Type a message to wake the agent.</span>
+						{resumeError ? <span className="text-[11px] leading-snug text-destructive">{resumeError}</span> : null}
+						{onResume ? (
+							<Button type="button" size="sm" variant="outline" onClick={resumeClick} disabled={resuming}>
+								{resumeError ? "Retry wake" : "Wake agent"}
 							</Button>
 						) : null}
 					</>
 				) : controller.error ? (
 					<span className="text-[11px] leading-snug text-muted-foreground">{controller.error}</span>
 				) : null}
-				{!starting && controller.state === "stopped" ? (
+				{!starting && controller.state === "stopped" && !waking ? (
 					<>
 						<span className="text-[11px] leading-snug text-muted-foreground">
 							History is kept. Resume the agent or open a shell in the same worktree.
@@ -1999,7 +2066,7 @@ function ControllerBanner({
 									type="button"
 									size="sm"
 									variant="outline"
-									onClick={onResume}
+									onClick={resumeClick}
 									disabled={resuming}
 								>
 									{resuming ? "Resuming…" : "Resume agent"}

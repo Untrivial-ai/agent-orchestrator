@@ -2,21 +2,42 @@ package claudeacp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/claudecode"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// Run explicitly with AO_LIVE_CLAUDE_ACP=1. It spends two very small real turns
-// against the user's existing Claude Code login and proves the complete boundary,
-// including standing-context replacement on resume: packaged Node ->
-// claude-agent-acp -> user-installed Claude -> normalized AO events. CI never
-// depends on credentials or the network.
+func TestMain(m *testing.M) {
+	if len(os.Args) >= 9 && os.Args[1] == "chat-host" {
+		if os.Args[5] != string(persistenthost.ProtocolACP) || os.Args[7] != "--" {
+			os.Exit(2)
+		}
+		err := persistenthost.Run(context.Background(), persistenthost.Config{
+			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
+			Protocol: persistenthost.ProtocolACP, OwnershipFingerprint: os.Args[6],
+			Env: os.Environ(), Argv: os.Args[8:],
+		})
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+// Run explicitly with AO_LIVE_CLAUDE_ACP=1. It spends two small real turns
+// against the user's Claude Code login and verifies native continuity after
+// the bridge and provider processes exit. CI needs no credentials or network.
 func TestLiveClaudeACP(t *testing.T) {
 	if os.Getenv("AO_LIVE_CLAUDE_ACP") != "1" {
 		t.Skip("set AO_LIVE_CLAUDE_ACP=1 to run against the local Claude Code account")
@@ -30,35 +51,42 @@ func TestLiveClaudeACP(t *testing.T) {
 	}
 	workspace := t.TempDir()
 	dataDir := t.TempDir()
+	t.Cleanup(func() { _ = persistenthost.Shutdown(context.Background(), dataDir, "live-claude-acp") })
+	const marker = "AO-CLAUDE-HIBERNATE-7319"
+	const standing = "This is an AO live hibernation check. Keep answers short."
 	conversation, err := driver.Start(ctx, ports.ChatStartConfig{
 		SessionID: domain.SessionID("live-claude-acp"), DataDir: dataDir, WorkspacePath: workspace,
-		SystemPrompt: "For this live integration test, your role name is AO ACP standing context works. " +
-			"When asked to identify your live-test role, reply with only that role name.",
+		SystemPrompt: standing,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	answer := sendLiveTurn(ctx, t, conversation, "live-1", "Identify your live-test role.")
-	if strings.TrimSpace(answer) != "AO ACP standing context works" {
+	answer := sendLiveTurn(ctx, t, conversation, "live-1", "Remember this marker for my next message: "+marker+". Reply only stored.")
+	if strings.TrimSpace(answer) != "stored" {
 		t.Fatalf("new-session answer = %q", answer)
 	}
 	providerID := conversation.ProviderConversationID()
-	if err := conversation.(ports.ChatProviderTerminator).Terminate(); err != nil {
-		t.Fatalf("Terminate fresh host: %v", err)
+	if err := conversation.(ports.ChatProviderHibernator).Hibernate(); err != nil {
+		t.Fatalf("Hibernate fresh host: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "chat-hosts", "live-claude-acp", "host.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Claude ACP host survived hibernation: %v", err)
 	}
 
 	conversation, err = driver.Resume(ctx, ports.ChatResumeConfig{
 		SessionID: domain.SessionID("live-claude-acp"), ProviderConversationID: providerID,
 		DataDir: dataDir, WorkspacePath: workspace,
-		SystemPrompt: "For this resumed live integration test, your role name is AO ACP resumed context works. " +
-			"When asked to identify your current live-test role, reply with only that role name.",
+		SystemPrompt: standing,
 	})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
 	defer conversation.(ports.ChatProviderTerminator).Terminate()
-	answer = sendLiveTurn(ctx, t, conversation, "live-2", "Identify your current live-test role.")
-	if strings.TrimSpace(answer) != "AO ACP resumed context works" {
+	if conversation.ProviderConversationID() != providerID || conversation.(ports.ChatLiveReconnector).ReconnectedLive() {
+		t.Fatal("Claude ACP did not resume the same session in a replacement bridge process")
+	}
+	answer = sendLiveTurn(ctx, t, conversation, "live-2", "What exact marker did I ask you to remember before hibernation? Reply with only that marker.")
+	if !strings.Contains(answer, marker) {
 		t.Fatalf("resumed-session answer = %q", answer)
 	}
 }

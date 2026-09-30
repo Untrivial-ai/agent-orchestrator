@@ -524,10 +524,8 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				onDecide={commands.resolve}
 				onResolveInput={commands.resolveInput}
 				onInterrupt={commands.interrupt}
-				onResumeAgent={() => {
-					void commands.resumeAgent().catch(() => {});
-				}}
-				resumingAgent={commands.resumingAgent}
+				onResumeAgent={commands.resumeAgent}
+				resumingAgent={commands.resumingAgent || (renderSnapshot.controller.state === "hibernated" && controllerBusy)}
 				resumeError={commands.resumeError}
 				onOpenShell={onOpenShell}
 				openingShell={openingShell}

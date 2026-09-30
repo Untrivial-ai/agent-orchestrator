@@ -44,19 +44,20 @@ func TestSeedRecordPreservesAutomationRunIdentity(t *testing.T) {
 }
 
 type fakeStore struct {
-	sessions         map[domain.SessionID]domain.SessionRecord
-	pr               map[domain.SessionID]domain.PRFacts
-	projects         map[string]domain.ProjectRecord
-	conversations    map[domain.SessionID]domain.ConversationRecord
-	workspaceRepo    map[string][]domain.WorkspaceRepoRecord
-	num              int
-	deleteErr        error
-	upsertWTErr      error
-	listAllErr       error
-	getProjectErr    error
-	getSessionErr    error
-	updateSessionErr error
-	deletePrepErr    error
+	sessions                map[domain.SessionID]domain.SessionRecord
+	pr                      map[domain.SessionID]domain.PRFacts
+	projects                map[string]domain.ProjectRecord
+	conversations           map[domain.SessionID]domain.ConversationRecord
+	workspaceRepo           map[string][]domain.WorkspaceRepoRecord
+	num                     int
+	deleteErr               error
+	upsertWTErr             error
+	listAllErr              error
+	getProjectErr           error
+	getSessionErr           error
+	updateSessionErr        error
+	hibernationCASConflicts int
+	deletePrepErr           error
 	// agentSwitchStore is wired only by agent-switch tests so fakeLCM can model
 	// Lifecycle Manager's atomic ownership-boundary commands.
 	agentSwitchStore any
@@ -112,6 +113,22 @@ func (f *fakeStore) UpdateSession(_ context.Context, rec domain.SessionRecord) e
 	}
 	f.sessions[rec.ID] = rec
 	return nil
+}
+func (f *fakeStore) SetSessionHibernated(_ context.Context, id domain.SessionID, revision int64, at *time.Time) (bool, error) {
+	rec, ok := f.sessions[id]
+	if !ok || rec.Revision != revision || rec.IsTerminated {
+		return false, nil
+	}
+	if f.hibernationCASConflicts > 0 {
+		f.hibernationCASConflicts--
+		rec.Revision++
+		f.sessions[id] = rec
+		return false, nil
+	}
+	rec.HibernatedAt = at
+	rec.Revision++
+	f.sessions[id] = rec
+	return true, nil
 }
 func (f *fakeStore) UpdateSessionModel(_ context.Context, id domain.SessionID, model string) (bool, error) {
 	if f.updateSessionErr != nil {

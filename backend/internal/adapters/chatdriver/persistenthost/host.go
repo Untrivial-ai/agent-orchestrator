@@ -582,9 +582,13 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	child.Stderr = io.Discard
-	if err := child.Start(); err != nil {
+	closeProviderTree, err := startProviderProcess(child)
+	if err != nil {
 		return err
 	}
+	// The job owns descendants even if the direct provider exits first. Close
+	// it before releasing the host lock so Shutdown follows the kill request.
+	defer closeProviderTree()
 
 	d := Descriptor{
 		Version: ProtocolVersion, SessionID: cfg.SessionID, Protocol: cfg.Protocol,
@@ -622,7 +626,7 @@ func Run(ctx context.Context, cfg Config) error {
 		select {
 		case <-providerDone:
 			// Wrapper adapters may exit before their provider child. The hosted
-			// process group is the ownership boundary, so explicit shutdown reaps
+			// process tree is the ownership boundary, so explicit shutdown reaps
 			// any descendant that did not follow stdin closure.
 			_ = killProviderProcess(context.WithoutCancel(ctx), child)
 		case <-time.After(3 * time.Second):

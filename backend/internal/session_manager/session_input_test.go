@@ -132,6 +132,26 @@ func TestAgentOperationAndInputLeaseAreScopedPerSession(t *testing.T) {
 	m.endAgentOperation("worker-2", agentOperationRestore)
 }
 
+func TestResumeWaitsForHibernation(t *testing.T) {
+	m := newInputLeaseTestManager()
+	id := domain.SessionID("worker-1")
+	if err := m.beginAgentOperation(context.Background(), id, agentOperationHibernate); err != nil {
+		t.Fatal(err)
+	}
+	resumed := make(chan error, 1)
+	go func() { resumed <- m.beginAgentResume(context.Background(), id) }()
+	select {
+	case err := <-resumed:
+		t.Fatalf("resume overtook hibernation: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	m.endAgentOperation(id, agentOperationHibernate)
+	if err := <-resumed; err != nil {
+		t.Fatal(err)
+	}
+	m.endAgentResume(id)
+}
+
 func eventuallySessionInput(t *testing.T, timeout time.Duration, fn func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

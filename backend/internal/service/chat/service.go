@@ -52,6 +52,7 @@ type Service struct {
 	onModelChanged   func(domain.SessionID, string)
 	stopProviderHost func(context.Context, domain.SessionID) error
 	reports          *reportsvc.Coordinator
+	wakeChat         func(context.Context, domain.SessionID) error
 
 	mu               sync.RWMutex
 	controllers      map[domain.SessionID]*Controller
@@ -1070,16 +1071,22 @@ func (s *Service) Send(
 			// refused a stale queue append; hand the message to its controller.
 			latest, readErr := s.requireChatSession(ctx, id)
 			if readErr == nil && !latest.IsTerminated && latest.ProvisionState.WithDefault() == domain.SessionProvisionReady {
-				if controller, controllerErr := s.Controller(id); controllerErr == nil {
+				var controller *Controller
+				var release func()
+				controller, release, err = s.workingController(ctx, id)
+				if err == nil {
 					turn, err = controller.Send(ctx, msg)
+					release()
 				}
 			}
 		}
 	} else {
 		var controller *Controller
-		controller, err = s.Controller(id)
+		var release func()
+		controller, release, err = s.workingController(ctx, id)
 		if err == nil {
 			turn, err = controller.Send(ctx, msg)
+			release()
 		}
 	}
 	if err != nil {
@@ -1200,6 +1207,9 @@ func (s *Service) ArmChatHandoff(
 	if err != nil {
 		return err
 	}
+	if controller.State() == ports.ChatControllerStopped {
+		return nil
+	}
 	return controller.ArmHandoff(ctx, policy)
 }
 
@@ -1220,6 +1230,9 @@ func (s *Service) PrepareChatHandoff(
 	}
 	if err != nil {
 		return err
+	}
+	if controller.State() == ports.ChatControllerStopped {
+		return nil
 	}
 	return controller.BeginHandoff(ctx, policy)
 }
@@ -1250,9 +1263,11 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 		delete(s.startConfigs, owner)
 		s.mu.Unlock()
 		if s.stopProviderHost != nil {
-			return s.stopProviderHost(ctx, id)
+			if err := s.stopProviderHost(ctx, id); err != nil {
+				return err
+			}
 		}
-		return nil
+		return s.clearHibernation(ctx, id)
 	}
 	err := controller.Terminate(ctx)
 	controller.mu.Lock()
@@ -1278,6 +1293,9 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 		delete(s.startConfigs, owner)
 		s.mu.Unlock()
 	default:
+	}
+	if err == nil {
+		err = s.clearHibernation(ctx, id)
 	}
 	return err
 }
@@ -1441,8 +1459,14 @@ type ConversationRows struct {
 // stopped, and a client that reads "stopped" hides the composer on a session
 // the user is meant to keep typing into.
 func idleControllerState(record domain.SessionRecord) ports.ChatControllerState {
+	if record.IsTerminated {
+		return ports.ChatControllerStopped
+	}
 	if record.ProvisionState.IsProvisioning() {
 		return ports.ChatControllerConnecting
+	}
+	if record.HibernatedAt != nil {
+		return ports.ChatControllerHibernated
 	}
 	return ports.ChatControllerStopped
 }
@@ -1483,8 +1507,10 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 	state := idleControllerState(record)
 	var caps ports.ChatCapabilities
 	if controller, err := s.Controller(id); err == nil {
-		state = controller.State()
-		caps = controller.Capabilities()
+		if live := controller.State(); record.HibernatedAt == nil || live != ports.ChatControllerStopped {
+			state = live
+			caps = controller.Capabilities()
+		}
 	}
 
 	return Snapshot{
@@ -1578,8 +1604,10 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 	state := idleControllerState(record)
 	var caps ports.ChatCapabilities
 	if controller, err := s.Controller(id); err == nil {
-		state = controller.State()
-		caps = controller.Capabilities()
+		if live := controller.State(); record.HibernatedAt == nil || live != ports.ChatControllerStopped {
+			state = live
+			caps = controller.Capabilities()
+		}
 	}
 	return Snapshot{
 		Conversation:                     rows.Conversation,
@@ -1792,13 +1820,11 @@ var ErrConfigOptionsUnsupported = errors.New("chat driver has no session config 
 // Read from the live conversation rather than a table in AO: models are added,
 // renamed, hidden per account and gated by entitlement the provider knows about.
 func (s *Service) Models(ctx context.Context, id domain.SessionID) ([]ports.ChatModel, domain.ConversationSettings, error) {
-	if _, err := s.requireChatSession(ctx, id); err != nil {
-		return nil, domain.ConversationSettings{}, err
-	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return nil, domain.ConversationSettings{}, err
 	}
+	defer release()
 	lister, ok := controller.conv.(ports.ChatModelLister)
 	if !ok {
 		return nil, controller.Settings(), ErrModelsUnsupported
@@ -1819,10 +1845,11 @@ func (s *Service) ConfigOptions(ctx context.Context, id domain.SessionID) ([]por
 	if err != nil {
 		return nil, err
 	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	configurer, ok := controller.conv.(ports.ChatConfigOptionController)
 	if !ok {
 		return nil, ErrConfigOptionsUnsupported
@@ -1844,10 +1871,11 @@ func (s *Service) SetConfigOption(
 	if err != nil {
 		return nil, err
 	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	configurer, ok := controller.conv.(ports.ChatConfigOptionController)
 	if !ok {
 		return nil, ErrConfigOptionsUnsupported
@@ -1952,13 +1980,11 @@ func settingsFromConfigOptions(
 // ten seconds or so; the settled figures arrive on the timeline as a compaction
 // entry.
 func (s *Service) Compact(ctx context.Context, id domain.SessionID) (ports.ChatCompactionResult, error) {
-	if _, err := s.requireChatSession(ctx, id); err != nil {
-		return ports.ChatCompactionResult{}, err
-	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return ports.ChatCompactionResult{}, err
 	}
+	defer release()
 	return controller.Compact(ctx)
 }
 
@@ -1977,13 +2003,11 @@ func (s *Service) ReloadMCPServers(
 	ctx context.Context,
 	id domain.SessionID,
 ) ([]domain.ConversationMCPServer, error) {
-	if _, err := s.requireChatSession(ctx, id); err != nil {
-		return nil, err
-	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	return controller.ReloadMCPServers(ctx)
 }
 
@@ -1995,13 +2019,11 @@ func (s *Service) RetryTurn(
 	id domain.SessionID,
 	turnID string,
 ) (domain.ConversationTurn, error) {
-	if _, err := s.requireChatSession(ctx, id); err != nil {
-		return domain.ConversationTurn{}, err
-	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return domain.ConversationTurn{}, err
 	}
+	defer release()
 	result, err := controller.RetryTurn(ctx, turnID)
 	if err != nil {
 		return domain.ConversationTurn{}, err
@@ -2018,13 +2040,11 @@ func (s *Service) SetTurnSettings(
 	id domain.SessionID,
 	settings domain.ConversationSettings,
 ) (domain.ConversationSettings, error) {
-	if _, err := s.requireChatSession(ctx, id); err != nil {
-		return domain.ConversationSettings{}, err
-	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return domain.ConversationSettings{}, err
 	}
+	defer release()
 	controller.configMu.Lock()
 	defer controller.configMu.Unlock()
 	// The turn-settings endpoint does not own provider session mode choices.
@@ -2085,10 +2105,11 @@ func (s *Service) relayChatTurn(
 	text, clientMessageID string,
 	authoredByUser bool,
 ) (string, error) {
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return "", err
 	}
+	defer release()
 	turn, err := controller.Send(ctx, ports.ChatUserMessage{
 		Text:            text,
 		ClientMessageID: clientMessageID,

@@ -78,6 +78,8 @@ import (
 // are healed on this cadence even when no event or hook fires.
 const usageReconcileTick = 3 * time.Minute
 
+const chatHibernateSweepTick = 30 * time.Second
+
 // sentryEnvironment maps the daemon's app version to a Sentry environment so a
 // nightly/edge build's issues do not mix with stable release health.
 func sentryEnvironment(version string) string {
@@ -550,7 +552,8 @@ func Run() error {
 	agentSvc = agentsvc.NewWithDeps(agentDeps)
 	agentSvc.WarmModelCatalogs(ctx)
 
-	sessionSvc, reviewSvc, wiredSessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, messenger, telemetrySink, notificationWriter, agents, agentSvc, managedPreview, browserBroker, browserAuthority, chatLauncher{svc: chatSvc}, settingsSvc, policyCoordinator, tracker, codexOperationGate, log)
+	persistentHostsReconciled := make(chan struct{})
+	sessionSvc, reviewSvc, wiredSessMgr, err := startSession(ctx, cfg, runtimeAdapter, store, lcStack.LCM, messenger, telemetrySink, notificationWriter, agents, agentSvc, managedPreview, browserBroker, browserAuthority, chatLauncher{svc: chatSvc, persistentHostReconcileDone: persistentHostsReconciled}, settingsSvc, policyCoordinator, tracker, codexOperationGate, log)
 	if err != nil {
 		stop()
 		lcStack.Stop()
@@ -561,6 +564,14 @@ func Run() error {
 	}
 	sessionSvc.SetChatProviderPreserver(chatSvc.PreservesProviderOnRestart)
 	sessMgr = wiredSessMgr
+	if fenced, ok := sessMgr.(interface{ SetPersistentHostReconcileDone(<-chan struct{}) }); ok {
+		fenced.SetPersistentHostReconcileDone(persistentHostsReconciled)
+	}
+	if wake, ok := sessMgr.(interface {
+		WakeHibernatedChat(context.Context, domain.SessionID) error
+	}); ok {
+		chatSvc.SetWakeCallback(wake.WakeHibernatedChat)
+	}
 	if tunable, ok := sessMgr.(interface {
 		SetModelCatalog(interface {
 			Models(context.Context, string, string, bool) (ports.AgentModelCatalog, error)
@@ -982,11 +993,28 @@ func Run() error {
 			if reconcileErr := reconcilePersistentChatHosts(ctx, cfg.DataDir, store); reconcileErr != nil {
 				log.Error("persistent chat host reconciliation on boot failed", "err", reconcileErr)
 			}
+			close(persistentHostsReconciled)
 			if reconcileErr := sessMgr.ReconcileBackground(ctx); reconcileErr != nil {
 				log.Error("background session reconciliation on boot failed", "err", reconcileErr)
 			}
 			if reconcileErr := lcStack.ReconcileRuntime(ctx); reconcileErr != nil {
 				log.Error("background agent-process reconciliation on boot failed", "err", reconcileErr)
+			}
+		}()
+		go func() {
+			// The session operation gate skips reconciliation in progress, so
+			// a slow provider reconnect must not stall hibernation of others.
+			ticker := time.NewTicker(chatHibernateSweepTick)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := sessMgr.HibernateIdleChats(ctx); err != nil && ctx.Err() == nil {
+						log.Warn("idle Chat hibernation failed", "err", err)
+					}
+				}
 			}
 		}()
 	})
