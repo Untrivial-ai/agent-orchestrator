@@ -81,6 +81,45 @@ describe("mobile browser bridge protocol", () => {
 			.toContain("refs: refInfo");
 	});
 
+	it("never exposes password values as snapshot names", () => {
+		let posted: string | undefined;
+		const passwordElement = (labels: Array<{ textContent: string }>, value: string) => ({
+			tagName: "INPUT",
+			type: "password",
+			value,
+			labels,
+			isConnected: true,
+			getBoundingClientRect: () => ({ width: 100, height: 24 }),
+			getAttribute: () => null,
+			matches: () => true,
+		});
+		const labeled = passwordElement([{ textContent: "Account password" }], "secret-one");
+		const unlabeled = passwordElement([], "secret-two");
+		const window = {
+			getComputedStyle: () => ({ visibility: "visible", display: "block" }),
+			ReactNativeWebView: {
+				postMessage(raw: string) {
+					posted = raw;
+				},
+			},
+		};
+		const document = { querySelectorAll: () => [labeled, unlabeled] };
+		const script = browserCommandScript({
+			type: "command",
+			requestId: "snapshot-passwords",
+			sessionId: "s1",
+			action: "snapshot",
+			args: { interactive: true },
+		});
+		new Function("window", "document", "location", script)(window, document, { href: "https://example.com" });
+
+		const result = parseBrowserBridgeMessage(posted ?? "")?.result;
+		expect(result?.text).toContain('textbox "Account password" [ref=e1]');
+		expect(result?.text).toContain('textbox "Password" [ref=e2]');
+		expect(JSON.stringify(result)).not.toContain("secret-one");
+		expect(JSON.stringify(result)).not.toContain("secret-two");
+	});
+
 	it("returns only the requested get property in the CLI value shape", () => {
 		expect(runPageGet("url")?.result).toEqual({ value: "https://example.com/current" });
 		expect(runPageGet("title")?.result).toEqual({ value: "Example title" });

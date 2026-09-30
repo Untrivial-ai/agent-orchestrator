@@ -72,7 +72,15 @@ export const MOBILE_BROWSER_BOOTSTRAP = `
   function role(el) {
     return el.getAttribute('role') || ({A:'link',BUTTON:'button',INPUT:el.type === 'checkbox' ? 'checkbox' : 'textbox',TEXTAREA:'textbox',SELECT:'combobox'}[el.tagName] || el.tagName.toLowerCase());
   }
-  function name(el) { return clean(el.getAttribute('aria-label') || el.getAttribute('alt') || el.getAttribute('placeholder') || el.innerText || el.value || el.title); }
+  function associatedLabel(el) {
+    if (!el.labels || !el.labels.length) return '';
+    return Array.prototype.map.call(el.labels, function (label) { return label.innerText || label.textContent || ''; }).join(' ');
+  }
+  function name(el) {
+    var safeName = el.getAttribute('aria-label') || associatedLabel(el) || el.getAttribute('alt') || el.getAttribute('placeholder') || el.innerText || el.title;
+    if (el.tagName === 'INPUT' && String(el.type || '').toLowerCase() === 'password') return clean(safeName || 'Password');
+    return clean(safeName || el.value);
+  }
   function snapshot(interactive) {
     generation += 1; refs = Object.create(null); refInfo = Object.create(null);
     var selector = interactive ? 'a,button,input,textarea,select,[role],[tabindex]' : 'a,button,input,textarea,select,[role],[tabindex],h1,h2,h3,p,li';
