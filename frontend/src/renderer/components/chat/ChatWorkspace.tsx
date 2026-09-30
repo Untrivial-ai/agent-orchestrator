@@ -3793,7 +3793,9 @@ function groupByTurn(snapshot: ConversationSnapshot): TimelineGroup[] {
 		// off, are the useful parts.
 		group.diff = turn.diff;
 		group.plan = turn.plan?.steps.length ? turn.plan : undefined;
-		group.live = turn.state === "running";
+		// A stopped controller cannot be producing live activity: showing the
+		// turn as live spun "Working for…" forever over a dead controller (#6064).
+		group.live = turn.state === "running" && snapshot.controller.state !== "stopped";
 		group.liveStartedAt = turn.startedAt ?? turn.requestedAt;
 		group.blocked = group.items.some(
 			(item) =>
