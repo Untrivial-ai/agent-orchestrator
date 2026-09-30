@@ -334,8 +334,9 @@ func TestResumeReconnectsInitializedHostWithoutNativeResume(t *testing.T) {
 
 func TestCodexHibernateStopsAppServerAndNativeResumesThread(t *testing.T) {
 	d, firstServer := newTestDriver(t)
+	workspace := t.TempDir()
 	first, err := d.Start(context.Background(), ports.ChatStartConfig{
-		SessionID: "hibernate-codex", WorkspacePath: "/tmp/ws",
+		SessionID: "hibernate-codex", WorkspacePath: workspace,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -365,7 +366,7 @@ func TestCodexHibernateStopsAppServerAndNativeResumesThread(t *testing.T) {
 	replacement, server := newTestDriver(t)
 	server.reply("turn/start", `{"turn":{"id":"turn-2","status":"inProgress","items":[]}}`)
 	resumed, err := replacement.Resume(context.Background(), ports.ChatResumeConfig{
-		SessionID: "hibernate-codex", WorkspacePath: "/tmp/ws", ProviderConversationID: threadID,
+		SessionID: "hibernate-codex", WorkspacePath: workspace, ProviderConversationID: threadID,
 	})
 	if err != nil {
 		t.Fatal(err)
