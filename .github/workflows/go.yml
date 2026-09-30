@@ -22,6 +22,10 @@ concurrency:
 jobs:
   backend-core:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
     defaults:
       run:
         working-directory: backend
@@ -42,6 +46,7 @@ jobs:
           cache-dependency-path: backend/go.sum
 
       - name: Check formatting
+        if: matrix.shard == 0
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
@@ -51,9 +56,11 @@ jobs:
           fi
 
       - name: Build
+        if: matrix.shard == 0
         run: go build ./...
 
       - name: Vet
+        if: matrix.shard == 0
         run: go vet ./...
 
       - name: Test
@@ -63,7 +70,11 @@ jobs:
         # cache is content-aware for Go inputs but not for the things these
         # tests actually touch — subprocesses, PATH contents, the network — so
         # a required check must still run every test. Compilation stays cached.
-        run: go list ./... | grep -v -e '/internal/storage/sqlite$' -e '/internal/service/chat$' -e '/internal/session_manager$' -e '/internal/storage/sqlite/store$' | xargs go test -race -count=1 -timeout=20m
+        run: |
+          packages=$(go list ./... | grep -v -e '/internal/storage/sqlite$' -e '/internal/service/chat$' -e '/internal/session_manager$' -e '/internal/storage/sqlite/store$')
+          selected=$(printf '%s\n' "$packages" | awk -v shard=${{ matrix.shard }} '((NR - 1) % 2) == shard')
+          test -n "$selected"
+          printf '%s\n' "$selected" | xargs go test -race -count=1 -timeout=20m
 
   chat-race:
     runs-on: ubuntu-latest
