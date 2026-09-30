@@ -21,8 +21,7 @@ const approvedLiterals: Record<string, readonly string[]> = {
 	],
 	"components/CenterPane.tsx": ["px"],
 	"components/CreateProjectFlow.tsx": [
-		"my-workspace/", "my-project", "web-app", "main", "github_pat_…", "ghp_...",
-		"https://github.com/owner/repo", "GitHub PAT",
+		"my-workspace/", "my-project", "web-app", "main",
 	],
 	"components/DaemonStartupLoader.tsx": ["Agent Orchestrator"],
 	"components/ProjectSettingsForm.tsx": [
@@ -44,8 +43,8 @@ const approvedLiterals: Record<string, readonly string[]> = {
 		"Ctrl+Shift+I",
 		"Ctrl+/",
 	],
-	"components/settings/CloudCredentialsSection.tsx": ["github_pat_…"],
 	"components/settings/ConnectMobileSetup.tsx": ["tailscale ip -4"],
+	"components/settings/CloudGitHubSection.tsx": ["GitHub"],
 	"components/settings/UpdatesSection.tsx": ["PR #"],
 };
 

@@ -1,3 +1,5 @@
+import { Info } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ThemePreference, ThemeStyle } from "../../lib/theme";
@@ -308,7 +310,18 @@ function CloudOfferingRow() {
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	return (
 		<div className="flex w-full flex-col">
-			<SettingsRow label={t("settings.cloud")}>
+			<div className="settings-row-bar">
+				<div className="flex items-center gap-1.5">
+					<span className="text-sm text-settings-label">{t("settings.cloud")}</span>
+					<Popover>
+						<PopoverTrigger asChild>
+							<button type="button" aria-label={t("settings.cloudInfo")} className="inline-flex size-6 items-center justify-center rounded text-settings-muted hover:bg-interactive-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
+								<Info className="size-3.5" aria-hidden="true" />
+							</button>
+						</PopoverTrigger>
+						<PopoverContent align="start" className="max-w-72 p-3 text-xs leading-relaxed">{t("settings.cloudToggleHint")}</PopoverContent>
+					</Popover>
+				</div>
 				<Switch
 					aria-label={t("settings.cloud")}
 					checked={settings?.cloudOffering ?? false}
@@ -321,7 +334,7 @@ function CloudOfferingRow() {
 						update(false);
 					}}
 				/>
-			</SettingsRow>
+			</div>
 			<ConfirmDialog
 				open={confirmOpen}
 				title={t("settings.cloudConfirm.title")}
@@ -335,7 +348,6 @@ function CloudOfferingRow() {
 				}}
 				onOpenChange={setConfirmOpen}
 			/>
-			<p className="px-3 pb-2 text-xs leading-relaxed text-muted-foreground">{t("settings.cloudToggleHint")}</p>
 			{error ? (
 				<p role="alert" className="px-3 pb-2 text-caption leading-4 text-error">
 					{error}

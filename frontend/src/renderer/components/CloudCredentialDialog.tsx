@@ -31,44 +31,46 @@ import { aoBridge } from "../lib/bridge";
 
 const BROWSER_LOGIN = "browser_login";
 
-// The coding-agent providers the control plane accepts, with the credential
-// types each one validates (see cloud validAgentCredentialType). Codex's
-// ChatGPT-subscription path deliberately has no secret field: the desktop app
-// performs the browser login locally, then securely sends Codex's native auth
-// document to the control plane. A session token is never pasted or displayed.
+// The coding-agent providers supported by the cloud connection flow, with the
+// credential values each one accepts. Browser login deliberately has no secret
+// field: the desktop app performs the login locally.
 const AGENTS = [
 	{
 		agent: "claude-code",
 		label: "Claude Code",
+		titleKey: "cloudCredential.titleClaudeCode",
 		creds: [
-			{ value: "oauth_token", label: "Setup token" },
-			{ value: "api_key", label: "API key" },
-			{ value: BROWSER_LOGIN, label: "Log in with Anthropic" },
+			{ value: "oauth_token", labelKey: "cloudCredential.claudeSetupToken" },
+			{ value: "api_key", labelKey: "cloudCredential.anthropicApiKey" },
+			{ value: BROWSER_LOGIN, labelKey: "cloudCredential.loginWithAnthropic" },
 		],
 	},
 	{
 		agent: "codex",
 		label: "Codex",
+		titleKey: "cloudCredential.titleCodex",
 		creds: [
-			{ value: "api_key", label: "API key" },
-			{ value: BROWSER_LOGIN, label: "Log in with ChatGPT" },
+			{ value: "api_key", labelKey: "cloudCredential.openaiApiKey" },
+			{ value: BROWSER_LOGIN, labelKey: "cloudCredential.loginWithChatGPT" },
 		],
 	},
 	{
 		agent: "cursor",
 		label: "Cursor",
-		creds: [{ value: "api_key", label: "API key" }],
+		titleKey: "cloudCredential.titleCursor",
+		creds: [{ value: "api_key", labelKey: "cloudCredential.cursorApiKey" }],
 	},
 	{
 		agent: "opencode",
 		label: "OpenCode",
-		// opencode is multi-provider; the credential type doubles as a provider
-		// selector so the worker injects the key as the matching env var.
+		titleKey: "cloudCredential.titleOpenCode",
+		// OpenCode accepts keys for several providers. The selected value is sent
+		// as the credential type so the worker can use the matching key.
 		creds: [
-			{ value: "opencode_api_key", label: "OpenCode API key" },
-			{ value: "anthropic_api_key", label: "Anthropic API key" },
-			{ value: "openai_api_key", label: "OpenAI API key" },
-			{ value: "openrouter_api_key", label: "OpenRouter API key" },
+			{ value: "opencode_api_key", labelKey: "cloudCredential.opencodeApiKey" },
+			{ value: "anthropic_api_key", labelKey: "cloudCredential.anthropicApiKey" },
+			{ value: "openai_api_key", labelKey: "cloudCredential.openaiApiKey" },
+			{ value: "openrouter_api_key", labelKey: "cloudCredential.openrouterApiKey" },
 		],
 	},
 ] as const;
@@ -87,6 +89,7 @@ export function CloudCredentialDialog() {
 	const open = useCredentialDialogStore((s) => s.open);
 	const setOpen = useCredentialDialogStore((s) => s.setOpen);
 	const targetAgent = useCredentialDialogStore((s) => s.targetAgent);
+	const targetCredentialType = useCredentialDialogStore((s) => s.targetCredentialType);
 
 	const [agent, setAgent] = useState<CloudCpAgentProvider>(AGENTS[0].agent);
 	const [credentialType, setCredentialType] = useState<string>(AGENTS[0].creds[0].value);
@@ -97,17 +100,69 @@ export function CloudCredentialDialog() {
 	const creds = useMemo(() => AGENTS.find((a) => a.agent === agent)?.creds ?? AGENTS[0].creds, [agent]);
 	const agentOptions = useMemo(() => AGENTS.map((entry) => ({ value: entry.agent, label: entry.label })), []);
 	const credentialOptions = useMemo(
-		() => creds.map((entry) => ({ value: entry.value, label: entry.label })),
-		[creds],
+		() => creds.map((entry) => ({ value: entry.value, label: t(entry.labelKey) })),
+		[creds, t],
 	);
 	const selectedAgent = AGENTS.find((entry) => entry.agent === agent);
 	const selectedCredential = creds.find((entry) => entry.value === credentialType);
+	const selectedCredentialLabel = selectedCredential ? t(selectedCredential.labelKey) : "";
 	const needsSecret = credentialType !== BROWSER_LOGIN;
-
+	const showCredentialType = creds.length > 1;
 	// When opened from a specific harness row (targetAgent) the agent is fixed to
-	// that harness -- the dialog is "for OpenCode", not a picker over all harnesses.
-	// The credential-type/provider dropdown remains the interactive choice.
+	// that harness. The generic settings entry keeps the agent picker.
 	const agentLocked = Boolean(targetAgent && AGENTS.some((a) => a.agent === targetAgent));
+	const openCodeProviders: Record<string, string> = {
+		opencode_api_key: "OpenCode",
+		anthropic_api_key: "Anthropic",
+		openai_api_key: "OpenAI",
+		openrouter_api_key: "OpenRouter",
+	};
+	const keyProvider = agent === "claude-code" ? "Anthropic"
+		: agent === "codex" ? "OpenAI"
+			: agent === "cursor" ? "Cursor" : openCodeProviders[credentialType] ?? "OpenCode";
+	const secretCopy = (() => {
+		if (agent === "claude-code" && credentialType === "oauth_token") {
+			return {
+				label: t("cloudCredential.claudeSetupToken"),
+				placeholder: t("cloudCredential.setupTokenPlaceholder"),
+				hint: t("cloudCredential.setupTokenHint"),
+			};
+		}
+		if (agent === "claude-code" && credentialType === "api_key") {
+			return {
+				label: t("cloudCredential.anthropicApiKey"),
+				placeholder: t("cloudCredential.anthropicApiKeyPlaceholder"),
+				hint: t("cloudCredential.anthropicApiKeyHint"),
+			};
+		}
+		if (agent === "codex") {
+			return {
+				label: t("cloudCredential.openaiApiKey"),
+				placeholder: t("cloudCredential.openaiApiKeyPlaceholder"),
+				hint: t("cloudCredential.openaiApiKeyHint"),
+			};
+		}
+		if (agent === "cursor") {
+			return {
+				label: t("cloudCredential.cursorApiKey"),
+				placeholder: t("cloudCredential.cursorApiKeyPlaceholder"),
+				hint: t("cloudCredential.cursorApiKeyHint"),
+			};
+		}
+		return {
+			label: selectedCredentialLabel,
+			placeholder: t("cloudCredential.providerApiKeyPlaceholder", { provider: keyProvider }),
+			hint: t("cloudCredential.providerApiKeyHint", { provider: keyProvider }),
+		};
+	})();
+	const title = agentLocked ? t(selectedAgent?.titleKey ?? "cloudCredential.title") : t("cloudCredential.title");
+	const description = needsSecret
+		? credentialType === "oauth_token"
+			? t("cloudCredential.setupTokenDescription")
+			: t("cloudCredential.apiKeyDescription", { provider: keyProvider, agent: selectedAgent?.label })
+		: agent === "claude-code"
+			? t("cloudCredential.anthropicLoginDescription")
+			: t("cloudCredential.chatgptLoginDescription");
 
 	// Reset the whole form each time the dialog opens so a reopen never shows a
 	// stale secret or a previous error/success. Pre-select the harness the user
@@ -115,12 +170,14 @@ export function CloudCredentialDialog() {
 	useEffect(() => {
 		if (!open) return;
 		const initial = AGENTS.find((a) => a.agent === targetAgent) ?? AGENTS[0];
+		const requestedType = initial.agent === "codex" && (targetCredentialType === "auth_json" || targetCredentialType === "access_token")
+			? BROWSER_LOGIN : targetCredentialType;
 		setAgent(initial.agent);
-		setCredentialType(initial.creds[0].value);
+		setCredentialType(initial.creds.find((entry) => entry.value === requestedType)?.value ?? initial.creds[0].value);
 		setSecret("");
 		setPhase("idle");
 		setError(null);
-	}, [open, targetAgent]);
+	}, [open, targetAgent, targetCredentialType]);
 
 	const onAgentChange = (next: string) => {
 		const agentValue = (AGENTS.find((a) => a.agent === next) ?? AGENTS[0]).agent;
@@ -184,9 +241,9 @@ export function CloudCredentialDialog() {
 					</button>
 				</DialogClose>
 
-				<DialogTitle className="px-4 pr-12 pt-3 text-balance text-[18px] font-semibold text-[var(--color-text-import-title)]">{t("cloudCredential.title")}</DialogTitle>
+				<DialogTitle className="px-4 pr-12 pt-3 text-balance text-[18px] font-semibold text-[var(--color-text-import-title)]">{title}</DialogTitle>
 				<DialogDescription className="px-4 pr-12 pt-1 text-pretty text-[13px] leading-5 text-muted-foreground">
-					{t("cloudCredential.description")}
+					{description}
 				</DialogDescription>
 
 				{phase === "success" ? (
@@ -229,15 +286,15 @@ export function CloudCredentialDialog() {
 							)}
 						</div>
 
-						<div className="space-y-2">
+						{showCredentialType ? <div className="space-y-2">
 							<Label htmlFor="cloud-cred-type" className={onboardingFormLabelClass}>
-								{t("cloudCredential.typeLabel")}
+								{t("cloudCredential.methodLabel")}
 							</Label>
 							<SettingsOptionMenu
-								aria-label={t("cloudCredential.typeLabel")}
+								aria-label={t("cloudCredential.methodLabel")}
 								value={credentialType}
 								options={credentialOptions}
-								disabled={busy || creds.length === 1}
+								disabled={busy}
 								menuAlign="start"
 								onChange={(val) => {
 									setCredentialType(val);
@@ -246,17 +303,17 @@ export function CloudCredentialDialog() {
 								}}
 								triggerClassName="composer-chip composer-toolbar-option h-control-form w-full justify-between"
 								renderTrigger={() => (
-									<span className="min-w-0 truncate text-control text-foreground" title={selectedCredential?.label}>
-										{selectedCredential?.label}
+									<span className="min-w-0 truncate text-control text-foreground" title={selectedCredentialLabel}>
+										{selectedCredentialLabel}
 									</span>
 								)}
 							/>
-						</div>
+						</div> : null}
 
 						{needsSecret ? (
 							<div className="space-y-2">
 							<Label htmlFor="cloud-cred-secret" className={onboardingFormLabelClass}>
-								{t("cloudCredential.tokenLabel")}
+								{secretCopy.label}
 							</Label>
 							<Input
 								id="cloud-cred-secret"
@@ -264,7 +321,7 @@ export function CloudCredentialDialog() {
 								autoComplete="off"
 								spellCheck={false}
 								className="text-[13px]"
-								placeholder={t("cloudCredential.tokenPlaceholder")}
+								placeholder={secretCopy.placeholder}
 								disabled={busy}
 								value={secret}
 								onChange={(e) => setSecret(e.target.value)}
@@ -272,15 +329,10 @@ export function CloudCredentialDialog() {
 									if (e.key === "Enter") void submit();
 								}}
 							/>
-							<p className={onboardingFieldHintClass}>{t("cloudCredential.tokenHint")}</p>
+							<p className={onboardingFieldHintClass}>{secretCopy.hint}</p>
+							<p className={onboardingFieldHintClass}>{t("cloudCredential.storageHint")}</p>
 						</div>
-						) : (
-							<p className={onboardingFieldHintClass}>
-								{agent === "claude-code"
-									? t("cloudCredential.anthropicLoginDescription")
-									: t("cloudCredential.chatgptLoginDescription")}
-							</p>
-						)}
+						) : null}
 
 						{error ? (
 							<p role="alert" className={onboardingFieldErrorClass}>

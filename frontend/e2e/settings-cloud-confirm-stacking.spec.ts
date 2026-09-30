@@ -30,7 +30,7 @@ const settingsBody = (cloudOffering: boolean) => ({
 	cloudControlPlaneUrl: "https://cloud.test",
 });
 
-test("settings: confirm opened from Settings stacks above it and enables Cloud", async ({ page }) => {
+test("settings: confirm opened from Settings stacks above it and enables Cloud", async ({ page }, testInfo) => {
 	await installFakeBridge(page, { daemonPort: port });
 	await page.route("**/api/v1/settings*", async (route) => {
 		await route.fulfill({ json: settingsBody(false) });
@@ -43,6 +43,14 @@ test("settings: confirm opened from Settings stacks above it and enables Cloud",
 	// confirm-gated direction this regression broke.
 	await page.getByRole("switch", { name: "Developer mode" }).click();
 	const cloudSwitch = page.getByRole("switch", { name: "Cloud", exact: true });
+	const info = page.getByRole("button", { name: "About AO Cloud" });
+	await info.focus();
+	await page.keyboard.press("Enter");
+	await expect(page.getByText("Run sessions in isolated cloud sandboxes. Requires signing in to AO Cloud.")).toBeVisible();
+	await expect(cloudSwitch).not.toBeChecked();
+	await page.screenshot({ path: testInfo.outputPath("cloud-toggle-info.png") });
+	await page.keyboard.press("Escape");
+	await expect(info).toBeFocused();
 	await cloudSwitch.click();
 
 	const confirm = page.getByRole("dialog", { name: "Enable Cloud?" });

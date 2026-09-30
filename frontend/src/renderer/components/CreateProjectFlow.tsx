@@ -16,7 +16,6 @@ import {
 	GitFork,
 	Globe,
 	KeyRound,
-	Link2,
 	LoaderCircle,
 	Lock,
 	X,
@@ -41,7 +40,6 @@ import { cloudAgentInfos } from "../lib/cloud-agents";
 import { aoBridge } from "../lib/bridge";
 import { CloudCpError } from "../lib/cloud-cp";
 import type { CloudCpGitHubAppRepository } from "../lib/cloud-cp/types";
-import { getGitHubStatus, isGitHubAuthInvalidError, listGitHubRepos, saveGitHubPAT } from "../lib/github-daemon";
 import { useCloudSession } from "../lib/cloud-session";
 import { useCredentialDialogStore } from "../stores/credential-dialog-store";
 import { useUiStore } from "../stores/ui-store";
@@ -58,7 +56,6 @@ import { cn } from "../lib/utils";
 import type { ProjectKind } from "../types/workspace";
 import { CreateProjectAgentSheet, RequiredAgentField, type CreateProjectAgentSelection } from "./CreateProjectAgentSheet";
 import CloneRepositoryDialog, { type CloneRepositoryDetails, type CloneRepositorySelection } from "./CloneRepositoryDialog";
-// GitHubTokenField is used via inline Input components in CloudProjectCard
 import { PathRow } from "./PathRow";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
@@ -78,7 +75,6 @@ export type CloneProjectInput = Pick<CloneRepositorySelection, "remoteUrl" | "de
 
 const LAST_CLONE_DESTINATION_KEY = "ao.clone.lastDestinationParent";
 const LAST_IMPORT_REMOTE_URL_KEY = "ao.import.lastRemoteUrl";
-const GITHUB_TOKEN_SETTINGS_URL = "https://github.com/settings/personal-access-tokens/new";
 const GIT_PREPARATION_ACTIONS = ["git_init", "git_commit", "create_remote_repository", "set_remote"] as const;
 const GIT_ACTION_LABELS: Record<string, string> = {
 	git_init: "Git initialization", git_commit: "Initial commit", create_remote_repository: "Create remote repository", set_remote: "Remote setup",
@@ -1238,17 +1234,8 @@ function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
 	});
 }
 
-function isHttpsRepositoryUrl(raw: string): boolean {
-	try {
-		const parsed = new URL(raw.trim());
-		return parsed.protocol === "https:" && parsed.host !== "";
-	} catch {
-		return false;
-	}
-}
-
 // Cloud project creation goes straight to the control plane
-// (client.createProject) instead of the daemon POST the local flow uses; the
+// (client.createGitHubProject) instead of the daemon POST the local flow uses; the
 // repository is cloned in a cloud sandbox, so no folder picker or agent sheet.
 
 /** Second half of cloud project creation: which agent runs the worker and
@@ -1384,74 +1371,17 @@ function CloudProjectCard({
 
 	const [projectName, setProjectName] = useState("");
 	const [nameSubmitted, setNameSubmitted] = useState(false);
-	const [useManualPat, setUseManualPat] = useState(false);
 	const [repositoryUrl, setRepositoryUrl] = useState("");
-	const [githubToken, setGithubToken] = useState("");
-	const [githubTokenBusy, setGithubTokenBusy] = useState(false);
 	const [githubOAuthBusy, setGithubOAuthBusy] = useState(false);
 	const [githubOAuthError, setGithubOAuthError] = useState<string | null>(null);
-	const [githubTokenError, setGithubTokenError] = useState<string | null>(null);
-	const [isValidating] = useState(false);
 	const [projectSubmitted, setProjectSubmitted] = useState(false);
 	const [defaultBranch, setDefaultBranch] = useState("main");
 	const [submitError, setSubmitError] = useState<string | null>(null);
-	const [submitIsUnreachable, setSubmitIsUnreachable] = useState(false);
-	const [submitIsUnavailable, setSubmitIsUnavailable] = useState(false);
-	const [readOnlyWarning, setReadOnlyWarning] = useState(false);
 	const [isCreating, setIsCreating] = useState(false);
-	// The GitHub App path selects a repository by its numeric id (create goes
-	// through POST /github/projects). The manual PAT path keeps using the repo URL.
+	// The GitHub App path selects a repository by its numeric id.
 	const [selectedRepoId, setSelectedRepoId] = useState("");
 	const connectAbortRef = useRef<AbortController | null>(null);
 	useEffect(() => () => connectAbortRef.current?.abort(), []);
-
-	const githubStatus = useQuery({
-		queryKey: ["github-status"],
-		staleTime: 0,
-		refetchOnMount: "always",
-		queryFn: getGitHubStatus,
-	});
-
-	// Cloud project creation needs the credential in two places: the daemon
-	// lists the user's repositories, while the control plane gives the sandbox
-	// access to the selected private repository. A local-only token must not be
-	// presented as fully connected or project creation fails later with
-	// `token_missing` even though the repository picker looked authenticated.
-	const cloudGithubStatus = useQuery({
-		queryKey: ["cloud-user-providers"],
-		staleTime: 0,
-		refetchOnMount: "always",
-		queryFn: async () => {
-			const { providerConnections } = await client.listUserProviderConnections();
-			return providerConnections.some(
-				(connection) => connection.provider === "github" && connection.validationState === "valid",
-			);
-		},
-	});
-
-	const hasGithubConnection =
-		(githubStatus.data?.connected ?? false) && (cloudGithubStatus.data ?? false);
-
-	const githubRepos = useQuery({
-		queryKey: ["github-repos"],
-		enabled: hasGithubConnection,
-		staleTime: 60_000,
-		// A 401 here is often transient (e.g. the daemon fetching repos before it
-		// has re-read a valid stored token right after launch), so give auth
-		// errors one retry to self-heal before surfacing a reconnect prompt;
-		// non-auth errors keep the usual three.
-		retry: (failureCount, error) => (isGitHubAuthInvalidError(error) ? failureCount < 1 : failureCount < 3),
-		queryFn: async () => {
-			const { repos } = await listGitHubRepos();
-			return repos.map((r) => ({
-				name: r.name,
-				fullName: r.full_name,
-				private: r.private,
-				defaultBranch: r.default_branch,
-				cloneUrl: r.clone_url,
-			}));
-		},
-	});
 
 	// GitHub App connection (the secure, hosted path): the control plane owns the
 	// installation, so connection and repository access are read from it, never
@@ -1512,63 +1442,18 @@ function CloudProjectCard({
 		if (readyInstallationKey === "") return;
 		void queryClient.invalidateQueries({ queryKey: ["cloud-github-app-repos", baseUrl, org?.id] });
 	}, [baseUrl, org?.id, queryClient, readyInstallationKey]);
-	// The App path is active whenever the user is not in manual-PAT mode and an
-	// installation exists; it drives which create call and repo source we use.
-	const usingApp = appConnected && !useManualPat;
-
 	// If the selected repository disappears from the installation (access revoked,
 	// archived, or removed from the App's repo list), drop the stale selection so
 	// we never submit a githubRepositoryId the installation no longer grants.
 	useEffect(() => {
-		if (!usingApp || selectedRepoId === "" || githubAppRepos.data === undefined) return;
+		if (!appConnected || selectedRepoId === "" || githubAppRepos.data === undefined) return;
 		if (!githubAppRepos.data.some((repo) => repo.githubRepositoryId === selectedRepoId)) {
 			setSelectedRepoId("");
 			setRepositoryUrl("");
 		}
-	}, [usingApp, selectedRepoId, githubAppRepos.data]);
+	}, [appConnected, selectedRepoId, githubAppRepos.data]);
 
-	const urlError = projectSubmitted && !isHttpsRepositoryUrl(repositoryUrl) ? t("createProject.cloudInvalidUrl") : null;
 	const nameError = nameSubmitted && projectName.trim() === "" ? t("createProject.cloudDisplayNameRequired", { defaultValue: "Project name is required" }) : null;
-
-	const saveGitHubTokenAndContinue = async () => {
-		const secret = githubToken.trim();
-		if (secret === "" || githubTokenBusy) return;
-		setGithubTokenBusy(true);
-		setGithubTokenError(null);
-		try {
-			await Promise.all([
-				saveGitHubPAT(secret),
-				client.putGitHubPAT({ secret }),
-			]);
-			await Promise.all([
-				queryClient.invalidateQueries({ queryKey: ["github-status"] }),
-				queryClient.invalidateQueries({ queryKey: ["cloud-user-providers"] }),
-				queryClient.invalidateQueries({ queryKey: ["github-repos"] }),
-			]);
-			setGithubToken("");
-			setSubmitError(null);
-			setSubmitIsUnreachable(false);
-			setSubmitIsUnavailable(false);
-		} catch (err) {
-			// A 401 here is the AO Cloud SESSION token, not the GitHub PAT: PUT
-			// /me/github-pat is rejected at the control plane's auth middleware
-			// before the token is ever validated. Prompt a re-sign-in instead of
-			// mislabeling it as an invalid token (a genuinely bad PAT returns 422
-			// with a token-specific message, handled by the else branch).
-			if (err instanceof CloudCpError && err.status === 401) {
-				setGithubTokenError(
-					t("createProject.cloudSessionExpiredForToken", {
-						defaultValue: "Your AO Cloud session expired. Sign in again, then re-enter the token.",
-					}),
-				);
-				onAuthRequired();
-			} else {
-				setGithubTokenError(err instanceof Error ? err.message : t("createProject.couldNotAdd"));
-			}
-		} finally {
-			setGithubTokenBusy(false);
-		}
-	};
 
 	// connectGitHub runs the secure GitHub App flow: the control plane builds the
 	// install/authorize URL (it holds the client id and secret), the browser
@@ -1610,7 +1495,7 @@ function CloudProjectCard({
 				if (Date.now() > deadline) {
 					setGithubOAuthError(
 						t("createProject.githubConnectTimeout", {
-							defaultValue: "GitHub did not finish connecting. Try again, or set up manually.",
+							defaultValue: "GitHub did not finish connecting. Try again.",
 						}),
 					);
 					return;
@@ -1678,58 +1563,26 @@ function CloudProjectCard({
 		setProjectSubmitted(true);
 		setNameSubmitted(true);
 		if (projectName.trim() === "") return;
-		if (usingApp) {
-			if (selectedRepoId === "") return;
-		} else if (!isHttpsRepositoryUrl(repositoryUrl) || defaultBranch.trim() === "") {
-			return;
-		}
+		if (selectedRepoId === "") return;
 		setSubmitError(null);
-		setSubmitIsUnreachable(false);
-		setSubmitIsUnavailable(false);
-		setReadOnlyWarning(false);
 		setIsCreating(true);
 		try {
 			const coder = buildCoderRequestOptions(useCoderSessionOptionsStore.getState());
-			if (usingApp) {
-				// The App path authorizes by repository id and derives the default
-				// branch server-side. Coder config nests under `config.coder`, which
-				// the control plane reads for the dev-kit template and extra repos.
-				await client.createGitHubProject(org.id, {
-					githubRepositoryId: selectedRepoId,
-					displayName: projectName.trim(),
-					config: {
-						worker: { agent: selection.workerAgent },
-						orchestrator: { agent: selection.orchestratorAgent },
-						...(coder ? { coder } : {}),
-					},
-				});
-			} else {
-				const result = await client.validateSavedRepositoryAccess({
-					repositoryUrl: repositoryUrl.trim(),
-				});
-				if (!result.writeAccess) {
-					setSubmitError(t("createProject.githubToken.readOnlyToken", { defaultValue: "Your token does not have push access to this repository. Please provide a token with push permissions." }));
-					setReadOnlyWarning(true);
-					setIsCreating(false);
-					return;
-				}
-				await client.createProject(org.id, {
-					displayName: projectName.trim(),
-					repositoryUrl: repositoryUrl.trim(),
-					defaultBranch: defaultBranch.trim(),
-					config: {
-						worker: { agent: selection.workerAgent },
-						orchestrator: { agent: selection.orchestratorAgent },
-					},
+			// The App authorizes by repository id and derives the default branch
+			// server-side. Coder config nests under config.coder.
+			await client.createGitHubProject(org.id, {
+				githubRepositoryId: selectedRepoId,
+				displayName: projectName.trim(),
+				config: {
+					worker: { agent: selection.workerAgent },
+					orchestrator: { agent: selection.orchestratorAgent },
 					...(coder ? { coder } : {}),
-				});
-			}
+				},
+			});
 			await queryClient.invalidateQueries({ queryKey: cloudProjectsQueryKey });
 			onCreated();
 		} catch (err) {
 			setSubmitError(err instanceof Error ? err.message : t("createProject.couldNotAdd"));
-			setSubmitIsUnreachable(err instanceof CloudCpError && (err.code === "repository_unreachable" || err.code === "read_only_token" || err.code === "token_missing"));
-			setSubmitIsUnavailable(err instanceof CloudCpError && err.code === "provider_unavailable");
 			setIsCreating(false);
 		}
 	};
@@ -1788,293 +1641,93 @@ function CloudProjectCard({
 					) : null}
 				</div>
 
-				{/* Project connection */}
+				{/* GitHub App repository access */}
 				<div className="space-y-2">
-					<div className="flex items-center justify-between">
-						<Label className={onboardingFormLabelClass}>
-							{t("createProject.cloneRepositoryUrl", { defaultValue: "Project" })}
-						</Label>
-						<button
-							type="button"
-							className="text-[12px] font-medium text-muted-foreground underline decoration-dotted underline-offset-4 transition-colors hover:text-foreground"
-							onClick={() => {
-								// Reset the fields that belong to the other mode so a value picked
-								// under the App path (repo URL, its default branch, the selected id)
-								// never leaks into the manual path, and vice versa.
-								setUseManualPat((v) => !v);
-								setGithubToken("");
-								setGithubTokenError(null);
-								setSelectedRepoId("");
-								setRepositoryUrl("");
-								setDefaultBranch("main");
-							}}
-						>
-							{useManualPat ? "Auth with GitHub" : "Manually setup"}
-						</button>
-					</div>
-
-					{!useManualPat && !appConnected ? (
+					<Label className={onboardingFormLabelClass}>
+						{t("createProject.githubRepository", { defaultValue: "GitHub repository" })}
+					</Label>
+					{githubInstallations.isError ? (
+						<div role="alert" className="flex items-center gap-2 text-[12px] text-destructive">
+							<span>{t("createProject.githubAuthFailed", { defaultValue: "Could not load GitHub connection." })}</span>
+							<button type="button" className="underline" onClick={() => void githubInstallations.refetch()}>{t("createProject.retry")}</button>
+						</div>
+					) : githubInstallations.isLoading ? (
+						<p className="text-[12px] text-muted-foreground">{t("createProject.githubReposLoading", { defaultValue: "Loading repositories..." })}</p>
+					) : !appConnected ? (
 						<>
-						<button
-							type="button"
-							className="flex w-full items-center gap-3 rounded-lg border border-border/50 bg-[var(--color-bg-import-card)] px-4 py-3 text-left transition-colors hover:bg-accent/50 active:bg-accent disabled:opacity-60"
-							disabled={isCreating || githubOAuthBusy}
-							onClick={() => void connectGitHub()}
-						>
-							<span className="grid size-9 shrink-0 place-items-center text-muted-foreground">
-								<GitHubIcon className="size-5" />
-							</span>
-							<span className="min-w-0">
-								<span className="block text-[14px] font-medium text-foreground">
-									{githubOAuthBusy
-										? t("createProject.githubWaiting", { defaultValue: "Waiting for GitHub..." })
-										: t("createProject.connectGitHub", { defaultValue: "Connect GitHub" })}
-								</span>
-								<span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">
-									{githubOAuthBusy
-										? t("createProject.githubCompleteInBrowser", { defaultValue: "Install the app on your repositories in the browser, then return here." })
-										: t("createProject.connectGitHubHint", { defaultValue: "Grants access to public and private repos, PRs, and comments" })}
-								</span>
-							</span>
-							{githubOAuthBusy && (
-								<span className="ml-auto size-4 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
-							)}
-						</button>
-						{githubOAuthBusy ? (
 							<button
 								type="button"
-								className="text-[12px] font-medium text-muted-foreground hover:text-foreground transition-colors"
-								onClick={cancelConnectGitHub}
+								className="flex w-full items-center gap-3 rounded-lg border border-border/50 bg-[var(--color-bg-import-card)] px-4 py-3 text-left transition-colors hover:bg-accent/50 active:bg-accent disabled:opacity-60"
+								disabled={isCreating || githubOAuthBusy}
+								onClick={() => void connectGitHub()}
 							>
-								{t("createProject.cancel", { defaultValue: "Cancel" })}
+								<span className="grid size-9 shrink-0 place-items-center text-muted-foreground"><GitHubIcon className="size-5" /></span>
+								<span className="min-w-0">
+									<span className="block text-[14px] font-medium text-foreground">
+										{githubOAuthBusy ? t("createProject.githubWaiting", { defaultValue: "Waiting for GitHub..." }) : t("createProject.connectGitHub", { defaultValue: "Connect GitHub" })}
+									</span>
+									<span className="mt-0.5 block text-[12px] leading-5 text-muted-foreground">
+										{githubOAuthBusy ? t("createProject.githubCompleteInBrowser", { defaultValue: "Install the app on your repositories in the browser, then return here." }) : t("createProject.connectGitHubHint", { defaultValue: "Grants access to public and private repos, PRs, and comments" })}
+									</span>
+								</span>
+								{githubOAuthBusy && <span className="ml-auto size-4 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />}
 							</button>
-						) : null}
-						{githubOAuthError ? (
-							<div className="space-y-2">
-								<p className="text-[12px] leading-5 text-destructive" role="alert">
-									{githubOAuthError}
-								</p>
-								<button
-									type="button"
-									className="text-[12px] font-medium text-muted-foreground hover:text-foreground transition-colors"
-									onClick={() => {
-										setGithubOAuthError(null);
-										setUseManualPat(true);
-									}}
-								>
-									{t("createProject.manualSetupInstead", { defaultValue: "Manually setup instead" })}
-								</button>
-							</div>
-						) : null}
+							{githubOAuthBusy && <button type="button" className="text-[12px] text-muted-foreground underline" onClick={cancelConnectGitHub}>{t("createProject.cancel", { defaultValue: "Cancel" })}</button>}
+							{githubOAuthError && <p role="alert" className="text-[12px] text-destructive">{githubOAuthError}</p>}
 						</>
 					) : (
 						<>
-							{usingApp ? (
-								<div className="space-y-2">
-									<SearchablePicker
-										ariaLabel={t("createProject.selectRepository", { defaultValue: "Select a repository" })}
-										fixedScroll
-										placeholder={!appRepositoriesReady || githubAppRepos.isLoading
-											? t("createProject.githubReposLoading", { defaultValue: "Loading repositories..." })
-											: t("createProject.selectRepository", { defaultValue: "Select a repository" })}
-										searchPlaceholder={t("createProject.searchRepositories", { defaultValue: "Search repositories" })}
-										disabled={isCreating || !appRepositoriesReady || githubAppRepos.isLoading}
-										value={selectedRepoId}
-										options={(githubAppRepos.data ?? []).map((repo) => ({ value: repo.githubRepositoryId, label: repo.fullName, private: repo.isPrivate }))}
-										onChange={(nextId) => {
-												setSelectedRepoId(nextId);
-												const repo = githubAppRepos.data?.find((candidate) => candidate.githubRepositoryId === nextId);
-												if (repo) {
-													setRepositoryUrl(repo.htmlUrl);
-													setDefaultBranch(repo.defaultBranch !== "" ? repo.defaultBranch : "main");
-													setProjectName(repo.name);
-													if (nameSubmitted) setNameSubmitted(false);
-												} else {
-													setRepositoryUrl("");
-												}
-												if (projectSubmitted) setProjectSubmitted(false);
-											}}
-									/>
-									{githubAppRepos.isError ? (
-										<div className="flex items-center gap-2 text-[12px] leading-5 text-destructive" role="alert">
-											<span>{t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." })}</span>
-											<button type="button" className="underline" disabled={githubAppRepos.isFetching} onClick={() => void githubAppRepos.refetch()}>
-												{t("createProject.retry")}
-											</button>
-										</div>
-									) : null}
-									{!appRepositoriesReady ? (
-										<div className="flex items-center gap-2 text-[12px] leading-5 text-muted-foreground">
-											<span>
-												{appRepositorySyncFailed
-													? t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." })
-													: t("createProject.githubReposLoading", { defaultValue: "Loading repositories..." })}
-											</span>
-											{githubOAuthError || appRepositorySyncFailed ? (
-												<button type="button" className="underline" disabled={githubOAuthBusy} onClick={() => void retryGitHubRepositorySync()}>
-													{t("createProject.retry")}
-												</button>
-											) : null}
-										</div>
-									) : !allActiveInstallationsReady && !githubAppRepos.isLoading && (githubAppRepos.data?.length ?? 0) === 0 ? (
-										<div className="flex items-center gap-2 text-[12px] leading-5 text-muted-foreground">
-											<span>
-												{appRepositorySyncFailed
-													? t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." })
-													: t("createProject.githubReposLoading", { defaultValue: "Loading repositories..." })}
-											</span>
-											{appRepositorySyncFailed ? (
-												<button type="button" className="underline" disabled={githubOAuthBusy} onClick={() => void retryGitHubRepositorySync()}>
-													{t("createProject.retry")}
-												</button>
-											) : null}
-										</div>
-									) : !githubAppRepos.isLoading && !githubAppRepos.isError && (githubAppRepos.data?.length ?? 0) === 0 ? (
-										<p className="text-[12px] leading-5 text-muted-foreground">
-											{t("createProject.githubNoRepos", { defaultValue: "This installation has no available repositories." })}{" "}
-											<button
-												type="button"
-												className="underline decoration-border underline-offset-2 hover:text-foreground disabled:opacity-60"
-												disabled={githubOAuthBusy}
-												onClick={() => void connectGitHub()}
-											>
-												{t("createProject.githubConfigureRepos", { defaultValue: "Configure repositories" })}
-											</button>
-										</p>
-									) : coderAvailable ? (
-										<button
-											type="button"
-											className="text-[12px] font-medium text-muted-foreground underline decoration-dotted underline-offset-4 transition-colors hover:text-foreground disabled:opacity-60"
-											disabled={isCreating}
-											onClick={() => setExtraRepos([...extraRepos, { url: "", branch: "" }])}
-										>
-											{t("coder.repos.add", { defaultValue: "Add repository" })}
-										</button>
-									) : null}
-									{appRepositoriesReady && appRepositorySyncFailed && (githubAppRepos.data?.length ?? 0) > 0 ? (
-										<div className="flex items-center gap-2 text-[12px] leading-5 text-destructive">
-											<span>{t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." })}</span>
-											<button type="button" className="underline" disabled={githubOAuthBusy} onClick={() => void retryGitHubRepositorySync()}>
-												{t("createProject.retry")}
-											</button>
-										</div>
-									) : null}
-									{githubOAuthError ? (
-										<p className="text-[12px] leading-5 text-destructive" role="alert">{githubOAuthError}</p>
-									) : null}
+							<SearchablePicker
+								ariaLabel={t("createProject.selectRepository", { defaultValue: "Select a repository" })}
+								fixedScroll
+								placeholder={!appRepositoriesReady || githubAppRepos.isLoading ? t("createProject.githubReposLoading", { defaultValue: "Loading repositories..." }) : t("createProject.selectRepository", { defaultValue: "Select a repository" })}
+								searchPlaceholder={t("createProject.searchRepositories", { defaultValue: "Search repositories" })}
+								disabled={isCreating || !appRepositoriesReady || githubAppRepos.isLoading}
+								value={selectedRepoId}
+								options={(githubAppRepos.data ?? []).map((repo) => ({ value: repo.githubRepositoryId, label: repo.fullName, private: repo.isPrivate }))}
+								onChange={(nextId) => {
+									setSelectedRepoId(nextId);
+									const repo = githubAppRepos.data?.find((candidate) => candidate.githubRepositoryId === nextId);
+									if (repo) {
+										setRepositoryUrl(repo.htmlUrl);
+										setDefaultBranch(repo.defaultBranch !== "" ? repo.defaultBranch : "main");
+										setProjectName(repo.name);
+										if (nameSubmitted) setNameSubmitted(false);
+									} else setRepositoryUrl("");
+									if (projectSubmitted) setProjectSubmitted(false);
+								}}
+							/>
+							{githubAppRepos.isError && (
+								<div role="alert" className="flex items-center gap-2 text-[12px] text-destructive">
+									<span>{t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." })}</span>
+										<button type="button" className="underline" disabled={githubAppRepos.isFetching} onClick={() => void githubAppRepos.refetch()}>{t("createProject.retry")}</button>
 								</div>
-							) : (
-								<>
-									<div className="space-y-2">
-										<div className="relative">
-											<span className="pointer-events-none absolute inset-y-0 left-3 flex w-4 items-center justify-center text-[var(--color-text-import-muted)]">
-												<Link2 className="size-4" aria-hidden="true" />
-											</span>
-											<Input
-												id="cloudRepositoryUrl"
-												autoCapitalize="none"
-												autoComplete="off"
-												aria-describedby={urlError ? "cloudRepositoryUrlError" : undefined}
-												aria-invalid={urlError ? true : undefined}
-												className="bg-[var(--color-bg-import-card)] pl-10 font-mono text-[13px]"
-												disabled={isCreating || isValidating}
-												placeholder="https://github.com/owner/repo"
-												spellCheck={false}
-												value={repositoryUrl}
-												onChange={(event) => {
-													setRepositoryUrl(event.target.value);
-													if (projectSubmitted) setProjectSubmitted(false);
-												}}
-											/>
-										</div>
-										{urlError ? (
-											<p id="cloudRepositoryUrlError" className="text-pretty text-[12px] leading-5 text-destructive" role="alert">
-												{urlError}
-											</p>
-										) : null}
-										{coderAvailable && useManualPat ? (
-											<button
-												type="button"
-												className="text-[12px] font-medium text-muted-foreground underline decoration-dotted underline-offset-4 transition-colors hover:text-foreground disabled:opacity-60"
-												disabled={isCreating}
-												onClick={() => setExtraRepos([...extraRepos, { url: "", branch: "" }])}
-											>
-												{t("coder.repos.add", { defaultValue: "Add repository" })}
-											</button>
-										) : null}
-									</div>
-								</>
 							)}
-							{coderAvailable && (usingApp || useManualPat) ? (
-								<AdditionalRepositoriesPicker
-									repos={usingApp
-										? (githubAppRepos.data ?? []).map((repo) => ({ label: repo.fullName, url: repo.htmlUrl, private: repo.isPrivate }))
-										: (githubRepos.data ?? []).map((repo) => ({
-												label: repo.fullName,
-												url: `https://github.com/${repo.fullName}`,
-												private: repo.private,
-											}))}
-								/>
-							) : null}
-							{useManualPat ? (
-								<>
-									<div className="space-y-2">
-										<Label htmlFor="cloudGithubPat" className={onboardingFormLabelClass}>
-											GitHub PAT
-										</Label>
-										<div className="relative">
-											<span className="pointer-events-none absolute inset-y-0 left-3 flex w-4 items-center justify-center text-[var(--color-text-import-muted)]">
-												<KeyRound className="size-4" aria-hidden="true" />
-											</span>
-											<Input
-												id="cloudGithubPat"
-												autoCapitalize="none"
-												autoComplete="off"
-												className="bg-[var(--color-bg-import-card)] pl-10 font-mono text-[13px]"
-												disabled={isCreating || githubTokenBusy}
-												placeholder="ghp_..."
-												spellCheck={false}
-												type="password"
-												value={githubToken}
-												onChange={(event) => setGithubToken(event.target.value)}
-											/>
-										</div>
-										{githubTokenError ? (
-											<p className="text-pretty text-[12px] leading-5 text-destructive" role="alert">
-												{githubTokenError}
-											</p>
-										) : null}
-										<p className="text-[11px] leading-4 text-muted-foreground">
-											{t("createProject.githubToken.step2", { defaultValue: "Create a fine-grained token with Contents read/write access." })}{" "}
-											<button
-												type="button"
-												className="underline decoration-border underline-offset-2 hover:text-foreground"
-												onClick={() => void aoBridge.app.openExternal(GITHUB_TOKEN_SETTINGS_URL)}
-											>
-												{t("createProject.openGitHubSettings", { defaultValue: "Open settings" })}
-											</button>
-										</p>
-									</div>
-									{githubToken.trim() !== "" ? (
-										<Button type="button" variant="primary" className="w-full" disabled={githubTokenBusy} onClick={() => void saveGitHubTokenAndContinue()}>
-											{githubTokenBusy ? "Connecting..." : "Save & Continue"}
-										</Button>
-									) : null}
-								</>
-							) : null}
+							{(!appRepositoriesReady || appRepositorySyncFailed) && (
+								<div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+									<span>{appRepositorySyncFailed ? t("createProject.githubReposFailed", { defaultValue: "Failed to load repositories." }) : t("createProject.githubReposLoading", { defaultValue: "Loading repositories..." })}</span>
+									{appRepositorySyncFailed && <button type="button" className="underline" disabled={githubOAuthBusy} onClick={() => void retryGitHubRepositorySync()}>{t("createProject.retry")}</button>}
+								</div>
+							)}
+							{!allActiveInstallationsReady && !appRepositorySyncFailed && !githubAppRepos.isLoading && githubAppRepos.data?.length === 0 && (
+								<p className="text-[12px] text-muted-foreground">{t("createProject.githubReposLoading", { defaultValue: "Loading repositories..." })}</p>
+							)}
+							{allActiveInstallationsReady && !githubAppRepos.isLoading && !githubAppRepos.isError && githubAppRepos.data?.length === 0 && (
+								<p className="text-[12px] text-muted-foreground">
+									{t("createProject.githubNoRepos", { defaultValue: "This installation has no available repositories." })}{" "}
+									<button type="button" className="underline" disabled={githubOAuthBusy} onClick={() => void connectGitHub()}>{t("createProject.githubConfigureRepos", { defaultValue: "Configure repositories" })}</button>
+								</p>
+							)}
+							{githubOAuthError && <p role="alert" className="text-[12px] text-destructive">{githubOAuthError}</p>}
+							{coderAvailable && <button type="button" className="text-[12px] text-muted-foreground underline" disabled={isCreating} onClick={() => setExtraRepos([...extraRepos, { url: "", branch: "" }])}>{t("coder.repos.add", { defaultValue: "Add repository" })}</button>}
+							{coderAvailable && <AdditionalRepositoriesPicker repos={(githubAppRepos.data ?? []).map((repo) => ({ label: repo.fullName, url: repo.htmlUrl, private: repo.isPrivate }))} />}
 						</>
 					)}
 				</div>
-
-				{/* Coder template and size are inherited by every session. */}
-				{coderAvailable && (usingApp || useManualPat) ? (
-					<div className="space-y-2">
-						<CoderTemplatePicker orgId={org?.id} />
-					</div>
-				) : null}
+				{coderAvailable && appConnected && <div className="space-y-2"><CoderTemplatePicker orgId={org?.id} /></div>}
 
 				{/* Agents — inline */}
-				{((usingApp && selectedRepoId !== "") || useManualPat) && org !== undefined ? (
+				{selectedRepoId !== "" && org !== undefined ? (
 					<CloudAgentSetupStep
 						orgId={org.id}
 						repositoryUrl={repositoryUrl.trim()}
@@ -2087,49 +1740,12 @@ function CloudProjectCard({
 					/>
 				) : null}
 
-				{submitError && !(submitIsUnreachable || submitIsUnavailable || readOnlyWarning) ? (
-					<div className={onboardingAlertErrorClass} role="alert">
-						<p>{submitError}</p>
-					</div>
-				) : null}
-				{submitError && readOnlyWarning ? (
-					<div className={onboardingAlertErrorClass} role="alert">
-						<p>{submitError}</p>
-						<div className="mt-2 flex gap-2">
-							<Button type="button" variant="outline" size="sm" onClick={() => setUseManualPat(true)}>
-								{t("createProject.githubToken.updateToken", { defaultValue: "Update Token" })}
-							</Button>
-							<Button type="button" variant="secondary" size="sm" onClick={() => { setReadOnlyWarning(false); }}>
-								{t("createProject.continueAnyway", { defaultValue: "Continue anyway" })}
-							</Button>
-						</div>
-					</div>
-				) : null}
-				{submitError && submitIsUnreachable ? (
-					<div className={onboardingAlertErrorClass} role="alert">
-						<p>{submitError}</p>
-						<div className="mt-2 flex">
-							<Button type="button" variant="outline" size="sm" onClick={() => setUseManualPat(true)}>
-								{t("createProject.githubToken.updateToken", { defaultValue: "Update Token" })}
-							</Button>
-						</div>
-					</div>
-				) : null}
-				{submitError && submitIsUnavailable ? (
-					<div className={onboardingAlertErrorClass} role="alert">
-						<p>{submitError}</p>
-						<div className="mt-2 flex">
-							<Button type="button" variant="outline" size="sm" onClick={() => setUseManualPat(true)}>
-								{t("createProject.githubToken.retry", { defaultValue: "Retry" })}
-							</Button>
-						</div>
-					</div>
-				) : null}
+				{submitError && <div className={onboardingAlertErrorClass} role="alert"><p>{submitError}</p></div>}
 
 				{/* Show Back exactly when the agent step (which carries its own Back)
 					is not shown, so a connected user who has not picked a repo yet is
 					never left without a way back. Mirrors the agent-step gate below. */}
-				{!((usingApp && selectedRepoId !== "") || useManualPat) ? (
+				{selectedRepoId === "" ? (
 					<div className={onboardingFooterActionsClass}>
 						<Button type="button" variant="outline" onClick={onBack} disabled={isCreating}>
 							{t("createProject.back", { defaultValue: "Back" })}

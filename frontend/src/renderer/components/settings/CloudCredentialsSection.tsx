@@ -1,16 +1,13 @@
-import { KeyRound } from "lucide-react";
-import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { GitHubTokenField } from "../onboarding/GitHubTokenField";
+import { AgentAvatar } from "../AgentAvatar";
 import { Button } from "../ui/button";
 import { useCloudGate } from "../../hooks/useCloudGate";
-import { useCloudCp } from "../../hooks/useCloudCp";
 import { useCloudOrg } from "../../hooks/useCloudOrg";
-import { hasValidAgentConnection, useProviderConnections } from "../../hooks/useProviderConnections";
+import { CLOUD_AGENT_PROVIDERS } from "../../lib/cloud-agents";
+import { useProviderConnections } from "../../hooks/useProviderConnections";
 import { useCloudSession } from "../../lib/cloud-session";
 import { useCredentialDialogStore } from "../../stores/credential-dialog-store";
-import { SettingsRow } from "./SettingsRow";
+import { CloudGitHubSection } from "./CloudGitHubSection";
 import { SettingsSection } from "./SettingsSection";
 
 // Proper nouns; deliberately not translated.
@@ -18,7 +15,7 @@ const AGENT_LABELS: Record<string, string> = {
 	"claude-code": "Claude Code",
 	codex: "Codex",
 	cursor: "Cursor",
-	github: "GitHub",
+	opencode: "OpenCode",
 };
 
 /**
@@ -38,19 +35,9 @@ export function CloudCredentialsSection({ titleHidden }: { titleHidden?: boolean
 function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }) {
 	const { t } = useTranslation();
 	const { status } = useCloudSession();
-	const { org } = useCloudOrg();
-	const { client } = useCloudCp();
-	const queryClient = useQueryClient();
+	const { org, error: orgError } = useCloudOrg();
 	const connections = useProviderConnections(org?.id);
-	const userConnections = useQuery({
-		queryKey: ["cloud-user-provider-connections"],
-		enabled: status === "authenticated",
-		queryFn: async () => (await client.listUserProviderConnections()).providerConnections,
-	});
 	const openCredentialDialog = useCredentialDialogStore((s) => s.openDialog);
-	const [githubPAT, setGitHubPAT] = useState("");
-	const [githubPATBusy, setGitHubPATBusy] = useState(false);
-	const [githubPATError, setGitHubPATError] = useState<string | null>(null);
 
 	// Managing credentials needs the signed-in org. The Cloud settings page is
 	// reachable while signed out, so say why it is empty instead of rendering a
@@ -63,85 +50,61 @@ function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }
 		);
 	}
 
-	const rows = connections.data ?? [];
-	const githubPATConnected = (userConnections.data ?? []).some(
-		(connection) => connection.provider === "github" && connection.label === "default" && connection.validationState === "valid",
-	);
-	const saveGitHubPAT = async () => {
-		if (githubPAT.trim() === "") return;
-		setGitHubPATBusy(true);
-		setGitHubPATError(null);
-		try {
-			await client.putGitHubPAT({ secret: githubPAT.trim() });
-			setGitHubPAT("");
-			await queryClient.invalidateQueries({ queryKey: ["cloud-user-provider-connections"] });
-		} catch (error) {
-			setGitHubPATError(error instanceof Error ? error.message : t("settings.cloudAgents.github.errorSave"));
-		} finally {
-			setGitHubPATBusy(false);
-		}
-	};
-	const removeGitHubPAT = async () => {
-		setGitHubPATBusy(true);
-		setGitHubPATError(null);
-		try {
-			await client.deleteGitHubPAT();
-			await queryClient.invalidateQueries({ queryKey: ["cloud-user-provider-connections"] });
-		} catch (error) {
-			setGitHubPATError(error instanceof Error ? error.message : t("settings.cloudAgents.github.errorRemove"));
-		} finally {
-			setGitHubPATBusy(false);
-		}
-	};
+	const rows = (connections.data ?? []).filter((connection) => connection.provider !== "github");
+	const connectionsError = orgError || connections.isError;
+	const connectionsLoading = !connectionsError && (org === undefined || connections.isPending);
 	return (
+		<>
 		<SettingsSection title={t("settings.cloudAgents")} sectionId="cloud-agents" titleHidden={titleHidden}>
 			<div className="flex w-full flex-col gap-1.5">
-				{rows.filter((connection) => connection.provider !== "github").map((connection) => (
-					<SettingsRow key={connection.id} icon={KeyRound} label={AGENT_LABELS[connection.provider] ?? connection.provider}>
-						<span className="text-sm leading-5 text-settings-muted">
-							{connection.validationState === "valid"
-								? t("settings.cloudAgents.valid")
-								: connection.validationState}
-						</span>
-					</SettingsRow>
-				))}
-				{connections.isSuccess && !hasValidAgentConnection(rows) ? (
-					<p className="px-3 text-xs leading-relaxed text-muted-foreground">{t("settings.cloudAgents.empty")}</p>
-				) : null}
-				<div className="flex items-center justify-between gap-4 px-3 pt-1">
+				<div className="flex items-center justify-between gap-4 px-3 pb-2">
 					<p className="text-xs leading-relaxed text-muted-foreground">{t("settings.cloudAgents.description")}</p>
-					<Button type="button" variant="footer" onClick={() => openCredentialDialog()}>
+					<Button type="button" variant="footer" disabled={!org} onClick={() => openCredentialDialog()}>
 						{t("settings.cloudAgents.connect")}
 					</Button>
 				</div>
-				<div className="mt-3 border-t border-border px-3 pt-3">
-					<SettingsRow key="github-pat" icon={KeyRound} label={t("settings.cloudAgents.github.title")}>
-						<span className="text-sm leading-5 text-settings-muted">{githubPATConnected ? t("settings.cloudAgents.github.connected") : t("settings.cloudAgents.github.notConnected")}</span>
-					</SettingsRow>
-					<GitHubTokenField
-						id="settings-github-pat"
-						bare
-						className="mt-2"
-						label={t("settings.cloudAgents.github.tokenLabel")}
-						hint={t("settings.cloudAgents.github.tokenHint")}
-						value={githubPAT}
-						disabled={githubPATBusy}
-						error={githubPATError}
-						submitLabel={githubPATBusy ? t("settings.cloudAgents.github.saving") : t("settings.cloudAgents.github.save")}
-						submitVariant="outline"
-						submitDisabled={githubPATBusy}
-						onChange={setGitHubPAT}
-						onSubmit={() => void saveGitHubPAT()}
-					/>
-					{githubPATConnected ? (
-						<div className="mt-2 flex justify-end">
-							<Button type="button" variant="footer" disabled={githubPATBusy} onClick={() => void removeGitHubPAT()}>
-								{t("settings.cloudAgents.github.remove")}
-							</Button>
+				{connectionsLoading ? <p role="status" className="px-3 text-xs text-muted-foreground">{t("settings.cloudAgents.loading")}</p> : null}
+				{connectionsError ? <p role="alert" className="px-3 text-xs text-error">{t("settings.cloudAgents.loadError")}</p> : null}
+				{rows.map((connection) => {
+					const agentName = AGENT_LABELS[connection.provider] ?? connection.provider;
+					const credentialType = connection.config.credentialType;
+					const methods: Record<string, string> = {
+						oauth_token: t("settings.cloudAgents.method.anthropicToken"),
+						auth_json: connection.provider === "codex" ? t("settings.cloudAgents.method.chatgpt") : t("settings.cloudAgents.method.account"),
+						access_token: t("settings.cloudAgents.method.account"),
+						api_key: t("settings.cloudAgents.method.apiKey"),
+						opencode_api_key: t("settings.cloudAgents.method.opencodeKey"),
+						anthropic_api_key: t("settings.cloudAgents.method.anthropicKey"),
+						openai_api_key: t("settings.cloudAgents.method.openaiKey"),
+						openrouter_api_key: t("settings.cloudAgents.method.openrouterKey"),
+					};
+					const method = typeof credentialType === "string" ? methods[credentialType] : undefined;
+					return (
+						<div key={connection.id} className="settings-row-bar h-auto min-h-14 flex-wrap gap-3 py-2">
+							<AgentAvatar provider={connection.provider} className="size-6 shrink-0" decorative />
+							<div className="min-w-0 flex-1">
+								<p className="text-sm text-settings-label">{agentName}</p>
+								{method ? <p className="text-xs text-settings-muted">{method}</p> : null}
+							</div>
+							<span className={connection.validationState === "valid" ? "text-xs text-success" : "text-xs text-settings-muted"}>
+								{connection.validationState === "valid" ? t("settings.cloudAgents.valid")
+									: connection.validationState === "pending" ? t("settings.cloudAgents.checking")
+										: t("settings.cloudAgents.needsAttention")}
+							</span>
+							{CLOUD_AGENT_PROVIDERS.some((provider) => provider === connection.provider) ? (
+								<Button type="button" variant="footer" aria-label={t("settings.cloudAgents.manageAgent", { agent: agentName })} onClick={() => openCredentialDialog(connection.provider, typeof credentialType === "string" ? credentialType : undefined)}>
+									{t("settings.cloudAgents.manage")}
+								</Button>
+							) : null}
 						</div>
-					) : null}
-				</div>
+					);
+				})}
+				{connections.isSuccess && rows.length === 0 ? (
+					<p className="px-3 text-xs leading-relaxed text-muted-foreground">{t("settings.cloudAgents.empty")}</p>
+				) : null}
 			</div>
 		</SettingsSection>
+		<CloudGitHubSection titleHidden={titleHidden} />
+		</>
 	);
 }

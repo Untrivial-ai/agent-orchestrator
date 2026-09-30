@@ -4,7 +4,6 @@ import userEvent from "@testing-library/user-event";
 import { useState, type ComponentProps, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CreateProjectFlow, type CloneProjectInput, type CreateProjectInput } from "./CreateProjectFlow";
-import { CloudCpError } from "../lib/cloud-cp";
 import { useUiStore } from "../stores/ui-store";
 import { TooltipProvider } from "./ui/tooltip";
 
@@ -1622,7 +1621,7 @@ describe("CreateProjectFlow project import validation", () => {
 		expect(cloud.compareDocumentPosition(local) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 	});
 
-	it("omits the cloud form heading and underlines the GitHub setup toggle", async () => {
+	it("offers GitHub App connection without manual token setup", async () => {
 		cloudMocks.cloudEnabled = true;
 		cloudMocks.sessionStatus = "authenticated";
 		const user = userEvent.setup();
@@ -1631,11 +1630,9 @@ describe("CreateProjectFlow project import validation", () => {
 		await user.click(screen.getByRole("button", { name: "New cloud project" }));
 
 		expect(screen.queryByRole("heading", { name: "New cloud project" })).not.toBeInTheDocument();
-		const manualSetup = screen.getByRole("button", { name: "Manually setup" });
-		expect(manualSetup).toHaveClass("decoration-dotted");
-
-		await user.click(manualSetup);
-		expect(screen.getByRole("button", { name: "Auth with GitHub" })).toHaveClass("decoration-dotted");
+		expect(await screen.findByRole("button", { name: /^Connect GitHub/ })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Manually setup" })).not.toBeInTheDocument();
+		expect(screen.queryByLabelText("GitHub PAT")).not.toBeInTheDocument();
 	});
 
 	it("creates a project from a connected GitHub App repository", async () => {
@@ -2004,110 +2001,6 @@ describe("CreateProjectFlow project import validation", () => {
 		expect(cloudMocks.startGitHubInstallation).not.toHaveBeenCalled();
 	});
 
-	it("offers the same add-repository action below the manual repository URL", async () => {
-		cloudMocks.cloudEnabled = true;
-		cloudMocks.sessionStatus = "authenticated";
-		cloudMocks.coderAvailable = true;
-		const user = userEvent.setup();
-		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
-		await user.click(screen.getByRole("button", { name: "New cloud project" }));
-		await user.click(screen.getByRole("button", { name: "Manually setup" }));
-		await user.click(await screen.findByRole("button", { name: "Add repository" }));
-		expect(screen.getByRole("textbox", { name: "Repository" })).toBeInTheDocument();
-		expect(screen.getAllByPlaceholderText("https://github.com/owner/repo")[0].compareDocumentPosition(screen.getByText("Additional repositories")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-	});
-
-	it("advances to the agent step, then creates a cloud project with the selected agents", async () => {
-		cloudMocks.cloudEnabled = true;
-		cloudMocks.sessionStatus = "authenticated";
-		cloudMocks.createProject.mockResolvedValue({ project: { id: "cp-1" } });
-		// Don't pre-set listUserProviderConnections so OAuth panel shows
-		const onCreateProject = vi.fn();
-		const user = userEvent.setup();
-		render(<CreateProjectFlow embedded mode="choose" {...noop} onCreateProject={onCreateProject} />, {
-			wrapper: CloudTestProviders,
-		});
-
-		// Single screen: enter project name, switch to PAT mode, fill fields, create
-		await user.click(screen.getByRole("button", { name: "New cloud project" }));
-		await user.type(screen.getByLabelText("Project name"), "web-app");
-		await user.click(screen.getByRole("button", { name: "Manually setup" }));
-
-		await user.type(screen.getByLabelText("GitHub PAT"), "ghp_setup_token");
-		await user.click(screen.getByRole("button", { name: "Save & Continue" }));
-		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalledWith("ghp_setup_token"));
-
-		await user.type(screen.getByPlaceholderText("https://github.com/owner/repo"), "https://github.com/acme/web-app");
-
-		const createButton = await screen.findByRole("button", { name: "Create cloud project" });
-		await waitFor(() => expect(createButton).not.toBeDisabled());
-		await user.click(screen.getByLabelText("Worker agent"));
-		expect(screen.getByRole("option", { name: /Codex/ })).toHaveAttribute("data-disabled");
-		expect(screen.queryByRole("option", { name: "Manage agents…" })).not.toBeInTheDocument();
-		await user.keyboard("{Escape}");
-		await user.click(createButton);
-
-		await waitFor(() =>
-			expect(cloudMocks.createProject).toHaveBeenCalledWith("org-1", {
-				displayName: "web-app",
-				repositoryUrl: "https://github.com/acme/web-app",
-				defaultBranch: "main",
-				config: {
-					worker: { agent: "claude-code" },
-					orchestrator: { agent: "claude-code" },
-				},
-			}),
-		);
-		expect(onCreateProject).not.toHaveBeenCalled();
-		expect(bridgeMocks.chooseDirectory).not.toHaveBeenCalled();
-	});
-
-	it("blocks a non-https repository URL without advancing past the repository step", async () => {
-		cloudMocks.cloudEnabled = true;
-		cloudMocks.sessionStatus = "authenticated";
-		const user = userEvent.setup();
-		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
-
-		await user.click(screen.getByRole("button", { name: "New cloud project" }));
-		await user.type(screen.getByLabelText("Project name"), "web-app");
-		await user.click(screen.getByRole("button", { name: "Manually setup" }));
-
-		await user.type(screen.getByLabelText("GitHub PAT"), "ghp_token");
-		await user.click(screen.getByRole("button", { name: "Save & Continue" }));
-		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalled());
-
-		await user.type(screen.getByPlaceholderText("https://github.com/owner/repo"), "git@github.com:acme/web-app.git");
-
-		const createButton = screen.getByRole("button", { name: "Create cloud project" });
-		await user.click(createButton);
-
-		expect(await screen.findByText("Enter an https repository URL.")).toBeInTheDocument();
-		expect(cloudMocks.createProject).not.toHaveBeenCalled();
-	});
-
-	it("treats a cloud-auth 401 on PAT save as an expired session, not an invalid token", async () => {
-		cloudMocks.cloudEnabled = true;
-		cloudMocks.sessionStatus = "authenticated";
-		// The control plane rejects PUT /me/github-pat at its auth middleware (the
-		// AO Cloud session token expired) before the PAT is ever validated.
-		cloudMocks.putGitHubPAT.mockRejectedValueOnce(
-			new CloudCpError("The access token is invalid or expired.", { status: 401, code: "unauthorized" }),
-		);
-		const user = userEvent.setup();
-		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
-
-		await user.click(screen.getByRole("button", { name: "New cloud project" }));
-		await user.type(screen.getByLabelText("Project name"), "web-app");
-		await user.click(screen.getByRole("button", { name: "Manually setup" }));
-		await user.type(screen.getByLabelText("GitHub PAT"), "ghp_validtoken00000000000000000000000");
-		await user.click(screen.getByRole("button", { name: "Save & Continue" }));
-
-		// Re-auth is triggered and the token is NOT blamed.
-		await waitFor(() => expect(cloudMocks.signIn).toHaveBeenCalled());
-		expect(await screen.findByText(/AO Cloud session expired/i)).toBeInTheDocument();
-		expect(screen.queryByText("The access token is invalid or expired.")).not.toBeInTheDocument();
-	});
-
 	it("returns from GitHub setup to the project source list", async () => {
 		cloudMocks.cloudEnabled = true;
 		cloudMocks.sessionStatus = "authenticated";
@@ -2121,103 +2014,5 @@ describe("CreateProjectFlow project import validation", () => {
 		expect(screen.getByRole("button", { name: "New cloud project" })).toBeInTheDocument();
 	});
 
-	it("catches an unreachable repository at create, then retries after a GitHub token is saved", async () => {
-		cloudMocks.cloudEnabled = true;
-		cloudMocks.sessionStatus = "authenticated";
-		cloudMocks.createProject
-			.mockRejectedValueOnce(
-				new CloudCpError("Can't reach this repository — it may be private, or the URL may be wrong.", {
-					status: 422,
-					code: "repository_unreachable",
-				}),
-			)
-			.mockResolvedValueOnce({ project: { id: "cp-1" } });
-		githubDaemonMocks.saveGitHubPAT.mockResolvedValue(undefined);
-		const user = userEvent.setup();
-		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
 
-		// Single screen: enter project name, switch to PAT mode, fill fields, create
-		await user.click(screen.getByRole("button", { name: "New cloud project" }));
-		await user.type(screen.getByLabelText("Project name"), "private-repo");
-		await user.click(screen.getByRole("button", { name: "Manually setup" }));
-
-		await user.type(screen.getByLabelText("GitHub PAT"), "ghp_validtoken00000000000000000000000");
-		await user.click(screen.getByRole("button", { name: "Save & Continue" }));
-		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalledWith("ghp_validtoken00000000000000000000000"));
-
-		await user.type(screen.getByPlaceholderText("https://github.com/owner/repo"), "https://github.com/acme/private-repo");
-
-		const createButton = await screen.findByRole("button", { name: "Create cloud project" });
-		await waitFor(() => expect(createButton).not.toBeDisabled());
-		await user.click(createButton);
-
-		// The failure shows in both CloudAgentSetupStep and the unreachable banner
-		const alerts = screen.getAllByRole("alert");
-		expect(alerts.some(a => /can't reach this repository/i.test(a.textContent ?? ""))).toBe(true);
-	});
-
-	it("blocks project creation if the token is read-only", async () => {
-		cloudMocks.cloudEnabled = true;
-		cloudMocks.sessionStatus = "authenticated";
-		cloudMocks.validateSavedRepositoryAccess.mockResolvedValue({ writeAccess: false });
-		const user = userEvent.setup();
-		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
-
-		// Single screen: enter project name, switch to PAT mode, fill fields, create
-		await user.click(screen.getByRole("button", { name: "New cloud project" }));
-		await user.type(screen.getByLabelText("Project name"), "read-only-repo");
-		await user.click(screen.getByRole("button", { name: "Manually setup" }));
-
-		await user.type(screen.getByLabelText("GitHub PAT"), "ghp_readonlytoken");
-		await user.click(screen.getByRole("button", { name: "Save & Continue" }));
-		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalled());
-
-		await user.type(screen.getByPlaceholderText("https://github.com/owner/repo"), "https://github.com/acme/read-only-repo");
-
-		const createButton = await screen.findByRole("button", { name: "Create cloud project" });
-		await waitFor(() => expect(createButton).not.toBeDisabled());
-		await user.click(createButton);
-
-		// The error shows in both CloudAgentSetupStep and the read-only banner
-		await waitFor(() => {
-			const alerts = screen.getAllByRole("alert");
-			expect(alerts.some(a => /does not have push access/i.test(a.textContent ?? ""))).toBe(true);
-		});
-		expect(screen.getByRole("button", { name: "Update Token" })).toBeInTheDocument();
-	});
-
-	it("shows a retry button when GitHub is temporarily unavailable", async () => {
-		cloudMocks.cloudEnabled = true;
-		cloudMocks.sessionStatus = "authenticated";
-		cloudMocks.validateSavedRepositoryAccess.mockRejectedValue(
-			new CloudCpError("GitHub is temporarily unavailable.", {
-				status: 502,
-				code: "provider_unavailable",
-			})
-		);
-		const user = userEvent.setup();
-		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
-
-		// Single screen: enter project name, switch to PAT mode, fill fields, create
-		await user.click(screen.getByRole("button", { name: "New cloud project" }));
-		await user.type(screen.getByLabelText("Project name"), "unavailable-repo");
-		await user.click(screen.getByRole("button", { name: "Manually setup" }));
-
-		await user.type(screen.getByLabelText("GitHub PAT"), "ghp_token");
-		await user.click(screen.getByRole("button", { name: "Save & Continue" }));
-		await waitFor(() => expect(githubDaemonMocks.saveGitHubPAT).toHaveBeenCalled());
-
-		await user.type(screen.getByPlaceholderText("https://github.com/owner/repo"), "https://github.com/acme/unavailable-repo");
-
-		const createButton = await screen.findByRole("button", { name: "Create cloud project" });
-		await waitFor(() => expect(createButton).not.toBeDisabled());
-		await user.click(createButton);
-
-		// The error shows in both CloudAgentSetupStep and the unavailable banner
-		await waitFor(() => {
-			const alerts = screen.getAllByRole("alert");
-			expect(alerts.some(a => /GitHub is temporarily unavailable/i.test(a.textContent ?? ""))).toBe(true);
-		});
-		expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
-	});
 });
