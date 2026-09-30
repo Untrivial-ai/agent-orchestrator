@@ -218,6 +218,30 @@ func latestPrimaryTurnCompleted(rows ConversationRows, id domain.SessionID, cuto
 	return false
 }
 
+// Provider catalog reads are passive: opening a chat must not wake it. Hold
+// the same gate as hibernation so a provider cannot stop during the read.
+func (s *Service) readingController(ctx context.Context, id domain.SessionID) (*Controller, domain.SessionRecord, func(), error) {
+	gate := s.controllerGate(domain.SessionConversationOwner(id))
+	if err := gate.lock(ctx); err != nil {
+		return nil, domain.SessionRecord{}, nil, err
+	}
+	rec, err := s.requireChatSession(ctx, id)
+	if err != nil {
+		gate.unlock()
+		return nil, domain.SessionRecord{}, nil, err
+	}
+	if rec.HibernatedAt != nil {
+		gate.unlock()
+		return nil, domain.SessionRecord{}, nil, ErrNoController
+	}
+	controller, err := s.Controller(id)
+	if err != nil || controller.State() == ports.ChatControllerStopped {
+		gate.unlock()
+		return nil, domain.SessionRecord{}, nil, ErrNoController
+	}
+	return controller, rec, gate.unlock, nil
+}
+
 // workingController holds the start/stop gate across provider work. A cold
 // session is resumed outside that gate because native Start takes it too.
 func (s *Service) workingController(ctx context.Context, id domain.SessionID) (*Controller, func(), error) {

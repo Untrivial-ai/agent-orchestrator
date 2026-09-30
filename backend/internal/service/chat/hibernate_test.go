@@ -117,6 +117,29 @@ func TestHibernateChatKeepsCompletedIdleSessionResumable(t *testing.T) {
 	}
 }
 
+func TestHibernatedCatalogReadsDoNotWakeProvider(t *testing.T) {
+	h, _ := settledHibernationHarness(t, domain.TurnStateCompleted)
+	ctx := context.Background()
+	if hibernated, err := h.svc.HibernateChat(ctx, testSession); err != nil || !hibernated {
+		t.Fatalf("HibernateChat = %v, %v", hibernated, err)
+	}
+	var wakeCalls atomic.Int32
+	h.svc.SetWakeCallback(func(context.Context, domain.SessionID) error {
+		wakeCalls.Add(1)
+		return nil
+	})
+	if _, _, err := h.svc.Models(ctx, testSession); !errors.Is(err, chatsvc.ErrNoController) {
+		t.Fatalf("Models error = %v, want no controller", err)
+	}
+	if _, err := h.svc.ConfigOptions(ctx, testSession); !errors.Is(err, chatsvc.ErrNoController) {
+		t.Fatalf("ConfigOptions error = %v, want no controller", err)
+	}
+	rec, found, err := h.st.GetSession(ctx, testSession)
+	if err != nil || !found || rec.HibernatedAt == nil || wakeCalls.Load() != 0 {
+		t.Fatalf("passive reads woke provider: session=%+v found=%v readsErr=%v wakeCalls=%d", rec, found, err, wakeCalls.Load())
+	}
+}
+
 func TestRelayChatTurnWithIDWakesHibernatedSession(t *testing.T) {
 	h, old := settledHibernationHarness(t, domain.TurnStateCompleted)
 	ctx := context.Background()

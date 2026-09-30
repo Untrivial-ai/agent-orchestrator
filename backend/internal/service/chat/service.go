@@ -1820,7 +1820,7 @@ var ErrConfigOptionsUnsupported = errors.New("chat driver has no session config 
 // Read from the live conversation rather than a table in AO: models are added,
 // renamed, hidden per account and gated by entitlement the provider knows about.
 func (s *Service) Models(ctx context.Context, id domain.SessionID) ([]ports.ChatModel, domain.ConversationSettings, error) {
-	controller, release, err := s.workingController(ctx, id)
+	controller, _, release, err := s.readingController(ctx, id)
 	if err != nil {
 		return nil, domain.ConversationSettings{}, err
 	}
@@ -1841,11 +1841,7 @@ func (s *Service) Models(ctx context.Context, id domain.SessionID) ([]ports.Chat
 // the connected conversation so model entitlements and model-dependent choices
 // cannot go stale in an AO table.
 func (s *Service) ConfigOptions(ctx context.Context, id domain.SessionID) ([]ports.ChatConfigOption, error) {
-	record, err := s.requireChatSession(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	controller, release, err := s.workingController(ctx, id)
+	controller, record, release, err := s.readingController(ctx, id)
 	if err != nil {
 		return nil, err
 	}
