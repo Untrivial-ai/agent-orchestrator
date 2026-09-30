@@ -13,6 +13,7 @@ import { executeMobileBrowserAct } from "../../lib/browser/mobileBrowserAct";
 import { bridgeResult, browserCommandScript, MOBILE_BROWSER_APPEARANCE_SCRIPT, MOBILE_BROWSER_BOOTSTRAP, parseBrowserBridgeMessage, parseBrowserContentAppearance, type BrowserContentAppearance } from "../../lib/browser/mobileBrowserBridge";
 import { clearPendingMobileBrowserNavigationTimers, failPendingMobileBrowserNavigation, schedulePendingMobileBrowserNavigationSuccess, type PendingMobileBrowserNavigation } from "../../lib/browser/mobileBrowserNavigation";
 import { MobileBrowserRuntimeClient, type MobileBrowserCommand, type MobileBrowserCommandResult } from "../../lib/browser/mobileBrowserRuntime";
+import { MobileBrowserUrlWaits } from "../../lib/browser/mobileBrowserUrlWait";
 import { inAppWebNavigation, isHttpUrl, normalizeBrowserInput, shouldAttachPreviewAuth } from "../../lib/browser/browserUrl";
 import { browserLoadEnd, browserLoadError, browserLoadStart, browserNavigationChanged, initialBrowserState, type MobileBrowserState } from "../../lib/browser/browserState";
 import { haptics } from "../../lib/haptics";
@@ -47,6 +48,8 @@ export default function SessionPreviewScreen() {
 		timer: ReturnType<typeof setTimeout>;
 	}>());
 	const pendingNavigation = useRef<PendingMobileBrowserNavigation | null>(null);
+	const pendingUrlWaits = useRef(new MobileBrowserUrlWaits());
+	const currentBrowserUrl = useRef("");
 	const browserDidNavigate = useRef(false);
 	const browserStorageKey = useMemo(() => config && id ? browserSessionUrlKey(config.host, config.httpPort, id) : "", [config, id]);
 
@@ -163,6 +166,9 @@ export default function SessionPreviewScreen() {
 			});
 		}
 		if (command.action === "act") return executeMobileBrowserAct(command, executeWebCommand);
+		if (command.action === "wait" && typeof command.args?.url === "string") {
+			return pendingUrlWaits.current.wait(command.requestId, command.args.url, currentBrowserUrl.current, command.args.timeoutMs);
+		}
 		return executeWebCommand(command);
 	}, [config, executeWebCommand, navigateTo]);
 	const cancelAgentCommand = useCallback((requestId: string) => {
@@ -173,6 +179,7 @@ export default function SessionPreviewScreen() {
 			navigation.resolve({ ok: false, error: { code: "BROWSER_COMMAND_CANCELLED", message: "Browser navigation was cancelled." } });
 			return;
 		}
+		if (pendingUrlWaits.current.cancel(requestId)) return;
 		const pending = commandResults.current.get(requestId);
 		if (!pending) return;
 		commandResults.current.delete(requestId);
@@ -207,6 +214,7 @@ export default function SessionPreviewScreen() {
 				pending.resolve({ ok: false, error: { code: "BROWSER_TARGET_UNAVAILABLE", message: "The mobile browser closed." } });
 			}
 			commandResults.current.clear();
+			pendingUrlWaits.current.close();
 			const navigation = pendingNavigation.current;
 			pendingNavigation.current = null;
 			if (navigation) {
@@ -274,6 +282,10 @@ export default function SessionPreviewScreen() {
 						// values now rather than dereferencing a released event inside the
 						// asynchronous state updater.
 						const nextUrl = event?.nativeEvent?.url;
+						if (nextUrl) {
+							currentBrowserUrl.current = nextUrl;
+							pendingUrlWaits.current.update(nextUrl);
+						}
 						if (nextUrl && pendingNavigation.current) pendingNavigation.current.started = true;
 						setBrowserState((current) => browserLoadStart(current, nextUrl));
 					}}
@@ -295,6 +307,8 @@ export default function SessionPreviewScreen() {
 					}}
 					onNavigationStateChange={(event: WebViewNavigation | null) => {
 						if (!event) return;
+						currentBrowserUrl.current = event.url;
+						pendingUrlWaits.current.update(event.url);
 						const update = {
 							url: event.url,
 							title: event.title,
