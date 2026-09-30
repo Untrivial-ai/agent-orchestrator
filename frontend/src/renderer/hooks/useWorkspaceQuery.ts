@@ -344,6 +344,7 @@ function toCloudWorkspace(
 ): WorkspaceSummary {
 	return {
 		id: project.id,
+		cloudOrgId: orgId,
 		name: project.displayName,
 		kind: "cloud",
 		// Cloud projects run in control-plane sandboxes; there is no local folder.

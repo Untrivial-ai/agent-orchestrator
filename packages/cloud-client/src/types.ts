@@ -18,6 +18,11 @@ export type AgentAvailability = Schemas["AgentAvailability"];
 export type AgentProfile = Schemas["AgentProfile"];
 
 export type Project = Schemas["Project"];
+export type ProjectConfig = Schemas["ProjectConfig"];
+export type ProjectAgentConfig = Schemas["ProjectAgentConfig"];
+export type ProjectRoleConfig = Schemas["ProjectRoleConfig"];
+export type ProjectReviewer = Schemas["ProjectReviewer"];
+export type ProjectSettingsInput = Schemas["ProjectSettingsInput"];
 export type CreateProjectInput = Schemas["CreateProjectInput"];
 export type UpdateProjectInput = Schemas["UpdateProjectInput"];
 export type DeleteProjectResponse = Schemas["DeleteProjectResponse"];

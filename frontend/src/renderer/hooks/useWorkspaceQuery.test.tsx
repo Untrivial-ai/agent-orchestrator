@@ -580,6 +580,7 @@ describe("useWorkspaceQuery", () => {
 		expect(result.current.data?.[0]).toMatchObject({ id: "proj-1", name: "my-app", path: "/p" });
 		expect(result.current.data?.[1]).toEqual({
 			id: "cp-1",
+			cloudOrgId: "org-1",
 			name: "cloud-app",
 			kind: "cloud",
 			path: "",

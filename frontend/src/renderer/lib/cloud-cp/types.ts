@@ -151,6 +151,13 @@ export interface CloudCpListQuery {
 // Projects (`resource_handlers.go`)
 // ---------------------------------------------------------------------------
 
+import type { ProjectConfig, ProjectAgentConfig, ProjectSettingsInput, ProjectRoleConfig, ProjectReviewer } from "../../../../../packages/cloud-client/src/types";
+
+export type CloudCpProjectAgentConfig = ProjectAgentConfig;
+export type CloudCpProjectRoleConfig = ProjectRoleConfig;
+export type CloudCpProjectReviewer = ProjectReviewer;
+export type CloudCpProjectSettingsRequest = ProjectSettingsInput;
+
 export interface CloudCpProject {
 	id: string;
 	orgId: string;
@@ -158,7 +165,7 @@ export interface CloudCpProject {
 	repositoryUrl: string;
 	defaultBranch: string;
 	githubRepositoryId?: string;
-	config: Record<string, unknown>;
+	config: ProjectConfig;
 	createdAt: string;
 	updatedAt: string;
 }

@@ -441,6 +441,8 @@ func New(options Options) *Server {
 			router.Patch("/notifications/{notificationId}", server.markNotificationRead)
 			router.Post("/notifications/read-all", server.markAllNotificationsRead)
 			router.Post("/projects", server.createProject)
+			router.Get("/projects/{projectId}", server.getProject)
+			router.Patch("/projects/{projectId}/settings", server.updateProjectSettings)
 			router.Patch("/projects/{projectId}", server.updateProject)
 			router.Delete("/projects/{projectId}", server.deleteProject)
 			router.Get("/projects/{projectId}/shares", server.listProjectShareLinks)

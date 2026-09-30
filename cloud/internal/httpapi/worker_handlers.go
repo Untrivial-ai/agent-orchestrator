@@ -236,6 +236,12 @@ func (s *Server) workerReconnect(w http.ResponseWriter, r *http.Request) {
 // launchContextFrom projects a stored launch spec onto the wire type shared by
 // bootstrap and reconnect.
 func launchContextFrom(launch domain.WorkerLaunch) (worker.LaunchContext, error) {
+	var agentConfig domain.ProjectAgentConfig
+	if len(launch.AgentConfig) > 0 {
+		if err := json.Unmarshal(launch.AgentConfig, &agentConfig); err != nil {
+			return worker.LaunchContext{}, err
+		}
+	}
 	agentRules, orchestratorRules, err := projectRoleRules(launch.ProjectConfig)
 	if err != nil {
 		return worker.LaunchContext{}, err
@@ -278,6 +284,7 @@ func launchContextFrom(launch domain.WorkerLaunch) (worker.LaunchContext, error)
 		ParentSessionID: launch.ParentSessionID,
 		Mode:            launch.Mode,
 		Model:           launch.Model,
+		AgentConfig:     agentConfig,
 		DeniedCommands:  launch.DeniedCommands,
 		RepositoryURL:   launch.RepositoryURL,
 		DefaultBranch:   launch.DefaultBranch,
@@ -1064,6 +1071,10 @@ func (s *Server) workerFinishTurn(w http.ResponseWriter, r *http.Request, outcom
 	})
 }
 
+type workerReviewCredentialStore interface {
+	WorkerReviewCredential(context.Context, string, string, string, int64, string) (domain.WorkerCredential, error)
+}
+
 func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	claims := workerFrom(r)
@@ -1075,9 +1086,22 @@ func (s *Server) workerCredential(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusServiceUnavailable, "CREDENTIALS_UNAVAILABLE", "Coding-agent credentials are unavailable.")
 		return
 	}
-	credential, err := s.store.WorkerAgentCredential(
-		r.Context(), claims.OrgID, claims.SessionID, claims.WorkerID, claims.Epoch,
-	)
+	var credential domain.WorkerCredential
+	var err error
+	if reviewRunID := r.URL.Query().Get("reviewRunId"); reviewRunID != "" {
+		if requireUUID(reviewRunID, "reviewRunId") != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "reviewRunId must be a UUID.")
+			return
+		}
+		store, ok := s.store.(workerReviewCredentialStore)
+		if !ok {
+			writeError(w, r, http.StatusNotImplemented, "not_implemented", "Reviewer credentials are unavailable.")
+			return
+		}
+		credential, err = store.WorkerReviewCredential(r.Context(), claims.OrgID, claims.SessionID, claims.WorkerID, claims.Epoch, reviewRunID)
+	} else {
+		credential, err = s.store.WorkerAgentCredential(r.Context(), claims.OrgID, claims.SessionID, claims.WorkerID, claims.Epoch)
+	}
 	if err != nil {
 		s.writeWorkerStoreError(w, r, err)
 		return

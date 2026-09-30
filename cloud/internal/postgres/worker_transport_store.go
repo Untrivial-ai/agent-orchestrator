@@ -332,7 +332,8 @@ func (s *Store) finishWorkerRequest(
 		}
 		if kind == "terminal.open" {
 			var command struct {
-				TerminalID string `json:"terminalId"`
+				TerminalID  string `json:"terminalId"`
+				ReviewRunID string `json:"reviewRunId"`
 			}
 			if json.Unmarshal(payload, &command) == nil && command.TerminalID != "" {
 				state := "open"
@@ -346,6 +347,13 @@ func (s *Store) finishWorkerRequest(
 					  AND worker_epoch = $6 AND state = 'opening'`,
 					state, message, orgID, sessionID, command.TerminalID, epoch,
 				)
+				if err == nil && status == "failed" && command.ReviewRunID != "" {
+					_, err = failReviewRunTx(ctx, tx, orgID, command.ReviewRunID, sessionID, message)
+					if errors.Is(err, ErrNotFound) {
+						// A cancelled or completed review stays in its terminal state.
+						err = nil
+					}
+				}
 			}
 		}
 		return err

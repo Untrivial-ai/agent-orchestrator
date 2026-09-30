@@ -11,6 +11,17 @@ import {
 } from "../src/index.js";
 
 describe("CloudClient", () => {
+  it("loads normalized project settings and preserves PATCH omissions", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ project: { id: "project" } }));
+    const client = createCloudClient({ baseUrl: "https://cloud.test", getAccessToken: () => "token", fetch: fetchMock });
+    await client.getProject("org/1", "project/1");
+    await client.updateProjectSettings("org/1", "project/1", { config: { reviewers: [{ harness: "claude-code", agentConfig: { model: "review-model", effort: "high", permissions: "auto" } }] } });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://cloud.test/api/cloud/v1/orgs/org%2F1/projects/project%2F1");
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("https://cloud.test/api/cloud/v1/orgs/org%2F1/projects/project%2F1/settings");
+    expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ config: { reviewers: [{ harness: "claude-code", agentConfig: { model: "review-model", effort: "high", permissions: "auto" } }] } }));
+    await client.updateProjectSettings("org/1", "project/1", { config: { worker: null, orchestrator: null } });
+    expect(fetchMock.mock.calls[2]?.[1]?.body).toBe('{"config":{"worker":null,"orchestrator":null}}');
+  });
   it("loads the authenticated account and organization memberships", async () => {
     const account = {
       user: {

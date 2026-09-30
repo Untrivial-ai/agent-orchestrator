@@ -102,7 +102,7 @@ func (s *Store) OrchestratorProjectWorkerAgent(
 		}
 		return tx.QueryRow(
 			ctx,
-			`SELECT COALESCE(config->'worker'->>'agent', '') FROM ao_projects WHERE org_id = $1 AND id = $2`,
+			`SELECT COALESCE(config->'worker'->>'agent', config->>'workerAgent', '') FROM ao_projects WHERE org_id = $1 AND id = $2`,
 			orgID, projectID,
 		).Scan(&agent)
 	})

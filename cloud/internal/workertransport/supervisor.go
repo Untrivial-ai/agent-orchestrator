@@ -62,6 +62,7 @@ type Supervisor struct {
 	CompareBase     string
 	Shell           string
 	AgentCommand    workerexec.Command
+	ReviewCommand   func(context.Context, worker.TerminalCommand) (workerexec.Command, error)
 	AgentTerminalID string
 	Started         chan<- error
 	PollInterval    time.Duration
@@ -467,7 +468,7 @@ func (s *Supervisor) handle(
 
 func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalCommand) error {
 	if input.TerminalID == "" ||
-		(input.Kind != "workspace" && input.Kind != "agent") {
+		(input.Kind != "workspace" && input.Kind != "agent" && input.Kind != "reviewer") {
 		return errors.New("invalid terminal open request")
 	}
 	s.mu.Lock()
@@ -475,12 +476,19 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 		s.mu.Unlock()
 		return nil
 	}
+	s.mu.Unlock()
 	processCtx, cancel := context.WithCancel(ctx)
-	command, cleanup, err := s.terminalCommand(processCtx, input.Kind)
+	command, cleanup, err := s.terminalCommand(processCtx, input)
 	if err != nil {
 		cancel()
-		s.mu.Unlock()
 		return err
+	}
+	s.mu.Lock()
+	if _, exists := s.terminals[input.TerminalID]; exists {
+		s.mu.Unlock()
+		cancel()
+		cleanup()
+		return nil
 	}
 	columns, rows := input.Columns, input.Rows
 	if columns == 0 {
@@ -537,16 +545,29 @@ func (s *Supervisor) openTerminal(ctx context.Context, input worker.TerminalComm
 
 func (s *Supervisor) terminalCommand(
 	ctx context.Context,
-	kind string,
+	input worker.TerminalCommand,
 ) (*exec.Cmd, func(), error) {
-	if kind == "agent" {
-		if s.AgentCommand.Path == "" {
+	if input.Kind == "agent" || input.Kind == "reviewer" {
+		s.mu.Lock()
+		agentCommand := s.AgentCommand
+		s.mu.Unlock()
+		if input.Kind == "reviewer" {
+			if s.ReviewCommand == nil || input.Reviewer == nil || input.ReviewRunID == "" {
+				return nil, func() {}, errors.New("reviewer command is unavailable")
+			}
+			var err error
+			agentCommand, err = s.ReviewCommand(ctx, input)
+			if err != nil {
+				return nil, func() {}, err
+			}
+		}
+		if agentCommand.Path == "" {
 			return nil, func() {}, errors.New("interactive agent command is unavailable")
 		}
-		command := exec.CommandContext(ctx, s.AgentCommand.Path, s.AgentCommand.Args...)
-		command.Dir = s.AgentCommand.Dir
-		command.Env = terminalEnvironment(s.AgentCommand.Env)
-		cleanup := s.AgentCommand.Cleanup
+		command := exec.CommandContext(ctx, agentCommand.Path, agentCommand.Args...)
+		command.Dir = agentCommand.Dir
+		command.Env = terminalEnvironment(agentCommand.Env)
+		cleanup := agentCommand.Cleanup
 		if cleanup == nil {
 			cleanup = func() {}
 		}

@@ -829,7 +829,7 @@ func (s *Store) WorkerLaunchSpec(
 		err := tx.QueryRow(
 			ctx,
 			`SELECT session.id, session.project_id, project.display_name, project.config,
-				session.kind, session.harness,
+				session.kind, session.harness, session.agent_config,
 				session.display_name, session.branch, session.prompt,
 				session.agent_session_id, session.mode, session.model, session.denied_commands,
 				COALESCE(session.parent_session_id::text, ''),
@@ -846,6 +846,7 @@ func (s *Store) WorkerLaunchSpec(
 			&launch.ProjectConfig,
 			&launch.Kind,
 			&launch.Harness,
+			&launch.AgentConfig,
 			&launch.DisplayName,
 			&launch.Branch,
 			&launch.Prompt,

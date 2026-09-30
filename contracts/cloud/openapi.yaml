@@ -167,6 +167,18 @@ paths:
     parameters:
       - $ref: "#/components/parameters/OrgId"
       - $ref: "#/components/parameters/ProjectId"
+    get:
+      operationId: getProject
+      tags: [Projects]
+      responses:
+        "200":
+          description: Project and normalized settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
+        default:
+          $ref: "#/components/responses/Error"
     patch:
       operationId: updateProject
       tags: [Projects]
@@ -200,6 +212,29 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeleteProjectResponse"
+        default:
+          $ref: "#/components/responses/Error"
+  /api/cloud/v1/orgs/{orgId}/projects/{projectId}/settings:
+    parameters:
+      - $ref: "#/components/parameters/OrgId"
+      - $ref: "#/components/parameters/ProjectId"
+    patch:
+      operationId: updateProjectSettings
+      tags: [Projects]
+      description: Merge supplied settings only. Omitted fields are preserved, nested role objects merge, and reviewers replace the array. Null is rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectSettingsInput"
+      responses:
+        "200":
+          description: Validated settings persisted atomically.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectResponse"
         default:
           $ref: "#/components/responses/Error"
   /api/cloud/v1/orgs/{orgId}/github/installations:
@@ -1045,12 +1080,21 @@ paths:
   /api/cloud/v1/worker/credential:
     get:
       operationId: getWorkerCredential
+      parameters:
+        - name: reviewRunId
+          in: query
+          required: false
+          description: Select the snapshotted reviewer credential for a running review owned by this session.
+          schema:
+            type: string
+            format: uuid
       tags: [Worker Execution]
       security:
         - workerAuth: []
       description: |
         Returns the valid default coding-agent credential selected by the
-        session harness. The secret must never be logged or persisted.
+        session harness, or the durable reviewer harness when reviewRunId is supplied.
+        The secret must never be logged or persisted.
       responses:
         "200":
           description: The decrypted session-scoped coding-agent credential.
@@ -2020,6 +2064,114 @@ components:
           type: boolean
         nextCursor:
           type: string
+    CloudAgentHarness:
+      type: string
+      enum: [claude-code, codex, cursor, opencode]
+    ProjectAgentConfig:
+      type: object
+      additionalProperties: false
+      properties:
+        model:
+          type: string
+          maxLength: 500
+        mode:
+          type: string
+          enum: ["", plan, ask]
+          description: Cursor CLI mode. Omit or use an empty string for the agent default.
+        effort:
+          type: string
+          enum: ["", low, medium, high, xhigh, max]
+          description: Reasoning effort for Codex or Claude Code. Claude Code does not accept xhigh.
+        permissions:
+          type: string
+          enum: ["", default, auto, accept-edits, bypass-permissions]
+          description: Native approval policy. OpenCode does not accept accept-edits. Empty uses the session execution policy.
+    ProjectRoleConfig:
+      type: object
+      additionalProperties: false
+      required: [agent]
+      properties:
+        agent:
+          $ref: "#/components/schemas/CloudAgentHarness"
+        agentConfig:
+          $ref: "#/components/schemas/ProjectAgentConfig"
+    ProjectRoleConfigPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        agent:
+          $ref: "#/components/schemas/CloudAgentHarness"
+        agentConfig:
+          $ref: "#/components/schemas/ProjectAgentConfig"
+    ProjectReviewer:
+      type: object
+      additionalProperties: false
+      required: [harness]
+      properties:
+        harness:
+          $ref: "#/components/schemas/CloudAgentHarness"
+        agentConfig:
+          $ref: "#/components/schemas/ProjectAgentConfig"
+    ProjectConfig:
+      type: object
+      additionalProperties: true
+      description: Canonical nested role settings. Legacy workerAgent and orchestratorAgent are normalized on reads and removed on the next settings write. Nested agents take precedence.
+      properties:
+        worker:
+          $ref: "#/components/schemas/ProjectRoleConfig"
+        orchestrator:
+          $ref: "#/components/schemas/ProjectRoleConfig"
+        reviewers:
+          type: array
+          maxItems: 1
+          items:
+            $ref: "#/components/schemas/ProjectReviewer"
+          description: Empty or absent uses the session agent for reviews.
+        autoReview:
+          type: boolean
+          description: Defaults to enabled when absent. Independent of session autoInjectReview feedback delivery.
+    ProjectSettingsConfigPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        worker:
+          description: Null removes the worker override and uses the session agent selection.
+          oneOf:
+            - $ref: "#/components/schemas/ProjectRoleConfigPatch"
+            - type: "null"
+        orchestrator:
+          description: Null removes the orchestrator override and uses the session agent selection.
+          oneOf:
+            - $ref: "#/components/schemas/ProjectRoleConfigPatch"
+            - type: "null"
+        reviewers:
+          type: array
+          maxItems: 1
+          items:
+            $ref: "#/components/schemas/ProjectReviewer"
+        autoReview:
+          type: boolean
+    ProjectSettingsInput:
+      type: object
+      additionalProperties: false
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        defaultBranch:
+          type: string
+          minLength: 1
+          maxLength: 255
+        config:
+          $ref: "#/components/schemas/ProjectSettingsConfigPatch"
+    ProjectResponse:
+      type: object
+      additionalProperties: false
+      required: [project]
+      properties:
+        project:
+          $ref: "#/components/schemas/Project"
     Project:
       type: object
       additionalProperties: false
@@ -2043,8 +2195,7 @@ components:
           pattern: "^[1-9][0-9]*$"
           description: GitHub's integer repository ID encoded as a decimal string to preserve precision.
         config:
-          type: object
-          additionalProperties: true
+          $ref: "#/components/schemas/ProjectConfig"
         createdAt:
           type: string
           format: date-time
@@ -2450,6 +2601,8 @@ components:
           type: string
           maxLength: 200
           description: Coding-agent model to launch with; empty uses the harness default.
+        agentConfig:
+          $ref: "#/components/schemas/ProjectAgentConfig"
         deniedCommands:
           type: array
           items:

@@ -114,13 +114,33 @@ export interface paths {
             };
             cookie?: never;
         };
-        get?: never;
+        get: operations["getProject"];
         put?: never;
         post?: never;
         delete: operations["deleteProject"];
         options?: never;
         head?: never;
         patch: operations["updateProject"];
+        trace?: never;
+    };
+    "/api/cloud/v1/orgs/{orgId}/projects/{projectId}/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description Merge supplied settings only. Omitted fields are preserved, nested role objects merge, and reviewers replace the array. Null is rejected. */
+        patch: operations["updateProjectSettings"];
         trace?: never;
     };
     "/api/cloud/v1/orgs/{orgId}/github/installations": {
@@ -733,7 +753,8 @@ export interface paths {
             cookie?: never;
         };
         /** @description Returns the valid default coding-agent credential selected by the
-         *     session harness. The secret must never be logged or persisted.
+         *     session harness, or the durable reviewer harness when reviewRunId is supplied.
+         *     The secret must never be logged or persisted.
          *      */
         get: operations["getWorkerCredential"];
         put?: never;
@@ -1172,6 +1193,65 @@ export interface components {
             hasMore: boolean;
             nextCursor?: string;
         };
+        /** @enum {string} */
+        CloudAgentHarness: "claude-code" | "codex" | "cursor" | "opencode";
+        ProjectAgentConfig: {
+            model?: string;
+            /**
+             * @description Cursor CLI mode. Omit or use an empty string for the agent default.
+             * @enum {string}
+             */
+            mode?: "" | "plan" | "ask";
+            /**
+             * @description Reasoning effort for Codex or Claude Code. Claude Code does not accept xhigh.
+             * @enum {string}
+             */
+            effort?: "" | "low" | "medium" | "high" | "xhigh" | "max";
+            /**
+             * @description Native approval policy. OpenCode does not accept accept-edits. Empty uses the session execution policy.
+             * @enum {string}
+             */
+            permissions?: "" | "default" | "auto" | "accept-edits" | "bypass-permissions";
+        };
+        ProjectRoleConfig: {
+            agent: components["schemas"]["CloudAgentHarness"];
+            agentConfig?: components["schemas"]["ProjectAgentConfig"];
+        };
+        ProjectRoleConfigPatch: {
+            agent?: components["schemas"]["CloudAgentHarness"];
+            agentConfig?: components["schemas"]["ProjectAgentConfig"];
+        };
+        ProjectReviewer: {
+            harness: components["schemas"]["CloudAgentHarness"];
+            agentConfig?: components["schemas"]["ProjectAgentConfig"];
+        };
+        /** @description Canonical nested role settings. Legacy workerAgent and orchestratorAgent are normalized on reads and removed on the next settings write. Nested agents take precedence. */
+        ProjectConfig: {
+            worker?: components["schemas"]["ProjectRoleConfig"];
+            orchestrator?: components["schemas"]["ProjectRoleConfig"];
+            /** @description Empty or absent uses the session agent for reviews. */
+            reviewers?: components["schemas"]["ProjectReviewer"][];
+            /** @description Defaults to enabled when absent. Independent of session autoInjectReview feedback delivery. */
+            autoReview?: boolean;
+        } & {
+            [key: string]: unknown;
+        };
+        ProjectSettingsConfigPatch: {
+            /** @description Null removes the worker override and uses the session agent selection. */
+            worker?: components["schemas"]["ProjectRoleConfigPatch"] | null;
+            /** @description Null removes the orchestrator override and uses the session agent selection. */
+            orchestrator?: components["schemas"]["ProjectRoleConfigPatch"] | null;
+            reviewers?: components["schemas"]["ProjectReviewer"][];
+            autoReview?: boolean;
+        };
+        ProjectSettingsInput: {
+            displayName?: string;
+            defaultBranch?: string;
+            config?: components["schemas"]["ProjectSettingsConfigPatch"];
+        };
+        ProjectResponse: {
+            project: components["schemas"]["Project"];
+        };
         Project: {
             /** Format: uuid */
             id: string;
@@ -1183,9 +1263,7 @@ export interface components {
             defaultBranch: string;
             /** @description GitHub's integer repository ID encoded as a decimal string to preserve precision. */
             githubRepositoryId?: string;
-            config: {
-                [key: string]: unknown;
-            };
+            config: components["schemas"]["ProjectConfig"];
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
@@ -1363,6 +1441,7 @@ export interface components {
             mode: components["schemas"]["SessionMode"];
             /** @description Coding-agent model to launch with; empty uses the harness default. */
             model?: string;
+            agentConfig?: components["schemas"]["ProjectAgentConfig"];
             deniedCommands: string[];
             /** Format: uri */
             repositoryUrl: string;
@@ -2409,6 +2488,30 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getProject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Project and normalized settings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     deleteProject: {
         parameters: {
             query?: never;
@@ -2458,6 +2561,34 @@ export interface operations {
                     "application/json": {
                         project: components["schemas"]["Project"];
                     };
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    updateProjectSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                orgId: components["parameters"]["OrgId"];
+                projectId: components["parameters"]["ProjectId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectSettingsInput"];
+            };
+        };
+        responses: {
+            /** @description Validated settings persisted atomically. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectResponse"];
                 };
             };
             default: components["responses"]["Error"];
@@ -3448,7 +3579,10 @@ export interface operations {
     };
     getWorkerCredential: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Select the snapshotted reviewer credential for a running review owned by this session. */
+                reviewRunId?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;

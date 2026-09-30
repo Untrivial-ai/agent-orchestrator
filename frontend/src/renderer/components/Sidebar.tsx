@@ -491,7 +491,7 @@ function useSelection() {
 	const goStandaloneBoard = useCallback(() => void navigate({ to: "/sessions" }), [navigate]);
 	const goGlobalSettings = useCallback(() => openGlobalSettings(), [openGlobalSettings]);
 	const goConnectMobile = useCallback(() => openGlobalSettings("mobile"), [openGlobalSettings]);
-	const goSettings = useCallback((projectId: string) => openProjectSettings(projectId), [openProjectSettings]);
+	const goSettings = useCallback((projectId: string, cloudOrgId?: string) => openProjectSettings(projectId, { cloudOrgId }), [openProjectSettings]);
 	const goProject = useCallback(
 		(projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } }),
 		[navigate],
@@ -1360,7 +1360,7 @@ const ProjectItem = memo(function ProjectItem({
 			return;
 		}
 		if (!hasConfiguredOrchestratorAgent(workspace)) {
-			selection.goSettings(workspace.id);
+					selection.goSettings(workspace.id, workspace.cloudOrgId);
 			return;
 		}
 		setIsSpawning(true);
@@ -1608,7 +1608,7 @@ const ProjectItem = memo(function ProjectItem({
 											<Plus aria-hidden="true" />
 											{t("shell.newTask")}
 										</DropdownMenuItem>
-										<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id)}>
+						<DropdownMenuItem onSelect={() => selection.goSettings(workspace.id, workspace.cloudOrgId)}>
 											<Settings aria-hidden="true" />
 											{t("shell.projectSettings")}
 										</DropdownMenuItem>
@@ -1727,7 +1727,7 @@ const ProjectItem = memo(function ProjectItem({
 					<Plus aria-hidden="true" />
 					{t("shell.newTask")}
 				</ContextMenuItem>
-				<ContextMenuItem onSelect={() => selection.goSettings(workspace.id)}>
+						<ContextMenuItem onSelect={() => selection.goSettings(workspace.id, workspace.cloudOrgId)}>
 					<Settings aria-hidden="true" />
 					{t("shell.projectSettings")}
 				</ContextMenuItem>

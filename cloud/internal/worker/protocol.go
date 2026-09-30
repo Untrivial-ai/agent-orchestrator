@@ -3,6 +3,8 @@ package worker
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 )
 
 // BootstrapRequest is what a worker sends to redeem its one-time ticket.
@@ -28,10 +30,11 @@ type LaunchContext struct {
 	Mode            string `json:"mode"`
 	// Model is the coding-agent model the worker launches the harness with;
 	// empty uses the harness default.
-	Model          string   `json:"model,omitempty"`
-	DeniedCommands []string `json:"deniedCommands"`
-	RepositoryURL  string   `json:"repositoryUrl"`
-	DefaultBranch  string   `json:"defaultBranch"`
+	Model          string                    `json:"model,omitempty"`
+	AgentConfig    domain.ProjectAgentConfig `json:"agentConfig,omitempty"`
+	DeniedCommands []string                  `json:"deniedCommands"`
+	RepositoryURL  string                    `json:"repositoryUrl"`
+	DefaultBranch  string                    `json:"defaultBranch"`
 	// ExtraRepos are additional repositories the worker clones alongside the
 	// primary repo (multi-repo dev kit). Empty for a single-repo session.
 	ExtraRepos []RepoRef `json:"extraRepos,omitempty"`
@@ -317,11 +320,13 @@ type WorkspaceDiffFile struct {
 }
 
 type TerminalCommand struct {
-	TerminalID string `json:"terminalId"`
-	Kind       string `json:"kind,omitempty"`
-	Data       []byte `json:"data,omitempty"`
-	Columns    uint16 `json:"columns,omitempty"`
-	Rows       uint16 `json:"rows,omitempty"`
+	TerminalID  string                  `json:"terminalId"`
+	Kind        string                  `json:"kind,omitempty"`
+	Data        []byte                  `json:"data,omitempty"`
+	Columns     uint16                  `json:"columns,omitempty"`
+	Rows        uint16                  `json:"rows,omitempty"`
+	ReviewRunID string                  `json:"reviewRunId,omitempty"`
+	Reviewer    *domain.ProjectReviewer `json:"reviewer,omitempty"`
 }
 
 // TerminalStreamFrame is one message on the persistent duplex terminal

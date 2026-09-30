@@ -11,6 +11,8 @@ export type ModelTuningControlsProps = {
 	models?: Model[];
 	model: string;
 	effort: string;
+	/** Supported launch efforts when no model override is selected. */
+	effortsWithoutModel?: readonly string[];
 	onEffortChange: (value: string) => void;
 	onEffortReset?: (value: string) => void;
 	onValidityChange?: (valid: boolean) => void;
@@ -24,6 +26,7 @@ export function useModelTuning(props: Omit<ModelTuningControlsProps, "variant" |
 		models,
 		model,
 		effort,
+		effortsWithoutModel,
 		onEffortChange,
 		onEffortReset = onEffortChange,
 		onValidityChange,
@@ -33,7 +36,8 @@ export function useModelTuning(props: Omit<ModelTuningControlsProps, "variant" |
 	const concreteModel = isConcreteModelID(model) ? model : "";
 	const selected =
 		(concreteModel ? models?.find((item) => item.id === concreteModel) : undefined) ??
-		(concreteModel === "" ? models?.find((item) => item.isDefault && isConcreteModelID(item.id)) : undefined);
+		(concreteModel === "" ? models?.find((item) => item.isDefault && isConcreteModelID(item.id)) : undefined) ??
+		(concreteModel === "" && effortsWithoutModel ? { id: "", label: "", efforts: [...effortsWithoutModel] } : undefined);
 	const capabilitiesKnown = models !== undefined;
 	const invalidEffort = Boolean(effort && capabilitiesKnown && !selected?.efforts?.includes(effort));
 

@@ -341,10 +341,31 @@ func (s *Store) WorkerAgentCredential(
 	orgID, sessionID, workerID string,
 	epoch int64,
 ) (domain.WorkerCredential, error) {
+	return s.workerAgentCredential(ctx, orgID, sessionID, workerID, epoch, "")
+}
+
+// WorkerReviewCredential can select only a running review owned by this session.
+func (s *Store) WorkerReviewCredential(ctx context.Context, orgID, sessionID, workerID string, epoch int64, reviewRunID string) (domain.WorkerCredential, error) {
+	return s.workerAgentCredential(ctx, orgID, sessionID, workerID, epoch, reviewRunID)
+}
+
+func (s *Store) workerAgentCredential(ctx context.Context, orgID, sessionID, workerID string, epoch int64, reviewRunID string) (domain.WorkerCredential, error) {
 	var credential domain.WorkerCredential
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		if err := requireCurrentWorker(ctx, tx, orgID, sessionID, workerID, epoch); err != nil {
 			return err
+		}
+		reviewHarness := ""
+		if reviewRunID != "" {
+			if err := tx.QueryRow(ctx,
+				`SELECT COALESCE(reviewer_config->>'harness', '') FROM ao_review_runs
+				WHERE org_id = $1 AND id = $2 AND review_session_id = $3 AND status = 'running'`,
+				orgID, reviewRunID, sessionID).Scan(&reviewHarness); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return ErrNotFound
+				}
+				return err
+			}
 		}
 		err := tx.QueryRow(
 			ctx,
@@ -355,7 +376,7 @@ func (s *Store) WorkerAgentCredential(
 			FROM ao_sessions session
 			JOIN ao_provider_connections connection
 				ON connection.org_id = session.org_id
-				AND connection.provider = session.harness
+				AND connection.provider = COALESCE(NULLIF($4, ''), session.harness)
 				AND connection.label = $3
 				AND connection.validation_state = 'valid'
 			WHERE session.org_id = $1
@@ -364,6 +385,7 @@ func (s *Store) WorkerAgentCredential(
 			orgID,
 			sessionID,
 			defaultWorkerCredentialLabel,
+			reviewHarness,
 		).Scan(
 			&credential.Provider,
 			&credential.CredentialType,
@@ -386,10 +408,10 @@ func (s *Store) WorkerAgentCredential(
 		var createdByUserID *string
 		if err := tx.QueryRow(
 			ctx,
-			`SELECT harness, created_by_user_id::text
+			`SELECT COALESCE(NULLIF($3, ''), harness), created_by_user_id::text
 			FROM ao_sessions
 			WHERE org_id = $1 AND id = $2 AND is_terminated = false`,
-			orgID, sessionID,
+			orgID, sessionID, reviewHarness,
 		).Scan(&harness, &createdByUserID); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound

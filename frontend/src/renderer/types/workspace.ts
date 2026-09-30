@@ -346,6 +346,7 @@ export type { AttentionZone } from "../lib/session-presentation";
 
 export type WorkspaceSummary = {
 	id: string;
+	cloudOrgId?: string;
 	name: string;
 	/**
 	 * Discriminator for where the project lives. Local projects carry the

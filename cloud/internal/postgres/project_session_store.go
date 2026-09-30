@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
@@ -20,8 +21,13 @@ func (s *Store) CreateProject(
 	idempotencyKey string,
 	input domain.CreateProject,
 ) (domain.Project, error) {
+	config, err := domain.NormalizeProjectConfig(input.Config)
+	if err != nil {
+		return domain.Project{}, ErrInvalid
+	}
+	input.Config = config
 	var project domain.Project
-	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
+	err = s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
 		payload, err := json.Marshal(input)
 		if err != nil {
 			return err
@@ -224,7 +230,7 @@ func loadIdempotentProject(
 		return err
 	}
 	if kind != expectedKind || status != "succeeded" ||
-		!jsonEqual(storedPayload, payload) || projectID == "" {
+		!projectCreatePayloadEqual(storedPayload, payload, "Config") || projectID == "" {
 		return ErrIdempotencyMismatch
 	}
 	return scanProject(tx.QueryRow(
@@ -372,9 +378,17 @@ func (s *Store) CreateGitHubScratchProject(
 	maxActiveSandboxes int,
 	input domain.CreateGitHubScratchProject,
 ) (domain.Project, domain.Session, error) {
+	if len(input.Config) == 0 {
+		input.Config = json.RawMessage(`{"source":"scratch"}`)
+	}
+	config, err := domain.NormalizeProjectConfig(input.Config)
+	if err != nil {
+		return domain.Project{}, domain.Session{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+	}
+	input.Config = config
 	var project domain.Project
 	var session domain.Session
-	err := s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
+	err = s.withTenant(ctx, principal, orgID, func(tx pgx.Tx) error {
 		payload, err := json.Marshal(struct {
 			RepositoryID            int64                `json:"repositoryId"`
 			InstallationID          int64                `json:"installationId"`
@@ -426,7 +440,7 @@ func (s *Store) CreateGitHubScratchProject(
 				return err
 			}
 			if kind != "github.scratch.create" || status != "succeeded" ||
-				!jsonEqual(storedPayload, payload) ||
+				!projectCreatePayloadEqual(storedPayload, payload, "config") ||
 				projectID == "" || sessionID == "" {
 				return ErrIdempotencyMismatch
 			}
@@ -678,16 +692,33 @@ func createSessionTx(
 	if maxActiveSandboxes < 1 || activeSandboxes >= maxActiveSandboxes {
 		return domain.Session{}, ErrSandboxQuotaExceeded
 	}
+	var projectConfig json.RawMessage
+	if err := tx.QueryRow(ctx, `SELECT config FROM ao_projects WHERE org_id = $1 AND id = $2 AND archived_at IS NULL`,
+		orgID, input.ProjectID).Scan(&projectConfig); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Session{}, ErrNotFound
+		}
+		return domain.Session{}, err
+	}
+	harness, agentConfig, err := domain.SessionAgentConfig(projectConfig, input.Kind, input.Harness, input.Model)
+	if err != nil {
+		return domain.Session{}, ErrInvalid
+	}
+	input.Harness, input.Model = harness, agentConfig.Model
+	agentConfigJSON, err := json.Marshal(agentConfig)
+	if err != nil {
+		return domain.Session{}, err
+	}
 
 	err = scanSession(tx.QueryRow(
 		ctx,
 		`WITH generated AS (SELECT gen_random_uuid() AS id)
 		INSERT INTO ao_sessions (
 			id, org_id, project_id, kind, harness, display_name, branch,
-			prompt, mode, model, denied_commands, parent_session_id, created_by_user_id
+			prompt, mode, model, denied_commands, parent_session_id, created_by_user_id, agent_config
 		)
 		SELECT id, $1, $2, $3, $4, $5, 'ao/' || left(id::text, 8),
-			$6, $7, $8, $9, NULLIF($10, '')::uuid, NULLIF($11, '')::uuid
+			$6, $7, $8, $9, NULLIF($10, '')::uuid, NULLIF($11, '')::uuid, $12
 		FROM generated
 		RETURNING id, org_id, project_id, kind, harness, display_name, branch,
 			mode, model, denied_commands, activity_state, is_terminated, auto_inject_ci,
@@ -704,6 +735,7 @@ func createSessionTx(
 		input.DeniedCommands,
 		parentSessionID,
 		actorUserID,
+		agentConfigJSON,
 	), &session)
 	if err != nil {
 		return domain.Session{}, normalizeConstraintError(err)
@@ -1066,7 +1098,7 @@ type scanner interface {
 }
 
 func scanProject(row scanner, project *domain.Project) error {
-	return row.Scan(
+	if err := row.Scan(
 		&project.ID,
 		&project.OrgID,
 		&project.DisplayName,
@@ -1076,7 +1108,12 @@ func scanProject(row scanner, project *domain.Project) error {
 		&project.Config,
 		&project.CreatedAt,
 		&project.UpdatedAt,
-	)
+	); err != nil {
+		return err
+	}
+	var err error
+	project.Config, err = domain.NormalizeProjectConfig(project.Config)
+	return err
 }
 
 func scanSession(row scanner, session *domain.Session) error {
@@ -1109,6 +1146,33 @@ func scanSession(row scanner, session *domain.Session) error {
 	)
 	session.ActivityState = contract.ActivityState(activity)
 	return err
+}
+
+// Creation commands written before nested settings retain their original
+// payload. Compare canonical configs without rewriting that durable history.
+func projectCreatePayloadEqual(left, right []byte, configKey string) bool {
+	normalize := func(payload []byte) ([]byte, error) {
+		var request map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &request); err != nil || request == nil {
+			return nil, ErrInvalid
+		}
+		config := request[configKey]
+		if bytes.Equal(bytes.TrimSpace(config), []byte("null")) {
+			config = nil
+		}
+		var err error
+		request[configKey], err = domain.NormalizeProjectConfig(config)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(request)
+	}
+	left, err := normalize(left)
+	if err != nil {
+		return false
+	}
+	right, err = normalize(right)
+	return err == nil && jsonEqual(left, right)
 }
 
 func jsonEqual(left, right []byte) bool {

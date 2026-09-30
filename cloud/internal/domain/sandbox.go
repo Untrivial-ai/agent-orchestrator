@@ -124,6 +124,7 @@ type WorkerLaunch struct {
 	ProjectID      string
 	ProjectName    string
 	ProjectConfig  json.RawMessage
+	AgentConfig    json.RawMessage
 	Kind           string
 	Harness        string
 	DisplayName    string

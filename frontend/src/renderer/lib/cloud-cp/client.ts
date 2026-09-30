@@ -32,6 +32,7 @@ import type {
 	CloudCpProjectDeletedResponse,
 	CloudCpProjectListResponse,
 	CloudCpProjectResponse,
+	CloudCpProjectSettingsRequest,
 	CloudCpProviderConnectionResponse,
 	CloudCpProviderConnectionsResponse,
 	CloudCpGitHubReposResponse,
@@ -140,6 +141,8 @@ export interface CloudCpClient {
 		body: CloudCpCreateProjectRequest,
 		options?: CloudCpMutationOptions,
 	): Promise<CloudCpProjectResponse>;
+	getProject(orgId: string, projectId: string, options?: CloudCpRequestOptions): Promise<CloudCpProjectResponse>;
+	updateProjectSettings(orgId: string, projectId: string, body: CloudCpProjectSettingsRequest, options?: CloudCpRequestOptions): Promise<CloudCpProjectResponse>;
 	updateProject(
 		orgId: string,
 		projectId: string,
@@ -504,6 +507,10 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			}),
 		updateProject: (orgId, projectId, body, o) =>
 			requestJson("PATCH", `/orgs/${seg(orgId)}/projects/${seg(projectId)}`, { body, signal: o?.signal }),
+		getProject: (orgId, projectId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/projects/${seg(projectId)}`, { signal: o?.signal }),
+		updateProjectSettings: (orgId, projectId, body, o) =>
+			requestJson("PATCH", `/orgs/${seg(orgId)}/projects/${seg(projectId)}/settings`, { body, signal: o?.signal }),
 		deleteProject: (orgId, projectId, o) =>
 			requestJson("DELETE", `/orgs/${seg(orgId)}/projects/${seg(projectId)}`, { signal: o?.signal }),
 
