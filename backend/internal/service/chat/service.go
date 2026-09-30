@@ -49,13 +49,14 @@ type Service struct {
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
 	// onModelChanged syncs ChatUI's model override (including clearing it) to
 	// session metadata before the next prompt routes or a later TUI rebuild.
-	onModelChanged   func(domain.SessionID, string)
-	stopProviderHost func(context.Context, domain.SessionID) error
-	reports          *reportsvc.Coordinator
-	wakeChat         func(context.Context, domain.SessionID) error
-	hibernateChat    func(context.Context, domain.SessionID) error
-	viewMu           sync.Mutex
-	viewLeases       map[domain.SessionID]map[string]time.Time
+	onModelChanged     func(domain.SessionID, string)
+	stopProviderHost   func(context.Context, domain.SessionID) error
+	reports            *reportsvc.Coordinator
+	wakeChat           func(context.Context, domain.SessionID) error
+	hibernateChat      func(context.Context, domain.SessionID) error
+	hibernationEnabled func() bool
+	viewMu             sync.Mutex
+	viewLeases         map[domain.SessionID]map[string]time.Time
 
 	mu               sync.RWMutex
 	controllers      map[domain.SessionID]*Controller
@@ -124,6 +125,8 @@ type Options struct {
 	// StopProviderHost destroys current session ownership on explicit teardown,
 	// even if its daemon attachment already failed. Never used by StopAll.
 	StopProviderHost func(context.Context, domain.SessionID) error
+	// HibernationEnabled reads the daemon-owned feature gate. Nil is disabled.
+	HibernationEnabled func() bool
 }
 
 // New builds a Chat service.
@@ -150,6 +153,7 @@ func New(opts Options) *Service {
 		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
 		onModelChanged:         opts.OnModelChanged,
 		stopProviderHost:       opts.StopProviderHost,
+		hibernationEnabled:     opts.HibernationEnabled,
 		controllers:            make(map[domain.SessionID]*Controller),
 		ownerControllers:       make(map[domain.ConversationOwner]*Controller),
 		startConfigs:           make(map[domain.ConversationOwner]StartConfig),

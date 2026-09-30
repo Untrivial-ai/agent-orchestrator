@@ -8,6 +8,7 @@ package settings
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/config"
@@ -26,8 +27,9 @@ type Store interface {
 type Snapshot struct {
 	DefaultSessionMode domain.SessionMode
 	// CloudOffering is the user's cloud toggle (Settings, Developer Mode).
-	CloudOffering bool
-	UpdatedAt     time.Time
+	CloudOffering          bool
+	ChatHibernationEnabled bool
+	UpdatedAt              time.Time
 }
 
 // Offering reports which AO offerings this daemon exposes to clients. It is
@@ -79,10 +81,11 @@ type ChatCapability interface {
 
 // Service reads and writes preferences.
 type Service struct {
-	store    Store
-	chat     ChatCapability
-	offering Offering
-	now      func() time.Time
+	store           Store
+	chat            ChatCapability
+	offering        Offering
+	now             func() time.Time
+	chatHibernation atomic.Bool
 }
 
 // New builds the service.
@@ -100,7 +103,9 @@ func (s *Service) Offering() Offering {
 
 // Get returns the current preferences.
 func (s *Service) Get(ctx context.Context) (Snapshot, error) {
-	return s.store.GetAppSettings(ctx)
+	snapshot, err := s.store.GetAppSettings(ctx)
+	snapshot.ChatHibernationEnabled = s.chatHibernation.Load()
+	return snapshot, err
 }
 
 // DefaultSessionMode resolves the default for a spawn that named no mode. A read
@@ -125,7 +130,7 @@ func (s *Service) SetDefaultSessionMode(ctx context.Context, mode domain.Session
 	if err := s.store.SetDefaultSessionMode(ctx, mode, s.now()); err != nil {
 		return Snapshot{}, err
 	}
-	return s.store.GetAppSettings(ctx)
+	return s.Get(ctx)
 }
 
 // SetCloudOffering flips the user's cloud toggle. The effect is immediate for
@@ -134,7 +139,28 @@ func (s *Service) SetCloudOffering(ctx context.Context, enabled bool) (Snapshot,
 	if err := s.store.SetCloudOffering(ctx, enabled, s.now()); err != nil {
 		return Snapshot{}, err
 	}
-	return s.store.GetAppSettings(ctx)
+	return s.Get(ctx)
+}
+
+// ChatHibernationEnabled is false on every daemon boot until Developer Mode
+// enables it through the settings route.
+func (s *Service) ChatHibernationEnabled() bool { return s.chatHibernation.Load() }
+
+// SetChatHibernationEnabled changes the in-memory hibernation gate.
+func (s *Service) SetChatHibernationEnabled(ctx context.Context, enabled bool) (Snapshot, error) {
+	if !enabled {
+		// Disabling must take effect even if reading the response later fails.
+		s.chatHibernation.Store(false)
+	}
+	snapshot, err := s.store.GetAppSettings(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if enabled {
+		s.chatHibernation.Store(true)
+	}
+	snapshot.ChatHibernationEnabled = enabled
+	return snapshot, nil
 }
 
 // ChatHarnesses lists the harnesses that can run in chat mode today.

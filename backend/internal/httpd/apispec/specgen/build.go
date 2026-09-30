@@ -157,6 +157,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersSettingsResponse":                          "SettingsResponse",
 	"ControllersDesktopWorkspaceLocationResponse":          "DesktopWorkspaceLocationResponse",
 	"ControllersUpdateSessionInterfaceRequest":             "UpdateSessionInterfaceRequest",
+	"ControllersUpdateChatHibernationRequest":              "UpdateChatHibernationRequest",
 	"ControllersConversationSnapshotResponse":              "ConversationSnapshotResponse",
 	"ControllersConversationTurnResponse":                  "ConversationTurnResponse",
 	"ControllersConversationTurnDiffResponse":              "ConversationTurnDiffResponse",
@@ -871,6 +872,17 @@ func shellTerminalOperations() []operation {
 			method: http.MethodPatch, path: "/api/v1/settings/cloud-offering", id: "updateCloudOffering", tag: "settings",
 			summary: "Turn the cloud offering on or off for this machine",
 			reqBody: controllers.UpdateCloudOfferingRequest{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.SettingsResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodPatch, path: "/api/v1/settings/chat-hibernation", id: "updateChatHibernation", tag: "settings",
+			summary: "Turn idle Chat hibernation on or off for this machine",
+			reqBody: controllers.UpdateChatHibernationRequest{},
 			resps: []respUnit{
 				{http.StatusOK, controllers.SettingsResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},

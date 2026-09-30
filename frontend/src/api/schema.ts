@@ -2683,6 +2683,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/chat-hibernation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Turn idle Chat hibernation on or off for this machine */
+        patch: operations["updateChatHibernation"];
+        trace?: never;
+    };
     "/api/v1/settings/cloud-offering": {
         parameters: {
             query?: never;
@@ -4867,6 +4884,7 @@ export interface components {
         };
         SettingsResponse: {
             chatHarnesses: string[];
+            chatHibernationEnabled: boolean;
             client: string;
             cloudControlPlaneUrl: string;
             cloudEnabled: boolean;
@@ -5085,6 +5103,9 @@ export interface components {
             prompt?: null | string;
             rrule?: null | string;
             timezone?: null | string;
+        };
+        UpdateChatHibernationRequest: {
+            enabled: null | boolean;
         };
         UpdateProjectSettingsInput: {
             config: components["schemas"]["ProjectConfig"];
@@ -15507,6 +15528,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updateChatHibernation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateChatHibernationRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
                 };
             };
             /** @description Internal Server Error */

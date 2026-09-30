@@ -2846,6 +2846,8 @@ type SettingsResponse struct {
 	// CloudOffering is the user's persisted cloud toggle (Settings, Developer
 	// Mode). Distinct from CloudEnabled, which is the effective gate.
 	CloudOffering bool `json:"cloudOffering"`
+	// ChatHibernationEnabled is the developer-mode gate for idle Chat process shutdown.
+	ChatHibernationEnabled bool `json:"chatHibernationEnabled"`
 	// CloudEnabled reports whether the cloud offering is effectively available:
 	// the user's toggle (or the env override) plus a configured control plane.
 	CloudEnabled bool `json:"cloudEnabled"`
@@ -2870,6 +2872,11 @@ type UpdateSessionInterfaceRequest struct {
 // UpdateCloudOfferingRequest flips the user's cloud toggle.
 type UpdateCloudOfferingRequest struct {
 	// Enabled turns the cloud offering on or off for this machine's user.
+	Enabled *bool `json:"enabled"`
+}
+
+// UpdateChatHibernationRequest flips the daemon-owned idle Chat gate.
+type UpdateChatHibernationRequest struct {
 	Enabled *bool `json:"enabled"`
 }
 

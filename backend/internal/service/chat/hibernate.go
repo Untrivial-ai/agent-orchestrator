@@ -219,6 +219,10 @@ func (s *Service) HibernateChat(ctx context.Context, id domain.SessionID) (bool,
 		controller.sendMu.Unlock()
 		return false, nil
 	}
+	if s.hibernationEnabled == nil || !s.hibernationEnabled() {
+		controller.sendMu.Unlock()
+		return false, nil
+	}
 	controller.mu.Lock()
 	controller.handoff = controllerHandoffHibernate
 	controller.suppressStoppedActivity = true

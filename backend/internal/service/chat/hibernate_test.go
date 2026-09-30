@@ -44,8 +44,12 @@ func (c *hibernationConversation) Compact(context.Context) (ports.ChatCompaction
 	return ports.ChatCompactionResult{}, nil
 }
 
-func settledHibernationHarness(t *testing.T, state domain.TurnState) (*harness, *hibernationConversation) {
+func settledHibernationHarness(t *testing.T, state domain.TurnState, gate ...func() bool) (*harness, *hibernationConversation) {
 	t.Helper()
+	enabled := func() bool { return true }
+	if len(gate) != 0 {
+		enabled = gate[0]
+	}
 	conv := &hibernationConversation{fakeConversation: newFakeConversation()}
 	st := openStore(t)
 	h := &harness{st: st, conv: conv.fakeConversation, activity: &recordingActivity{}, clock: time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)}
@@ -61,7 +65,8 @@ func settledHibernationHarness(t *testing.T, state domain.TurnState) (*harness, 
 		}), Sessions: st,
 		Drivers:  fakeRegistry{driver: fakeDriver{conv: conv}},
 		Activity: h.activity, Log: slog.New(slog.DiscardHandler), Now: h.now,
-		NewID: func() string { return fmt.Sprintf("hibernate-%d", nextID.Add(1)) },
+		NewID:              func() string { return fmt.Sprintf("hibernate-%d", nextID.Add(1)) },
+		HibernationEnabled: enabled,
 	})
 	ctx := context.Background()
 	ctrl, err := h.svc.Start(ctx, chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir()})
@@ -92,6 +97,19 @@ func settledHibernationHarness(t *testing.T, state domain.TurnState) (*harness, 
 		t.Fatal(err)
 	}
 	return h, conv
+}
+
+func TestHibernationGateKeepsCompletedIdleProviderWarmUntilEnabled(t *testing.T) {
+	var enabled atomic.Bool
+	h, conv := settledHibernationHarness(t, domain.TurnStateCompleted, enabled.Load)
+	ctx := context.Background()
+	if stopped, err := h.svc.HibernateChat(ctx, testSession); err != nil || stopped || conv.calls.Load() != 0 || !h.svc.HasLiveChatController(testSession) {
+		t.Fatalf("disabled hibernation: stopped=%v err=%v calls=%d live=%v", stopped, err, conv.calls.Load(), h.svc.HasLiveChatController(testSession))
+	}
+	enabled.Store(true)
+	if stopped, err := h.svc.HibernateChat(ctx, testSession); err != nil || !stopped || conv.calls.Load() != 1 {
+		t.Fatalf("enabled hibernation: stopped=%v err=%v calls=%d", stopped, err, conv.calls.Load())
+	}
 }
 
 func TestHibernateChatKeepsCompletedIdleSessionResumable(t *testing.T) {
@@ -507,7 +525,8 @@ func TestSendWaitsForHibernationThenWakesNativeConversation(t *testing.T) {
 		Store: st, Reader: fullSnapshotReader(st), Sessions: st,
 		Drivers:  fakeRegistry{driver: &sequenceDriver{conversations: []ports.ChatConversation{first, resumed}}},
 		Activity: h.activity, Log: slog.New(slog.DiscardHandler), Now: h.now,
-		NewID: func() string { return fmt.Sprintf("hibernate-race-%d", nextID.Add(1)) },
+		NewID:              func() string { return fmt.Sprintf("hibernate-race-%d", nextID.Add(1)) },
+		HibernationEnabled: func() bool { return true },
 	})
 	h.svc = svc
 	start := chatsvc.StartConfig{SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir()}
