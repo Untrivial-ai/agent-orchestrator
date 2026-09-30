@@ -39,42 +39,43 @@ type Target string
 
 // The exhaustive set of installable targets. No other value is ever accepted.
 const (
-	TargetTmux       Target = "tmux"
-	TargetGH         Target = "gh"
-	TargetClaude     Target = "claude"
-	TargetClaudeCode Target = "claude-code"
-	TargetCodex      Target = "codex"
-	TargetCursor     Target = "cursor"
-	TargetOpencode   Target = "opencode"
-	TargetOpencodeV2 Target = "opencode-v2"
-	TargetAider      Target = "aider"
-	TargetCopilot    Target = "copilot"
-	TargetGrok       Target = "grok"
-	TargetKimi       Target = "kimi"
-	TargetPi         Target = "pi"
-	TargetAmp        Target = "amp"
-	TargetAuggie     Target = "auggie"
-	TargetDroid      Target = "droid"
-	TargetCrush      Target = "crush"
-	TargetCline      Target = "cline"
-	TargetGoose      Target = "goose"
-	TargetQwen       Target = "qwen"
-	TargetGemini     Target = "gemini"
-	TargetContinue   Target = "continue"
-	TargetDevin      Target = "devin"
-	TargetKiro       Target = "kiro"
-	TargetKilocode   Target = "kilocode"
-	TargetVibe       Target = "vibe"
-	TargetMuse       Target = "muse"
-	TargetAgy        Target = "agy"
-	TargetAutohand   Target = "autohand"
-	TargetKimchi     Target = "kimchi"
-	TargetPrimeAgent Target = "prime-agent"
-	TargetOMP        Target = "omp"
-	TargetFX         Target = "fx"
-	TargetUnreal     Target = "unreal-agent"
-	TargetMiMoCode   Target = "mimo-code"
-	TargetDeepSeek   Target = "deepseek-harness"
+	TargetTmux        Target = "tmux"
+	TargetGH          Target = "gh"
+	TargetClaude      Target = "claude"
+	TargetClaudeCode  Target = "claude-code"
+	TargetCodex       Target = "codex"
+	TargetCursor      Target = "cursor"
+	TargetOpencode    Target = "opencode"
+	TargetOpencodeV2  Target = "opencode-v2"
+	TargetAider       Target = "aider"
+	TargetCopilot     Target = "copilot"
+	TargetGrok        Target = "grok"
+	TargetKimi        Target = "kimi"
+	TargetPi          Target = "pi"
+	TargetAmp         Target = "amp"
+	TargetAuggie      Target = "auggie"
+	TargetDroid       Target = "droid"
+	TargetCrush       Target = "crush"
+	TargetCline       Target = "cline"
+	TargetGoose       Target = "goose"
+	TargetQwen        Target = "qwen"
+	TargetGemini      Target = "gemini"
+	TargetContinue    Target = "continue"
+	TargetDevin       Target = "devin"
+	TargetKiro        Target = "kiro"
+	TargetKilocode    Target = "kilocode"
+	TargetVibe        Target = "vibe"
+	TargetMuse        Target = "muse"
+	TargetAgy         Target = "agy"
+	TargetAutohand    Target = "autohand"
+	TargetKimchi      Target = "kimchi"
+	TargetPrimeAgent  Target = "prime-agent"
+	TargetOMP         Target = "omp"
+	TargetFX          Target = "fx"
+	TargetUnreal      Target = "unreal-agent"
+	TargetMiMoCode    Target = "mimo-code"
+	TargetDeepSeek    Target = "deepseek-harness"
+	TargetCommandCode Target = "command-code"
 	// TargetCloudflared is the optional connector that makes a paired phone
 	// reachable from outside the local network.
 	TargetCloudflared Target = "cloudflared"
@@ -87,7 +88,7 @@ var agentTargets = []Target{
 	TargetDroid, TargetCrush, TargetCline, TargetGoose, TargetQwen, TargetGemini,
 	TargetContinue, TargetDevin, TargetKiro, TargetKilocode, TargetVibe,
 	TargetMuse, TargetAgy, TargetAutohand, TargetKimchi, TargetPrimeAgent,
-	TargetOMP, TargetFX, TargetUnreal, TargetMiMoCode, TargetDeepSeek,
+	TargetOMP, TargetFX, TargetUnreal, TargetMiMoCode, TargetDeepSeek, TargetCommandCode,
 }
 
 var agentTargetSet = func() map[Target]bool {
@@ -262,7 +263,7 @@ var devinInstalledLine = regexp.MustCompile(`Installed devin v\S+ to [^\r\n]+/de
 
 // Job is the tracked state of one install run for a Target.
 type Job struct {
-	Target              Target `json:"target" enum:"tmux,gh,claude,claude-code,codex,cursor,opencode,opencode-v2,aider,copilot,grok,kimi,pi,amp,auggie,droid,crush,cline,goose,qwen,gemini,continue,devin,kiro,kilocode,vibe,muse,agy,autohand,kimchi,prime-agent,omp,fx,unreal-agent,mimo-code,deepseek-harness,cloudflared" description:"Fixed install target this job ran (or is running) for."`
+	Target              Target `json:"target" enum:"tmux,gh,claude,claude-code,codex,cursor,opencode,opencode-v2,aider,copilot,grok,kimi,pi,amp,auggie,droid,crush,cline,goose,qwen,gemini,continue,devin,kiro,kilocode,vibe,muse,agy,autohand,kimchi,prime-agent,omp,fx,unreal-agent,mimo-code,deepseek-harness,command-code,cloudflared" description:"Fixed install target this job ran (or is running) for."`
 	Status              Status `json:"status" enum:"idle,running,installing,verifying,succeeded,failed,unsupported,interrupted" description:"Current lifecycle state of the job."`
 	Method              string `json:"method,omitempty" description:"Server-owned installation method selected for this harness job."`
 	Command             string `json:"command,omitempty" description:"Human-readable install command, e.g. \"brew install tmux\", for display even before/without output."`

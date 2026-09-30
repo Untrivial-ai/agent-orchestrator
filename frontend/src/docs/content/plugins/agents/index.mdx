@@ -18,7 +18,7 @@ The daemon registry currently advertises these worker harnesses:
 | `continue` | `devin` | `cline` | `kiro` |
 | `kilocode` | `vibe` | `pi` | `kimchi` |
 | `prime-agent` | `autohand` | `omp` | `fx` (experimental) |
-| `deepseek-harness` | | | |
+| `mimo-code` | `deepseek-harness` | `command-code` | |
 
 Run the catalog instead of relying on a static page when scripting:
 
@@ -37,6 +37,16 @@ fx Chat is not supported.
 
 ```bash
 ao spawn --name fx-task --agent fx --mode tui
+```
+
+### command-code
+
+Install Command Code with `npm install -g command-code` (binary `cmd`;
+on Windows `cmdc` or `command-code`), then spawn it in Terminal UI mode.
+Command Code Chat is not supported yet.
+
+```bash
+ao spawn --name command-code-task --agent command-code --mode tui
 ```
 
 ## Chat versus Terminal UI

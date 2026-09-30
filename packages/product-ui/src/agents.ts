@@ -32,8 +32,9 @@ export const AGENT_OPTIONS = [
 	"omp",
 	"fx",
 	"unreal-agent",
-	"mimo-code",
+"mimo-code",
 	"deepseek-harness",
+	"command-code",
 ] as const;
 
 export type AgentId = (typeof AGENT_OPTIONS)[number];
@@ -76,8 +77,9 @@ export const AGENT_LABELS: Record<AgentId, string> = {
 	omp: "OMP",
 	fx: "fx",
 	"unreal-agent": "Unreal Agent",
-	"mimo-code": "MiMo Code",
+"mimo-code": "MiMo Code",
 	"deepseek-harness": "DeepSeek",
+	"command-code": "Command Code",
 };
 
 export const AGENT_IDENTITIES: ReadonlyMap<AgentId, AgentIdentity> = new Map(

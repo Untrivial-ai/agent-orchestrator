@@ -127,6 +127,9 @@ var commandSpecs = map[string]commandSpec{
 	"crush":       {args: []string{"models"}, parser: parseIDLines},
 	"fx":          {args: []string{"models", "--json"}, parser: parseFXModels},
 	"mimo-code":   {args: []string{"models"}, parser: parseIDLines},
+	// `cmd --list-models` prints a tabular `provider/model` list; the shared
+	// parser handles the leading `(default)` marker.
+	"command-code": {args: []string{"--list-models"}, parser: parseAgyModels},
 }
 
 // Base returns the picker behavior AO can provide without executing a CLI.
