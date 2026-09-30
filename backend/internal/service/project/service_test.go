@@ -25,6 +25,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/importer"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
+	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/sqlitetest"
 )
 
@@ -676,6 +677,12 @@ func TestManager_RemoveBlockedReturnsConflictWithBlockerDetails(t *testing.T) {
 	if force, _ := e.Details["forceSupported"].(bool); !force {
 		t.Fatalf("forceSupported = %v, want true", e.Details["forceSupported"])
 	}
+	if preserved, _ := e.Details["preservesUncommittedWork"].(bool); preserved {
+		t.Fatalf("preservesUncommittedWork = %v, want false because ignored files are excluded", e.Details["preservesUncommittedWork"])
+	}
+	if mayDelete, _ := e.Details["ignoredFilesMayBeDeleted"].(bool); !mayDelete {
+		t.Fatalf("ignoredFilesMayBeDeleted = %v, want true", e.Details["ignoredFilesMayBeDeleted"])
+	}
 	if len(teardown.forceCalls) != 0 {
 		t.Fatalf("forceCalls = %#v, want none without force=true", teardown.forceCalls)
 	}
@@ -709,6 +716,63 @@ func TestManager_RemoveForceRunsForceTeardownThenArchives(t *testing.T) {
 		t.Fatal("Get after force remove = nil error, want PROJECT_NOT_FOUND")
 	} else {
 		wantCode(t, err, "PROJECT_NOT_FOUND")
+	}
+}
+
+func TestManager_RemoveForceFailureReturnsActionableConflict(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	teardown := &fakeProjectTeardowner{
+		outcome:  sessionsvc.ProjectTeardownOutcome{Blocked: true, Blockers: []sessionsvc.ProjectTeardownBlocker{{SessionID: "mer-1", Class: "workspace_dirty", WorkspacePath: "/ws/mer-1"}}},
+		forceErr: errors.New("runtime still running"),
+	}
+	m := project.NewWithDeps(project.Deps{Store: store, Sessions: teardown})
+	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	_, err = m.Remove(ctx, "ao", true)
+	wantCode(t, err, "PROJECT_REMOVE_FORCE_BLOCKED")
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Kind != apierr.KindConflict || apiError.Details == nil {
+		t.Fatalf("Remove error = %v, want structured conflict", err)
+	}
+	if recovery, _ := apiError.Details["recovery"].(string); recovery == "" {
+		t.Fatalf("missing recovery instructions: %+v", apiError.Details)
+	}
+	if got, err := m.Get(ctx, "ao"); err != nil || got.Project == nil {
+		t.Fatalf("project archived despite force failure: project=%+v err=%v", got, err)
+	}
+}
+
+func TestManager_RemoveForceRegistryDriftIncludesRetainedChild(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	teardown := &fakeProjectTeardowner{
+		outcome:  sessionsvc.ProjectTeardownOutcome{Blocked: true, Blockers: []sessionsvc.ProjectTeardownBlocker{{SessionID: "mer-1", Class: "workspace_registry_drift", WorkspacePath: "/ws/mer-1/removed-child"}}},
+		forceErr: &sessionmanager.WorkspaceRegistryDriftError{SessionID: "mer-1", RepoName: "removed-child", WorkspacePath: "/ws/mer-1/removed-child"},
+	}
+	m := project.NewWithDeps(project.Deps{Store: store, Sessions: teardown})
+	if _, err := m.Add(ctx, project.AddInput{Path: gitRepo(t), ProjectID: ptr("ao")}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	_, err = m.Remove(ctx, "ao", true)
+	wantCode(t, err, "PROJECT_REMOVE_FORCE_BLOCKED")
+	var apiError *apierr.Error
+	if !errors.As(err, &apiError) || apiError.Details["repoName"] != "removed-child" {
+		t.Fatalf("Remove error = %v, want repo-specific conflict", err)
+	}
+	if blockers, ok := apiError.Details["blockers"].([]sessionsvc.ProjectTeardownBlocker); !ok || len(blockers) == 0 || blockers[len(blockers)-1].WorkspacePath != "/ws/mer-1/removed-child" {
+		t.Fatalf("blockers = %#v, want retained child path", apiError.Details["blockers"])
 	}
 }
 

@@ -1377,7 +1377,10 @@ const ProjectItem = memo(function ProjectItem({
 		setForceConfirmOpen(false);
 		setIsRemoving(true);
 		try { await onRemoveProject(workspace.id, true); }
-		catch (err) { setRemoveError(err instanceof Error ? err.message : t("shell.couldNotRemoveProject")); }
+		catch (err) {
+			const details = err instanceof Error ? (err as Error & { details?: { recovery?: string } }).details : undefined;
+			setRemoveError(details?.recovery || (err instanceof Error ? err.message : t("shell.couldNotRemoveProject")));
+		}
 		finally { setIsRemoving(false); }
 	};
 
@@ -1426,6 +1429,11 @@ const ProjectItem = memo(function ProjectItem({
 			await onRemoveProject(workspace.id);
 		} catch (err) {
 			if (err instanceof Error && (err as Error & { code?: string }).code === "PROJECT_REMOVE_BLOCKED") {
+				const details = (err as Error & { details?: { forceSupported?: boolean; recovery?: string } }).details;
+				if (details?.forceSupported === false) {
+					setRemoveError(details.recovery || err.message);
+					return;
+				}
 				setForceBlockers(readProjectRemoveBlockers(err));
 				setForceConfirmOpen(true);
 				return;

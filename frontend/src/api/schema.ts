@@ -8671,7 +8671,7 @@ export interface operations {
     removeProject: {
         parameters: {
             query?: {
-                /** @description When true, force-remove protected AO-managed session workspaces after an explicit user confirmation, preserving uncommitted work under refs/ao/preserved/<session-id> before each workspace is removed. Never applies to the source repository. */
+                /** @description When true, force-remove protected AO-managed session workspaces after an explicit user confirmation. Tracked changes and new non-ignored files are saved under refs/ao/preserved/<session-id>; Git-ignored files are not saved and may be deleted. Never applies to the source repository. */
                 force?: boolean;
             };
             header?: never;

@@ -1054,6 +1054,19 @@ func (s *Service) TeardownProject(ctx context.Context, project domain.ProjectID)
 	}
 	cleanup, err := s.Cleanup(ctx, project)
 	if err != nil {
+		var drift *sessionmanager.WorkspaceRegistryDriftError
+		if errors.As(err, &drift) {
+			if s.logger != nil {
+				s.logger.Error("project teardown: workspace registry drift", "projectID", project, "sessionID", drift.SessionID, "repo", drift.RepoName, "error", err)
+			}
+			out.Blockers = append(out.Blockers, ProjectTeardownBlocker{
+				SessionID: drift.SessionID, Class: "workspace_registry_drift",
+				Reason:        "saved workspace no longer matches a registered project repository; repair the project repository list or move the retained workspace aside before retrying",
+				WorkspacePath: drift.WorkspacePath,
+			})
+			out.Blocked = true
+			return out, nil
+		}
 		return out, err
 	}
 	for _, skip := range cleanup.Skipped {

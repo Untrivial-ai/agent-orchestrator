@@ -1314,7 +1314,7 @@
 	"shell.removeProjectTitle": "프로젝트 제거",
 	"shell.forceRemoveProjectTitle": "Delete protected workspace?",
 	"shell.forceRemoveProjectLead": "AO could not safely remove a session workspace.",
-	"shell.forceRemoveProjectBody": "Confirming will preserve uncommitted changes under refs/ao/preserved/<session> in your repository, then remove the protected AO-managed workspace. Your original project folder will not be deleted.",
+	"shell.forceRemoveProjectBody": "AO saves tracked changes and new files Git does not ignore under refs/ao/preserved/<session> before removing the protected workspace. Files Git ignores (such as local configuration or generated output) are not saved and will be deleted from that workspace. Your original project folder will not be deleted.",
 	"shell.forceRemoveProjectConfirm": "Delete project and workspace",
 	"shell.removingNamed": "{{name}} 제거 중…",
 	"shell.renameSession": "{{title}} 이름 바꾸기",

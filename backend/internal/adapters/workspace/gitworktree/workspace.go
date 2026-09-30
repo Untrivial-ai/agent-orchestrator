@@ -974,9 +974,9 @@ func (w *Workspace) destroy(ctx context.Context, info ports.WorkspaceInfo) (port
 // it from git's worktree list, and falls back to os.RemoveAll if any filesystem
 // residue remains.
 //
-// ponytail: only safe to call AFTER the session's uncommitted work has been
-// captured via StashUncommitted. Calling it before capture silently
-// discards agent work. For interactive teardown (ao session kill, ao cleanup)
+// ponytail: only safe to call AFTER tracked and non-ignored work has been
+// captured via StashUncommitted. Ignored files are not captured and may be
+// deleted. For interactive teardown (ao session kill, ao cleanup)
 // use Destroy, which refuses dirty worktrees via ErrWorkspaceDirty.
 func (w *Workspace) ForceDestroy(ctx context.Context, info ports.WorkspaceInfo) error {
 	if info.Path == "" {

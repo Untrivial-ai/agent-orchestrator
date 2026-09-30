@@ -326,7 +326,8 @@ type Workspace interface {
 	Restore(ctx context.Context, cfg WorkspaceConfig) (WorkspaceInfo, error)
 	// ForceDestroy removes the worktree unconditionally, bypassing the
 	// dirty-worktree refusal that Destroy enforces. It is only safe to call
-	// AFTER the session's uncommitted work has been captured via StashUncommitted.
+	// AFTER tracked and non-ignored work has been captured via
+	// StashUncommitted. Ignored files are not captured and may be deleted.
 	// Never call it from interactive teardown paths.
 	ForceDestroy(ctx context.Context, info WorkspaceInfo) error
 	// StashUncommitted captures all uncommitted work in the worktree as a git

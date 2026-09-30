@@ -177,6 +177,19 @@ var (
 	ErrChatController      = errors.New("chat controller")
 )
 
+// WorkspaceRegistryDriftError means a durable session worktree no longer has
+// a matching project-repository registration. Its path must be retained: AO
+// cannot safely locate the source repository to preserve or remove it.
+type WorkspaceRegistryDriftError struct {
+	SessionID     domain.SessionID
+	RepoName      string
+	WorkspacePath string
+}
+
+func (e *WorkspaceRegistryDriftError) Error() string {
+	return fmt.Sprintf("session worktree row %q no longer matches workspace registry", e.RepoName)
+}
+
 // wrapSpawnStage annotates a spawn failure with a stage sentinel. The original
 // error stays in the chain so errors.Is still matches inner sentinels.
 func wrapSpawnStage(id domain.SessionID, stage, err error) error {
@@ -3802,7 +3815,7 @@ func (m *Manager) workspaceProjectRows(ctx context.Context, rec domain.SessionRe
 	if err != nil {
 		return nil, false, err
 	}
-	if len(rows) <= 1 {
+	if len(rows) == 0 || (len(rows) == 1 && (rows[0].RepoName == "" || rows[0].RepoName == domain.RootWorkspaceRepoName)) {
 		return nil, false, nil
 	}
 	project, err := m.loadProject(ctx, rec.ProjectID)
@@ -3834,7 +3847,7 @@ func (m *Manager) sessionWorktreeRowsToRepoInfos(ctx context.Context, project do
 	for _, row := range rows {
 		repoPath := repoPaths[row.RepoName]
 		if repoPath == "" {
-			return nil, fmt.Errorf("session worktree row %q no longer matches workspace registry", row.RepoName)
+			return nil, &WorkspaceRegistryDriftError{SessionID: rec.ID, RepoName: row.RepoName, WorkspacePath: row.WorktreePath}
 		}
 		out = append(out, ports.WorkspaceRepoInfo{
 			RepoName:     row.RepoName,
@@ -4530,6 +4543,23 @@ func (m *Manager) isWorkspaceInUse(ctx context.Context, projectID domain.Project
 	return live[normalizeWorkspacePath(workspacePath)], nil
 }
 
+// Force teardown must not remove a path referenced by another live session.
+// The caller holds the project workspace gate, preventing a new successor from
+// appearing between this check and workspace removal.
+func (m *Manager) isWorkspaceInUseByOtherSession(ctx context.Context, rec domain.SessionRecord) (bool, error) {
+	recs, err := m.cleanupRecords(ctx, rec.ProjectID)
+	if err != nil {
+		return false, err
+	}
+	path := normalizeWorkspacePath(rec.Metadata.WorkspacePath)
+	for _, other := range recs {
+		if other.ID != rec.ID && !other.IsTerminated && normalizeWorkspacePath(other.Metadata.WorkspacePath) == path {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // ForceTeardownProject permanently removes only AO-managed session workspaces.
 // It is called after an explicit user confirmation from project removal; the
 // original project repository is never passed to ForceDestroy.
@@ -4539,8 +4569,9 @@ func (m *Manager) isWorkspaceInUse(ctx context.Context, projectID domain.Project
 // worktree, stash uncommitted work before ForceDestroy, then clear restore
 // markers and mark the row terminated only after teardown is confirmed. A
 // missing source repository is tolerated so stale partial state cannot keep
-// the project registered; dirty work is preserved under a stash ref so the
-// force path never permanently discards uncommitted changes.
+// the project registered; tracked and non-ignored changes are preserved under
+// a stash ref. Git-ignored files are not captured and the confirmation warns
+// that they can be deleted with an AO-managed worktree.
 func (m *Manager) ForceTeardownProject(ctx context.Context, project domain.ProjectID) error {
 	release := m.acquireWorkspaceGate(project)
 	defer release()
@@ -4621,24 +4652,61 @@ func (m *Manager) forceTeardownProjectOne(ctx context.Context, rec domain.Sessio
 	if err := m.importAttachments(ctx, rec); err != nil {
 		return fmt.Errorf("force cleanup %s: preserve attachments: %w", rec.ID, err)
 	}
+	inUse, err := m.isWorkspaceInUseByOtherSession(ctx, rec)
+	if err != nil {
+		return fmt.Errorf("force cleanup %s: workspace owners: %w", rec.ID, err)
+	}
 
 	// Capture uncommitted work before ForceDestroy (ports.Workspace.ForceDestroy
 	// contract: calling it before StashUncommitted silently discards agent work).
-	if rows, ok, rowErr := m.workspaceProjectRows(ctx, rec); rowErr != nil {
-		return fmt.Errorf("force cleanup %s: workspace rows: %w", rec.ID, rowErr)
-	} else if ok {
-		for i := range rows {
-			if err := m.forceStashAndDestroy(ctx, rec, workspaceInfoFromRepoInfo(rows[i])); err != nil {
+	workspaceDestroyed := false
+	if !inUse {
+		if rows, ok, rowErr := m.workspaceProjectRows(ctx, rec); rowErr != nil {
+			return fmt.Errorf("force cleanup %s: workspace rows: %w", rec.ID, rowErr)
+		} else if ok {
+			allPreserved := true
+			for i := range rows {
+				safe, err := m.forceStashWorkspace(ctx, rec, workspaceInfoFromRepoInfo(rows[i]))
+				if err != nil {
+					return err
+				}
+				allPreserved = allPreserved && safe
+			}
+			if allPreserved {
+				for i := len(rows) - 1; i >= 0; i-- {
+					info := workspaceInfoFromRepoInfo(rows[i])
+					removed, err := m.forceDestroyWorkspace(ctx, rec, info)
+					if err != nil {
+						return err
+					}
+					if !removed {
+						break
+					}
+					if normalizeWorkspacePath(info.Path) == normalizeWorkspacePath(ws.Path) {
+						workspaceDestroyed = true
+					}
+				}
+			}
+		} else {
+			safe, err := m.forceStashWorkspace(ctx, rec, ws)
+			if err != nil {
 				return err
 			}
+			if safe {
+				removed, err := m.forceDestroyWorkspace(ctx, rec, ws)
+				if err != nil {
+					return err
+				}
+				workspaceDestroyed = removed
+			}
 		}
-	} else if err := m.forceStashAndDestroy(ctx, rec, ws); err != nil {
-		return err
+	} else {
+		m.logger.Warn("force cleanup: workspace remains in use by another session", "sessionID", rec.ID, "path", ws.Path)
 	}
 
-	// Only after teardown is confirmed do we clear restore markers (so
-	// RestoreAll cannot resurrect an archived project's sessions) and mark
-	// the row terminated.
+	// Only after process teardown and the workspace preservation/removal
+	// decision are confirmed do we clear restore markers (so RestoreAll cannot
+	// resurrect an archived project's sessions) and mark the row terminated.
 	if err := m.store.DeleteSessionWorktrees(ctx, rec.ID); err != nil {
 		return fmt.Errorf("force cleanup %s: clear restore markers: %w", rec.ID, err)
 	}
@@ -4647,38 +4715,45 @@ func (m *Manager) forceTeardownProjectOne(ctx context.Context, rec domain.Sessio
 			return fmt.Errorf("force cleanup %s: mark terminated: %w", rec.ID, err)
 		}
 	}
-	m.cleanupAgentWorkspace(ctx, rec, ws.Path)
+	if workspaceDestroyed {
+		m.cleanupAgentWorkspace(ctx, rec, ws.Path)
+	}
 	m.cleanupSystemPromptDir(rec.ID)
 	return nil
 }
 
-// forceStashAndDestroy preserves uncommitted work then force-removes one
-// AO-managed worktree. A missing source repository is not fatal: git's
+// forceStashWorkspace preserves uncommitted work before any nested worktree
+// is destroyed. A missing source repository is not fatal: git's
 // worktree admin lives with the deleted repo, so there is nothing left to
 // prune — log and continue so ForceTeardownProject can still unregister the
-// project (review issue: stale missing state must not block unregistering).
-func (m *Manager) forceStashAndDestroy(ctx context.Context, rec domain.SessionRecord, info ports.WorkspaceInfo) error {
+// project. False means the path must be retained rather than force-deleted.
+func (m *Manager) forceStashWorkspace(ctx context.Context, rec domain.SessionRecord, info ports.WorkspaceInfo) (bool, error) {
 	if _, err := m.workspace.StashUncommitted(ctx, info); err != nil {
 		switch {
 		case errors.Is(err, ports.ErrWorkspaceStale):
 			// The path may have been replaced with unregistered user files.
 			// Leave it alone: without a valid worktree there is no safe stash.
 			m.logger.Warn("force cleanup: stale workspace; leaving path untouched", "sessionID", rec.ID, "path", info.Path, "error", err)
-			return nil
+			return false, nil
 		case errors.Is(err, ports.ErrWorkspaceRepoUnavailable):
 			m.logger.Warn("force cleanup: repository missing; skipping preserve", "sessionID", rec.ID, "path", info.Path, "error", err)
+			return false, nil
 		default:
-			return fmt.Errorf("force cleanup %s: stash: %w", rec.ID, err)
+			return false, fmt.Errorf("force cleanup %s: stash: %w", rec.ID, err)
 		}
 	}
+	return true, nil
+}
+
+func (m *Manager) forceDestroyWorkspace(ctx context.Context, rec domain.SessionRecord, info ports.WorkspaceInfo) (bool, error) {
 	if err := m.workspace.ForceDestroy(ctx, info); err != nil {
 		if errors.Is(err, ports.ErrWorkspaceRepoUnavailable) {
 			m.logger.Warn("force cleanup: repository missing; skipping worktree removal", "sessionID", rec.ID, "path", info.Path, "error", err)
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("force cleanup %s: force destroy: %w", rec.ID, err)
+		return false, fmt.Errorf("force cleanup %s: force destroy: %w", rec.ID, err)
 	}
-	return nil
+	return true, nil
 }
 
 // cleanupOne reclaims one terminated session's workspace, gating shut any

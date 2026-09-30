@@ -2693,6 +2693,23 @@ func TestTeardownProjectKillsActiveSessionsThenCleansProject(t *testing.T) {
 	}
 }
 
+func TestTeardownProjectRegistryDriftReturnsBlocker(t *testing.T) {
+	st := newFakeStore()
+	st.sessions["mer-1"] = domain.SessionRecord{ID: "mer-1", ProjectID: "mer", IsTerminated: true, Metadata: domain.SessionMetadata{WorkspacePath: "/ws/mer-1"}}
+	fc := &fakeCommander{cleanupErr: fmt.Errorf("cleanup: %w", &sessionmanager.WorkspaceRegistryDriftError{
+		SessionID: "mer-1", RepoName: "removed-child", WorkspacePath: "/ws/mer-1/removed-child",
+	})}
+	svc := &Service{manager: fc, store: st}
+
+	out, err := svc.TeardownProject(context.Background(), "mer")
+	if err != nil || !out.Blocked || len(out.Blockers) != 1 {
+		t.Fatalf("TeardownProject = %+v, %v; want one structured blocker", out, err)
+	}
+	if blocker := out.Blockers[0]; blocker.Class != "workspace_registry_drift" || blocker.SessionID != "mer-1" || blocker.WorkspacePath != "/ws/mer-1/removed-child" {
+		t.Fatalf("blocker = %+v, want retained child path", blocker)
+	}
+}
+
 // Project removal must tear live sessions down in parallel: the per-session
 // cost (agent/runtime shutdown, controller teardown) dominates and is
 // independent, which is exactly what makes removing a many-session project
