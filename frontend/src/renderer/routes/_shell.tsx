@@ -773,7 +773,7 @@ function ShellLayout() {
 			cancelled = true;
 			clearTimeout(retry);
 		};
-	}, [daemonStatus.port, daemonStatus.state, developerMode]);
+	}, [daemonStatus.pid, daemonStatus.port, daemonStatus.state, developerMode]);
 
 	// A daemon port is not enough to render a trustworthy empty state: the
 	// route loader may have cached [] before Electron reported the port. Fetch
