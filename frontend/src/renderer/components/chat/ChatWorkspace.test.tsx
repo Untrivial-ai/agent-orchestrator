@@ -1254,6 +1254,35 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getByRole("alert")).toHaveTextContent("The agent controller stopped");
 	});
 
+	it("shows recovery only after an automatic wake actually fails", async () => {
+		const resume = vi.fn();
+		const send = vi.fn();
+		const snapshot = { ...chatFixtureSettled, controller: { state: "hibernated" as const } };
+		const view = render(
+			<ChatWorkspace
+				snapshot={snapshot}
+				automaticWakeError="The provider could not reopen the saved conversation."
+				onResumeAgent={resume}
+				onSend={send}
+			/>,
+		);
+
+		expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t reconnect to this chat");
+		expect(screen.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute("contenteditable", "true");
+		await userEvent.setup().click(screen.getByRole("button", { name: "Try again" }));
+		expect(resume).toHaveBeenCalledOnce();
+		expect(send).not.toHaveBeenCalled();
+
+		view.rerender(
+			<ChatWorkspace
+				snapshot={{ ...snapshot, controller: { state: "ready" } }}
+				automaticWakeError="The provider could not reopen the saved conversation."
+				onResumeAgent={resume}
+			/>,
+		);
+		expect(screen.queryByText("Couldn’t reconnect to this chat")).not.toBeInTheDocument();
+	});
+
 	it("does not race view activation when hibernation arrives after a draft edit", async () => {
 		const resume = vi.fn(async () => undefined);
 		const snapshot = { ...chatFixtureSettled, sessionId: "hibernate-race", controller: { state: "ready" as const } };

@@ -38,7 +38,7 @@ func (s *Service) SetChatView(ctx context.Context, id domain.SessionID, viewID s
 		return err
 	}
 	if !active {
-		remaining := s.setViewLease(id, viewID, false)
+		remaining, _ := s.setViewLease(id, viewID, false)
 		gate.unlock()
 		if !remaining && s.hibernateChat != nil {
 			return s.hibernateChat(context.WithoutCancel(ctx), id)
@@ -57,9 +57,12 @@ func (s *Service) SetChatView(ctx context.Context, id domain.SessionID, viewID s
 		gate.unlock()
 		return nil
 	}
-	s.setViewLease(id, viewID, true)
+	_, newView := s.setViewLease(id, viewID, true)
 	gate.unlock()
-	if !s.hasChatView(id) {
+	// Renewing a lease keeps the view open; only a newly opened view wakes a
+	// sleeping provider. A failed resume must not spawn another process on
+	// every heartbeat. Explicit sends and newly opened views can still retry.
+	if !newView || !s.hasChatView(id) {
 		return nil
 	}
 	if rec.ProvisionState.WithDefault() != domain.SessionProvisionReady ||
@@ -85,7 +88,7 @@ func (s *Service) SetChatView(ctx context.Context, id domain.SessionID, viewID s
 	return err
 }
 
-func (s *Service) setViewLease(id domain.SessionID, viewID string, active bool) bool {
+func (s *Service) setViewLease(id domain.SessionID, viewID string, active bool) (remaining, newView bool) {
 	s.viewMu.Lock()
 	defer s.viewMu.Unlock()
 	views := s.liveViewLeasesLocked(id)
@@ -97,15 +100,17 @@ func (s *Service) setViewLease(id domain.SessionID, viewID string, active bool) 
 			}
 			s.viewLeases[id] = views
 		}
+		_, existing := views[viewID]
+		newView = !existing
 		views[viewID] = s.now().Add(chatViewLease)
 	} else {
 		delete(views, viewID)
 	}
 	if len(views) == 0 {
 		delete(s.viewLeases, id)
-		return false
+		return false, false
 	}
-	return true
+	return true, newView
 }
 
 func (s *Service) hasChatView(id domain.SessionID) bool {

@@ -174,7 +174,7 @@ func TestChatViewKeepsCompletedSessionWarmUntilReleasedOrExpired(t *testing.T) {
 	})
 }
 
-func TestChatViewRetriesFailedWakeWithoutLosingLease(t *testing.T) {
+func TestChatViewRenewalDoesNotRetryFailedWake(t *testing.T) {
 	h, _ := settledHibernationHarness(t, domain.TurnStateCompleted)
 	ctx := context.Background()
 	if hibernated, err := h.svc.HibernateChat(ctx, testSession); err != nil || !hibernated {
@@ -186,13 +186,23 @@ func TestChatViewRetriesFailedWakeWithoutLosingLease(t *testing.T) {
 		calls.Add(1)
 		return wakeErr
 	})
-	for range 2 {
-		if err := h.svc.SetChatView(ctx, testSession, "viewer-1", true); !errors.Is(err, wakeErr) {
-			t.Fatalf("wake = %v, want %v", err, wakeErr)
-		}
+	if err := h.svc.SetChatView(ctx, testSession, "viewer-1", true); !errors.Is(err, wakeErr) {
+		t.Fatalf("initial wake = %v, want %v", err, wakeErr)
+	}
+	if err := h.svc.SetChatView(ctx, testSession, "viewer-1", true); err != nil {
+		t.Fatalf("view renewal = %v, want nil", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("wake calls after renewal = %d, want 1", calls.Load())
+	}
+	if err := h.svc.SetChatView(ctx, testSession, "viewer-1", false); err != nil {
+		t.Fatalf("close view = %v", err)
+	}
+	if err := h.svc.SetChatView(ctx, testSession, "viewer-1", true); !errors.Is(err, wakeErr) {
+		t.Fatalf("reopened view wake = %v, want %v", err, wakeErr)
 	}
 	if calls.Load() != 2 {
-		t.Fatalf("wake calls = %d, want 2", calls.Load())
+		t.Fatalf("wake calls after reopen = %d, want 2", calls.Load())
 	}
 }
 

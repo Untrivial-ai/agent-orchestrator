@@ -332,6 +332,8 @@ export interface ChatWorkspaceProps {
 	onResumeAgent?: () => void | Promise<unknown>;
 	resumingAgent?: boolean;
 	resumeError?: string;
+	/** Set only when opening this Chat view failed to wake its saved conversation. */
+	automaticWakeError?: string;
 	onOpenShell?: () => void;
 	openingShell?: boolean;
 	shellError?: string;
@@ -580,6 +582,7 @@ function ChatWorkspaceContent({
 	onResumeAgent,
 	resumingAgent,
 	resumeError,
+	automaticWakeError,
 	onOpenShell,
 	openingShell,
 	shellError,
@@ -1441,6 +1444,7 @@ function ChatWorkspaceContent({
 						onResume={newWorkDisabled ? undefined : onResumeAgent}
 						resuming={resumingAgent}
 						resumeError={resumeError}
+						automaticWakeError={automaticWakeError}
 						onOpenShell={onOpenShell}
 						openingShell={openingShell}
 						shellError={shellError}
@@ -1908,6 +1912,7 @@ function ControllerBanner({
 	onResume,
 	resuming,
 	resumeError,
+	automaticWakeError,
 	onOpenShell,
 	openingShell,
 	shellError,
@@ -1921,6 +1926,7 @@ function ControllerBanner({
 	onResume?: () => void | Promise<unknown>;
 	resuming?: boolean;
 	resumeError?: string;
+	automaticWakeError?: string;
 	onOpenShell?: () => void;
 	openingShell?: boolean;
 	shellError?: string;
@@ -1929,12 +1935,13 @@ function ControllerBanner({
 	const failed = provisionState === "failed";
 	const starting = provisioning || failed;
 	const waking = Boolean(resuming && controller.state === "stopped");
+	const wakeFailed = Boolean(automaticWakeError && controller.state !== "ready" && controller.state !== "busy");
 
 	// The transition coordinator intentionally stops one controller before it
 	// starts the other. The top-bar handoff state already explains that interval;
 	// presenting its intermediate snapshot as a crash produces a red false alarm.
-	if (!starting && (controller.state === "ready" || controller.state === "busy" || controller.state === "hibernated")) return null;
-	if (!starting && controller.state === "stopped" && (transitioning || automaticWakePending)) return null;
+	if (!starting && !wakeFailed && (controller.state === "ready" || controller.state === "busy" || controller.state === "hibernated")) return null;
+	if (!starting && !wakeFailed && controller.state === "stopped" && (transitioning || automaticWakePending)) return null;
 
 	const copy: Partial<Record<ControllerState, { title: string; tone: string }>> = {
 		connecting: {
@@ -1950,20 +1957,22 @@ function ControllerBanner({
 			tone: waking ? "text-muted-foreground" : "text-destructive",
 		},
 	};
-	const shown = provisioning
+	const shown = wakeFailed
+		? { title: "Couldn’t reconnect to this chat", tone: "text-destructive" }
+		: provisioning
 		? { title: `Starting ${agentName}…`, tone: "text-muted-foreground" }
 		: failed
 			? { title: "This session could not be started", tone: "text-destructive" }
 			: copy[controller.state];
 	if (!shown) return null;
-	const loading = provisioning || (!failed && (controller.state === "connecting" || waking));
+	const loading = !wakeFailed && (provisioning || (!failed && (controller.state === "connecting" || waking)));
 	const resumeClick = () => {
 		void Promise.resolve().then(() => onResume?.()).catch(() => {});
 	};
 
 	return (
 		<div
-			role={failed || (controller.state === "stopped" && !waking) ? "alert" : "status"}
+			role={wakeFailed || failed || (controller.state === "stopped" && !waking) ? "alert" : "status"}
 			aria-atomic="true"
 			className="flex shrink-0 items-start gap-2.5 border-b border-border bg-surface px-4 py-2.5"
 		>
@@ -1977,7 +1986,17 @@ function ControllerBanner({
 			)}
 			<div className="flex min-w-0 flex-1 flex-col gap-0.5">
 				<strong className={cn("text-xs font-medium", shown.tone)}>{shown.title}</strong>
-				{provisioning ? (
+				{wakeFailed ? (
+					<>
+						<span className="text-[11px] leading-snug text-muted-foreground">{automaticWakeError}</span>
+						{resumeError ? <span className="text-[11px] leading-snug text-destructive">{resumeError}</span> : null}
+						{onResume ? (
+							<Button type="button" size="sm" variant="outline" onClick={resumeClick} disabled={resuming}>
+								{resuming ? "Retrying…" : "Try again"}
+							</Button>
+						) : null}
+					</>
+				) : provisioning ? (
 					<span className="text-[11px] leading-snug text-muted-foreground">
 						Setting up the worktree and the agent. Keep typing — your messages are
 						queued and sent in order as soon as it is ready.

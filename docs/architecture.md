@@ -60,7 +60,7 @@ Display status like `working`, `needs_input`, `ci_failed`, `mergeable` are **com
 | Hibernated | Already cold | Opening the primary Chat tab, sending, or an AO relay wakes the native conversation in the background. |
 | Exited or terminated | No | Existing resume or restore behavior applies. |
 
-The daemon starts with Chat hibernation disabled; the desktop synchronizes its Developer Mode toggle when the daemon becomes ready. TUI sessions keep their runtime lifecycle. The Chat view renews its lease every 10 seconds; an abandoned lease expires after 30 seconds. Hibernation records a process boundary, not a display status: the session's derived board status continues to use activity and PR facts.
+The daemon starts with Chat hibernation disabled; the desktop synchronizes its Developer Mode toggle when the daemon becomes ready. TUI sessions keep their runtime lifecycle. The Chat view renews its lease every 10 seconds; an abandoned lease expires after 30 seconds. A renewal only extends the lease: after a failed wake, reopening the view, sending work, or using the visible retry action can attempt native resume again. Hibernation records a process boundary, not a display status: the session's derived board status continues to use activity and PR facts.
 
 ---
 
