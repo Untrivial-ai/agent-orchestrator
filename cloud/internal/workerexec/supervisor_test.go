@@ -107,7 +107,7 @@ func TestExecuteProjectsHeadlessReplyAndIdentityPerHarness(t *testing.T) {
 			harness: "codex",
 			outputs: []Output{
 				{Stream: "stdout", Text: `{"type":"thread.started","thread_id":"codex-native-1"}` + "\n"},
-				{Stream: "stdout", Text: `{"type":"item.completed","item":{"type":"agent_message","text":"codex reply"}}` + "\n"},
+				{Stream: "stdout", Text: `{"type":"item.completed","item":{"id":"codex-answer","type":"agent_message","text":"codex reply"}}` + "\n"},
 			},
 			wantTexts:  []string{"codex reply"},
 			wantNative: "codex-native-1",
@@ -159,6 +159,9 @@ func TestExecuteProjectsHeadlessReplyAndIdentityPerHarness(t *testing.T) {
 			for _, output := range control.outputs {
 				if output.Stream == "stdout" {
 					gotTexts = append(gotTexts, output.Text)
+					if test.harness == "codex" && output.ItemID != "codex-answer" {
+						t.Fatalf("provider item ID = %q, want codex-answer", output.ItemID)
+					}
 				}
 			}
 			if !reflect.DeepEqual(gotTexts, test.wantTexts) {

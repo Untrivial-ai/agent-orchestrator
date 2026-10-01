@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
@@ -100,6 +101,14 @@ func sendMessageTx(
 	event, err := appendUserMessage(ctx, tx, orgID, sessionID, idempotencyKey, text, modeCap, deniedCommands, settings)
 	if err != nil {
 		return domain.ClientEvent{}, err
+	}
+	if actorSessionID != "" {
+		if err := annotateAutomationMessage(&event, actorSessionID); err != nil {
+			return domain.ClientEvent{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE ao_events SET payload=$4 WHERE org_id=$1 AND session_id=$2 AND sequence=$3`, orgID, sessionID, event.Sequence, event.Payload); err != nil {
+			return domain.ClientEvent{}, err
+		}
 	}
 	// A user message is proof of life: wake a sandbox the idle-pause scanner
 	// paused for silence and schedule reconciliation immediately even when the
@@ -603,7 +612,45 @@ func (s *Store) ListClientEvents(
 			}
 			events = append(events, event)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows.Close()
+		needsAttribution := false
+		for _, event := range events {
+			if event.Type == "chat.user_message" {
+				needsAttribution = true
+				break
+			}
+		}
+		if !needsAttribution {
+			return nil
+		}
+		// Older reports already have durable actor attribution in their audit row.
+		// Recover it without guessing from user-editable message prefixes.
+		audits, err := tx.Query(ctx, `SELECT metadata->>'sequence', metadata->>'actorSessionId'
+			FROM ao_audit_events WHERE org_id=$1 AND resource_id=$2 AND action='session.message_queued'
+			AND metadata ? 'actorSessionId' AND (metadata->>'sequence')::bigint BETWEEN $3 AND $4`, orgID, sessionID, events[0].Sequence, events[len(events)-1].Sequence)
+		if err != nil {
+			return err
+		}
+		defer audits.Close()
+		bySequence := make(map[string]*domain.ClientEvent, len(events))
+		for i := range events {
+			bySequence[strconv.FormatInt(events[i].Sequence, 10)] = &events[i]
+		}
+		for audits.Next() {
+			var sequence, source string
+			if err := audits.Scan(&sequence, &source); err != nil {
+				return err
+			}
+			if event := bySequence[sequence]; event != nil && event.Type == "chat.user_message" {
+				if err := annotateAutomationMessage(event, source); err != nil {
+					return err
+				}
+			}
+		}
+		return audits.Err()
 	})
 	if err != nil {
 		return nil, false, err
@@ -623,4 +670,19 @@ func scanClientEvent(row scanner, event *domain.ClientEvent) error {
 		&event.Payload,
 		&event.CreatedAt,
 	)
+}
+
+// Attribution is server-owned. A user writing a report-like prefix stays human.
+func annotateAutomationMessage(event *domain.ClientEvent, source string) error {
+	var payload map[string]any
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return err
+	}
+	payload["origin"] = "automation"
+	payload["senderSessionId"] = source
+	encoded, err := json.Marshal(payload)
+	if err == nil {
+		event.Payload = encoded
+	}
+	return err
 }

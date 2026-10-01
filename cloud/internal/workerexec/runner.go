@@ -12,6 +12,7 @@ import (
 const outputChunkSize = 8 << 10
 
 type Output struct {
+	ItemID string
 	Stream string
 	Text   string
 }

@@ -230,6 +230,7 @@ type ReadyEvent struct {
 }
 
 type OutputEvent struct {
+	ItemID  string `json:"itemId,omitempty"`
 	TurnID  string `json:"turnId"`
 	Attempt int    `json:"attempt"`
 	Stream  string `json:"stream"`

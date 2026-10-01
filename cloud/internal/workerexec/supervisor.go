@@ -248,6 +248,7 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 				Attempt: turn.Attempt,
 				Stream:  projected.Stream,
 				Text:    projected.Text,
+				ItemID:  projected.ItemID,
 			}); err != nil {
 				return err
 			}
@@ -287,7 +288,7 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	if acpTurn {
 		runErr = s.runACP(executionCtx, turn, command, func(output Output) error {
 			return s.Control.PublishOutput(executionCtx, worker.OutputEvent{
-				TurnID: turn.ID, Attempt: turn.Attempt, Stream: output.Stream, Text: output.Text,
+				TurnID: turn.ID, Attempt: turn.Attempt, Stream: output.Stream, Text: output.Text, ItemID: output.ItemID,
 			})
 		}, func(identity string) error {
 			if publisher, ok := s.Control.(conversationIdentityPublisher); ok {
@@ -300,7 +301,7 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	} else if codexTurn {
 		runErr = s.runCodex(executionCtx, turn, command, func(output Output) error {
 			return s.Control.PublishOutput(executionCtx, worker.OutputEvent{
-				TurnID: turn.ID, Attempt: turn.Attempt, Stream: output.Stream, Text: output.Text,
+				TurnID: turn.ID, Attempt: turn.Attempt, Stream: output.Stream, Text: output.Text, ItemID: output.ItemID,
 			})
 		}, func(identity string) error {
 			if publisher, ok := s.Control.(conversationIdentityPublisher); ok {
@@ -338,6 +339,7 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 				Attempt: turn.Attempt,
 				Stream:  output.Stream,
 				Text:    output.Text,
+				ItemID:  output.ItemID,
 			}); err != nil {
 				runErr = err
 				break

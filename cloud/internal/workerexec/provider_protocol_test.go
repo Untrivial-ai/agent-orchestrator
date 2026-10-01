@@ -365,3 +365,35 @@ func TestACPSettingsUseAdvertisedChoices(t *testing.T) {
 		t.Fatal("advertised ACP approval mode was hidden")
 	}
 }
+
+func TestACPMessageIdentityAndWhitespaceSurviveLiveOutput(t *testing.T) {
+	var got []Output
+	client := &cloudACPClient{publish: func(output Output) error { got = append(got, output); return nil }}
+	client.live.Store(true)
+	for _, raw := range []string{
+		`{"sessionId":"session","update":{"sessionUpdate":"agent_message_chunk","messageId":"progress","content":{"type":"text","text":"Checking."}}}`,
+		`{"sessionId":"session","update":{"sessionUpdate":"agent_message_chunk","messageId":"answer","content":{"type":"text","text":"\n\n"}}}`,
+	} {
+		var notification acp.SessionNotification
+		if err := json.Unmarshal([]byte(raw), &notification); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.SessionUpdate(context.Background(), notification); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []Output{{Stream: "stdout", ItemID: "progress", Text: "Checking."}, {Stream: "stdout", ItemID: "answer", Text: "\n\n"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("output = %#v, want %#v", got, want)
+	}
+}
+
+func TestCodexMessageOutputPreservesIdentityAndWhitespace(t *testing.T) {
+	output, ok := codexAgentMessageOutput(json.RawMessage(`{"threadId":"current","itemId":"answer","delta":"\n\n"}`), "current")
+	if !ok || output.ItemID != "answer" || output.Text != "\n\n" {
+		t.Fatalf("output=%#v accepted=%v", output, ok)
+	}
+	if _, ok := codexAgentMessageOutput(json.RawMessage(`{"threadId":"other","itemId":"answer","delta":"foreign"}`), "current"); ok {
+		t.Fatal("another thread's output was accepted")
+	}
+}

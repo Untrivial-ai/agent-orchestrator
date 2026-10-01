@@ -156,3 +156,12 @@ func TestChatOutputProjectorLeavesStderrUntouched(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexJSONLRetainsProviderMessageIDs(t *testing.T) {
+	projector := newChatOutputProjector("codex")
+	got := projector.Project(Output{Stream: "stdout", Text: `{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"Result"}}` + "\n"})
+	want := []Output{{Stream: "stdout", Text: "Result", ItemID: "answer"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("output = %#v, want %#v", got, want)
+	}
+}

@@ -294,7 +294,11 @@ func (c *cloudACPClient) SessionUpdate(_ context.Context, notification acp.Sessi
 		return nil
 	}
 	if chunk := notification.Update.AgentMessageChunk; chunk != nil && chunk.Content.Text != nil {
-		return c.publish(Output{Stream: "stdout", Text: chunk.Content.Text.Text})
+		itemID := ""
+		if chunk.MessageId != nil {
+			itemID = string(*chunk.MessageId)
+		}
+		return c.publish(Output{Stream: "stdout", Text: chunk.Content.Text.Text, ItemID: itemID})
 	}
 	return nil
 }
