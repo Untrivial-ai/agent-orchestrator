@@ -213,6 +213,10 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 	env := m.runtimeEnv(id, in.record.ProjectID, in.record.IssueID, in.project.Config.Env)
 	if agent, ok := m.agents.Agent(in.cfg.Harness); ok {
 		m.augmentAgentRuntimeEnv(agent, env)
+		if err := m.prepareAgentPreLaunch(ctx, agent, id, in.workspace.Path); err != nil {
+			m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false, in.promptQueued)
+			return domain.SessionRecord{}, wrapSpawnStage(id, ErrSpawnPrepare, err)
+		}
 	}
 
 	var (
@@ -485,6 +489,9 @@ func (m *Manager) resumeChatController(
 			}
 			if agent, ok := m.agents.Agent(rec.Harness); ok {
 				m.augmentAgentRuntimeEnv(agent, launchEnv)
+				if prepareErr := m.prepareAgentPreLaunch(launchCtx, agent, rec.ID, ws.Path); prepareErr != nil {
+					return nil, fmt.Errorf("%s %s: %w", operation, rec.ID, prepareErr)
+				}
 			}
 			rec = prepared
 			return launchEnv, nil

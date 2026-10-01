@@ -1176,7 +1176,6 @@ function AttachedTerminal({
 	const banner = isCloudConnectError
 		? undefined
 		: bannerText(state, t, hasAttached, Boolean(attachSession?.cloud), error);
-	const showEmptyState = !handleId;
 	// Cover xterm while the attachment buffers the initial replay, so the pane
 	// appears already drawn at the tail instead of visibly scrolling down to it.
 	// Deliberately NOT the empty state above: that renders a centered "Starting
@@ -1232,6 +1231,10 @@ function AttachedTerminal({
 	// action on it — stays hidden in exactly the state that needs it (#3875).
 	const showEndedStatePreview =
 		state === "exited" || canRestoreSession || (terminalTarget?.kind === "worker" && sessionAgentExited(session));
+	// A missing handle is only a startup state while the agent is expected to
+	// produce one. Once the session has exited, the recovery strip owns the pane;
+	// otherwise the stale startup copy claims AO is still preparing forever.
+	const showEmptyState = !handleId && !showEndedStatePreview;
 	const isCloudConnecting =
 		Boolean(attachSession?.cloud) &&
 		!isCloudConnectError &&

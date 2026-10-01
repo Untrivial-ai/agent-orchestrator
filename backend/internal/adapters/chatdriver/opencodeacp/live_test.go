@@ -61,7 +61,7 @@ func TestLiveOpenCodeACP(t *testing.T) {
 	defer conversation.(ports.ChatProviderTerminator).Terminate()
 
 	ref, err := conversation.SendTurn(ctx, ports.ChatUserMessage{
-		Text: "Reply with exactly: AO OpenCode ACP works", ClientMessageID: "live-1",
+		Text: "Remember the exact token AO_OPENCODE_RESUME_731 and reply only READY.", ClientMessageID: "live-1",
 		Origin: domain.MessageOriginHuman,
 	})
 	if err != nil {
@@ -73,6 +73,8 @@ func TestLiveOpenCodeACP(t *testing.T) {
 
 	var answer strings.Builder
 	var contextUsed, contextWindow int64
+
+firstTurn:
 	for {
 		select {
 		case event, ok := <-conversation.Events():
@@ -90,7 +92,7 @@ func TestLiveOpenCodeACP(t *testing.T) {
 				if event.TurnState != domain.TurnStateCompleted {
 					t.Fatalf("turn state = %q; answer=%q", event.TurnState, answer.String())
 				}
-				if !strings.Contains(answer.String(), "AO OpenCode ACP works") {
+				if !strings.Contains(answer.String(), "READY") {
 					t.Fatalf("answer = %q", answer.String())
 				}
 				if contextUsed <= 0 || contextWindow <= 0 {
@@ -102,10 +104,54 @@ func TestLiveOpenCodeACP(t *testing.T) {
 						t.Fatalf("acknowledge turn: %v", err)
 					}
 				}
-				return
+				break firstTurn
 			}
 		case <-ctx.Done():
 			t.Fatalf("live turn timed out: %v; answer=%q", ctx.Err(), answer.String())
+		}
+	}
+
+	providerID := conversation.ProviderConversationID()
+	if err := conversation.(ports.ChatProviderTerminator).Terminate(); err != nil {
+		t.Fatalf("Terminate fresh host: %v", err)
+	}
+	conversation, err = driver.Resume(ctx, ports.ChatResumeConfig{
+		SessionID: "live-opencode-acp", ProviderConversationID: providerID,
+		DataDir: dataDir, WorkspacePath: workspace, Env: envMap(),
+		AllowResumeWithoutHistory: true,
+	})
+	if err != nil {
+		t.Fatalf("Resume after fresh provider process: %v", err)
+	}
+	defer conversation.(ports.ChatProviderTerminator).Terminate()
+	ref, err = conversation.SendTurn(ctx, ports.ChatUserMessage{
+		Text:            "What exact token did I ask you to remember? Reply with the token only.",
+		ClientMessageID: "live-2", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatalf("SendTurn after Resume: %v", err)
+	}
+	if err := conversation.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
+		t.Fatalf("StartDeferredTurn after Resume: %v", err)
+	}
+	var resumedAnswer strings.Builder
+	for {
+		select {
+		case event, ok := <-conversation.Events():
+			if !ok {
+				t.Fatalf("resumed controller closed before completion; answer=%q", resumedAnswer.String())
+			}
+			if event.Kind == ports.ChatEventMessageDelta {
+				resumedAnswer.WriteString(event.Delta)
+			}
+			if event.Kind == ports.ChatEventTurnCompleted {
+				if event.TurnState != domain.TurnStateCompleted || !strings.Contains(resumedAnswer.String(), "AO_OPENCODE_RESUME_731") {
+					t.Fatalf("resumed turn state=%q answer=%q", event.TurnState, resumedAnswer.String())
+				}
+				return
+			}
+		case <-ctx.Done():
+			t.Fatalf("resumed live turn timed out: %v; answer=%q", ctx.Err(), resumedAnswer.String())
 		}
 	}
 }

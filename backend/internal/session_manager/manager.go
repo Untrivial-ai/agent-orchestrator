@@ -144,6 +144,11 @@ var (
 	// ErrResumeInProgress prevents concurrent resume requests from replacing the
 	// same runtime twice.
 	ErrResumeInProgress = errors.New("session: agent resume already in progress")
+	// ErrSessionWorkspaceUnavailable means an exited agent cannot be relaunched
+	// because its recorded workspace no longer exists. Other filesystem errors
+	// remain distinct so temporary mount and permission failures are not reported
+	// as a permanently missing workspace.
+	ErrSessionWorkspaceUnavailable = errors.New("session: workspace is not available")
 	// ErrAwaitingDecision means the session is paused on a pending
 	// permission/approval dialog. Send refuses to paste into it: the runtime
 	// appends Enter after every paste, and an Enter into a decision dialog
@@ -452,9 +457,14 @@ type Manager struct {
 	startupBackgroundReconcileOnce sync.Once
 	statusRecoveryMu               sync.RWMutex
 	statusRecoveryFailed           bool
+	statusRecoveryPending          bool
+	statusRecoveryRetrying         bool
 	statusRecoveryRevision         uint64
 	statusRecoveries               map[domain.SessionID]statusRecovery
 	statusVerificationLimit        time.Duration
+	statusRecoveryRetryInitial     time.Duration
+	statusRecoveryRetryMax         time.Duration
+	statusRecoveryRetryAttempts    int
 	agentOpMu                      sync.Mutex
 	agentOperations                map[domain.SessionID]agentOperationKind
 	interfaceRecoveryMu            sync.Mutex
@@ -852,6 +862,9 @@ func New(d Deps) *Manager {
 	}
 	m.statusRecoveries = make(map[domain.SessionID]statusRecovery)
 	m.statusVerificationLimit = statusVerificationLimit
+	m.statusRecoveryRetryInitial = 2 * time.Second
+	m.statusRecoveryRetryMax = 30 * time.Second
+	m.statusRecoveryRetryAttempts = 4
 	if m.reconcileWorkers < 1 {
 		m.reconcileWorkers = 1
 	}
@@ -2693,7 +2706,7 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 		}
 		return result, err
 	}
-	if m.SessionStatusReadiness(rec) == "unavailable" {
+	if m.SessionStatusReadiness(rec) == "unavailable" && rec.Activity.State != domain.ActivityExited {
 		m.beginStatusRecovery(id)
 		recoveryCtx, cancel := context.WithTimeout(ctx, m.statusVerificationLimit)
 		defer cancel()
@@ -2703,7 +2716,13 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 			return RestoreResult{}, err
 		}
 		current, err := m.getRecord(ctx, id)
-		return RestoreResult{Session: current, Mode: RestoreModeNative}, err
+		if err != nil {
+			return RestoreResult{}, err
+		}
+		if current.Activity.State != domain.ActivityExited {
+			return RestoreResult{Session: current, Mode: RestoreModeNative}, nil
+		}
+		rec = current
 	}
 	mode := domain.NormalizeSessionMode(rec.Mode)
 	if mode == domain.SessionModeChat && m.chat != nil && m.chat.HasLiveChatController(id) {
@@ -2717,6 +2736,48 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 		// existing durable-exited precondition.
 		if mode != domain.SessionModeChat || m.chat == nil {
 			return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrAgentNotExited)
+		}
+	}
+	workspacePath := strings.TrimSpace(rec.Metadata.WorkspacePath)
+	workspaceRestored := false
+	if rec.Activity.State == domain.ActivityExited {
+		// Resume may follow a daemon shutdown that removed the session worktree.
+		// A shutdown-saved marker means the workspace adapter can restore it, so
+		// don't reject the stale path before giving that restore path a chance.
+		rows, err := m.store.ListSessionWorktrees(ctx, rec.ID)
+		if err != nil {
+			return RestoreResult{}, fmt.Errorf("resume agent %s: list saved worktrees: %w", id, err)
+		}
+		if len(restorableWorktreeRows(rows)) > 0 {
+			project, found, err := m.store.GetProject(ctx, string(rec.ProjectID))
+			if err != nil {
+				return RestoreResult{}, err
+			}
+			if !found {
+				return RestoreResult{}, ErrNotFound
+			}
+			ws, err := m.restoreSessionWorkspace(ctx, project, rec)
+			if err != nil {
+				return RestoreResult{}, fmt.Errorf("resume agent %s: restore workspace: %w", id, err)
+			}
+			workspacePath = ws.Path
+			rec.Metadata.WorkspacePath = ws.Path
+			workspaceRestored = true
+		}
+	}
+	if workspacePath == "" {
+		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrSessionWorkspaceUnavailable)
+	}
+	if !workspaceRestored {
+		workspaceInfo, statErr := os.Stat(workspacePath)
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrSessionWorkspaceUnavailable)
+			}
+			return RestoreResult{}, fmt.Errorf("resume agent %s: inspect workspace: %w", id, statErr)
+		}
+		if !workspaceInfo.IsDir() {
+			return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrSessionWorkspaceUnavailable)
 		}
 	}
 	return m.resumeAgentRecordWithPolicy(ctx, "resume agent", rec, false, false)
@@ -3410,14 +3471,34 @@ func (m *Manager) ReconcileStartupSafety(ctx context.Context) error {
 // saved-session restoration passes. It is deliberately separate from the
 // startup safety pass so the daemon can serve durable SQLite-backed project
 // and session metadata while this best-effort work continues.
-func (m *Manager) ReconcileBackground(ctx context.Context) (resultErr error) {
-	defer func() {
-		m.statusRecoveryMu.Lock()
-		m.statusRecoveryFailed = resultErr != nil
-		m.statusRecoveryRevision++
-		m.statusRecoveryMu.Unlock()
-		m.startupBackgroundReconcileOnce.Do(func() { close(m.startupBackgroundReconcileDone) })
-	}()
+func (m *Manager) ReconcileBackground(ctx context.Context) error {
+	err := m.reconcileBackgroundPass(ctx)
+	retry := false
+	m.statusRecoveryMu.Lock()
+	if err != nil {
+		// A failed global discovery pass is ambiguous, not proof that every
+		// controller died. Keep reads neutral while one bounded retry loop owns
+		// discovery, then publish unavailable if the dependency stays broken.
+		m.statusRecoveryPending = true
+		m.statusRecoveryFailed = false
+		if !m.statusRecoveryRetrying {
+			m.statusRecoveryRetrying = true
+			retry = true
+		}
+	} else {
+		m.statusRecoveryPending = false
+		m.statusRecoveryFailed = false
+	}
+	m.statusRecoveryRevision++
+	m.statusRecoveryMu.Unlock()
+	m.startupBackgroundReconcileOnce.Do(func() { close(m.startupBackgroundReconcileDone) })
+	if retry {
+		m.runInBackground(func() { m.retryBackgroundReconcile(m.backgroundContext) })
+	}
+	return err
+}
+
+func (m *Manager) reconcileBackgroundPass(ctx context.Context) error {
 	for _, interrupted := range m.startupTaskPreparations {
 		releaseWorkspaceGate := m.acquireWorkspaceGate(interrupted.ProjectID)
 		rec, ok, err := m.store.GetSession(ctx, interrupted.ID)
@@ -3461,14 +3542,24 @@ func (m *Manager) ReconcileBackground(ctx context.Context) (resultErr error) {
 			m.logger.Error("reconcile: reap pass failed, skipping", "sessionID", rec.ID, "error", err)
 		}
 	}
-	if err := m.RestoreAll(ctx); err != nil {
-		return err
-	}
+	m.restoreAllRecords(ctx, recs)
 	if err := m.deliverAllTransitionMessages(ctx); err != nil {
 		m.logger.Error("reconcile: transition-message delivery deferred for retry", "error", err)
 	}
 	m.wakeTransitionMessageDispatcher()
 	return nil
+}
+
+func (m *Manager) retryBackgroundReconcile(ctx context.Context) {
+	err := m.retryStatusRecovery(ctx, func(recoveryCtx context.Context) error {
+		return m.reconcileBackgroundPass(recoveryCtx)
+	})
+	m.statusRecoveryMu.Lock()
+	m.statusRecoveryRetrying = false
+	m.statusRecoveryPending = false
+	m.statusRecoveryFailed = err != nil
+	m.statusRecoveryRevision++
+	m.statusRecoveryMu.Unlock()
 }
 
 func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRecord) {
@@ -3490,7 +3581,12 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 	acquired, err := m.beginAgentOperations(ctx, ids, agentOperationReconcile)
 	if err != nil {
 		for _, rec := range candidates {
-			m.finishStatusRecovery(ctx, rec, err)
+			if isUnrecoverableStartupRecoveryError(err) {
+				m.finishStatusRecovery(ctx, rec, err)
+			} else {
+				m.beginStatusRecovery(rec.ID)
+				m.runInBackground(func() { m.retryLiveRecovery(m.backgroundContext, rec.ID) })
+			}
 		}
 		m.logger.Warn("reconcile: could not fence live sessions", "error", err)
 		return
@@ -3502,7 +3598,8 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 	live := make([]domain.SessionRecord, 0, len(acquired))
 	for _, rec := range candidates {
 		if _, ok := acquiredSet[rec.ID]; !ok {
-			m.finishStatusRecovery(ctx, rec, ErrResumeInProgress)
+			m.beginStatusRecovery(rec.ID)
+			m.runInBackground(func() { m.retryLiveRecovery(m.backgroundContext, rec.ID) })
 			m.logger.Warn("reconcile: session remains input-gated pending unambiguous agent-switch recovery", "sessionID", rec.ID)
 			continue
 		}
@@ -3529,10 +3626,14 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 					defer cancel()
 					return m.reconcileLive(recoveryCtx, rec)
 				}()
-				m.finishStatusRecovery(ctx, rec, err)
 				if err != nil {
 					m.logger.Error("reconcile: live pass failed, skipping", "sessionID", rec.ID, "error", err)
+					if !isUnrecoverableStartupRecoveryError(err) {
+						m.runInBackground(func() { m.retryLiveRecovery(m.backgroundContext, rec.ID) })
+						continue
+					}
 				}
+				m.finishStatusRecovery(ctx, rec, err)
 			}
 		}()
 	}
@@ -3541,6 +3642,80 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 	}
 	close(jobs)
 	wg.Wait()
+}
+
+// retryLiveRecovery keeps an uncertain startup reconnect neutral and retries it
+// without requiring the user to discover and click Resume. A provider being
+// slow, a GUI-launched daemon missing a transient dependency, or another
+// process briefly owning a native writer is not proof that a session is dead.
+func (m *Manager) retryLiveRecovery(ctx context.Context, id domain.SessionID) {
+	before := domain.SessionRecord{ID: id}
+	err := m.retryStatusRecovery(ctx, func(recoveryCtx context.Context) error {
+		rec, ok, err := m.store.GetSession(recoveryCtx, id)
+		if err != nil {
+			return err
+		}
+		before = rec
+		if !ok || rec.IsTerminated {
+			return nil
+		}
+		if err := m.beginAgentOperation(recoveryCtx, id, agentOperationReconcile); err != nil {
+			return err
+		}
+		recoveryCtx, cancel := context.WithTimeout(recoveryCtx, m.statusVerificationLimit)
+		err = m.reconcileLive(recoveryCtx, rec)
+		cancel()
+		m.endAgentOperation(id, agentOperationReconcile)
+		return err
+	})
+	m.finishStatusRecovery(ctx, before, err)
+}
+
+func (m *Manager) retryStatusRecovery(ctx context.Context, attempt func(context.Context) error) error {
+	backoff := m.statusRecoveryRetryInitial
+	attempts := m.statusRecoveryRetryAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for range attempts {
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		lastErr = attempt(ctx)
+		if lastErr == nil || isUnrecoverableStartupRecoveryError(lastErr) {
+			return lastErr
+		}
+		if backoff >= m.statusRecoveryRetryMax/2 {
+			backoff = m.statusRecoveryRetryMax
+		} else {
+			backoff *= 2
+		}
+	}
+	return lastErr
+}
+
+// Only typed, terminal conditions justify a persistent unavailable state.
+// Unclassified errors stay eligible for background recovery instead of
+// painting the session red on a transient startup race.
+func isUnrecoverableStartupRecoveryError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
+		errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+		return false
+	}
+	return errors.Is(err, ErrIncompleteHandle) ||
+		errors.Is(err, ErrNotResumable) ||
+		errors.Is(err, ports.ErrAgentAuthRequired) ||
+		errors.Is(err, ports.ErrAgentBinaryNotFound) ||
+		errors.Is(err, ports.ErrChatUnsupported) ||
+		errors.Is(err, ports.ErrChatDriverUnavailable) ||
+		errors.Is(err, ports.ErrChatDriverIncompatible) ||
+		errors.Is(err, ports.ErrChatAuthRequired) ||
+		errors.Is(err, ports.ErrChatResumeFailed)
 }
 
 // RestoreAll relaunches every terminated session that was saved by the last
@@ -3560,19 +3735,66 @@ func (m *Manager) RestoreAll(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("restore-all: list sessions: %w", err)
 	}
+	m.restoreAllRecords(ctx, recs)
+	return nil
+}
+
+func (m *Manager) restoreAllRecords(ctx context.Context, recs []domain.SessionRecord) {
 	for _, rec := range recs {
 		if !rec.IsTerminated {
 			continue
 		}
-		m.restoreAllSession(ctx, rec)
+		m.beginStatusRecovery(rec.ID)
+		err := m.attemptRestoreAllSession(ctx, rec.ID)
+		if err == nil || errors.Is(err, ErrNotFound) || errors.Is(err, ErrNotResumable) {
+			m.finishStatusRecovery(ctx, rec, nil)
+			continue
+		}
+		if isUnrecoverableStartupRecoveryError(err) {
+			m.finishStatusRecovery(ctx, rec, err)
+			continue
+		}
+		m.logger.Warn("restore-all: session remains in recovery; retrying in background", "sessionID", rec.ID, "error", err)
+		m.runInBackground(func() { m.retryRestoredRecovery(m.backgroundContext, rec.ID) })
 	}
-	return nil
+}
+
+func (m *Manager) attemptRestoreAllSession(ctx context.Context, id domain.SessionID) error {
+	recoveryCtx, cancel := context.WithTimeout(ctx, m.statusVerificationLimit)
+	defer cancel()
+	if err := m.beginAgentOperation(recoveryCtx, id, agentOperationReconcile); err != nil {
+		return err
+	}
+	defer m.endAgentOperation(id, agentOperationReconcile)
+	rec, ok, err := m.store.GetSession(recoveryCtx, id)
+	if err != nil {
+		return err
+	}
+	if !ok || !rec.IsTerminated {
+		return nil
+	}
+	return m.restoreAllSession(recoveryCtx, rec)
+}
+
+func (m *Manager) retryRestoredRecovery(ctx context.Context, id domain.SessionID) {
+	err := m.retryStatusRecovery(ctx, func(recoveryCtx context.Context) error {
+		err := m.attemptRestoreAllSession(recoveryCtx, id)
+		if errors.Is(err, ErrNotFound) || errors.Is(err, ErrNotResumable) {
+			return nil
+		}
+		return err
+	})
+	rec, _, _ := m.store.GetSession(ctx, id)
+	if rec.ID == "" {
+		rec.ID = id
+	}
+	m.finishStatusRecovery(ctx, rec, err)
 }
 
 // restoreAllSession restores one terminated session marked for restore at
 // shutdown, acquiring the project workspace gate so cleanup does not tear down
 // its workspace while restore is in progress.
-func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecord) {
+func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecord) error {
 	releaseWorkspaceGate := m.acquireWorkspaceGate(rec.ProjectID)
 	defer releaseWorkspaceGate()
 
@@ -3580,15 +3802,15 @@ func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecor
 	rows, err := m.store.ListSessionWorktrees(ctx, rec.ID)
 	if err != nil {
 		m.logger.Error("restore-all: list worktrees failed", "sessionID", rec.ID, "error", err)
-		return
+		return err
 	}
 	if len(rows) == 0 {
 		// No marker: this session was killed by the user before shutdown.
-		return
+		return nil
 	}
 	rows = restorableWorktreeRows(rows)
 	if len(rows) == 0 {
-		return
+		return nil
 	}
 
 	// Step 1: ensure the worktree exists. workspace.Restore re-creates it
@@ -3596,7 +3818,7 @@ func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecor
 	project, err := m.loadProject(ctx, rec.ProjectID)
 	if err != nil {
 		m.logger.Error("restore-all: load project failed", "sessionID", rec.ID, "error", err)
-		return
+		return err
 	}
 	var ws ports.WorkspaceInfo
 	restoredWorkspaceProject := project.Kind.WithDefault() == domain.ProjectKindWorkspace
@@ -3606,12 +3828,12 @@ func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecor
 		projectRows, rowErr = m.workspaceProjectRestoreRowsFromMarkers(ctx, project, rec, rows)
 		if rowErr != nil {
 			m.logger.Error("restore-all: workspace rows failed", "sessionID", rec.ID, "error", rowErr)
-			return
+			return rowErr
 		}
 		root, restoreErr := m.restoreWorkspaceProjectRows(ctx, projectRows)
 		if restoreErr != nil {
 			m.logger.Error("restore-all: workspace project restore failed", "sessionID", rec.ID, "error", restoreErr)
-			return
+			return restoreErr
 		}
 		ws = workspaceInfoFromRepoInfo(root)
 	} else {
@@ -3628,16 +3850,16 @@ func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecor
 		})
 		if restoreErr != nil {
 			m.logger.Error("restore-all: workspace restore failed", "sessionID", rec.ID, "error", restoreErr)
-			return
+			return restoreErr
 		}
 	}
 	if ws.Path == "" {
 		m.logger.Error("restore-all: workspace restore failed", "sessionID", rec.ID, "error", "empty restored root path")
-		return
+		return fmt.Errorf("restore-all: workspace restore returned empty path: %w", ErrIncompleteHandle)
 	}
 	if err := m.restoreAttachments(ctx, rec.ID, ws); err != nil {
 		m.logger.Error("restore-all: restore attachments failed", "sessionID", rec.ID, "error", err)
-		return
+		return err
 	}
 
 	// Step 2: replay preserve ref when one was recorded.
@@ -3678,7 +3900,7 @@ func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecor
 		default:
 			m.logger.Error("restore-all: relaunch failed", "sessionID", rec.ID, "error", err)
 		}
-		return
+		return err
 	}
 
 	// One-shot: drop the consumed marker so it never outlives one restart
@@ -3697,6 +3919,7 @@ func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecor
 			m.logger.Warn("restore-all: delete restore marker failed", "sessionID", rec.ID, "error", err)
 		}
 	}
+	return nil
 }
 
 func restorableWorktreeRows(rows []domain.SessionWorktreeRecord) []domain.SessionWorktreeRecord {
@@ -5425,11 +5648,26 @@ func (m *Manager) prepareWorkspace(ctx context.Context, agent ports.Agent, id do
 		m.cleanupPreparedAgentWorkspace(ctx, agent, id, workspacePath, env)
 		return fmt.Errorf("install hooks: %w", err)
 	}
-	if pl, ok := agent.(preLauncher); ok {
-		if err := pl.PreLaunch(ctx, ports.LaunchConfig{DataDir: m.dataDir, SessionID: string(id), WorkspacePath: workspacePath}); err != nil {
-			m.cleanupPreparedAgentWorkspace(ctx, agent, id, workspacePath, env)
-			return fmt.Errorf("pre-launch: %w", err)
-		}
+	if err := m.prepareAgentPreLaunch(ctx, agent, id, workspacePath); err != nil {
+		m.cleanupPreparedAgentWorkspace(ctx, agent, id, workspacePath, env)
+		return err
+	}
+	return nil
+}
+
+// prepareAgentPreLaunch runs adapter setup that must happen before the provider
+// process starts but is independent of terminal-only workspace hooks. Chat
+// controllers use this too: for example, Claude needs the AO worktree marked as
+// trusted before its ACP process is launched.
+func (m *Manager) prepareAgentPreLaunch(ctx context.Context, agent ports.Agent, id domain.SessionID, workspacePath string) error {
+	pl, ok := agent.(preLauncher)
+	if !ok {
+		return nil
+	}
+	if err := pl.PreLaunch(ctx, ports.LaunchConfig{
+		DataDir: m.dataDir, SessionID: string(id), WorkspacePath: workspacePath,
+	}); err != nil {
+		return fmt.Errorf("pre-launch: %w", err)
 	}
 	return nil
 }

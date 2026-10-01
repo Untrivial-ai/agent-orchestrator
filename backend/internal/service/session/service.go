@@ -1309,6 +1309,9 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("CHAT_DRIVER_UNAVAILABLE", err.Error(), nil)
 	case errors.Is(err, ports.ErrChatDriverIncompatible):
 		return apierr.Conflict("CHAT_DRIVER_INCOMPATIBLE", err.Error(), nil)
+	case errors.Is(err, ports.ErrChatRecoveryInconclusive):
+		return apierr.Conflict("CHAT_RECOVERY_INCONCLUSIVE",
+			"AO could not safely reconnect to this agent. It may still be running in another AO instance.", nil)
 	case errors.Is(err, ports.ErrChatAuthRequired):
 		return apierr.Conflict("CHAT_AUTH_REQUIRED", "The agent is installed but not authenticated", nil)
 	case errors.Is(err, ports.ErrAgentAuthRequired):
@@ -1321,6 +1324,8 @@ func mapSessionError(err error) error {
 		return apierr.Conflict("WORKSPACE_CWD_MISMATCH", err.Error(), nil)
 	case errors.Is(err, ports.ErrWorkspaceLocked):
 		return apierr.Conflict("WORKSPACE_LOCKED", err.Error(), nil)
+	case errors.Is(err, sessionmanager.ErrSessionWorkspaceUnavailable):
+		return apierr.NotFound("SESSION_WORKSPACE_NOT_FOUND", "Session workspace is not available")
 	default:
 		return err
 	}

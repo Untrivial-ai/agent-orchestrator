@@ -338,6 +338,11 @@ type ChatResumeConfig struct {
 	Effort      string
 	Permissions PermissionMode
 	ReadOnly    bool
+	// AllowResumeWithoutHistory lets ordinary session recovery fall back from a
+	// failed ACP session/load to session/resume when the provider supports it.
+	// The provider can retain model context without replaying history; AO then
+	// keeps its durable conversation projection. Strict handoffs leave this false.
+	AllowResumeWithoutHistory bool
 	// SystemPrompt is recomputed by the session manager on restore and reapplied
 	// to the provider process. It is not persisted in the conversation transcript.
 	SystemPrompt string

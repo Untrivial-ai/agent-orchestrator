@@ -911,6 +911,11 @@ func writeConversationError(w http.ResponseWriter, r *http.Request, err error) {
 			"CHAT_CONTROLLER_NOT_READY",
 			"the agent controller for this session is not running", nil)
 
+	case errors.Is(err, ports.ErrChatRecoveryInconclusive):
+		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
+			"CHAT_RECOVERY_INCONCLUSIVE",
+			"AO could not safely reconnect to this agent; it may still be running elsewhere", nil)
+
 	case errors.Is(err, chatsvc.ErrControllerHandoff):
 		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict",
 			"CHAT_INTERFACE_TRANSITION",
@@ -1082,16 +1087,17 @@ func conversationSnapshotResponse(s chatsvc.Snapshot) ConversationSnapshotRespon
 
 	for _, msg := range s.Messages {
 		message := ConversationMessageResponse{
-			Kind:      "message",
-			ID:        msg.ID,
-			TurnID:    msg.TurnID,
-			Sequence:  msg.Sequence,
-			Revision:  msg.Revision,
-			Role:      string(msg.Role),
-			Origin:    string(msg.Origin),
-			Text:      msg.Text,
-			Streaming: msg.Streaming,
-			CreatedAt: msg.CreatedAt.UTC().Format(time.RFC3339),
+			Kind:            "message",
+			ID:              msg.ID,
+			TurnID:          msg.TurnID,
+			ClientMessageID: msg.ClientMessageID,
+			Sequence:        msg.Sequence,
+			Revision:        msg.Revision,
+			Role:            string(msg.Role),
+			Origin:          string(msg.Origin),
+			Text:            msg.Text,
+			Streaming:       msg.Streaming,
+			CreatedAt:       msg.CreatedAt.UTC().Format(time.RFC3339),
 		}
 		message.Content, message.EditAvailable = conversationContentSummary(msg)
 		message.EditAvailable = message.EditAvailable && msg.Sequence > s.EditFloorSequence

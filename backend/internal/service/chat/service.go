@@ -609,21 +609,22 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	hostID := providerHostID(cfg)
 	if cfg.ProviderConversationID != "" {
 		conv, err = driver.Resume(ctx, ports.ChatResumeConfig{
-			SessionID:              hostID,
-			ProviderConversationID: cfg.ProviderConversationID,
-			DataDir:                cfg.DataDir,
-			WorkspacePath:          cfg.WorkspacePath,
-			Env:                    cfg.Env,
-			PrepareEnv:             prepareEnv,
-			Model:                  cfg.Model,
-			Effort:                 cfg.Effort,
-			Permissions:            cfg.Permissions,
-			ReadOnly:               cfg.ReadOnly,
-			SystemPrompt:           cfg.SystemPrompt,
-			ProviderScopeID:        providerScopeID,
-			ProviderIDsScoped:      providerBoundaryID != "" || activeBranch.ProviderIDsScoped,
-			AdditionalDirectories:  cfg.AdditionalDirectories,
-			MCPServers:             cfg.MCPServers,
+			SessionID:                 hostID,
+			ProviderConversationID:    cfg.ProviderConversationID,
+			DataDir:                   cfg.DataDir,
+			WorkspacePath:             cfg.WorkspacePath,
+			Env:                       cfg.Env,
+			PrepareEnv:                prepareEnv,
+			Model:                     cfg.Model,
+			Effort:                    cfg.Effort,
+			Permissions:               cfg.Permissions,
+			AllowResumeWithoutHistory: cfg.HistoryMode == ports.ChatHistoryImport,
+			ReadOnly:                  cfg.ReadOnly,
+			SystemPrompt:              cfg.SystemPrompt,
+			ProviderScopeID:           providerScopeID,
+			ProviderIDsScoped:         providerBoundaryID != "" || activeBranch.ProviderIDsScoped,
+			AdditionalDirectories:     cfg.AdditionalDirectories,
+			MCPServers:                cfg.MCPServers,
 		})
 	} else {
 		conv, err = driver.Start(ctx, ports.ChatStartConfig{
