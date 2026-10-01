@@ -188,6 +188,10 @@ function humanMessage(text: string): ConversationMessage {
 	};
 }
 
+function fileClipboardData(files: File[]): DataTransfer {
+	return { files, items: [], getData: () => "" } as unknown as DataTransfer;
+}
+
 const chatSession = {
 	id: chatFixture.sessionId,
 	workspaceId: "project-1",
@@ -667,8 +671,10 @@ describe("ChatWorkspace timeline", () => {
 		render(<ChatWorkspace snapshot={snapshot} onInterrupt={onInterrupt} />);
 
 		expect(screen.queryByTestId("live-turn-status")).not.toBeInTheDocument();
-		expect(screen.getByTestId("live-working-label")).toHaveTextContent(/^Working for /);
-		expect(screen.getByTestId("response-spinner")).toBeInTheDocument();
+		const streamingResponse = document.querySelector<HTMLElement>("[data-chat-streaming-output]");
+		expect(streamingResponse).not.toBeNull();
+		expect(within(streamingResponse!).getByTestId("live-working-label")).toHaveTextContent(/^Working for /);
+		expect(within(streamingResponse!).getByTestId("response-spinner")).toBeInTheDocument();
 
 		const stop = screen.getByRole("button", { name: "Stop turn" });
 		expect(screen.getByLabelText("Message the agent").closest("form")).toContainElement(stop);
@@ -1003,7 +1009,9 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getByRole("alert")).toHaveTextContent("The agent is waiting for your decision.");
 		expect(screen.getByText("Do you want to run this command?")).toBeInTheDocument();
 		expect(screen.queryByText("Waiting for your decision")).not.toBeInTheDocument();
-		expect(screen.getByTestId("live-working-label")).toHaveTextContent(/^Working for /);
+		const streamingResponse = document.querySelector<HTMLElement>("[data-chat-streaming-output]");
+		expect(streamingResponse).not.toBeNull();
+		expect(within(streamingResponse!).getByTestId("live-working-label")).toHaveTextContent(/^Working for /);
 		const approval = screen.getByRole("group", {
 			name: "Approval request approval-1",
 		});
@@ -1317,6 +1325,9 @@ describe("ChatWorkspace timeline", () => {
 		const snapshot = {
 			...chatFixtureSettled,
 			controller: { state: "connecting" as const },
+			items: chatFixtureSettled.items.map((item) =>
+				item.kind === "message" && item.role === "assistant" ? { ...item, streaming: false } : item,
+			),
 			turns: [
 				...chatFixtureSettled.turns,
 				{ id: "queued-start", state: "queued" as const, requestedAt: "2026-08-15T00:00:00Z" },
@@ -1330,7 +1341,7 @@ describe("ChatWorkspace timeline", () => {
 			/>,
 		);
 
-		expect(screen.getByRole("status")).toHaveTextContent("Starting Codex…");
+		expect(screen.getByText("Starting Codex…")).toBeInTheDocument();
 		expect(screen.queryByText(/^Working for /)).not.toBeInTheDocument();
 		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
@@ -2364,7 +2375,7 @@ describe("ChatWorkspace message actions", () => {
 				onSend={onSend}
 			/>,
 		);
-		expect(await screen.findByRole("status")).toHaveTextContent("view is out of date");
+		expect(await screen.findByText(/view is out of date/)).toBeInTheDocument();
 		const staleComposer = await screen.findByLabelText("Message the agent");
 		await typeInLexicalEditor(staleComposer, "continue on the current session");
 		fireEvent.keyDown(staleComposer, { key: "Enter" });
@@ -2398,9 +2409,7 @@ describe("ChatWorkspace message actions", () => {
 
 		try {
 			render(<ChatWorkspace snapshot={snapshot} session={session} onSend={onSend} />);
-			expect(await screen.findByRole("status")).toHaveTextContent(
-				"Draft storage is unavailable",
-			);
+			expect(await screen.findByText(/Draft storage is unavailable/)).toBeInTheDocument();
 			const composer = await screen.findByLabelText("Message the agent");
 			await typeInLexicalEditor(composer, "send without draft storage");
 			fireEvent.keyDown(composer, { key: "Enter" });
@@ -2913,17 +2922,16 @@ describe("ChatWorkspace message actions", () => {
 		const common = { snapshot, onSend: vi.fn(), onStageAttachments };
 		const firstView = render(<ChatWorkspace {...common} />);
 		fireEvent.paste(screen.getByLabelText("Message the agent"), {
-			clipboardData: {
-				files: [new File([new Uint8Array([1, 2, 3])], "pending.txt", { type: "text/plain" })],
-				items: [],
-			},
+			clipboardData: fileClipboardData([
+				new File([new Uint8Array([1, 2, 3])], "pending.txt", { type: "text/plain" }),
+			]),
 		});
 		await waitFor(() => expect(onStageAttachments).toHaveBeenCalledTimes(1));
-		expect(screen.getByRole("status")).toHaveTextContent("Saving attachments");
+		expect(screen.getByText("Saving attachments… Wait before leaving this chat.")).toBeInTheDocument();
 		firstView.unmount();
 
 		render(<ChatWorkspace {...common} />);
-		expect(screen.getByRole("status")).toHaveTextContent("Saving attachments");
+		expect(screen.getByText("Saving attachments… Wait before leaving this chat.")).toBeInTheDocument();
 		await act(async () => finishStaging([".ao/attachments/attachment-pending.txt"]));
 
 		expect(await screen.findByLabelText("Remove pending.txt")).toBeInTheDocument();
@@ -2960,10 +2968,9 @@ describe("ChatWorkspace message actions", () => {
 		const common = { snapshot, onSend: vi.fn(), onStageAttachments };
 		const firstView = render(<ChatWorkspace {...common} />);
 		fireEvent.paste(screen.getByLabelText("Message the agent"), {
-			clipboardData: {
-				files: [new File([new Uint8Array([1])], "unsafe.txt", { type: "text/plain" })],
-				items: [],
-			},
+			clipboardData: fileClipboardData([
+				new File([new Uint8Array([1])], "unsafe.txt", { type: "text/plain" }),
+			]),
 		});
 		await waitFor(() => expect(onStageAttachments).toHaveBeenCalledTimes(1));
 		firstView.unmount();
@@ -2996,14 +3003,11 @@ describe("ChatWorkspace message actions", () => {
 		const firstView = render(<ChatWorkspace {...common} />);
 		const composer = screen.getByLabelText("Message the agent");
 		fireEvent.paste(composer, {
-			clipboardData: {
-				files: [
-					new File([new Uint8Array([137, 80, 78, 71])], "durable.png", {
-						type: "image/png",
-					}),
-				],
-				items: [],
-			},
+			clipboardData: fileClipboardData([
+				new File([new Uint8Array([137, 80, 78, 71])], "durable.png", {
+					type: "image/png",
+				}),
+			]),
 		});
 		await waitFor(() => expect(onStageAttachments).toHaveBeenCalledTimes(1));
 		await screen.findByLabelText("Remove durable.png");
@@ -3373,14 +3377,11 @@ describe("ChatWorkspace reviewer tabs", () => {
 		});
 		await typeInLexicalEditor(composer, "unsent reviewer-switch draft");
 		fireEvent.paste(composer, {
-			clipboardData: {
-				files: [
-					new File([new Uint8Array([137, 80, 78, 71])], "review.png", {
-						type: "image/png",
-					}),
-				],
-				items: [],
-			},
+			clipboardData: fileClipboardData([
+				new File([new Uint8Array([137, 80, 78, 71])], "review.png", {
+					type: "image/png",
+				}),
+			]),
 		});
 		await waitFor(() => expect(screen.getByLabelText("Remove review.png")).toBeInTheDocument());
 		const attachment = screen.getByLabelText("Remove review.png");
@@ -3849,7 +3850,9 @@ describe("durable queued edits", () => {
 		render(<ChatWorkspace snapshot={snapshot} onSend={send} onEditQueuedTurn={save} onStageAttachments={stage} />);
 		const composer = screen.getByLabelText("Message the agent");
 		await typeInLexicalEditor(composer, "ordinary prompt");
-		fireEvent.paste(composer, { clipboardData: { files: [new File(["file"], "note.txt", { type: "text/plain" })], items: [] } });
+		fireEvent.paste(composer, {
+			clipboardData: fileClipboardData([new File(["file"], "note.txt", { type: "text/plain" })]),
+		});
 		await waitFor(() => expect(stage).toHaveBeenCalledOnce());
 		fireEvent.keyDown(composer, { key: "Enter" });
 		expect(screen.getByRole("button", { name: "Edit queued message" })).toBeDisabled();
