@@ -234,6 +234,49 @@ func TestOpeningViewWakesNativeConversation(t *testing.T) {
 	}
 }
 
+func TestOpeningViewDoesNotReportStoppedDuringNativeWake(t *testing.T) {
+	h, _ := settledHibernationHarness(t, domain.TurnStateCompleted)
+	ctx := context.Background()
+	if hibernated, err := h.svc.HibernateChat(ctx, testSession); err != nil || !hibernated {
+		t.Fatalf("hibernate = %v, %v", hibernated, err)
+	}
+	wakeService := chatsvc.New(chatsvc.Options{
+		Store: h.st, Reader: fullSnapshotReader(h.st), Sessions: h.st,
+		Log: slog.New(slog.DiscardHandler), Now: h.now,
+	})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	wakeService.SetWakeCallback(func(ctx context.Context, id domain.SessionID) error {
+		rec, found, err := h.st.GetSession(ctx, id)
+		if err != nil || !found || rec.HibernatedAt == nil {
+			return fmt.Errorf("read sleeping session: found=%v err=%w", found, err)
+		}
+		if cleared, err := h.st.SetSessionHibernated(ctx, id, rec.Revision, nil); err != nil || !cleared {
+			return fmt.Errorf("clear sleeping marker: cleared=%v err=%w", cleared, err)
+		}
+		close(started)
+		<-release
+		return errors.New("provider unavailable")
+	})
+	result := make(chan error, 1)
+	go func() { result <- wakeService.SetChatView(ctx, testSession, "viewer-1", true) }()
+	select {
+	case <-started:
+	case err := <-result:
+		t.Fatalf("wake returned before native startup: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("native wake did not start")
+	}
+	snapshot, err := wakeService.Snapshot(ctx, testSession)
+	close(release)
+	if err != nil || snapshot.Controller != ports.ChatControllerHibernated {
+		t.Fatalf("snapshot during native wake = %q, %v", snapshot.Controller, err)
+	}
+	if err := <-result; err == nil {
+		t.Fatal("wake unexpectedly succeeded")
+	}
+}
+
 func TestOpeningViewWaitsForHibernationThenWakes(t *testing.T) {
 	h, conv := settledHibernationHarness(t, domain.TurnStateCompleted)
 	ctx := context.Background()

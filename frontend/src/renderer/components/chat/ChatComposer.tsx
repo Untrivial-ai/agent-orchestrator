@@ -184,7 +184,6 @@ export const ChatComposer = memo(function ChatComposer({
 	draftSessionId,
 	draftSessionIncarnation,
 	acceptedClientMessageIds,
-	onDraftInput,
 }: {
 	onSend: (
 		text: string,
@@ -271,8 +270,6 @@ export const ChatComposer = memo(function ChatComposer({
 	draftSessionIncarnation?: string;
 	/** Client ids already present in daemon-authoritative conversation history. */
 	acceptedClientMessageIds?: ReadonlySet<string>;
-	/** A user text edit can start waking a hibernated agent before send. */
-	onDraftInput?: () => void;
 }) {
 	const translateDraft = useChatDraftTranslation();
 	const draftScope = useMemo<ChatDraftScope | undefined>(
@@ -845,7 +842,6 @@ export const ChatComposer = memo(function ChatComposer({
 	}, [clearEditorView, editingQueuedTurnId]);
 
 	const onEditorChange = useCallback((snapshot: ComposerEditorSnapshot) => {
-		if (snapshot.hasText && snapshot.text !== textRef.current) onDraftInput?.();
 		textRef.current = snapshot.text;
 		onQueuedDraftChange?.(snapshot.text);
 		if (draftScope) {
@@ -885,7 +881,7 @@ export const ChatComposer = memo(function ChatComposer({
 			dismissedKeyRef.current = null;
 			setDismissedKey(null);
 		}
-	}, [draftScope, onDraftInput, onQueuedDraftChange]);
+	}, [draftScope, onQueuedDraftChange]);
 
 	const pick = useCallback((value: string) => {
 		const currentTrigger = triggerRef.current;

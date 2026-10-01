@@ -417,6 +417,17 @@ func (s *Service) wakeHibernated(ctx context.Context, id domain.SessionID) error
 	if s.wakeChat == nil {
 		return ErrNoController
 	}
+	s.wakeMu.Lock()
+	s.waking[id]++
+	s.wakeMu.Unlock()
+	defer func() {
+		s.wakeMu.Lock()
+		s.waking[id]--
+		if s.waking[id] == 0 {
+			delete(s.waking, id)
+		}
+		s.wakeMu.Unlock()
+	}()
 	if err := s.wakeChat(ctx, id); err != nil {
 		return err
 	}
@@ -424,4 +435,10 @@ func (s *Service) wakeHibernated(ctx context.Context, id domain.SessionID) error
 		return ErrNoController
 	}
 	return nil
+}
+
+func (s *Service) isWaking(id domain.SessionID) bool {
+	s.wakeMu.Lock()
+	defer s.wakeMu.Unlock()
+	return s.waking[id] > 0
 }

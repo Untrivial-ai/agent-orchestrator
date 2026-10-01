@@ -1214,7 +1214,7 @@ describe("ChatWorkspace timeline", () => {
 		expect(openShell).toHaveBeenCalledOnce();
 	});
 
-	it("keeps hibernated history and composer usable, waking once on the first edit", async () => {
+	it("keeps a sleeping conversation usable without exposing wake controls", async () => {
 		const user = userEvent.setup();
 		const resume = vi.fn();
 		const send = vi.fn();
@@ -1229,7 +1229,8 @@ describe("ChatWorkspace timeline", () => {
 			/>,
 		);
 
-		expect(screen.getByRole("status")).toHaveTextContent("Agent hibernated");
+		expect(screen.queryByText("Agent hibernated")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Wake agent" })).not.toBeInTheDocument();
 		expect(screen.getAllByText(/Check the worktree state/).length).toBeGreaterThan(0);
 		const composer = screen.getByRole("combobox", { name: "Message the agent" });
 		expect(composer).toHaveAttribute("contenteditable", "true");
@@ -1237,19 +1238,23 @@ describe("ChatWorkspace timeline", () => {
 		expect(resume).not.toHaveBeenCalled();
 
 		await typeInLexicalEditor(composer, " this work");
-		expect(resume).toHaveBeenCalledOnce();
-		view.rerender(<ChatWorkspace snapshot={snapshot} onResumeAgent={resume} onSend={send} resumingAgent />);
-		expect(screen.getByRole("status")).toHaveTextContent("Waking agent…");
-		view.rerender(<ChatWorkspace snapshot={{ ...snapshot, controller: { state: "stopped" } }} onResumeAgent={resume} onSend={send} resumingAgent />);
-		expect(screen.getByRole("status")).toHaveTextContent("Waking agent…");
+		expect(resume).not.toHaveBeenCalled();
+		view.rerender(<ChatWorkspace snapshot={{ ...snapshot, controller: { state: "stopped" } }} onResumeAgent={resume} onSend={send} resumeError="resume agent error" />);
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		expect(screen.queryByText("The agent controller stopped")).not.toBeInTheDocument();
+		expect(screen.queryByText("resume agent error")).not.toBeInTheDocument();
 		expect(composer).toHaveAttribute("contenteditable", "true");
 		await user.click(screen.getByRole("button", { name: "Send message" }));
 		await waitFor(() => expect(send).toHaveBeenCalledOnce());
 		expect(send.mock.calls[0]?.[0]).toBe("Continue this work");
+		expect(resume).not.toHaveBeenCalled();
+
+		view.rerender(<ChatWorkspace snapshot={{ ...snapshot, controller: { state: "ready" } }} onResumeAgent={resume} />);
+		view.rerender(<ChatWorkspace snapshot={{ ...snapshot, controller: { state: "stopped" } }} onResumeAgent={resume} />);
+		expect(screen.getByRole("alert")).toHaveTextContent("The agent controller stopped");
 	});
 
-	it("wakes when hibernation arrives just after a genuine draft edit", async () => {
+	it("does not race view activation when hibernation arrives after a draft edit", async () => {
 		const resume = vi.fn(async () => undefined);
 		const snapshot = { ...chatFixtureSettled, sessionId: "hibernate-race", controller: { state: "ready" as const } };
 		const view = render(<ChatWorkspace snapshot={snapshot} onResumeAgent={resume} />);
@@ -1257,62 +1262,9 @@ describe("ChatWorkspace timeline", () => {
 		expect(resume).not.toHaveBeenCalled();
 
 		view.rerender(<ChatWorkspace snapshot={{ ...snapshot, controller: { state: "hibernated" } }} onResumeAgent={resume} />);
-		await waitFor(() => expect(resume).toHaveBeenCalledOnce());
-	});
-
-	it("keeps an old unsent draft asleep", async () => {
-		const resume = vi.fn(async () => undefined);
-		const snapshot = { ...chatFixtureSettled, sessionId: "hibernate-old-draft", controller: { state: "ready" as const } };
-		let now = Date.now();
-		const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-		try {
-			const view = render(<ChatWorkspace snapshot={snapshot} onResumeAgent={resume} />);
-			await typeInLexicalEditor(screen.getByRole("combobox", { name: "Message the agent" }), "later");
-			now += 31_000;
-			view.rerender(<ChatWorkspace snapshot={{ ...snapshot, controller: { state: "hibernated" } }} onResumeAgent={resume} />);
-			expect(resume).not.toHaveBeenCalled();
-		} finally {
-			clock.mockRestore();
-		}
-	});
-
-	it("retries a failed prewarm on the next edit", async () => {
-		const resume = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);
-		render(
-			<ChatWorkspace
-				snapshot={{ ...chatFixtureSettled, sessionId: "hibernate-retry", controller: { state: "hibernated" } }}
-				onResumeAgent={resume}
-			/>,
-		);
-		const composer = screen.getByRole("combobox", { name: "Message the agent" });
-		await typeInLexicalEditor(composer, "x");
-		await waitFor(() => expect(resume).toHaveBeenCalledOnce());
-		await typeInLexicalEditor(composer, "y");
-		await waitFor(() => expect(resume).toHaveBeenCalledTimes(2));
-	});
-
-	it("retries a settled wake while the snapshot is still hibernated", async () => {
-		const user = userEvent.setup();
-		let finishFirstWake = () => {};
-		const firstWake = new Promise<void>((resolve) => { finishFirstWake = resolve; });
-		const resume = vi.fn().mockReturnValueOnce(firstWake).mockResolvedValue(undefined);
-		render(
-			<ChatWorkspace
-				snapshot={{ ...chatFixtureSettled, sessionId: "hibernate-stale-snapshot", controller: { state: "hibernated" } }}
-				onResumeAgent={resume}
-			/>,
-		);
-		const composer = screen.getByRole("combobox", { name: "Message the agent" });
-		await typeInLexicalEditor(composer, "x");
-		await typeInLexicalEditor(composer, "y");
-		await user.click(screen.getByRole("button", { name: "Wake agent" }));
-		expect(resume).toHaveBeenCalledOnce();
-
-		await act(async () => finishFirstWake());
-		await typeInLexicalEditor(composer, "z");
-		expect(resume).toHaveBeenCalledTimes(2);
-		await user.click(screen.getByRole("button", { name: "Wake agent" }));
-		expect(resume).toHaveBeenCalledTimes(3);
+		await typeInLexicalEditor(screen.getByRole("combobox", { name: "Message the agent" }), " again");
+		expect(resume).not.toHaveBeenCalled();
+		expect(screen.queryByRole("button", { name: "Wake agent" })).not.toBeInTheDocument();
 	});
 
 	// An asynchronous spawn puts the session on screen before its agent exists.

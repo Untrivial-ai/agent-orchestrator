@@ -2757,7 +2757,7 @@ func (m *Manager) WakeHibernatedChat(ctx context.Context, id domain.SessionID) e
 // Unlike RestoreWithMode, it preserves the existing worktree and terminal
 // identity and never changes the durable terminated flag as an intermediate
 // step.
-func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (RestoreResult, error) {
+func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (result RestoreResult, err error) {
 	if err := m.beginAgentResume(ctx, id); err != nil {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, err)
 	}
@@ -2848,6 +2848,42 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 		if !ok {
 			return RestoreResult{}, fmt.Errorf("resume agent %s: hibernation store unavailable", id)
 		}
+		asleepAt := rec.HibernatedAt
+		nativeID := rec.Metadata.ProviderConversationID
+		generation := rec.Metadata.ControllerGeneration
+		// Native resume can fail after the marker is cleared. Keep a failed
+		// automatic wake retryable and visibly asleep, including when the HTTP
+		// request was canceled while the provider was starting.
+		defer func() {
+			if err == nil || errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+				return
+			}
+			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			for range 3 {
+				fresh, found, readErr := m.store.GetSession(recoveryCtx, id)
+				if readErr != nil {
+					err = errors.Join(err, fmt.Errorf("restore hibernation marker: %w", readErr))
+					return
+				}
+				if !found || fresh.HibernatedAt != nil || fresh.IsTerminated ||
+					domain.NormalizeSessionMode(fresh.Mode) != domain.SessionModeChat ||
+					fresh.Metadata.ProviderConversationID != nativeID ||
+					fresh.Metadata.ControllerGeneration != generation ||
+					(m.chat != nil && m.chat.HasLiveChatController(id)) {
+					return
+				}
+				restored, restoreErr := store.SetSessionHibernated(recoveryCtx, id, fresh.Revision, asleepAt)
+				if restoreErr != nil {
+					err = errors.Join(err, fmt.Errorf("restore hibernation marker: %w", restoreErr))
+					return
+				}
+				if restored {
+					return
+				}
+			}
+			err = errors.Join(err, errors.New("restore hibernation marker: session changed concurrently"))
+		}()
 		for range 3 {
 			if rec.HibernatedAt == nil {
 				break

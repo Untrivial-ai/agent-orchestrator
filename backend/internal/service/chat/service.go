@@ -57,6 +57,8 @@ type Service struct {
 	hibernationEnabled func() bool
 	viewMu             sync.Mutex
 	viewLeases         map[domain.SessionID]map[string]time.Time
+	wakeMu             sync.Mutex
+	waking             map[domain.SessionID]int
 
 	mu               sync.RWMutex
 	controllers      map[domain.SessionID]*Controller
@@ -159,6 +161,7 @@ func New(opts Options) *Service {
 		startConfigs:           make(map[domain.ConversationOwner]StartConfig),
 		gates:                  make(map[domain.ConversationOwner]controllerGate),
 		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
+		waking:                 make(map[domain.SessionID]int),
 	}
 }
 
@@ -1511,10 +1514,14 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 		return Snapshot{}, fmt.Errorf("load conversation %s: %w", conversation.ID, err)
 	}
 
+	waking := s.isWaking(id)
 	state := idleControllerState(record)
+	if waking && !record.IsTerminated && state == ports.ChatControllerStopped {
+		state = ports.ChatControllerHibernated
+	}
 	var caps ports.ChatCapabilities
 	if controller, err := s.Controller(id); err == nil {
-		if live := controller.State(); record.HibernatedAt == nil || live != ports.ChatControllerStopped {
+		if live := controller.State(); (record.HibernatedAt == nil && !waking) || live != ports.ChatControllerStopped {
 			state = live
 			caps = controller.Capabilities()
 		}
@@ -1608,10 +1615,14 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load conversation page %s: %w", conversation.ID, err)
 	}
+	waking := s.isWaking(id)
 	state := idleControllerState(record)
+	if waking && !record.IsTerminated && state == ports.ChatControllerStopped {
+		state = ports.ChatControllerHibernated
+	}
 	var caps ports.ChatCapabilities
 	if controller, err := s.Controller(id); err == nil {
-		if live := controller.State(); record.HibernatedAt == nil || live != ports.ChatControllerStopped {
+		if live := controller.State(); (record.HibernatedAt == nil && !waking) || live != ports.ChatControllerStopped {
 			state = live
 			caps = controller.Capabilities()
 		}

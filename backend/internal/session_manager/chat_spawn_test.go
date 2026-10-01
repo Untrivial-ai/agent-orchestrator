@@ -850,7 +850,7 @@ func TestWakeHibernatedChatClearsMarkerBeforeNativeResume(t *testing.T) {
 	}
 }
 
-func TestWakeHibernatedChatRetriesFailedNativeResumeAfterMarkerCleared(t *testing.T) {
+func TestWakeHibernatedChatRetainsMarkerAfterFailedNativeResume(t *testing.T) {
 	providerErr := errors.New("provider failed to start")
 	launcher := &recordingLauncher{startErr: providerErr}
 	mgr, store, _ := newChatManager(launcher)
@@ -863,7 +863,7 @@ func TestWakeHibernatedChatRetriesFailedNativeResumeAfterMarkerCleared(t *testin
 	if err := mgr.WakeHibernatedChat(context.Background(), rec.ID); !errors.Is(err, providerErr) {
 		t.Fatalf("first wake error = %v, want provider failure", err)
 	}
-	if got := store.sessions[rec.ID]; got.HibernatedAt != nil || got.IsTerminated || got.Metadata.ProviderConversationID != rec.Metadata.ProviderConversationID {
+	if got := store.sessions[rec.ID]; got.HibernatedAt == nil || got.IsTerminated || got.Metadata.ProviderConversationID != rec.Metadata.ProviderConversationID {
 		t.Fatalf("failed wake lost retryable native identity: %+v", got)
 	}
 	launcher.startErr = nil
