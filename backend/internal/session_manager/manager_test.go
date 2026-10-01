@@ -2227,6 +2227,30 @@ func TestResumeAgent_MissingWorkspaceIsCheckedAfterLifecycleState(t *testing.T) 
 	}
 }
 
+func TestResumeAgent_RestoresShutdownSavedWorkspaceBeforeCheckingPath(t *testing.T) {
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-mer-1": true}}
+	runtime := &fakeRestartRuntime{fakeRuntime: baseRuntime}
+	agent := supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex", "resume", "agent-x"}}}
+	m, st, ws := newExitedResumeManager(t, runtime, agent)
+	rec := st.sessions["mer-1"]
+	rec.Metadata.WorkspacePath = filepath.Join(t.TempDir(), "removed-worktree")
+	st.sessions[rec.ID] = rec
+	st.worktrees[rec.ID] = []domain.SessionWorktreeRecord{{
+		SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName, Branch: rec.Metadata.Branch,
+		WorktreePath: rec.Metadata.WorkspacePath, State: "removed",
+	}}
+
+	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); err != nil {
+		t.Fatalf("ResumeAgentWithMode: %v", err)
+	}
+	if len(ws.restoreConfigs) != 1 || ws.restoreConfigs[0].Path != rec.Metadata.WorkspacePath {
+		t.Fatalf("restore configs = %+v, want one restore of removed path %q", ws.restoreConfigs, rec.Metadata.WorkspacePath)
+	}
+	if got := st.sessions[rec.ID].Metadata.WorkspacePath; got != "/ws/mer-1" {
+		t.Fatalf("restored workspace path = %q, want adapter path /ws/mer-1", got)
+	}
+}
+
 func TestResumeAgent_RestartFailureLeavesSessionExited(t *testing.T) {
 	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-mer-1": true}}
 	runtime := &fakeRestartRuntime{fakeRuntime: baseRuntime, restartErr: errors.New("respawn failed")}

@@ -2739,18 +2739,46 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 		}
 	}
 	workspacePath := strings.TrimSpace(rec.Metadata.WorkspacePath)
+	workspaceRestored := false
+	if rec.Activity.State == domain.ActivityExited {
+		// Resume may follow a daemon shutdown that removed the session worktree.
+		// A shutdown-saved marker means the workspace adapter can restore it, so
+		// don't reject the stale path before giving that restore path a chance.
+		rows, err := m.store.ListSessionWorktrees(ctx, rec.ID)
+		if err != nil {
+			return RestoreResult{}, fmt.Errorf("resume agent %s: list saved worktrees: %w", id, err)
+		}
+		if len(restorableWorktreeRows(rows)) > 0 {
+			project, found, err := m.store.GetProject(ctx, string(rec.ProjectID))
+			if err != nil {
+				return RestoreResult{}, err
+			}
+			if !found {
+				return RestoreResult{}, ErrNotFound
+			}
+			ws, err := m.restoreSessionWorkspace(ctx, project, rec)
+			if err != nil {
+				return RestoreResult{}, fmt.Errorf("resume agent %s: restore workspace: %w", id, err)
+			}
+			workspacePath = ws.Path
+			rec.Metadata.WorkspacePath = ws.Path
+			workspaceRestored = true
+		}
+	}
 	if workspacePath == "" {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrSessionWorkspaceUnavailable)
 	}
-	workspaceInfo, statErr := os.Stat(workspacePath)
-	if statErr != nil {
-		if errors.Is(statErr, os.ErrNotExist) {
+	if !workspaceRestored {
+		workspaceInfo, statErr := os.Stat(workspacePath)
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrSessionWorkspaceUnavailable)
+			}
+			return RestoreResult{}, fmt.Errorf("resume agent %s: inspect workspace: %w", id, statErr)
+		}
+		if !workspaceInfo.IsDir() {
 			return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrSessionWorkspaceUnavailable)
 		}
-		return RestoreResult{}, fmt.Errorf("resume agent %s: inspect workspace: %w", id, statErr)
-	}
-	if !workspaceInfo.IsDir() {
-		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrSessionWorkspaceUnavailable)
 	}
 	return m.resumeAgentRecordWithPolicy(ctx, "resume agent", rec, false, false)
 }
@@ -3557,7 +3585,7 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 				m.finishStatusRecovery(ctx, rec, err)
 			} else {
 				m.beginStatusRecovery(rec.ID)
-				m.runInBackground(func() { m.retryLiveRecovery(ctx, rec.ID) })
+				m.runInBackground(func() { m.retryLiveRecovery(m.backgroundContext, rec.ID) })
 			}
 		}
 		m.logger.Warn("reconcile: could not fence live sessions", "error", err)
@@ -3571,7 +3599,7 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 	for _, rec := range candidates {
 		if _, ok := acquiredSet[rec.ID]; !ok {
 			m.beginStatusRecovery(rec.ID)
-			m.runInBackground(func() { m.retryLiveRecovery(ctx, rec.ID) })
+			m.runInBackground(func() { m.retryLiveRecovery(m.backgroundContext, rec.ID) })
 			m.logger.Warn("reconcile: session remains input-gated pending unambiguous agent-switch recovery", "sessionID", rec.ID)
 			continue
 		}
@@ -3601,7 +3629,7 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 				if err != nil {
 					m.logger.Error("reconcile: live pass failed, skipping", "sessionID", rec.ID, "error", err)
 					if !isUnrecoverableStartupRecoveryError(err) {
-						m.runInBackground(func() { m.retryLiveRecovery(ctx, rec.ID) })
+						m.runInBackground(func() { m.retryLiveRecovery(m.backgroundContext, rec.ID) })
 						continue
 					}
 				}
@@ -3727,7 +3755,7 @@ func (m *Manager) restoreAllRecords(ctx context.Context, recs []domain.SessionRe
 			continue
 		}
 		m.logger.Warn("restore-all: session remains in recovery; retrying in background", "sessionID", rec.ID, "error", err)
-		m.runInBackground(func() { m.retryRestoredRecovery(ctx, rec.ID) })
+		m.runInBackground(func() { m.retryRestoredRecovery(m.backgroundContext, rec.ID) })
 	}
 }
 
