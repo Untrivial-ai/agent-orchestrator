@@ -3,6 +3,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { editorHandoffQueryKey } from "../hooks/useEditorHandoff";
 import { shellTerminalsQueryKey, type ShellTerminal } from "../hooks/useShellTerminals";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import type { AttachableTerminal } from "../hooks/useTerminalSession";
@@ -258,10 +259,19 @@ function renderPane(
 	onInputRequestResult?: (id: number, accepted: boolean) => void,
 	terminalTarget?: TerminalTarget,
 	onTerminalContentReadyChange?: (ready: boolean) => void,
+	workspaceAvailable = true,
+	unavailableCode?: string,
 ) {
 	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-	const previousAO = window.ao;
-	window.ao = {} as typeof window.ao;
+	if (!window.ao) throw new Error("AO bridge is required to render the terminal pane");
+	const getEditorHandoffState = vi
+		.spyOn(window.ao.editorHandoff, "getState")
+		.mockResolvedValue({
+			targets: [],
+			preferredEditorId: "cursor",
+			workspaceAvailable,
+			...(unavailableCode ? { unavailableCode } : {}),
+		});
 	const result = render(
 		<QueryClientProvider client={queryClient}>
 			<TooltipProvider>
@@ -280,9 +290,10 @@ function renderPane(
 	);
 	return {
 		...result,
+		getEditorHandoffState,
 		queryClient,
 		restore: () => {
-			window.ao = previousAO;
+			getEditorHandoffState.mockRestore();
 		},
 	};
 }
@@ -990,7 +1001,7 @@ describe("terminal restore", () => {
 			terminalState.value = "exited";
 			const view = renderPane({ ...session, ...exited });
 			try {
-				await userEvent.click(screen.getByRole("button", { name: "Resume agent" }));
+				await userEvent.click(await screen.findByRole("button", { name: "Resume agent" }));
 				await waitFor(() =>
 					expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/resume-agent", {
 						params: { path: { sessionId: session.id } },
@@ -1004,17 +1015,17 @@ describe("terminal restore", () => {
 		// An agent can exit while its pane survives on a keep-alive, so the mux
 		// never reports "exited". Without sessionAgentExited in showEndedState the
 		// whole strip stays hidden and the only recovery control goes with it.
-		it("shows the strip even when the mux never reported an exit", () => {
+		it("shows the strip even when the mux never reported an exit", async () => {
 			terminalState.value = "attached";
 			const view = renderPane({ ...orchestrator, ...exited });
 			try {
-				expect(screen.getByRole("button", { name: "Resume agent" })).toBeInTheDocument();
+				expect(await screen.findByRole("button", { name: "Resume agent" })).toBeInTheDocument();
 			} finally {
 				view.restore();
 			}
 		});
 
-		it("does not show startup copy when an exited session has no terminal handle", () => {
+		it("does not show startup copy when an exited session has no terminal handle", async () => {
 			terminalState.value = "idle";
 			const view = renderPane({
 				...worker,
@@ -1024,7 +1035,7 @@ describe("terminal restore", () => {
 				terminalHandleId: undefined,
 			});
 			try {
-				expect(screen.getByRole("button", { name: "Resume agent" })).toBeInTheDocument();
+				expect(await screen.findByRole("button", { name: "Resume agent" })).toBeInTheDocument();
 				expect(screen.queryByText("Starting session")).not.toBeInTheDocument();
 				expect(screen.queryByText(/Preparing the worker terminal/)).not.toBeInTheDocument();
 			} finally {
@@ -1051,7 +1062,7 @@ describe("terminal restore", () => {
 
 		// Cloud sessions recover through the control plane; the local daemon has
 		// never heard of them, so this button must not appear for one.
-		it("does not offer resume for a cloud session", () => {
+		it("does not offer resume for a cloud session", async () => {
 			terminalState.value = "exited";
 			const view = renderPane({
 				...worker,
@@ -1065,7 +1076,7 @@ describe("terminal restore", () => {
 			}
 		});
 
-		it("offers restore and not resume once the row is terminated", () => {
+		it("offers restore and not resume once the row is terminated", async () => {
 			terminalState.value = "exited";
 			const view = renderPane({
 				...worker,
@@ -1076,7 +1087,50 @@ describe("terminal restore", () => {
 			});
 			try {
 				expect(screen.getByRole("button", { name: "Restore session" })).toBeInTheDocument();
+				await waitFor(() =>
+					expect(view.queryClient.getQueryData(editorHandoffQueryKey(worker.id))).toMatchObject({
+						workspaceAvailable: true,
+					}),
+				);
 				expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+			} finally {
+				view.restore();
+			}
+		});
+
+		it("does not offer resume when the session worktree is unavailable", async () => {
+			terminalState.value = "exited";
+			const view = renderPane(
+				{ ...worker, ...exited },
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				false,
+				"SESSION_WORKSPACE_NOT_FOUND",
+			);
+			try {
+				await waitFor(() =>
+					expect(view.queryClient.getQueryData(editorHandoffQueryKey(worker.id))).toMatchObject({
+						workspaceAvailable: false,
+					}),
+				);
+				expect(screen.queryByRole("button", { name: "Resume agent" })).not.toBeInTheDocument();
+			} finally {
+				view.restore();
+			}
+		});
+
+		it("keeps Resume available when the workspace probe has no definitive code", async () => {
+			terminalState.value = "exited";
+			const view = renderPane({ ...worker, ...exited }, undefined, undefined, undefined, undefined, false);
+			try {
+				await waitFor(() =>
+					expect(view.queryClient.getQueryData(editorHandoffQueryKey(worker.id))).toMatchObject({
+						workspaceAvailable: false,
+					}),
+				);
+				expect(await screen.findByRole("button", { name: "Resume agent" })).toBeInTheDocument();
 			} finally {
 				view.restore();
 			}

@@ -2091,7 +2091,7 @@ function ControllerBanner({
 						) : (
 							<>
 								<span className="text-[11px] leading-snug text-muted-foreground">
-									History is kept. Resume the agent or open a shell in the same worktree.
+									History is kept. Try reconnecting, or continue from a shell in the same worktree.
 								</span>
 								{resumeError || shellError ? (
 									<span className="text-[11px] leading-snug text-destructive">
@@ -2107,7 +2107,7 @@ function ControllerBanner({
 											onClick={onResume}
 											disabled={resuming}
 										>
-											{resuming ? "Resuming…" : "Resume agent"}
+											{resuming ? "Resuming…" : "Try resuming"}
 										</Button>
 									) : null}
 									{onOpenShell ? (
@@ -2118,7 +2118,7 @@ function ControllerBanner({
 											onClick={onOpenShell}
 											disabled={openingShell}
 										>
-											{openingShell ? "Opening shell…" : "Open shell"}
+											{openingShell ? "Opening shell…" : "Try in shell"}
 										</Button>
 									) : null}
 								</div>
