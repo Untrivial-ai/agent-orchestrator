@@ -570,7 +570,7 @@ func TestSubmitEmitsIdempotentReviewResultNotification(t *testing.T) {
 	svc := New(nil, st, WithNotificationSink(sink))
 
 	for range 2 {
-		if _, err := svc.Submit(context.Background(), "mer-1", "run-1", domain.VerdictApproved, "looks good", "987"); err != nil {
+		if _, err := svc.Submit(context.Background(), "mer-1", "run-1", domain.VerdictApproved, "looks good", nil); err != nil {
 			t.Fatalf("Submit: %v", err)
 		}
 	}
@@ -591,7 +591,7 @@ func TestSubmitEmitsChangesRequestedNotification(t *testing.T) {
 	sink := &fakeNotificationSink{}
 	svc := New(nil, st, WithNotificationSink(sink))
 
-	if _, err := svc.Submit(context.Background(), "mer-1", "run-2", domain.VerdictChangesRequested, "fix it", ""); err != nil {
+	if _, err := svc.Submit(context.Background(), "mer-1", "run-2", domain.VerdictChangesRequested, "fix it", nil); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 	if len(sink.intents) != 1 || sink.intents[0].Type != domain.NotificationReviewChangesRequested {
