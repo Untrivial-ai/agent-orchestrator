@@ -255,23 +255,8 @@ type MessageEditDraft = ChatDraftInlineEdit;
 function useQueuedMessages(snapshot: ConversationSnapshot): QueuedMessage[] {
 	const previous = useRef<QueuedMessage[]>([]);
 	return useMemo(() => {
-		const queuedTurnIds = new Set(
-			snapshot.turns.filter((turn) => turn.state === "queued").map((turn) => turn.id),
-		);
-		// The first prompt belongs in the user timeline immediately. Do not briefly
-		// move an otherwise empty welcome-state conversation into the queue dock while
-		// the daemon is acknowledging that first request.
-		const hasEarlierHumanMessage = snapshot.items.some(
-			(item) =>
-				item.kind === "message" &&
-				item.role === "user" &&
-				item.origin === "human" &&
-				(!item.turnId || !queuedTurnIds.has(item.turnId)),
-		);
-		if (!hasEarlierHumanMessage) {
-			previous.current = [];
-			return previous.current;
-		}
+		// Keep first-turn queued prompts in the timeline for the welcome flow, while
+		// also retaining them in the dock so users can edit or cancel before ack.
 		const messagesByTurn = new Map(
 			snapshot.items
 				.filter(
@@ -301,6 +286,18 @@ function useQueuedMessages(snapshot: ConversationSnapshot): QueuedMessage[] {
 		previous.current = next;
 		return next;
 	}, [snapshot.items, snapshot.turns]);
+}
+
+function hasEarlierNonQueuedUserMessage(snapshot: ConversationSnapshot): boolean {
+	const queuedTurnIds = new Set(
+		snapshot.turns.filter((turn) => turn.state === "queued").map((turn) => turn.id),
+	);
+	return snapshot.items.some(
+		(item) =>
+			item.kind === "message" &&
+			item.role === "user" &&
+			(!item.turnId || !queuedTurnIds.has(item.turnId)),
+	);
 }
 
 export interface ChatWorkspaceProps {
@@ -1550,7 +1547,7 @@ function ChatWorkspaceContent({
 										sessionId={snapshot.sessionId}
 										servers={brokenServers}
 										placement={conversationEmpty ? "below" : "above"}
-										active={!reviewerActive && !shellActive}
+									active={!workspaceActiveTabKey && !reviewerActive && !shellActive}
 									/>
 									<ChatComposer
 									key={`${draftScopeKey}:${queueEdit ? `${queueEdit.turnId}:${queueEdit.ownerId ?? queueEdit.expectedRevision ?? "legacy"}` : "composer"}`}
@@ -2812,25 +2809,19 @@ function Timeline({
 		[items],
 	);
 	const timelineItems = useStableList([...durableItems, ...localItems], itemKey, sameContent);
-	const hasEarlierHumanMessage = timelineItems.some(
-		(item) =>
-			item.kind === "message" &&
-			item.role === "user" &&
-			item.origin === "human" &&
-			(!item.turnId || !queued.has(item.turnId)),
-	);
+	const hasEarlierUserMessage = hasEarlierNonQueuedUserMessage(snapshot);
 	const grouped = useMemo(() => {
 		const hiddenTurns = hiddenTimelineTurnIds(snapshot);
 		// The queue dock deliberately stays out of the welcome-state flow. Keep a
 		// first queued prompt in the timeline instead, otherwise both surfaces hide
 		// the only user message while an asynchronously spawned controller starts.
-		if (!hasEarlierHumanMessage) {
+		if (!hasEarlierUserMessage) {
 			for (const turnId of queued) hiddenTurns.delete(turnId);
 		}
 		return groupByTurn({ ...snapshot, items: timelineItems }).filter(
 			(group) => !group.turnId || !hiddenTurns.has(group.turnId),
 		);
-	}, [hasEarlierHumanMessage, queued, snapshot, timelineItems]);
+	}, [hasEarlierUserMessage, queued, snapshot, timelineItems]);
 	const groups = useStableList(grouped, groupKey, sameGroup);
 	const streamingContentRevision = timelineItems
 		.filter((item): item is ConversationMessage =>
@@ -3040,7 +3031,7 @@ function Timeline({
 		// Wheel intent precedes the browser's scroll event. Unpin immediately on an
 		// upward gesture so a concurrent stream commit cannot yank the reader back
 		// to the bottom before onScroll gets a chance to update pinned state.
-		if (event.deltaY < 0 && pinnedRef.current) {
+		if (event.deltaY < 0 && pinnedRef.current && (scroller.current?.scrollTop ?? 0) > 0) {
 			pinnedRef.current = false;
 			setPinned(false);
 		}
@@ -3250,7 +3241,7 @@ function Timeline({
 									canRollback={Boolean(onRollback && group.turnId && (group.rollbackable || group.live))}
 									rollbackDisabled={rollbackDisabled}
 									busy={busy}
-									queued={Boolean(group.turnId && queued.has(group.turnId) && hasEarlierHumanMessage)}
+										queued={Boolean(group.turnId && queued.has(group.turnId) && hasEarlierUserMessage)}
 								/>
 							</div>
 						);
@@ -3562,7 +3553,6 @@ const TurnGroup = memo(function TurnGroup({
 				localEchoClientMessageIds={localEchoClientMessageIds}
 				showCopy={run.items[0]?.id === copyableMessageId}
 				live={group.live}
-				liveStatus={false}
 				onRollback={
 					canRollback && run.items[0]?.id === copyableMessageId
 						? () => onRollback(group.turnId as string)
@@ -3724,7 +3714,6 @@ function TimelineItem({
 	localEchoClientMessageIds,
 	showCopy,
 	live,
-	liveStatus,
 	onRollback,
 	rollbackDisabled,
 }: {
@@ -3760,7 +3749,6 @@ function TimelineItem({
 	/** This is the final assistant response of a turn that has finished. */
 	showCopy?: boolean;
 	live?: boolean;
-	liveStatus?: boolean;
 	/** Undo this finished turn from the answer that owns its copy action. */
 	onRollback?: () => void;
 	/** Keep the action row mounted while another turn is running. */
@@ -3775,7 +3763,6 @@ function TimelineItem({
 					message={item}
 					showCopy={showCopy}
 					live={live}
-					liveStatus={liveStatus}
 					onRollback={onRollback}
 					rollbackDisabled={rollbackDisabled}
 				/>

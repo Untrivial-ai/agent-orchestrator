@@ -735,7 +735,7 @@ export const ChatComposer = memo(function ChatComposer({
 		setTextDraftPersistenceError(null);
 		setDeliveryRecoveryNotice(null);
 		setSteerOutcomeNotice(
-			"chat.draft.abandonedSteer",
+		durableDelivery.kind === "send" ? "chat.draft.abandonedSend" : "chat.draft.abandonedSteer",
 		);
 	}, [draftScope, durableDelivery, onAbandonDelivery]);
 
@@ -1152,7 +1152,16 @@ export const ChatComposer = memo(function ChatComposer({
 					// The parent leaves this editor only after proving durable cleanup.
 					return;
 				} else if (nativePayloads.length > 0) {
-					await onSend(message, nativePayloads);
+					if (onAbandonDelivery) {
+						const volatileDelivery = volatileDeliveryRef.current?.requestText === message
+							? volatileDeliveryRef.current
+							: { requestText: message, clientMessageId: crypto.randomUUID() };
+						volatileDeliveryRef.current = volatileDelivery;
+						await onSend(message, nativePayloads, volatileDelivery.clientMessageId);
+						volatileDeliveryRef.current = undefined;
+					} else {
+						await onSend(message, nativePayloads);
+					}
 				} else {
 					if (onAbandonDelivery) {
 						const volatileDelivery = volatileDeliveryRef.current?.requestText === message
@@ -1290,6 +1299,10 @@ export const ChatComposer = memo(function ChatComposer({
 				if (cleared.ok) {
 					durableDeliveryRef.current = undefined;
 					const restoredText = cleared.draft.composer.text;
+					const restoredSeedText = draftSeed?.text ?? restoredText;
+					restoredSeedKey.current = editingQueuedTurnId
+						? draftSeedId
+						: JSON.stringify([draftSeedId, restoredSeedText]);
 					textRef.current = restoredText;
 					hasTextRef.current = restoredText.trim().length > 0;
 					setHasText(hasTextRef.current);

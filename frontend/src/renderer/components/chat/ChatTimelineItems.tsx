@@ -879,18 +879,14 @@ export function AssistantMessage({
 	message,
 	showCopy = false,
 	live = false,
-	liveStatus = true,
 	onRollback,
 	rollbackDisabled = false,
-	durationMs,
 }: {
 	message: ConversationMessage;
 	/** The final answer owns the copy action; it stays available while that answer streams. */
 	showCopy?: boolean;
 	/** The enclosing turn is still active, even if its last text chunk has landed. */
 	live?: boolean;
-	/** When false, the enclosing turn owns the single live status row. */
-	liveStatus?: boolean;
 	/**
 	 * Discard this turn and everything after it. Lives next to copy so the finished
 	 * answer owns both "keep this" and "undo from here".
@@ -898,14 +894,11 @@ export function AssistantMessage({
 	onRollback?: () => void;
 	/** Keep the rollback action mounted while another response is streaming. */
 	rollbackDisabled?: boolean;
-	/** How long the turn took; sits next to rollback on the action row. */
-	durationMs?: number;
 }) {
 	const visibleText = useSmoothStreamingText(message);
 	const renderingStreaming = message.streaming || visibleText.length < message.text.length;
-	const hasDuration = durationMs !== undefined && durationMs > 0;
-	const showLiveStatus = liveStatus && (live || (renderingStreaming && (showCopy || Boolean(onRollback))));
-	const showActions = !live && !renderingStreaming && (showCopy || Boolean(onRollback) || hasDuration);
+	const showLiveStatus = live || (renderingStreaming && (showCopy || Boolean(onRollback)));
+	const showActions = !live && !renderingStreaming && (showCopy || Boolean(onRollback));
 	return (
 		<div className="group/message relative" data-chat-streaming-output={renderingStreaming ? "" : undefined}>
 			<ChatMarkdown text={visibleText} streaming={renderingStreaming} />
@@ -943,7 +936,6 @@ export function AssistantMessage({
 							<TooltipContent side="bottom">Roll back to here</TooltipContent>
 						</Tooltip>
 					) : null}
-					{hasDuration ? <TurnDuration durationMs={durationMs} /> : null}
 					<span
 						className="w-auto shrink-0 px-1 text-[11px] tabular-nums text-muted-foreground/75 opacity-0 transition-opacity duration-150 ease-out group-hover/message:opacity-100 group-focus-within/message:opacity-100 motion-reduce:transition-none"
 						aria-label={`Sent ${formatMessageTimestamp(message.createdAt)}`}

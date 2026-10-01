@@ -547,11 +547,22 @@ describe("ChatWorkspace steering", () => {
 		expect(onCancelQueuedTurn).toHaveBeenCalledWith("queued-1");
 	});
 
-	it("keeps a first queued prompt out of the queue dock", () => {
+	it("keeps queued prompts editable and cancellable after automation user activity", () => {
 		const snapshot = {
 			...chatFixture,
 			turns: [{ id: "queued-first", state: "queued" as const, requestedAt: "2026-08-11T10:01:00Z" }],
 			items: [
+				{
+					kind: "message" as const,
+					id: "automation-relay",
+					sequence: 0,
+					revision: 0,
+					role: "user" as const,
+					origin: "automation" as const,
+					text: "automated context",
+					streaming: false,
+					createdAt: "2026-08-11T10:00:00Z",
+				},
 				{
 					kind: "message" as const,
 					id: "queued-first-message",
@@ -567,9 +578,18 @@ describe("ChatWorkspace steering", () => {
 			],
 		};
 
-		render(<ChatWorkspace snapshot={snapshot} />);
-		expect(screen.queryByTestId("queued-message-dock")).not.toBeInTheDocument();
-		expect(screen.getByRole("log")).toHaveTextContent("first prompt");
+		const onCancelQueuedTurn = vi.fn().mockResolvedValue(undefined);
+		render(
+			<ChatWorkspace
+				snapshot={snapshot}
+				onCancelQueuedTurn={onCancelQueuedTurn}
+				onEditQueuedTurn={vi.fn()}
+			/>,
+		);
+		const dock = screen.getByTestId("queued-message-dock");
+		expect(within(dock).getByRole("button", { name: "Edit queued message" })).toBeVisible();
+		expect(within(dock).getByRole("button", { name: "Delete queued message" })).toBeVisible();
+		expect(within(dock).getByText("first prompt")).toBeVisible();
 	});
 
 	it("keeps queued messages docked after the conversation branches", () => {

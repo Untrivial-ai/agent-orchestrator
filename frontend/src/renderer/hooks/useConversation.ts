@@ -24,6 +24,7 @@ import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
 import { DEFINITIVE_CHAT_SEND_REJECTIONS } from "../lib/chat-send-errors";
 import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
+import { editorHandoffQueryKey } from "./useEditorHandoff";
 import type {
 	ActivityKind,
 	ApprovalMode,
@@ -708,6 +709,11 @@ export function useConversationCommands(sessionId: string | undefined) {
 		onSuccess: () => {
 			invalidate();
 			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+		},
+		onError: (error) => {
+			if (apiErrorCode(error) === "SESSION_WORKSPACE_NOT_FOUND" && sessionId) {
+				void queryClient.invalidateQueries({ queryKey: editorHandoffQueryKey(sessionId) });
+			}
 		},
 	});
 

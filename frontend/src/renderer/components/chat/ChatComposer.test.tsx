@@ -1645,7 +1645,15 @@ describe("attachments", () => {
 	it("keeps attachments after a failed send and reuses their staged paths on retry", async () => {
 		const stage = vi.fn().mockResolvedValue([".ao/attachments/attachment-retry.png"]);
 		const onSend = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);
-		render(<ChatComposer onSend={onSend} onStageAttachments={stage} />);
+		const onAbandonDelivery = vi.fn();
+		render(
+			<ChatComposer
+				onSend={onSend}
+				onAbandonDelivery={onAbandonDelivery}
+				onStageAttachments={stage}
+				nativeImages
+			/>,
+		);
 		const field = screen.getByLabelText("Message the agent") as HTMLElement;
 
 		fireEvent.paste(field, { clipboardData: clipboardData([png()]) });
@@ -1654,11 +1662,14 @@ describe("attachments", () => {
 		await userEvent.keyboard("{Enter}");
 
 		expect(await screen.findByRole("alert")).toHaveTextContent("attachments were kept");
+		const clientMessageId = onSend.mock.calls[0]?.[2];
+		expect(clientMessageId).toEqual(expect.any(String));
 		expect(field.textContent).toBe("inspect this");
 		expect(screen.getAllByRole("listitem")).toHaveLength(1);
 
 		await userEvent.keyboard("{Enter}");
 		await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+		expect(onSend.mock.calls[1]?.[2]).toBe(clientMessageId);
 		expect(stage).toHaveBeenCalledTimes(1);
 		await waitFor(() => expect(screen.queryByRole("listitem")).not.toBeInTheDocument());
 		expect(field.textContent).toBe("");
