@@ -1859,12 +1859,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 				!shellTerminals.some((shell) => shell.handleId === activeShellTerminalHandleId))) &&
 		!reviewerChatId &&
 		!fileTabs.activePath;
-	const [failedChatViewWake, setFailedChatViewWake] = useState<{ sessionId: string; message: string } | null>(null);
-	const automaticWakeError = chatViewActive && failedChatViewWake?.sessionId === sessionId
-		? failedChatViewWake.message
-		: undefined;
 	useEffect(() => {
-		setFailedChatViewWake(null);
 		if (!chatViewActive) return;
 		const viewId = crypto.randomUUID();
 		let left = false;
@@ -1885,19 +1880,12 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 			});
 			return pending;
 		};
-		const reportWakeError = (error: unknown) => {
+		const refreshAfterWakeError = () => {
 			if (left) return;
-			const code = apiErrorCode(error);
-			const message = code === "CHAT_RESUME_FAILED"
-				? "The agent couldn’t restore the saved conversation. Your messages are still here."
-				: code === "CHAT_AUTH_REQUIRED"
-					? "Sign in to the agent provider, then reconnect."
-					: "Check the agent connection, then reconnect.";
-			setFailedChatViewWake({ sessionId, message });
 			void queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId) });
 		};
-		void setViewActive(true).catch(reportWakeError);
-		const renewal = window.setInterval(() => { void setViewActive(true).catch(reportWakeError); }, 10_000);
+		void setViewActive(true).catch(refreshAfterWakeError);
+		const renewal = window.setInterval(() => { void setViewActive(true).catch(refreshAfterWakeError); }, 10_000);
 		return () => {
 			left = true;
 			window.clearInterval(renewal);
@@ -2345,7 +2333,6 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 								<SessionChatSurface
 									key={session.id}
 									session={session}
-									automaticWakeError={automaticWakeError}
 									reviewerTerminal={reviewerTerminal}
 									reviewerChat={reviewerChat}
 									reviewerChatSelected={Boolean(reviewerChatId)}

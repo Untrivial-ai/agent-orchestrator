@@ -1231,6 +1231,7 @@ describe("ChatWorkspace timeline", () => {
 
 		expect(screen.queryByText("Agent hibernated")).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Wake agent" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Reconnect" })).not.toBeInTheDocument();
 		expect(screen.getAllByText(/Check the worktree state/).length).toBeGreaterThan(0);
 		const composer = screen.getByRole("combobox", { name: "Message the agent" });
 		expect(composer).toHaveAttribute("contenteditable", "true");
@@ -1252,55 +1253,6 @@ describe("ChatWorkspace timeline", () => {
 		view.rerender(<ChatWorkspace snapshot={{ ...snapshot, controller: { state: "ready" } }} onResumeAgent={resume} />);
 		view.rerender(<ChatWorkspace snapshot={{ ...snapshot, controller: { state: "stopped" } }} onResumeAgent={resume} />);
 		expect(screen.getByRole("alert")).toHaveTextContent("The agent controller stopped");
-	});
-
-	it("shows recovery only after an automatic wake actually fails", async () => {
-		const resume = vi.fn();
-		const send = vi.fn();
-		const snapshot = { ...chatFixtureSettled, controller: { state: "hibernated" as const } };
-		const view = render(
-			<ChatWorkspace
-				snapshot={snapshot}
-				automaticWakeError="The provider could not reopen the saved conversation."
-				onResumeAgent={resume}
-				onSend={send}
-			/>,
-		);
-
-		expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t reconnect");
-		expect(screen.getByRole("combobox", { name: "Message the agent" })).toHaveAttribute("contenteditable", "true");
-		await userEvent.setup().click(screen.getByRole("button", { name: "Reconnect" }));
-		expect(resume).toHaveBeenCalledOnce();
-		expect(send).not.toHaveBeenCalled();
-		view.rerender(
-			<ChatWorkspace
-				snapshot={snapshot}
-				automaticWakeError="The provider could not reopen the saved conversation."
-				onResumeAgent={resume}
-				resumingAgent
-			/>,
-		);
-		expect(screen.getByRole("status")).toHaveTextContent("Reconnecting…");
-		expect(screen.getByRole("button", { name: "Connecting…" })).toBeDisabled();
-		view.rerender(
-			<ChatWorkspace
-				snapshot={snapshot}
-				automaticWakeError="The provider could not reopen the saved conversation."
-				onResumeAgent={resume}
-				resumeError="resume agent: chat driver unavailable"
-			/>,
-		);
-		expect(screen.getByRole("alert")).toHaveTextContent("Still couldn’t reconnect");
-		expect(screen.getByRole("alert")).not.toHaveTextContent("chat driver unavailable");
-
-		view.rerender(
-			<ChatWorkspace
-				snapshot={{ ...snapshot, controller: { state: "ready" } }}
-				automaticWakeError="The provider could not reopen the saved conversation."
-				onResumeAgent={resume}
-			/>,
-		);
-		expect(screen.queryByText("Couldn’t reconnect")).not.toBeInTheDocument();
 	});
 
 	it("does not race view activation when hibernation arrives after a draft edit", async () => {
