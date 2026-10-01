@@ -6,6 +6,10 @@ import { captureRendererEvent } from "../lib/telemetry";
 export const editorHandoffQueryKey = (sessionId: string) => ["editor-handoff", sessionId] as const;
 export const editorHandoffQueryRoot = ["editor-handoff"] as const;
 
+export function isWorkspaceDefinitelyUnavailable(state: EditorHandoffState | undefined): boolean {
+	return state?.workspaceAvailable === false && state.unavailableCode === "SESSION_WORKSPACE_NOT_FOUND";
+}
+
 const NEW_SESSION_READINESS_WINDOW_MS = 30_000;
 const WORKSPACE_READINESS_RETRY_MS = 500;
 const WORKSPACE_READINESS_MAX_RETRIES = 10;

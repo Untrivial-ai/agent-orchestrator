@@ -3,9 +3,9 @@ import { useTranslation } from "react-i18next";
 import { Play } from "lucide-react";
 import { aoBridge } from "../lib/bridge";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { isWorkspaceDefinitelyUnavailable, useEditorHandoffState } from "../hooks/useEditorHandoff";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { useCanResumeAgent } from "../hooks/useCanResumeAgent";
-import { useEditorHandoffState } from "../hooks/useEditorHandoff";
 import { usesPreviewWorkspaceData as usePreviewData } from "../lib/preview-mode";
 import { cn } from "../lib/utils";
 import type { WorkspaceSession } from "../types/workspace";
@@ -28,12 +28,13 @@ export function ResumeAgentControl({
 }) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const canResume = useCanResumeAgent(session);
-	const mutationKey = ["resume-agent", session.id] as const;
 	const workspaceHandoff = useEditorHandoffState(session.id, {
 		sessionCreatedAt: session.createdAt,
 		sessionTerminated: session.isTerminated,
 	});
+	const workspaceUnavailable = isWorkspaceDefinitelyUnavailable(workspaceHandoff.data);
+	const canResume = useCanResumeAgent(session);
+	const mutationKey = ["resume-agent", session.id] as const;
 	const resume = useMutation({
 		mutationKey,
 		mutationFn: async () => {
@@ -67,7 +68,6 @@ export function ResumeAgentControl({
 	// Cloud sessions re-provision through the control plane (useRestoreSession),
 	// not this local-daemon route — the local daemon has never heard of them and
 	// would answer "Unknown session".
-	const workspaceUnavailable = workspaceHandoff.data?.workspaceAvailable === false;
 	if (!canResume || (workspaceUnavailable && session.provisionState !== "failed")) return null;
 
 	const resumeError = resume.error ?? sharedResumeState?.error;
