@@ -859,6 +859,14 @@ func TestWakeHibernatedChatRetainsMarkerAfterFailedNativeResume(t *testing.T) {
 	at := time.Now().UTC().Add(-time.Hour)
 	rec.HibernatedAt = &at
 	store.sessions[rec.ID] = rec
+	launcher.beforeStart = func(cfg ChatStart) {
+		// The provider can fail after chat.Start claims a fresh generation,
+		// before the controller is published as ready.
+		claimed := store.sessions[cfg.SessionID]
+		claimed.Metadata.ControllerGeneration = "claimed-before-native-history-failed"
+		claimed.Revision++
+		store.sessions[cfg.SessionID] = claimed
+	}
 
 	if err := mgr.WakeHibernatedChat(context.Background(), rec.ID); !errors.Is(err, providerErr) {
 		t.Fatalf("first wake error = %v, want provider failure", err)
@@ -872,6 +880,28 @@ func TestWakeHibernatedChatRetainsMarkerAfterFailedNativeResume(t *testing.T) {
 	}
 	if len(launcher.started) != 2 || launcher.started[1].ProviderConversationID != rec.Metadata.ProviderConversationID {
 		t.Fatalf("native resume attempts = %+v, want two with same provider id", launcher.started)
+	}
+}
+
+func TestWakeHibernatedChatDoesNotRestoreMarkerAfterControllerPublished(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, store, _ := newChatManager(launcher)
+	seedChatResumeSession(store, domain.ActivityIdle)
+	rec := store.sessions["mer-1"]
+	at := time.Now().UTC().Add(-time.Hour)
+	rec.HibernatedAt = &at
+	store.sessions[rec.ID] = rec
+	launcher.afterReady = func() {
+		launcher.live = true
+		store.getSessionErr = errors.New("readback unavailable")
+	}
+
+	err := mgr.WakeHibernatedChat(context.Background(), rec.ID)
+	if !errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+		t.Fatalf("wake error = %v, want uncertain post-publication recovery", err)
+	}
+	if got := store.sessions[rec.ID]; got.HibernatedAt != nil {
+		t.Fatal("published controller was incorrectly marked hibernated")
 	}
 }
 

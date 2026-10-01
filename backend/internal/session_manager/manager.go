@@ -2850,7 +2850,6 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 		}
 		asleepAt := rec.HibernatedAt
 		nativeID := rec.Metadata.ProviderConversationID
-		generation := rec.Metadata.ControllerGeneration
 		// Native resume can fail after the marker is cleared. Keep a failed
 		// automatic wake retryable and visibly asleep, including when the HTTP
 		// request was canceled while the provider was starting.
@@ -2869,7 +2868,6 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 				if !found || fresh.HibernatedAt != nil || fresh.IsTerminated ||
 					domain.NormalizeSessionMode(fresh.Mode) != domain.SessionModeChat ||
 					fresh.Metadata.ProviderConversationID != nativeID ||
-					fresh.Metadata.ControllerGeneration != generation ||
 					(m.chat != nil && m.chat.HasLiveChatController(id)) {
 					return
 				}
