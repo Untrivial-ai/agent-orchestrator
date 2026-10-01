@@ -118,13 +118,33 @@ const ORIGIN_REPORT_PREVIEW_LENGTH = 240;
 /** Smooth baseline, with adaptive catch-up when provider chunks outrun playback. */
 const STREAM_BASE_CHARACTERS_PER_SECOND = 58;
 const STREAM_TARGET_BACKLOG_CHARACTERS = 72;
-const STREAM_MAX_CHARACTERS_PER_SECOND = 720;
+const STREAM_TARGET_CATCHUP_MS = 500;
+const STREAM_SETTLED_CATCHUP_MS = 220;
+const STREAM_MAX_CHARACTERS_PER_SECOND = 20_000;
 const STREAM_MAX_FRAME_DELTA_MS = 100;
-const STREAM_MAX_DISPLAY_LAG_MS = 200;
+const STREAM_BACKGROUND_FRAME_PAUSE_MS = 1_000;
+const STREAM_MIN_UPDATE_INTERVAL_MS = 32;
+const STREAM_SETTLED_MAX_LAG_MS = 200;
 const STREAM_GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 function streamGraphemes(text: string): string[] {
 	return Array.from(STREAM_GRAPHEME_SEGMENTER.segment(text), ({ segment }) => segment);
+}
+
+function appendStreamGraphemes(
+	previous: { id: string; text: string; graphemes: string[] } | undefined,
+	id: string,
+	text: string,
+): { id: string; text: string; graphemes: string[] } {
+	if (previous?.id === id && text.startsWith(previous.text) && previous.graphemes.length > 0) {
+		// Re-segment only the previous trailing grapheme plus the new suffix. A
+		// provider delta can extend a combining sequence/ZWJ emoji, so that tail is
+		// the smallest safe incremental seam.
+		const stable = previous.graphemes.slice(0, -1);
+		const tail = previous.graphemes.at(-1)! + text.slice(previous.text.length);
+		return { id, text, graphemes: [...stable, ...streamGraphemes(tail)] };
+	}
+	return { id, text, graphemes: streamGraphemes(text) };
 }
 
 function reconciledStreamPrefix(visibleText: string, targetGraphemes: string[]) {
@@ -140,17 +160,28 @@ function reconciledStreamPrefix(visibleText: string, targetGraphemes: string[]) 
 }
 
 function useSmoothStreamingText(message: ConversationMessage): string {
+	// STRICT STREAMING INVARIANT: while a message is streaming, provider text is
+	// an append-only target. Never replace the visible prefix with a partial
+	// snapshot or flush the whole target mid-stream; doing either drops the
+	// smooth queue and makes the response jump. Only a completed stream (or a
+	// genuinely late background-tab frame) may flush the target.
 	// A snapshot can first reach the renderer after the provider has already emitted
 	// text. Keep that first durable burst visible; only later deltas need smoothing.
 	const [visibleText, setVisibleText] = useState(() => message.text);
 	const visibleRef = useRef(visibleText);
-	const targetRef = useRef(message.text);
-	const targetGraphemes = useMemo(() => streamGraphemes(message.text), [message.text]);
+	const targetStateRef = useRef<{ id: string; text: string; graphemes: string[] } | undefined>(undefined);
+	const targetGraphemes = useMemo(() => {
+		const next = appendStreamGraphemes(targetStateRef.current, message.id, message.text);
+		targetStateRef.current = next;
+		return next.graphemes;
+	}, [message.id, message.text]);
 	const visibleGraphemeCountRef = useRef(targetGraphemes.length);
 	const targetGraphemesRef = useRef(targetGraphemes);
+	const streamingRef = useRef(message.streaming);
 	const messageIdRef = useRef(message.id);
 	const frameRef = useRef<number | undefined>(undefined);
 	const lastFrameAtRef = useRef<number | undefined>(undefined);
+	const lastPublishedAtRef = useRef<number | undefined>(undefined);
 	const fractionalCharactersRef = useRef(0);
 	const [reducedMotion, setReducedMotion] = useState(
 		() => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -169,12 +200,13 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 			frameRef.current = undefined;
 		}
 		lastFrameAtRef.current = undefined;
+		lastPublishedAtRef.current = undefined;
 		fractionalCharactersRef.current = 0;
 	}, []);
 
 	const scheduleDrain = useCallback(() => {
 		if (frameRef.current !== undefined) return;
-		const drainStartedAt = performance.now();
+		if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
 
 		const tick = (now: number) => {
 			frameRef.current = undefined;
@@ -185,32 +217,38 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 				fractionalCharactersRef.current = 0;
 				return;
 			}
-
-			// New snapshots share this drain's deadline. Use real elapsed time so a
-			// background tab catches up even if it has not received its first frame.
-			if (now - drainStartedAt >= STREAM_MAX_DISPLAY_LAG_MS) {
-				visibleRef.current = targetRef.current;
-				visibleGraphemeCountRef.current = targetGraphemesRef.current.length;
-				setVisibleText(targetRef.current);
-				cancelDrain();
+			const elapsedSincePrevious = now - previousFrameAt;
+			if (elapsedSincePrevious > STREAM_BACKGROUND_FRAME_PAUSE_MS) {
+				fractionalCharactersRef.current = 0;
+				frameRef.current = window.requestAnimationFrame(tick);
 				return;
 			}
-
 			// Keep a small, intentional buffer for smoothness. As it grows, increase
 			// throughput instead of letting a long response fall further behind.
 			const catchup = Math.max(0, backlog - STREAM_TARGET_BACKLOG_CHARACTERS);
+			const catchupWindowMs = streamingRef.current
+				? STREAM_TARGET_CATCHUP_MS
+				: STREAM_SETTLED_CATCHUP_MS;
 			const charactersPerSecond = Math.min(
 				STREAM_MAX_CHARACTERS_PER_SECOND,
-				STREAM_BASE_CHARACTERS_PER_SECOND + catchup * 2,
+				Math.max(
+					STREAM_BASE_CHARACTERS_PER_SECOND,
+					catchup * 1000 / catchupWindowMs,
+				),
 			);
 			const elapsedMs = Math.min(STREAM_MAX_FRAME_DELTA_MS, Math.max(0, now - previousFrameAt));
 			fractionalCharactersRef.current += charactersPerSecond * elapsedMs / 1000;
+			if (now - (lastPublishedAtRef.current ?? now) < STREAM_MIN_UPDATE_INTERVAL_MS) {
+				frameRef.current = window.requestAnimationFrame(tick);
+				return;
+			}
 			const count = Math.floor(fractionalCharactersRef.current);
 			if (count < 1) {
 				frameRef.current = window.requestAnimationFrame(tick);
 				return;
 			}
 			fractionalCharactersRef.current -= count;
+			lastPublishedAtRef.current = now;
 			const currentCount = visibleGraphemeCountRef.current;
 			const target = targetGraphemesRef.current;
 			const nextCount = Math.min(target.length, currentCount + count);
@@ -223,16 +261,30 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 			}
 		};
 
-		lastFrameAtRef.current = undefined;
+		lastFrameAtRef.current = performance.now();
+		lastPublishedAtRef.current = lastFrameAtRef.current;
 		fractionalCharactersRef.current = 0;
 		frameRef.current = window.requestAnimationFrame(tick);
 	}, [cancelDrain]);
 
 	useEffect(() => {
+		const resumeVisibleStream = () => {
+			if (document.visibilityState === "hidden") {
+				cancelDrain();
+				return;
+			}
+			if (visibleGraphemeCountRef.current < targetGraphemesRef.current.length) {
+				scheduleDrain();
+			}
+		};
+		document.addEventListener("visibilitychange", resumeVisibleStream);
+		return () => document.removeEventListener("visibilitychange", resumeVisibleStream);
+	}, [cancelDrain, scheduleDrain]);
+
+	useEffect(() => {
 		if (message.id !== messageIdRef.current) {
 			cancelDrain();
 			messageIdRef.current = message.id;
-			targetRef.current = message.text;
 			targetGraphemesRef.current = targetGraphemes;
 			const initial = message.text;
 			visibleRef.current = initial;
@@ -241,9 +293,9 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 			return;
 		}
 
-		targetRef.current = message.text;
 		targetGraphemesRef.current = targetGraphemes;
-		if (!message.streaming || reducedMotion) {
+		streamingRef.current = message.streaming;
+		if (reducedMotion) {
 			cancelDrain();
 			visibleRef.current = message.text;
 			visibleGraphemeCountRef.current = targetGraphemes.length;
@@ -270,6 +322,21 @@ function useSmoothStreamingText(message: ConversationMessage): string {
 		}
 		if (visibleGraphemeCountRef.current < targetGraphemesRef.current.length) scheduleDrain();
 	}, [cancelDrain, message.id, message.text, message.streaming, reducedMotion, scheduleDrain, targetGraphemes]);
+
+	useEffect(() => {
+		if (message.streaming || visibleGraphemeCountRef.current >= targetGraphemesRef.current.length) {
+			return;
+		}
+		// Once the provider is done, smoothing may finish the short tail but must not
+		// leave completion controls waiting forever on throttled RAF callbacks.
+		const timeout = window.setTimeout(() => {
+			cancelDrain();
+			visibleRef.current = message.text;
+			visibleGraphemeCountRef.current = targetGraphemesRef.current.length;
+			setVisibleText(message.text);
+		}, STREAM_SETTLED_MAX_LAG_MS);
+		return () => window.clearTimeout(timeout);
+	}, [cancelDrain, message.streaming, message.text]);
 
 	useEffect(
 		() => cancelDrain,
@@ -439,18 +506,81 @@ function StagedAttachmentItems({
 	);
 }
 
+function MessageContentSummaryItems({ content }: { content: ConversationMessage["content"] }) {
+	if (!content?.length) return null;
+	return (
+		<ul aria-label="Attached content" className="flex max-w-full flex-wrap gap-2">
+			{content.map((item, index) => (
+				<li
+					key={`${item.type}:${item.uri ?? item.name ?? index}`}
+					title={item.uri}
+					className="flex max-w-full items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-xs text-muted-foreground"
+				>
+					<FileIcon aria-hidden="true" className="size-3.5 shrink-0" />
+					<span className="truncate">{item.name ?? (item.type === "image" ? "Image attachment" : item.mimeType ?? "Attached content")}</span>
+				</li>
+			))}
+		</ul>
+	);
+}
+
 /** Collapse the home directory so a long absolute path does not eat the row. */
 function shortenPaths(text: string): string {
 	return text.replace(/\/(?:Users|home)\/[^/\s]+/g, "~");
 }
 
 function formatDuration(ms: number): string {
-	if (ms < 1000) return `${ms}ms`;
-	if (ms < 60_000) {
-		// Drop a trailing ".0" so whole seconds read as "3s", not "3.0s".
-		return `${(ms / 1000).toFixed(1).replace(/\.0$/, "")}s`;
-	}
-	return `${Math.round(ms / 60_000)}m`;
+	// Status labels are intentionally discrete: start at one second and advance
+	// in whole seconds so the live and settled rows never show fractional time.
+	if (ms < 60_000) return `${Math.max(1, Math.floor(ms / 1000))}s`;
+	return `${Math.max(1, Math.floor(ms / 60_000))}m`;
+}
+
+function formatDecisionDuration(ms: number): string {
+	if (ms < 1_000) return `${Math.max(0, Math.round(ms))}ms`;
+	return `${(ms / 1_000).toFixed(1)}s`;
+}
+
+export function ResponseSpinner() {
+	const reducedMotion = useReducedMotion();
+	return (
+		<span
+			role="status"
+			aria-label="Generating response"
+			data-testid="response-spinner"
+			className="flex size-7 items-center justify-center rounded-md text-muted-foreground"
+		>
+			<svg viewBox="0 0 2400 2400" className="size-4" aria-hidden="true">
+				<g stroke="currentColor" strokeWidth="200" strokeLinecap="round" fill="none">
+					<line x1="1200" y1="600" x2="1200" y2="100" />
+					<line opacity="0.5" x1="1200" y1="2300" x2="1200" y2="1800" />
+					<line opacity="0.917" x1="900" y1="680.4" x2="650" y2="247.4" />
+					<line opacity="0.417" x1="1750" y1="2152.6" x2="1500" y2="1719.6" />
+					<line opacity="0.833" x1="680.4" y1="900" x2="247.4" y2="650" />
+					<line opacity="0.333" x1="2152.6" y1="1750" x2="1719.6" y2="1500" />
+					<line opacity="0.75" x1="600" y1="1200" x2="100" y2="1200" />
+					<line opacity="0.25" x1="2300" y1="1200" x2="1800" y2="1200" />
+					<line opacity="0.667" x1="680.4" y1="1500" x2="247.4" y2="1750" />
+					<line opacity="0.167" x1="2152.6" y1="650" x2="1719.6" y2="900" />
+					<line opacity="0.583" x1="900" y1="1719.6" x2="650" y2="2152.6" />
+					<line opacity="0.083" x1="1750" y1="247.4" x2="1500" y2="680.4" />
+					{reducedMotion ? null : (
+						<animateTransform
+							attributeName="transform"
+							attributeType="XML"
+							type="rotate"
+							keyTimes="0;0.08333;0.16667;0.25;0.33333;0.41667;0.5;0.58333;0.66667;0.75;0.83333;0.91667"
+							values="0 1199 1199;30 1199 1199;60 1199 1199;90 1199 1199;120 1199 1199;150 1199 1199;180 1199 1199;210 1199 1199;240 1199 1199;270 1199 1199;300 1199 1199;330 1199 1199"
+							dur="0.83333s"
+							begin="0s"
+							repeatCount="indefinite"
+							calcMode="discrete"
+						/>
+					)}
+				</g>
+			</svg>
+		</span>
+	);
 }
 
 function formatTime(iso: string): string {
@@ -538,6 +668,9 @@ export function HumanMessage({
 }) {
 	const visibleMessageText = humanVisibleText(message.text);
 	const { body, attachments } = stagedAttachmentParts(visibleMessageText);
+	const contentWithoutPathImages = message.content?.filter(
+		(item) => item.type !== "image" || attachments.length === 0,
+	);
 	return (
 		<div className="group/message flex flex-col items-end gap-1">
 			{/* A queued message reads as not-yet-sent rather than as sent-and-ignored:
@@ -586,6 +719,9 @@ export function HumanMessage({
 						ariaLabel="Attached files"
 						className={cn(body && "mt-2")}
 					/>
+					{contentWithoutPathImages?.length ? (
+						<MessageContentSummaryItems content={contentWithoutPathImages} />
+					) : null}
 				</div>
 			)}
 			{editing ? null : (
@@ -634,7 +770,8 @@ export function HumanMessage({
 					<span>Queued · sends when the agent finishes</span>
 				</div>
 			) : null}
-			{message.delivery && message.delivery !== "accepted" ? (
+			{message.delivery && message.delivery !== "accepted" && message.delivery !== "sending" &&
+				!(queued && message.delivery === "queued") ? (
 				<DeliveryNote state={message.delivery} />
 			) : null}
 		</div>
@@ -741,41 +878,47 @@ function BrowserAnnotationOrigin({
 export function AssistantMessage({
 	message,
 	showCopy = false,
+	live = false,
 	onRollback,
-	durationMs,
+	rollbackDisabled = false,
 }: {
 	message: ConversationMessage;
-	/** Only the final answer of a finished turn owns the turn's copy action. */
+	/** The final answer owns the copy action; it stays available while that answer streams. */
 	showCopy?: boolean;
+	/** The enclosing turn is still active, even if its last text chunk has landed. */
+	live?: boolean;
 	/**
 	 * Discard this turn and everything after it. Lives next to copy so the finished
 	 * answer owns both "keep this" and "undo from here".
 	 */
 	onRollback?: () => void;
-	/** How long the finished turn took; sits next to rollback on the action row. */
-	durationMs?: number;
+	/** Keep the rollback action mounted while another response is streaming. */
+	rollbackDisabled?: boolean;
 }) {
 	const visibleText = useSmoothStreamingText(message);
 	const renderingStreaming = message.streaming || visibleText.length < message.text.length;
-	const hasDuration = durationMs !== undefined && durationMs > 0;
-	const showActions = !renderingStreaming && (showCopy || Boolean(onRollback) || hasDuration);
+	const showLiveStatus = live || (renderingStreaming && (showCopy || Boolean(onRollback)));
+	const showActions = !live && !renderingStreaming && (showCopy || Boolean(onRollback));
 	return (
-		<div className="group/message relative">
+		<div className="group/message relative" data-chat-streaming-output={renderingStreaming ? "" : undefined}>
 			<ChatMarkdown text={visibleText} streaming={renderingStreaming} />
+			{showLiveStatus ? <LiveResponseStatus /> : null}
 			{showActions ? (
 				// One action row for the completed answer, not one after every prose
 				// fragment the provider emitted while working. Copy, rollback, and
 				// duration stay visible; only the wall-clock time reveals on hover.
 				<div className="mt-1 flex h-7 items-center gap-0.5">
 					{showCopy ? (
-						/* The stored markdown, not a re-serialization of what was rendered:
-						   pasting it into an editor has to give back what the agent wrote. */
-						<CopyButton
-							text={message.text}
-							label="Copy message as markdown"
-							compact
-							className="-ml-1.5 size-7 justify-center rounded-md px-0 py-0 transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
-						/>
+						<div className="-ml-1.5 size-7 shrink-0">
+							{/* The stored markdown, not a re-serialization of what was rendered:
+							   pasting it into an editor has to give back what the agent wrote. */}
+							<CopyButton
+								text={message.text}
+								label="Copy message as markdown"
+								compact
+								className="size-7 justify-center rounded-md px-0 py-0 transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
+							/>
+						</div>
 					) : null}
 					{onRollback ? (
 						<Tooltip>
@@ -783,8 +926,9 @@ export function AssistantMessage({
 								<button
 									type="button"
 									onClick={onRollback}
+									disabled={rollbackDisabled}
 									aria-label="Roll back to here"
-									className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] motion-reduce:transition-none motion-reduce:active:scale-100"
+									className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-[scale,background-color,color] duration-150 ease-out hover:bg-interactive-hover hover:text-foreground active:scale-[0.96] disabled:pointer-events-none disabled:opacity-40 motion-reduce:transition-none motion-reduce:active:scale-100"
 								>
 									<Undo2 aria-hidden="true" className="size-3" />
 								</button>
@@ -792,7 +936,6 @@ export function AssistantMessage({
 							<TooltipContent side="bottom">Roll back to here</TooltipContent>
 						</Tooltip>
 					) : null}
-					{hasDuration ? <TurnDuration durationMs={durationMs} /> : null}
 					<span
 						className="w-auto shrink-0 px-1 text-[11px] tabular-nums text-muted-foreground/75 opacity-0 transition-opacity duration-150 ease-out group-hover/message:opacity-100 group-focus-within/message:opacity-100 motion-reduce:transition-none"
 						aria-label={`Sent ${formatMessageTimestamp(message.createdAt)}`}
@@ -801,6 +944,46 @@ export function AssistantMessage({
 					</span>
 				</div>
 			) : null}
+		</div>
+	);
+}
+
+
+export function LiveResponseStatus({ startedAt, settling = false }: { startedAt?: string; settling?: boolean }) {
+	const started = useMemo(() => {
+		const parsed = startedAt ? Date.parse(startedAt) : Date.now();
+		return Number.isFinite(parsed) ? parsed : Date.now();
+	}, [startedAt]);
+	const [now, setNow] = useState(() => Date.now());
+	useEffect(() => {
+		const timer = window.setInterval(() => setNow(Date.now()), 1000);
+		return () => window.clearInterval(timer);
+	}, []);
+	const elapsedMs = Math.max(0, now - started);
+	return (
+		<div className="-mx-1 flex h-7 items-center gap-0.5 border-b border-border py-0">
+			<motion.div
+				initial={false}
+				animate={{ width: settling ? 0 : 24, opacity: settling ? 0 : 1 }}
+				transition={{ duration: 0.12, ease: "linear" }}
+				style={{ willChange: "width, opacity" }}
+				className="flex shrink-0 items-center overflow-hidden"
+			>
+				<div className="mx-0.5 flex size-5 shrink-0 items-center">
+					<ResponseSpinner />
+				</div>
+			</motion.div>
+			<span
+				role="status"
+				data-testid="live-working-label"
+				className={
+					settling
+						? "text-sm font-medium text-muted-foreground transition-colors duration-180"
+						: "text-sm font-medium text-foreground transition-colors duration-180"
+				}
+			>
+				{settling ? "Worked for" : "Working for"} {formatDuration(elapsedMs)}
+			</span>
 		</div>
 	);
 }
@@ -1915,9 +2098,9 @@ function AutoReviewRow({ activity }: { activity: ConversationActivity }) {
 									    told than a policy rule matching, so the provider's own word
 									    for it is carried rather than flattened to "automatically". */}
 									{detail.decisionSource}
-									{detail.durationMs !== undefined && detail.durationMs > 0
-										? ` · ${formatDuration(detail.durationMs)}`
-										: ""}
+						{detail.durationMs !== undefined && detail.durationMs > 0
+							? ` · ${formatDecisionDuration(detail.durationMs)}`
+							: ""}
 								</dd>
 							</>
 						) : null}
@@ -2751,10 +2934,16 @@ function fileBasename(path: string): string {
 /* -------------------------------------------------------------------------- */
 
 /** Turn wall-clock duration; lives on the action row next to rollback, not the Done divider. */
-export function TurnDuration({ durationMs }: { durationMs: number }) {
+export function TurnDuration({ durationMs, inline = false }: { durationMs: number; inline?: boolean }) {
 	if (durationMs <= 0) return null;
 	return (
-		<span className="shrink-0 px-1 font-sans text-[12px] leading-none tabular-nums text-muted-foreground">
+		<span
+			className={cn(
+				"shrink-0 font-sans text-sm leading-none tabular-nums text-muted-foreground",
+				inline && "group-hover/row:text-foreground",
+				!inline && "px-1",
+			)}
+		>
 			{formatDuration(durationMs)}
 		</span>
 	);

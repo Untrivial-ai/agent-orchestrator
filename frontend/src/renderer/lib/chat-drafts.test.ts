@@ -265,7 +265,7 @@ describe("Chat draft storage", () => {
 		expect(getChatInlineEditMutation(first)).toEqual({ pending: false });
 	});
 
-	it("warned abandon clears only an uncertain steer journal", () => {
+	it.each(["send", "steer"] as const)("warned abandon clears an uncertain %s journal", (kind) => {
 		const storage = new MemoryStorage();
 		const scope: ChatDraftScope = { sessionId: "session-abandon", incarnation: "one" };
 		const attachment = {
@@ -278,7 +278,7 @@ describe("Chat draft storage", () => {
 		const prepared = prepareChatComposerDelivery(
 			scope,
 			{
-				kind: "steer",
+				kind,
 				composerText: "possibly delivered",
 				attachments: [attachment],
 				requestText: "possibly delivered",

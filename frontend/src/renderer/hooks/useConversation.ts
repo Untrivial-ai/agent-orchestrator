@@ -18,21 +18,25 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { components } from "../../api/schema";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
+import { DEFINITIVE_CHAT_SEND_REJECTIONS } from "../lib/chat-send-errors";
 import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
+import { editorHandoffQueryKey } from "./useEditorHandoff";
 import type {
 	ActivityKind,
 	ApprovalMode,
 	ActivityStatus,
 	ConversationActivity,
+	ConversationContentSummary,
 	ConversationItem,
 	ConversationMessage,
 	ConversationSnapshot,
 	ControllerState,
 	DecisionOption,
+	DeliveryState,
 	DiffStatus,
 	McpServer,
 	MessageOrigin,
@@ -101,6 +105,7 @@ export function conversationConfigOptionsQueryKey(sessionId: string) {
 
 const conversationDispatchTrackingQueryKey = ["conversation-dispatch-tracking"] as const;
 const conversationLocalEchosQueryKey = ["conversation-local-echos"] as const;
+const emptyConversationLocalEchos: ConversationLocalEchosBySession = {};
 type ConversationDispatchOperation = "edit" | "retry" | "send";
 interface ConversationDispatchDescriptor {
 	operation: ConversationDispatchOperation;
@@ -121,6 +126,8 @@ export type ConversationLocalEcho = {
 	clientMessageId: string;
 	text: string;
 	createdAt: string;
+	content?: ConversationContentSummary[];
+	delivery?: DeliveryState;
 	/** Filled after the daemon accepts the send, then used for exact reconciliation. */
 	turnId?: string;
 };
@@ -133,7 +140,10 @@ function addConversationLocalEcho(
 ): void {
 	queryClient.setQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey, (current = {}) => ({
 		...current,
-		[targetSessionId]: [...(current[targetSessionId] ?? []), echo],
+		[targetSessionId]: [
+			...(current[targetSessionId] ?? []).filter((existing) => existing.clientMessageId !== echo.clientMessageId),
+			echo,
+		],
 	}));
 }
 
@@ -142,15 +152,35 @@ function acceptConversationLocalEcho(
 	targetSessionId: string,
 	clientMessageId: string,
 	turnId: string,
+	delivery: DeliveryState,
 ): void {
 	queryClient.setQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey, (current = {}) => {
 		const echoes = current[targetSessionId];
 		if (!echoes) return current;
 		let changed = false;
 		const nextEchoes = echoes.map((echo) => {
-			if (echo.clientMessageId !== clientMessageId || echo.turnId === turnId) return echo;
+			if (echo.clientMessageId !== clientMessageId || (echo.turnId === turnId && echo.delivery === delivery)) return echo;
 			changed = true;
-			return { ...echo, turnId };
+			return { ...echo, turnId, delivery };
+		});
+		return changed ? { ...current, [targetSessionId]: nextEchoes } : current;
+	});
+}
+
+function updateConversationLocalEchoDelivery(
+	queryClient: QueryClient,
+	targetSessionId: string,
+	clientMessageId: string,
+	delivery: DeliveryState,
+): void {
+	queryClient.setQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey, (current = {}) => {
+		const echoes = current[targetSessionId];
+		if (!echoes) return current;
+		let changed = false;
+		const nextEchoes = echoes.map((echo) => {
+			if (echo.clientMessageId !== clientMessageId || echo.delivery === delivery) return echo;
+			changed = true;
+			return { ...echo, delivery };
 		});
 		return changed ? { ...current, [targetSessionId]: nextEchoes } : current;
 	});
@@ -388,14 +418,35 @@ export function useConversationCommands(sessionId: string | undefined) {
 		gcTime: Number.POSITIVE_INFINITY,
 		staleTime: Number.POSITIVE_INFINITY,
 	}).data;
-	const localEchosBySession = useQuery({
+	useQuery({
 		queryKey: conversationLocalEchosQueryKey,
 		queryFn: async (): Promise<ConversationLocalEchosBySession> => ({}),
-		initialData: {} as ConversationLocalEchosBySession,
+		initialData: emptyConversationLocalEchos,
 		enabled: false,
+		// These rows bridge the gap between an accepted HTTP request and the exact
+		// durable conversation row. Observing them prevents React Query's default
+		// five-minute GC from making a slow delivery disappear mid-flight; infinity
+		// also preserves the journal-backed recovery row across surface remounts.
 		gcTime: Number.POSITIVE_INFINITY,
 		staleTime: Number.POSITIVE_INFINITY,
-	}).data;
+	});
+	const subscribeToLocalEchos = useCallback(
+		(onStoreChange: () => void) =>
+			queryClient.getQueryCache().subscribe((event) => {
+				if (event.query.queryKey[0] === conversationLocalEchosQueryKey[0]) onStoreChange();
+			}),
+		[queryClient],
+	);
+	const getLocalEchosSnapshot = useCallback(
+		() => queryClient.getQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey)
+			?? emptyConversationLocalEchos,
+		[queryClient],
+	);
+	const localEchosBySession = useSyncExternalStore(
+		subscribeToLocalEchos,
+		getLocalEchosSnapshot,
+		getLocalEchosSnapshot,
+	);
 	const trackedDispatch = sessionId ? trackedDispatches[sessionId] : undefined;
 	const invalidateSession = useCallback(
 		async (targetSessionId: string) => {
@@ -420,10 +471,27 @@ export function useConversationCommands(sessionId: string | undefined) {
 
 	const send = useMutation({
 		onMutate: (variables: ConversationSendMutationInput) => {
+			const previousEcho = queryClient
+				.getQueryData<ConversationLocalEchosBySession>(conversationLocalEchosQueryKey)
+				?.[variables.targetSessionId]
+				?.find((echo) => echo.clientMessageId === variables.clientMessageId);
 			addConversationLocalEcho(queryClient, variables.targetSessionId, {
 				clientMessageId: variables.clientMessageId,
 				text: variables.input.text,
 				createdAt: new Date().toISOString(),
+				content: [
+					...(variables.input.attachments ?? []).map((attachment) => ({
+						type: "image",
+						mimeType: attachment.mimeType,
+					})),
+					...(variables.input.resources ?? []).map((resource) => ({
+						type: "resource",
+						mimeType: resource.mimeType,
+						uri: resource.uri,
+						name: resource.name,
+					})),
+				],
+				delivery: "sending",
 			});
 			queryClient.setQueryData<ConversationDispatchTrackingBySession>(
 				conversationDispatchTrackingQueryKey,
@@ -440,6 +508,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 					};
 				},
 			);
+			return { previousEcho };
 		},
 		mutationFn: async ({
 			targetSessionId,
@@ -462,11 +531,13 @@ export function useConversationCommands(sessionId: string | undefined) {
 		onSuccess: (data, variables) => {
 			const acceptedTurnId = data?.turnId;
 			if (acceptedTurnId) {
+				const delivery: DeliveryState = data.state === "queued" ? "queued" : "accepted";
 				acceptConversationLocalEcho(
 					queryClient,
 					variables.targetSessionId,
 					variables.clientMessageId,
 					acceptedTurnId,
+					delivery,
 				);
 				if (data.state === "queued") {
 					// A queued row is already durable and did not start a new provider turn,
@@ -490,36 +561,72 @@ export function useConversationCommands(sessionId: string | undefined) {
 				}
 			} else {
 				// A duplicate response intentionally has no turn id: the daemon already
-				// delivered this idempotency key, so there is no exact new row this
-				// renderer can wait to observe. Release only this request's sentinel.
+				// delivered this idempotency key. Keep the optimistic row until the next
+				// snapshot acknowledges this exact client ID; dropping it here makes a
+				// successful retry visibly disappear during a slow refetch.
 				releaseConversationDispatch(
 					queryClient,
 					variables.targetSessionId,
 					variables.clientMessageId,
 				);
-				releaseConversationLocalEcho(
+				updateConversationLocalEchoDelivery(
 					queryClient,
 					variables.targetSessionId,
 					variables.clientMessageId,
+					"accepted",
 				);
+				void invalidateSession(variables.targetSessionId).then(() => {
+					const refreshed = queryClient.getQueryData<InfiniteData<ConversationSnapshot>>(
+						conversationQueryKey(variables.targetSessionId),
+					);
+					const observed = refreshed?.pages.some((page) =>
+						page.items.some((item) =>
+							item.kind === "message" &&
+							item.clientMessageId === variables.clientMessageId,
+						),
+					);
+					if (!observed) {
+						releaseConversationLocalEcho(
+							queryClient,
+							variables.targetSessionId,
+							variables.clientMessageId,
+						);
+					}
+				}).catch(() => {});
 			}
 			// Delivery is already authoritative at this point. Refresh in the
 			// background so a slow conversation refetch cannot keep send.isPending
 			// true and leave the composer disabled or spinning after the daemon
 			// accepted the message.
-			void refreshSessionInBackground(variables.targetSessionId);
+			if (acceptedTurnId) refreshSessionInBackground(variables.targetSessionId);
 		},
-		onError: (_error, variables) => {
+		onError: (error, variables, context) => {
 			releaseConversationDispatch(
 				queryClient,
 				variables.targetSessionId,
 				variables.clientMessageId,
 			);
-			releaseConversationLocalEcho(
-				queryClient,
-				variables.targetSessionId,
-				variables.clientMessageId,
-			);
+			if (
+				DEFINITIVE_CHAT_SEND_REJECTIONS.has(apiErrorCode(error) ?? "") &&
+				context?.previousEcho?.delivery !== "uncertain"
+			) {
+				releaseConversationLocalEcho(
+					queryClient,
+					variables.targetSessionId,
+					variables.clientMessageId,
+				);
+			} else {
+				// A lost response can follow durable provider acceptance. Preserve the
+				// same visible row, state the uncertainty, and reconcile in the background
+				// rather than making the prompt vanish and later reappear.
+				updateConversationLocalEchoDelivery(
+					queryClient,
+					variables.targetSessionId,
+					variables.clientMessageId,
+					"uncertain",
+				);
+				void refreshSessionInBackground(variables.targetSessionId);
+			}
 		},
 	});
 
@@ -588,13 +695,25 @@ export function useConversationCommands(sessionId: string | undefined) {
 					params: { path: { sessionId: sessionId as string } },
 				},
 			);
-			if (error)
-				throw new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`));
+			if (error) {
+				// Preserve the daemon's typed recovery code. The controller banner uses
+				// it to stop offering resume when the worktree no longer exists.
+				const resumeError = Object.assign(
+					new Error(apiErrorMessage(error, `Failed to resume agent (${response.status})`)),
+					{ code: apiErrorCode(error) },
+				);
+				throw resumeError;
+			}
 			return data;
 		},
 		onSuccess: () => {
 			invalidate();
 			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+		},
+		onError: (error) => {
+			if (apiErrorCode(error) === "SESSION_WORKSPACE_NOT_FOUND" && sessionId) {
+				void queryClient.invalidateQueries({ queryKey: editorHandoffQueryKey(sessionId) });
+			}
 		},
 	});
 
@@ -773,28 +892,6 @@ export function useConversationCommands(sessionId: string | undefined) {
 		},
 	});
 
-	/**
-	 * Restart the tool servers.
-	 *
-	 * Worth offering because a server that failed to start is not a transient blip the
-	 * agent will retry: it will simply never call those tools, and nothing in the
-	 * timeline says so. Refused mid-turn, which is why the control is disabled rather
-	 * than allowed to fail.
-	 */
-	const reloadMcp = useMutation({
-		mutationFn: async () => {
-			const { data, error } = await apiClient.POST(
-				"/api/v1/sessions/{sessionId}/conversation/mcp/reload",
-				{
-					params: { path: { sessionId: sessionId as string } },
-				},
-			);
-			if (error) throw error;
-			return data;
-		},
-		onSuccess: invalidate,
-	});
-
 	const rollback = useMutation({
 		mutationFn: async (turnId: string) => {
 			const { data, error } = await apiClient.POST(
@@ -911,12 +1008,13 @@ export function useConversationCommands(sessionId: string | undefined) {
 		[queryClient, sessionId],
 	);
 	const acknowledgeLocalEcho = useCallback(
-		(turnId: string) => {
+		(clientMessageId: string) => {
 			if (!sessionId) return;
-			releaseConversationLocalEcho(queryClient, sessionId, undefined, turnId);
+			releaseConversationLocalEcho(queryClient, sessionId, clientMessageId);
 		},
 		[queryClient, sessionId],
 	);
+	const abandonLocalEcho = acknowledgeLocalEcho;
 	const sendTargetsCurrentSession = send.variables?.targetSessionId === sessionId;
 	const interruptTargetsCurrentSession = interrupt.variables?.targetSessionId === sessionId;
 	const retryTargetsCurrentSession = retryTurn.variables?.targetSessionId === sessionId;
@@ -943,6 +1041,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 		acknowledgeAcceptedTurn,
 		localEchos: sessionId ? localEchosBySession[sessionId] ?? [] : [],
 		acknowledgeLocalEcho,
+		abandonLocalEcho,
 		resolve: (requestId: string, decisionId: string) => resolve.mutate({ requestId, decisionId }),
 		resolveInput: (
 			requestId: string,
@@ -953,6 +1052,8 @@ export function useConversationCommands(sessionId: string | undefined) {
 		resumeAgent: () => resume.mutateAsync(),
 		resumingAgent: resume.isPending,
 		resumeError: resume.error ? apiErrorMessage(resume.error) : undefined,
+		resumeWorkspaceUnavailable: apiErrorCode(resume.error) === "SESSION_WORKSPACE_NOT_FOUND",
+		resetResumeError: resume.reset,
 		compact: () => compact.mutateAsync(),
 		choosingSettings: chooseSettings.isPending && chooseSettings.variables?.targetSessionId === sessionId,
 		chooseSettings: (settings: TurnSettings) => chooseSettings.mutate({ targetSessionId: sessionId as string, settings }),
@@ -1070,13 +1171,6 @@ export function useConversationCommands(sessionId: string | undefined) {
 		 * answer is a property of the driver, not of the moment.
 		 */
 		steerUnsupported: apiErrorCode(steer.error) === "CHAT_STEER_UNSUPPORTED",
-		reloadMcpServers: () => reloadMcp.mutateAsync(),
-		reloadingMcpServers: reloadMcp.isPending,
-		mcpReloadUnsupported: apiErrorCode(reloadMcp.error) === "CHAT_MCP_RELOAD_UNSUPPORTED",
-		mcpReloadError:
-			reloadMcp.error && apiErrorCode(reloadMcp.error) !== "CHAT_MCP_RELOAD_UNSUPPORTED"
-				? apiErrorMessage(reloadMcp.error)
-				: undefined,
 		busy:
 			trackedDispatch?.state === "pending" ||
 			(send.isPending && sendTargetsCurrentSession) ||
@@ -1214,7 +1308,8 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
 	// only closes half the race — without also holding the poll, the interval can
 	// start a fresh read mid-write whose pre-change catalog lands after the
 	// mutation's own result and reverts the picker the user just used.
-	const [writing, setWriting] = useState(false);
+	const [writingOptionId, setWritingOptionId] = useState<string>();
+	const writing = writingOptionId !== undefined;
 	const query = useQuery({
 		queryKey,
 		enabled: Boolean(sessionId) && enabled,
@@ -1238,8 +1333,8 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
 		// Held across the whole write, paired with the cancel below: `onMutate`
 		// runs before the request and `onSettled` after the result is committed,
 		// so no poll can start or land inside that window.
-		onMutate: () => setWriting(true),
-		onSettled: () => setWriting(false),
+		onMutate: ({ optionId }) => setWritingOptionId(optionId),
+		onSettled: () => setWritingOptionId(undefined),
 		mutationFn: async ({
 			optionId,
 			value,
@@ -1284,6 +1379,10 @@ export function useConversationConfigOptions(sessionId: string | undefined, enab
 		setOption: async (optionId: string, value: ChatConfigOptionValue) =>
 			(await mutation.mutateAsync({ optionId, value })).options,
 		pending: mutation.isPending,
+		// React Query publishes the mutation variables in the same render that it
+		// marks the write pending. Keep the local state as a fallback for the poll
+		// guard, but prefer those variables so there is no one-render global lock.
+		pendingOptionId: mutation.isPending ? mutation.variables?.optionId ?? writingOptionId : undefined,
 		error: mutation.error || query.error ? apiErrorMessage(mutation.error ?? query.error) : undefined,
 	};
 }
@@ -1610,6 +1709,7 @@ function toMessage(wire: WireMessage): ConversationMessage {
 		kind: "message",
 		id: wire.id,
 		turnId: wire.turnId,
+		clientMessageId: wire.clientMessageId || undefined,
 		sequence: wire.sequence,
 		revision: wire.revision,
 		role: wire.role as MessageRole,

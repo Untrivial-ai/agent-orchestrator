@@ -73,11 +73,11 @@ describe("ChatWorkspace rollback", () => {
 		expect(onRollback).not.toHaveBeenCalled();
 	});
 
-	// The daemon refuses a rollback mid-turn. A control that exists only to be
-	// refused is worse than one that waits for the agent to finish.
-	it("withholds the control while a turn is in flight", () => {
+	// Keep the action slot stable while a turn is in flight; it becomes available
+	// when the response settles without shifting the message footer.
+	it("keeps the rollback control mounted but disabled while a turn is in flight", () => {
 		render(<ChatWorkspace snapshot={chatFixture} onRollback={vi.fn()} />);
-		expect(screen.queryByRole("button", { name: "Roll back to here" })).toBeNull();
+		expect(screen.getAllByRole("button", { name: "Roll back to here" })[0]).toBeDisabled();
 	});
 
 	// Feature detection reaches the UI as an absent callback, following how the model

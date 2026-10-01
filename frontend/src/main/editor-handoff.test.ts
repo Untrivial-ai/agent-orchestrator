@@ -122,12 +122,16 @@ describe("editor handoff", () => {
 	});
 
 	it("reports a missing workspace without hiding the available targets", async () => {
+		const missing = Object.assign(new Error("Session workspace is not available."), {
+			code: "SESSION_WORKSPACE_NOT_FOUND",
+		});
 		const handoff = createEditorHandoff(deps({
-			resolveWorkspace: vi.fn().mockRejectedValue(new Error("Session workspace is not available.")),
+			resolveWorkspace: vi.fn().mockRejectedValue(missing),
 		}));
 		const state = await handoff.getState("ao-1");
 		expect(state.workspaceAvailable).toBe(false);
 		expect(state.unavailableReason).toBe("Session workspace is not available.");
+		expect(state.unavailableCode).toBe("SESSION_WORKSPACE_NOT_FOUND");
 		expect(state.targets).toHaveLength(4);
 	});
 

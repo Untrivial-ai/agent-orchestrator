@@ -1049,7 +1049,7 @@ export function clearRejectedChatComposerDelivery(
 }
 
 /**
- * Explicitly abandon a steer whose acceptance is unknowable. This is deliberately
+ * Explicitly abandon a composer delivery whose acceptance is unknowable. This is deliberately
  * separate from definitive refusal: the provider may already have received it.
  * Only the renderer journal is removed; text and staged descriptors remain so the
  * person can decide whether a later submit is worth the duplicate-delivery risk.
@@ -1065,7 +1065,6 @@ export function clearUncertainChatComposerDelivery(
 	if (
 		!loaded.ok ||
 		!delivery ||
-		delivery.kind !== "steer" ||
 		delivery.state !== "dispatching" ||
 		delivery.clientMessageId !== clientMessageId ||
 		delivery.revision !== revision

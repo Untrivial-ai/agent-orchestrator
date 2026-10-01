@@ -40,6 +40,12 @@ function runFrame(now: number) {
 	act(() => callback(now));
 }
 
+function drainFrames(startAt = frameTime + 16) {
+	for (let now = startAt, count = 0; frames.size > 0 && count < 1_000; now += 16, count++) {
+		runFrame(now);
+	}
+}
+
 beforeEach(() => {
 	nextFrame = 1;
 	frameTime = 0;
@@ -112,10 +118,9 @@ describe("AssistantMessage streaming", () => {
 		expect(frames.size).toBe(0);
 
 		view.rerender(<AssistantMessage message={message({ text: "Corrected text" })} />);
-		runFrame(190);
-		runFrame(198);
+		runFrame(166);
 		expect(document.querySelector("p")?.textContent).toBe("Corrected");
-		runFrame(390);
+		drainFrames(182);
 		expect(document.querySelector("p")?.textContent).toBe("Corrected text");
 	});
 
@@ -130,7 +135,7 @@ describe("AssistantMessage streaming", () => {
 		expect(screen.queryByText("ab")).not.toBeInTheDocument();
 	});
 
-	it("shows the current snapshot immediately when an occluded tab resumes", () => {
+	it("resumes a smooth drain after an occluded tab pauses animation frames", () => {
 		const view = render(<AssistantMessage message={message()} />);
 		view.rerender(<AssistantMessage message={message({ text: "a".padEnd(2000, "x") })} />);
 
@@ -138,21 +143,25 @@ describe("AssistantMessage streaming", () => {
 		runFrame(5 * 60 * 1000);
 		const rendered = document.querySelector("p");
 
+		expect(rendered?.textContent).toBe("a");
+		drainFrames();
 		expect(rendered?.textContent).toBe("a".padEnd(2000, "x"));
 	});
 
-	it("flushes on resume when a hidden tab received no initial animation frame", () => {
+	it("starts a smooth drain when a hidden tab received no initial animation frame", () => {
 		const view = render(<AssistantMessage message={message()} />);
 		const text = "a".padEnd(2000, "x");
 		view.rerender(<AssistantMessage message={message({ text })} />);
 
 		runFrame(5 * 60 * 1000);
 
+		expect(document.querySelector("p")?.textContent).toBe("a");
+		drainFrames();
 		expect(document.querySelector("p")?.textContent).toBe(text);
 		expect(frames.size).toBe(0);
 	});
 
-	it("shows a large received burst within 250ms", () => {
+	it("drains a large received burst without replacing the live target", () => {
 		const view = render(<AssistantMessage message={message()} />);
 		const text = "a".padEnd(10_000, "x");
 		view.rerender(<AssistantMessage message={message({ text })} />);
@@ -160,11 +169,11 @@ describe("AssistantMessage streaming", () => {
 		runFrame(0);
 		for (let now = 16; now <= 240 && frames.size; now += 16) runFrame(now);
 
-		expect(document.querySelector("p")?.textContent).toBe(text);
-		expect(frames.size).toBe(0);
+		expect(document.querySelector("p")?.textContent).not.toBe(text);
+		expect(frames.size).toBeGreaterThan(0);
 	});
 
-	it("does not postpone the drain deadline when new snapshots keep arriving", () => {
+	it("keeps draining while new snapshots keep arriving", () => {
 		const view = render(<AssistantMessage message={message()} />);
 		let text = "a".padEnd(2000, "x");
 		view.rerender(<AssistantMessage message={message({ text })} />);
@@ -175,8 +184,8 @@ describe("AssistantMessage streaming", () => {
 			runFrame(now);
 		}
 
-		expect(document.querySelector("p")?.textContent).toBe(text);
-		expect(frames.size).toBe(0);
+		expect(document.querySelector("p")?.textContent).not.toBe(text);
+		expect(frames.size).toBeGreaterThan(0);
 	});
 
 	it("segments each snapshot once and reuses it across animation frames", () => {
@@ -196,7 +205,7 @@ describe("AssistantMessage streaming", () => {
 		view.rerender(<AssistantMessage message={message({ text: "a👨‍👩‍👧‍👦e\u0301" })} />);
 
 		runFrame(0);
-		runFrame(1000);
+		drainFrames();
 
 		expect(document.querySelector("p")?.textContent).toBe("a👨‍👩‍👧‍👦e\u0301");
 	});
@@ -205,12 +214,11 @@ describe("AssistantMessage streaming", () => {
 		const view = render(<AssistantMessage message={message()} />);
 		view.rerender(<AssistantMessage message={message({ text: "a👨" })} />);
 		runFrame(0);
-		runFrame(1000);
+		drainFrames();
 
 		view.rerender(<AssistantMessage message={message({ text: "a👨‍👩" })} />);
 		expect(document.querySelector("p")?.textContent).toBe("a");
-		runFrame(1000);
-		runFrame(1200);
+		drainFrames();
 
 		expect(document.querySelector("p")?.textContent).toBe("a👨‍👩");
 	});
@@ -220,9 +228,11 @@ describe("AssistantMessage streaming", () => {
 		view.rerender(<AssistantMessage message={message({ text: "ae\u0301z" })} />);
 		expect(document.querySelector("p")?.textContent).toBe("a");
 		runFrame(0);
-		runFrame(20);
+		runFrame(16);
+		runFrame(32);
 		expect(document.querySelector("p")?.textContent).toBe("ae\u0301");
-		runFrame(40);
+		runFrame(48);
+		runFrame(64);
 		expect(document.querySelector("p")?.textContent).toBe("ae\u0301z");
 	});
 
@@ -244,7 +254,7 @@ describe("AssistantMessage streaming", () => {
 		expect(frames.size).toBe(0);
 	});
 
-	it("flushes buffered text when streaming completes and restores actions", () => {
+	it("drains buffered text smoothly when streaming completes, then restores actions", () => {
 		const view = render(<AssistantMessage message={message()} showCopy />);
 		view.rerender(<AssistantMessage message={message({ text: "aThe complete answer", streaming: true })} showCopy />);
 		runFrame(0);
@@ -252,14 +262,32 @@ describe("AssistantMessage streaming", () => {
 			<AssistantMessage message={message({ text: "aThe complete answer", streaming: false })} showCopy />,
 		);
 
+		expect(screen.queryByText("aThe complete answer")).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Copy message as markdown" })).not.toBeInTheDocument();
+		drainFrames();
+
 		expect(screen.getByText("aThe complete answer")).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Copy message as markdown" })).toBeInTheDocument();
 	});
 
-	it("hides message actions while text is still buffered", () => {
+	it("accelerates a large backlog enough to avoid an unbounded live-stream lag", () => {
+		const view = render(<AssistantMessage message={message()} />);
+		const text = "a".padEnd(10_000, "x");
+		view.rerender(<AssistantMessage message={message({ text })} />);
+
+		runFrame(0);
+		for (let now = 16; now <= 1_500 && frames.size; now += 16) runFrame(now);
+
+		expect(document.querySelector("p")?.textContent?.length).toBeGreaterThan(text.length * 0.9);
+	});
+
+	it("shows the response spinner while text is still streaming", () => {
 		const view = render(<AssistantMessage message={message()} showCopy />);
 		view.rerender(<AssistantMessage message={message({ text: "a buffered answer" })} showCopy />);
 
+		const loader = screen.getByTestId("response-spinner");
+		expect(loader).toBeInTheDocument();
+		expect(loader.querySelector("svg")).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Copy message as markdown" })).not.toBeInTheDocument();
 	});
 

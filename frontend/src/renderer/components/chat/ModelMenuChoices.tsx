@@ -1,5 +1,5 @@
 import { Search } from "lucide-react";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 
@@ -9,7 +9,7 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 	children,
 }: {
 	models: T[];
-	children: (models: T[]) => ReactNode;
+	children: (models: T[], searchActiveID?: string, optionID?: (id: string) => string) => ReactNode;
 }) {
 	const { t } = useTranslation();
 	const [search, setSearch] = useState("");
@@ -20,6 +20,13 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 		if (!normalizedQuery) return models;
 		return models.filter((model) => model.label.toLocaleLowerCase().includes(normalizedQuery));
 	}, [models, normalizedQuery]);
+	const [searchFocused, setSearchFocused] = useState(false);
+	const searchActiveID = normalizedQuery && searchFocused ? matches[0]?.id : undefined;
+	const optionIDPrefix = useId();
+	const optionID = useCallback(
+		(id: string) => `${optionIDPrefix}-option-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`,
+		[optionIDPrefix],
+	);
 	const searchRef = useRef<HTMLInputElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const [canScrollDown, setCanScrollDown] = useState(false);
@@ -52,6 +59,12 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 						}
 						if (event.key === "Escape") return;
 						event.stopPropagation();
+						if (event.key === "Enter") {
+							event.preventDefault();
+							if (!normalizedQuery) return;
+							scrollRef.current?.querySelector<HTMLElement>('[role="menuitemradio"]')?.click();
+							return;
+						}
 						if (event.key === "ArrowDown" || event.key === "ArrowUp") {
 							event.preventDefault();
 							const items = scrollRef.current?.querySelectorAll<HTMLElement>('[role="menuitemradio"]');
@@ -69,12 +82,20 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 							ref={searchRef}
 							type="search"
 							aria-label={t("settings.models.searchAria", { label: "models" })}
+							aria-activedescendant={searchActiveID ? optionID(searchActiveID) : undefined}
 							value={search}
 							onChange={(event) => setSearch(event.target.value)}
+							onFocus={() => setSearchFocused(true)}
+							onBlur={() => setSearchFocused(false)}
 							placeholder={t("settings.models.searchPlaceholder")}
 							className="menu-search-input h-control-form! rounded-[10px] pl-8!"
 						/>
 					</div>
+					{normalizedQuery ? (
+						<span className="sr-only" aria-live="polite">
+							{t("settings.models.matchingCount", { visible: matches.length, total: models.length })}
+						</span>
+					) : null}
 				</div>
 			)}
 			<div className="relative grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] overflow-hidden">
@@ -110,7 +131,7 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 						}
 					}}
 				>
-					{children(matches)}
+					{children(matches, searchActiveID, optionID)}
 					{matches.length === 0 && (
 						<p className="px-2 py-1.5 text-xs text-settings-muted">{t("settings.models.noMatches")}</p>
 					)}
@@ -120,14 +141,6 @@ export function ModelMenuChoices<T extends { id: string; label: string }>({
 					aria-hidden="true"
 				/>
 			</div>
-			{showSearch && (
-				<p className="shrink-0 px-2 py-1.5 text-xs text-settings-muted" aria-live="polite">
-					{t("settings.models.matchingCount", {
-						visible: matches.length.toLocaleString(),
-						total: matches.length.toLocaleString(),
-					})}
-				</p>
-			)}
 		</div>
 	);
 }
