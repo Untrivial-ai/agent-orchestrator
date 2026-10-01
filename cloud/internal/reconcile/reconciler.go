@@ -983,7 +983,7 @@ func (r *Reconciler) terminate(
 		}
 	}
 	message := fmt.Sprintf(
-		"The session's worker never started within %s and has been stopped. This usually means the repository could not be checked out (for example a private repository not connected through the GitHub App).",
+		"The session's worker did not connect within %s and has been stopped. Check the sandbox and worker startup logs for the cause.",
 		r.options.TerminalStartupTimeout,
 	)
 	return r.observe(ctx, record, string(environment.ID),

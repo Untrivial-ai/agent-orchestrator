@@ -1727,6 +1727,7 @@
 	"terminal.unableRestore": "Unable to restore session",
 	"terminal.cloudConnectTitle": "Cannot connect to terminal",
 	"terminal.cloudConnectDescription": "The terminal ticket was issued but the WebSocket connection failed repeatedly. This is usually caused by a browser Content Security Policy, firewall, or proxy blocking WebSocket traffic.",
+	"terminal.cloudSessionStopped": "Cloud session stopped",
 	"terminal.cloudConnectRetry": "Retry connection",
 	"tray.attentionTooltip_one": "{{count}} session needs attention",
 	"tray.attentionTooltip_other": "{{count}} sessions need attention",

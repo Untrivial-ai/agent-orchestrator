@@ -738,6 +738,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const session = workspaceQuery.data;
 	const cloudStage = cloudLifecycleStage(session);
 	const cloudReconnecting = useTerminalResetStore((state) => Boolean(state.reconnecting[sessionId]));
+	const cloudFailure = session?.cloud?.observedState === "terminated";
 	// Latch the session that has reached "connected" at least once (keyed on
 	// sessionId so it resets cleanly when the view switches sessions). After the
 	// first successful connect, a transient runtime-connection drop while the
@@ -764,9 +765,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// "restoring_agent" while the sandbox is still running (a transient runtime
 	// relay drop mid-turn). A terminal re-mint (cloudReconnecting, covers a blank
 	// flash) and a genuine workspace restart still raise the loader.
-	const showLifecycleLoader = hasConnectedOnce
+	const showLifecycleLoader = !cloudFailure && (hasConnectedOnce
 		? (cloudReconnecting || workspaceRestarting)
-		: (cloudReconnecting || (cloudStage != null && cloudStage !== "paused_by_coder" && cloudStage !== "connected"));
+		: (cloudReconnecting || (cloudStage != null && cloudStage !== "paused_by_coder" && cloudStage !== "connected")));
 	const cloudResumeRef = useRef("");
 	const requestCloudResume = useCallback(async () => {
 		if (!session?.cloud) return;

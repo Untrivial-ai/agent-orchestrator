@@ -1574,6 +1574,7 @@
 	"terminal.unableRestore": "セッションを復元できません",
 	"terminal.cloudConnectTitle": "ターミナルに接続できません",
 	"terminal.cloudConnectDescription": "ターミナルチケットは発行されましたが、WebSocket接続が繰り返し失敗しました。これは通常、ブラウザのコンテンツセキュリティポリシー、ファイアウォール、またはプロキシがWebSocketトラフィックをブロックしていることが原因です。",
+	"terminal.cloudSessionStopped": "クラウドセッションは停止しました",
 	"terminal.cloudConnectRetry": "再接続",
 	"tray.attentionTooltip_one": "{{count}} 件のセッションに対応が必要です",
 	"tray.attentionTooltip_other": "{{count}} 件のセッションに対応が必要です",

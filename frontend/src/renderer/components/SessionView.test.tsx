@@ -1022,6 +1022,20 @@ describe("SessionView", () => {
 		);
 	});
 
+	it("removes a stale reconnect loader when cloud startup terminates", () => {
+		const session = workerSession("sess-2");
+		session.runtimeConnected = false;
+		session.cloud = {
+			orgId: "cloud-org", desiredState: "running", observedState: "terminated",
+			runtimeError: "The worker never started.",
+		};
+		useTerminalResetStore.setState({ reconnecting: { "sess-2": true } });
+
+		render(<SessionView sessionId="sess-2" />);
+
+		expect(screen.queryByTestId("cloud-session-loader-screen")).not.toBeInTheDocument();
+	});
+
 	it("does not re-raise the full-screen loader when a connected cloud session's runtime relay drops mid-turn", () => {
 		const session = workerSession("sess-2");
 		session.runtimeConnected = true;

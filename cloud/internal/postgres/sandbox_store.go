@@ -532,6 +532,10 @@ func (s *Store) PauseIfIdle(
 				AND org_id = $2
 				AND desired_state = 'running'
 				AND observed_state = 'running'
+				-- A worker startup or repair may still be in flight even when the
+				-- previous worker left the sandbox observed as running. Only the
+				-- worker check-in clears this marker; the reconciler owns failures.
+				AND startup_started_at IS NULL
 				AND (interactive_until IS NULL OR interactive_until <= now())
 				AND EXISTS (
 					SELECT 1 FROM ao_sessions
@@ -955,6 +959,15 @@ func (s *Store) MarkWorkerSeen(
 			ctx,
 			`UPDATE ao_sandboxes
 			SET worker_last_seen_at = now(),
+				-- Startup can consume the whole wake lease before the worker's
+				-- first check-in. Give the newly usable terminal a fresh lease once;
+				-- later heartbeats must not keep an idle sandbox awake forever.
+				interactive_until = CASE
+					WHEN startup_started_at IS NOT NULL THEN GREATEST(
+						COALESCE(interactive_until, now()), now() + $3::interval
+					)
+					ELSE interactive_until
+				END,
 				startup_started_at = NULL,
 				startup_attempts = 0,
 				observed_state = CASE
@@ -967,6 +980,7 @@ func (s *Store) MarkWorkerSeen(
 			WHERE session_id = $1 AND org_id = $2`,
 			sessionID,
 			orgID,
+			intervalString(interactiveSessionLease),
 		)
 		if err != nil {
 			return fmt.Errorf("mark sandbox worker seen: %w", err)

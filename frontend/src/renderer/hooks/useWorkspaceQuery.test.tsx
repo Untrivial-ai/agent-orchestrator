@@ -620,6 +620,26 @@ describe("useWorkspaceQuery", () => {
 		]);
 	});
 
+	it("preserves a stopped cloud session's startup error for the terminal", async () => {
+		cloudState.ready = true;
+		cloudState.org = { id: "org-1" };
+		listProjectsMock.mockResolvedValue({ items: [{ id: "cp-1", displayName: "cloud-app" }] });
+		listSessionsMock.mockResolvedValue({ items: [{
+			id: "cp-session", projectId: "cp-1", kind: "orchestrator", harness: "codex",
+			status: "no_signal", isTerminated: false, runtimeConnected: false,
+			desiredState: "running", observedState: "terminated",
+			runtimeError: "The session's worker never started within 10m0s and has been stopped.",
+		}] });
+		respondWith({});
+
+		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+		await waitFor(() => expect(result.current.data?.find((workspace) => workspace.id === "cp-1")?.sessions).toHaveLength(1));
+		expect(result.current.data?.find((workspace) => workspace.id === "cp-1")?.sessions[0].cloud).toMatchObject({
+			observedState: "terminated",
+			runtimeError: "The session's worker never started within 10m0s and has been stopped.",
+		});
+	});
+
 	it("keeps local projects when the cloud fetch fails", async () => {
 		cloudState.ready = true;
 		cloudState.org = { id: "org-1" };

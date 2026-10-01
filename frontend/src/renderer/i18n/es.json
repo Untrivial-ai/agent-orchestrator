@@ -1597,6 +1597,7 @@
 	"terminal.unableRestore": "No se pudo restaurar la sesión",
 	"terminal.cloudConnectTitle": "No se puede conectar al terminal",
 	"terminal.cloudConnectDescription": "Se emitió el ticket del terminal pero la conexión WebSocket falló repetidamente. Esto suele deberse a una política de seguridad de contenido del navegador, un cortafuegos o un proxy que bloquea el tráfico WebSocket.",
+	"terminal.cloudSessionStopped": "Sesión en la nube detenida",
 	"terminal.cloudConnectRetry": "Reintentar conexión",
 	"tray.attentionTooltip_one": "{{count}} sesión requiere atención",
 	"tray.attentionTooltip_many": "{{count}} sesiones requieren atención",

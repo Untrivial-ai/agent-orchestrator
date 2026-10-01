@@ -1181,6 +1181,8 @@ function AttachedTerminal({
 	// a terminal they cannot type into, and it never flickers back once the new
 	// epoch attaches (the epoch only moves forward). Cloud only.
 	const isBoxComingUp = Boolean(session?.cloud) && isReconnecting;
+	// A terminal control-plane verdict wins even if a restore left reconnecting set.
+	const cloudFailure = attachSession?.cloud?.observedState === "terminated";
 	// The single connecting state for a cloud terminal: ONE opaque centered
 	// "Connecting" cover from first connect (or a restore box coming up) until the
 	// pane has been fully revealed once (attached AND its replay painted). It is
@@ -1210,6 +1212,7 @@ function AttachedTerminal({
 		state === "exited" || canRestoreSession || (terminalTarget?.kind === "worker" && sessionAgentExited(session));
 	const isCloudConnecting =
 		Boolean(attachSession?.cloud) &&
+		!cloudFailure &&
 		!isCloudConnectError &&
 		!showEmptyState &&
 		!showEndedStatePreview &&
@@ -1273,10 +1276,20 @@ function AttachedTerminal({
 						<div className="text-terminal">{t("terminal.connecting")}</div>
 					</div>
 				)}
-				{showReplayCover && !isCloudConnecting && (
+				{showReplayCover && !isCloudConnecting && !cloudFailure && (
 					<ReplayCover message={attachSession?.cloud ? t("terminal.connecting") : undefined} />
 				)}
-				{isCloudConnectError && <CloudConnectError onRetry={handleRetry} />}
+				{isCloudConnectError && !cloudFailure && <CloudConnectError onRetry={handleRetry} />}
+				{cloudFailure && (
+					<div className="terminal-surface absolute inset-0 z-10 grid place-items-center p-6 font-mono text-control" data-testid="terminal-cloud-failure">
+						<div className="max-w-lg text-center">
+							<div className="text-terminal">{t("terminal.cloudSessionStopped")}</div>
+							{attachSession?.cloud?.runtimeError && (
+								<div className="mt-2 text-terminal-dim">{attachSession.cloud.runtimeError}</div>
+							)}
+						</div>
+					</div>
+				)}
 				{banner && !showEndedState && (
 					<div className="absolute inset-x-3 top-2 rounded-md border border-border bg-surface/95 px-3 py-1.5 font-mono text-caption text-muted-foreground">
 						{banner}
