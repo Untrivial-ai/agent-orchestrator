@@ -295,7 +295,7 @@ export function BrowserImportDialog({
 							</div>
 						</div>
 					) : null}
-					{view === "result" && result ? <ResultStep result={result} /> : null}
+					{view === "result" && result ? <ResultStep includeCookies={includeCookies} result={result} /> : null}
 				</div>
 
 				<div className={settingsDialogFooterClass}>
@@ -559,11 +559,12 @@ function OptionsStep({
 	);
 }
 
-function ResultStep({ result }: { result: BrowserImportResult }) {
+function ResultStep({ includeCookies, result }: { includeCookies: boolean; result: BrowserImportResult }) {
 	const { t } = useTranslation();
 	const empty = result.entries.every((entry) => entry.importedCookies + entry.importedHistoryEntries === 0);
 	const partial = result.entries.some((entry) =>
-		entry.warnings.some((warning) => !isExpectedSkip(warning))
+		(includeCookies && entry.importedCookies === 0 && entry.skippedCookies > 0)
+		|| entry.warnings.some((warning) => !isExpectedSkip(warning))
 		|| entry.skippedCookies > entry.warnings.reduce((count, warning) => count + (isExpectedSkip(warning) ? warning.count ?? 0 : 0), 0),
 	);
 	const warning = empty || partial;

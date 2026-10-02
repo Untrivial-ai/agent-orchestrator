@@ -129,7 +129,7 @@ AO works with the coding agents and source-control workflow you already use. Age
 
 ## Supported agents
 
-**29 coding agents supported** through one supervised workflow.
+**32 coding agents supported** through one supervised workflow.
 
 <table>
   <tr valign="middle">
@@ -178,9 +178,14 @@ AO works with the coding agents and source-control workflow you already use. Age
     <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/omp.png" alt="OMP" width="24" height="24" align="middle" /> &nbsp; <b>OMP</b></td>
   </tr>
   <tr valign="middle">
-    <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/fx.svg" alt="fx" width="24" height="24" align="middle" /> &nbsp; <b>fx (experimental)</b></td>
-    <td valign="middle" nowrap><b>Unreal Agent</b></td>
+    <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/fx.svg" alt="fx" width="24" height="24" align="middle" /> &nbsp; <b>fx</b></td>
+    <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/unreal-agent.png" alt="Unreal Agent" width="24" height="24" align="middle" /> &nbsp; <b>Unreal Agent</b></td>
     <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/mimo-code.svg" alt="MiMo Code" width="24" height="24" align="middle" /> &nbsp; <b>MiMo Code</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/gemini.svg" alt="Gemini CLI" width="24" height="24" align="middle" /> &nbsp; <b>Gemini CLI</b></td>
+    <td valign="middle" nowrap><img src="frontend/src/renderer/assets/agents/deepseek-harness.svg" alt="DeepSeek" width="24" height="24" align="middle" /> &nbsp; <b>DeepSeek</b></td>
+    <td valign="middle" nowrap></td>
   </tr>
 </table>
 

@@ -1,8 +1,9 @@
 import type { ProjectSource } from "@aoagents/product-ui";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, Bot, Folder, Folders, FolderOpen, GitFork, Star } from "lucide-react";
+import { AlertTriangle, Bot, Cloud, Folder, Folders, FolderOpen, GitFork, Star } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
+import { useCloudGate } from "../hooks/useCloudGate";
 import { useSystemRequirementsGate } from "../hooks/useSystemRequirementsGate";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import { aoBridge } from "../lib/bridge";
@@ -28,8 +29,9 @@ import { Badge } from "./ui/badge";
  * - One centered column (`max-w-[640px]`); no upward translate hack.
  * - "Star us" is a quiet text link with dashed underline on hover — NOT a
  *   TopbarButton / accent pill / bordered card.
- * - Primary actions are a 2×2 grid; standalone agent lives IN the grid (not a
- *   full-width accent CTA above). Connect Mobile is settings-only — not here.
+ * - Primary actions are a 2×2 grid; Cloud replaces the standalone-agent action
+ *   in the fourth cell when Developer Mode and Cloud are enabled.
+ *   Connect Mobile is settings-only — not here.
  * - Recent rows use shared {@link NavRowHighlight} (same as sidebar), not a
  *   flat `hover:bg-interactive-hover` wash.
  * - Section titles share {@link HOME_SECTION_TITLE_CLASS}. With no projects the
@@ -157,11 +159,13 @@ export function HomePage() {
 	const navigate = useNavigate();
 	const { t } = useTranslation();
 	const requestNewTask = useUiStore((state) => state.requestNewTask);
+	const developerMode = useUiStore((state) => state.developerMode);
 	const { cloneProject, createProject, daemonStatus, initializeProjectRepository, workspaceStartupState } =
 		useShell();
 	const { blocked: requirementsBlocked } = useSystemRequirementsGate();
+	const { cloudEnabled } = useCloudGate();
 	const workspaceQuery = useWorkspaceQuery();
-	const [sourceSignal, setSourceSignal] = useState<{ source: ProjectSource; nonce: number } | null>(null);
+	const [sourceSignal, setSourceSignal] = useState<{ source: ProjectSource | "cloud"; nonce: number } | null>(null);
 	const projects = workspaceQuery.data ?? [];
 	const recentProjects = useMemo(() => sortProjectsByActivity(projects).slice(0, RECENT_PROJECT_LIMIT), [projects]);
 
@@ -176,7 +180,7 @@ export function HomePage() {
 
 	if (showStartup) return <DaemonStartupLoader />;
 
-	const requestSource = (source: ProjectSource) => {
+	const requestSource = (source: ProjectSource | "cloud") => {
 		setSourceSignal({ source, nonce: Date.now() });
 	};
 
@@ -214,7 +218,7 @@ export function HomePage() {
 							</button>
 						</div>
 
-						{/* 2×2 action grid; standalone agent is a cell here, not a hero CTA above. */}
+						{/* Cloud replaces the standalone action in the same grid cell when enabled. */}
 						<div className="grid grid-cols-2 gap-3">
 							<HomeActionCard
 								icon={<GitFork strokeWidth={1.8} />}
@@ -231,11 +235,19 @@ export function HomePage() {
 								label={t("createProject.addWorkspace")}
 								onClick={() => requestSource("workspace")}
 							/>
-							<HomeActionCard
-								icon={<Bot strokeWidth={1.8} />}
-								label={t("home.newStandaloneAgent")}
-								onClick={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
-							/>
+							{developerMode && cloudEnabled ? (
+								<HomeActionCard
+									icon={<Cloud strokeWidth={1.8} />}
+									label={t("createProject.cloudTitle")}
+									onClick={() => requestSource("cloud")}
+								/>
+							) : (
+								<HomeActionCard
+									icon={<Bot strokeWidth={1.8} />}
+									label={t("home.newStandaloneAgent")}
+									onClick={() => requestNewTask(STANDALONE_WORKSPACE_ID)}
+								/>
+							)}
 						</div>
 					</section>
 

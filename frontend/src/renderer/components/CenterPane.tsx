@@ -60,6 +60,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 
 type CenterPaneProps = {
 	session?: WorkspaceSession;
+	terminalGeneration?: string;
 	theme: Theme;
 	daemonReady: boolean;
 	terminalTarget?: TerminalTarget;
@@ -94,6 +95,8 @@ type CenterPaneProps = {
 	onAuxiliaryTabOrderChange?: (keys: string[]) => void;
 	/** Stop forwarding the agent pane's keystrokes while its controller drains. */
 	agentInputDisabled?: boolean;
+	/** Reports attachment of the session's own agent terminal. */
+	onSessionTerminalAttached?: (attached: boolean) => void;
 };
 
 export type CenterPaneWorkspaceTab = {
@@ -152,6 +155,7 @@ function initialTerminalFontSize(): number {
 
 export function CenterPane({
 	session,
+	terminalGeneration,
 	theme,
 	daemonReady,
 	terminalTarget,
@@ -178,6 +182,7 @@ export function CenterPane({
 	auxiliaryTabOrder,
 	onAuxiliaryTabOrderChange,
 	agentInputDisabled = false,
+	onSessionTerminalAttached,
 }: CenterPaneProps) {
 	const { t } = useTranslation();
 	const paneRef = useRef<HTMLDivElement | null>(null);
@@ -233,7 +238,7 @@ export function CenterPane({
 		showRightFade,
 	} = useTabScrollEdges([tabOverflowWatch]);
 	const previousTabCountRef = useRef(availableAuxiliaryKeys.length);
-	const agentSwitchesQuery = useAgentSwitches(session?.id ?? "");
+	const agentSwitchesQuery = useAgentSwitches(session?.id ?? "", !session?.cloud);
 	const agentSwitches = agentSwitchesQuery.data ?? [];
 	const switchMutation = useSwitchAgentState(session?.id ?? "");
 	const mountedSessionIdRef = useRef(session?.id);
@@ -763,8 +768,10 @@ export function CenterPane({
 							isFullscreen={isFullscreen}
 							inputDisabled={workerInputDisabled}
 							onChangeFontSize={updateFontSize}
+							onTerminalContentReadyChange={target.kind === "worker" && session?.cloud ? onSessionTerminalAttached : undefined}
 							onToggleFullscreen={toggleFullscreen}
 							session={session}
+							terminalGeneration={terminalGeneration}
 							terminalTarget={target}
 							theme={theme}
 						/>

@@ -294,6 +294,17 @@ describe("HumanMessage attachments", () => {
 		expect(screen.queryByRole("img")).not.toBeInTheDocument();
 		expect(document.body.textContent).toContain(text);
 	});
+
+	it("linkifies session URLs without parsing the human message as Markdown", () => {
+		const text = "Notes:\n- fix *bug*\nao://sessions/proj/sess\n> write test";
+		const { container } = render(<HumanMessage message={humanMessage(text)} sessionId="ao-1" />);
+
+		const paragraph = container.querySelector(".cursor-chat-human-message > p");
+		expect(paragraph).toHaveClass("whitespace-pre-wrap");
+		expect(paragraph?.textContent).toBe(text);
+		expect(screen.getByRole("link", { name: "ao://sessions/proj/sess" })).toBeInTheDocument();
+		expect(container.querySelector("ul, blockquote, em")).toBeNull();
+	});
 });
 
 describe("Chat message timestamps", () => {
@@ -1163,6 +1174,22 @@ describe("ChatWorkspace timeline", () => {
 		expect(onLinkOpen).toHaveBeenCalledWith("http://localhost:5173");
 	});
 
+	it.each([
+		["human", "user"],
+		["automation", "user"],
+		["daemon", "user"],
+		["provider", "assistant"],
+	] as const)("activates session links from %s messages", async (origin, role) => {
+		const snapshot = structuredClone(chatFixtureSettled);
+		const template = snapshot.items.find((item): item is ConversationMessage => item.kind === "message");
+		if (!template) throw new Error("fixture has no message");
+		snapshot.items = [{ ...template, id: `link-${origin}`, origin, role, text: "ao://sessions/project/session", streaming: false }];
+		const onSessionLinkOpen = vi.fn();
+		render(<ChatWorkspace snapshot={snapshot} onSessionLinkOpen={onSessionLinkOpen} />);
+		await userEvent.setup().click(screen.getByRole("link"));
+		expect(onSessionLinkOpen).toHaveBeenCalledWith("ao://sessions/project/session");
+	});
+
 	it("offers real recovery actions when the controller stops", async () => {
 		const user = userEvent.setup();
 		const resume = vi.fn();
@@ -1760,6 +1787,37 @@ describe("ChatWorkspace timeline", () => {
 });
 
 describe("automation reports", () => {
+	it("keeps queued browser feedback visible while the agent is busy", () => {
+		const snapshot: ConversationSnapshot = {
+			...chatFixture,
+			turns: [
+				...chatFixture.turns,
+				{ id: "queued-feedback", state: "queued", requestedAt: "2026-09-28T12:00:00Z" },
+			],
+			items: [
+				...chatFixture.items,
+				{
+					kind: "message",
+					id: "queued-feedback-message",
+					turnId: "queued-feedback",
+					sequence: 15,
+					revision: 0,
+					role: "user",
+					origin: "automation",
+					text: "<browser_annotations>\nBrowser feedback\nPage: Example\nURL: https://example.com/\nAnnotations: 1\n\nAnnotation 1 (comment):\nTarget: button\nComment: Make this clearer.\n\n</browser_annotations>",
+					streaming: false,
+					createdAt: "2026-09-28T12:00:00Z",
+				},
+			],
+		};
+
+		render(<ChatWorkspace snapshot={snapshot} />);
+
+		expect(screen.getByText("Browser feedback")).toBeInTheDocument();
+		expect(screen.getByText("1 annotation on Example")).toBeInTheDocument();
+		expect(screen.getByText("Make this clearer.")).toBeInTheDocument();
+	});
+
 	it("renders browser annotation transport as a compact feedback card", () => {
 		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
 		const message: ConversationMessage = {
@@ -1827,6 +1885,18 @@ Task: Address the feedback below according to its wording. Visual adjustments ar
 		render(<OriginMessage message={message} />);
 		expect(screen.getByText(/Checks failed on the base branch/)).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Show full report" })).not.toBeInTheDocument();
+	});
+
+	it("linkifies session URLs without parsing an origin preview as Markdown", () => {
+		const source = chatFixture.items.find((item) => item.id === "m-4") as ConversationMessage;
+		const text = "Notes:\n- fix *bug*\nao://sessions/proj/sess\n> write test";
+		const { container } = render(<OriginMessage message={{ ...source, text }} />);
+
+		const paragraph = container.querySelector(".cursor-chat-origin-message > p");
+		expect(paragraph).toHaveClass("whitespace-pre-wrap");
+		expect(paragraph?.textContent).toBe(text);
+		expect(screen.getByRole("link", { name: "ao://sessions/proj/sess" })).toBeInTheDocument();
+		expect(container.querySelector("ul, blockquote, em")).toBeNull();
 	});
 });
 

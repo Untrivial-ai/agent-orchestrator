@@ -803,6 +803,14 @@ async function createWindowInternal(): Promise<void> {
 			});
 			return result.response === 1;
 		},
+		reportSwitchFailure: (message, labels) => {
+			if (!mainWindow || mainWindow.isDestroyed()) return;
+			void dialog.showMessageBox(mainWindow, {
+				type: "error",
+				title: labels.switchTitle,
+				message,
+			}).catch((error) => console.error("browser profile error dialog failed:", error));
+		},
 	});
 	if (daemonStatus.state === "ready") establishBrowserRuntimeLink();
 

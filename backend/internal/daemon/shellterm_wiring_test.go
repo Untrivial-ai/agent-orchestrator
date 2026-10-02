@@ -132,3 +132,23 @@ func TestSessionWorkspaceLocator_PropagatesUnknownSessionError(t *testing.T) {
 		t.Fatal("SessionWorkspace: want error for an unknown session")
 	}
 }
+
+func TestSessionWorkspaceLocator_CueCommandTargetPreservesStrictFacts(t *testing.T) {
+	removed := filepath.Join(t.TempDir(), "removed-worktree")
+	getter := &fakeSessionGetter{sessions: map[domain.SessionID]domain.Session{
+		"mer-1": {SessionRecord: domain.SessionRecord{
+			ID: "mer-1", ProjectID: "mer", IsTerminated: true,
+			Activity: domain.Activity{State: domain.ActivityExited},
+			Metadata: domain.SessionMetadata{WorkspacePath: removed},
+		}},
+	}}
+	loc := &sessionWorkspaceLocator{sessions: getter}
+
+	target, err := loc.CueCommandSessionTarget(context.Background(), "mer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.ProjectID != "mer" || target.WorkspacePath != removed || !target.IsTerminated || target.Activity != domain.ActivityExited {
+		t.Fatalf("target = %+v", target)
+	}
+}

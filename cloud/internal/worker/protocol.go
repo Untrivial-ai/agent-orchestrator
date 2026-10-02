@@ -22,6 +22,7 @@ type LaunchContext struct {
 	Branch         string `json:"branch"`
 	Prompt         string `json:"prompt,omitempty"`
 	AgentSessionID string `json:"agentSessionId,omitempty"`
+	Interface      string `json:"interface"`
 	// ParentSessionID is the orchestrator that spawned this session; empty for
 	// top-level sessions.
 	ParentSessionID string `json:"parentSessionId,omitempty"`
@@ -158,12 +159,38 @@ type ClaimTurnRequest struct{}
 type Turn struct {
 	ID              string   `json:"id"`
 	Prompt          string   `json:"prompt"`
+	Model           string   `json:"model,omitempty"`
+	ReasoningEffort string   `json:"reasoningEffort,omitempty"`
 	Mode            string   `json:"mode"`
+	ApprovalMode    string   `json:"approvalMode,omitempty"`
 	DeniedCommands  []string `json:"deniedCommands"`
 	Harness         string   `json:"harness"`
 	Attempt         int      `json:"attempt"`
 	CancelRequested bool     `json:"cancelRequested"`
 	AgentSessionID  string   `json:"agentSessionId,omitempty"`
+}
+
+type ChatModel struct {
+	ID            string   `json:"id"`
+	DisplayName   string   `json:"displayName"`
+	Description   string   `json:"description,omitempty"`
+	Default       bool     `json:"default"`
+	Efforts       []string `json:"efforts,omitempty"`
+	DefaultEffort string   `json:"defaultEffort,omitempty"`
+}
+
+type ChatModelsResponse struct {
+	Models []ChatModel `json:"models"`
+}
+
+type ChatApproval struct {
+	RequestID   string          `json:"requestId"`
+	TurnID      string          `json:"turnId"`
+	Attempt     int             `json:"attempt"`
+	WorkerEpoch int64           `json:"workerEpoch,omitempty"`
+	Summary     string          `json:"summary"`
+	ToolKind    string          `json:"toolKind,omitempty"`
+	Decisions   json.RawMessage `json:"decisions"`
 }
 
 type ClaimTurnResponse struct {
@@ -317,11 +344,12 @@ type WorkspaceDiffFile struct {
 }
 
 type TerminalCommand struct {
-	TerminalID string `json:"terminalId"`
-	Kind       string `json:"kind,omitempty"`
-	Data       []byte `json:"data,omitempty"`
-	Columns    uint16 `json:"columns,omitempty"`
-	Rows       uint16 `json:"rows,omitempty"`
+	TerminalID         string `json:"terminalId"`
+	NextOutputSequence int64  `json:"nextOutputSequence,omitempty"`
+	Kind               string `json:"kind,omitempty"`
+	Data               []byte `json:"data,omitempty"`
+	Columns            uint16 `json:"columns,omitempty"`
+	Rows               uint16 `json:"rows,omitempty"`
 }
 
 // TerminalStreamFrame is one message on the persistent duplex terminal
@@ -348,9 +376,11 @@ type TerminalOutputRequest struct {
 }
 
 type TerminalExitRequest struct {
-	ExitCode int `json:"exitCode"`
+	ExitCode         int  `json:"exitCode"`
+	InterfaceHandoff bool `json:"interfaceHandoff,omitempty"`
 }
 
 type AgentTerminalResponse struct {
-	TerminalID string `json:"terminalId"`
+	TerminalID         string `json:"terminalId"`
+	NextOutputSequence int64  `json:"nextOutputSequence"`
 }

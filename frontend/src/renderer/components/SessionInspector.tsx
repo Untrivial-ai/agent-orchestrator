@@ -46,10 +46,12 @@ import { formatTimeCompact } from "../lib/format-time";
 import { AgentAvatar } from "./AgentAvatar";
 import { OrchestratorChildrenSection } from "./OrchestratorChildrenSection";
 import { ProductExternalLink } from "./ProductExternalLink";
+import { CopyButton } from "./chat/CopyButton";
 import { ResumeAgentControl } from "./ResumeAgentControl";
 import {
 	sessionScmSummaryQueryKey,
 	useSessionScmSummary,
+	type SessionPRReference,
 	type SessionPRSummary,
 } from "../hooks/useSessionScmSummary";
 import { useSessionUsage, type SessionUsage } from "../hooks/useSessionUsage";
@@ -342,6 +344,18 @@ const SummaryView = memo(function SummaryView({
 }) {
 	const { t } = useTranslation();
 	const query = useSessionScmSummary(session.id, true, session.cloud?.orgId, session.autoInjectCI === true);
+	const linkedPRs = query.data?.linkedPrs ?? [];
+	const projectQuery = useQuery({
+		queryKey: ["project", session.workspaceId],
+		enabled: linkedPRs.length > 0 && !session.cloud,
+		queryFn: async () => {
+			const { data, error } = await apiClient.GET("/api/v1/projects/{id}", {
+				params: { path: { id: session.workspaceId } },
+			});
+			if (error) throw error;
+			return data?.status === "ok" && "repo" in data.project ? data.project : undefined;
+		},
+	});
 	const developerMode = useUiStore((state) => state.developerMode);
 	const usageQuery = useSessionUsage(session.id, developerMode);
 	const showUsage =
@@ -350,9 +364,10 @@ const SummaryView = memo(function SummaryView({
 		!usageQuery.isError &&
 		hasMeaningfulSessionUsage(usageQuery.data);
 	const showUsageError = developerMode && usageQuery.isError;
-	const prSummaries = sessionPRDisplaySummaries(session, query.data);
-	const prSectionTitle = prSummaries.length > 1 ? t("inspector.pullRequests", { count: prSummaries.length }) : t("inspector.pullRequest");
-	const hasPRs = prSummaries.length > 0;
+	const prSummaries = sessionPRDisplaySummaries(session, query.data?.prs);
+	const prCount = prSummaries.length + linkedPRs.length;
+	const prSectionTitle = prCount > 1 ? t("inspector.pullRequests", { count: prCount }) : t("inspector.pullRequest");
+	const hasPRs = prCount > 0;
 	// Cloud orchestrators list the workers they spawned; local orchestrators
 	// have no parent/child model and every other session has no children.
 	const showWorkers =
@@ -374,16 +389,19 @@ const SummaryView = memo(function SummaryView({
 			pullRequestCards={
 				<div className="flex flex-col gap-1.5">
 					{hasPRs ? (
-						prSummaries.map((pr) => (
-							<PRSummaryCard
-								canOpenReviews={canOpenReviews}
-								key={pr.url || pr.htmlUrl || pr.number}
-								onOpenReviews={onOpenReviews}
-								pr={pr}
-								sessionId={session.id}
-								cloudOrgId={session.cloud?.orgId}
-							/>
-						))
+						<>
+							{prSummaries.map((pr) => (
+								<PRSummaryCard
+									canOpenReviews={canOpenReviews}
+									key={pr.url || pr.htmlUrl || pr.number}
+									onOpenReviews={onOpenReviews}
+									pr={pr}
+									sessionId={session.id}
+									cloudOrgId={session.cloud?.orgId}
+								/>
+							))}
+							{linkedPRs.map((pr) => <LinkedPRCard external={isExternalRepository(pr, projectQuery.data)} key={pr.url} pr={pr} />)}
+						</>
 					) : (
 						<p className={inspectorEmptyClass}>{t("inspector.noPROpened")}</p>
 					)}
@@ -476,6 +494,51 @@ function InspectorPolicyRow({
 				onCheckedChange={onCheckedChange}
 			/>
 		</div>
+	);
+}
+
+function isExternalRepository(pr: SessionPRReference, project: components["schemas"]["Project"] | undefined): boolean {
+	if (!project) return false;
+	const repositories = [project.repo, project.config?.canonicalRepoURL, ...(project.workspaceRepos?.map((repo) => repo.repo) ?? [])];
+	const identities = repositories.flatMap((repository) => {
+		if (!repository) return [];
+		try {
+			const url = new URL(repository.replace(/^git@([^:]+):/, "ssh://git@$1/"));
+			return [`${url.hostname.toLowerCase()}/${url.pathname.replace(/^\/|\/$|\.git$/g, "").toLowerCase()}`];
+		} catch {
+			return [];
+		}
+	});
+	return identities.length > 0 && !identities.includes(`${pr.host.toLowerCase()}/${pr.repo.toLowerCase()}`);
+}
+
+function LinkedPRCard({ external, pr }: { external: boolean; pr: SessionPRReference }) {
+	const { t } = useTranslation();
+	return (
+		<article className="min-w-0 w-full rounded-lg border border-(--color-border-settings-input) bg-(--color-bg-settings-input) px-3 py-2.5">
+			<div className="flex min-w-0 items-center justify-between gap-2">
+				<ProductExternalLink className="inline-flex min-w-0 items-center gap-1 font-mono text-xs font-medium text-settings-label underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60" href={pr.url}>
+					<GitPullRequest className="size-icon-sm shrink-0" aria-hidden="true" />
+					<span className="truncate">{pr.host}/{pr.repo} {pr.provider === "gitlab" ? "MR" : "PR"} #{pr.number}</span>
+					<ArrowUpRight aria-hidden="true" className="size-icon-2xs shrink-0" />
+				</ProductExternalLink>
+				<CopyButton compact label={t("link.copy")} text={pr.url} />
+			</div>
+			<div className="mt-1.5 flex items-center justify-between gap-2">
+				<div className="flex min-w-0 items-center gap-1 text-2xs text-settings-muted">
+					<span>{t("inspector.reportedByWorker")}</span>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<button aria-label={t("inspector.linkedPRInfo")} className="inline-flex size-5 shrink-0 items-center justify-center rounded-full hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" type="button">
+								<Info aria-hidden="true" className="size-icon-2xs" />
+							</button>
+						</TooltipTrigger>
+						<TooltipContent className="max-w-72 leading-normal text-pretty">{t("inspector.linkedPRInfo")}</TooltipContent>
+					</Tooltip>
+				</div>
+				{external ? <span className="shrink-0 rounded-full border border-(--color-border-settings-input) px-1.5 py-0.5 text-[9px] leading-none text-settings-muted">{t("inspector.externalRepository")}</span> : null}
+			</div>
+		</article>
 	);
 }
 
@@ -1679,7 +1742,7 @@ function ReviewsSection({
 	const reviewStates = reviewsQuery.data?.reviews ?? [];
 	const autoReviewEnabled = session.autoReviewEnabled === true;
 	const scmSummary = useSessionScmSummary(session.id, true, session.cloud?.orgId, session.autoInjectCI === true);
-	const prSummaries = sessionPRDisplaySummaries(session, scmSummary.data);
+	const prSummaries = sessionPRDisplaySummaries(session, scmSummary.data?.prs);
 	const githubReviews = prSummaries.filter(
 		(pr) =>
 			(pr.state === "open" || pr.state === "draft") &&

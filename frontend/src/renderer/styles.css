@@ -131,6 +131,7 @@
 	--color-sidebar-ring: var(--sidebar-ring);
 	--color-terminal: var(--color-bg-terminal);
 	--color-terminal-opaque: var(--color-bg-terminal-opaque);
+	--color-terminal-foreground: var(--color-text-terminal);
 	--color-terminal-dim: var(--color-text-terminal-dim);
 	--color-scrim: var(--bridge-scrim);
 
@@ -1801,76 +1802,62 @@ textarea,
 }
 
 .multi-step-loader__step {
-	/* `both`: hold the final keyframe (opacity 0) after the exit and pre-apply
-	   the 0% keyframe before the entry. Without it the element snaps back to its
-	   base style (opacity 1) at animation end, flashing the outgoing sentence
-	   fully opaque for a frame before the swap. */
-	animation: multi-step-loader-step var(--multi-step-loader-duration, 3500ms) ease-in-out both;
+	animation: multi-step-loader-step var(--multi-step-loader-duration, 380ms) ease-out both;
 }
 
 .multi-step-loader__dot {
-	animation: multi-step-loader-dot var(--multi-step-loader-duration, 3500ms) ease-in-out both;
+	animation: status-pulse 1.8s ease-in-out infinite;
 }
 
-.multi-step-loader__check {
-	animation: multi-step-loader-check var(--multi-step-loader-duration, 3500ms) ease-out both;
+.cloud-session-loader--complete {
+	animation: cloud-session-loader-complete 360ms ease-out both;
+}
+
+@keyframes cloud-session-loader-complete {
+	to { opacity: 0; }
+}
+
+.multi-step-loader__shimmer {
+	background-image: linear-gradient(90deg, var(--color-text-muted) 0%, var(--color-text-muted) 34%, #93c5fd 50%, var(--color-text-muted) 66%, var(--color-text-muted) 100%);
+	background-size: 400px 100%;
+	background-repeat: repeat-x;
+	background-clip: text;
+	color: transparent;
+	animation: multi-step-loader-step var(--multi-step-loader-duration, 380ms) ease-out both,
+		multi-step-loader-shimmer 3.2s linear infinite;
+}
+
+@keyframes multi-step-loader-shimmer {
+	to { background-position: -400px center; }
 }
 
 @keyframes multi-step-loader-step {
-	0% {
-		filter: blur(3px);
+	from {
+		filter: blur(2px);
 		opacity: 0;
-		transform: translateY(4px);
+		transform: translateY(3px);
 	}
-	8%,
-	86% {
+	to {
 		filter: blur(0);
 		opacity: 1;
 		transform: translateY(0);
 	}
-	94%,
-	100% {
-		filter: blur(2px);
-		opacity: 0;
-		transform: translateY(-2px);
-	}
-}
-
-@keyframes multi-step-loader-dot {
-	0%,
-	82% {
-		opacity: 1;
-		transform: scale(1);
-	}
-	90%,
-	100% {
-		opacity: 0;
-		transform: scale(0.72);
-	}
-}
-
-@keyframes multi-step-loader-check {
-	0%,
-	82% {
-		opacity: 0;
-		transform: scale(0.72);
-	}
-	90%,
-	100% {
-		opacity: 1;
-		transform: scale(1);
-	}
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.multi-step-loader__step,
-	.multi-step-loader__dot,
-	.multi-step-loader__check {
+	.multi-step-loader__dot {
 		animation: none;
 	}
-
-	.multi-step-loader__check {
-		display: none;
+	.cloud-session-loader--complete {
+		animation: none;
+		opacity: 0;
+	}
+	.multi-step-loader__step {
+		animation: none;
+	}
+	.multi-step-loader__shimmer {
+		background: none;
+		color: var(--color-text-muted);
 	}
 }
 
@@ -3078,6 +3065,22 @@ html.sidebar-reordering * {
 }
 
 .workspace-topbar-actions .topbar-control:active:not(:disabled) {
+	transform: scale(0.96);
+}
+
+/* A control that anchors a popover must not transform while pressed. The menu is
+   positioned from the trigger's rect, so scaling the trigger drags the open menu
+   along with it. Press feedback moves to the glyph, which the menu does not
+   measure. */
+.workspace-topbar-actions .topbar-control--static-press:active:not(:disabled) {
+	transform: none;
+}
+
+.workspace-topbar-actions .topbar-control--static-press > svg {
+	transition: transform var(--duration-fast) ease-out;
+}
+
+.workspace-topbar-actions .topbar-control--static-press:active:not(:disabled) > svg {
 	transform: scale(0.96);
 }
 
@@ -4711,6 +4714,23 @@ body:has(#root .platform-windows) > .files-popout-overlay {
 .files-popout-overlay--mac-windowed {
 	top: var(--size-traffic-light-clearance);
 	--browser-popout-top: var(--size-traffic-light-clearance);
+}
+
+/* The files popout has no titlebar row of its own. Its content starts below
+   the native traffic-light band, so without a mask the session topbar from
+   underneath the portal remains visible through that band (half of the row
+   is visible on macOS windowed maximization). Keep the reserved band opaque,
+   matching the browser popout's titlebar surface. */
+.files-popout-overlay--mac-windowed::before {
+	position: absolute;
+	top: calc(-1 * var(--size-traffic-light-clearance));
+	right: 0;
+	left: 0;
+	height: var(--size-traffic-light-clearance);
+	content: "";
+	background: var(--bg);
+	border-bottom: 1px solid var(--border);
+	pointer-events: none;
 }
 
 .browser-popout-overlay--mac-windowed {

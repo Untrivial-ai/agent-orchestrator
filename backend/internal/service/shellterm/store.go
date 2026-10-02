@@ -8,7 +8,7 @@ import (
 )
 
 // ShellTerminalRecord is one persisted shell terminal row. It carries only what
-// is needed to re-attach after daemon/desktop restarts. Only transient command
+// is needed to re-attach after daemon/desktop restarts. Transient trusted
 // terminals expire when their originating app launch ends.
 type ShellTerminalRecord struct {
 	HandleID   string
@@ -18,7 +18,7 @@ type ShellTerminalRecord struct {
 	Title      string
 	AppRunID   string
 	CreatedAt  time.Time
-	Transient  bool // Trusted command terminal, owned by its app launch.
+	Transient  bool // Trusted auth terminal, owned by its app launch.
 }
 
 // Store is the shell terminal service's persistence surface. The SQLite store

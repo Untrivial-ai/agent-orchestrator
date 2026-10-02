@@ -23,6 +23,7 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 		{"codex", "Log in to Codex", "codex", "Choose ChatGPT, device code, API key, or access token", "https://github.com/openai/codex", "", ActionLogin, []string{"codex", "login"}},
 		{"cursor", "Log in to Cursor", "cursor-agent", "Native browser flow", "https://docs.cursor.com/en/cli/installation", "", ActionLogin, []string{"cursor-agent", "login"}},
 		{"opencode", "Log in to OpenCode", "opencode", "Native provider chooser", "https://github.com/anomalyco/opencode", "", ActionLogin, []string{"opencode", "auth", "login"}},
+		{"opencode-v2", "Log in to OpenCode 2", "opencode", "Native provider chooser", "https://opencode.ai/v2/docs", "", ActionLogin, []string{"opencode", "auth", "login"}},
 		{"mimo-code", "Log in to MiMo Code", "mimo", "Native provider chooser", "https://mimo.mi.com/docs/en-US/tokenplan/integration/mimo-code", "", ActionLogin, []string{"mimo", "auth", "login"}},
 		{"aider", "Set up Aider", "", "Configure provider credentials using Aider's documented environment or configuration-file options", "https://aider.chat/docs/config/api-keys.html", "", ActionSetup, nil},
 		{"copilot", "Log in to GitHub Copilot", "copilot", "Native GitHub device/browser flow", "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli", "", ActionLogin, []string{"copilot", "login"}},

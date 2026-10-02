@@ -45,6 +45,7 @@ const LOGOS: AgentLogoSources = {
 	claude: claudeLogo,
 	cursor: cursorLogo,
 	opencode: opencodeLogo,
+	"opencode-v2": opencodeLogo,
 	copilot: copilotLogo,
 	aider: aiderLogo,
 	grok: grokLogo,

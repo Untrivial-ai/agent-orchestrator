@@ -110,7 +110,8 @@ describe("ReviewerSelect", () => {
 		/></QueryClientProvider>);
 
 		const trigger = screen.getByRole("button", { name: "Reviewer" });
-		expect(trigger).toHaveTextContent("Model not reported");
+		// The unidentified model is left off the trigger.
+		expect(trigger).toHaveTextContent(/^Codex$/);
 		await userEvent.click(trigger);
 		await userEvent.click(screen.getByRole("menuitem", { name: /Codex/ }));
 		expect(screen.queryByRole("menuitem", { name: "Agent choice" })).not.toBeInTheDocument();

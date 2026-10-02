@@ -31,6 +31,7 @@ const REVIEWER_HARNESS_IDS = [
 	"kimchi",
 	"muse",
 	"opencode",
+	"opencode-v2",
 	"pi",
 ] as const satisfies readonly ReviewerHarnessId[];
 

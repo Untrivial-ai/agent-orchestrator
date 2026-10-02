@@ -217,13 +217,28 @@ func TestDiscoveryWithoutASignInCheckNeverProbes(t *testing.T) {
 	}
 }
 
-func TestOpenCodeDiscoveryUsesStableModelsCommand(t *testing.T) {
+func TestOpenCodeDiscoveryUsesStableModelsCommandForEachMajor(t *testing.T) {
 	// Must be the bare `models` subcommand. `--pure` is a global flag some
 	// opencode builds reject ("Unrecognized flag: --pure"), which would empty the
-	// picker; the stable contract is `opencode models` with no rejectable flag.
-	spec := commandSpecs["opencode"]
-	if len(spec.args) != 1 || spec.args[0] != "models" {
-		t.Fatalf("opencode discovery args = %q, want [models]", spec.args)
+	// picker; the stable contract for both verified majors is `opencode models`
+	// with no rejectable flag.
+	for _, agentID := range []string{"opencode", "opencode-v2"} {
+		spec, ok := commandSpecs[agentID]
+		if !ok {
+			t.Errorf("%s has no discovery command", agentID)
+			continue
+		}
+		if len(spec.args) != 1 || spec.args[0] != "models" {
+			t.Errorf("%s discovery args = %q, want [models]", agentID, spec.args)
+		}
+		models, err := spec.parser([]byte("anthropic/claude-sonnet-4-6\nopenai/gpt-5.4\n"))
+		if err != nil || len(models) != 2 || models[0].ID != "anthropic/claude-sonnet-4-6" || models[1].ID != "openai/gpt-5.4" {
+			t.Errorf("%s parsed models = %#v, %v", agentID, models, err)
+		}
+		base := Base(agentID)
+		if !base.AllowCustom || base.CustomModelEntry != ports.CustomModelEntryDirect {
+			t.Errorf("%s custom model policy = (%v, %q), want direct", agentID, base.AllowCustom, base.CustomModelEntry)
+		}
 	}
 }
 

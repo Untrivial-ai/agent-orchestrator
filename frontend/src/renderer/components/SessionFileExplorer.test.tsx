@@ -298,7 +298,7 @@ describe("SessionFileExplorer", () => {
 		const { client } = renderWithQuery(<SessionFileExplorer sessionId={sessionId} />);
 
 		await waitFor(() => expect(client.getQueryData(["session-source-files", sessionId, "pull_request", url, "head-1"])).toBeDefined());
-		client.setQueryData(["session-scm-summary", sessionId], [{ headSha: "head-2", number: 42, url, sourceBranch: "files", title: "Files" }]);
+		client.setQueryData(["session-scm-summary", sessionId], { prs: [{ headSha: "head-2", number: 42, url, sourceBranch: "files", title: "Files" }], linkedPrs: [] });
 		await waitFor(() => expect(client.getQueryData(["session-source-files", sessionId, "pull_request", url, "head-2"])).toBeDefined());
 	});
 

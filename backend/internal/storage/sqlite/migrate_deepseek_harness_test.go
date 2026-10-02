@@ -35,19 +35,13 @@ func TestMigration0165AllowsDeepSeekAndReversesBothHistoricalSchemas(t *testing.
 			if legacyQM {
 				mustExec(t, db, insert, "existing-qm", 2, "qm")
 			}
-			if err := migrate(db); err != nil {
-				t.Fatal(err)
-			}
+			upTo(t, db, 166)
 			if _, err := db.Exec(insert, "deepseek-session", 3, "deepseek-harness"); err != nil {
 				t.Fatalf("insert deepseek session after migration: %v", err)
 			}
 			var version int
-			latest, err := expectedMigrationVersion()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := db.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil || int64(version) != latest {
-				t.Fatalf("migration version = %d, err = %v; want %d", version, err, latest)
+			if err := db.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil || version != 166 {
+				t.Fatalf("migration version = %d, err = %v; want 166", version, err)
 			}
 			if _, err := db.Exec(insert, "unknown", 4, "unknown-agent"); err == nil {
 				t.Fatal("unknown harness bypassed the CHECK constraint")

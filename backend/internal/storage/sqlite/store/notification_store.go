@@ -24,7 +24,7 @@ func (s *Store) CreateNotification(ctx context.Context, rec domain.NotificationR
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if existing, ok, err := s.getOpenNotificationByDedupe(ctx, rec); err != nil {
+	if existing, ok, err := s.getNotificationByDedupe(ctx, rec); err != nil {
 		return domain.NotificationRecord{}, false, err
 	} else if ok {
 		return existing, false, nil
@@ -39,10 +39,11 @@ func (s *Store) CreateNotification(ctx context.Context, rec domain.NotificationR
 		Body:      rec.Body,
 		Status:    rec.Status,
 		CreatedAt: rec.CreatedAt,
+		SourceKey: rec.SourceKey,
 	})
 	if err != nil {
 		if isSQLiteUnique(err) {
-			if existing, ok, lookupErr := s.getOpenNotificationByDedupe(ctx, rec); lookupErr != nil {
+			if existing, ok, lookupErr := s.getNotificationByDedupe(ctx, rec); lookupErr != nil {
 				return domain.NotificationRecord{}, false, lookupErr
 			} else if ok {
 				return existing, false, nil
@@ -51,6 +52,20 @@ func (s *Store) CreateNotification(ctx context.Context, rec domain.NotificationR
 		return domain.NotificationRecord{}, false, fmt.Errorf("create notification %s: %w", rec.ID, err)
 	}
 	return notificationFromGen(row), true, nil
+}
+
+func (s *Store) getNotificationByDedupe(ctx context.Context, rec domain.NotificationRecord) (domain.NotificationRecord, bool, error) {
+	if rec.SourceKey != "" {
+		row, err := s.qw.GetNotificationBySourceKey(ctx, rec.SourceKey)
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.NotificationRecord{}, false, nil
+		}
+		if err != nil {
+			return domain.NotificationRecord{}, false, fmt.Errorf("lookup notification source dedupe: %w", err)
+		}
+		return notificationFromGen(row), true, nil
+	}
+	return s.getOpenNotificationByDedupe(ctx, rec)
 }
 
 // ListNotifications returns one stable newest-first page of notifications.
@@ -380,6 +395,7 @@ func notificationFromGen(row gen.Notification) domain.NotificationRecord {
 		Status:     row.Status,
 		CreatedAt:  row.CreatedAt,
 		ResolvedAt: timeFromNull(row.ResolvedAt),
+		SourceKey:  row.SourceKey,
 	}
 }
 

@@ -19,6 +19,12 @@ SELECT * FROM report_outputs WHERE report_id = ? ORDER BY position;
 -- name: ListReportsBySession :many
 SELECT * FROM reports WHERE session_id = ? ORDER BY created_at, id;
 
+-- name: ListReportedPRURLs :many
+SELECT o.reference FROM report_outputs o
+JOIN reports r ON r.id = o.report_id
+WHERE r.session_id = ? AND o.kind = 'pr_created'
+ORDER BY r.created_at, r.id, o.position;
+
 -- name: ListReportsByProject :many
 SELECT * FROM reports WHERE project_id = ? ORDER BY created_at, id;
 

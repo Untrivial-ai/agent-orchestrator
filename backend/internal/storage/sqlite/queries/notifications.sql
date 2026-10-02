@@ -1,8 +1,11 @@
 -- name: CreateNotification :one
 INSERT INTO notifications (
-    id, session_id, project_id, pr_url, type, title, body, status, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    id, session_id, project_id, pr_url, type, title, body, status, created_at, source_key
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
+
+-- name: GetNotificationBySourceKey :one
+SELECT * FROM notifications WHERE source_key = ? LIMIT 1;
 
 -- name: ListUnreadNotificationsPage :many
 SELECT *

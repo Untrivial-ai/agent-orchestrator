@@ -39,6 +39,28 @@ func TestDeepSeekHarnessAdapterIsSelectable(t *testing.T) {
 	}
 }
 
+func TestOpenCodeMajorsAreIndependentlySelectable(t *testing.T) {
+	reg, err := Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"opencode", "opencode-v2"} {
+		adapter, ok := reg.Get(id)
+		if !ok {
+			t.Fatalf("%s is not registered", id)
+		}
+		if _, ok := adapter.(ports.Agent); !ok {
+			t.Fatalf("%s does not implement Agent", id)
+		}
+		if _, ok := adapter.(ports.AgentAuthChecker); !ok {
+			t.Fatalf("%s does not report authentication", id)
+		}
+		if _, ok := adapter.(ports.AgentBinaryResolver); !ok {
+			t.Fatalf("%s does not expose its major-aware binary resolver", id)
+		}
+	}
+}
+
 // TestGetAgentHooksFootprintIsGitignored enforces a contract every shipped
 // (and future) adapter must hold: any file GetAgentHooks writes into a session
 // worktree must be covered by a sibling AO-managed self-ignoring .gitignore

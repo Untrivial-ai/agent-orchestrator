@@ -9,7 +9,9 @@ import {
 } from "@aoagents/product-ui";
 import { AlertTriangle, LayoutDashboard, RotateCw } from "lucide-react";
 import {
+	CLOUD_PROJECT_KIND,
 	STANDALONE_WORKSPACE_ID,
+	toProjectKind,
 	type WorkspaceSession,
 	newestActiveOrchestrator,
 	orchestratorHealth,
@@ -46,6 +48,7 @@ import {
 	BoardSessionCardAdapter,
 	sessionsBoardLabels,
 } from "./SessionsBoardAdapters";
+import { CueRunMenu } from "./chat/CueRunMenu";
 
 type SessionsBoardProps = {
 	/** When set, the board shows only this project's sessions. */
@@ -116,11 +119,15 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	const setProjectRestarting = useUiStore((state) => state.setProjectRestarting);
 	const setOrchestratorReplacementError = useUiStore((state) => state.setOrchestratorReplacementError);
 	const health = workspace ? orchestratorHealth(workspace, isProjectRestarting) : { state: "ok" as const };
-
 	const archived = sessions
 		.filter(isArchivedSession)
 		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 	const activeSessions = sessions.filter((candidate) => !isArchivedSession(candidate));
+	const boardSessions = activeSessions.map((session) =>
+		session.status === "no_signal" || session.displayStatus === "No signal"
+			? { ...session, kanbanColumn: "building" as const }
+			: session,
+	);
 	const boardLabels = sessionsBoardLabels(t);
 	const { showStartup, showWelcome, showProjectEmpty, workspaceStartupState } = useBoardPresentation({
 		projectId,
@@ -158,7 +165,13 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 
 	const actions = projectId ? (
 		<>
-			<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} />
+			<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} cloud={workspace?.kind === CLOUD_PROJECT_KIND} />
+			{workspace && toProjectKind(workspace.kind) ? <span className="inline-flex">
+				<CueRunMenu
+					projectId={projectId}
+					disabled={isProjectRestarting || isProvisioning}
+				/>
+			</span> : null}
 			{boardOwnsNotificationCenter ? (
 				<>
 					<NotificationCenter />
@@ -253,7 +266,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 								usage={usageBySession.get(session.id)}
 							/>
 						)}
-						sessions={activeSessions}
+						sessions={boardSessions}
 					/>
 				)}
 			</div>

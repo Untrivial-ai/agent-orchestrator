@@ -686,7 +686,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			return nil, err
 		}
 	}
-	if !liveReconnect && cfg.Harness == domain.HarnessOpenCode && conversation.Settings.OpenCodeMode != "" {
+	if !liveReconnect && isOpenCodeHarness(cfg.Harness) && conversation.Settings.OpenCodeMode != "" {
 		if err := restoreOpenCodeMode(ctx, conv, conversation.Settings.OpenCodeMode); err != nil {
 			_ = cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
 			return nil, err
@@ -1870,7 +1870,7 @@ func (s *Service) SetConfigOption(
 			settings.ReasoningEffort = ""
 		}
 	}
-	if record.Harness == domain.HarnessOpenCode && configID == "mode" {
+	if isOpenCodeHarness(record.Harness) && configID == "mode" {
 		for _, option := range options {
 			if option.ID == "mode" {
 				settings.OpenCodeMode = option.Current.Select
@@ -1887,6 +1887,10 @@ func (s *Service) SetConfigOption(
 		s.persistPickedModel(id, previous, settings)
 	}
 	return options, nil
+}
+
+func isOpenCodeHarness(harness domain.AgentHarness) bool {
+	return harness == domain.HarnessOpenCode || harness == domain.HarnessOpenCodeV2
 }
 
 // Restore the provider-owned choice before publishing a controller. A rejected
@@ -2126,7 +2130,7 @@ func permissionConfigOptions(harness domain.AgentHarness, options []ports.ChatCo
 				case "bypassPermissions":
 					choice.PermissionMode = domain.PermissionModeBypassPermissions
 				}
-			case domain.HarnessOpenCode:
+			case domain.HarnessOpenCode, domain.HarnessOpenCodeV2:
 				// AO's own permission tiers, injected as OpenCode agents. OpenCode
 				// reports an agent's key as its display name, so they are relabelled
 				// here into the vocabulary the rest of AO uses. Its native build and

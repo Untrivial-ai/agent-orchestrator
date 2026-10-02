@@ -138,7 +138,7 @@ describe("NewTaskDialog", () => {
 		expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Agent" })).toHaveTextContent("Claude Code");
 		expect(screen.queryByTestId("execution-context")).not.toBeInTheDocument();
-		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Model not reported");
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Select model");
 		expect(screen.getByRole("button", { name: "Add file" })).toBeInTheDocument();
 		expect(screen.getByLabelText("Task").getAttribute("placeholder")).toBeTruthy();
 		expect(screen.queryByLabelText("Title")).not.toBeInTheDocument();
@@ -355,7 +355,7 @@ describe("NewTaskDialog", () => {
 		await waitForAgentCatalog();
 
 		expect(screen.queryByLabelText("Branch")).not.toBeInTheDocument();
-		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Model not reported");
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Select model");
 
 		await user.type(screen.getByLabelText("Task"), "Build a quick prototype in scratch.");
 		await user.click(screen.getByRole("button", { name: "Start task" }));

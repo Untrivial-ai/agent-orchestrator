@@ -222,6 +222,15 @@ describe("Android native compatibility boundaries", () => {
 		expect(layout).toContain("sheetAllowedDetents: [0.6]");
 	});
 
+	it("keeps Android review actions at the 60% detent with a visible native drag handle", () => {
+		const layout = source("../app/_layout.tsx");
+		const actions = source("../app/sheets/review-actions.tsx");
+		expect(layout).toContain('{ name: "sheets/review-actions", detents: [0.6, 0.95] }');
+		expect(layout).toContain("sheetInitialDetentIndex: 0");
+		expect(layout).toContain("sheetGrabberVisible: true");
+		expect(actions).toMatch(/<ScrollView[^>]*nestedScrollEnabled/);
+	});
+
 	it("does not register the built-in Android sound as a missing custom asset", () => {
 		expect(source("./push.ts")).not.toContain('sound: "default"');
 	});

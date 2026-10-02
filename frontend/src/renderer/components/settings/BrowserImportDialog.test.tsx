@@ -207,6 +207,42 @@ describe("BrowserImportDialog", () => {
 		expect(screen.queryByText("Import complete")).not.toBeInTheDocument();
 	});
 
+	it("warns when Safari history imports but all requested cookies are skipped", async () => {
+		aoBridge.browserProfiles = {
+			...originalBridge,
+			discoverImportSources: vi.fn(async () => ({ sources: [safariSource] })),
+			import: vi.fn(async () => ({ sourceName: "Safari", entries: [{
+				sourceProfileNames: ["Personal"],
+				destinationProfile: { id: "11111111-1111-4111-8111-111111111111", name: "Imported Safari", createdAt: "2026-01-01", updatedAt: "2026-01-01" },
+				importedCookies: 0, importedHistoryEntries: 1, skippedCookies: 1,
+				warnings: [{ code: "expired-cookies-skipped" as const, count: 1 }],
+			}] })),
+			onImportProgress: vi.fn(() => () => undefined),
+		};
+		render(<BrowserImportDialog onImported={() => undefined} onOpenChange={() => undefined} open />);
+		await screen.findByText("Safari");
+		await userEvent.click(screen.getByRole("button", { name: "Start import" }));
+		expect(await screen.findByRole("status")).toHaveTextContent("Import completed with warnings");
+		expect(screen.getByText("0 cookies · 1 history entries")).toBeInTheDocument();
+	});
+
+	it("does not warn when a requested cookie store is empty", async () => {
+		aoBridge.browserProfiles = {
+			...originalBridge,
+			discoverImportSources: vi.fn(async () => ({ sources: [safariSource] })),
+			import: vi.fn(async () => ({ sourceName: "Safari", entries: [{
+				sourceProfileNames: ["Personal"],
+				destinationProfile: { id: "11111111-1111-4111-8111-111111111111", name: "Imported Safari", createdAt: "2026-01-01", updatedAt: "2026-01-01" },
+				importedCookies: 0, importedHistoryEntries: 1, skippedCookies: 0, warnings: [],
+			}] })),
+			onImportProgress: vi.fn(() => () => undefined),
+		};
+		render(<BrowserImportDialog onImported={() => undefined} onOpenChange={() => undefined} open />);
+		await screen.findByText("Safari");
+		await userEvent.click(screen.getByRole("button", { name: "Start import" }));
+		expect(await screen.findByRole("status")).toHaveTextContent("Import complete");
+	});
+
 	it.each([
 		{ imported: 12, failure: false, title: "Import complete" },
 		{ imported: 12, failure: true, title: "Import completed with warnings" },

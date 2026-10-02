@@ -55,8 +55,11 @@ func (s *scmRefreshStore) SchedulePullRequestRefresh(ctx context.Context, orgID,
 	return nil
 }
 
-func (s *scmRefreshStore) GitHubInstallationRoute(context.Context, int64) (string, string, error) {
-	return "", "", s.routeErr
+func (s *scmRefreshStore) GitHubInstallationRoutes(context.Context, int64) ([]domain.GitHubInstallationRoute, error) {
+	if s.routeErr != nil {
+		return nil, s.routeErr
+	}
+	return []domain.GitHubInstallationRoute{{OrgID: "org-1", InstallationID: "install-1"}}, nil
 }
 
 var errWebhookPRNotFound = postgres.ErrNotFound

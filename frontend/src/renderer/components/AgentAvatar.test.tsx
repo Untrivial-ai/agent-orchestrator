@@ -56,4 +56,18 @@ describe("AgentAvatar", () => {
 			expect.stringContaining("data:image/svg+xml"),
 		);
 	});
+
+	it("reuses the OpenCode brand asset for OpenCode 2", () => {
+		render(
+			<>
+				<AgentAvatar provider="opencode" />
+				<AgentAvatar provider="opencode-v2" />
+			</>,
+		);
+
+		expect(screen.getByRole("img", { name: "opencode-v2" })).toHaveAttribute(
+			"src",
+			screen.getByRole("img", { name: "opencode" }).getAttribute("src"),
+		);
+	});
 });

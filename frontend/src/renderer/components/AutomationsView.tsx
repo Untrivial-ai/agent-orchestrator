@@ -1,9 +1,11 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { ScrollArea } from "radix-ui";
 import { useTranslation } from "react-i18next";
-import { CalendarClock, ChevronDown, ChevronRight, Pencil, Plus, Trash2, TriangleAlert, X } from "lucide-react";
+import { CalendarClock, ChevronRight, Clock3, History, Pencil, Plus, Trash2, TriangleAlert, X } from "lucide-react";
 import { Button } from "./ui/button";
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { TopbarButton, topbarProjectLabelClass } from "./TopbarButton";
 import {
 	Dialog,
 	DialogClose,
@@ -57,6 +59,7 @@ import {
 	onboardingFormLabelClass,
 } from "../lib/onboarding-ui";
 import { cn } from "../lib/utils";
+import { hidesShellTopbar } from "../lib/platform";
 
 function displayTime(value?: string, locale?: string) {
 	if (!value) return "—";
@@ -66,6 +69,7 @@ function displayTime(value?: string, locale?: string) {
 export function AutomationsView() {
 	const { t } = useTranslation();
 	const query = useAutomations();
+	const showPageTitle = hidesShellTopbar();
 	const workspaces = useWorkspaceQuery().data ?? [];
 	const harnesses = useAgentReadinessQuery().data?.agents ?? [];
 	const create = useCreateAutomation();
@@ -76,22 +80,52 @@ export function AutomationsView() {
 	const [deleteTarget, setDeleteTarget] = useState<Automation | null>(null);
 	const [expanded, setExpanded] = useState<string | null>(null);
 	const [actionError, setActionError] = useState<string | null>(null);
+	const [filter, setFilter] = useState<"all" | "enabled" | "paused">("all");
+	const automations = query.data ?? [];
+	const visibleAutomations = automations.filter((item) => filter === "all" || (filter === "enabled" ? item.enabled : !item.enabled));
 
 	return (
-		<div className="flex min-h-0 flex-1 flex-col overflow-auto bg-background">
-			<header className="flex items-center justify-between border-b border-border px-8 py-5">
-				<div><h1 className="text-xl font-semibold">{t("automations.title")}</h1><p className="mt-1 text-sm text-muted-foreground">{t("automations.description")}</p></div>
-				<Button onClick={() => setCreateOpen(true)}><Plus aria-hidden="true" />{t("automations.new")}</Button>
+		<div className="flex min-h-0 flex-1 flex-col bg-background">
+			<header className="workspace-topbar-container center-panel-titlebar flex h-toolbar shrink-0 items-center justify-between gap-3 border-b border-border-strong pr-2">
+				<div className="flex min-w-0 items-center gap-2">
+					<h1 className={showPageTitle ? cn(topbarProjectLabelClass, "inline-flex items-center gap-1.5") : "sr-only"}>{showPageTitle ? <CalendarClock className="size-icon-md" aria-hidden="true" /> : null}{t("automations.title")}</h1>
+					{!showPageTitle ? <p className="truncate text-xs text-muted-foreground">{t("automations.description")}</p> : null}
+				</div>
+				<div className="workspace-topbar-actions flex shrink-0 items-center">
+					<TopbarButton variant="primary" className="topbar-control--labeled" onClick={() => setCreateOpen(true)}><Plus className="size-icon-md" aria-hidden="true" />{t("automations.new")}</TopbarButton>
+				</div>
 			</header>
-			<main className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-8">
-				{actionError ? <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{actionError}</p> : null}
-				{query.isLoading ? <p className="text-sm text-muted-foreground">{t("automations.loading")}</p> : null}
+			<ScrollArea.Root asChild type="hover" scrollHideDelay={500}>
+			<main className="relative min-h-0 flex-1 overflow-hidden">
+				<ScrollArea.Viewport className="h-full w-full overscroll-contain focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60" tabIndex={0}>
+				<div className="p-4">
+				{actionError ? <p role="alert" className="mb-3 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{actionError}</p> : null}
+				{query.isLoading ? <p role="status" className="px-3 py-8 text-center text-sm text-muted-foreground">{t("automations.loading")}</p> : null}
 				{query.error ? <p role="alert" className="text-sm text-destructive">{query.error.message}</p> : null}
-				{!query.isLoading && !query.error && query.data?.length === 0 ? <EmptyAutomations onCreate={() => setCreateOpen(true)} /> : null}
-				{query.data?.map((item) => (
-					<AutomationCard key={item.id} item={item} expanded={expanded === item.id} onExpand={() => setExpanded(expanded === item.id ? null : item.id)} onEdit={() => setEditTarget(item)} onDelete={() => setDeleteTarget(item)} onToggle={async (enabled) => { setActionError(null); try { await update.mutateAsync({ id: item.id, body: { enabled } }); } catch (error) { setActionError(error instanceof Error ? error.message : t("automations.updateError")); } }} />
-				))}
+				{!query.isLoading && !query.error && automations.length === 0 ? <EmptyAutomations onCreate={() => setCreateOpen(true)} /> : null}
+				{automations.length > 0 ? <>
+					<div className="mb-3 flex items-center gap-1" role="group" aria-label={t("automations.filter.label")}>
+						{(["all", "enabled", "paused"] as const).map((value) => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)} className={cn("inline-flex h-7 items-center gap-2 rounded-md px-2.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60", filter === value ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground")}>
+							{t(`automations.filter.${value}`)}{" "}<span className="text-[10px] tabular-nums text-muted-foreground">{value === "all" ? automations.length : automations.filter((item) => value === "enabled" ? item.enabled : !item.enabled).length}</span>
+						</button>)}
+					</div>
+					<div className="overflow-hidden rounded-lg border border-border bg-background">
+						<div className="hidden grid-cols-[minmax(0,1fr)_180px_160px_132px] items-center gap-4 border-b border-border bg-muted/20 px-4 py-2 text-[11px] text-muted-foreground lg:grid" aria-hidden="true">
+							<span>{t("automations.field.name")}</span><span>{t("automations.field.schedule")}</span><span>{t("automations.nextRun")}</span><span className="text-right">{t("automations.status")}</span>
+						</div>
+						{visibleAutomations.map((item) => (
+							<AutomationCard key={item.id} item={item} projectName={workspaces.find((workspace) => workspace.id === item.projectId)?.name ?? item.projectId} busy={update.isPending} expanded={expanded === item.id} onExpand={() => setExpanded(expanded === item.id ? null : item.id)} onEdit={() => setEditTarget(item)} onDelete={() => setDeleteTarget(item)} onToggle={async (enabled) => { setActionError(null); try { await update.mutateAsync({ id: item.id, body: { enabled } }); } catch (error) { setActionError(error instanceof Error ? error.message : t("automations.updateError")); } }} />
+						))}
+						{visibleAutomations.length === 0 ? <p className="px-4 py-10 text-center text-xs text-muted-foreground">{t("automations.filter.empty")}</p> : null}
+					</div>
+				</> : null}
+				</div>
+				</ScrollArea.Viewport>
+				<ScrollArea.Scrollbar orientation="vertical" className="z-10 flex w-2 touch-none select-none p-0.5">
+					<ScrollArea.Thumb className="relative flex-1 rounded-full bg-[color-mix(in_srgb,var(--color-scrollbar)_42%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-scrollbar)_56%,transparent)]" />
+				</ScrollArea.Scrollbar>
 			</main>
+			</ScrollArea.Root>
 			<AutomationFormDialog open={createOpen} workspaces={workspaces} harnesses={harnesses} busy={create.isPending} error={create.error?.message ?? null} onOpenChange={setCreateOpen} onSubmit={async (input) => { await create.mutateAsync(input as CreateAutomationInput); setCreateOpen(false); }} />
 			<AutomationFormDialog open={Boolean(editTarget)} automation={editTarget ?? undefined} workspaces={workspaces} harnesses={harnesses} busy={update.isPending} error={update.error?.message ?? null} onOpenChange={(open) => { if (!open) setEditTarget(null); }} onSubmit={async (input) => { if (!editTarget) return; await update.mutateAsync({ id: editTarget.id, body: input }); setEditTarget(null); }} />
 			<ConfirmDialog open={Boolean(deleteTarget)} title={t("automations.delete.title")} description={t("automations.delete.description", { name: deleteTarget?.displayName })} confirmLabel={t("automations.delete.confirm")} destructive busy={remove.isPending} error={remove.error?.message ?? null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }} onConfirm={() => { if (!deleteTarget) return; remove.mutate(deleteTarget.id, { onSuccess: () => setDeleteTarget(null) }); }} />
@@ -104,17 +138,54 @@ function EmptyAutomations({ onCreate }: { onCreate: () => void }) {
 	return <div className="grid min-h-64 place-items-center rounded-xl border border-dashed border-border p-8 text-center"><div><CalendarClock className="mx-auto mb-3 size-8 text-muted-foreground" /><h2 className="font-medium">{t("automations.empty.title")}</h2><p className="mt-1 text-sm text-muted-foreground">{t("automations.empty.description")}</p><Button className="mt-4" onClick={onCreate}>{t("automations.create")}</Button></div></div>;
 }
 
-function AutomationCard({ item, expanded, onExpand, onEdit, onDelete, onToggle }: { item: Automation; expanded: boolean; onExpand: () => void; onEdit: () => void; onDelete: () => void; onToggle: (enabled: boolean) => Promise<void> }) {
+function AutomationCard({ item, projectName, busy, expanded, onExpand, onEdit, onDelete, onToggle }: { item: Automation; projectName: string; busy: boolean; expanded: boolean; onExpand: () => void; onEdit: () => void; onDelete: () => void; onToggle: (enabled: boolean) => Promise<void> }) {
 	const runs = useAutomationRuns(expanded ? item.id : null);
 	const navigate = useNavigate();
 	const { t, i18n } = useTranslation();
-	const frequency = item.rrule.match(/FREQ=([^;\n]+)/)?.[1]?.toLowerCase();
+	const reduceMotion = useReducedMotion();
+	// The daemon serializes DTSTART + RRULE, while the form intentionally
+	// preserves those as legacy rules. Read the rule independently for display.
+	const rule = item.rrule.split(/\r?\n/).find((line) => line.startsWith("RRULE:"))?.slice(6) ?? item.rrule.replace(/^RRULE:/, "");
+	const parts: Record<string, string | undefined> = Object.fromEntries(rule.split(";").map((part) => part.split("=")));
+	const frequency = parts.FREQ?.toLowerCase();
 	const schedule = t(`automations.frequency.${frequency ?? "recurring"}`, { defaultValue: frequency ?? t("automations.frequency.recurring") });
-	return <Card size="sm">
-		<CardHeader><CardTitle className="flex items-center gap-2"><button type="button" className="grid size-6 place-items-center rounded hover:bg-muted" aria-label={t(expanded ? "automations.runs.hide" : "automations.runs.show", { name: item.displayName })} onClick={onExpand}>{expanded ? <ChevronDown /> : <ChevronRight />}</button>{item.displayName}</CardTitle><CardDescription>{item.projectId} · {schedule} · {item.timezone}</CardDescription><CardAction className="flex items-center gap-3"><label className="flex items-center gap-2 text-xs text-muted-foreground"><span>{t(item.enabled ? "automations.enabled" : "automations.disabled")}</span><Switch checked={item.enabled} aria-label={t(item.enabled ? "automations.disable" : "automations.enable", { name: item.displayName })} onCheckedChange={(checked) => void onToggle(checked)} /></label><Button variant="ghost" size="icon-sm" aria-label={t("automations.edit.aria", { name: item.displayName })} onClick={onEdit}><Pencil /></Button><Button variant="ghost" size="icon-sm" className="text-destructive hover:bg-destructive/10 hover:text-destructive" aria-label={t("automations.delete.aria", { name: item.displayName })} onClick={onDelete}><Trash2 /></Button></CardAction></CardHeader>
-		<CardContent><div className="grid gap-3 text-sm sm:grid-cols-3"><div><span className="block text-xs text-muted-foreground">{t("automations.nextRun")}</span>{item.enabled ? displayTime(item.nextRunAt, i18n.resolvedLanguage) : t("automations.paused")}</div><div><span className="block text-xs text-muted-foreground">{t("automations.latestState")}</span>{item.latestRun?.status ?? t("automations.neverRun")}</div><div><span className="block text-xs text-muted-foreground">{t("automations.agent")}</span>{item.harness || t("automations.projectDefault")} · {item.kind}</div></div>{item.latestRun?.errorMessage ? <p role="alert" className="mt-3 rounded bg-destructive/10 px-3 py-2 text-xs text-destructive">{item.latestRun.errorMessage}</p> : null}
-		{expanded ? <div className="mt-4 border-t border-border pt-4"><h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("automations.runs.title")}</h3>{runs.isLoading ? <p className="text-sm text-muted-foreground">{t("automations.runs.loading")}</p> : runs.error ? <p role="alert" className="text-sm text-destructive">{runs.error.message}</p> : runs.data?.length ? <div className="space-y-2">{runs.data.map((run) => <div key={run.id} className="flex items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-sm"><div><span className="font-medium capitalize">{run.status}</span><span className="ml-2 text-xs text-muted-foreground">{displayTime(run.scheduledFor, i18n.resolvedLanguage)}</span>{run.errorMessage ? <p className="text-xs text-destructive">{run.errorMessage}</p> : null}</div>{run.sessionId ? <Button variant="outline" size="sm" onClick={() => void navigate({ to: "/sessions/$sessionId", params: { sessionId: run.sessionId! } })}>{t("automations.runs.openSession")}</Button> : null}</div>)}</div> : <p className="text-sm text-muted-foreground">{t("automations.runs.empty")}</p>}</div> : null}</CardContent>
-	</Card>;
+	const simpleRule = !parts.INTERVAL || parts.INTERVAL === "1";
+	const scheduleTime = parts.BYHOUR !== undefined && parts.BYMINUTE !== undefined ? parseHourMinute(parts.BYHOUR, parts.BYMINUTE) : null;
+	const clockTime = scheduleTime ? new Intl.DateTimeFormat(i18n.resolvedLanguage, { hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(new Date(Date.UTC(2000, 0, 1, scheduleTime.hour, scheduleTime.minute))) : null;
+	const rawWeekdays = parts.BYDAY?.split(",") ?? [];
+	const weekdays = rawWeekdays.filter((day): day is WeekdayCode => WEEKDAY_CODES.includes(day as WeekdayCode));
+	const validWeekdays = weekdays.length > 0 && weekdays.length === rawWeekdays.length;
+	const shortWeekday = (day: WeekdayCode) => new Intl.DateTimeFormat(i18n.resolvedLanguage, { weekday: "short", timeZone: "UTC" }).format(new Date(Date.UTC(2026, 0, 5 + WEEKDAY_CODES.indexOf(day))));
+	const weekdayLabel = weekdays.length === 1 ? t(`automations.weekday.${weekdays[0]}`) : weekdays.join(",") === "MO,TU,WE,TH,FR" ? `${shortWeekday("MO")}–${shortWeekday("FR")}` : weekdays.map(shortWeekday).join(", ");
+	const scheduleLabel = simpleRule && frequency === "weekly" && validWeekdays ? weekdayLabel : simpleRule && frequency === "monthly" && /^[1-9]$|^[12]\d$|^3[01]$/.test(parts.BYMONTHDAY ?? "") ? t("automations.schedule.monthDay", { day: parts.BYMONTHDAY }) : schedule;
+
+	const historyId = `automation-history-${item.id}`;
+	return <article className="group border-b border-border last:border-b-0">
+		<div className={cn("grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-4 py-3 transition-colors motion-reduce:transition-none lg:grid-cols-[minmax(0,1fr)_180px_160px_132px]", expanded ? "bg-muted/30" : "hover:bg-muted/20")}>
+			<button type="button" className="flex min-w-0 items-center gap-2.5 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60" aria-label={t(expanded ? "automations.runs.hide" : "automations.runs.show", { name: item.displayName })} aria-expanded={expanded} aria-controls={historyId} onClick={onExpand}>
+				<ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform duration-150 motion-reduce:transition-none", expanded && "rotate-90")} />
+				<div className="min-w-0"><h2 className="truncate text-[13px] font-medium leading-5 text-foreground">{item.displayName}</h2><p className="truncate text-[11px] leading-5 text-muted-foreground">{projectName}</p></div>
+			</button>
+			<div className="col-start-1 flex items-start gap-2 pl-6 text-xs lg:col-start-auto lg:pl-0"><CalendarClock aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" /><div><p className="capitalize">{scheduleLabel}{clockTime ? ` · ${clockTime}` : ""}</p></div></div>
+			<div className="col-start-1 pl-6 text-xs lg:col-start-auto lg:pl-0"><span className="mr-2 text-muted-foreground lg:hidden">{t("automations.nextRun")}</span><span className={cn("tabular-nums", !item.enabled && "text-muted-foreground")}>{item.enabled ? displayTime(item.nextRunAt, i18n.resolvedLanguage) : t("automations.paused")}</span>{item.latestRun ? <p className="mt-1 text-[11px] capitalize text-muted-foreground">{item.latestRun.status}</p> : null}</div>
+			<div className="col-start-2 row-start-1 row-span-3 flex items-center justify-end gap-1 lg:col-start-auto lg:row-start-auto lg:row-span-1">
+				<Button variant="ghost" size="icon-sm" className="text-muted-foreground lg:opacity-0 lg:group-hover:opacity-100 lg:group-focus-within:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/60" aria-label={t("automations.edit.aria", { name: item.displayName })} onClick={onEdit}><Pencil className="size-3.5" /></Button>
+				<Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive lg:opacity-0 lg:group-hover:opacity-100 lg:group-focus-within:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/60" aria-label={t("automations.delete.aria", { name: item.displayName })} onClick={onDelete}><Trash2 className="size-3.5" /></Button>
+				<Switch checked={item.enabled} disabled={busy} aria-label={t(item.enabled ? "automations.disable" : "automations.enable", { name: item.displayName })} onCheckedChange={(checked) => void onToggle(checked)} />
+			</div>
+		</div>
+		{item.latestRun?.errorMessage ? <p role="alert" className="mx-4 mb-3 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{item.latestRun.errorMessage}</p> : null}
+		<AnimatePresence initial={false}>
+			{expanded ? <motion.div id={historyId} initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: reduceMotion ? 0 : 0.18, ease: "easeOut" }} className="overflow-hidden">
+				<div className="border-t border-border bg-muted/10 px-4 py-4 pl-10">
+					<div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground"><span>{t("automations.timezone", { timezone: item.timezone })}</span><span>{t("automations.agent")}: <span className="text-foreground">{item.harness || t("automations.projectDefault")} · {item.kind}</span></span><span>{t("automations.latestState")}: <span className="capitalize">{item.latestRun?.status ?? t("automations.neverRun")}</span></span></div>
+					<p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("automations.field.prompt")}</p><p className="mb-4 whitespace-pre-wrap text-xs leading-5 text-foreground">{item.prompt}</p>
+					<h3 className="mb-2 flex items-center gap-1.5 text-xs font-medium"><History className="size-3.5 text-muted-foreground" aria-hidden="true" />{t("automations.runs.title")}</h3>
+					{runs.isLoading ? <p role="status" className="text-xs text-muted-foreground">{t("automations.runs.loading")}</p> : runs.error ? <p role="alert" className="text-xs text-destructive">{runs.error.message}</p> : runs.data?.length ? <div className="divide-y divide-border">{runs.data.map((run) => <div key={run.id} className="flex items-center justify-between gap-3 py-2 text-xs"><div><span className="font-medium capitalize">{run.status}</span><span className="ml-3 text-[11px] text-muted-foreground">{displayTime(run.scheduledFor, i18n.resolvedLanguage)}</span>{run.errorMessage ? <p className="mt-1 text-xs text-destructive">{run.errorMessage}</p> : null}</div>{run.sessionId ? <Button variant="outline" size="sm" onClick={() => void navigate({ to: "/sessions/$sessionId", params: { sessionId: run.sessionId! } })}>{t("automations.runs.openSession")}</Button> : null}</div>)}</div> : <p className="flex items-center gap-2 py-3 text-xs text-muted-foreground"><Clock3 className="size-3.5" aria-hidden="true" />{t("automations.runs.empty")}</p>}
+				</div>
+			</motion.div> : null}
+		</AnimatePresence>
+	</article>;
 }
 
 type WorkspaceOption = { id: string; name: string };
@@ -333,7 +404,7 @@ function AutomationFormDialog({
 								aria-invalid={Boolean(validationErrors.prompt) || undefined}
 								aria-describedby={validationErrors.prompt ? `${AUTOMATION_FIELD_IDS.prompt}-error` : undefined}
 								onChange={(event) => { setPrompt(event.target.value); if (event.target.value.trim()) clearValidationError("prompt"); }}
-								className="min-h-24 w-full rounded-md border border-transparent bg-input/50 px-3 py-2 text-[13px] outline-none focus-visible:outline-none aria-invalid:border-destructive"
+								className="min-h-28 w-full resize-y rounded-md border border-transparent bg-input/50 px-3 py-2 text-[13px] leading-5 outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 aria-invalid:border-destructive"
 							/>
 						</Field>
 						{/* Agent/Schedule/Time share one labeled grid and Select/Input chrome. */}

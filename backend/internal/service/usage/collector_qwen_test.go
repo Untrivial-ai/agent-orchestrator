@@ -187,3 +187,38 @@ func TestCollectorQwenRegistersLaterMonthlyRollover(t *testing.T) {
 		t.Fatalf("paths=%v want=%v", got, want)
 	}
 }
+
+// TestCollectorQwenDiscoversEarlierMonthOnFirstObservation catches losing the
+// prior month's usage when a session is first observed after a month rollover:
+// only the newest monthly file existed when AO first looked, but the earlier
+// month's records for this session must still be ingested.
+func TestCollectorQwenDiscoversEarlierMonthOnFirstObservation(t *testing.T) {
+	const nativeID = "qwen-session-1"
+	store := collectorTestStore(t)
+	session := collectorTestSession(t, store, domain.HarnessQwen, nativeID, false)
+	root := t.TempDir()
+	july := filepath.Join(root, "token-usage-2026-07.jsonl")
+	august := filepath.Join(root, "token-usage-2026-08.jsonl")
+	writeUsageFixture(t, july, `{"schemaVersion":1,"id":"turn-july","sessionId":"`+nativeID+`","model":"qwen3","inputTokens":1,"outputTokens":1,"cachedTokens":0,"thoughtsTokens":0,"totalTokens":2}`+"\n")
+	writeUsageFixture(t, august, `{"schemaVersion":1,"id":"turn-august","sessionId":"`+nativeID+`","model":"qwen3","inputTokens":1,"outputTokens":1,"cachedTokens":0,"thoughtsTokens":0,"totalTokens":2}`+"\n")
+	collector := NewCollector(store, SourceRoots{QwenUsage: root}, nil)
+
+	mustNoError(t, collector.RecordHook(context.Background(), session.ID, HookSignal{
+		Harness: domain.HarnessQwen, Event: "session-start", NativeSessionID: nativeID,
+	}))
+	bindings, err := store.ListUsageBindingsForSession(context.Background(), session.ID)
+	if err != nil || len(bindings) != 1 {
+		t.Fatalf("bindings=%+v err=%v", bindings, err)
+	}
+	sources, err := store.ListUsageSourcesForBinding(context.Background(), bindings[0].ID)
+	if err != nil || len(sources) != 2 {
+		t.Fatalf("sources=%+v err=%v, want both monthly files", sources, err)
+	}
+	got := []string{sources[0].ArtifactPath, sources[1].ArtifactPath}
+	slices.Sort(got)
+	want := []string{canonicalUsagePath(t, july), canonicalUsagePath(t, august)}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("paths=%v want=%v", got, want)
+	}
+}

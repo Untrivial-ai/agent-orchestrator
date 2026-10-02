@@ -648,6 +648,21 @@ func (r *Runtime) IsChildAlive(ctx context.Context, handle ports.RuntimeHandle) 
 	return childAlive, nil
 }
 
+// IsUnsupervisedReviewerAlive detects a live pre-supervisor reviewer process
+// without mistaking the pane's preserved shell or the supervised exit sink for
+// reviewer work.
+func (r *Runtime) IsUnsupervisedReviewerAlive(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
+	alive, err := r.IsAlive(ctx, handle)
+	if err != nil || !alive {
+		return false, err
+	}
+	entries, panePID, err := r.supervisedProcessTree(ctx, handle)
+	if err != nil {
+		return false, err
+	}
+	return containsUnsupervisedReviewerWorkload(entries, panePID), nil
+}
+
 // ProbeFencedRuntime returns liveness evidence for the exact fenced runtime identity.
 func (r *Runtime) ProbeFencedRuntime(ctx context.Context, ref ports.FencedRuntimeRef) ports.FencedProbeResult {
 	if ref.Handle.ID == "" || ref.SessionID == "" || strings.TrimSpace(ref.Generation) == "" || ref.Handle.ID != string(ref.SessionID) {
@@ -710,11 +725,39 @@ func (r *Runtime) IsExactSupervisedProcessAlive(ctx context.Context, handle port
 	if ref.SessionID == "" || strings.TrimSpace(ref.LaunchID) == "" {
 		return false, errors.New("tmux runtime: exact supervisor session and launch are required")
 	}
+	// A reviewer pane may be closed outside AO. Confirm the handle first so a
+	// definitively missing tmux session is reported as not alive instead of the
+	// lower-level pane PID lookup surfacing it as an unexpected error.
+	alive, err := r.IsAlive(ctx, handle)
+	if err != nil || !alive {
+		return false, err
+	}
 	entries, panePID, err := r.supervisedProcessTree(ctx, handle)
 	if err != nil {
 		return false, err
 	}
 	return containsExactSupervisedWorkload(entries, panePID, string(ref.SessionID), ref.LaunchID), nil
+}
+
+// HasSupervisedProcessRecord reports whether an AO supervisor is present in
+// the pane's process tree. A live pane without one may be a reviewer launched
+// by an older AO version, which must retain the legacy child-liveness probe.
+func (r *Runtime) HasSupervisedProcessRecord(ctx context.Context, handle ports.RuntimeHandle) (bool, error) {
+	alive, err := r.IsAlive(ctx, handle)
+	if err != nil || !alive {
+		return false, err
+	}
+	entries, panePID, err := r.supervisedProcessTree(ctx, handle)
+	if err != nil {
+		return false, err
+	}
+	descendants := descendantPIDs(entries, panePID)
+	for _, entry := range entries {
+		if entry.pid != panePID && descendants[entry.pid] && isAnySupervisorCommand(entry.command) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *Runtime) supervisedProcessTree(ctx context.Context, handle ports.RuntimeHandle) ([]processEntry, int, error) {
@@ -1152,6 +1195,34 @@ func containsManagedWorkload(entries []processEntry, rootPID int, sessionID, lau
 	return hasChild && !hasSupervisor
 }
 
+func containsUnsupervisedReviewerWorkload(entries []processEntry, rootPID int) bool {
+	descendants := descendantPIDs(entries, rootPID)
+	for _, entry := range entries {
+		if entry.pid == rootPID || !descendants[entry.pid] || isAnySupervisorCommand(entry.command) {
+			continue
+		}
+		if isPreservedPaneProcess(entry.command) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isPreservedPaneProcess(command string) bool {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return true
+	}
+	name := filepath.Base(fields[0])
+	switch name {
+	case "sh", "bash", "zsh", "fish", "ksh", "dash", "nu", "cat":
+		return true
+	default:
+		return false
+	}
+}
+
 func containsExactSupervisedWorkload(entries []processEntry, rootPID int, sessionID, launchID string) bool {
 	descendants := descendantPIDs(entries, rootPID)
 	supervisorPID := 0
@@ -1185,10 +1256,22 @@ func isAnySupervisorCommand(command string) bool {
 
 func isSupervisorCommand(command, sessionID, launchID string) bool {
 	fields := strings.Fields(command)
-	for i := 0; i+6 < len(fields); i++ {
-		if fields[i] == "agent-process" && fields[i+1] == "supervise" &&
-			fields[i+2] == "--session" && fields[i+3] == sessionID &&
-			fields[i+4] == "--launch" && fields[i+5] == launchID && fields[i+6] == "--" {
+	for i := 0; i+1 < len(fields); i++ {
+		if fields[i] != "agent-process" || fields[i+1] != "supervise" {
+			continue
+		}
+		gotSession, gotLaunch := "", ""
+		for j := i + 2; j+1 < len(fields) && fields[j] != "--"; j++ {
+			switch fields[j] {
+			case "--session":
+				gotSession = fields[j+1]
+				j++
+			case "--launch":
+				gotLaunch = fields[j+1]
+				j++
+			}
+		}
+		if gotSession == sessionID && gotLaunch == launchID {
 			return true
 		}
 	}

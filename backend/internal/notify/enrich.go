@@ -15,6 +15,7 @@ func enrich(intent Intent) (domain.NotificationRecord, error) {
 		Type:      intent.Type,
 		Status:    domain.NotificationUnread,
 		CreatedAt: intent.CreatedAt,
+		SourceKey: strings.TrimSpace(intent.SourceKey),
 	}
 	if !intent.Type.Valid() {
 		return domain.NotificationRecord{}, domain.ErrInvalidNotificationType
@@ -46,6 +47,10 @@ func titleForIntent(intent Intent) string {
 		return fmt.Sprintf("%s merged", prLabel(intent))
 	case domain.NotificationPRClosedUnmerged:
 		return fmt.Sprintf("%s closed", prLabel(intent))
+	case domain.NotificationReviewCompleted:
+		return fmt.Sprintf("Review complete for %s", prLabel(intent))
+	case domain.NotificationReviewChangesRequested:
+		return fmt.Sprintf("Review found changes for %s", prLabel(intent))
 	default:
 		return "Notification"
 	}
@@ -74,6 +79,10 @@ func bodyForIntent(intent Intent) string {
 			return fmt.Sprintf("%s was closed without merging. Reopen it if this wasn't intended.", title)
 		}
 		return "Closed without merging. Reopen it if this wasn't intended."
+	case domain.NotificationReviewCompleted:
+		return "AO finished reviewing this pull request and approved it."
+	case domain.NotificationReviewChangesRequested:
+		return "AO finished reviewing this pull request and found changes to address."
 	default:
 		return ""
 	}

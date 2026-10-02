@@ -28,6 +28,17 @@ var clientEventTypes = []string{
 	"chat.turn_interrupted",
 	"chat.turn_aborted",
 	"chat.interrupt_requested",
+	"chat.turn_steered",
+	"chat.turn_steer_requested",
+	"chat.turn_steer_failed",
+	"chat.approval_requested",
+	"chat.approval_decided",
+	"chat.turn_capabilities",
+}
+
+type chatMessagePayload struct {
+	Text string `json:"text"`
+	domain.ChatTurnSettings
 }
 
 func (s *Store) SendMessage(
@@ -37,6 +48,7 @@ func (s *Store) SendMessage(
 	sessionID string,
 	idempotencyKey string,
 	text string,
+	settings domain.ChatTurnSettings,
 ) (domain.ClientEvent, error) {
 	var event domain.ClientEvent
 	err := s.withSessionAccess(ctx, principal, orgID, sessionID, func(tx pgx.Tx, access sessionAccess) error {
@@ -46,7 +58,7 @@ func (s *Store) SendMessage(
 		var err error
 		event, err = sendMessageTx(
 			ctx, tx, orgID, sessionID, idempotencyKey, text, principal.UserID, "",
-			access.ModeCap, access.DeniedCommands,
+			access.ModeCap, access.DeniedCommands, settings,
 		)
 		return err
 	})
@@ -59,8 +71,9 @@ func sendMessageTx(
 	orgID, sessionID, idempotencyKey, text, actorUserID, actorSessionID string,
 	modeCap string,
 	deniedCommands []string,
+	settings domain.ChatTurnSettings,
 ) (domain.ClientEvent, error) {
-	payload, err := json.Marshal(map[string]string{"text": text})
+	payload, err := json.Marshal(chatMessagePayload{Text: text, ChatTurnSettings: settings})
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -84,7 +97,7 @@ func sendMessageTx(
 	if err != nil {
 		return domain.ClientEvent{}, normalizeConstraintError(err)
 	}
-	event, err := appendUserMessage(ctx, tx, orgID, sessionID, text, modeCap, deniedCommands)
+	event, err := appendUserMessage(ctx, tx, orgID, sessionID, idempotencyKey, text, modeCap, deniedCommands, settings)
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -234,6 +247,85 @@ func (s *Store) AppendSessionEvent(
 	return event, nil
 }
 
+// AppendInteractiveConversationFacts projects native TUI hooks into the durable
+// Chat transcript. Headless Chat hooks must not be projected twice.
+func (s *Store) AppendInteractiveConversationFacts(ctx context.Context, orgID, sessionID, eventType, sourceInterface, userPrompt, assistantUpdate string) error {
+	if sourceInterface != "" && sourceInterface != "tui" {
+		return nil
+	}
+	if eventType != "user-prompt-submit" && eventType != "stop" {
+		return nil
+	}
+	text := userPrompt
+	eventTypeOut := "chat.user_message"
+	if eventType == "stop" {
+		text = assistantUpdate
+		eventTypeOut = "chat.assistant_delta"
+	}
+	if text == "" {
+		return nil
+	}
+	payload, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		return err
+	}
+	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if sourceInterface == "" {
+			var current string
+			if err := tx.QueryRow(ctx, `SELECT interface FROM ao_sessions WHERE org_id = $1 AND id = $2 AND is_terminated = false`, orgID, sessionID).Scan(&current); errors.Is(err, pgx.ErrNoRows) {
+				return ErrNotFound
+			} else if err != nil {
+				return err
+			} else if current != "tui" {
+				return nil
+			}
+		}
+		// The initial prompt is already recorded as a chat.user_message at session
+		// create (createSessionTx), and the worker auto-runs it in the TUI, whose
+		// user-prompt-submit hook mirrors the identical text back here — producing a
+		// second, duplicate prompt bubble in ChatUI. Skip a user-prompt mirror that
+		// only repeats the latest recorded user message while it is still
+		// unanswered; a genuinely distinct TUI prompt (the reason this mirror
+		// exists) and a real re-submit of the same text after the agent has replied
+		// (an intervening chat.assistant_delta) both still record. Assistant deltas
+		// are never deduped.
+		if eventTypeOut == "chat.user_message" {
+			var lastText string
+			var answered bool
+			switch err := tx.QueryRow(ctx, `
+				WITH last_user AS (
+					SELECT sequence, payload->>'text' AS text
+					FROM ao_events
+					WHERE org_id = $1 AND session_id = $2 AND type = 'chat.user_message'
+					ORDER BY sequence DESC LIMIT 1
+				)
+				SELECT lu.text, EXISTS (
+					SELECT 1 FROM ao_events e
+					WHERE e.org_id = $1 AND e.session_id = $2
+					  AND e.type = 'chat.assistant_delta' AND e.sequence > lu.sequence
+				)
+				FROM last_user lu`, orgID, sessionID).Scan(&lastText, &answered); {
+			case errors.Is(err, pgx.ErrNoRows):
+				// No prior user message recorded — this is the first, record it.
+			case err != nil:
+				return err
+			case lastText == text && !answered:
+				return nil // duplicate of the still-unanswered latest prompt
+			}
+		}
+		var sequence int64
+		if err := tx.QueryRow(ctx, `UPDATE ao_sessions SET next_sequence = next_sequence + 1, updated_at = now()
+			WHERE org_id = $1 AND id = $2 AND is_terminated = false RETURNING next_sequence - 1`, orgID, sessionID).Scan(&sequence); errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO ao_events (org_id, session_id, sequence, type, payload)
+			VALUES ($1, $2, $3, $4, $5)`, orgID, sessionID, sequence, eventTypeOut, payload)
+		return err
+	})
+}
+
 // appendUserMessage records a user message and, depending on how the
 // session is currently running, either injects it directly into an
 // already-open interactive agent terminal or queues it as a new turn.
@@ -249,13 +341,40 @@ func appendUserMessage(
 	tx pgx.Tx,
 	orgID string,
 	sessionID string,
+	clientMessageID string,
 	text string,
 	modeCap string,
 	deniedCommands []string,
+	settings domain.ChatTurnSettings,
 ) (domain.ClientEvent, error) {
-	event, err := appendUserMessageEvent(ctx, tx, orgID, sessionID, text)
+	event, err := appendUserMessageEvent(ctx, tx, orgID, sessionID, text, settings)
 	if err != nil {
 		return domain.ClientEvent{}, err
+	}
+	// The transition row serializes message acceptance with the coordinator's
+	// completion, preventing delivery to a controller that is being replaced.
+	var transitionID string
+	transitionErr := tx.QueryRow(ctx, `SELECT id FROM ao_interface_transitions
+		WHERE org_id = $1 AND session_id = $2
+		  AND phase NOT IN ('completed', 'failed', 'cancelled')
+		FOR UPDATE`, orgID, sessionID).Scan(&transitionID)
+	if transitionErr == nil {
+		var turnID string
+		if err := tx.QueryRow(ctx, `INSERT INTO ao_interface_transition_messages (
+			org_id, transition_id, client_message_id, message, user_message_sequence,
+			mode_cap, denied_commands
+		) VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)
+		RETURNING turn_id`, orgID, transitionID, clientMessageID, text, event.Sequence,
+			modeCap, nonNilStrings(deniedCommands)).Scan(&turnID); err != nil {
+			return domain.ClientEvent{}, normalizeConstraintError(err)
+		}
+		if err := attachTurnID(ctx, tx, orgID, sessionID, event.Sequence, turnID, &event); err != nil {
+			return domain.ClientEvent{}, err
+		}
+		return event, nil
+	}
+	if !errors.Is(transitionErr, pgx.ErrNoRows) {
+		return domain.ClientEvent{}, transitionErr
 	}
 	var terminalID string
 	var workerEpoch int64
@@ -272,6 +391,7 @@ func appendUserMessage(
 		JOIN ao_sessions session
 			ON session.org_id = terminal.org_id AND session.id = terminal.session_id
 		WHERE terminal.org_id = $1 AND terminal.session_id = $2 AND terminal.kind = 'agent'
+		  AND session.interface = 'tui'
 		  AND terminal.state = 'open' AND terminal.expires_at > now()
 		  AND session.activity_state <> 'active'
 		ORDER BY terminal.created_at DESC
@@ -321,18 +441,22 @@ func appendUserMessage(
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return domain.ClientEvent{}, err
 	}
-	if _, err := tx.Exec(
+	var turnID string
+	if err := tx.QueryRow(
 		ctx,
 		`INSERT INTO ao_turns (
 			org_id, session_id, user_message_sequence, mode_cap, denied_commands
-		) VALUES ($1, $2, $3, NULLIF($4, ''), $5)`,
+		) VALUES ($1, $2, $3, NULLIF($4, ''), $5) RETURNING id`,
 		orgID,
 		sessionID,
 		event.Sequence,
 		modeCap,
 		nonNilStrings(deniedCommands),
-	); err != nil {
+	).Scan(&turnID); err != nil {
 		return domain.ClientEvent{}, normalizeConstraintError(err)
+	}
+	if err := attachTurnID(ctx, tx, orgID, sessionID, event.Sequence, turnID, &event); err != nil {
+		return domain.ClientEvent{}, err
 	}
 	// Wake a worker blocked in WaitForWork so it claims this queued turn without
 	// busy-polling. Delivered on commit; the durable ao_turns row stays the
@@ -343,12 +467,32 @@ func appendUserMessage(
 	return event, nil
 }
 
+func attachTurnID(ctx context.Context, tx pgx.Tx, orgID, sessionID string, sequence int64, turnID string, event *domain.ClientEvent) error {
+	var payload map[string]any
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return err
+	}
+	payload["turnId"] = turnID
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE ao_events SET payload = $4
+		WHERE org_id = $1 AND session_id = $2 AND sequence = $3 AND type = 'chat.user_message'`,
+		orgID, sessionID, sequence, raw); err != nil {
+		return err
+	}
+	event.Payload = raw
+	return nil
+}
+
 func appendUserMessageEvent(
 	ctx context.Context,
 	tx pgx.Tx,
 	orgID string,
 	sessionID string,
 	text string,
+	selected ...domain.ChatTurnSettings,
 ) (domain.ClientEvent, error) {
 	var sequence int64
 	err := tx.QueryRow(
@@ -382,7 +526,11 @@ func appendUserMessageEvent(
 		return domain.ClientEvent{}, err
 	}
 
-	payload, err := json.Marshal(map[string]string{"text": text})
+	settings := domain.ChatTurnSettings{}
+	if len(selected) > 0 {
+		settings = selected[0]
+	}
+	payload, err := json.Marshal(chatMessagePayload{Text: text, ChatTurnSettings: settings})
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}

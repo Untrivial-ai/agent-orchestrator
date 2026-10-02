@@ -2,12 +2,17 @@ package session
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 )
 
 func TestPRFilesUsePersistedBaseAndHeadWithoutReadingWorkspaceChanges(t *testing.T) {
@@ -106,6 +111,116 @@ func TestPRFilesListCommitsAndReadOneCommit(t *testing.T) {
 	}
 	if _, err := svc.GetPRFileRevisionAtCommit(ctx, "ao-1", 42, "", "README.md", WorkspaceBlobAfter, base); err == nil {
 		t.Fatal("read a commit that is not part of the pull request")
+	}
+}
+
+func TestPRCommitListStopsAtTheCapButEveryPRCommitStillOpens(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	runGit(t, repo, "remote", "add", "origin", "https://example.test/acme/repo.git")
+	base := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+	fixture := make([]fixtureCommit, maxCommitLogCommits+10)
+	for i := range fixture {
+		fixture[i] = fixtureCommit{message: fmt.Sprintf("change %d", i), files: map[string]string{"changes.txt": fmt.Sprintf("change %d\n", i)}}
+	}
+	commits := importCommits(t, repo, "feature", base, fixture)
+	head := commits[len(commits)-1]
+	runGit(t, repo, "commit", "--allow-empty", "-m", "outside the pull request")
+	outside := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", Metadata: domain.SessionMetadata{WorkspacePath: repo}}
+	st.prs["ao-1"] = []domain.PullRequest{{Number: 42, URL: "https://example.test/acme/repo/-/merge_requests/42", Provider: "gitlab", Host: "example.test", Repo: "acme/repo", BaseSHA: base, HeadSHA: head}}
+	svc := &Service{store: st}
+	ctx := context.Background()
+
+	files, err := svc.ListPRFiles(ctx, "ao-1", 42, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files.Commits) != maxCommitLogCommits || !files.CommitsTruncated {
+		t.Fatalf("listed %d commits, truncated=%v; want the newest %d and truncated", len(files.Commits), files.CommitsTruncated, maxCommitLogCommits)
+	}
+	if files.Commits[0].SHA != head || files.Commits[maxCommitLogCommits-1].SHA != commits[10] {
+		t.Fatalf("commits run %s to %s, want newest first from %s to %s", files.Commits[0].SHA, files.Commits[maxCommitLogCommits-1].SHA, head, commits[10])
+	}
+
+	// The oldest commit is past the list's cap but still part of the PR.
+	detail, err := svc.GetPRFileAtCommit(ctx, "ao-1", 42, "", "changes.txt", commits[0])
+	if err != nil || detail.Content != "change 0\n" || detail.Status != WorkspaceFileAdded {
+		t.Fatalf("oldest commit file = %#v, %v", detail, err)
+	}
+	after, err := svc.GetPRFileRevisionAtCommit(ctx, "ao-1", 42, "", "changes.txt", WorkspaceBlobAfter, commits[0])
+	if err != nil || after.Content != "change 0\n" {
+		t.Fatalf("oldest commit after = %#v, %v", after, err)
+	}
+
+	// Only a full SHA inside base..head reaches git, and never as an option.
+	escaped := filepath.Join(t.TempDir(), "escaped")
+	for _, sha := range []string{base, outside, commits[0][:12], strings.ToUpper(commits[0]), "--output=" + escaped} {
+		_, err := svc.GetPRFileAtCommit(ctx, "ao-1", 42, "", "changes.txt", sha)
+		var apiErr *apierr.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != "PR_COMMIT_NOT_FOUND" {
+			t.Fatalf("commitSha %q: error = %v, want PR_COMMIT_NOT_FOUND", sha, err)
+		}
+	}
+	if _, err := os.Stat(escaped); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a commitSha reached git as an option: %v", err)
+	}
+}
+
+func TestCommitLogCapsLeaveOutWholeCommitsOnly(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	base := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+	// Sixty files with four-digit line counts make a commit's numstat output
+	// about 260 bytes longer than its name-status output, so some byte caps
+	// cut the numstat pass inside a commit the name-status pass read whole.
+	lines := strings.Repeat("line\n", 1000)
+	wide := func(name string) fixtureCommit {
+		files := map[string]string{}
+		for i := range 60 {
+			files[fmt.Sprintf("wide/%s/%02d.txt", name, i)] = lines
+		}
+		return fixtureCommit{message: name, files: files}
+	}
+	importCommits(t, repo, "feature", base, []fixtureCommit{
+		{message: "small", files: map[string]string{"small.txt": "small\n"}},
+		wide("a"),
+		{message: strings.Repeat("long subject ", 20), files: map[string]string{"subject.txt": "subject\n"}},
+		wide("b"),
+	})
+	ctx := context.Background()
+	revRange := base + "..feature"
+
+	want, wantChanges, wantCounts, truncated, err := gitCommitLogChanges(ctx, repo, revRange, maxCommitLogCommits, maxCommitLogBytes)
+	if err != nil || truncated || len(want) != 4 {
+		t.Fatalf("uncapped log = %d commits, truncated=%v, err=%v; want all 4", len(want), truncated, err)
+	}
+	if got, _, _, truncated, _ := gitCommitLogChanges(ctx, repo, revRange, 4, maxCommitLogBytes); len(got) != 4 || truncated {
+		t.Fatalf("a cap of exactly 4 commits = %d commits, truncated=%v", len(got), truncated)
+	}
+	if got, _, _, truncated, _ := gitCommitLogChanges(ctx, repo, revRange, 3, maxCommitLogBytes); len(got) != 3 || !truncated || got[0].SHA != want[0].SHA {
+		t.Fatalf("a cap of 3 commits = %d commits, truncated=%v; want the newest 3", len(got), truncated)
+	}
+
+	// Every byte cap yields the newest commits, each exactly as the uncapped
+	// log reads it, and flags the rest as left out.
+	for limit := 1; ; limit += 50 {
+		got, changes, counts, truncated, err := gitCommitLogChanges(ctx, repo, revRange, maxCommitLogCommits, limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if truncated != (len(got) < len(want)) {
+			t.Fatalf("cap %d bytes: %d of %d commits, truncated=%v", limit, len(got), len(want), truncated)
+		}
+		for i, commit := range got {
+			sha := want[i].SHA
+			if commit.SHA != sha || !reflect.DeepEqual(changes[sha], wantChanges[sha]) || !reflect.DeepEqual(counts[sha], wantCounts[sha]) {
+				t.Fatalf("cap %d bytes: commit %d is not %s read whole", limit, i, sha)
+			}
+		}
+		if !truncated {
+			return
+		}
 	}
 }
 

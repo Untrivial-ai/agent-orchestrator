@@ -84,6 +84,11 @@ type Config struct {
 	// PromptResponseFailure lets a provider binding interpret its own structured
 	// terminal metadata after a nominally successful ACP prompt response.
 	PromptResponseFailure func(acpsdk.PromptResponse) error
+	// EncodeProviderConversationID and DecodeProviderConversationID let a binding
+	// persist ownership metadata around an opaque provider ID while keeping the
+	// raw value on the ACP wire.
+	EncodeProviderConversationID func(string) string
+	DecodeProviderConversationID func(string) (string, error)
 	// OnAuthRejected is called when the provider rejects the credential during
 	// a live turn. It is how a cached "this credential works" verdict is
 	// corrected the moment the provider says otherwise, and it is the only
@@ -264,6 +269,9 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 		cfg.Permissions, d.cfg.ValidateTurnSettings, resp.ConfigOptions,
 		conv.legacyWire.modelState(), resp.Modes,
 	)
+	if d.cfg.EncodeProviderConversationID != nil {
+		conv.setReportedProviderConversationID(d.cfg.EncodeProviderConversationID(string(resp.SessionId)))
+	}
 	settingsStarted := time.Now()
 	err = conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions})
 	d.logStartStage(cfg.SessionID, "initial_settings", settingsStarted, err)
@@ -302,6 +310,14 @@ func (d *Driver) logStartStage(sessionID domain.SessionID, stage string, started
 func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.ChatConversation, error) {
 	if cfg.ProviderConversationID == "" {
 		return nil, fmt.Errorf("%w: no stored ACP session id", ports.ErrChatResumeFailed)
+	}
+	reportedProviderConversationID := cfg.ProviderConversationID
+	if d.cfg.DecodeProviderConversationID != nil {
+		providerConversationID, err := d.cfg.DecodeProviderConversationID(cfg.ProviderConversationID)
+		if err != nil {
+			return nil, err
+		}
+		cfg.ProviderConversationID = providerConversationID
 	}
 	if !filepath.IsAbs(cfg.WorkspacePath) {
 		return nil, fmt.Errorf("workspace path must be absolute, got %q", cfg.WorkspacePath)
@@ -357,6 +373,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 			cfg.Permissions, d.cfg.ValidateTurnSettings, setup.ConfigOptions,
 			setup.Models, setup.Modes,
 		)
+		conv.setReportedProviderConversationID(reportedProviderConversationID)
 		conv.initialPermission = ports.PermissionMode(live.InitialPermissions)
 		return conv, nil
 	}
@@ -424,6 +441,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 		cfg.Permissions, d.cfg.ValidateTurnSettings, configOptions,
 		conv.legacyWire.modelState(), modes,
 	)
+	conv.setReportedProviderConversationID(reportedProviderConversationID)
 	if err := conv.applyTurnSettings(ctx, ports.ChatTurnSettings{Model: cfg.Model, Effort: cfg.Effort, Approval: cfg.Permissions}); err != nil {
 		if !errors.Is(err, ErrACPSetterUnsupported) {
 			conv.discard()

@@ -24,6 +24,7 @@ import {
 	type TerminalSessionState,
 } from "../hooks/useTerminalSession";
 import { useSessionBrowserLink } from "../hooks/useSessionBrowserLink";
+import { useSessionLinkNavigation } from "../lib/use-session-link-navigation";
 import { getApiBaseUrl } from "../lib/api-client";
 import {
 	createTerminalMux,
@@ -45,6 +46,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 type TerminalPaneProps = {
 	session?: WorkspaceSession;
+	terminalGeneration?: string;
 	theme: Theme;
 	daemonReady: boolean;
 	terminalTarget?: TerminalTarget;
@@ -60,6 +62,8 @@ type TerminalPaneProps = {
 	focusRequested?: boolean;
 	/** Observe attachment state without taking ownership of the terminal lifecycle. */
 	onTerminalStateChange?: (state: TerminalSessionState) => void;
+	/** Cloud agent screen has painted nonblank terminal content. */
+	onTerminalContentReadyChange?: (ready: boolean) => void;
 	/** One-shot input initiated by an explicit UI action. */
 	inputRequest?: { id: number; data: string };
 	/** Reports whether the active attachment accepted a one-shot input request. */
@@ -128,6 +132,7 @@ function terminalPropsMatch(left: TerminalPaneProps, right: TerminalPaneProps): 
 		left.inputDisabled === right.inputDisabled &&
 		left.focusRequested === right.focusRequested &&
 		left.onTerminalStateChange === right.onTerminalStateChange &&
+		left.onTerminalContentReadyChange === right.onTerminalContentReadyChange &&
 		left.inputRequest === right.inputRequest &&
 		left.onInputRequestResult === right.onInputRequestResult &&
 		left.createMux === right.createMux &&
@@ -138,6 +143,7 @@ function terminalPropsMatch(left: TerminalPaneProps, right: TerminalPaneProps): 
 function cacheDescriptor(
 	session: WorkspaceSession | undefined,
 	terminalTarget: TerminalTarget | undefined,
+	terminalGeneration?: string,
 ): TerminalCacheDescriptor | null {
 	if (terminalTarget?.kind === "shell") {
 		if (!terminalTargetBelongsToSession(terminalTarget, session?.id)) return null;
@@ -158,7 +164,7 @@ function cacheDescriptor(
 	const handleId = session?.terminalHandleId;
 	if (!session?.id || !handleId) return null;
 	const ownerKey = `session:${session.id}:worker`;
-	const generation = session.terminalGeneration ?? "";
+	const generation = terminalGeneration ?? session.terminalGeneration ?? "";
 	// The reset nonce discriminates a restored session (same id, new worker epoch,
 	// dead old terminal) from the live one: folding it into the cache key alone
 	// makes restore mount a brand-new entry (which re-mints against the new epoch)
@@ -536,6 +542,10 @@ export function TerminalCacheProvider({
 				removeEntry(entry.cacheKey);
 				continue;
 			}
+			if (entry.kind === "worker" && session?.cloud && session.mode === "chat") {
+				removeEntry(entry.cacheKey);
+				continue;
+			}
 			if (entry.kind === "worker" && session) {
 				const sessionGen = session.terminalGeneration ?? "";
 				const entryGen = entry.generation ?? "";
@@ -670,6 +680,7 @@ function CachedTerminalSlot({
 
 export function TerminalPane({
 	session,
+	terminalGeneration,
 	theme,
 	daemonReady,
 	terminalTarget: requestedTerminalTarget,
@@ -680,6 +691,7 @@ export function TerminalPane({
 	inputDisabled,
 	focusRequested,
 	onTerminalStateChange,
+	onTerminalContentReadyChange,
 	inputRequest,
 	onInputRequestResult,
 }: TerminalPaneProps) {
@@ -780,10 +792,11 @@ export function TerminalPane({
 		inputDisabled,
 		focusRequested,
 		onTerminalStateChange,
+		onTerminalContentReadyChange,
 		inputRequest,
 		onInputRequestResult,
 	};
-	const descriptor = cacheDescriptor(session, terminalTarget);
+	const descriptor = cacheDescriptor(session, terminalTarget, terminalGeneration);
 	if (cache && descriptor) {
 		return <CachedTerminalSlot descriptor={descriptor} props={props} />;
 	}
@@ -801,6 +814,7 @@ export function TerminalPane({
 			onToggleFullscreen={onToggleFullscreen}
 			focusRequested={focusRequested}
 			onTerminalStateChange={onTerminalStateChange}
+			onTerminalContentReadyChange={onTerminalContentReadyChange}
 			inputRequest={inputRequest}
 			onInputRequestResult={onInputRequestResult}
 			terminalTarget={terminalTarget}
@@ -926,7 +940,7 @@ function reviewerPreviewLines(session: WorkspaceSession | undefined): string[] {
 // kilocode and MiMo Code share opencode's TUI lineage; grok also uses a
 // full-screen keyboard-scroll TUI, so all scroll the same way. Muse Code uses
 // the normal terminal buffer instead and must keep the SGR -> tmux scroll path.
-const KEYBOARD_SCROLL_PROVIDERS = new Set(["opencode", "kilocode", "grok", "mimo-code"]);
+const KEYBOARD_SCROLL_PROVIDERS = new Set(["opencode", "opencode-v2", "kilocode", "grok", "mimo-code"]);
 
 // Whether the given provider's TUI is one of the keyboard-scroll agents above.
 export function providerScrollsByKeyboard(provider?: string): boolean {
@@ -963,6 +977,7 @@ function AttachedTerminal({
 	inputDisabled,
 	focusRequested,
 	onTerminalStateChange,
+	onTerminalContentReadyChange,
 	inputRequest,
 	onInputRequestResult,
 	createMux,
@@ -985,6 +1000,7 @@ function AttachedTerminal({
 	// cache retains this component across route switches; a replacement handle
 	// gets a new component rather than inheriting stale screen/input state.
 	const [terminal, setTerminal] = useState<AttachableTerminal | null>(null);
+	const [hasVisibleContent, setHasVisibleContent] = useState(false);
 	const lastInputRequestIdRef = useRef<number | null>(null);
 	const [initFailed, setInitFailed] = useState(false);
 	const [isRestoring, setIsRestoring] = useState(false);
@@ -1062,6 +1078,13 @@ function AttachedTerminal({
 			current = false;
 		};
 	}, [replayPaintPending, replaySettled, terminal]);
+	useEffect(() => {
+		if (!attachSession?.cloud) return;
+		onTerminalContentReadyChange?.(
+			(hasAttached && replaySettled && !replayPaintPending && hasVisibleContent)
+			|| state === "error" || state === "exited" || initFailed,
+		);
+	}, [attachSession?.cloud, hasAttached, hasVisibleContent, initFailed, onTerminalContentReadyChange, replayPaintPending, replaySettled, state]);
 	const handleId = shellTerminalHandleId ?? attachSession?.terminalHandleId;
 	const handleRetry = useCallback(() => {
 		// Re-attach from scratch: resets the connect-failure counter and starts a
@@ -1095,6 +1118,7 @@ function AttachedTerminal({
 		}
 	}, [initFailed, onFatal, onTerminalStateChange]);
 	const handleLinkOpen = useSessionBrowserLink(session);
+	const handleSessionLinkOpen = useSessionLinkNavigation();
 	const restoreSession = useCallback(async () => {
 		if (!session?.id || !canRestoreSession || isRestoring) return;
 		setIsRestoring(true);
@@ -1183,7 +1207,7 @@ function AttachedTerminal({
 	const isBoxComingUp = Boolean(session?.cloud) && isReconnecting;
 	// The single connecting state for a cloud terminal: ONE opaque centered
 	// "Connecting" cover from first connect (or a restore box coming up) until the
-	// pane has been fully revealed once (attached AND its replay painted). It is
+	// pane has been fully revealed once (attached, replay painted, content visible). It is
 	// LATCHED on that first reveal so a later transient reconnect (hasAttached
 	// briefly flips back to false) never flashes the cover back over an
 	// already-visible terminal. The latch resets when the terminal identity
@@ -1202,7 +1226,7 @@ function AttachedTerminal({
 		cloudRevealedIdentityRef.current = cloudTerminalIdentity;
 		cloudRevealedRef.current = false;
 	}
-	if (hasAttached && replaySettled && !replayPaintPending) cloudRevealedRef.current = true;
+	if (hasAttached && replaySettled && !replayPaintPending && hasVisibleContent) cloudRevealedRef.current = true;
 	// Also when the agent exited but its pane survived on a keep-alive: the mux
 	// never reports "exited" there, so without this the strip — and the resume
 	// action on it — stays hidden in exactly the state that needs it (#3875).
@@ -1214,7 +1238,7 @@ function AttachedTerminal({
 		!showEmptyState &&
 		!showEndedStatePreview &&
 		!cloudRevealedRef.current;
-	const showEndedState = showEndedStatePreview && !isBoxComingUp;
+	const showEndedState = showEndedStatePreview && !isBoxComingUp && !session?.cloud;
 	const emptyStateTitle = session ? t("terminal.startingSession") : "Agent Orchestrator";
 	const emptyStateMessage = session
 		? session.kind === "orchestrator"
@@ -1250,7 +1274,9 @@ function AttachedTerminal({
 					onChangeFontSize={onChangeFontSize}
 					onError={handleInitError}
 					onLinkOpen={handleLinkOpen}
+					onSessionLinkOpen={handleSessionLinkOpen}
 					onReady={handleReady}
+					onVisibleContent={attachSession?.cloud ? () => setHasVisibleContent(true) : undefined}
 					onToggleFullscreen={onToggleFullscreen}
 					onVisibleSize={syncVisibleSize}
 					paneScrollsByKeyboard={providerScrollsByKeyboard(provider)}

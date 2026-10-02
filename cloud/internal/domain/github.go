@@ -61,6 +61,15 @@ type GitHubInstallation struct {
 	UpdatedAt            time.Time
 }
 
+// GitHubInstallationRoute maps a GitHub App installation to one AO
+// organization's installation record. A single github_installation_id may have
+// several routes — one per organization that has connected the installation —
+// so a webhook delivery fans out to every connected organization.
+type GitHubInstallationRoute struct {
+	OrgID          string
+	InstallationID string
+}
+
 type GitHubInstallAttempt struct {
 	ID                          string
 	OrgID                       string

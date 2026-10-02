@@ -2257,15 +2257,34 @@ describe("agent browser runtime", () => {
 		expect(result).toMatchObject({ text: "t1" });
 	});
 
-	it("denies browser-partition permissions by default", async () => {
-		const { host, setPermissionCheckHandler, setPermissionRequestHandler } = setupHost();
+	it("allows browser clipboard writes while denying reads and other permissions", async () => {
+		const { host, setPermissionCheckHandler, setPermissionRequestHandler, webContents } = setupHost();
 		await host.execute("sess-1", "tabs");
+		await webContents.loadURL("https://example.com/page");
 
 		expect(setPermissionCheckHandler).toHaveBeenCalledWith(expect.any(Function));
-		expect(setPermissionCheckHandler.mock.calls[0][0]()).toBe(false);
+		const checkPermission = setPermissionCheckHandler.mock.calls[0][0];
+		const mainFrameDetails = { isMainFrame: true, requestingUrl: "https://example.com/page" };
+		const iframeDetails = { isMainFrame: false, requestingUrl: "https://example.com/frame" };
+		const crossOriginDetails = { isMainFrame: true, requestingUrl: "https://malicious.example/page" };
+		expect(checkPermission(webContents, "clipboard-sanitized-write", "https://example.com", mainFrameDetails)).toBe(true);
+		expect(checkPermission(webContents, "clipboard-sanitized-write", "https://example.com", iframeDetails)).toBe(false);
+		expect(checkPermission(webContents, "clipboard-sanitized-write", "https://malicious.example", crossOriginDetails)).toBe(false);
+		expect(checkPermission(webContents, "clipboard-read", "https://example.com", mainFrameDetails)).toBe(false);
+		expect(checkPermission(webContents, "camera", "https://example.com", mainFrameDetails)).toBe(false);
+
+		const requestPermission = setPermissionRequestHandler.mock.calls[0][0];
 		const callback = vi.fn();
-		setPermissionRequestHandler.mock.calls[0][0]({}, "camera", callback);
-		expect(callback).toHaveBeenCalledWith(false);
+		requestPermission(webContents, "clipboard-sanitized-write", callback, mainFrameDetails);
+		expect(callback).toHaveBeenLastCalledWith(true);
+		requestPermission(webContents, "clipboard-sanitized-write", callback, iframeDetails);
+		expect(callback).toHaveBeenLastCalledWith(false);
+		requestPermission(webContents, "clipboard-sanitized-write", callback, crossOriginDetails);
+		expect(callback).toHaveBeenLastCalledWith(false);
+		requestPermission(webContents, "clipboard-read", callback, mainFrameDetails);
+		expect(callback).toHaveBeenLastCalledWith(false);
+		requestPermission(webContents, "camera", callback, mainFrameDetails);
+		expect(callback).toHaveBeenLastCalledWith(false);
 	});
 
 	it("rounds every native browser tab view to match the renderer shell", async () => {

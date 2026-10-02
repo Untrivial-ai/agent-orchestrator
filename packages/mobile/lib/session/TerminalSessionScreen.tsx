@@ -5,7 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ActivityIndicator, Alert, BackHandler, Keyboard, LayoutAnimation, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
-import { ApiError, getPreview, isTerminalStatus, killSession, sendMessage } from "../api";
+import { ApiError, getPreview, isTerminalStatus, killSession, killSessionReviewer, sendMessage } from "../api";
 import { authHeaders, isConfigured, loadConfig, type ServerConfig } from "../config";
 import { terminalTheme, type Theme } from "../theme";
 import { haptics } from "../haptics";
@@ -575,8 +575,11 @@ export default function TerminalScreen({ session: resolved }: { session?: RouteS
 	const t = useTheme();
 	const { scheme } = useThemeState();
 	const styles = useThemedStyles(makeStyles);
-	const params = useLocalSearchParams<{ id?: string; handleId?: string; projectId?: string; sessionId?: string; title?: string }>();
+	const params = useLocalSearchParams<{ id?: string; handleId?: string; projectId?: string; sessionId?: string; title?: string; kind?: string }>();
 	const shellOnly = Boolean(params.handleId);
+	// A reviewer pane is attached by handle like a shell, but the daemon does not
+	// own it as a shell terminal: closing it means stopping the worker's reviewer.
+	const reviewerPane = params.kind === "reviewer" && Boolean(params.sessionId);
 	const id = String(params.handleId ?? params.id ?? "");
 	const sessionId = shellOnly ? String(params.sessionId ?? "") : id;
 	const projectId = params.projectId ? String(params.projectId) : undefined;
@@ -1239,7 +1242,8 @@ export default function TerminalScreen({ session: resolved }: { session?: RouteS
 		const doKill = async () => {
 			try {
 				const config = cfg ?? (await loadConfig());
-				if (shellOnly) await closeShellTerminal(config, id);
+				if (reviewerPane) await killSessionReviewer(config, String(params.sessionId));
+				else if (shellOnly) await closeShellTerminal(config, id);
 				else await killSession(config, id);
 				haptics.success();
 				leave();
@@ -1254,11 +1258,18 @@ export default function TerminalScreen({ session: resolved }: { session?: RouteS
 		}
 		// Cautionary buzz as the destructive confirmation dialog is raised.
 		haptics.warning();
+		if (reviewerPane) {
+			Alert.alert("Stop reviewer session?", "This closes the persistent reviewer and cancels any review it is currently running. Review history is preserved.", [
+				{ text: "Keep reviewer", style: "cancel" },
+				{ text: "Stop reviewer", style: "destructive", onPress: doKill },
+			]);
+			return;
+		}
 		Alert.alert(shellOnly ? "Close shell?" : "Kill session?", shellOnly ? "This stops the worktree shell." : `This stops ${id}.`, [
 			{ text: "Cancel", style: "cancel" },
 			{ text: shellOnly ? "Close" : "Kill", style: "destructive", onPress: doKill },
 		]);
-	}, [cfg, id, leave, shellOnly]);
+	}, [cfg, id, leave, params.sessionId, reviewerPane, shellOnly]);
 
 	// Restore a terminated session: the daemon re-attaches its worktree agent and
 	// its PTY comes back, so we re-open the terminal once restore succeeds.

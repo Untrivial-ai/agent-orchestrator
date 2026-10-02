@@ -109,6 +109,7 @@ var commandSpecs = map[string]commandSpec{
 	// (and still honors the provider-presence env used for cloud scoping) without
 	// betting on a flag that can be rejected.
 	"opencode":    {args: []string{"models"}, parser: parseIDLines},
+	"opencode-v2": {args: []string{"models"}, parser: parseIDLines},
 	"grok":        {args: []string{"models"}, parser: parseGrokModels},
 	"cursor":      {args: []string{"models"}, parser: parseCursorModels},
 	"agy":         {args: []string{"models"}, parser: parseAgyModels},
@@ -187,7 +188,7 @@ func Manual(agentID string) ports.AgentModelCatalog {
 // availability remain agent-owned and are never listed here.
 func customModelEntryMode(agentID string) ports.CustomModelEntryMode {
 	switch agentID {
-	case "claude-code", "codex", "opencode", "grok", "cursor", "qwen", "gemini",
+	case "claude-code", "codex", "opencode", "opencode-v2", "grok", "cursor", "qwen", "gemini",
 		"kimi", "muse", "aider", "goose", "autohand", "fx", "unreal-agent", "mimo-code", "deepseek-harness":
 		return ports.CustomModelEntryDirect
 	case "continue", "cline", "kilocode", "vibe", "pi", "kimchi", "prime-agent":
@@ -489,7 +490,7 @@ func Discover(ctx context.Context, agentID, binary, workingDir string, env map[s
 	if len(models) == 0 {
 		return base, fmt.Errorf("%s model discovery returned no models", agentID)
 	}
-	base.Models = models
+	base.Models = applyConfiguredDefault(models, configuredDefaultModel(agentID, workingDir, env))
 	base.Source = "cli"
 	base.FetchedAt = time.Now().UTC()
 	return base, nil
@@ -816,6 +817,12 @@ func discoveryConfigInputs(ctx context.Context, agentID, workingDir string, env 
 	}
 	if config := configDiscoveryFingerprint(agentID, workingDir, env); config != "" {
 		return "config=" + config
+	}
+	// The listed models come from the binary, but which one is the default comes
+	// from the agent's settings, so a changed default must invalidate the cached
+	// catalog. Nothing configured keeps the binary-only fingerprint unchanged.
+	if configured := configuredDefaultModel(agentID, workingDir, env); configured != "" {
+		return "default=" + configured
 	}
 	return ""
 }

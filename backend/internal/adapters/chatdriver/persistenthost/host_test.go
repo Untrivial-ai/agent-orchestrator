@@ -344,6 +344,7 @@ func TestHostReconnectsSameProviderAndReplaysDetachedOutput(t *testing.T) {
 	}
 	if second == nil {
 		t.Fatal("host never released first controller")
+		return
 	}
 	if !second.Reconnected || second.NextRequestID != 8 {
 		t.Fatalf("reattach metadata = reconnected:%v next:%d", second.Reconnected, second.NextRequestID)

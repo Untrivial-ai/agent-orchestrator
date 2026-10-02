@@ -22,39 +22,17 @@ func TestOpenCodeAgentName(t *testing.T) {
 	}
 }
 
-func TestOpenCodeLaunchArgs(t *testing.T) {
-	got := openCodeLaunchArgs("opencode", "s1", "", nil, agentruntime.PermissionBypassPermissions, "do it")
-	want := []string{"opencode", "--dangerously-skip-permissions", "--agent", "ao", "--prompt", "do it"}
-	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("launch argv = %v, want %v", got, want)
-	}
-	got = openCodeLaunchArgs("opencode", "s2", "", nil, agentruntime.PermissionAuto, "")
-	want = []string{"opencode", "--auto", "--agent", "ao"}
-	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("auto launch argv = %v, want %v", got, want)
-	}
-	got = openCodeRestoreArgs("opencode", "s1", "", nil, agentruntime.PermissionDefault, "", "native-9")
-	want = []string{"opencode", "--agent", "ao", "--session", "native-9"}
-	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("restore argv = %v, want %v", got, want)
-	}
-	// A selected model becomes opencode's --model; empty leaves it on its default.
-	got = openCodeLaunchArgs("opencode", "s3", "anthropic/claude-opus-4-8", nil, agentruntime.PermissionDefault, "")
-	want = []string{"opencode", "--model", "anthropic/claude-opus-4-8", "--agent", "ao"}
-	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("model launch argv = %v, want %v", got, want)
-	}
-}
-
 func TestWriteOpenCodeConfig(t *testing.T) {
 	dir := t.TempDir()
 	promptFile := filepath.Join(dir, "system.md")
 	if err := os.WriteFile(promptFile, []byte("be helpful"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// No prompt file -> no AO config (opencode runs on its own configuration).
 	if path, err := writeOpenCodeConfig("", agentruntime.PermissionDefault, "s1", ""); err != nil || path != "" {
 		t.Fatalf("no prompt file: got %q, %v; want \"\", nil", path, err)
 	}
+
 	path, err := writeOpenCodeConfig(promptFile, agentruntime.PermissionAcceptEdits, "s1", "opencode/space-bunny-free")
 	if err != nil {
 		t.Fatalf("writeOpenCodeConfig: %v", err)
@@ -64,28 +42,69 @@ func TestWriteOpenCodeConfig(t *testing.T) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatalf("config not valid JSON: %v", err)
 	}
+	// accept-edits -> permission.edit = allow.
 	if doc.Permission["edit"] != "allow" {
 		t.Errorf("accept-edits -> permission.edit=allow; got %v", doc.Permission)
+	}
+	// v2: the model rides the config top level, not the argv, and not the agent.
+	if doc.Model != "opencode/space-bunny-free" {
+		t.Errorf("config model = %q, want opencode/space-bunny-free", doc.Model)
+	}
+	// v2: the AO agent is selected via default_agent (the --agent flag is gone).
+	if doc.DefaultAgent != openCodeAgentName("s1") {
+		t.Errorf("default_agent = %q, want %q", doc.DefaultAgent, openCodeAgentName("s1"))
 	}
 	agent, ok := doc.Agent[openCodeAgentName("s1")]
 	if !ok || agent.Mode != "primary" || agent.Prompt != "{file:./system.md}" {
 		t.Errorf("agent config wrong: ok=%v agent=%+v", ok, agent)
 	}
-	// The selected model is pinned on the agent (opencode's authoritative layer)
-	// so the TUI adopts it rather than its persisted default.
-	if agent.Model != "opencode/space-bunny-free" {
-		t.Errorf("agent model = %q, want opencode/space-bunny-free", agent.Model)
-	}
-	// Empty model leaves the agent model unset (harness default).
-	pathNoModel, err := writeOpenCodeConfig(promptFile, agentruntime.PermissionDefault, "s2", "")
+
+	// Empty model leaves the config model unset (harness default), and bypass puts
+	// the full-access rule on the agent so it outranks every config layer.
+	bypassPath, err := writeOpenCodeConfig(promptFile, agentruntime.PermissionBypassPermissions, "s2", "")
 	if err != nil {
-		t.Fatalf("writeOpenCodeConfig (no model): %v", err)
+		t.Fatalf("writeOpenCodeConfig (bypass): %v", err)
 	}
 	var doc2 openCodeInlineConfig
-	data2, _ := os.ReadFile(pathNoModel)
-	_ = json.Unmarshal(data2, &doc2)
-	if m := doc2.Agent[openCodeAgentName("s2")].Model; m != "" {
-		t.Errorf("empty model should leave agent model unset; got %q", m)
+	data2, _ := os.ReadFile(bypassPath)
+	if err := json.Unmarshal(data2, &doc2); err != nil {
+		t.Fatalf("bypass config not valid JSON: %v", err)
+	}
+	if doc2.Model != "" {
+		t.Errorf("empty model should leave config model unset; got %q", doc2.Model)
+	}
+	if perm := doc2.Agent[openCodeAgentName("s2")].Permission; perm != "allow" {
+		t.Errorf("bypass -> agent permission=allow; got %v", perm)
+	}
+}
+
+func TestInstallOpenCodeActivityPlugin(t *testing.T) {
+	workspace := t.TempDir()
+	if err := installOpenCodeActivityPlugin(workspace); err != nil {
+		t.Fatalf("installOpenCodeActivityPlugin: %v", err)
+	}
+	pluginPath := filepath.Join(workspace, ".opencode", "plugins", "ao-activity.ts")
+	data, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("plugin not written: %v", err)
+	}
+	// The plugin must carry the AO sentinel and shell the cloud hook bridge.
+	if !strings.Contains(string(data), openCodePluginSentinel) {
+		t.Error("plugin missing AO sentinel")
+	}
+	if !strings.Contains(string(data), "ao") || !strings.Contains(string(data), "hooks") || !strings.Contains(string(data), "opencode") {
+		t.Error("plugin does not shell `ao hooks opencode <event>`")
+	}
+	// Re-installing overwrites AO's own file (idempotent).
+	if err := installOpenCodeActivityPlugin(workspace); err != nil {
+		t.Fatalf("re-install: %v", err)
+	}
+	// It refuses to clobber a same-named file that is not AO-managed.
+	if err := os.WriteFile(pluginPath, []byte("// user plugin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installOpenCodeActivityPlugin(workspace); err == nil {
+		t.Error("install should refuse to overwrite a non-AO plugin file")
 	}
 }
 

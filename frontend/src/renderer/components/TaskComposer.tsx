@@ -22,6 +22,7 @@ import { type FileAttachmentPayload, useFileAttachments } from "../hooks/useFile
 import { useSettings } from "../hooks/useSettings";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useCloudOrg } from "../hooks/useCloudOrg";
+import { useCloudSandboxProviders } from "../hooks/useCloudSandboxProviders";
 import { useProviderConnections } from "../hooks/useProviderConnections";
 import { cloudAgentInfos, connectedCredentialType, credentialModelScope } from "../lib/cloud-agents";
 import { isConcreteModelID, modelChoiceLabel } from "../lib/agent-model-choices";
@@ -30,7 +31,7 @@ import {
 	DEFAULT_AGENT_PRIORITY_RANK,
 	isReadyAgent,
 } from "../lib/agent-select-options";
-import { useSandboxProviderStore } from "../stores/sandbox-provider-store";
+import { resolveSandboxProviderPreference, useSandboxProviderStore } from "../stores/sandbox-provider-store";
 import { cloudSessionsQueryKey, useCloudProjectsQuery } from "../hooks/useWorkspaceQuery";
 import {
 	agentModelsQueryKey,
@@ -148,6 +149,8 @@ export function TaskComposer({
 	// The user's client-side sandbox-provider preference (when the control plane
 	// offers more than one); omitted lets the control plane use its default.
 	const selectedProvider = useSandboxProviderStore((s) => s.selectedProvider);
+	const { available: availableSandboxProviders } = useCloudSandboxProviders();
+	const provider = resolveSandboxProviderPreference(selectedProvider, availableSandboxProviders);
 	const cloudProjects = useCloudProjectsQuery();
 	const cloudProject = (cloudProjects.data ?? []).find((project) => project.id === projectId);
 	const isCloudProject = Boolean(cloudProject);
@@ -173,7 +176,7 @@ export function TaskComposer({
 					displayName: input.brief.trim().slice(0, 100) || (input.agent ?? "claude-code"),
 					prompt: input.brief,
 					...(input.model ? { model: input.model } : {}),
-					...(selectedProvider ? { provider: selectedProvider } : {}),
+					...(provider ? { provider } : {}),
 				});
 				// The control plane provisions the sandbox asynchronously; surface the
 				// new session on the board immediately.
@@ -185,7 +188,7 @@ export function TaskComposer({
 				throw err instanceof Error ? err : new Error(t("newTask.unableToStart"));
 			}
 		},
-		[cloudClient, cloudOrg, queryClient, selectedProvider, t],
+		[cloudClient, cloudOrg, provider, queryClient, t],
 	);
 
 	const createLocalTask = useCallback(
@@ -332,8 +335,8 @@ export function TaskComposer({
 	const configuredProjectAgent = projectWorkerAgent || globalDefaultAgent;
 	const agentCatalog = agentsQuery.data;
 	// Cloud projects support the control-plane agents listed in CLOUD_AGENT_PROVIDERS
-	// (the single source), with readiness derived from the org's provider connections.
-	const cloudConnectionsQuery = useProviderConnections(isCloudProject ? cloudOrg?.id : undefined);
+	// (the single source), with readiness derived from the user's provider connections.
+	const cloudConnectionsQuery = useProviderConnections();
 	const cloudAgents = useMemo(() => cloudAgentInfos(cloudConnectionsQuery.data), [cloudConnectionsQuery.data]);
 	const standaloneDefaultAgent = useMemo(() => {
 		if (!isStandalone || !agentCatalog) return "";
@@ -693,7 +696,7 @@ export function TaskComposer({
 						: submitTask(brief, "tui")),
 				onSubmit: (brief) => void submitTask(brief, selectedAgent === "unreal-agent" ? "chat" : requiresTuiFallback ? "tui" : undefined),
 			}}
-			renderAgentControl={(control) => <DesktopAgentControl {...control} manageAgents={!isCloudProject} />}
+			renderAgentControl={(control) => <DesktopAgentControl {...control} manageView={isCloudProject ? "cloud" : "local"} />}
 			renderEffortControl={(control) => <TaskEffortPicker {...control} defaultEffort={effortModel?.defaultEffort} />}
 			renderModelControl={(control) => <TaskModelPicker {...control} onRefresh={refreshSelectedModels}
 				showFollowAgentAction={Boolean(catalogDefaultOption || !isConcreteModelID(projectModelOrMode))} />}
@@ -732,11 +735,13 @@ function formatEffortLabel(value: string): string {
 	return value === "xhigh" ? "Extra high" : value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-function DesktopAgentControl({ manageAgents, ...control }: TaskComposerAgentControl & { manageAgents: boolean }) {
+// Both local and cloud list only harnesses that can run, plus a way to manage
+// them: local logins, or cloud connections for cloud projects.
+function DesktopAgentControl({ manageView, ...control }: TaskComposerAgentControl & { manageView: "local" | "cloud" }) {
 	return (
 		<RequiredAgentField
 			{...control}
-			manageAgents={manageAgents}
+			manageView={manageView}
 			variant="chip"
 			triggerClassName="composer-toolbar-option w-full justify-between"
 		/>

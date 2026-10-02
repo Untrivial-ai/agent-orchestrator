@@ -959,6 +959,10 @@ function ShellLayout() {
 			}),
 		[],
 	);
+	const openProject = useCallback(
+		(projectId: string) => void navigate({ to: "/projects/$projectId", params: { projectId } }),
+		[navigate],
+	);
 	const shellContextValue = useMemo(
 		() => ({
 			daemonStatus,
@@ -966,6 +970,7 @@ function ShellLayout() {
 			cloneProject,
 			createProject,
 			initializeProjectRepository,
+			openProject,
 			validateImport,
 		}),
 		[
@@ -973,6 +978,7 @@ function ShellLayout() {
 			createProject,
 			daemonStatus,
 			initializeProjectRepository,
+			openProject,
 			validateImport,
 			workspaceStartupState,
 		],

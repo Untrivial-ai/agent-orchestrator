@@ -1374,6 +1374,222 @@ paths:
       summary: Check whether the desktop browser runtime is connected for a session
       tags:
       - browser
+  /api/v1/cues/{cueId}:
+    delete:
+      operationId: deleteCue
+      parameters:
+      - description: Cue identifier.
+        in: path
+        name: cueId
+        required: true
+        schema:
+          description: Cue identifier.
+          type: string
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Delete a cue
+      tags:
+      - cues
+    get:
+      operationId: getCue
+      parameters:
+      - description: Cue identifier.
+        in: path
+        name: cueId
+        required: true
+        schema:
+          description: Cue identifier.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CueEnvelope'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get a cue
+      tags:
+      - cues
+    patch:
+      operationId: updateCue
+      parameters:
+      - description: Cue identifier.
+        in: path
+        name: cueId
+        required: true
+        schema:
+          description: Cue identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CueDefinitionRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CueEnvelope'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Replace a cue's definition
+      tags:
+      - cues
+  /api/v1/cues/{cueId}/invoke:
+    post:
+      operationId: invokeCue
+      parameters:
+      - description: Cue identifier.
+        in: path
+        name: cueId
+        required: true
+        schema:
+          description: Cue identifier.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvokeCueRequest'
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvokeCueResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Dispatch an agent cue to a session or send a command cue to a scoped
+        shell terminal
+      tags:
+      - cues
   /api/v1/desktop/sessions/{sessionId}/workspace:
     get:
       operationId: getDesktopSessionWorkspace
@@ -2824,6 +3040,107 @@ paths:
       summary: Speculatively create the next task's worktree
       tags:
       - projects
+  /api/v1/projects/{projectId}/cues:
+    get:
+      operationId: listProjectCues
+      parameters:
+      - description: Project whose cues are listed or extended.
+        in: path
+        name: projectId
+        required: true
+        schema:
+          description: Project whose cues are listed or extended.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListCuesResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List a project's cues in name order
+      tags:
+      - cues
+    post:
+      operationId: createCue
+      parameters:
+      - description: Project whose cues are listed or extended.
+        in: path
+        name: projectId
+        required: true
+        schema:
+          description: Project whose cues are listed or extended.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CueDefinitionRequest'
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CueEnvelope'
+          description: Created
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "413":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Request Entity Too Large
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Create a cue for a project
+      tags:
+      - cues
   /api/v1/projects/clone:
     post:
       operationId: cloneProject
@@ -8105,19 +8422,20 @@ paths:
       operationId: getSystemInstallStatus
       parameters:
       - description: 'Install target identifier: tmux, gh, claude, codex, opencode,
-          copilot, or cloudflared.'
+          opencode-v2, copilot, or cloudflared.'
         in: path
         name: target
         required: true
         schema:
           description: 'Install target identifier: tmux, gh, claude, codex, opencode,
-            copilot, or cloudflared.'
+            opencode-v2, copilot, or cloudflared.'
           enum:
           - tmux
           - gh
           - claude
           - codex
           - opencode
+          - opencode-v2
           - copilot
           - cloudflared
           type: string
@@ -8153,19 +8471,20 @@ paths:
       operationId: startSystemInstall
       parameters:
       - description: 'Install target identifier: tmux, gh, claude, codex, opencode,
-          copilot, or cloudflared.'
+          opencode-v2, copilot, or cloudflared.'
         in: path
         name: target
         required: true
         schema:
           description: 'Install target identifier: tmux, gh, claude, codex, opencode,
-            copilot, or cloudflared.'
+            opencode-v2, copilot, or cloudflared.'
           enum:
           - tmux
           - gh
           - claude
           - codex
           - opencode
+          - opencode-v2
           - copilot
           - cloudflared
           type: string
@@ -8518,6 +8837,8 @@ components:
           type: string
         label:
           type: string
+        notice:
+          type: string
         reason:
           type: string
         recommended:
@@ -8555,6 +8876,8 @@ components:
           items:
             $ref: '#/components/schemas/AgentInstallMethod'
           type: array
+        notice:
+          type: string
         reason:
           type: string
       required:
@@ -9894,6 +10217,7 @@ components:
           - cursor
           - kilocode
           - opencode
+          - opencode-v2
           - kiro
           - pi
           - agy
@@ -10702,6 +11026,73 @@ components:
       required:
       - id
       type: object
+    CueDefinitionRequest:
+      properties:
+        command:
+          description: Shell command for a command cue. At most 4096 bytes; cleared
+            when saving agent cues.
+          maxLength: 4096
+          type: string
+        description:
+          description: Optional human note about the cue, at most 240 bytes.
+          maxLength: 240
+          type: string
+        name:
+          description: Short cue name, unique within the project. Trimmed; must be
+            non-empty and at most 64 bytes.
+          maxLength: 64
+          type: string
+        prompt:
+          description: Agent instruction for an agent cue. At most 16384 bytes; cleared
+            when saving command cues.
+          maxLength: 16384
+          type: string
+        type:
+          description: 'Cue kind: command sends to a project- or session-scoped shell
+            terminal; agent sends an authored prompt. Definition body limit: 128 KiB.'
+          type: string
+      required:
+      - name
+      - type
+      type: object
+    CueEnvelope:
+      properties:
+        cue:
+          $ref: '#/components/schemas/CueResponse'
+      required:
+      - cue
+      type: object
+    CueResponse:
+      properties:
+        command:
+          type: string
+        createdAt:
+          format: date-time
+          type: string
+        description:
+          type: string
+        id:
+          type: string
+        name:
+          type: string
+        projectId:
+          type: string
+        prompt:
+          type: string
+        type:
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      required:
+      - id
+      - projectId
+      - name
+      - description
+      - type
+      - createdAt
+      - updatedAt
+      type: object
     DegradedProject:
       properties:
         id:
@@ -10733,6 +11124,7 @@ components:
           - codex
           - aider
           - opencode
+          - opencode-v2
           - grok
           - droid
           - amp
@@ -11332,6 +11724,10 @@ components:
           description: Server-owned installation method selected for this harness
             job.
           type: string
+        notice:
+          description: Fixed user-visible consequence to acknowledge before running
+            this install.
+          type: string
         output:
           description: Combined stdout+stderr from the install command, tail-capped
             to the last ~4000 bytes.
@@ -11363,6 +11759,7 @@ components:
           - codex
           - cursor
           - opencode
+          - opencode-v2
           - aider
           - copilot
           - grok
@@ -11401,6 +11798,37 @@ components:
       required:
       - target
       - status
+      type: object
+    InvokeCueRequest:
+      properties:
+        sessionId:
+          description: 'Optional exact session target. Agent cues message it; command
+            cues use its worktree. Omit it to spawn an agent worker or run a command
+            in the project root. A supplied id must be non-blank and compatible, and
+            never falls back to a replacement worker. Invocation body limit: 4 KiB.'
+          type: string
+        shell:
+          description: Desktop shell selection used only for command cues.
+          type: string
+      type: object
+    InvokeCueResponse:
+      properties:
+        kind:
+          description: Invocation kind.
+          enum:
+          - agent
+          - command
+          type: string
+        sessionId:
+          description: For agent cues, the session that received the prompt or newly
+            spawned worker.
+          type: string
+        shellTerminal:
+          $ref: '#/components/schemas/ShellTerminalResponse'
+          description: For command cues, the normal shell terminal that received the
+            command.
+      required:
+      - kind
       type: object
     KillReviewResponse:
       properties:
@@ -11524,6 +11952,15 @@ components:
       required:
       - sessions
       type: object
+    ListCuesResponse:
+      properties:
+        cues:
+          items:
+            $ref: '#/components/schemas/CueResponse'
+          type: array
+      required:
+      - cues
+      type: object
     ListDirsResponse:
       properties:
         entries:
@@ -11570,6 +12007,11 @@ components:
           items:
             $ref: '#/components/schemas/WorkspaceCommitSummary'
           type: array
+        commitsTruncated:
+          description: 'True when older commits were left out of commits: the list
+            keeps the newest 250, and stops at the last commit whose changes fit the
+            daemon''s size cap.'
+          type: boolean
         files:
           items:
             $ref: '#/components/schemas/WorkspaceFileSummary'
@@ -11636,6 +12078,10 @@ components:
       type: object
     ListSessionPRsResponse:
       properties:
+        linkedPrs:
+          items:
+            $ref: '#/components/schemas/SessionPRReference'
+          type: array
         prs:
           items:
             $ref: '#/components/schemas/SessionPRSummary'
@@ -11645,6 +12091,7 @@ components:
       required:
       - sessionId
       - prs
+      - linkedPrs
       type: object
     ListSessionsResponse:
       properties:
@@ -11678,6 +12125,11 @@ components:
           items:
             $ref: '#/components/schemas/WorkspaceCommitSummary'
           type: array
+        commitsTruncated:
+          description: 'True when older commits were left out of commits: the list
+            keeps the newest 250, and stops at the last commit whose changes fit the
+            daemon''s size cap.'
+          type: boolean
         compareBaseRef:
           type: string
         compareBaseSha:
@@ -11967,6 +12419,8 @@ components:
           - ready_to_merge
           - pr_merged
           - pr_closed_unmerged
+          - review_completed
+          - review_changes_requested
           type: string
       required:
       - id
@@ -12960,6 +13414,28 @@ components:
       - reasons
       - prUrl
       type: object
+    SessionPRReference:
+      properties:
+        host:
+          type: string
+        number:
+          type: integer
+        provider:
+          enum:
+          - github
+          - gitlab
+          type: string
+        repo:
+          type: string
+        url:
+          type: string
+      required:
+      - url
+      - provider
+      - host
+      - repo
+      - number
+      type: object
     SessionPRReviewCommentLink:
       properties:
         autoInjectReview:
@@ -13425,6 +13901,7 @@ components:
           - cursor
           - kilocode
           - opencode
+          - opencode-v2
           - kiro
           - pi
           - agy
@@ -13463,6 +13940,8 @@ components:
           type: string
         localEnabled:
           type: boolean
+        trackerIntakeEnabled:
+          type: boolean
       required:
       - defaultSessionMode
       - chatHarnesses
@@ -13471,6 +13950,7 @@ components:
       - cloudOffering
       - cloudEnabled
       - cloudControlPlaneUrl
+      - trackerIntakeEnabled
       type: object
     ShellTerminalEnvelope:
       properties:
@@ -13555,6 +14035,7 @@ components:
           - codex
           - aider
           - opencode
+          - opencode-v2
           - grok
           - droid
           - amp
@@ -13929,6 +14410,7 @@ components:
           - cursor
           - kilocode
           - opencode
+          - opencode-v2
           - kiro
           - pi
           - agy

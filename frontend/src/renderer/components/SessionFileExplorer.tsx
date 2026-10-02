@@ -86,6 +86,7 @@ export function SessionFileExplorer({
 	const filesTopbarHost = useFilesTopbarHost();
 	const [treeOpen, setTreeOpen] = useState(true);
 	const scmQuery = useSessionScmSummary(sessionId);
+	const prSummaries = scmQuery.data?.prs ?? [];
 	const queryClient = useQueryClient();
 	const connectionState = useWorkspaceFileConnectionState(sessionId);
 
@@ -94,7 +95,7 @@ export function SessionFileExplorer({
 	const setFilesChangedOnly = useUiStore((state) => state.setFilesChangedOnly);
 	const setFilesSource = useUiStore((state) => state.setFilesSource);
 	const annotation = useFileAnnotation(sessionId, { source: source.kind === "workspace" ? "Workspace" : `${source.label} (${source.url})` });
-	const snapshot = source.kind === "pull_request" ? scmQuery.data?.find((pr) => pr.url === source.url)?.headSha ?? "" : "";
+	const snapshot = source.kind === "pull_request" ? prSummaries.find((pr) => pr.url === source.url)?.headSha ?? "" : "";
 	const querySource = useMemo<FilesSource>(
 		() => source.kind === "pull_request" ? { ...source, snapshot } : source,
 		[source, snapshot],
@@ -119,7 +120,7 @@ export function SessionFileExplorer({
 	const showChanges = source.kind === "workspace" && changedOnly && (!filesQuery.data || hasChanges);
 	const splitView = !showChanges && (isMaximized || source.kind === "pull_request");
 	const sourceUnavailable = source.kind === "pull_request"
-		&& (filesQuery.isError || Boolean(scmQuery.data && !scmQuery.data.some((pr) => pr.url === source.url)));
+		&& (filesQuery.isError || Boolean(scmQuery.data && !prSummaries.some((pr) => pr.url === source.url)));
 
 	useEffect(() => {
 		setSelectedPath(null);
@@ -166,7 +167,7 @@ export function SessionFileExplorer({
 	const sourceValue = source.kind === "workspace" ? "workspace" : source.url;
 	const sourceOptions: { value: string; label: string }[] = [
 		{ value: "workspace", label: t("files.explorer.workspaceSource") },
-		...(scmQuery.data ?? []).map((pr) => ({ value: pr.url, label: `PR #${pr.number} · ${pr.sourceBranch || pr.title}` })),
+		...prSummaries.map((pr) => ({ value: pr.url, label: `PR #${pr.number} · ${pr.sourceBranch || pr.title}` })),
 	];
 	const selectPRCommit = (sha: string | null) => {
 		setPreviewRequest(null);
@@ -197,7 +198,7 @@ export function SessionFileExplorer({
 			setFilesSource(sessionId, WORKSPACE_SOURCE);
 			return;
 		}
-		const pr = scmQuery.data?.find((candidate) => candidate.url === value);
+		const pr = prSummaries.find((candidate) => candidate.url === value);
 		if (pr) setFilesSource(sessionId, { kind: "pull_request", number: pr.number, url: pr.url, label: `PR #${pr.number} · ${pr.sourceBranch || pr.title}` });
 	};
 

@@ -689,6 +689,41 @@ describe("ACP session config options", () => {
 		expect(onChange).toHaveBeenCalledWith({ approvalMode: "auto" });
 	});
 
+	it("keeps Cloud model and effort choices without a per-turn permission picker", () => {
+		render(
+			<TurnSettingsBar
+				harness="codex"
+				models={[{ id: "codex-test", displayName: "Codex Test", default: true, efforts: ["low", "high"] }]}
+				settings={{}}
+				onChange={vi.fn()}
+				showApprovalMode={false}
+			/>,
+		);
+		expect(screen.getByRole("button", { name: "Model and reasoning effort for the next turn" })).toHaveTextContent("Codex Test");
+		expect(screen.queryByRole("button", { name: "Approval policy for the next turn" })).not.toBeInTheDocument();
+	});
+
+	it("shows the Cloud mode picker for a provider with no model catalog", async () => {
+		const onChange = vi.fn();
+		render(
+			<TurnSettingsBar
+				harness="cursor"
+				models={[]}
+				settings={{}}
+				showApprovalMode={false}
+				configOptions={[{
+					id: "mode", category: "mode", name: "Permission mode", type: "select",
+					currentValue: "trusted",
+					choices: [{ value: "standard", name: "Standard" }, { value: "trusted", name: "Full access" }],
+				}]}
+				onChangeConfigOption={onChange}
+			/>,
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Permission mode" }));
+		await userEvent.click(screen.getByRole("menuitemradio", { name: "Standard" }));
+		expect(onChange).toHaveBeenCalledWith("mode", { value: "standard" });
+	});
+
 	it("keeps Codex native model+effort in one trigger when the provider has no catalog", () => {
 		render(
 			<TurnSettingsBar
@@ -754,6 +789,16 @@ describe("ACP session config options", () => {
 });
 
 describe("remember project permissions", () => {
+	it("limits Codex approval choices to the Cloud session's permission ceiling", async () => {
+		const user = userEvent.setup();
+		render(<TurnSettingsBar models={[]} harness="codex" settings={{ approvalMode: "accept-edits" }}
+			approvalModes={["accept-edits", "auto"]} onChange={vi.fn()} />);
+		await user.click(screen.getByRole("button", { name: "Approval policy for the next turn" }));
+		expect(screen.getByRole("menuitemradio", { name: "Ask for approval" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitemradio", { name: "Approve for me" })).toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Full access" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("menuitemradio", { name: "Bypass permissions" })).not.toBeInTheDocument();
+	});
 	it("keeps choosing a session policy separate from remembering the confirmed policy", async () => {
 		const user = userEvent.setup();
 		const onChange = vi.fn();

@@ -1,4 +1,4 @@
-import { agentLabel, AGENT_OPTIONS } from "./agent-options";
+import { AGENT_OPTIONS, agentLabel } from "./agent-options";
 
 describe("AGENT_OPTIONS", () => {
 	it("offers fx as a spawn harness exactly once", () => {
@@ -11,5 +11,11 @@ describe("AGENT_OPTIONS", () => {
 	});
 	it("uses the concise DeepSeek display name", () => {
 		expect(agentLabel("deepseek-harness")).toBe("DeepSeek");
+	});
+
+	it("exposes OpenCode 2 as a distinct worker option", () => {
+		expect(AGENT_OPTIONS).toContain("opencode-v2");
+		expect(agentLabel("opencode-v2")).toBe("OpenCode 2");
+		expect(agentLabel("opencode")).toBe("OpenCode");
 	});
 });

@@ -244,6 +244,7 @@ async function createSafariFixture(root: string): Promise<{ library: string; nam
 
 	await writeFile(path.join(container, "Cookies", "Cookies.binarycookies"), safariBinaryCookies([
 		{ domain: ".webkit.org", name: "session", value: "safari", expires: "2030-01-01T00:00:00.000Z", flags: 0x25 },
+		{ domain: "github.com", name: "__Host-user_session_same_site", value: "safari", expires: "2030-01-01T00:00:00.000Z", flags: 0x3d },
 		{ domain: ".webkit.org", name: "expired", value: "old", expires: "2020-01-01T00:00:00.000Z" },
 	]));
 	await writeFile(path.join(
@@ -367,7 +368,7 @@ describe("BrowserProfileImportService", () => {
 		const profileStore = new BrowserProfileStore({ stateDir });
 		await profileStore.load();
 		const historyStore = new BrowserHistoryStore({ stateDir });
-		const importedCookies: Array<{ name?: string; value?: string; sameSite?: string; secure?: boolean; httpOnly?: boolean }> = [];
+		const importedCookies: Array<{ name?: string; value?: string; domain?: string; sameSite?: string; secure?: boolean; httpOnly?: boolean }> = [];
 		const service = new BrowserProfileImportService({
 			stateDir,
 			profileStore,
@@ -393,14 +394,22 @@ describe("BrowserProfileImportService", () => {
 			destination: { mode: "merge", name: "Imported Safari" },
 		}, vi.fn());
 
-		expect(importedCookies).toEqual([expect.objectContaining({
+		expect(importedCookies).toContainEqual(expect.objectContaining({
 			name: "session",
 			value: "safari",
+			domain: ".webkit.org",
 			secure: true,
 			httpOnly: true,
 			sameSite: "no_restriction",
-		})]);
-		expect(result.entries[0]).toMatchObject({ importedCookies: 1, skippedCookies: 1, importedHistoryEntries: 1 });
+		}));
+		expect(importedCookies).toContainEqual(expect.objectContaining({
+			name: "__Host-user_session_same_site",
+			secure: true,
+			httpOnly: true,
+			sameSite: "strict",
+		}));
+		expect(importedCookies.find((cookie) => cookie.name === "__Host-user_session_same_site")).not.toHaveProperty("domain");
+		expect(result.entries[0]).toMatchObject({ importedCookies: 2, skippedCookies: 1, importedHistoryEntries: 1 });
 		expect(result.entries[0]!.warnings).toContainEqual({ code: "expired-cookies-skipped", count: 1 });
 		const profileId = result.entries[0]!.destinationProfile.id;
 		expect(await historyStore.suggest(profileId, "webkit")).toEqual([

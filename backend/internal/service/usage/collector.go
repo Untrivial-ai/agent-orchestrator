@@ -119,10 +119,10 @@ func qwenRuntimeBaseDir(ctx context.Context, home, workspace string) (string, er
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return "", err
+			// Settings are optional: a missing or unreadable settings file
+			// must not fail provider-root resolution, which would disable the
+			// whole usage pipeline. Fall back to the default runtime base.
+			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -499,6 +499,11 @@ func (c *Collector) RecordHook(ctx context.Context, sessionID domain.SessionID, 
 				return err
 			}
 		}
+		if session.Harness == domain.HarnessQwen {
+			if err := c.registerDiscoveredQwenMonths(ctx, binding, now, false); err != nil {
+				return err
+			}
+		}
 		sourceErrorCode := ""
 		if c.codexDiscoveryStillPending(ctx, signal.Event, signal.TranscriptPath, mainPath) {
 			sourceErrorCode = domain.UsageErrorSourceDiscoveryPending
@@ -748,6 +753,10 @@ func (c *Collector) backfillSession(ctx context.Context, session domain.SessionR
 		}
 	case domain.HarnessKimi:
 		if err := c.registerDiscoveredKimiAgents(ctx, binding, path, now, false); err != nil {
+			return err
+		}
+	case domain.HarnessQwen:
+		if err := c.registerDiscoveredQwenMonths(ctx, binding, now, false); err != nil {
 			return err
 		}
 	}
@@ -1007,6 +1016,10 @@ func (c *Collector) reconcileBinding(ctx context.Context, binding domain.UsageBi
 		}
 	case domain.HarnessKimi:
 		if err := c.registerDiscoveredKimiAgents(ctx, binding, path, now, false); err != nil {
+			return err
+		}
+	case domain.HarnessQwen:
+		if err := c.registerDiscoveredQwenMonths(ctx, binding, now, false); err != nil {
 			return err
 		}
 	}
@@ -1758,6 +1771,55 @@ func (c *Collector) registerDiscoveredKimiAgents(
 			domain.UsageSourceKimiWire,
 			binding.NativeRootID,
 			subagentID,
+			path,
+			now,
+			reactivateExisting,
+		); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// registerDiscoveredQwenMonths registers every monthly Qwen usage file for the
+// binding, not only the newest one. Qwen rolls one shared file per month, so a
+// session first observed after a month boundary still has earlier months
+// ingested; discoverQwenPath alone would return only the latest file.
+func (c *Collector) registerDiscoveredQwenMonths(
+	ctx context.Context,
+	binding domain.UsageBindingRecord,
+	now time.Time,
+	reactivateExisting bool,
+) error {
+	root, err := c.qwenUsageRoot(ctx, binding.SessionID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(root) == "" {
+		return nil
+	}
+	paths, err := filepath.Glob(filepath.Join(root, "token-usage-*.jsonl"))
+	if err != nil {
+		return err
+	}
+	sort.Strings(paths)
+	var errs []error
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !qwenUsageFilename(filepath.Base(path)) {
+			continue
+		}
+		if info, statErr := os.Stat(path); statErr != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if _, err := c.registerSource(
+			ctx,
+			binding,
+			domain.UsageSourceQwenMonthly,
+			binding.NativeRootID,
+			"",
 			path,
 			now,
 			reactivateExisting,

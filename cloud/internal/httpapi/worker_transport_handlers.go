@@ -34,7 +34,7 @@ func (s *Server) workerEnsureAgentTerminal(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, worker.AgentTerminalResponse{
-		TerminalID: terminal.ID,
+		TerminalID: terminal.ID, NextOutputSequence: terminal.NextOutputSequence,
 	})
 }
 
@@ -193,7 +193,7 @@ func (s *Server) workerTerminalExit(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.store.MarkTerminalExited(
 		r.Context(), claims.OrgID, claims.SessionID, claims.WorkerID,
-		terminalID, claims.Epoch, input.ExitCode,
+		terminalID, claims.Epoch, input.ExitCode, input.InterfaceHandoff,
 	); err != nil {
 		s.writeWorkerTransportError(w, r, err)
 		return

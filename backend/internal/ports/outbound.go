@@ -255,6 +255,14 @@ type ExactSupervisedProcessInspector interface {
 	IsExactSupervisedProcessAlive(ctx context.Context, handle RuntimeHandle, ref SupervisedProcessRef) (bool, error)
 }
 
+// SupervisedProcessRecordInspector reports whether a runtime handle contains
+// any AO supervisor. Review liveness uses this to keep pre-supervisor reviewer
+// launches working while still requiring an exact launch match for supervised
+// processes.
+type SupervisedProcessRecordInspector interface {
+	HasSupervisedProcessRecord(ctx context.Context, handle RuntimeHandle) (bool, error)
+}
+
 // ContainerReaper removes Docker containers a worker session owns, identified
 // by the ao.session=<id> label convention (see EnvSessionID). It is an
 // optional capability: nil wiring means container reaping is a no-op, not an

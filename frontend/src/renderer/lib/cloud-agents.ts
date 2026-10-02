@@ -2,9 +2,10 @@ import { agentLabel } from "./agent-options";
 import type { AgentInfo } from "./agent-select-options";
 import type { CloudCpProviderConnection } from "./cloud-cp";
 
-/** The only agents AO cloud supports, matching the set the control plane's
- * validAgentProvider accepts (cloud/internal/httpapi/provider_handlers.go).
- * Unlike local's full AGENT_OPTIONS list, cloud has no "install" step, so any
+/** The agents AO cloud offers: the ones with a cloud login on the Harness
+ * settings page. Each must be accepted by the control plane's
+ * validAgentProvider (cloud/internal/httpapi/provider_handlers.go). Unlike
+ * local's full AGENT_OPTIONS list, cloud has no "install" step, so any
  * unlisted agent would just be a dead end. */
 export const CLOUD_AGENT_PROVIDERS = ["claude-code", "codex", "cursor", "opencode"] as const;
 
@@ -42,7 +43,17 @@ export function connectedCredentialType(
 	return typeof credentialType === "string" ? credentialType : "";
 }
 
-/** Maps the org's cloud provider connections onto the same AgentInfo shape
+/** Whether a cloud harness is connected: its *default* connection is valid.
+ * A provider can have more than one connection, so this never takes whichever
+ * comes last; it is the same rule the cloud orchestrator launcher uses to pick
+ * a harness (cloud-orchestrator.ts connectedProviders). */
+export function isCloudHarnessConnected(connections: CloudCpProviderConnection[] | undefined, provider: string): boolean {
+	return (connections ?? []).some(
+		(connection) => connection.provider === provider && connection.label === "default" && connection.validationState === "valid",
+	);
+}
+
+/** Maps the user's cloud provider connections onto the same AgentInfo shape
  * local readiness uses, so the cloud agent picker is the identical component
  * local's agent sheet already ships (RequiredAgentField, AgentSelectMenuItem,
  * buildRankedAgentOptions): a missing or invalid connection reads as "Needs
@@ -51,9 +62,8 @@ export function connectedCredentialType(
  * create-project flow and the task composer can source the cloud picker without
  * importing a heavy component module. */
 export function cloudAgentInfos(connections: CloudCpProviderConnection[] | undefined): AgentInfo[] {
-	const byProvider = new Map((connections ?? []).map((connection) => [connection.provider, connection]));
 	return CLOUD_AGENT_PROVIDERS.map((id) => {
-		const authorized = byProvider.get(id)?.validationState === "valid";
+		const authorized = isCloudHarnessConnected(connections, id);
 		return {
 			id,
 			label: agentLabel(id),

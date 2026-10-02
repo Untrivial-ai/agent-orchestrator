@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,6 +150,27 @@ func TestCommitReviewUsesOnlyTheSelectedCommit(t *testing.T) {
 	}
 	if after.Content != "first commit\n" {
 		t.Fatalf("selected commit after = %q", after.Content)
+	}
+}
+
+func TestWorkspaceCommitListStopsAtTheCap(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	base := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+	fixture := make([]fixtureCommit, maxCommitLogCommits+1)
+	for i := range fixture {
+		fixture[i] = fixtureCommit{message: fmt.Sprintf("change %d", i), files: map[string]string{fmt.Sprintf("changes/%03d.txt", i): "change\n"}}
+	}
+	commits := importCommits(t, repo, "ao/commit-cap", base, fixture)
+	runGit(t, repo, "switch", "ao/commit-cap")
+
+	store := newFakeStore()
+	store.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", Metadata: domain.SessionMetadata{Branch: "ao/commit-cap", WorkspacePath: repo, DiffBaseSHA: base, DiffBaseRef: "main"}}
+	files, err := (&Service{store: store}).ListWorkspaceFiles(context.Background(), "ao-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files.Commits) != maxCommitLogCommits || !files.CommitsTruncated || files.Commits[0].SHA != commits[len(commits)-1] {
+		t.Fatalf("listed %d commits, truncated=%v; want the newest %d and truncated", len(files.Commits), files.CommitsTruncated, maxCommitLogCommits)
 	}
 }
 

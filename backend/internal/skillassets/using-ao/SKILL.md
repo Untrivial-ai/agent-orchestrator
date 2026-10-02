@@ -1,7 +1,7 @@
 ---
 name: using-ao
-description: "Catalog of the AO (Agent Orchestrator) `ao` CLI: spawning workers, managing sessions and projects, sending messages, controlling the shared browser, previewing pages, and daemon control. Use when using the ao CLI, spawning workers, or managing AO sessions in an AO workspace."
-trigger: "Using the ao CLI in an AO workspace: spawning workers, managing sessions/projects, sending messages, controlling or previewing pages."
+description: "Catalog of the AO (Agent Orchestrator) `ao` CLI: spawning workers, managing sessions and projects, creating reusable Cues, sending messages, controlling the shared browser, previewing pages, and daemon control. Use when using the ao CLI, creating Cues, spawning workers, or managing AO sessions in an AO workspace."
+trigger: "Using the ao CLI in an AO workspace: creating Cues, spawning workers, managing sessions/projects, sending messages, controlling or previewing pages."
 ---
 
 # AO CLI Catalog
@@ -14,6 +14,7 @@ trigger: "Using the ao CLI in an AO workspace: spawning workers, managing sessio
 | `session` | Manage agent sessions (list, kill, rename, restore, etc.) | Inspecting or controlling running/terminated sessions | [commands/session.md](commands/session.md) |
 | `project` | Register, inspect, configure, or remove projects | Setting up or managing repos AO knows about | [commands/project.md](commands/project.md) |
 | `automation` | Manage durable recurring session automations | Creating, editing, disabling, deleting, and inspecting scheduled runs | [commands/automation.md](commands/automation.md) |
+| `cue` | Create or list reusable project Cues | Saving a repetitive command or agent task at the user's request | [commands/cue.md](commands/cue.md) |
 | `orchestrator` | List orchestrator sessions | Viewing which sessions are orchestrators | [commands/orchestrator.md](commands/orchestrator.md) |
 | `review` | Submit a reviewer result for a worker's PR | Completing a code review loop | [commands/review.md](commands/review.md) |
 | `send` | Send a message to a running agent session | Correcting or directing a live agent | [commands/send.md](commands/send.md) |
@@ -33,6 +34,11 @@ trigger: "Using the ao CLI in an AO workspace: spawning workers, managing sessio
 - Most read commands accept `--json` for machine-readable output.
 - `-p / --project` scopes session subcommand lookups to one project.
 - Session and project ids are shown by `ao session ls` and `ao project ls`.
+- To refer to a session in AO Chat or the AO terminal, use the canonical in-app
+  link `ao://sessions/{project-id}/{session-id}`. Read
+  [commands/session.md](commands/session.md) for identity, encoding, and safety
+  rules before constructing one.
+- When the user asks to save a repeatable task as a Cue, use `ao cue list --json` to check existing definitions, then `ao cue create`. An agent Cue stores a reusable instruction; a command Cue stores an exact shell command. This agent-facing command can create and read Cues, but cannot edit or delete them. Direct the user to project settings for changes to existing Cues.
 - `--agent` is an alias for `--harness` on `ao spawn`.
 - Every command accepts `-h / --help` for the full flag list.
 - For frontend launch, preview selection, or artifact handoff, read

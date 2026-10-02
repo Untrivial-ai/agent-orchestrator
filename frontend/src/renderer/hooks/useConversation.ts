@@ -12,6 +12,7 @@
 import {
 	type InfiniteData,
 	type QueryClient,
+	infiniteQueryOptions,
 	useInfiniteQuery,
 	useMutation,
 	useQuery,
@@ -295,15 +296,14 @@ export interface ConversationQueryResult {
 	loadOlder: () => void;
 }
 
-export function useConversation(sessionId: string | undefined): ConversationQueryResult {
-	const query = useInfiniteQuery({
-		queryKey: conversationQueryKey(sessionId ?? ""),
-		enabled: Boolean(sessionId),
+export function conversationQueryOptions(sessionId: string) {
+	return infiniteQueryOptions({
+		queryKey: conversationQueryKey(sessionId),
 		initialPageParam: undefined as number | undefined,
 		queryFn: async ({ pageParam }) => {
 			const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/conversation", {
 				params: {
-					path: { sessionId: sessionId as string },
+					path: { sessionId },
 					query: {
 						beforeSequence: pageParam,
 						limit: CONVERSATION_PAGE_SIZE,
@@ -314,7 +314,6 @@ export function useConversation(sessionId: string | undefined): ConversationQuer
 			return toSnapshot(data as WireSnapshot);
 		},
 		getNextPageParam: (page) => (page.hasMoreBefore ? page.oldestSequence : undefined),
-		select: (data) => mergeConversationPages(data.pages),
 		// A mode mismatch is authoritative for this committed controller epoch, so
 		// retrying the same request cannot help and would leave the surface loading
 		// instead of explaining why there is no conversation. Only genuinely
@@ -324,6 +323,14 @@ export function useConversation(sessionId: string | undefined): ConversationQuer
 			if (code && PERMANENT_CODES.has(code)) return false;
 			return attempt < 2;
 		},
+	});
+}
+
+export function useConversation(sessionId: string | undefined): ConversationQueryResult {
+	const query = useInfiniteQuery({
+		...conversationQueryOptions(sessionId ?? ""),
+		enabled: Boolean(sessionId),
+		select: (data) => mergeConversationPages(data.pages),
 	});
 
 	if (query.error) {

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openInspector } from "./support/open-inspector";
 
 // dev:web (VITE_NO_ELECTRON=1) serves lib/mock-data.ts. The api-gateway
 // workspace owns a "stacked-auth" session ("auth stack") carrying three PRs:
@@ -10,8 +11,7 @@ test("the inspector rail stacks every PR a session owns, actionable-first", asyn
 	await page.getByRole("button", { name: "Open auth stack" }).click();
 	await expect(page).toHaveURL(/sessions\/stacked-auth/);
 
-	const inspector = page.locator("#inspector");
-	await expect(inspector).toBeVisible();
+	const inspector = await openInspector(page);
 
 	// Plural heading reflects the stack size.
 	await expect(inspector.getByText("Pull requests (3)")).toBeVisible();

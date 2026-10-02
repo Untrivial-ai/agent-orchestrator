@@ -130,7 +130,7 @@ func TestPersistentACPDriverSurvivesRealProcessDetach(t *testing.T) {
 	// These are protocol contract tests, not claims of authenticated E2E for
 	// every vendor. Each runs the real detached host with a fake ACP process.
 	for _, harness := range []domain.AgentHarness{
-		domain.HarnessClaudeCode, domain.HarnessCursor, domain.HarnessOpenCode,
+		domain.HarnessClaudeCode, domain.HarnessCursor, domain.HarnessOpenCode, domain.HarnessOpenCodeV2,
 		domain.HarnessDroid, domain.HarnessKimi, domain.HarnessKimchi,
 		domain.HarnessPi, domain.HarnessOMP,
 	} {

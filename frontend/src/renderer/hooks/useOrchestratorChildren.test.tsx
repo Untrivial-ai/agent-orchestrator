@@ -37,6 +37,7 @@ const child = (overrides: Partial<CloudCpSessionChild>): CloudCpSessionChild => 
 	displayName: "Fix CI",
 	branch: "ao/11111111",
 	mode: "trusted",
+	interfaceMode: "tui",
 	deniedCommands: [],
 	activityState: "active",
 	status: "working",

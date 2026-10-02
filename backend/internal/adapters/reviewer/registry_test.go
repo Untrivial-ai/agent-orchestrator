@@ -43,7 +43,7 @@ func TestRegistryMatchesDomainVocabulary(t *testing.T) {
 				if spec.Input != "\x1b" || len(spec.Inputs) != 0 {
 					t.Errorf("reviewer harness %q cancel input = %q inputs=%#v, want single escape", h, spec.Input, spec.Inputs)
 				}
-			case domain.ReviewerClaudeCode, domain.ReviewerOpenCode:
+			case domain.ReviewerClaudeCode, domain.ReviewerOpenCode, domain.ReviewerOpenCodeV2:
 				if spec.Mode != ports.ReviewCancelInput {
 					t.Errorf("reviewer harness %q cancel mode = %q, want %q", h, spec.Mode, ports.ReviewCancelInput)
 				}
