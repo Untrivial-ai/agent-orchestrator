@@ -8571,6 +8571,31 @@ paths:
       summary: Cancel an unclaimed speculative task worktree
       tags:
       - projects
+  /api/v1/usage/memory/pressure:
+    get:
+      operationId: getMemoryPressure
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryPressureResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Read the machine's memory-pressure verdict without sampling any process
+      tags:
+      - usage
   /api/v1/usage/sessions:
     get:
       operationId: listCompactSessionUsage
@@ -8640,6 +8665,38 @@ paths:
                 $ref: '#/components/schemas/APIError'
           description: Not Implemented
       summary: Get detailed token and estimated cost usage for one session
+      tags:
+      - usage
+  /api/v1/usage/sessions/memory:
+    get:
+      operationId: listSessionMemory
+      parameters:
+      - description: Optional project id filter for dashboard cards.
+        in: query
+        name: projectId
+        schema:
+          description: Optional project id filter for dashboard cards.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListSessionMemoryResponse'
+          description: OK
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: List resident memory of each live session's runtime process tree
       tags:
       - usage
 components:
@@ -9154,6 +9211,34 @@ components:
           $ref: '#/components/schemas/AgentSwitch'
       required:
       - switch
+      type: object
+    AppMemoryResponse:
+      properties:
+        cpuMeasured:
+          description: 'False when there was no earlier sample to measure against:
+            cpuPercent is unknown, not zero.'
+          type: boolean
+        cpuPercent:
+          format: double
+          minimum: 0
+          type: number
+        own:
+          $ref: '#/components/schemas/SessionMemoryResponse'
+        processCount:
+          minimum: 0
+          type: integer
+        reviewers:
+          items:
+            $ref: '#/components/schemas/ControllersReviewerMemoryResponse'
+          type: array
+        rssBytes:
+          minimum: 0
+          type: integer
+      required:
+      - rssBytes
+      - processCount
+      - cpuPercent
+      - cpuMeasured
       type: object
     AttachmentInput:
       properties:
@@ -10082,6 +10167,24 @@ components:
           type: boolean
       required:
       - ok
+      type: object
+    ControllersReviewerMemoryResponse:
+      properties:
+        harness:
+          type: string
+        memory:
+          $ref: '#/components/schemas/SessionMemoryResponse'
+        reviewId:
+          type: string
+        sessionId:
+          description: The worker session this reviewer reviews, not the reviewer's
+            own identity.
+          type: string
+      required:
+      - reviewId
+      - sessionId
+      - harness
+      - memory
       type: object
     ControllersSecurePairingStatus:
       properties:
@@ -12076,6 +12179,19 @@ components:
       - reviews
       - runs
       type: object
+    ListSessionMemoryResponse:
+      properties:
+        app:
+          $ref: '#/components/schemas/AppMemoryResponse'
+        sessions:
+          items:
+            $ref: '#/components/schemas/SessionMemoryResponse'
+          type: array
+        system:
+          $ref: '#/components/schemas/SystemMemoryResponse'
+      required:
+      - sessions
+      type: object
     ListSessionPRsResponse:
       properties:
         linkedPrs:
@@ -12220,6 +12336,22 @@ components:
           type: string
       required:
       - status
+      type: object
+    MemoryPressureResponse:
+      properties:
+        pressureRaw:
+          format: double
+          minimum: 0
+          type: number
+        pressureSource:
+          enum:
+          - psi
+          - available_pct
+          - memorystatus
+          type: string
+      required:
+      - pressureRaw
+      - pressureSource
       type: object
     MergePRRequest:
       properties:
@@ -13202,6 +13334,17 @@ components:
       - sessionId
       - message
       type: object
+    SessionActivityResponse:
+      properties:
+        current:
+          $ref: '#/components/schemas/SessionStepResponse'
+        recent:
+          items:
+            $ref: '#/components/schemas/SessionStepResponse'
+          type: array
+      required:
+      - recent
+      type: object
     SessionInterfaceTransition:
       properties:
         completedAt:
@@ -13291,6 +13434,64 @@ components:
       required:
       - supported
       - targetMode
+      type: object
+    SessionMemoryProcessResponse:
+      properties:
+        command:
+          type: string
+        cpuPercent:
+          description: Share of one core used since the previous sample; zero on the
+            first.
+          format: double
+          minimum: 0
+          type: number
+        pid:
+          type: integer
+        ppid:
+          type: integer
+        rssBytes:
+          minimum: 0
+          type: integer
+      required:
+      - pid
+      - ppid
+      - rssBytes
+      - cpuPercent
+      - command
+      type: object
+    SessionMemoryResponse:
+      properties:
+        activity:
+          $ref: '#/components/schemas/SessionActivityResponse'
+        cpuPercent:
+          description: Share of one core the whole tree used since the previous sample;
+            zero on the first.
+          format: double
+          minimum: 0
+          type: number
+        processCount:
+          minimum: 0
+          type: integer
+        processes:
+          items:
+            $ref: '#/components/schemas/SessionMemoryProcessResponse'
+          type: array
+        rssBytes:
+          description: Resident set size summed over the runtime process tree.
+          minimum: 0
+          type: integer
+        sampledAt:
+          format: date-time
+          type: string
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - rssBytes
+      - processCount
+      - cpuPercent
+      - sampledAt
+      - processes
       type: object
     SessionPRCISummary:
       properties:
@@ -13636,6 +13837,26 @@ components:
           $ref: '#/components/schemas/ControllersSessionView'
       required:
       - session
+      type: object
+    SessionStepResponse:
+      properties:
+        endedAt:
+          description: Absent while the tool is still running.
+          format: date-time
+          type:
+          - "null"
+          - string
+        failed:
+          type: boolean
+        startedAt:
+          format: date-time
+          type: string
+        tool:
+          type: string
+      required:
+      - tool
+      - startedAt
+      - failed
       type: object
     SessionUsageResponse:
       properties:
@@ -14337,6 +14558,60 @@ components:
           type: string
       required:
       - targetHarness
+      type: object
+    SystemMemoryResponse:
+      properties:
+        availableBytes:
+          description: What the kernel would hand out without swapping (MemAvailable).
+          minimum: 0
+          type: integer
+        cpuCount:
+          minimum: 0
+          type: integer
+        cpuMeasured:
+          type: boolean
+        cpuPercent:
+          format: double
+          minimum: 0
+          type: number
+        load1:
+          format: double
+          type: number
+        pressureRaw:
+          format: double
+          minimum: 0
+          type: number
+        pressureSource:
+          enum:
+          - psi
+          - available_pct
+          - memorystatus
+          type: string
+        swapBytesPerSec:
+          format: double
+          minimum: 0
+          type: number
+        swapTotalBytes:
+          minimum: 0
+          type: integer
+        swapUsedBytes:
+          minimum: 0
+          type: integer
+        totalBytes:
+          minimum: 0
+          type: integer
+      required:
+      - totalBytes
+      - availableBytes
+      - swapTotalBytes
+      - swapUsedBytes
+      - swapBytesPerSec
+      - cpuCount
+      - load1
+      - cpuPercent
+      - cpuMeasured
+      - pressureRaw
+      - pressureSource
       type: object
     SystemRequirement:
       properties:

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "../stores/ui-store";
 import type { ProjectSettingsSaveState } from "./ProjectSettingsForm";
 import { SettingsDialog } from "./SettingsDialog";
+import { globalSettingsItemsFor, visibleGlobalSettings } from "./settings/settingsCatalog";
 
 const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }));
 
@@ -212,6 +213,28 @@ describe("SettingsDialog", () => {
 
 		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("browserProfiles");
 		expect(screen.queryByRole("button", { name: "Downloads" })).not.toBeInTheDocument();
+	});
+
+	it("opens Diagnostics as its own page, and leaves it out of the whole-settings view", async () => {
+		useUiStore.setState({ developerMode: true });
+		useUiStore.getState().openGlobalSettings("diagnostics");
+		renderSettingsDialog();
+
+		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("diagnostics");
+		expect(screen.getByRole("button", { name: "Diagnostics" })).toBeInTheDocument();
+		// The live monitor is a page of its own: the aggregate view never mounts it.
+		expect(globalSettingsItemsFor("all", { cloudEnabled: true, developerMode: true }).map((item) => item.id)).not.toContain("diagnostics");
+		expect(visibleGlobalSettings({ cloudEnabled: true, developerMode: true }).map((item) => item.id)).toContain("diagnostics");
+	});
+
+	it("hides Diagnostics outside Developer mode, falling back to General if asked for", async () => {
+		useUiStore.setState({ developerMode: false });
+		useUiStore.getState().openGlobalSettings("diagnostics");
+		renderSettingsDialog();
+
+		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("general");
+		expect(screen.queryByRole("button", { name: "Diagnostics" })).not.toBeInTheDocument();
+		expect(visibleGlobalSettings({ cloudEnabled: true }).map((item) => item.id)).not.toContain("diagnostics");
 	});
 
 	it("falls back to General when Cloud is unavailable", async () => {

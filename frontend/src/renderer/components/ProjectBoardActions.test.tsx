@@ -5,6 +5,7 @@ import { ProjectBoardActions } from "./ProjectBoardActions";
 import { TooltipProvider } from "./ui/tooltip";
 
 const actions: ProjectOrchestratorAction = {
+	projectId: undefined,
 	orchestrator: undefined,
 	isSpawning: false,
 	isProjectRestarting: false,

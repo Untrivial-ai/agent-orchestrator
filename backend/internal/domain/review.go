@@ -140,3 +140,15 @@ type CurrentHeadReviewRun struct {
 	ID        string
 	CreatedAt time.Time
 }
+
+// ReviewerHandle names one live reviewer pane's runtime handle, independent
+// of whether the worker session that spawned it still exists. A reviewer has
+// no session row of its own — its identity is this review's id and
+// SessionID (the worker it reviews) plus Harness — so the memory diagnostic
+// needs this to find it by anything other than walking session roots.
+type ReviewerHandle struct {
+	ReviewID  string
+	SessionID SessionID
+	Harness   ReviewerHarness
+	HandleID  string
+}

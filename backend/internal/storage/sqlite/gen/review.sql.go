@@ -533,6 +533,51 @@ func (q *Queries) ListCurrentHeadReviewRunsBySessions(ctx context.Context, jsonE
 	return items, nil
 }
 
+const listLiveReviewerHandles = `-- name: ListLiveReviewerHandles :many
+SELECT id, session_id, harness, reviewer_handle_id
+FROM review WHERE reviewer_handle_id != ''
+`
+
+type ListLiveReviewerHandlesRow struct {
+	ID               string
+	SessionID        domain.SessionID
+	Harness          domain.ReviewerHarness
+	ReviewerHandleID string
+}
+
+// Every review row that currently owns a live TUI reviewer pane, across the
+// whole daemon: reviewer processes have no session row of their own (their
+// identity is this table's reviewer_handle_id), and a reviewer outlives the
+// worker that spawned it, so this is the only way to find one that survived
+// its worker's death.
+func (q *Queries) ListLiveReviewerHandles(ctx context.Context) ([]ListLiveReviewerHandlesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listLiveReviewerHandles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLiveReviewerHandlesRow{}
+	for rows.Next() {
+		var i ListLiveReviewerHandlesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Harness,
+			&i.ReviewerHandleID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRecoverableChatReviews = `-- name: ListRecoverableChatReviews :many
 SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, interface_mode, provider_conversation_id, controller_generation, controller_error, created_at, updated_at
 FROM review WHERE interface_mode = 'chat' AND provider_conversation_id != '' ORDER BY updated_at, id

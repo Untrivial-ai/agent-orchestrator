@@ -33,6 +33,8 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const closeSettings = useUiStore((state) => state.closeSettings);
+	// Diagnostics (memory and CPU) is listed only in Developer mode.
+	const developerMode = useUiStore((state) => state.developerMode);
 	// Reads the daemon settings the dialog tree already queries; no extra fetch.
 	const { cloudEnabled } = useCloudGate();
 
@@ -55,7 +57,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	}, [deferSettingsBody, settingsModal]);
 	const isBodyReady = bodySettings === displaySettings;
 
-	const globalSections = visibleGlobalSettings({ cloudEnabled });
+	const globalSections = visibleGlobalSettings({ cloudEnabled, developerMode });
 
 	const projectSections: Array<{
 		id: ProjectSettingsSection;
@@ -79,7 +81,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 
 	const activeLabel = isProjectSettings
 		? (projectSections.find((s) => s.id === activeProjectSection)?.label ?? t("settings.project.general"))
-		: globalSettingsItem(activeSection, { cloudEnabled }).label(t);
+		: globalSettingsItem(activeSection, { cloudEnabled, developerMode }).label(t);
 
 	const closeSettingsDialog = () => {
 		if (cueBusy) return;
@@ -135,14 +137,14 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 
 	useEffect(() => {
 		if (settingsModal?.scope === "global") {
-			setActiveSection(globalSettingsItem(settingsModal.section ?? "general", { cloudEnabled }).id);
+			setActiveSection(globalSettingsItem(settingsModal.section ?? "general", { cloudEnabled, developerMode }).id);
 		}
 		if (settingsModal?.scope === "project") {
 			setActiveProjectSection(settingsModal.section ?? "general");
 			setProjectSaveState(initialProjectSaveState());
 			setCueBusy(false);
 		}
-	}, [cloudEnabled, settingsModal]);
+	}, [cloudEnabled, developerMode, settingsModal]);
 
 	useEffect(() => {
 		setFocusAgentId(settingsModal?.scope === "global" ? settingsModal.focusAgentId : undefined);

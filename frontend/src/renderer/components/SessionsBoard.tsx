@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -6,6 +6,9 @@ import {
 	SessionsArchiveView,
 	SessionsBoardGridView,
 	archiveToggleOffsetClassName,
+	chipTone,
+	largestSession,
+	type ChipTone,
 } from "@aoagents/product-ui";
 import { AlertTriangle, LayoutDashboard, RotateCw } from "lucide-react";
 import {
@@ -13,6 +16,7 @@ import {
 	STANDALONE_WORKSPACE_ID,
 	toProjectKind,
 	type WorkspaceSession,
+	isOrchestratorSession,
 	newestActiveOrchestrator,
 	orchestratorHealth,
 	workerSessions,
@@ -43,6 +47,8 @@ import { DaemonStartupLoader } from "./DaemonStartupLoader";
 import { useBoardPresentation } from "../hooks/useBoardPresentation";
 import { useProjectOrchestratorAction } from "../hooks/useProjectOrchestratorAction";
 import { ProjectBoardActions } from "./ProjectBoardActions";
+import { usePressureState, useSessionMemory } from "../hooks/useSessionMemory";
+import { AppMemoryIndicator, toSessionFacts, useHasAppMemory } from "./SessionMemoryPanel";
 import {
 	ArchivedSessionCardAdapter,
 	BoardSessionCardAdapter,
@@ -136,7 +142,27 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 		hasProjects: workspaces.length > 0,
 		hasWorkerSessions: liveSessions.length > 0,
 	});
-	const hasArchive = archived.length > 0;
+	// Memory and CPU monitoring is a developer tool: the light, the card chips
+	// and the window behind them only exist in Developer mode.
+	const developerMode = useUiStore((state) => state.developerMode);
+	const hasMemory = useHasAppMemory() && developerMode;
+	// Per-session readings feed each card's resource chip. Chips are grey
+	// unless the machine is tight and the card is part of the fix (idle, or
+	// the single largest).
+	const sessionMemory = useSessionMemory(projectId).data;
+	const memoryBySession = developerMode ? sessionMemory : undefined;
+	const pressure = usePressureState();
+	const chipToneOf = useMemo(() => {
+		const now = Date.now();
+		const facts = sessions
+			.filter((session) => session.isTerminated !== true && !isOrchestratorSession(session))
+			.map((session) => toSessionFacts(session, memoryBySession?.get(session.id), now));
+		const largest = largestSession(facts);
+		return (session: WorkspaceSession): ChipTone =>
+			chipTone(pressure ?? "fine", facts.find((f) => f.id === session.id) ?? toSessionFacts(session, memoryBySession?.get(session.id), now), largest);
+	}, [sessions, memoryBySession, pressure]);
+	// The bar hosts the memory indicator too, so it stays up with an empty archive.
+	const hasArchive = archived.length > 0 || hasMemory;
 	const terminateSession = useTerminateSession();
 	const activeProjectIdRef = useRef(projectId);
 	activeProjectIdRef.current = projectId;
@@ -260,6 +286,8 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 						labels={boardLabels}
 							renderSessionCard={(session) => (
 								<BoardSessionCardAdapter
+								memory={memoryBySession?.get(session.id)}
+								memoryTone={chipToneOf(session)}
 								onOpen={() => openSession(session)}
 									onTerminate={() => terminateSession.mutate(session)}
 									session={session}
@@ -303,6 +331,7 @@ const BoardArchivePanel = memo(function BoardArchivePanel({
 	const { t } = useTranslation();
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
+	const developerMode = useUiStore((state) => state.developerMode);
 	const restoreSessionById = useRestoreSession();
 	const [restoringSessionId, setRestoringSessionId] = useState<string | undefined>();
 	const [restoreErrors, setRestoreErrors] = useState<Record<string, string>>({});
@@ -375,6 +404,7 @@ const BoardArchivePanel = memo(function BoardArchivePanel({
 					archiveAria: t("shell.archiveSessionsAria", { count: sessions.length }),
 					archivedSessions: t("shell.archivedSessions"),
 				}}
+				trailing={developerMode ? <AppMemoryIndicator /> : undefined}
 				renderSessionCard={(session) => (
 					<ArchivedSessionCardAdapter
 						isRestoreDisabled={restoringSessionId !== undefined}

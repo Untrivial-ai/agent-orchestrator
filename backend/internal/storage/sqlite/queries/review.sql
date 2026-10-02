@@ -30,6 +30,15 @@ FROM review WHERE id = ?;
 SELECT id, session_id, project_id, harness, pr_url, reviewer_handle_id, agent_session_id, reviewer_activity_state, reviewer_launch_id, interface_mode, provider_conversation_id, controller_generation, controller_error, created_at, updated_at
 FROM review WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC;
 
+-- name: ListLiveReviewerHandles :many
+-- Every review row that currently owns a live TUI reviewer pane, across the
+-- whole daemon: reviewer processes have no session row of their own (their
+-- identity is this table's reviewer_handle_id), and a reviewer outlives the
+-- worker that spawned it, so this is the only way to find one that survived
+-- its worker's death.
+SELECT id, session_id, harness, reviewer_handle_id
+FROM review WHERE reviewer_handle_id != '';
+
 -- name: SetReviewInterfaceMode :execrows
 UPDATE review SET interface_mode = ?, reviewer_handle_id = CASE WHEN ? = 'chat' THEN '' ELSE reviewer_handle_id END,
     provider_conversation_id = CASE WHEN ? = 'tui' THEN '' ELSE provider_conversation_id END,

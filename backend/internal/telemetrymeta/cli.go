@@ -23,6 +23,7 @@ func IsRoutineInternalCLICommand(commandPath string) bool {
 var routineInternalCLICommands = []string{
 	"ao status",
 	"ao session ls",
+	"ao session top",
 	"ao session get",
 	"ao session agent-switch ls",
 	"ao session handoff",

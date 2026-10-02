@@ -746,8 +746,10 @@ describe("SessionsBoardView", () => {
 		);
 
 		const archiveButton = screen.getByRole("button", { name: "Archive, 1 session" });
-		expect(archiveButton).toHaveClass(archiveToggleHeightClassName, "w-full", "py-0");
-		expect(archiveButton.parentElement).toHaveClass("absolute", "inset-x-0", "bottom-0", "bg-background");
+		// The toggle fills a fixed-height row it shares with the trailing status slot.
+		expect(archiveButton).toHaveClass("h-full", "flex-1", "py-0");
+		expect(archiveButton.parentElement).toHaveClass(archiveToggleHeightClassName);
+		expect(archiveButton.parentElement?.parentElement).toHaveClass("absolute", "inset-x-0", "bottom-0", "bg-background");
 		expect(within(archiveButton).getByText("Archive")).toHaveClass("text-2xs", "font-medium");
 		expect(within(archiveButton).getByText("Archive")).not.toHaveClass("font-mono", "uppercase");
 

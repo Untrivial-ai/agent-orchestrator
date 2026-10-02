@@ -192,6 +192,7 @@ func newSessionCommand(ctx *commandContext) *cobra.Command {
 		Short: "Manage agent sessions",
 	}
 	cmd.AddCommand(newSessionListCommand(ctx))
+	cmd.AddCommand(newSessionTopCommand(ctx))
 	cmd.AddCommand(newSessionGetCommand(ctx))
 	cmd.AddCommand(newSessionKillCommand(ctx))
 	cmd.AddCommand(newSessionRestoreCommand(ctx))

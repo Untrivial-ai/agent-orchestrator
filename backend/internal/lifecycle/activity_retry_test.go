@@ -103,3 +103,49 @@ func TestActivityProjectionRetryUsesOriginalStopSignal(t *testing.T) {
 		t.Fatalf("retry lost original Stop payload: conflict=%v checkpoint=%+v", s.conflict, after)
 	}
 }
+
+// TestActivityProjectionRetryRecordsStepOnce guards against recordStepLocked
+// running before the CAS retry loop: a signal that wins only on its second
+// pass through the fences must still leave exactly one step behind, not one
+// per pass.
+func TestActivityProjectionRetryRecordsStepOnce(t *testing.T) {
+	s := &promptConflictStore{fakeStore: newFakeStore(), conflict: true}
+	s.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", Mode: domain.SessionModeTUI,
+		Metadata: domain.SessionMetadata{RuntimeLaunchID: "launch-1"},
+	}
+	m := New(s, nil)
+	if err := m.ApplyActivitySignal(context.Background(), "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityActive, Event: "pre-tool-use",
+		ToolName: "Bash", ToolUseID: "tool-1", LaunchID: "launch-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if s.conflict {
+		t.Fatal("test setup did not force a retry")
+	}
+	if steps := m.Steps("mer-1"); len(steps) != 1 {
+		t.Fatalf("retry must record the step once, got %d: %+v", len(steps), steps)
+	}
+}
+
+// TestActivityProjectionRejectedSignalRecordsNoStep guards the other half of
+// the same fix: a signal the launch-id fence rejects must never reach the
+// step log, even though recordStepLocked used to run before that fence.
+func TestActivityProjectionRejectedSignalRecordsNoStep(t *testing.T) {
+	s := &promptConflictStore{fakeStore: newFakeStore()}
+	s.sessions["mer-1"] = domain.SessionRecord{
+		ID: "mer-1", Mode: domain.SessionModeTUI,
+		Metadata: domain.SessionMetadata{RuntimeLaunchID: "launch-1"},
+	}
+	m := New(s, nil)
+	if err := m.ApplyActivitySignal(context.Background(), "mer-1", ports.ActivitySignal{
+		Valid: true, State: domain.ActivityActive, Event: "pre-tool-use",
+		ToolName: "Bash", ToolUseID: "tool-1", LaunchID: "stale-launch",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if steps := m.Steps("mer-1"); len(steps) != 0 {
+		t.Fatalf("a signal rejected by the launch fence must not be recorded, got %+v", steps)
+	}
+}

@@ -577,7 +577,7 @@ function UpdateActions({
 					</p>
 					<DesktopReleaseNotes
 						notes={status.releaseNotes}
-						textClassName="mt-1.5 max-h-40 overflow-y-auto text-pretty text-sm leading-5 text-settings-label"
+						textClassName="settings-thin-scrollbar mt-1.5 max-h-40 overflow-y-auto overscroll-contain text-pretty text-sm leading-5 text-settings-label"
 					/>
 				</div>
 			) : null}

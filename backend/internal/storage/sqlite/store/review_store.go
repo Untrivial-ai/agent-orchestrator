@@ -114,6 +114,24 @@ func (s *Store) ListReviewsBySession(ctx context.Context, id domain.SessionID) (
 	return out, nil
 }
 
+// ListLiveReviewerHandles returns every review row currently holding a live
+// TUI reviewer pane, across every project and session (including one whose
+// worker has since terminated) — the only lookup for a reviewer process that
+// has no session row of its own.
+func (s *Store) ListLiveReviewerHandles(ctx context.Context) ([]domain.ReviewerHandle, error) {
+	rows, err := s.qr.ListLiveReviewerHandles(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list live reviewer handles: %w", err)
+	}
+	out := make([]domain.ReviewerHandle, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.ReviewerHandle{
+			ReviewID: row.ID, SessionID: row.SessionID, Harness: row.Harness, HandleID: row.ReviewerHandleID,
+		})
+	}
+	return out, nil
+}
+
 // ClaimReviewChatController records ownership of a reviewer chat controller.
 func (s *Store) ClaimReviewChatController(ctx context.Context, id, providerID, generation string, now time.Time) (bool, error) {
 	s.writeMu.Lock()

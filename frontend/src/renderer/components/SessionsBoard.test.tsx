@@ -19,6 +19,8 @@ vi.mock("motion/react", async (importOriginal) => {
 });
 
 const {
+	appMemoryMock,
+	sessionMemoryMock,
 	navigateMock,
 	notificationShowMock,
 	postMock,
@@ -26,6 +28,8 @@ const {
 	usageQueryMock,
 	boardActionsInPanelMock,
 } = vi.hoisted(() => ({
+	appMemoryMock: vi.fn(),
+	sessionMemoryMock: vi.fn(),
 	navigateMock: vi.fn(),
 	notificationShowMock: vi.fn(),
 	postMock: vi.fn(),
@@ -55,8 +59,23 @@ vi.mock("../hooks/useSessionUsageSummaries", () => ({
 	useSessionUsageSummaries: usageQueryMock,
 }));
 
+vi.mock("../hooks/useSessionMemory", async (importOriginal) => {
+	const { pressureState } = await import("@aoagents/product-ui");
+	return {
+		...(await importOriginal<typeof import("../hooks/useSessionMemory")>()),
+		useAppMemory: appMemoryMock,
+		useSessionMemory: sessionMemoryMock,
+		// The light's own poll, fed from the same mocked reading.
+		usePressureState: () => {
+			const system = appMemoryMock()?.data?.system;
+			return system ? pressureState(system) : undefined;
+		},
+	};
+});
+
 vi.mock("../lib/api-client", () => ({
 	apiClient: { POST: (...args: unknown[]) => postMock(...args) },
+	apiErrorCode: (error: unknown) => (error as { code?: string } | null)?.code,
 	apiErrorMessage: (_error: unknown, fallback: string) => fallback,
 	getApiBaseUrl: () => "http://127.0.0.1:3001",
 	subscribeApiBaseUrl: () => () => undefined,
@@ -89,6 +108,7 @@ vi.mock("../lib/platform", async (importOriginal) => {
 });
 
 import { archiveToggleHeightClassName, archiveToggleOffsetClassName } from "@aoagents/product-ui";
+import { useUiStore } from "../stores/ui-store";
 import { SessionsBoard } from "./SessionsBoard";
 import { toBoardSessionPresentation } from "./SessionsBoardAdapters";
 import { TooltipProvider } from "./ui/tooltip";
@@ -116,16 +136,93 @@ async function expandArchive() {
 }
 
 beforeEach(() => {
+	// The memory light and card chips are Developer mode tools.
+	useUiStore.setState({ developerMode: true });
 	navigateMock.mockReset();
 	notificationShowMock.mockReset().mockResolvedValue(undefined);
 	postMock.mockReset().mockResolvedValue({ data: {} });
 	workspaceQueryMock.mockReset().mockReturnValue({ data: [], isError: false });
 	usageQueryMock.mockReset().mockReturnValue({ data: new Map() });
+	appMemoryMock.mockReset().mockReturnValue({ data: undefined, isError: false });
+	sessionMemoryMock.mockReset().mockReturnValue({ data: undefined, isError: false });
 	window.localStorage.removeItem("ao.board.archive.layout");
 	boardActionsInPanelMock.mockReset().mockReturnValue(false);
 });
 
 describe("SessionsBoard", () => {
+	it("says a session's status could not be verified, without offering a retry", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([boardSession({ id: "unverified", title: "Unverified task", status: "unknown", displayStatus: "Working", statusReadiness: "unavailable" })])],
+			isSuccess: true, isError: false,
+		});
+		renderBoard("p1");
+		expect(screen.queryByText("Working")).not.toBeInTheDocument();
+		expect(screen.getByText("Unable to verify")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Retry status check" })).not.toBeInTheDocument();
+		expect(postMock).not.toHaveBeenCalled();
+		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
+	it("shows what a session costs the machine on its card", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([
+				boardSession({ id: "running", title: "Running task", status: "idle", activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" } }),
+				boardSession({ id: "quiet", title: "Quiet task", status: "idle", activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" } }),
+			])],
+			isSuccess: true, isError: false,
+		});
+		sessionMemoryMock.mockReturnValue({
+			isError: false,
+			data: new Map([["running", { sessionId: "running", rssBytes: 641_728_512, processCount: 3, cpuPercent: 82.4, sampledAt: "", processes: [] }]]),
+		});
+		renderBoard("p1");
+		// The card says what the session costs the machine right now; an unsampled one shows nothing, never 0 MB.
+		expect(screen.getAllByTestId("session-resource")).toHaveLength(1);
+		expect(screen.getByTestId("session-resource")).toHaveTextContent("612 MB");
+		expect(screen.getByTestId("session-resource")).toHaveAttribute("data-resource-tone", "neutral");
+	});
+
+	it("shows no memory light or card memory outside Developer mode", async () => {
+		useUiStore.setState({ developerMode: false });
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([boardSession({ id: "running", title: "Running task", status: "idle", activity: { state: "idle", lastActivityAt: "2026-01-01T00:00:00Z" } })])],
+			isSuccess: true, isError: false,
+		});
+		sessionMemoryMock.mockReturnValue({
+			isError: false,
+			data: new Map([["running", { sessionId: "running", rssBytes: 641_728_512, processCount: 3, cpuPercent: 82.4, sampledAt: "", processes: [] }]]),
+		});
+		appMemoryMock.mockReturnValue({ isError: false, data: { app: { rssBytes: 2 * 1024 ** 3, processCount: 4, cpuPercent: 0 }, liveCount: 1 } });
+		renderBoard("p1");
+		expect(await screen.findByText("Running task")).toBeInTheDocument();
+		expect(screen.queryByTestId("session-resource")).not.toBeInTheDocument();
+		expect(screen.queryByTestId("app-memory-indicator")).not.toBeInTheDocument();
+	});
+
+	it("shows AO memory pressure in the archive bar even with nothing archived", async () => {
+		const GIB = 1024 ** 3;
+		appMemoryMock.mockReturnValue({
+			isError: false,
+			data: {
+				app: { rssBytes: 12 * GIB, processCount: 20, cpuPercent: 40 },
+				system: { totalBytes: 32 * GIB, availableBytes: 2 * GIB, swapTotalBytes: 0, swapUsedBytes: 0, swapBytesPerSec: 0, cpuCount: 8, load1: 1, cpuPercent: 0, pressureRaw: 35, pressureSource: "psi" },
+				liveCount: 1,
+			},
+		});
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([boardSession({ id: "live", title: "Live task", status: "working" })])],
+			isSuccess: true, isError: false,
+		});
+		renderBoard("p1");
+		expect(screen.queryByRole("button", { name: /^Archive, \d+ sessions?$/ })).not.toBeInTheDocument();
+		const indicator = screen.getByTestId("app-memory-indicator");
+		expect(indicator).toHaveTextContent("12.0 GB");
+		expect(indicator).toHaveAttribute("data-memory-state", "tight");
+		expect(indicator).toHaveAttribute("aria-label", "Tight · 2.0 GB free of 32.0 GB · AO holds 12.0 GB · pressure 35.0");
+		await userEvent.click(indicator);
+		expect(await screen.findByTestId("session-memory-stacked")).toBeInTheDocument();
+	});
+
 	it.each(["cloud", "standalone", undefined] as const)("hides the cue runner for %s projects", (kind) => {
 		boardActionsInPanelMock.mockReturnValue(true);
 		workspaceQueryMock.mockReturnValue({
@@ -511,9 +608,16 @@ describe("SessionsBoard", () => {
 			]),
 		});
 
+		sessionMemoryMock.mockReturnValue({
+			isError: false,
+			data: new Map([["s-tokens", { sessionId: "s-tokens", rssBytes: 253_755_392, processCount: 3, cpuPercent: 0, sampledAt: "", processes: [] }]]),
+		});
+
 		renderBoard("p1");
 
 		const card = screen.getByText("tokens worker").closest('[data-testid="board-session-card"]') as HTMLElement;
+		// Memory sits beside token usage, never in place of it.
+		expect(within(card).getByTestId("session-resource")).toHaveTextContent("242 MB");
 		const usage = within(card).getByText("12.4K", { selector: "span" });
 		expect(usage).toHaveAttribute("aria-hidden", "true");
 		expect(within(card).getByText("12,400 tokens")).toHaveClass("sr-only");
@@ -942,13 +1046,14 @@ describe("SessionsBoard", () => {
 		renderBoard("p1");
 
 		const archiveButton = screen.getByRole("button", { name: /^Archive, \d+ sessions?$/ });
-		expect(archiveButton).toHaveClass(archiveToggleHeightClassName, "w-full", "py-0");
+		expect(archiveButton.parentElement).toHaveClass(archiveToggleHeightClassName);
+		expect(archiveButton).toHaveClass("h-full", "flex-1", "py-0");
 		const archiveLabel = within(archiveButton).getByText("Archive");
 		expect(archiveLabel).not.toHaveClass("font-mono", "uppercase");
 		expect(archiveLabel).toHaveClass("text-2xs", "font-medium");
 		// Expanded archive overlays the board instead of shrinking lanes (which would
 		// force a persistent Needs You column scrollbar gutter).
-		expect(archiveButton.parentElement).toHaveClass("absolute", "inset-x-0", "bottom-0", "bg-background");
+		expect(archiveButton.parentElement?.parentElement).toHaveClass("absolute", "inset-x-0", "bottom-0", "bg-background");
 		expect(screen.getByTestId("board")).toHaveClass("relative");
 		expect(screen.getByTestId("board").querySelector(":scope > .min-h-0.flex-1")).toHaveClass(
 			archiveToggleOffsetClassName,
