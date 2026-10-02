@@ -274,7 +274,11 @@ func (s *Store) AppendInteractiveConversationFacts(ctx context.Context, orgID, s
 	if text == "" {
 		return nil
 	}
-	payload, err := json.Marshal(map[string]string{"text": text})
+	fields := map[string]string{"text": text}
+	if eventTypeOut == "chat.user_message" {
+		fields["origin"] = "human"
+	}
+	payload, err := json.Marshal(fields)
 	if err != nil {
 		return err
 	}

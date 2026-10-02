@@ -94,6 +94,53 @@ func TestCloudChatAutomationProvenanceSurvivesRetriesAndLegacyReads(t *testing.T
 	}
 }
 
+func TestCloudChatInteractivePromptsSkipLegacyAuditRecovery(t *testing.T) {
+	store, admin, f := openNotificationTestStore(t)
+	ctx := context.Background()
+	if _, err := admin.Exec(ctx, `UPDATE ao_sessions SET interface='tui' WHERE id=$1`, f.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	for _, sourceInterface := range []string{"tui", ""} {
+		if err := store.AppendInteractiveConversationFacts(ctx, f.orgID, f.sessionID, "user-prompt-submit", sourceInterface, "Find homes", ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.AppendInteractiveConversationFacts(ctx, f.orgID, f.sessionID, "stop", sourceInterface, "", "Found homes"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trace := &chatAuditQueryTrace{}
+	config := store.pool.Config()
+	config.ConnConfig.Tracer = trace
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracedStore := &Store{pool: pool}
+	t.Cleanup(tracedStore.Close)
+	events, _, err := tracedStore.ListClientEvents(ctx, domain.Principal{UserID: f.userID, Provider: "local"}, f.orgID, f.sessionID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := trace.queries.Load(); got != 0 {
+		t.Fatalf("new TUI prompts queried legacy audit %d times", got)
+	}
+	if len(events) != 4 {
+		t.Fatalf("got %d events, want two prompts and two replies", len(events))
+	}
+	for _, event := range events {
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == "chat.user_message" && payload["origin"] != "human" {
+			t.Fatalf("TUI prompt lost human origin: %s", event.Payload)
+		}
+		if event.Type == "chat.assistant_delta" && payload["origin"] != nil {
+			t.Fatalf("assistant reply gained user origin: %s", event.Payload)
+		}
+	}
+}
+
 func TestCloudChatPersistsProviderMessageIDUnderTurnFence(t *testing.T) {
 	store, _, f := openNotificationTestStore(t)
 	ctx := context.Background()

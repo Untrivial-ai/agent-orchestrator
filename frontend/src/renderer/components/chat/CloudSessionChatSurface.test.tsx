@@ -390,6 +390,23 @@ describe("Cloud chat message boundaries", () => {
 		expect(snapshot.items.map((item) => item.kind === "message" && item.streaming)).toEqual([false, true]);
 	});
 
+	it("settles the previous attempt before the replacement emits output", () => {
+		const events = [
+			event(1, "chat.turn_started", { turnId: "turn-1", attempt: 1 }),
+			event(2, "chat.assistant_delta", { turnId: "turn-1", attempt: 1, itemId: "answer", text: "Original reply." }),
+		];
+		expect(toSnapshot(session, events).items[0]).toMatchObject({ streaming: true });
+		events.push(event(3, "chat.turn_started", { turnId: "turn-1", attempt: 2 }));
+		const waiting = toSnapshot(session, events);
+		expect(waiting.turns[0]).toMatchObject({ state: "running" });
+		expect(waiting.items[0]).toMatchObject({ text: "Original reply.", streaming: false });
+		events.push(event(4, "chat.assistant_delta", { turnId: "turn-1", attempt: 2, itemId: "answer", text: "Replacement reply." }));
+		expect(toSnapshot(session, events).items).toMatchObject([
+			{ text: "Original reply.", streaming: false },
+			{ text: "Replacement reply.", streaming: true },
+		]);
+	});
+
 	it("uses durable provenance rather than report-looking text", () => {
 		const snapshot = toSnapshot(session, [
 			event(1, "chat.user_message", { text: "[from worker someone] A human pasted this." }),

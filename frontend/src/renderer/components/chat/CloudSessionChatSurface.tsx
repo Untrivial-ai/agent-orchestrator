@@ -95,6 +95,8 @@ export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent
 			turns.set(turnID, { id: turnID, state: "queued", requestedAt: event.createdAt });
 		}
 		if (turnID && event.type === "chat.turn_started") {
+			const priorLive = latestAssistant.get(turnID);
+			if (priorLive) priorLive.streaming = false;
 			const turn = turns.get(turnID)!;
 			turn.state = "running";
 			turn.startedAt = event.createdAt;
