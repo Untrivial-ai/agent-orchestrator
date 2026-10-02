@@ -22,6 +22,11 @@ func claudeRequest(t *testing.T) ports.AgentModelDiscoveryRequest {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
 	t.Setenv("ANTHROPIC_MODEL", "")
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	t.Setenv("ANTHROPIC_DEFAULT_OPUS_MODEL", "")
+	t.Setenv("ANTHROPIC_DEFAULT_SONNET_MODEL", "")
+	t.Setenv("ANTHROPIC_DEFAULT_HAIKU_MODEL", "")
+	t.Setenv("ANTHROPIC_SMALL_FAST_MODEL", "")
 	return ports.AgentModelDiscoveryRequest{
 		AgentID: "claude-code", WorkingDir: t.TempDir(), Env: map[string]string{},
 	}
@@ -330,6 +335,64 @@ func TestClaudeFallbackModelsOrderedByFamily(t *testing.T) {
 	assertClaudeOrder(t, catalog.Models, []string{"fable", "opus", "opus[1m]", "sonnet", "haiku"})
 }
 
+func TestClaudeBracketedAliasDoesNotOutrankPinnedSnapshot(t *testing.T) {
+	models := []ports.AgentModelInfo{
+		{ID: "opus[1m]", Label: "Opus (1M context)"},
+		{ID: "claude-opus-5-20260101", Label: "Claude Opus 5"},
+		{ID: "opus", Label: "Opus"},
+	}
+
+	assertClaudeOrder(t, SortClaudeNewestFirst(models), []string{
+		"opus", "claude-opus-5-20260101", "opus[1m]",
+	})
+}
+
+func TestClaudeLegacyFamilyVersionsSortNewestFirst(t *testing.T) {
+	models := []ports.AgentModelInfo{
+		{ID: "claude-3-5-sonnet-20241022", Label: "Claude 3.5 Sonnet"},
+		{ID: "claude-3-7-sonnet-20250219", Label: "Claude 3.7 Sonnet"},
+	}
+
+	assertClaudeOrder(t, SortClaudeNewestFirst(models), []string{
+		"claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022",
+	})
+}
+
+func TestClaudeSameVersionSnapshotsSortNewestFirst(t *testing.T) {
+	models := []ports.AgentModelInfo{
+		{ID: "claude-opus-4-5-20251101", Label: "Claude Opus 4.5"},
+		{ID: "claude-opus-4-5-20251201", Label: "Claude Opus 4.5"},
+		{ID: "claude-opus-4-5-20250901", Label: "Claude Opus 4.5"},
+	}
+
+	assertClaudeOrder(t, SortClaudeNewestFirst(models), []string{
+		"claude-opus-4-5-20251201", "claude-opus-4-5-20251101", "claude-opus-4-5-20250901",
+	})
+}
+
+func TestClaudeSortFallsBackToLabelForOpaqueProviderID(t *testing.T) {
+	models := []ports.AgentModelInfo{
+		{ID: "gateway-model-a", Label: "Claude Sonnet 5"},
+		{ID: "gateway-model-b", Label: "Claude Opus 5"},
+	}
+
+	assertClaudeOrder(t, SortClaudeNewestFirst(models), []string{"gateway-model-b", "gateway-model-a"})
+}
+
+func TestClaudeRequestScrubsAmbientGatewayConfiguration(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "https://gw.example")
+	t.Setenv("ANTHROPIC_DEFAULT_OPUS_MODEL", "gw-opus")
+	t.Setenv("ANTHROPIC_DEFAULT_SONNET_MODEL", "gw-sonnet")
+	t.Setenv("ANTHROPIC_DEFAULT_HAIKU_MODEL", "gw-haiku")
+	t.Setenv("ANTHROPIC_SMALL_FAST_MODEL", "gw-fast")
+
+	catalog, err := discoverClaudeCatalog(context.Background(), claudeRequest(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertClaudeOrder(t, catalog.Models, []string{"fable", "opus", "opus[1m]", "sonnet", "haiku"})
+}
+
 // The configured default stays pinned at the top of the picker regardless of
 // its family, and the rest of the catalog keeps tier order behind it.
 func TestClaudeConfiguredDefaultLeadsFamilyOrder(t *testing.T) {
@@ -382,10 +445,17 @@ func assertClaudeOrder(t *testing.T, models []ports.AgentModelInfo, want []strin
 func TestClaudeDiscoveryFingerprintCoversTheOrderRevision(t *testing.T) {
 	dir := t.TempDir()
 	claude := discoveryConfigInputs(context.Background(), "claude-code", dir, nil)
-	if !strings.Contains(claude, "order="+claudeCatalogOrderRevision) {
-		t.Fatalf("claude discovery inputs = %q, want the order revision folded in", claude)
+	if !strings.Contains(claude, "order=") {
+		t.Fatalf("claude discovery inputs = %q, want the order fingerprint folded in", claude)
 	}
 	if other := discoveryConfigInputs(context.Background(), "codex", dir, nil); strings.Contains(other, "order=") {
 		t.Fatalf("codex discovery inputs = %q, want no Claude order revision", other)
+	}
+	original := claudeFamilyOrder
+	claudeFamilyOrder = append(append([]string(nil), original...), "future-family")
+	t.Cleanup(func() { claudeFamilyOrder = original })
+	changed := discoveryConfigInputs(context.Background(), "claude-code", dir, nil)
+	if changed == claude {
+		t.Fatalf("Claude discovery inputs did not change with family order: %q", changed)
 	}
 }

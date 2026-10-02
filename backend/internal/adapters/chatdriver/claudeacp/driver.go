@@ -44,7 +44,13 @@ type claudeLaunchAuthenticator interface {
 // plugin. The plugin remains the canonical discovery/auth implementation for
 // both Chat and TUI modes.
 func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.ChatDriver {
-	return &checkpointDriver{plugin: plugin, ChatDriver: acpdriver.New(acpdriver.Config{
+	return &checkpointDriver{
+		plugin: plugin, ChatDriver: acpdriver.New(claudeACPConfig(plugin, log, onAuthRejected), log),
+	}
+}
+
+func claudeACPConfig(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) acpdriver.Config {
+	return acpdriver.Config{
 		Harness: domain.HarnessClaudeCode,
 		// A live rejection is the ground truth that outranks any cached
 		// verdict, so drop the cache the moment one arrives. This is also the
@@ -112,7 +118,7 @@ func New(plugin claudePlugin, log *slog.Logger, onAuthRejected func()) ports.Cha
 		SessionMeta:    claudeSessionMeta,
 		SessionMode:    claudeSessionMode,
 		SessionOptions: claudeSessionOptions,
-	}, log)}
+	}
 }
 
 func validateClaudeLaunchAuth(ctx context.Context, plugin claudePlugin, workingDir string, env map[string]string, log *slog.Logger) error {
@@ -430,6 +436,11 @@ func requireNodeVersion(ctx context.Context, node string) error {
 func claudeOrderChoices(optionID string, choices []ports.ChatConfigOptionChoice) {
 	if optionID != "model" || len(choices) < 2 {
 		return
+	}
+	for _, choice := range choices {
+		if choice.Group != "" || choice.GroupName != "" {
+			return
+		}
 	}
 	models := make([]ports.AgentModelInfo, 0, len(choices))
 	for _, choice := range choices {

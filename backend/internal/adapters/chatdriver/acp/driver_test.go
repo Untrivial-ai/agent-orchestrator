@@ -12,6 +12,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -2821,6 +2823,43 @@ func TestACPDriverExposesAndMutatesAdvertisedConfigOptions(t *testing.T) {
 	}
 }
 
+// The driver must carry the binding-owned ordering hook all the way from
+// Config through conversation construction and session setup.
+func TestACPDriverAppliesConfiguredChoiceOrderAtSessionStart(t *testing.T) {
+	agent := &fakeAgent{newConfig: []acpsdk.SessionConfigOption{
+		selectConfigOption("model", "Model", "model", "sonnet", "sonnet", "haiku", "opus"),
+	}}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+		OrderChoices: func(optionID string, choices []ports.ChatConfigOptionChoice) {
+			if optionID == "model" {
+				sort.Slice(choices, func(i, j int) bool { return choices[i].Value < choices[j].Value })
+			}
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	conv, err := driver.Start(context.Background(), ports.ChatStartConfig{WorkspacePath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer conv.Close()
+	options, err := conv.(ports.ChatConfigOptionController).ListConfigOptions(context.Background())
+	if err != nil {
+		t.Fatalf("ListConfigOptions: %v", err)
+	}
+	got := make([]string, 0, len(options[0].Choices))
+	for _, choice := range options[0].Choices {
+		got = append(got, choice.Value)
+	}
+	if !reflect.DeepEqual(got, []string{"haiku", "opus", "sonnet"}) {
+		t.Fatalf("choices = %v, want binding order", got)
+	}
+}
+
 func TestACPDriverConsumesLegacyKimiSelectorsOnSDK0135(t *testing.T) {
 	agent := &legacyKimiAgent{}
 	driver := New(Config{
@@ -3329,6 +3368,11 @@ func TestDiscoverConfigOptionsReadsSessionCatalogWithoutPrompt(t *testing.T) {
 		Launch: func(context.Context, LaunchConfig) (Launch, error) {
 			return Launch{Command: "cline", Args: []string{"--acp"}}, nil
 		},
+		OrderChoices: func(optionID string, choices []ports.ChatConfigOptionChoice) {
+			if optionID == "model" {
+				sort.Slice(choices, func(i, j int) bool { return choices[i].Value < choices[j].Value })
+			}
+		},
 	}, slog.New(slog.DiscardHandler))
 	driver.useTestProcess(fakeSpawn(agent))
 
@@ -3338,6 +3382,9 @@ func TestDiscoverConfigOptionsReadsSessionCatalogWithoutPrompt(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Category != "model" || got[0].Current.Select != "sonnet" || len(got[0].Choices) != 2 {
 		t.Fatalf("options = %#v", got)
+	}
+	if got[0].Choices[0].Value != "opus" || got[0].Choices[1].Value != "sonnet" {
+		t.Fatalf("choices = %#v, want binding order", got[0].Choices)
 	}
 	if agent.promptParams.Prompt != nil {
 		t.Fatalf("discovery sent a prompt: %#v", agent.promptParams)

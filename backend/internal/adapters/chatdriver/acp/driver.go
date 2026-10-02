@@ -183,7 +183,7 @@ func (d *Driver) discoverConfigOptions(ctx context.Context, workingDir string) (
 	if err != nil {
 		return nil, normalizeACPError("ACP session/new", err)
 	}
-	return normalizeConfigOptions(resp.ConfigOptions), nil
+	return conv.orderedOptions(normalizeConfigOptions(resp.ConfigOptions)), nil
 }
 
 // Harness identifies the AO harness this ACP transport adapts.
@@ -484,9 +484,9 @@ func (d *Driver) initialize(
 ) (*conversation, acpsdk.InitializeResponse, *persistenthost.ACPState, error) {
 	conv := newConversation(
 		proc, d.log, cfg.ProviderScopeID, d.cfg.ClientExtension, d.cfg.ClientExtensionAliases,
+		d.cfg.OrderChoices,
 	)
 	conv.onAuthRejected = d.cfg.OnAuthRejected
-	conv.orderChoices = d.cfg.OrderChoices
 	conv.promptResponseFailure = d.cfg.PromptResponseFailure
 	if proc.reconnected {
 		state := proc.acpState

@@ -319,11 +319,10 @@ func (s *Service) monitorModelCatalogFreshness(ctx context.Context) {
 	}
 }
 
-// Models returns one normalized model catalog. Cached values survive daemon
-// restarts; refresh forces a new documented CLI discovery attempt. Discovery
-// failures degrade to the last cached catalog or a custom model input.
 // Models returns the picker catalog for one agent, ordered with the models this
-// user actually runs first. See withModelUsage for why recency leads.
+// user actually runs first. Cached values survive daemon restarts; refresh
+// forces a new documented CLI discovery attempt. Discovery failures degrade to
+// the last cached catalog or a custom model input.
 func (s *Service) Models(ctx context.Context, agentID, projectID string, refresh bool) (ports.AgentModelCatalog, error) {
 	catalog, err := s.modelCatalog(ctx, agentID, projectID, refresh)
 	if err != nil {

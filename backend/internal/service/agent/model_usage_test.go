@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	agentregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -14,6 +15,7 @@ func usageSession(project, harness, model string, at time.Time) domain.SessionRe
 		ProjectID: domain.ProjectID(project),
 		Harness:   domain.AgentHarness(harness),
 		Metadata:  domain.SessionMetadata{Model: model},
+		Activity:  domain.Activity{LastActivityAt: at},
 		CreatedAt: at,
 		UpdatedAt: at,
 	}
@@ -108,9 +110,9 @@ func TestModelUsageFallsBackToAgentWideHistory(t *testing.T) {
 	assertIDs(t, got, "sonnet", "fable")
 }
 
-// A model switched into a running session is used from that moment, not from
-// whenever the session happened to start.
-func TestModelUsageUsesLastActivityNotCreation(t *testing.T) {
+// Row metadata updates such as a rename must not make an old model look newly
+// used. Activity is the durable fact that represents actual session use.
+func TestModelUsageUsesActivityInsteadOfRowUpdateTime(t *testing.T) {
 	now := time.Now().UTC()
 	old := usageSession("p1", "claude-code", "opus", now.Add(-48*time.Hour))
 	old.UpdatedAt = now
@@ -122,7 +124,7 @@ func TestModelUsageUsesLastActivityNotCreation(t *testing.T) {
 
 	got := svc.withModelUsage(context.Background(), "claude-code", "p1", claudeCatalog("sonnet", "opus"))
 
-	assertIDs(t, got, "opus", "sonnet")
+	assertIDs(t, got, "sonnet", "opus")
 }
 
 // Losing the recency hint must not empty or reorder the picker.
@@ -133,4 +135,45 @@ func TestModelUsageDegradesToCatalogOrder(t *testing.T) {
 	got := svc.withModelUsage(context.Background(), "claude-code", "p1", claudeCatalog("fable", "opus"))
 
 	assertIDs(t, got, "fable", "opus")
+}
+
+func TestCatalogReadPathsApplyModelUsage(t *testing.T) {
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		name string
+		load func(*Service) (ports.AgentModelCatalog, error)
+	}{
+		{
+			name: "Models",
+			load: func(svc *Service) (ports.AgentModelCatalog, error) {
+				return svc.Models(context.Background(), "claude-code", "p1", true)
+			},
+		},
+		{
+			name: "RevalidateModels",
+			load: func(svc *Service) (ports.AgentModelCatalog, error) {
+				return svc.RevalidateModels(context.Background(), "claude-code", "p1")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			discoverer := &fakeModelDiscoverer{catalog: claudeCatalog("fable", "sonnet")}
+			svc := newService(
+				[]agentregistry.HarnessAgent{harnessAgent("claude-code", "Claude Code", nil)},
+				&fakeModelCache{}, nil, discoverer,
+			)
+			svc.sessions = fakeSessionUsageLookup{records: []domain.SessionRecord{
+				usageSession("p1", "claude-code", "sonnet", now),
+			}}
+
+			got, err := tc.load(svc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertIDs(t, got, "sonnet", "fable")
+			if got.Models[0].LastUsedAt == nil {
+				t.Fatal("most recently used model was not stamped")
+			}
+		})
+	}
 }

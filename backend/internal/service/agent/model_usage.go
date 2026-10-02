@@ -9,8 +9,8 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// withModelUsage stamps each model with when a session last ran it and floats
-// the used ones to the front, most recent first.
+// withModelUsage stamps each model with the latest activity of a session whose
+// current model matches it and floats the used ones to the front.
 //
 // Recency outranks the catalog's own order deliberately. A static order encodes
 // what is newest; it cannot encode what this user works with. Someone who ran
@@ -50,7 +50,7 @@ func (s *Service) withModelUsage(ctx context.Context, agentID, projectID string,
 	return catalog
 }
 
-// modelUsage maps model ID to when a session last ran it.
+// modelUsage maps each current session model to that session's latest activity.
 //
 // Project history wins where it exists, because the model someone uses in one
 // repository says little about another. A project with no history inherits the
@@ -95,12 +95,11 @@ func recordUsage(usage map[string]time.Time, model string, at time.Time) {
 	usage[model] = at
 }
 
-// sessionModelUsedAt prefers the session's last activity over its creation
-// time. A model switched into an existing session is used from that moment, not
-// from whenever the session happened to start.
+// sessionModelUsedAt uses the durable activity fact rather than UpdatedAt,
+// which also advances for renames, pinning and other preference mutations.
 func sessionModelUsedAt(record domain.SessionRecord) time.Time {
-	if record.UpdatedAt.After(record.CreatedAt) {
-		return record.UpdatedAt
+	if record.Activity.LastActivityAt.After(record.CreatedAt) {
+		return record.Activity.LastActivityAt
 	}
 	return record.CreatedAt
 }

@@ -1,9 +1,11 @@
 package acp
 
 import (
+	"context"
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
@@ -164,5 +166,35 @@ func TestReplaceConfigOptionsAppliesChoiceOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, []string{"haiku", "opus", "sonnet"}) {
 		t.Fatalf("choices = %v, want the binding's order", got)
+	}
+}
+
+// A provider ordering hook is an extension point and may inspect conversation
+// state. Session setup must not invoke it while holding the conversation lock.
+func TestStartInvokesChoiceOrderOutsideConversationLock(t *testing.T) {
+	c := &conversation{
+		capabilities: make(ports.ChatCapabilities),
+		events:       make(chan ports.ChatEvent, 1),
+	}
+	c.orderChoices = func(string, []ports.ChatConfigOptionChoice) {
+		if _, err := c.ListConfigOptions(context.Background()); err != nil {
+			t.Errorf("ListConfigOptions: %v", err)
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		c.start(
+			"session-1", make(ports.ChatCapabilities), nil, nil, nil,
+			ports.PermissionModeDefault, nil,
+			[]acpsdk.SessionConfigOption{selectOption("model", "Model", "sonnet", "sonnet", "opus")},
+			nil, nil,
+		)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("start deadlocked while the ordering hook inspected conversation state")
 	}
 }

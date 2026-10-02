@@ -360,8 +360,23 @@ func TestClaudeOrderChoicesGroupsModelsByFamily(t *testing.T) {
 	}
 	claudeOrderChoices("model", choices)
 	assertChoiceOrder(t, choices, []string{
-		"fable", "opus", "opus[1m]", "claude-opus-4-1", "claude-sonnet-4-5-20250929", "haiku",
+		"fable", "opus", "claude-opus-4-1", "opus[1m]", "claude-sonnet-4-5-20250929", "haiku",
 	})
+}
+
+func TestClaudeACPConfigWiresModelChoiceOrdering(t *testing.T) {
+	cfg := claudeACPConfig(rejectedClaudePlugin{binary: "/tmp/claude"}, nil, nil)
+	if cfg.OrderChoices == nil {
+		t.Fatal("Claude ACP config has no model ordering hook")
+	}
+	choices := []ports.ChatConfigOptionChoice{
+		{Value: "haiku", Name: "Haiku"},
+		{Value: "opus", Name: "Opus"},
+	}
+
+	cfg.OrderChoices("model", choices)
+
+	assertChoiceOrder(t, choices, []string{"opus", "haiku"})
 }
 
 // "Default" is the agent's own lead entry, not a member of the family order.
@@ -384,6 +399,18 @@ func TestClaudeOrderChoicesLeavesOtherOptionsAlone(t *testing.T) {
 	}
 	claudeOrderChoices("mode", choices)
 	assertChoiceOrder(t, choices, []string{"plan", "acceptEdits"})
+}
+
+func TestClaudeOrderChoicesPreservesGroupedModels(t *testing.T) {
+	choices := []ports.ChatConfigOptionChoice{
+		{Value: "opus", Name: "Opus", Group: "recommended", GroupName: "Recommended"},
+		{Value: "haiku", Name: "Haiku", Group: "recommended", GroupName: "Recommended"},
+		{Value: "sonnet", Name: "Sonnet", Group: "other", GroupName: "Other"},
+	}
+
+	claudeOrderChoices("model", choices)
+
+	assertChoiceOrder(t, choices, []string{"opus", "haiku", "sonnet"})
 }
 
 func assertChoiceOrder(t *testing.T, choices []ports.ChatConfigOptionChoice, want []string) {
