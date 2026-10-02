@@ -89,6 +89,9 @@ var harnessProbeSpecs = map[string]harnessProbeSpec{
 	"omp":         {BinaryName: "omp", VersionArg: "--version"},
 	"cursor":      {BinaryName: "cursor-agent"},
 	"continue":    {BinaryName: "cn"},
+	// Command Code's binary is `cmd` on Unix and `cmdc` on Windows, where `cmd`
+	// is the built-in shell; the full name resolves on every platform.
+	"command-code": {BinaryName: "command-code", VersionArg: "--version"},
 }
 
 func newDoctorCommand(ctx *commandContext) *cobra.Command {

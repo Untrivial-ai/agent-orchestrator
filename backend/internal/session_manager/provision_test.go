@@ -455,6 +455,48 @@ func TestResolveClaudeModelWithoutEffortRejectsUnknownAndStaleCatalogs(t *testin
 	}
 }
 
+func TestResolveCommandCodeTUIAgentConfigPassesEffortThrough(t *testing.T) {
+	// Command Code's catalog advertises no effort levels, so resolution must
+	// forward the raw level without consulting the catalog at all — even a
+	// discovery failure must not clear it or fail the spawn.
+	m := &Manager{modelCatalog: tuningCatalog{err: errors.New("discovery failed")}}
+
+	resolved, err := m.resolveAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCommandCode,
+		RequestedMode: domain.SessionModeTUI,
+		AgentConfig:   ports.AgentConfig{Model: "deepseek/deepseek-v4-flash", Effort: "high"},
+	}, domain.ProjectConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Model != "deepseek/deepseek-v4-flash" || resolved.Effort != "high" {
+		t.Fatalf("resolved = %#v, want model deepseek/deepseek-v4-flash effort high", resolved)
+	}
+
+	resolved, err = m.resolveAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessCommandCode,
+		RequestedMode: domain.SessionModeTUI,
+	}, domain.ProjectConfig{Worker: domain.RoleOverride{AgentConfig: domain.AgentConfig{Effort: "medium"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Effort != "medium" {
+		t.Fatalf("project effort = %q, want medium", resolved.Effort)
+	}
+
+	resolved, err = m.resolveAgentConfig(context.Background(), ports.SpawnConfig{
+		ProjectID: "p", Kind: domain.KindWorker, Harness: domain.HarnessOpenCode,
+		RequestedMode: domain.SessionModeTUI,
+		AgentConfig:   ports.AgentConfig{Effort: "high"},
+	}, domain.ProjectConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Effort != "" {
+		t.Fatalf("non-effort harness effort = %q, want cleared", resolved.Effort)
+	}
+}
+
 func TestApplySymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows symlink creation requires a host privilege outside this unit test")

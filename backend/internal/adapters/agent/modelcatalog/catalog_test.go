@@ -38,6 +38,119 @@ func TestNormalizeShowsConcreteNameForDefaultCatalogModel(t *testing.T) {
 	}
 }
 
+// Verbatim shape of `cmd --list-models` from Command Code v1.74.0, including the
+// banner, section headings, and the `(default)` marker.
+const commandCodeListModelsFixture = `Available models  ·  85 models
+
+Open Source
+
+deepseek/deepseek-v4-pro               hybrid-attention long-context reasoning
+deepseek/deepseek-v4-flash             fast hybrid-attention reasoning (default)
+minimaxai/minimax-m3                   600B sparse-MoE agentic coding with 1M context
+inclusionai/ling-3.1-flash:free        FREE hybrid-reasoning MoE for coding & tool-using agents
+
+Stealth
+
+stealth/space-bunny-alpha              FREE stealth model with 1M context
+
+Anthropic
+
+claude-sonnet-5-5                      best combo of speed & intelligence (recommended)
+`
+
+func TestParseCommandCodeModelsUsesIDAsLabel(t *testing.T) {
+	got, err := parseCommandCodeModels([]byte(commandCodeListModelsFixture))
+	if err != nil {
+		t.Fatalf("parseCommandCodeModels: %v", err)
+	}
+	byID := make(map[string]string, len(got))
+	for _, m := range got {
+		byID[m.ID] = m.Label
+	}
+	for id, wantLabel := range map[string]string{
+		"deepseek/deepseek-v4-pro":        "deepseek/deepseek-v4-pro",
+		"minimaxai/minimax-m3":            "minimaxai/minimax-m3",
+		"stealth/space-bunny-alpha":       "stealth/space-bunny-alpha",
+		"inclusionai/ling-3.1-flash:free": "inclusionai/ling-3.1-flash:free",
+		"claude-sonnet-5-5":               "claude-sonnet-5-5",
+	} {
+		label, ok := byID[id]
+		if !ok {
+			t.Errorf("missing model %q; parsed %v", id, byID)
+			continue
+		}
+		if label != wantLabel {
+			t.Errorf("model %q label = %q, want the id", id, label)
+		}
+	}
+}
+
+// The regression this fixes: the picker offered "balances intelligence and
+// cost" and similar descriptions as selectable models.
+func TestParseCommandCodeModelsNeverUsesDescriptionAsLabel(t *testing.T) {
+	got, err := parseCommandCodeModels([]byte(commandCodeListModelsFixture))
+	if err != nil {
+		t.Fatalf("parseCommandCodeModels: %v", err)
+	}
+	descriptions := []string{
+		"hybrid-attention long-context reasoning",
+		"fast hybrid-attention reasoning",
+		"600B sparse-MoE agentic coding with 1M context",
+		"best combo of speed & intelligence (recommended)",
+		"FREE stealth model with 1M context",
+	}
+	for _, m := range got {
+		for _, description := range descriptions {
+			if m.Label == description {
+				t.Errorf("model %q uses its description as the label", m.ID)
+			}
+		}
+	}
+}
+
+func TestParseCommandCodeModelsReadsDefaultMarker(t *testing.T) {
+	got, err := parseCommandCodeModels([]byte(commandCodeListModelsFixture))
+	if err != nil {
+		t.Fatalf("parseCommandCodeModels: %v", err)
+	}
+	var defaults []string
+	for _, m := range got {
+		if m.IsDefault {
+			defaults = append(defaults, m.ID)
+		}
+	}
+	if len(defaults) != 1 || defaults[0] != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("default models = %v, want [deepseek/deepseek-v4-flash]", defaults)
+	}
+}
+
+// The banner and section headings must not become selectable models.
+func TestParseCommandCodeModelsSkipsBannerAndSections(t *testing.T) {
+	got, err := parseCommandCodeModels([]byte(commandCodeListModelsFixture))
+	if err != nil {
+		t.Fatalf("parseCommandCodeModels: %v", err)
+	}
+	if len(got) != 6 {
+		t.Fatalf("parsed %d models, want 6: %#v", len(got), got)
+	}
+	for _, m := range got {
+		switch m.ID {
+		case "Available", "models", "Open", "Source", "Stealth", "Anthropic":
+			t.Errorf("banner or section heading parsed as a model: %#v", m)
+		}
+	}
+}
+
+func TestParseCommandCodeModelsEmptyOutput(t *testing.T) {
+	got, err := parseCommandCodeModels([]byte("Available models  ·  0 models\n"))
+	if err != nil {
+		t.Fatalf("parseCommandCodeModels: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %#v, want no models", got)
+	}
+}
+
 func environmentContains(env []string, wanted string) bool {
 	for _, item := range env {
 		if item == wanted {
@@ -274,6 +387,7 @@ func TestOMPAndHelpBackedAgentsUseDocumentedDiscoveryCommands(t *testing.T) {
 		{agent: "droid", want: []string{"exec", "--help"}},
 		{agent: "crush", want: []string{"models"}},
 		{agent: "fx", want: []string{"models", "--json"}},
+		{agent: "command-code", want: []string{"--list-models"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.agent, func(t *testing.T) {
@@ -630,6 +744,41 @@ gpt-oss-120b-medium  GPT-OSS 120B (Medium)
 		{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6 (Thinking)"},
 		{ID: "gemini-3.7-flash-high", Label: "Gemini 3.7 Flash (High)"},
 		{ID: "gpt-oss-120b-medium", Label: "GPT-OSS 120B (Medium)"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("models = %#v, want %#v", got, want)
+	}
+}
+
+// Command Code's `--list-models` prints `<id>  <description>`, where the
+// trailing text is marketing copy rather than a display name. This replaced an
+// earlier fixture that assumed `anthropic/claude-opus-4-1  Claude Opus 4.1`;
+// the real v1.74.0 output emits bare ids and descriptions, which is why the
+// picker was offering "balances intelligence and cost" as a model.
+func TestCommandCodeCatalogParsesTabularModelList(t *testing.T) {
+	got, err := commandSpecs["command-code"].parser([]byte(`Available models  ·  3 models
+
+Anthropic
+
+claude-sonnet-5-5   best combo of speed & intelligence (recommended)
+claude-opus-5-5    most intelligent Opus for agents and coding
+
+OpenAI
+
+gpt-6.1-sol        near-Astra performance for complex work at a lower cost
+
+Pass the full id, or just the short name after the last "/":
+cmd --model openai/gpt-5.4
+
+Docs:  https://commandcode.ai/docs/models
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ports.AgentModelInfo{
+		{ID: "claude-opus-5-5", Label: "claude-opus-5-5"},
+		{ID: "claude-sonnet-5-5", Label: "claude-sonnet-5-5"},
+		{ID: "gpt-6.1-sol", Label: "gpt-6.1-sol"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("models = %#v, want %#v", got, want)

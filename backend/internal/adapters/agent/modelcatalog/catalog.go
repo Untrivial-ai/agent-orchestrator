@@ -127,6 +127,9 @@ var commandSpecs = map[string]commandSpec{
 	"crush":       {args: []string{"models"}, parser: parseIDLines},
 	"fx":          {args: []string{"models", "--json"}, parser: parseFXModels},
 	"mimo-code":   {args: []string{"models"}, parser: parseIDLines},
+	// `cmd --list-models` prints `provider/model` followed by a marketing
+	// description, not a display name — see parseCommandCodeModels.
+	"command-code": {args: []string{"--list-models"}, parser: parseCommandCodeModels},
 }
 
 // Base returns the picker behavior AO can provide without executing a CLI.
@@ -897,6 +900,49 @@ func parseAgyModels(output []byte) ([]ports.AgentModelInfo, error) {
 			label = id
 		}
 		models = append(models, ports.AgentModelInfo{ID: id, Label: label})
+	}
+	return normalize(models), nil
+}
+
+// parseCommandCodeModels parses `cmd --list-models`, whose rows look like
+//
+//	deepseek/deepseek-v4-pro    hybrid-attention long-context reasoning
+//	deepseek/deepseek-v4-flash  fast hybrid-attention reasoning (default)
+//
+// The trailing text is a description, not a display name. parseAgyModels reads
+// everything after the id as the label, which is right for Agy's format but
+// wrong here: the Command Code picker then offered "balances intelligence and
+// cost" and "600B sparse-MoE agentic coding with 1M context" as if they were
+// models the user could select.
+//
+// Command Code's `--list-models` publishes no friendly name, so the id is the
+// only label that cannot misdescribe a model — and it is exactly the value
+// `--model` accepts. Chat mode is unaffected: its ACP catalog carries real
+// names ("Claude Sonnet 5.5") alongside descriptions.
+func parseCommandCodeModels(output []byte) ([]ports.AgentModelInfo, error) {
+	text := ansiPattern.ReplaceAllString(string(output), "")
+	var models []ports.AgentModelInfo
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(rawLine)
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		id := strings.Trim(fields[0], "`\"'[](),:")
+		// Every Command Code model id carries a provider-qualified separator.
+		// This also rejects the banner and the section headings ("Available
+		// models", "Open Source", "Anthropic"), which would otherwise parse as
+		// one-word ids.
+		if !looksLikeModelID(id) || !strings.ContainsAny(id, "-./:_") {
+			continue
+		}
+		models = append(models, ports.AgentModelInfo{
+			ID:    id,
+			Label: id,
+			// normalize() strips a trailing "(default)" from Label, but the
+			// label is the id here, so the marker has to be read from the row.
+			IsDefault: strings.Contains(strings.ToLower(line), "(default)"),
+		})
 	}
 	return normalize(models), nil
 }

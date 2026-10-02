@@ -11153,6 +11153,7 @@ components:
           - unreal-agent
           - mimo-code
           - deepseek-harness
+          - command-code
           - fake
           type: string
         approvalMode:
@@ -11788,6 +11789,7 @@ components:
           - unreal-agent
           - mimo-code
           - deepseek-harness
+          - command-code
           - cloudflared
           type: string
         updatedAt:
@@ -14064,6 +14066,7 @@ components:
           - unreal-agent
           - mimo-code
           - deepseek-harness
+          - command-code
           type: string
         issueId:
           type: string
