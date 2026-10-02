@@ -666,13 +666,13 @@ export function OriginMessage({ message }: { message: ConversationMessage }) {
 					{formatTime(message.createdAt)}
 				</span>
 			</div>
-			{longReport && expanded ? (
-				<ChatMarkdown text={message.text} muted />
-			) : (
-				<p className={cn("whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground", longReport && "line-clamp-3")}>
-					<SessionLinkedText text={preview} />
-				</p>
-			)}
+			<div className={cn(longReport && !expanded && "line-clamp-3")}>
+				<ChatMarkdown
+					text={longReport && expanded ? message.text : preview}
+					muted
+					className="text-sm leading-relaxed"
+				/>
+			</div>
 			{longReport ? (
 				<button
 					type="button"
