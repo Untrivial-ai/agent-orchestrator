@@ -1092,7 +1092,9 @@ func (e *Engine) listLocked(ctx stdctx.Context, workerID domain.SessionID, selec
 	// are session-scoped and cannot be reconstructed from the worker id, so
 	// they keep the DB-only behavior (#6064).
 	if handle == "" && (reviewRow.ID == "" || reviewRow.InterfaceMode != domain.ReviewerInterfaceChat) {
-		if alive, err := e.launcher.Alive(ctx, reviewerHandleID(workerID)); err == nil && alive {
+		// No launch id: the stable-id probe wants the plain child-alive check,
+		// which is what Alive does when launchID is blank.
+		if alive, err := e.launcher.Alive(ctx, reviewerHandleID(workerID), ""); err == nil && alive {
 			handle = reviewerHandleID(workerID)
 		}
 	}
