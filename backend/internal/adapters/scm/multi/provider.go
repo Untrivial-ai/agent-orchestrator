@@ -227,6 +227,43 @@ func (m *Provider) ResolveReviewThread(ctx context.Context, request ports.SCMRev
 	return resolver.ResolveReviewThread(ctx, request)
 }
 
+// PublishReview delegates to the sub-provider matching request.PR.Repo.Provider
+// when that provider supports review publication (issue #5701: the daemon owns
+// publishing reviewer results to the provider).
+func (m *Provider) PublishReview(ctx context.Context, request ports.SCMReviewPublishRequest) (ports.SCMReviewPublishResult, error) {
+	if m == nil {
+		return ports.SCMReviewPublishResult{}, fmt.Errorf("%w: review publisher is unavailable", ports.ErrSCMUnsupported)
+	}
+	p, err := m.resolve(request.PR.Repo.Provider)
+	if err != nil {
+		return ports.SCMReviewPublishResult{}, err
+	}
+	publisher, ok := p.(ports.SCMReviewPublisher)
+	if !ok {
+		return ports.SCMReviewPublishResult{}, fmt.Errorf("%w: review publication for provider %q", ports.ErrSCMUnsupported, request.PR.Repo.Provider)
+	}
+	return publisher.PublishReview(ctx, request)
+}
+
+// FindPublishedReview delegates to the sub-provider matching ref.Repo.Provider
+// when that provider can search its published reviews. A provider without the
+// capability reports an error rather than "not found": absence of a lookup
+// must never read as evidence that a review does not exist.
+func (m *Provider) FindPublishedReview(ctx context.Context, ref ports.SCMPRRef, bodyMarker string) (ports.SCMReviewPublishResult, bool, error) {
+	if m == nil {
+		return ports.SCMReviewPublishResult{}, false, fmt.Errorf("%w: review publisher is unavailable", ports.ErrSCMUnsupported)
+	}
+	p, err := m.resolve(ref.Repo.Provider)
+	if err != nil {
+		return ports.SCMReviewPublishResult{}, false, err
+	}
+	finder, ok := p.(ports.SCMReviewPublicationFinder)
+	if !ok {
+		return ports.SCMReviewPublishResult{}, false, fmt.Errorf("%w: review publication lookup for provider %q", ports.ErrSCMUnsupported, ref.Repo.Provider)
+	}
+	return finder.FindPublishedReview(ctx, ref, bodyMarker)
+}
+
 type credentialChecker interface {
 	SCMCredentialsAvailable(ctx context.Context) (bool, error)
 }

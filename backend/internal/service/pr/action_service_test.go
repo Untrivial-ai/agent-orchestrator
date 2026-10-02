@@ -18,10 +18,15 @@ type fakeActionStore struct {
 	threads     []domain.PullRequestReviewThread
 	reviews     []domain.PullRequestReview
 	activeCount int
+	published   []string
 }
 
 func (f *fakeActionStore) GetPR(context.Context, string) (domain.PullRequest, bool, error) {
 	return f.pr, f.ok, nil
+}
+
+func (f *fakeActionStore) ListPublishedReviewGitHubIDsByPR(_ context.Context, _ string) ([]string, error) {
+	return f.published, nil
 }
 
 func (f *fakeActionStore) GetPRByNumber(_ context.Context, number int) (domain.PullRequest, bool, error) {
@@ -183,6 +188,94 @@ func TestActionServiceMerge_FailsClosedForStaleHeadOrReadiness(t *testing.T) {
 	if !errors.Is(err, ErrPRPreconditions) || scm.mergeCalls != 0 {
 		t.Fatalf("pending CI error = %v, calls = %d", err, scm.mergeCalls)
 	}
+}
+
+// A failed provider refresh (network outage, rate limit, timeout) arrives as an
+// unfetched placeholder carrying the cause. It must surface as "provider
+// unavailable", never as "Unknown PR": the PR demonstrably exists — the user is
+// looking at its card.
+func TestActionServiceMerge_ProviderOutageIsNotUnknownPR(t *testing.T) {
+	pr, scm := mergeableActionFixture()
+	scm.observation = ports.SCMObservation{
+		Fetched: false,
+		PR:      ports.SCMPRObservation{Number: pr.Number, URL: pr.URL},
+		Error:   errors.New("github scm: POST graphql: net/http: TLS handshake timeout"),
+	}
+	svc := NewActionService(ActionDeps{Store: &fakeActionStore{pr: pr, ok: true}, Reader: scm, Merger: scm})
+	_, err := svc.Merge(context.Background(), MergeRequest{PRID: "42", PRURL: pr.URL, ExpectedHeadSHA: pr.HeadSHA})
+	if !errors.Is(err, ErrPRProviderUnavailable) {
+		t.Fatalf("outage error = %v, want ErrPRProviderUnavailable", err)
+	}
+	if errors.Is(err, ErrPRNotFound) {
+		t.Fatalf("outage must not map to ErrPRNotFound: %v", err)
+	}
+	if scm.mergeCalls != 0 {
+		t.Fatalf("merge calls = %d, want 0", scm.mergeCalls)
+	}
+
+	// A top-level reader failure is likewise unavailable, not a 500 accident.
+	svc = NewActionService(ActionDeps{
+		Store:  &fakeActionStore{pr: pr, ok: true},
+		Reader: failingReaderAction{err: errors.New("rate limit exceeded")},
+		Merger: scm,
+	})
+	_, err = svc.Merge(context.Background(), MergeRequest{PRID: "42", PRURL: pr.URL, ExpectedHeadSHA: pr.HeadSHA})
+	if !errors.Is(err, ErrPRProviderUnavailable) || errors.Is(err, ErrPRNotFound) {
+		t.Fatalf("reader failure error = %v, want ErrPRProviderUnavailable", err)
+	}
+}
+
+// Inline findings AO itself published are not human feedback: they must not
+// block a merge as unresolved human comments.
+func TestActionServiceMerge_PublishedReviewCommentsDoNotBlockMerge(t *testing.T) {
+	pr, scm := mergeableActionFixture()
+	scm.review = ports.SCMReviewObservation{
+		Decision: string(domain.ReviewNone),
+		Threads: []ports.SCMReviewThreadObservation{{
+			ID:       "thread-1",
+			Comments: []ports.SCMReviewCommentObservation{{Author: "axisrow", ReviewID: "5328579754", Body: "non-blocking note"}},
+		}},
+	}
+	store := &fakeActionStore{pr: pr, ok: true, published: []string{"5328579754"}}
+	svc := NewActionService(ActionDeps{Store: store, Reader: scm, Merger: scm})
+	if _, err := svc.Merge(context.Background(), MergeRequest{PRID: "42", PRURL: pr.URL, ExpectedHeadSHA: pr.HeadSHA}); err != nil {
+		t.Fatalf("AO-published comment blocked merge: %v", err)
+	}
+	if scm.mergeCalls != 1 {
+		t.Fatalf("merge calls = %d, want 1", scm.mergeCalls)
+	}
+
+	// The same thread from a reviewer AO did not publish stays a blocker.
+	store.published = []string{"0000000001"}
+	svc = NewActionService(ActionDeps{Store: store, Reader: scm, Merger: scm})
+	_, err := svc.Merge(context.Background(), MergeRequest{PRID: "42", PRURL: pr.URL, ExpectedHeadSHA: pr.HeadSHA})
+	if !errors.Is(err, ErrPRPreconditions) || scm.mergeCalls != 1 {
+		t.Fatalf("human thread error = %v, calls = %d", err, scm.mergeCalls)
+	}
+}
+
+func TestHasUnresolvedHumanCommentsSkipsPublishedReviews(t *testing.T) {
+	aoThread := ports.SCMReviewThreadObservation{ID: "t1", Comments: []ports.SCMReviewCommentObservation{{Author: "axisrow", ReviewID: "555"}}}
+	humanThread := ports.SCMReviewThreadObservation{ID: "t2", Comments: []ports.SCMReviewCommentObservation{{Author: "alice", ReviewID: "777"}}}
+	if hasUnresolvedHumanComments([]ports.SCMReviewThreadObservation{aoThread}, map[string]bool{"555": true}) {
+		t.Fatal("AO-published thread counted as human feedback")
+	}
+	if !hasUnresolvedHumanComments([]ports.SCMReviewThreadObservation{humanThread}, map[string]bool{"555": true}) {
+		t.Fatal("human thread not counted")
+	}
+	if !hasUnresolvedHumanComments([]ports.SCMReviewThreadObservation{aoThread}, nil) {
+		t.Fatal("no set: conservative counting must stay")
+	}
+}
+
+type failingReaderAction struct{ err error }
+
+func (f failingReaderAction) FetchPullRequests(context.Context, []ports.SCMPRRef) ([]ports.SCMObservation, error) {
+	return nil, f.err
+}
+
+func (f failingReaderAction) FetchReviewThreads(context.Context, ports.SCMPRRef) (ports.SCMReviewObservation, error) {
+	return ports.SCMReviewObservation{}, f.err
 }
 
 func TestScmRepoForPR_NestedNamespace(t *testing.T) {

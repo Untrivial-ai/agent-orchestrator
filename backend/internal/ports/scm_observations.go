@@ -14,6 +14,12 @@ import (
 // that found no matching resource, such as a branch with no open pull request.
 var ErrSCMNotFound = errors.New("scm: not found")
 
+// ErrSCMPublishOutcomeUnknown is the provider-neutral sentinel for a failed
+// mutation whose outcome the provider did not report: a transport failure or a
+// 5xx means the request may or may not have been applied. Callers must treat
+// the result as uncertain instead of retrying into a duplicate.
+var ErrSCMPublishOutcomeUnknown = errors.New("scm: publish outcome unknown")
+
 // SCMRepo identifies a repository without assuming a provider-specific URL
 // shape. Repo is conventionally "owner/name" for providers that expose an
 // owner namespace, while Owner/Name are kept split for provider calls.

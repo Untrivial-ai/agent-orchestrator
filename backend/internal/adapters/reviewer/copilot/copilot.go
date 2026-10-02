@@ -19,7 +19,9 @@ var allowedTools = []string{
 	"shell(git show:*)",
 	"shell(git status:*)",
 	"shell(printf:*)",
-	"shell(gh api:*)",
+	"shell(gh pr view:*)",
+	"shell(gh pr diff:*)",
+	"shell(gh pr checks:*)",
 	"shell(ao review submit:*)",
 }
 

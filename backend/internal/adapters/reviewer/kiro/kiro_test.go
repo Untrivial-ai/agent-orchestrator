@@ -5,12 +5,34 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+// The shared review prompt teaches embedded single quotes as '\”; the policy
+// must accept that shape or an apostrophe in any finding body gets the whole
+// submit denied (the #5701 loop pathology).
+func TestShellAllowedCommandsAcceptEscapedApostropheInFinding(t *testing.T) {
+	inv := ports.ReviewInvocation{
+		WorkspacePath:   "/tmp/ws",
+		WorkerSessionID: "mer-1",
+	}
+	cmd := `printf '%s' 'eyJhIjoxfQ==' | base64 --decode | ao review submit --session mer-1 --run run-1 --verdict changes_requested --body - --comment-path a/b.go --comment-line 3 --comment-body 'don'\''t call os.Getenv'`
+	for _, pattern := range shellAllowedCommands(inv) {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			t.Fatalf("policy %q does not compile: %v", pattern, err)
+		}
+		if re.MatchString(cmd) {
+			return
+		}
+	}
+	t.Fatalf("no policy accepts a finding body with an escaped apostrophe:\n%s", cmd)
+}
 
 func TestReviewCommandBuildsReadOnlyInteractiveTUI(t *testing.T) {
 	promptRoot := t.TempDir()
@@ -73,7 +95,7 @@ func TestReviewCommandBuildsReadOnlyInteractiveTUI(t *testing.T) {
 	if !slices.Equal(cfg.Tools, []string{"read", "glob", "grep", "shell"}) || slices.Contains(cfg.AllowedTools, "shell") {
 		t.Fatalf("tool policy = tools %#v allowed %#v", cfg.Tools, cfg.AllowedTools)
 	}
-	if !cfg.ToolsSettings.Shell.DenyByDefault || len(cfg.ToolsSettings.Shell.AllowedCommands) != 6 || len(cfg.ToolsSettings.Shell.DeniedCommands) == 0 {
+	if !cfg.ToolsSettings.Shell.DenyByDefault || len(cfg.ToolsSettings.Shell.AllowedCommands) != 5 || len(cfg.ToolsSettings.Shell.DeniedCommands) == 0 {
 		t.Fatalf("shell policy = %+v", cfg.ToolsSettings.Shell)
 	}
 	for _, command := range cfg.ToolsSettings.Shell.AllowedCommands {
