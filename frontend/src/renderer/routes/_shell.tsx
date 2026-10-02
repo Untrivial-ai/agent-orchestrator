@@ -57,6 +57,7 @@ import { matchesRendererShortcut } from "../stores/keybindings-store";
 import { CLOUD_PROJECT_KIND, sessionIsActive, STANDALONE_WORKSPACE_ID, toProjectKind, type WorkspaceSummary } from "../types/workspace";
 import type { components } from "../../api/schema";
 import { useAgentInventoryTelemetry } from "../hooks/useAgentInventoryTelemetry";
+import { recordManualWorkerOpen, recordSessionSurface } from "../lib/session-management-telemetry";
 
 export const Route = createFileRoute("/_shell")({
 	// Prefetch the workspace list for the whole shell (parent loaders run before
@@ -305,6 +306,13 @@ function ShellLayout() {
 	const scopedSession = routeParams.sessionId
 		? workspaces.flatMap((workspace) => workspace.sessions).find((session) => session.id === routeParams.sessionId)
 		: undefined;
+	useEffect(() => {
+		recordSessionSurface(
+			scopedSession?.kind === "orchestrator" || scopedSession?.kind === "worker"
+				? { kind: scopedSession.kind, sessionId: scopedSession.id }
+				: null,
+		);
+	}, [scopedSession?.id, scopedSession?.kind]);
 	// Warms the New Task composer's model-catalog cache while the user is just
 	// looking at the project, so the picker never shows a loading flash the
 	// first time they actually open the dialog.
@@ -377,6 +385,7 @@ function ShellLayout() {
 					: (currentIndex + direction + sessions.length) % sessions.length;
 			const session = sessions[nextIndex];
 			if (!session || session.id === routeParams.sessionId) return;
+			if (session.kind === "worker") recordManualWorkerOpen(session.id);
 			if (scopedProjectId === STANDALONE_WORKSPACE_ID) {
 				void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
 				return;

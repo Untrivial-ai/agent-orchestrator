@@ -8,6 +8,7 @@ import { useSystemRequirementsGate } from "../hooks/useSystemRequirementsGate";
 import { useWorkspaceQuery } from "../hooks/useWorkspaceQuery";
 import { aoBridge } from "../lib/bridge";
 import { getProjectLastOpenedAt } from "../lib/project-history";
+import { recordManualWorkerOpen } from "../lib/session-management-telemetry";
 import { usesPreviewWorkspaceData } from "../lib/preview-mode";
 import { useShell } from "../lib/shell-context";
 import { cn } from "../lib/utils";
@@ -262,6 +263,7 @@ export function HomePage() {
 										onClick={() => {
 											if (project.kind === STANDALONE_PROJECT_KIND) {
 												const session = mostRecentStandaloneSession(project.sessions);
+												if (session) recordManualWorkerOpen(session.id);
 												session
 													? void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } })
 													: requestNewTask(STANDALONE_WORKSPACE_ID);

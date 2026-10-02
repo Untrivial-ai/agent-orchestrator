@@ -16,6 +16,7 @@ import { applyRendererTelemetryPolicy, clearRendererTelemetryQueues, initTelemet
 import { aoBridge } from "./lib/bridge";
 import { startDaemonFailureTelemetry } from "./lib/daemon-telemetry";
 import { startUpdateTelemetry } from "./lib/update-telemetry";
+import { startSessionManagementTelemetry } from "./lib/session-management-telemetry";
 import { appI18n } from "./i18n";
 import { useLocaleStore } from "./stores/locale-store";
 import { useSoundNotificationsStore } from "./stores/sound-notifications-store";
@@ -74,7 +75,9 @@ if (import.meta.env.DEV) {
 	};
 }
 
-void initTelemetry();
+void initTelemetry().then((enabled) => {
+	if (enabled) startSessionManagementTelemetry();
+});
 startDaemonFailureTelemetry();
 startUpdateTelemetry();
 

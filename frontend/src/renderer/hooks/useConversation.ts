@@ -23,6 +23,7 @@ import type { components } from "../../api/schema";
 import { apiClient, apiErrorCode, apiErrorMessage } from "../lib/api-client";
 import { subscribeWorkspaceFileChanges } from "../lib/workspace-file-events";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
+import { recordDirectWorkerInteraction } from "../lib/session-management-telemetry";
 import type {
 	ActivityKind,
 	ApprovalMode,
@@ -932,6 +933,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 			if (!claimConversationDispatch(queryClient, sessionId, clientMessageId, "send")) {
 				return Promise.reject(new Error("Conversation work is already being sent for this session."));
 			}
+			recordDirectWorkerInteraction(sessionId, "chat");
 			return send.mutateAsync({
 				targetSessionId: sessionId,
 				clientMessageId,
@@ -1033,6 +1035,7 @@ export function useConversationCommands(sessionId: string | undefined) {
 		activateBranchError: activateBranch.error ? apiErrorMessage(activateBranch.error) : undefined,
 		steer: async (text: string, attachments?: WireImageContent[], clientMessageId?: string, recoverOnly?: boolean): Promise<ChatSteerOutcome> => {
 			try {
+				if (sessionId) recordDirectWorkerInteraction(sessionId, "chat");
 				await steer.mutateAsync({ text, attachments, clientMessageId, recoverOnly });
 				return { status: "accepted" };
 			} catch (error) {
