@@ -87,6 +87,12 @@ describe("parseRunFile", () => {
 		);
 	});
 
+	it("parses the backend-published browser stream locator without a token", () => {
+		expect(
+			parseRunFile(JSON.stringify({ pid: 4242, port: 3037, browserStreamAddress: "/tmp/ao-browser-stream.sock" })),
+		).toEqual(expect.objectContaining({ browserStreamAddress: "/tmp/ao-browser-stream.sock" }));
+	});
+
 	it("parses the app run that owns the daemon browser credential", () => {
 		expect(parseRunFile(JSON.stringify({ pid: 4242, port: 3037, appRunId: "apprun-current" }))).toEqual(
 			expect.objectContaining({ appRunId: "apprun-current" }),
