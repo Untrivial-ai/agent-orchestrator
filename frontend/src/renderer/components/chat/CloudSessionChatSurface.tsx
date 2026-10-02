@@ -163,7 +163,7 @@ export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent
 		// Older Cloud workers persisted this Codex CLI status as assistant text.
 		if (session.provider === "codex" && text.trim() === "Reading additional input from stdin...") continue;
 		const payload = eventPayload(event);
-		const itemID = typeof payload.itemId === "string" && payload.itemId !== "" ? payload.itemId : "legacy";
+		const itemID = typeof payload.itemId === "string" && payload.itemId !== "" ? payload.itemId : null;
 		const assistantKey = turnID ? JSON.stringify([turnID, payload.attempt ?? 1, itemID]) : `event-${event.sequence}`;
 		const previous = assistant.get(assistantKey);
 		const priorLive = turnID ? latestAssistant.get(turnID) : undefined;

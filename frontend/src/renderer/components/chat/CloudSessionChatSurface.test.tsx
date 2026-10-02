@@ -370,6 +370,17 @@ describe("Cloud chat message boundaries", () => {
 		expect(snapshot.turns[0]).toMatchObject({ state: "completed", startedAt: "2026-09-22T00:00:07Z", completedAt: "2026-09-22T00:00:09Z" });
 		expect(messages.every((item) => item.kind === "message" && !item.streaming)).toBe(true);
 	});
+	it("keeps a literal provider ID distinct from output without an ID", () => {
+		const snapshot = toSnapshot(session, [
+			event(1, "chat.turn_started", { turnId: "turn-1" }),
+			event(2, "chat.assistant_delta", { turnId: "turn-1", text: "Older worker output." }),
+			event(3, "chat.assistant_delta", { turnId: "turn-1", itemId: "legacy", text: "Provider message." }),
+		]);
+		expect(snapshot.items.map((item) => item.kind === "message" && item.text)).toEqual([
+			"Older worker output.", "Provider message.",
+		]);
+	});
+
 	it("stops streaming an earlier provider message when the next one begins", () => {
 		const snapshot = toSnapshot(session, [
 			event(1, "chat.turn_started", { turnId: "turn-1" }),
