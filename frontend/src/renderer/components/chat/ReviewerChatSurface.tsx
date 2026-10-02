@@ -3,7 +3,20 @@ import { useTranslation } from "react-i18next";
 import { useReviewerConversation, useReviewerConversationCommands } from "../../hooks/useReviewerConversation";
 import { ChatWorkspace } from "./ChatWorkspace";
 
-export function ReviewerChatSurface({ reviewId, hideHeader = false }: { reviewId: string; hideHeader?: boolean }) {
+export function ReviewerChatSurface({
+	reviewId,
+	hideHeader = false,
+	onOpenShell,
+	openingShell,
+	shellError,
+}: {
+	reviewId: string;
+	hideHeader?: boolean;
+	/** Open a shell in the review's worktree — the stopped-banner's recovery lever. */
+	onOpenShell?: () => void;
+	openingShell?: boolean;
+	shellError?: string;
+}) {
 	const { t } = useTranslation();
 	const { snapshot, isLoading, error, hasOlder, isLoadingOlder, loadOlder } = useReviewerConversation(reviewId);
 	const commands = useReviewerConversationCommands(reviewId);
@@ -36,6 +49,9 @@ export function ReviewerChatSurface({ reviewId, hideHeader = false }: { reviewId
 			onDecide={commands.resolve}
 			onResolveInput={commands.resolveInput}
 			onInterrupt={commands.interrupt}
+			onOpenShell={onOpenShell}
+			openingShell={openingShell}
+			shellError={shellError}
 		/>
 	);
 }
