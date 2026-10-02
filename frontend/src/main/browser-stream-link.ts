@@ -40,7 +40,10 @@ type BrowserStreamLinkOptions = {
 	token: string;
 	onControl: (control: BrowserStreamControl) => void | Promise<void>;
 	log?: (message: string) => void;
+	createConnection?: (address: string | net.TcpNetConnectOpts) => net.Socket;
 };
+
+type WriteResult = "rejected" | "ready" | "blocked";
 
 export function connectBrowserStream(
 	address: string | net.TcpNetConnectOpts,
@@ -57,7 +60,8 @@ export function connectBrowserStream(
 	// At most one unsent frame per stream. Socket backpressure replaces stale
 	// frames rather than growing an image queue without bound.
 	const pendingFrames = new Map<number, Buffer>();
-	let draining = false;
+	let flushing = false;
+	let writeBlocked = false;
 
 	const scheduleRetry = () => {
 		if (disposed || retry) return;
@@ -74,36 +78,44 @@ export function connectBrowserStream(
 		connected = false;
 		buffered = Buffer.alloc(0);
 		pendingFrames.clear();
+		writeBlocked = false;
 		if (target) {
 			target.removeAllListeners();
 			target.destroy();
 		}
 	};
 
-	const writePacket = (packet: Buffer): boolean => {
+	const writePacket = (packet: Buffer): WriteResult => {
 		const target = socket;
-		if (!target || target.destroyed || !connected || packet.byteLength === 0 || packet.byteLength > MAX_PACKET_BYTES) return false;
+		if (!target || target.destroyed || !connected || packet.byteLength === 0 || packet.byteLength > MAX_PACKET_BYTES) return "rejected";
 		const prefix = Buffer.allocUnsafe(4);
 		prefix.writeUInt32BE(packet.byteLength);
-		return target.write(Buffer.concat([prefix, packet]));
+		return target.write(Buffer.concat([prefix, packet])) ? "ready" : "blocked";
 	};
 
 	const sendControl = (control: BrowserStreamControl): boolean => {
 		const body = Buffer.from(JSON.stringify(control), "utf8");
 		if (body.byteLength > MAX_CONTROL_BYTES) return false;
-		return writePacket(Buffer.concat([Buffer.from([KIND_CONTROL]), body]));
+		const result = writePacket(Buffer.concat([Buffer.from([KIND_CONTROL]), body]));
+		if (result === "blocked") writeBlocked = true;
+		return result !== "rejected";
 	};
 
 	const flushFrames = () => {
-		if (draining || !connected) return;
-		draining = true;
+		if (flushing || writeBlocked || !connected) return;
+		flushing = true;
 		try {
 			for (const [streamId, packet] of pendingFrames) {
 				pendingFrames.delete(streamId);
-				if (!writePacket(packet)) break;
+				const result = writePacket(packet);
+				if (result === "blocked") {
+					writeBlocked = true;
+					break;
+				}
+				if (result === "rejected") break;
 			}
 		} finally {
-			draining = false;
+			flushing = false;
 		}
 	};
 
@@ -170,7 +182,9 @@ export function connectBrowserStream(
 
 	const open = () => {
 		if (disposed) return;
-		const target = typeof address === "string" ? net.createConnection(address) : net.createConnection(address);
+		const target = options.createConnection
+			? options.createConnection(address)
+			: typeof address === "string" ? net.createConnection(address) : net.createConnection(address);
 		socket = target;
 		target.on("connect", () => {
 			if (socket !== target || disposed) return;
@@ -179,7 +193,10 @@ export function connectBrowserStream(
 			sendControl({ type: "hello", version: PROTOCOL_VERSION, token: options.token });
 		});
 		target.on("data", consume);
-		target.on("drain", flushFrames);
+		target.on("drain", () => {
+			writeBlocked = false;
+			flushFrames();
+		});
 		target.on("error", (error) => log(`browser-stream-link: ${String(error)}`));
 		target.on("close", () => {
 			if (socket === target) destroy();
