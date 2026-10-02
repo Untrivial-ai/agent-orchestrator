@@ -556,7 +556,7 @@ func createPendingCredentialHome(pendingRoot, operationID string) (string, strin
 	if err := os.Mkdir(pendingDir, 0o700); err != nil {
 		return "", "", err
 	}
-	if err := protectCodexPrivateDirectory(pendingDir); err != nil {
+	if err := protectNewCodexPrivateDirectory(pendingDir); err != nil {
 		_ = os.RemoveAll(pendingDir)
 		return "", "", err
 	}
@@ -565,7 +565,7 @@ func createPendingCredentialHome(pendingRoot, operationID string) (string, strin
 		_ = os.RemoveAll(pendingDir)
 		return "", "", err
 	}
-	if err := protectCodexPrivateDirectory(home); err != nil {
+	if err := protectNewCodexPrivateDirectory(home); err != nil {
 		_ = os.RemoveAll(pendingDir)
 		return "", "", err
 	}
@@ -622,6 +622,11 @@ func ensurePrivateDirectory(path string) error {
 	if err := validateCodexDirectoryAncestors(path); err != nil {
 		return err
 	}
+	_, statErr := os.Lstat(path)
+	created := errors.Is(statErr, os.ErrNotExist)
+	if statErr != nil && !created {
+		return statErr
+	}
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return err
 	}
@@ -629,7 +634,11 @@ func ensurePrivateDirectory(path string) error {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("path is not a safe directory")
 	}
-	if err := protectCodexPrivateDirectory(path); err != nil {
+	protect := protectCodexPrivateDirectory
+	if created {
+		protect = protectNewCodexPrivateDirectory
+	}
+	if err := protect(path); err != nil {
 		return err
 	}
 	return validateCodexDirectory(path, true)

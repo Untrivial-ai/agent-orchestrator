@@ -58,6 +58,10 @@ func protectCodexPrivateDirectory(path string) error {
 	return os.Chmod(path, 0o700) //nolint:gosec // credential directories must be owner-only.
 }
 
+func protectNewCodexPrivateDirectory(path string) error {
+	return protectCodexPrivateDirectory(path)
+}
+
 func protectCodexPrivateFile(_ string, file *os.File) error {
 	return file.Chmod(0o600)
 }

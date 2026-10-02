@@ -175,6 +175,28 @@ describe("CreateProjectAgentSheet", () => {
 		expect(screen.queryByRole("menuitem", { name: "Manage agents…" })).not.toBeInTheDocument();
 	});
 
+	it("does not repeat the manage-agents action in onboarding", async () => {
+		const { container } = render(<RequiredAgentField
+			id="agent"
+			label="Agent"
+			placeholder="Choose agent"
+			value=""
+			variant="onboarding"
+			onChange={() => undefined}
+			agents={[
+				agentReadiness("codex", "Codex"),
+				agentReadiness("cursor", "Cursor", { installation: "not_installed" }),
+			]}
+		/>);
+		const trigger = screen.getByLabelText("Agent");
+		expect(container.querySelector("label")).not.toBeInTheDocument();
+		expect(trigger).toHaveClass("bg-foreground/[0.035]");
+		await userEvent.click(screen.getByLabelText("Agent"));
+		expect(screen.getByRole("option", { name: /Codex/ })).toBeInTheDocument();
+		expect(screen.queryByRole("option", { name: /Cursor/ })).not.toBeInTheDocument();
+		expect(screen.queryByRole("option", { name: "Manage agents…" })).not.toBeInTheDocument();
+	});
+
 	it("does not send an installed configured agent back to setup", () => {
 		render(<RequiredAgentField id="agent" label="Agent" placeholder="Choose agent" value="fx" variant="chip" onChange={() => undefined}
 			agents={[agentReadiness("fx", "fx", { authentication: "configured" })]} />);

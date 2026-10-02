@@ -70,6 +70,8 @@ type TerminalPaneProps = {
 	onInputRequestResult?: (id: number, accepted: boolean) => void;
 	/** Provider-owned shared transport lease factory. */
 	createMux?: () => TerminalMux;
+	/** Compact menus keep short-lived setup terminals focused on basic actions. */
+	contextMenuMode?: "full" | "compact";
 };
 
 type TerminalCacheDescriptor = {
@@ -136,6 +138,7 @@ function terminalPropsMatch(left: TerminalPaneProps, right: TerminalPaneProps): 
 		left.inputRequest === right.inputRequest &&
 		left.onInputRequestResult === right.onInputRequestResult &&
 		left.createMux === right.createMux &&
+		left.contextMenuMode === right.contextMenuMode &&
 		terminalTargetMatches(left.terminalTarget, right.terminalTarget)
 	);
 }
@@ -694,6 +697,7 @@ export function TerminalPane({
 	onTerminalContentReadyChange,
 	inputRequest,
 	onInputRequestResult,
+	contextMenuMode,
 }: TerminalPaneProps) {
 	const { t } = useTranslation();
 	const terminalTarget =
@@ -795,6 +799,7 @@ export function TerminalPane({
 		onTerminalContentReadyChange,
 		inputRequest,
 		onInputRequestResult,
+		contextMenuMode,
 	};
 	const descriptor = cacheDescriptor(session, terminalTarget, terminalGeneration);
 	if (cache && descriptor) {
@@ -817,6 +822,7 @@ export function TerminalPane({
 			onTerminalContentReadyChange={onTerminalContentReadyChange}
 			inputRequest={inputRequest}
 			onInputRequestResult={onInputRequestResult}
+			contextMenuMode={contextMenuMode}
 			terminalTarget={terminalTarget}
 		/>
 	);
@@ -981,6 +987,7 @@ function AttachedTerminal({
 	inputRequest,
 	onInputRequestResult,
 	createMux,
+	contextMenuMode,
 	isVisible = true,
 	onFatal,
 	onTerminalReady,
@@ -1268,6 +1275,7 @@ function AttachedTerminal({
 				<XtermTerminal
 					ariaLabel={terminalTarget?.kind === "shell" ? t("terminal.shellAria") : t("terminal.sessionAria")}
 					fontSize={fontSize}
+					contextMenuMode={contextMenuMode}
 					focusRequested={focusRequested}
 					isFullscreen={isFullscreen}
 					isVisible={isVisible}

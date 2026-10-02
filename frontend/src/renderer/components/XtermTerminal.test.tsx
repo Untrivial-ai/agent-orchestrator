@@ -816,17 +816,28 @@ describe("XtermTerminal", () => {
 		expect(window.ao!.clipboard.writeText).toHaveBeenCalledWith("focused copied selection");
 	});
 
-	it("opens a themed context menu on right-click and disables Copy without a selection", async () => {
+	it("opens a themed context menu on right-click and hides unavailable actions", async () => {
 		const { container } = render(<XtermTerminal theme="dark" />);
 		const host = container.firstElementChild!;
 
 		expect(fireEvent.contextMenu(host, { clientX: 120, clientY: 88 })).toBe(false);
 
 		expect(await screen.findByText("Paste")).toBeInTheDocument();
-		expect(screen.getByText("Copy")).toHaveAttribute("data-disabled");
+		expect(screen.queryByText("Copy")).not.toBeInTheDocument();
 		const trigger = container.querySelector("button[aria-hidden='true']") as HTMLButtonElement;
 		expect(trigger.style.left).toBe("120px");
 		expect(trigger.style.top).toBe("88px");
+	});
+
+	it("limits setup terminals to applicable basic context actions", async () => {
+		const { container } = render(<XtermTerminal contextMenuMode="compact" theme="dark" />);
+
+		fireEvent.contextMenu(container.firstElementChild!);
+
+		expect(await screen.findByText("Paste")).toBeInTheDocument();
+		expect(screen.getByText("Select All")).toBeInTheDocument();
+		expect(screen.queryByText("Copy")).not.toBeInTheDocument();
+		expect(screen.queryByText("Search terminal")).not.toBeInTheDocument();
 	});
 
 	it("opens terminal search from the context menu with readable light-theme query text", async () => {

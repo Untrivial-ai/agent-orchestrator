@@ -393,7 +393,9 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 	id,
 	invalid = false,
 	label,
+	managementActionLabel,
 	onChange,
+	onManagementAction,
 	placeholder,
 	manageAgents = true,
 	manageView = "local",
@@ -411,7 +413,9 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 	id: string;
 	invalid?: boolean;
 	label: string;
+	managementActionLabel?: string;
 	onChange: (value: string) => void;
+	onManagementAction?: () => void;
 	placeholder: string;
 	/** Cloud tasks use remote availability, not this computer's Harness settings. */
 	manageAgents?: boolean;
@@ -421,7 +425,7 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 	labelClassName?: string;
 	contentClassName?: string;
 	value: string;
-	variant?: "stacked" | "settings-row" | "settings-control" | "chip";
+	variant?: "stacked" | "settings-row" | "settings-control" | "chip" | "onboarding";
 }) {
 	const { t } = useTranslation();
 	const fallbackAgents: AgentInfo[] = AGENT_OPTIONS.map((agent) => unknownAgentReadiness(agent, agentLabel(agent)));
@@ -435,10 +439,12 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 	const hasReadinessSnapshot = agents !== undefined;
 	const needsSetup = manageAgents && hasReadinessSnapshot && Boolean(selectedOption && !isLaunchableAgent(selectedOption));
 	const visibleOptions = manageAgents && hasReadinessSnapshot ? options.filter(isLaunchableAgent) : options;
-	// Local is Harness settings' default view, so only cloud needs to ask for one.
+	// Local is Harness settings' default view, so only cloud needs an explicit view.
 	const management = useAgentManagementMenu(needsSetup ? value : undefined, manageView === "cloud" ? "cloud" : undefined);
+	const managementActionHandler = onManagementAction ?? management.requestManagement;
+	const showManagementAction = manageAgents && (variant !== "onboarding" || Boolean(onManagementAction));
 	const manageLabel = manageView === "cloud" ? t("agentSelector.manageCloud") : t("agentSelector.manage");
-	const managementAction = manageAgents ? { label: manageLabel, onSelect: management.requestManagement } : undefined;
+	const managementAction = showManagementAction ? { label: managementActionLabel ?? manageLabel, onSelect: managementActionHandler } : undefined;
 	const setupHint = needsSetup ? <span className="text-xs text-muted-foreground">{t("agentSelector.needsSetup")}</span> : null;
 
 	if (variant === "settings-row" || variant === "settings-control") {
@@ -554,21 +560,27 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 
 	return (
 		<div className="flex flex-col gap-1.5">
-			<div className="flex min-w-0 items-baseline gap-1.5">
-				<Label htmlFor={id} className={cn("text-xs font-medium text-muted-foreground", labelClassName)}>
-					{label}
-				</Label>
-				{hint && <FieldDefaultHint text={hint} />}
-			</div>
+			{variant !== "onboarding" && (
+				<div className="flex min-w-0 items-baseline gap-1.5">
+					<Label htmlFor={id} className={cn("text-xs font-medium text-muted-foreground", labelClassName)}>
+						{label}
+					</Label>
+					{hint && <FieldDefaultHint text={hint} />}
+				</div>
+			)}
 			<Select value={value} onValueChange={(next) => {
-				if (manageAgents && next === "__manage_agents__") management.requestManagement();
+				if (manageAgents && next === "__manage_agents__") managementActionHandler();
 				else onChange(next);
 			}} disabled={disabled}>
 				<SelectTrigger
 					ref={management.triggerRef}
 					id={id}
 					size="sm"
-					className={cn("w-full text-control", triggerClassName)}
+					className={cn(
+						"w-full text-control",
+						variant === "onboarding" && "border-0 bg-foreground/[0.035] transition-none duration-0 hover:bg-muted",
+						triggerClassName,
+					)}
 					aria-label={label}
 					aria-invalid={invalid || undefined}
 				>
@@ -590,14 +602,18 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 					side="bottom"
 					align="start"
 					sideOffset={4}
-					className={cn("max-h-select-menu-max!", contentClassName)}
+					className={cn(
+						"max-h-select-menu-max!",
+						variant === "onboarding" && "border-0 data-[state=open]:animate-none data-[state=closed]:animate-none",
+						contentClassName,
+					)}
 				>
 					{visibleOptions.map((agent) => (
 						<SelectItem
 							key={agent.id}
 							value={agent.id}
 							disabled={agent.disabled}
-							className="[&>span:last-child]:w-full"
+							className={cn("[&>span:last-child]:w-full", variant === "onboarding" && "transition-none duration-0")}
 						>
 							<AgentSelectMenuItem
 								agentId={agent.id}
@@ -610,7 +626,19 @@ export const RequiredAgentField = memo(function RequiredAgentField({
 						</SelectItem>
 					))}
 					{manageAgents && visibleOptions.length === 0 && <p className="px-2 py-1.5 text-xs text-muted-foreground">{t("agentSelector.noneReady")}</p>}
-					{manageAgents && <SelectItem value="__manage_agents__" className="mt-1 border-t border-border">{manageLabel}</SelectItem>}
+					{showManagementAction && (
+						<SelectItem
+							value="__manage_agents__"
+							className={cn(
+								"mt-1",
+								variant === "onboarding"
+									? "border-0 bg-foreground/[0.035] transition-none duration-0"
+									: "border-t border-border",
+							)}
+						>
+							{managementActionLabel ?? manageLabel}
+						</SelectItem>
+					)}
 				</SelectContent>
 			</Select>
 		</div>
