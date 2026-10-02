@@ -44,7 +44,15 @@ function inAppBrowser(): Promise<WebBrowserModule | null> {
 // A URL that is not a web page can only be opened by the system: the iOS bug
 // report arrives as `x-safari-https://` (see bugReportOpenUrl), which the
 // in-app browser rejects.
-export async function openGitHub(url: string): Promise<void> {
+//
+// `fromSheet` skips the in-app browser. SFSafariViewController is presented on
+// whatever is frontmost, and on top of a native formSheet that goes wrong both
+// ways: dismissed later, it leaves the sheet full-height with no grabber; opened
+// while the sheet is still dismissing, iOS drops the presentation silently and
+// expo-web-browser answers every later call with "locked" until the app
+// restarts. Leaving the app keeps the sheet untouched, exactly as it already is
+// on a device with the GitHub app installed.
+export async function openGitHub(url: string, options: { fromSheet?: boolean } = {}): Promise<void> {
 	const appUrl = githubAppUrl(url);
 	if (appUrl) {
 		try {
@@ -57,6 +65,10 @@ export async function openGitHub(url: string): Promise<void> {
 		}
 	}
 	if (!/^https?:\/\//i.test(url)) {
+		await Linking.openURL(url).catch(() => haptics.error());
+		return;
+	}
+	if (options.fromSheet) {
 		await Linking.openURL(url).catch(() => haptics.error());
 		return;
 	}

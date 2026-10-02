@@ -105,7 +105,7 @@ type SessionService interface {
 	DelegateTask(ctx context.Context, in sessionsvc.DelegateTaskInput) (sessionsvc.DelegateTaskOutcome, error)
 	PrepareTask(ctx context.Context, projectID domain.ProjectID) (string, error)
 	CancelTaskPreparation(ctx context.Context, token string) error
-	ListPRSummaries(ctx context.Context, id domain.SessionID) ([]sessionsvc.PRSummary, error)
+	ListPRListing(ctx context.Context, id domain.SessionID) (sessionsvc.PRListing, error)
 	ClaimPR(ctx context.Context, id domain.SessionID, ref string, opts sessionsvc.ClaimPROptions) (sessionsvc.ClaimPRResult, error)
 	StageAttachments(ctx context.Context, id domain.SessionID, attachments []ports.SpawnAttachment) ([]string, error)
 	WorkspaceWatchPaths(ctx context.Context, id domain.SessionID) ([]string, error)
@@ -1177,12 +1177,16 @@ func (c *SessionsController) listPRs(w http.ResponseWriter, r *http.Request) {
 		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/pr")
 		return
 	}
-	prs, err := c.Svc.ListPRSummaries(r.Context(), sessionID(r))
+	listing, err := c.Svc.ListPRListing(r.Context(), sessionID(r))
 	if err != nil {
 		envelope.WriteError(w, r, err)
 		return
 	}
-	envelope.WriteJSON(w, http.StatusOK, ListSessionPRsResponse{SessionID: sessionID(r), PRs: sessionPRSummaries(prs)})
+	linked := make([]SessionPRReference, len(listing.Linked))
+	for i, ref := range listing.Linked {
+		linked[i] = SessionPRReference{URL: ref.URL, Provider: ref.Provider, Host: ref.Host, Repo: ref.Repository, Number: ref.Number}
+	}
+	envelope.WriteJSON(w, http.StatusOK, ListSessionPRsResponse{SessionID: sessionID(r), PRs: sessionPRSummaries(listing.Tracked), LinkedPRs: linked})
 }
 
 func (c *SessionsController) claimPR(w http.ResponseWriter, r *http.Request) {

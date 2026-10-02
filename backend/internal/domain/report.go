@@ -3,7 +3,6 @@ package domain
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -189,30 +188,11 @@ func ValidateReportContent(state ReportState, note, message string, outputs []Re
 		if !output.Kind.Valid() || strings.TrimSpace(output.Reference) == "" {
 			return ErrInvalidReport
 		}
-		if (output.Kind == ReportOutputPRCreated || output.Kind == ReportOutputPRReviewed) && !IsGitHubPullRequestURL(output.Reference) {
-			return ErrInvalidReport
+		if output.Kind == ReportOutputPRCreated || output.Kind == ReportOutputPRReviewed {
+			if _, err := ParseChangeRequestURL(output.Reference); err != nil {
+				return ErrInvalidReport
+			}
 		}
 	}
 	return nil
-}
-
-// IsGitHubPullRequestURL reports whether raw is an HTTP(S) github.com PR URL.
-func IsGitHubPullRequestURL(raw string) bool {
-	if strings.TrimSpace(raw) != raw {
-		return false
-	}
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !strings.EqualFold(u.Hostname(), "github.com") || u.Port() != "" || u.User != nil {
-		return false
-	}
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) != 4 || parts[0] == "" || parts[1] == "" || parts[2] != "pull" || parts[3] == "" {
-		return false
-	}
-	for _, c := range parts[3] {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
 }

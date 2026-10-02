@@ -12078,6 +12078,10 @@ components:
       type: object
     ListSessionPRsResponse:
       properties:
+        linkedPrs:
+          items:
+            $ref: '#/components/schemas/SessionPRReference'
+          type: array
         prs:
           items:
             $ref: '#/components/schemas/SessionPRSummary'
@@ -12087,6 +12091,7 @@ components:
       required:
       - sessionId
       - prs
+      - linkedPrs
       type: object
     ListSessionsResponse:
       properties:
@@ -12414,6 +12419,8 @@ components:
           - ready_to_merge
           - pr_merged
           - pr_closed_unmerged
+          - review_completed
+          - review_changes_requested
           type: string
       required:
       - id
@@ -13407,6 +13414,28 @@ components:
       - reasons
       - prUrl
       type: object
+    SessionPRReference:
+      properties:
+        host:
+          type: string
+        number:
+          type: integer
+        provider:
+          enum:
+          - github
+          - gitlab
+          type: string
+        repo:
+          type: string
+        url:
+          type: string
+      required:
+      - url
+      - provider
+      - host
+      - repo
+      - number
+      type: object
     SessionPRReviewCommentLink:
       properties:
         autoInjectReview:
@@ -13911,6 +13940,8 @@ components:
           type: string
         localEnabled:
           type: boolean
+        trackerIntakeEnabled:
+          type: boolean
       required:
       - defaultSessionMode
       - chatHarnesses
@@ -13919,6 +13950,7 @@ components:
       - cloudOffering
       - cloudEnabled
       - cloudControlPlaneUrl
+      - trackerIntakeEnabled
       type: object
     ShellTerminalEnvelope:
       properties:

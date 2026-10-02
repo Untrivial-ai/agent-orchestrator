@@ -216,9 +216,9 @@ export function ShellTopbar({
 				data-compact-actions={compactActions ? "true" : "false"}
 				data-testid="workspace-topbar-actions"
 			>
-			{!boardActionsInPanel && isProjectBoardRoute ? (
+				{!boardActionsInPanel && isProjectBoardRoute ? (
 					<>
-						<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} style={noDragStyle} />
+						<ProjectBoardActions actions={projectActions} placement="header" quiet={showProjectEmpty} cloud={project?.kind === CLOUD_PROJECT_KIND} style={noDragStyle} />
 						{supportsLocalCues ? <span className="inline-flex" style={noDragStyle}>
 							<CueRunMenu
 								projectId={projectId!}
@@ -308,14 +308,15 @@ export function ShellTopbar({
 						) : null}
 						{/* Local worker actions share one tight control group. Navigation
 						    remains a separate visual target in the outer top-bar row. */}
-						{!isOrchestrator && session && (sessionAction || sessionIsActive(session)) ? (
+						{!isOrchestrator &&
+							(sessionAction || (session && !session.cloud && sessionIsActive(session))) ? (
 							<div
 								className="inline-flex shrink-0 items-center gap-1"
 								data-testid="session-local-actions"
 								style={noDragStyle}
 							>
 								{sessionAction ? <div className="inline-flex shrink-0 items-center">{sessionAction}</div> : null}
-								{sessionIsActive(session) ? (
+								{session && !session.cloud && sessionIsActive(session) ? (
 									<TopbarArchiveButton
 										key={session.id}
 										session={session}

@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/aoagents/agent-orchestrator/backend v0.0.0
+	github.com/coder/acp-go-sdk v0.13.5
 	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/creack/pty v1.1.24

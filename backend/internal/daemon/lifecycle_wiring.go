@@ -251,7 +251,7 @@ func telemetryEmitsSpawned(cfg config.Config) bool {
 // (issue #2685). The returned service is mounted at httpd APIDeps.Sessions.
 // It also returns the manager so the caller can wire Reconcile into the boot
 // sequence.
-func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, messenger ports.AgentMessenger, telemetry ports.EventSink, agents ports.AgentResolver, agentReadiness ports.AgentReadinessProvider, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, chat sessionmanager.ChatLauncher, defaults sessionmanager.SessionModeDefaults, reportingPolicy ports.AgentSwitchReportingPolicy, tracker ports.Tracker, codexOperationGate ports.CodexOperationGate, log *slog.Logger) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, error) {
+func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.Runtime, store *sqlite.Store, lcm *lifecycle.Manager, messenger ports.AgentMessenger, telemetry ports.EventSink, notifications notificationSink, agents ports.AgentResolver, agentReadiness ports.AgentReadinessProvider, previewLifecycle sessionmanager.PreviewLifecycle, browserLifecycle sessionmanager.BrowserLifecycle, browserCapabilities sessionmanager.BrowserCapabilityIssuer, chat sessionmanager.ChatLauncher, defaults sessionmanager.SessionModeDefaults, reportingPolicy ports.AgentSwitchReportingPolicy, tracker ports.Tracker, codexOperationGate ports.CodexOperationGate, log *slog.Logger) (*sessionsvc.Service, reviewsvc.Manager, sessionLifecycle, error) {
 	gitWS, err := gitworktree.New(gitworktree.Options{
 		// Per-session worktrees live under the data dir, so a single AO_DATA_DIR
 		// override moves all durable per-user state together.
@@ -345,6 +345,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 	reviewOpts := []reviewsvc.Option{
 		reviewsvc.WithLifecycleReducer(lcm),
 		reviewsvc.WithTelemetry(telemetry),
+		reviewsvc.WithNotificationSink(notifications),
 		reviewsvc.WithCodexAccountOperationGate(codexOperationGate),
 	}
 	if scmProvider != nil {
@@ -550,6 +551,7 @@ type chatLauncher struct{ svc *chatsvc.Service }
 var _ sessionmanager.ChatLauncher = chatLauncher{}
 var _ interface {
 	RunBackgroundTask(context.Context, domain.AgentHarness, ports.ChatStartConfig, string) (string, error)
+	RelayUserAuthoredChatTurn(context.Context, domain.SessionID, string) (string, error)
 	ArmChatHandoff(context.Context, domain.SessionID, domain.SessionInterfaceTransitionPolicy) error
 	PrepareChatHandoff(context.Context, domain.SessionID, domain.SessionInterfaceTransitionPolicy) error
 	AbortChatHandoff(domain.SessionID)
@@ -634,6 +636,10 @@ func (c chatLauncher) StartChatTurn(ctx context.Context, id domain.SessionID, te
 
 func (c chatLauncher) RelayChatTurn(ctx context.Context, id domain.SessionID, text string) (string, error) {
 	return c.svc.RelayChatTurn(ctx, id, text)
+}
+
+func (c chatLauncher) RelayUserAuthoredChatTurn(ctx context.Context, id domain.SessionID, text string) (string, error) {
+	return c.svc.RelayUserAuthoredChatTurn(ctx, id, text)
 }
 
 func (c chatLauncher) RelayChatTurnWithID(

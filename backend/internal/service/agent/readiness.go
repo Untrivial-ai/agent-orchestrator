@@ -203,6 +203,9 @@ func (s *Service) Probe(ctx context.Context, agentID string) (ProbeResult, error
 	if _, ok := s.agent(agentID); !ok {
 		return ProbeResult{Agent: Info{ID: agentID}, Supported: false, Installed: false}, nil
 	}
+	if agentID == string(domain.HarnessCodex) {
+		s.reconcileCodexDeviceCredentialForRecheck(ctx)
+	}
 	s.InvalidateAgentAuthentication(agentID)
 	readiness, err := s.EnsureReadiness(ctx, []string{agentID}, domain.AgentReadinessPurposeLaunch)
 	if err != nil {

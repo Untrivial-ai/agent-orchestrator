@@ -14,6 +14,7 @@ import type {
 	CloudCpCancelTurnResponse,
 	CloudCpChatEventsQuery,
 	CloudCpChatEventsResponse,
+	CloudCpChatModelsResponse,
 	CloudCpCoderTemplatesResponse,
 	CloudCpClientEvent,
 	CloudCpCreateOrganizationRequest,
@@ -44,6 +45,7 @@ import type {
 	CloudCpPutGitHubPATRequest,
 	CloudCpSendMessageRequest,
 	CloudCpSendMessageResponse,
+	CloudCpSteerTurnResponse,
 	CloudCpSessionChildrenResponse,
 	CloudCpSessionDeletedResponse,
 	CloudCpSessionListResponse,
@@ -51,6 +53,11 @@ import type {
 	CloudCpResumeSessionResponse,
 	CloudCpRestoreSessionResponse,
 	CloudCpSessionResponse,
+	CloudCpAcknowledgeInterfaceTransitionNoticeResponse,
+	CloudCpCancelInterfaceTransitionResponse,
+	CloudCpInterfaceTransitionStatusResponse,
+	CloudCpStartInterfaceTransitionRequest,
+	CloudCpStartInterfaceTransitionResponse,
 	CloudCpWorkspaceDiff,
 	CloudCpWorkspaceDiffFileDetail,
 	CloudCpWorkspaceReviewDiffsRequest,
@@ -163,6 +170,24 @@ export interface CloudCpClient {
 		options?: CloudCpMutationOptions,
 	): Promise<CloudCpSessionResponse>;
 	getSession(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
+	getInterfaceTransition(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpInterfaceTransitionStatusResponse>;
+	startInterfaceTransition(
+		orgId: string,
+		sessionId: string,
+		body: CloudCpStartInterfaceTransitionRequest,
+		options?: CloudCpMutationOptions,
+	): Promise<CloudCpStartInterfaceTransitionResponse>;
+	cancelInterfaceTransition(
+		orgId: string,
+		sessionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpCancelInterfaceTransitionResponse>;
+	acknowledgeInterfaceTransitionNotice(
+		orgId: string,
+		sessionId: string,
+		transitionId: string,
+		options?: CloudCpRequestOptions,
+	): Promise<CloudCpAcknowledgeInterfaceTransitionNoticeResponse>;
 	setSessionAutoInjectCI(orgId: string, sessionId: string, autoInjectCI: boolean, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
 	setSessionAutoInjectReview(orgId: string, sessionId: string, autoInjectReview: boolean, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
 	setSessionMergePolicy(orgId: string, sessionId: string, terminateOnPrMerge: boolean, options?: CloudCpRequestOptions): Promise<CloudCpSessionResponse>;
@@ -220,12 +245,21 @@ export interface CloudCpClient {
 		body: CloudCpSendMessageRequest,
 		options?: CloudCpMutationOptions,
 	): Promise<CloudCpSendMessageResponse>;
+	listChatModels(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpChatModelsResponse>;
 	cancelTurn(
 		orgId: string,
 		sessionId: string,
 		turnId: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpCancelTurnResponse>;
+	steerTurn(
+		orgId: string,
+		sessionId: string,
+		turnId: string,
+		body: CloudCpSendMessageRequest,
+		options?: CloudCpMutationOptions,
+	): Promise<CloudCpSteerTurnResponse>;
+	decideChatApproval(orgId: string, sessionId: string, requestId: string, decisionId: string, options?: CloudCpRequestOptions): Promise<{ ok: boolean }>;
 	listChatEvents(
 		orgId: string,
 		sessionId: string,
@@ -250,18 +284,12 @@ export interface CloudCpClient {
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpTerminalTicketResponse>;
 
-	listProviderConnections(
-		orgId: string,
-		options?: CloudCpRequestOptions,
-	): Promise<CloudCpProviderConnectionsResponse>;
 	listUserProviderConnections(options?: CloudCpRequestOptions): Promise<CloudCpProviderConnectionsResponse>;
-	putAgentConnection(
-		orgId: string,
+	putUserAgentConnection(
 		agent: CloudCpAgentProvider,
 		body: CloudCpPutAgentConnectionRequest,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpProviderConnectionResponse>;
-	deleteAgentConnection(orgId: string, agent: CloudCpAgentProvider, options?: CloudCpRequestOptions): Promise<void>;
 	putGitHubPAT(body: CloudCpPutGitHubPATRequest, options?: CloudCpRequestOptions): Promise<CloudCpProviderConnectionResponse>;
 	deleteGitHubPAT(options?: CloudCpRequestOptions): Promise<void>;
 	listGitHubRepos(options?: CloudCpRequestOptions): Promise<CloudCpGitHubReposResponse>;
@@ -520,6 +548,24 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			}),
 		getSession: (orgId, sessionId, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
+		getInterfaceTransition: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/interface-transition`, { signal: o?.signal }),
+		startInterfaceTransition: (orgId, sessionId, body, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/interface-transition`, {
+				body,
+				signal: o?.signal,
+				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
+			}),
+		cancelInterfaceTransition: (orgId, sessionId, o) =>
+			requestJson("DELETE", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/interface-transition`, {
+				signal: o?.signal,
+			}),
+		acknowledgeInterfaceTransitionNotice: (orgId, sessionId, transitionId, o) =>
+			requestJson(
+				"PUT",
+				`/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/interface-transition/${seg(transitionId)}/notice-acknowledgement`,
+				{ signal: o?.signal },
+			),
 		setSessionAutoInjectCI: (orgId, sessionId, autoInjectCI, o) =>
 			requestJson("PATCH", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/auto-inject-ci`, { body: { autoInjectCI }, signal: o?.signal }),
 		setSessionAutoInjectReview: (orgId, sessionId, autoInjectReview, o) =>
@@ -596,9 +642,21 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 				signal: o?.signal,
 				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
 			}),
+		listChatModels: (orgId, sessionId, o) =>
+			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/chat-models`, { signal: o?.signal }),
 		cancelTurn: (orgId, sessionId, turnId, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/turns/${seg(turnId)}/cancel`, {
 				signal: o?.signal,
+			}),
+		steerTurn: (orgId, sessionId, turnId, body, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/turns/${seg(turnId)}/steer`, {
+				body,
+				signal: o?.signal,
+				idempotencyKey: o?.idempotencyKey ?? newIdempotencyKey(),
+			}),
+		decideChatApproval: (orgId, sessionId, requestId, decisionId, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/approvals/${seg(requestId)}/decide`, {
+				body: { decisionId }, signal: o?.signal,
 			}),
 		listChatEvents: (orgId, sessionId, query, o) =>
 			requestJson("GET", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/chat-events`, {
@@ -619,18 +677,9 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 				signal: o?.signal,
 			}),
 
-		listProviderConnections: (orgId, o) =>
-			requestJson("GET", `/orgs/${seg(orgId)}/provider-connections`, { signal: o?.signal }),
 		listUserProviderConnections: (o) => requestJson("GET", "/me/providers", { signal: o?.signal }),
-		putAgentConnection: (orgId, agent, body, o) =>
-			requestJson("PUT", `/orgs/${seg(orgId)}/provider-connections/agents/${seg(agent)}`, {
-				body,
-				signal: o?.signal,
-			}),
-		deleteAgentConnection: (orgId, agent, o) =>
-			requestVoid("DELETE", `/orgs/${seg(orgId)}/provider-connections/agents/${seg(agent)}`, {
-				signal: o?.signal,
-			}),
+		putUserAgentConnection: (agent, body, o) =>
+			requestJson("PUT", `/me/providers/${seg(agent)}`, { body, signal: o?.signal }),
 		putGitHubPAT: (body, o) => requestJson("PUT", "/me/github-pat", { body, signal: o?.signal }),
 		deleteGitHubPAT: (o) => requestVoid("DELETE", "/me/github-pat", { signal: o?.signal }),
 		listGitHubRepos: (o) => requestJson("GET", "/me/github/repos", { signal: o?.signal }),

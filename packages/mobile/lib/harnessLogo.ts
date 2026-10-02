@@ -15,7 +15,7 @@ export type BackdropPolarity = "neutral" | "needs-dark" | "needs-light";
 export const LOGO_KEYS: ReadonlySet<string> = new Set([
 	"agy", "aider", "amp", "auggie", "autohand", "claude-code", "cline", "codex",
 	"continue", "copilot", "crush", "cursor", "devin", "droid", "goose", "grok",
-	"kilocode", "kimi", "kiro", "muse", "opencode", "pi", "qwen", "vibe",
+	"kilocode", "kimi", "kiro", "muse", "opencode", "pi", "prime-agent", "qwen", "vibe",
 	"kimchi", "fx",
 ]);
 
@@ -41,8 +41,8 @@ export function hasLogo(harness?: string | null): boolean {
 // black and `devin`/`droid`/`pi`/`kimi` are near-black, so they vanish just as
 // completely on the dark card. Desktop has both bugs and renders every mark
 // bare on every theme.
-const NEEDS_DARK_BACKDROP = new Set(["opencode", "cursor", "cline", "continue", "grok", "copilot"]);
-const NEEDS_LIGHT_BACKDROP = new Set(["kilocode", "goose", "devin", "droid", "pi", "kimi", "fx"]);
+export const NEEDS_DARK_BACKDROP: ReadonlySet<string> = new Set(["opencode", "cursor", "cline", "continue", "grok"]);
+export const NEEDS_LIGHT_BACKDROP: ReadonlySet<string> = new Set(["kilocode", "goose", "devin", "droid", "pi", "kimi", "fx", "prime-agent"]);
 
 /**
  * What the mark needs behind it to stay visible.

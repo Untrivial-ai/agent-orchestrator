@@ -54,6 +54,23 @@ func TestReportStorePersistsOutputsAndDeadlinesAcrossRestart(t *testing.T) {
 	if pending, err := s.ListPendingReports(ctx, now, 10); err != nil || len(pending) != 0 {
 		t.Fatalf("early pending=%+v err=%v", pending, err)
 	}
+	urls, err := s.ListReportedPRURLs(ctx, sess.ID)
+	if err != nil || len(urls) != 1 || urls[0] != "https://github.com/o/r/pull/1" {
+		t.Fatalf("reported PR URLs=%v err=%v", urls, err)
+	}
+	events, err := s.EventsAfter(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reportEvents int
+	for _, event := range events {
+		if event.SessionID == string(sess.ID) && event.Type == "session_updated" {
+			reportEvents++
+		}
+	}
+	if reportEvents != 1 {
+		t.Fatalf("reported PR CDC events=%d, want 1", reportEvents)
+	}
 	pending, err := s.ListPendingReports(ctx, want.AvailableAt, 10)
 	if err != nil || len(pending) != 1 || pending[0].ID != want.ID || len(pending[0].Outputs) != 3 {
 		t.Fatalf("pending=%+v err=%v", pending, err)

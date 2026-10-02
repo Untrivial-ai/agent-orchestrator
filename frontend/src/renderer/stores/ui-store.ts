@@ -40,6 +40,8 @@ export type SettingsModal =
 			scope: "global";
 			section?: GlobalSettingsSection;
 			focusAgentId?: string;
+			/** Which Harness page view (local or cloud logins) to open. */
+			harnessView?: "local" | "cloud";
 			/** Preserve the project form while global recovery settings is above it. */
 			returnTo?: Extract<SettingsModal, { scope: "project" }>;
 	}
@@ -74,8 +76,13 @@ export type GlobalToast = {
 	body?: string;
 	tone?: "info" | "error";
 	placement?: "bottom-right" | "top-center";
+	dismissible?: boolean;
+	durationMs?: number;
+	dedupeKey?: string;
 	nonce: number;
 };
+
+export type GlobalToastOptions = Pick<GlobalToast, "tone" | "placement" | "dismissible" | "durationMs" | "dedupeKey">;
 
 // Selection (which project/session is open) now lives in the URL — the router
 // is the single source of truth, read via route params. This store holds only
@@ -149,7 +156,7 @@ export type UiState = {
 	updateInstallPromptOpen: boolean;
 	openUpdateInstallPrompt: () => void;
 	closeUpdateInstallPrompt: () => void;
-	openGlobalSettings: (section?: GlobalSettingsSection, options?: { focusAgentId?: string; preserveProject?: boolean }) => void;
+	openGlobalSettings: (section?: GlobalSettingsSection, options?: { focusAgentId?: string; harnessView?: "local" | "cloud"; preserveProject?: boolean }) => void;
 	openProjectSettings: (projectId: string, options?: { section?: ProjectSettingsSection }) => void;
 	closeSettings: () => void;
 	/** Refresh resolvedTheme from OS without writing light/dark to storage. */
@@ -175,7 +182,7 @@ export type UiState = {
 	setProjectProvisioning: (projectId: string, provisioning: boolean) => void;
 	setOrchestratorReplacementError: (projectId: string, failure: OrchestratorReplacementFailure | null) => void;
 	setOrchestratorStartupError: (projectId: string, message: string | null) => void;
-	showGlobalToast: (title: string, body?: string, style?: GlobalToast["tone"] | GlobalToast["placement"]) => void;
+	showGlobalToast: (title: string, body?: string, style?: GlobalToast["tone"] | GlobalToast["placement"] | GlobalToastOptions) => void;
 	dismissGlobalToast: (nonce: number) => void;
 	clearGlobalToast: () => void;
 	requestNewTask: (projectId: string) => void;
@@ -311,6 +318,7 @@ export const useUiStore = create<UiState>((set, get) => ({
 			scope: "global",
 			section,
 			...(options?.focusAgentId ? { focusAgentId: options.focusAgentId } : {}),
+			...(options?.harnessView ? { harnessView: options.harnessView } : {}),
 			...(options?.preserveProject && state.settingsModal?.scope === "project"
 				? { returnTo: state.settingsModal }
 				: options?.preserveProject && state.settingsModal?.scope === "global" && state.settingsModal.returnTo
@@ -486,10 +494,14 @@ export const useUiStore = create<UiState>((set, get) => ({
 	showGlobalToast: (title, body, style) =>
 		set((state) => {
 			const nonce = state.globalToastSequence + 1;
-			const tone = style === "error" || style === "info" ? style : "info";
-			const placement = style === "top-center" || style === "bottom-right" ? style : "bottom-right";
-			const toast = { title, body, tone, placement, nonce };
-			return { globalToast: toast, globalToasts: [...state.globalToasts, toast], globalToastSequence: nonce };
+			const options = typeof style === "object" ? style : undefined;
+			const tone = options?.tone ?? (style === "error" || style === "info" ? style : "info");
+			const placement = options?.placement ?? (style === "top-center" || style === "bottom-right" ? style : "bottom-right");
+			const toast = { title, body, tone, placement, nonce, ...options };
+			const globalToasts = toast.dedupeKey
+				? state.globalToasts.filter((existing) => existing.dedupeKey !== toast.dedupeKey)
+				: state.globalToasts;
+			return { globalToast: toast, globalToasts: [...globalToasts, toast], globalToastSequence: nonce };
 		}),
 	dismissGlobalToast: (nonce) =>
 		set((state) => ({

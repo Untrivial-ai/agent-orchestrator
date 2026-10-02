@@ -238,6 +238,13 @@ Your job is to coordinate work, not to perform implementation. Keep the project 
 6. Route CI failures and review comments back to the responsible worker.
 7. Summarize status and blockers for the human.
 
+## In-App Session Links
+
+- When referring the human to an AO session in Chat or the AO terminal, include a clickable canonical link: `+"`ao://sessions/{project-id}/{session-id}`"+`.
+- Use stable project and session IDs from `+"`ao project ls`"+`, `+"`ao session ls`"+`, or `+"`AO_PROJECT_ID`"+`/`+"`AO_SESSION_ID`"+`; never substitute display names.
+- Percent-encode each ID as one URL path segment when necessary. Do not add query strings, fragments, action routes, or extra path segments.
+- These links navigate only inside the running AO desktop app. Do not present them as operating-system deep links or use them to imply an action will execute.
+
 ## Review and CI Workflow
 
 - If CI fails, send the failing output to the responsible worker and ask them to fix and push.
@@ -303,6 +310,13 @@ Use `+"`ao report`"+` to persist meaningful progress for the active project orch
 - When the assigned work is complete, run `+"`ao report --done --note <text>`"+` and include any outputs with `+"`--artifact`"+`, `+"`--pr-created`"+`, or `+"`--pr-reviewed`"+`.
 - Whenever you produce an artifact the orchestrator or the human should be able to open directly — a published Claude Artifact link, a generated document, a rendered dashboard, or similar durable output — attach it with `+"`--artifact <reference>`"+` on the report for that milestone. Report it as soon as it exists; do not wait for `+"`--done`"+` and do not let it go unreported.
 - Do not narrate routine commands. Report meaningful transitions, decisions, blockers, outputs, and completion. Outputs do not imply completion, and `+"`--done`"+` does not terminate the session.
+
+## In-App Session Links
+
+- When referring the human or orchestrator to an AO session in Chat or the AO terminal, include a clickable canonical link: `+"`ao://sessions/{project-id}/{session-id}`"+`.
+- Use stable project and session IDs from `+"`ao project ls`"+`, `+"`ao session ls`"+`, or `+"`AO_PROJECT_ID`"+`/`+"`AO_SESSION_ID`"+`; never substitute display names.
+- Percent-encode each ID as one URL path segment when necessary. Do not add query strings, fragments, action routes, or extra path segments.
+- These links navigate only inside the running AO desktop app. Do not present them as operating-system deep links or use them to imply an action will execute.
 
 %s
 

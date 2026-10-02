@@ -10,6 +10,12 @@ const mocks = vi.hoisted(() => ({
 	create: vi.fn(),
 	update: vi.fn(),
 	runsError: null as Error | null,
+	hideShellTopbar: false,
+}));
+
+vi.mock("../lib/platform", async (importOriginal) => ({
+	...await importOriginal<typeof import("../lib/platform")>(),
+	hidesShellTopbar: () => mocks.hideShellTopbar,
 }));
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
@@ -47,13 +53,21 @@ function renderView(ui: ReactNode = <AutomationsView />) {
 }
 
 describe("AutomationsView", () => {
-	beforeEach(() => { mocks.automations = []; mocks.runsError = null; mocks.create.mockReset(); mocks.update.mockReset(); });
+	beforeEach(() => { mocks.automations = []; mocks.runsError = null; mocks.hideShellTopbar = false; mocks.create.mockReset(); mocks.update.mockReset(); });
 
 	it("shows a discoverable empty state and create action", () => {
 		renderView();
 		expect(screen.getByRole("heading", { name: "Automations" })).toBeInTheDocument();
 		expect(screen.getByText("No automations yet")).toBeInTheDocument();
 		expect(screen.getAllByRole("button", { name: /create automation/i })).not.toHaveLength(0);
+	});
+
+	it.each([true, false])("shows the page title only when the shell title is hidden (%s)", (hidden) => {
+		mocks.hideShellTopbar = hidden;
+		renderView();
+		const title = screen.getByRole("heading", { name: "Automations" });
+		if (hidden) expect(title).not.toHaveClass("sr-only");
+		else expect(title).toHaveClass("sr-only");
 	});
 
 	it("preselects the project's resolved default worker like New Task", async () => {
@@ -352,6 +366,44 @@ describe("AutomationsView", () => {
 		await userEvent.click(screen.getAllByRole("button", { name: /create automation/i })[0]);
 		expect(screen.getByLabelText("Time")).toHaveValue("14:07");
 		vi.useRealTimers();
+	});
+
+	it("filters paused automations and keeps schedule and project names readable", async () => {
+		const base = { projectId: "demo", prompt: "Review the board", kind: "worker", harness: "codex", rrule: "FREQ=WEEKLY;BYDAY=FR;BYHOUR=9;BYMINUTE=30;BYSECOND=0", timezone: "UTC" };
+		mocks.automations = [{ ...base, id: "active", displayName: "Friday review", enabled: true }, { ...base, id: "paused", displayName: "Paused review", enabled: false }];
+		renderView();
+		expect(screen.getAllByText("Demo")).toHaveLength(2);
+		expect(screen.getAllByText(/Friday ·/)).toHaveLength(2);
+		await userEvent.click(screen.getByRole("button", { name: /Paused 1/ }));
+		expect(screen.queryByRole("heading", { name: "Friday review" })).not.toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "Paused review" })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /Paused 1/ })).toHaveAttribute("aria-pressed", "true");
+	});
+
+	it.each([
+		["FREQ=DAILY;BYHOUR=8;BYMINUTE=30;BYSECOND=0", /daily · 8:30 AM/i],
+		["FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=0;BYSECOND=0", /Mon–Fri · 9:00 AM/],
+		["FREQ=WEEKLY;BYDAY=MO,WE,FR;BYHOUR=10;BYMINUTE=0;BYSECOND=0", /Mon, Wed, Fri · 10:00 AM/],
+		["FREQ=MONTHLY;BYMONTHDAY=1;BYHOUR=10;BYMINUTE=0;BYSECOND=0", /Monthly · day 1 · 10:00 AM/],
+	])("shows the complete schedule from a canonical daemon rule %s", (rule, label) => {
+		mocks.automations = [{ id: "canonical", projectId: "demo", displayName: "Scheduled review", prompt: "Review", kind: "worker", rrule: `DTSTART;TZID=Asia/Kolkata:20261001T183600\nRRULE:${rule}`, timezone: "Asia/Kolkata", enabled: true }];
+		renderView();
+		expect(screen.getByText(label)).toBeInTheDocument();
+	});
+
+	it("exposes details with expansion state and surfaces failed toggles", async () => {
+		mocks.automations = [{ id: "active", projectId: "demo", displayName: "Morning triage", prompt: "Review the board", kind: "worker", harness: "codex", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=30;BYSECOND=0", timezone: "UTC", enabled: true }];
+		mocks.update.mockRejectedValue(new Error("Could not pause"));
+		renderView();
+		const expand = screen.getByRole("button", { name: /Show run history/ });
+		expect(expand).toHaveAttribute("aria-expanded", "false");
+		await userEvent.click(expand);
+		expect(screen.getByRole("button", { name: /Hide run history/ })).toHaveAttribute("aria-expanded", "true");
+		expect(screen.getByText("Review the board")).toBeInTheDocument();
+		expect(screen.getByText("Timezone: UTC")).toBeInTheDocument();
+		await userEvent.click(screen.getByRole("switch", { name: "Disable Morning triage" }));
+		expect(mocks.update).toHaveBeenCalledWith({ id: "active", body: { enabled: false } });
+		expect(screen.getByRole("alert")).toHaveTextContent("Could not pause");
 	});
 
 	it("surfaces run-history fetch failures instead of an empty list", async () => {

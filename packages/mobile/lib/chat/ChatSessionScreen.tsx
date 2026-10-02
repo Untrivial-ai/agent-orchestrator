@@ -2,6 +2,7 @@ import { Feather } from "../icons";
 import { useHeaderHeight } from "expo-router/build/react-navigation/elements";
 import { useNavigation, useRouter } from "expo-router";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { KeyboardAvoidingView, useKeyboardState } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
@@ -44,7 +45,10 @@ import { conversationActionError, conversationActionUnsupported } from "./conver
 import { conversationMarkers } from "./timelineModel";
 import { brokenMcpServers, can } from "./types";
 import { useMobileConversation } from "./useConversation";
-import { type, space } from "../tokens";
+import { useOpenPage } from "../pageNavigation";
+import { usePRSummaries } from "../usePRSummaries";
+import { reviewRouteForPR, reviewRouteForSession, sessionPRReadyForReview } from "../reviewView";
+import { iconSize, type, space } from "../tokens";
 import { backOr } from "../backNavigation";
 import { userFacingError, NOT_PAIRED_ACTION_COPY } from "../connectionError";
 
@@ -73,6 +77,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	const styles = useThemedStyles(makeStyles);
 	const navigation = useNavigation();
 	const router = useRouter();
+	const openPage = useOpenPage();
 	const headerHeight = useHeaderHeight();
 	const insets = useSafeAreaInsets();
 	const [headerRightReady, setHeaderRightReady] = useState(false);
@@ -98,6 +103,8 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 	const actionsListeners = useRef(new Set<(entry: ConversationActionsEntry) => void>());
 	const interfaceSwitch = useInterfaceTransition(config, session.id, refreshBoard);
 	const [menuOpen, setMenuOpen] = useState(false);
+	const [collapsedReviewPRKey, setCollapsedReviewPRKey] = useState<string>();
+	const [loadedReviewPromptStateKey, setLoadedReviewPromptStateKey] = useState<string>();
 	const [jumpToSequence, setJumpToSequence] = useState<number>();
 	const clearJumpToSequence = useCallback(() => setJumpToSequence(undefined), []);
 	// Which request the user pushed aside to type instead. It lives here because
@@ -192,6 +199,43 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		: projects.find((project) => project.id === session.projectId)?.name;
 	const headerHarness = conversation.snapshot?.harness || session.harness || "Agent";
 	const headerState = conversation.snapshot?.controller.state;
+	const reviewPromptPRCandidate = "projectName" in session ? undefined : sessionPRReadyForReview(session);
+	const reviewPromptKey = reviewPromptPRCandidate ? `${reviewPromptPRCandidate.url}#${reviewPromptPRCandidate.number}` : undefined;
+	const reviewPromptStateStorageKey = reviewPromptKey
+		? `ao.chat.reviewPromptCollapsed:${encodeURIComponent(session.id)}:${encodeURIComponent(reviewPromptKey)}`
+		: undefined;
+	useEffect(() => {
+		let cancelled = false;
+		setLoadedReviewPromptStateKey(undefined);
+		setCollapsedReviewPRKey(undefined);
+		if (!reviewPromptKey || !reviewPromptStateStorageKey) {
+			setLoadedReviewPromptStateKey(reviewPromptStateStorageKey);
+			return () => { cancelled = true; };
+		}
+		AsyncStorage.getItem(reviewPromptStateStorageKey).then((value) => {
+			if (cancelled) return;
+			setCollapsedReviewPRKey(value === "1" ? reviewPromptKey : undefined);
+			setLoadedReviewPromptStateKey(reviewPromptStateStorageKey);
+		}).catch(() => {
+			if (cancelled) return;
+			setLoadedReviewPromptStateKey(reviewPromptStateStorageKey);
+		});
+		return () => { cancelled = true; };
+	}, [reviewPromptKey, reviewPromptStateStorageKey]);
+	const reviewPromptStateReady = !reviewPromptStateStorageKey || loadedReviewPromptStateKey === reviewPromptStateStorageKey;
+	const reviewPromptPR = reviewPromptStateReady ? reviewPromptPRCandidate : undefined;
+	const reviewPromptCollapsed = Boolean(reviewPromptStateReady && reviewPromptKey && reviewPromptKey === collapsedReviewPRKey);
+	const collapseReviewPrompt = useCallback(() => {
+		if (!reviewPromptKey || !reviewPromptStateStorageKey) return;
+		setCollapsedReviewPRKey(reviewPromptKey);
+		void AsyncStorage.setItem(reviewPromptStateStorageKey, "1").catch(() => {});
+	}, [reviewPromptKey, reviewPromptStateStorageKey]);
+	const expandReviewPrompt = useCallback(() => {
+		setCollapsedReviewPRKey(undefined);
+		if (reviewPromptStateStorageKey) void AsyncStorage.removeItem(reviewPromptStateStorageKey).catch(() => {});
+	}, [reviewPromptStateStorageKey]);
+	const reviewSummaries = usePRSummaries(reviewPromptPR ? [session.id] : []);
+	const reviewPromptSummary = reviewPromptPR ? reviewSummaries.summaryFor(session.id, reviewPromptPR.number) : undefined;
 
 	// The blocking request. It takes the composer's place until it is answered.
 	// Computed here rather than at render because the back-swipe below is a hook
@@ -234,11 +278,24 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		navigation.setOptions(
 			headerRightReady
 				? glassHeaderControl("right", (
-					<NativeHeaderButton icon="more" label="Conversation actions" onPress={() => { haptics.tap(); setMenuOpen(true); }} />
+					<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+						{reviewPromptCollapsed && reviewPromptPR ? (
+							<Pressable
+								testID="header-pullRequest"
+								accessibilityRole="button"
+								accessibilityLabel="Show PR card"
+								onPress={() => { haptics.tap(); expandReviewPrompt(); }}
+								style={({ pressed }) => [styles.reviewHeaderPRButton, { backgroundColor: pressed ? t.accentTint : t.bgElevatedHover }]}
+							>
+								<Feather name="git-pull-request" size={iconSize.lg} color={t.textSecondary} />
+							</Pressable>
+						) : null}
+						<NativeHeaderButton icon="more" label="Conversation actions" onPress={() => { haptics.tap(); setMenuOpen(true); }} />
+					</View>
 				))
 				: glassHeaderControl("right"),
 		);
-	}, [headerRightReady, navigation, t]);
+	}, [expandReviewPrompt, headerRightReady, navigation, reviewPromptCollapsed, reviewPromptPR, t]);
 
 	const loadWorkspaceFiles = useCallback(async () => {
 		if (!config || !conversation.snapshot) return { paths: filePaths, truncated: filePathsTruncated };
@@ -378,7 +435,16 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 			onMap: () => router.push(chatSheetRoute({ kind: "conversation-map", markers: conversationMarkers(actionsEntryRef.current?.snapshot ?? current), onSelect: setJumpToSequence })),
 			onOpenShell: () => void openShell(),
 			onPreview: () => router.push({ pathname: "/preview/[id]", params: { id: session.id, title, previewUrl: "previewUrl" in session ? session.previewUrl ?? undefined : undefined } }),
-			onPullRequests: () => { setActiveProject(session.projectId); router.push("/(tabs)/prs"); },
+			onPullRequests: () => {
+				const route = !("projectName" in session) && (session.prs?.length ?? (session.pr ? 1 : 0)) <= 1
+					? reviewRouteForSession(session)
+					: undefined;
+				if (route) openPage(route);
+				else {
+					setActiveProject(session.projectId);
+					router.push("/(tabs)/prs");
+				}
+			},
 			onSettings: () => void openTurnSettings(),
 			onSwitchInterface: requestInterfaceSwitch,
 			onCompact: () => void conversation.compact().catch(() => {}),
@@ -409,7 +475,7 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 		};
 		actionsEntryRef.current = entry;
 		void dismissKeyboardBeforeSheet(keyboardVisible).then(() => router.push(chatSheetRoute(actionsEntryRef.current ?? entry)));
-	}, [conversation, interfaceSwitch, interfaceTransitionActive, keyboardVisible, menuOpen, openShell, openTurnSettings, openingShell, requestInterfaceSwitch, router, session, sessionName, setActiveProject, setWorkerPinned, title]);
+	}, [conversation, interfaceSwitch, interfaceTransitionActive, keyboardVisible, menuOpen, openPage, openShell, openTurnSettings, openingShell, requestInterfaceSwitch, router, session, sessionName, setActiveProject, setWorkerPinned, title]);
 
 	// The poll keeps retrying on its own at up to 8s; this is for the user who can
 	// see the network is back and does not want to wait for the tick. Nothing else
@@ -540,6 +606,11 @@ export function ChatSessionScreen({ session }: { session: MobileChatSession }) {
 				/>
 			</ChatLinkProvider>
 			<ChatComposer
+				reviewPR={reviewPromptPR}
+				reviewPRSummary={reviewPromptSummary}
+				reviewPRCollapsed={reviewPromptCollapsed}
+				onCollapseReviewPR={collapseReviewPrompt}
+				onOpenReview={reviewPromptPR ? () => openPage(reviewRouteForPR(session.id, reviewPromptPR)) : undefined}
 				sessionId={session.id}
 				snapshot={snapshot}
 				quotaActive={Boolean(quota)}
@@ -642,6 +713,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	bannerClose: { width: 26, height: 26, alignItems: "center", justifyContent: "center" },
 	bannerAction: { fontFamily: "Geist_600SemiBold", fontSize: type.caption2.fontSize, fontWeight: "600" },
 	bannerSecondary: { fontFamily: "Geist_600SemiBold", color: t.textTertiary, fontSize: type.caption2.fontSize, fontWeight: "600" },
+	reviewHeaderPRButton: { width: 44, height: 44, borderRadius: 22, borderCurve: "continuous", borderWidth: StyleSheet.hairlineWidth, borderColor: t.borderStrong, alignItems: "center", justifyContent: "center", overflow: "hidden" },
 	center: { flex: 1, alignItems: "center", justifyContent: "center", gap: space.md, paddingHorizontal: space.huge, backgroundColor: t.bgBase },
 	centerTitle: { fontFamily: "Geist_600SemiBold", color: t.textPrimary, fontSize: type.body.fontSize, fontWeight: "600", textAlign: "center" },
 	centerCopy: { fontFamily: "Geist_400Regular", color: t.textSecondary, fontSize: type.footnote.fontSize, lineHeight: type.footnote.lineHeight, textAlign: "center" },

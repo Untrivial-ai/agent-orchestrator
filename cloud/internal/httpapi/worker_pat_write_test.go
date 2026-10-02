@@ -63,6 +63,8 @@ func (s *patRecordStore) ClaimPullRequestRecord(_ context.Context, _, _ string, 
 type recordingCheckoutBroker struct {
 	raiseCalls int
 	raiseErr   error
+	claimCalls int
+	claimErr   error
 }
 
 func (b *recordingCheckoutBroker) IssueCheckoutGrant(context.Context, string, string) (githubapp.CheckoutGrant, error) {
@@ -82,6 +84,10 @@ func (b *recordingCheckoutBroker) RaisePullRequest(context.Context, string, stri
 	return domain.PullRequest{ID: "broker-pr", Number: 99, URL: "https://github.com/octo/widgets/pull/99"}, nil
 }
 func (b *recordingCheckoutBroker) ClaimPullRequest(context.Context, string, string, string) (domain.PullRequest, error) {
+	b.claimCalls++
+	if b.claimErr != nil {
+		return domain.PullRequest{}, b.claimErr
+	}
 	return domain.PullRequest{ID: "broker-pr", Number: 7, URL: "https://github.com/octo/widgets/pull/7"}, nil
 }
 func (b *recordingCheckoutBroker) SubmitReview(context.Context, string, string, string, domain.SubmitReviewResult) (domain.ReviewRun, error) {
@@ -109,6 +115,16 @@ func newPATTestServer(t *testing.T, patErr error) (*Server, *recordingCheckoutBr
 		if r.Method == http.MethodPost && r.URL.Path == "/repos/octo/widgets/pulls" {
 			_, _ = io.ReadAll(r.Body)
 			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": 1, "number": 7, "html_url": "https://github.com/octo/widgets/pull/7",
+				"state": "open", "title": "Add logging", "user": map[string]any{"login": "octocat"},
+				"head": map[string]any{"sha": "abc123", "ref": "feature"}, "base": map[string]any{"ref": "main"},
+			})
+			return
+		}
+		// PAT claim path fetches the PR (GetPullRequestRecord) before recording it.
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/octo/widgets/pulls/7" {
+			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id": 1, "number": 7, "html_url": "https://github.com/octo/widgets/pull/7",
 				"state": "open", "title": "Add logging", "user": map[string]any{"login": "octocat"},
@@ -240,6 +256,54 @@ func TestWorkerClaimPullRequestRecordsOpenedNotification(t *testing.T) {
 	srv.workerClaimPullRequest(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if serverStore.opened != 1 {
+		t.Fatalf("PR opened notifications = %d, want 1", serverStore.opened)
+	}
+}
+
+// The GitHub App (checkout broker) must win the CLAIM too, even when a PAT exists.
+// A PAT-first order let a rotted-but-cached-valid PAT shadow a healthy App and
+// fail every `ao claim-pr` / gh-create claim with "The pull request could not be
+// tracked" (GitHub 401). Regression test: a healthy App claim must not touch the PAT.
+func TestWorkerClaimPullRequestPrefersBrokerAppOverPAT(t *testing.T) {
+	srv, broker, _, gh, serverStore := newPATTestServer(t, nil) // PAT configured
+	req := workerRequest(t, http.MethodPost, "/worker/pull-requests/claim", `{"reference":"https://github.com/octo/widgets/pull/7"}`, "worker:git")
+	w := httptest.NewRecorder()
+	srv.workerClaimPullRequest(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if broker.claimCalls != 1 {
+		t.Fatalf("broker.ClaimPullRequest called %d times, want 1 (App tried first)", broker.claimCalls)
+	}
+	if gh.hits != 0 {
+		t.Fatalf("PAT GitHub server hit %d times, want 0 (a healthy App claim must not fall back to a possibly-stale PAT)", gh.hits)
+	}
+	if serverStore.opened != 1 {
+		t.Fatalf("PR opened notifications = %d, want 1", serverStore.opened)
+	}
+}
+
+// When the broker cannot claim (e.g. a remote capability broker is read-only),
+// fall back to the PAT — the App-first/PAT-fallback contract, same as raise.
+func TestWorkerClaimPullRequestFallsBackToPATWhenBrokerCannotWrite(t *testing.T) {
+	srv, broker, _, gh, serverStore := newPATTestServer(t, nil) // PAT configured
+	broker.claimErr = errors.New("claiming is not supported for the remote capability broker")
+	req := workerRequest(t, http.MethodPost, "/worker/pull-requests/claim", `{"reference":"https://github.com/octo/widgets/pull/7"}`, "worker:git")
+	w := httptest.NewRecorder()
+	srv.workerClaimPullRequest(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (PAT fallback); body=%s", w.Code, w.Body.String())
+	}
+	if broker.claimCalls != 1 {
+		t.Fatalf("broker.ClaimPullRequest called %d times, want 1 (App tried first)", broker.claimCalls)
+	}
+	if gh.hits == 0 {
+		t.Fatal("GitHub PAT path was never called; the claim fallback did not run")
+	}
+	if gh.auth != "Bearer ghp_HANDLERtestPAT0000000000000000000" {
+		t.Fatalf("GitHub Authorization = %q, want the PAT as bearer on fallback", gh.auth)
 	}
 	if serverStore.opened != 1 {
 		t.Fatalf("PR opened notifications = %d, want 1", serverStore.opened)

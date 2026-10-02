@@ -306,116 +306,176 @@ const codexAuthFlow: ProviderAuthFlow = {
 	},
 };
 
+// Base64url (no padding) encoding for PKCE material.
+function base64Url(buf: Buffer): string {
+	return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// Claude Code's public OAuth client id and endpoints, mirrored from the claude
+// binary (verified against 2.1.284: CLIENT_ID / CLAUDE_AI_AUTHORIZE_URL /
+// TOKEN_URL). `claude setup-token` performs exactly this PKCE authorization-code
+// flow over a localhost loopback redirect and, for the long-lived token, requests
+// a one-year lifetime.
+const CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const CLAUDE_OAUTH_AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize";
+const CLAUDE_OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+const CLAUDE_OAUTH_SCOPE = "user:inference";
+const CLAUDE_OAUTH_TOKEN_TTL_SECONDS = 31_536_000; // one year, matching `setup-token`
+
+const CLAUDE_CALLBACK_HTML = (title: string, body: string): string =>
+	`<!doctype html><meta charset="utf-8"><title>${title}</title>` +
+	`<body style="font:15px -apple-system,system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.5rem;color:#111">` +
+	`<h1 style="font-size:1.25rem">${title}</h1><p style="color:#555">${body}</p></body>`;
+
+// Build the Claude OAuth authorize URL for a PKCE loopback login. Kept pure and
+// exported so the parameter set the CLI depends on (client id, loopback redirect,
+// user:inference scope, S256 challenge) is guarded by a unit test.
+export function buildClaudeAuthorizeUrl(redirectUri: string, codeChallenge: string, state: string): string {
+	const params = new URLSearchParams({
+		code: "true",
+		client_id: CLAUDE_OAUTH_CLIENT_ID,
+		response_type: "code",
+		redirect_uri: redirectUri,
+		scope: CLAUDE_OAUTH_SCOPE,
+		code_challenge: codeChallenge,
+		code_challenge_method: "S256",
+		state,
+	});
+	return `${CLAUDE_OAUTH_AUTHORIZE_URL}?${params.toString()}`;
+}
+
 const claudeAuthFlow: ProviderAuthFlow = {
 	provider: "claude-code",
-	async authenticate(dataDir: string, signal?: AbortSignal): Promise<ProviderAuthCredential> {
-		await mkdir(dataDir, { recursive: true, mode: 0o700 });
-		await chmod(dataDir, 0o700);
-		const pending = await mkdtemp(path.join(dataDir, "claude-cloud-login-"));
-		try {
-			const binary = await resolveProviderBinary("claude");
-			if (!binary) {
-				throw new Error(
-					'Claude Code is not installed or could not be found. Install Claude Code, or connect with the "API key" credential type instead.',
-				);
-			}
-			// Use `claude setup-token`, the purpose-built command for exporting a
-			// long-lived token, instead of `auth login` + scraping a version-specific
-			// credential file. Modern claude stores the login credential in the OS
-			// keychain, so no file is written and the old settings.json read fails.
-			// setup-token opens the browser for OAuth and, on completion, emits the
-			// token; capture stdout/stderr so we can read it.
-			let captured = "";
-			// Resolve as soon as the setup token MATERIALIZES, not when the CLI exits.
-			// `claude setup-token` emits the sk-ant-oat token the instant OAuth
-			// completes, but recent builds do not reliably exit afterward (they can
-			// idle holding the browser session open). Waiting on process `exit` then
-			// timed out at 5 minutes even though the token was already in hand - the
-			// exact failure the browser-login button hit. So watch stdout AND the
-			// isolated config dir, and finish the moment a token appears; the process
-			// `exit` becomes only the terminal-error signal.
-			const secret = await new Promise<string>((resolve, reject) => {
-				const child = spawnAgentBinary(binary.path, ["setup-token"], {
-					env: { ...process.env, PATH: binary.pathEnv, CLAUDE_CONFIG_DIR: pending },
-					stdio: ["ignore", "pipe", "pipe"],
-				});
+	async authenticate(_dataDir: string, signal?: AbortSignal): Promise<ProviderAuthCredential> {
+		// Run the OAuth loopback flow ourselves rather than shelling out to `claude
+		// setup-token`. When AO spawns that CLI non-interactively (stdio: pipe, no
+		// TTY) it *does* run this same loopback flow to completion, but it is a React
+		// Ink TUI that prints the resulting sk-ant-oat token only to a real terminal:
+		// on a non-TTY pipe it emits zero bytes and writes nothing to
+		// CLAUDE_CONFIG_DIR, so scraping stdout / polling the config dir never
+		// observes a token and the login spins until the 5-minute timeout. Attaching
+		// a PTY does not help either -- with a TTY the CLI switches to an out-of-band
+		// "paste this code" flow that AO's spinner-only UX cannot drive. Mirroring the
+		// CLI's loopback flow (like githubAuthFlow) lets us read the token straight
+		// from the token endpoint, independent of the CLI's output channel, and does
+		// not require Claude Code to be installed at all.
+		const codeVerifier = base64Url(crypto.randomBytes(32));
+		const codeChallenge = base64Url(crypto.createHash("sha256").update(codeVerifier).digest());
+		const state = crypto.randomBytes(32).toString("hex");
+		let server: Server | null = null;
 
-				let settled = false;
-				let timeout: NodeJS.Timeout;
-				let poll: NodeJS.Timeout;
-				const cleanup = () => {
-					clearTimeout(timeout);
-					clearInterval(poll);
-					signal?.removeEventListener("abort", onAbort);
+		return new Promise<ProviderAuthCredential>((resolve, reject) => {
+			let port = 0;
+
+			const timeout = setTimeout(() => {
+				server?.close();
+				cleanup();
+				reject(new Error("Claude sign-in timed out after 5 minutes."));
+			}, 5 * 60 * 1000);
+
+			const cleanup = () => {
+				clearTimeout(timeout);
+				signal?.removeEventListener("abort", onAbort);
+			};
+			const onAbort = () => {
+				server?.close();
+				cleanup();
+				reject(new Error("Login was cancelled."));
+			};
+			if (signal?.aborted) return onAbort();
+			signal?.addEventListener("abort", onAbort, { once: true });
+
+			const failCallback = (res: import("node:http").ServerResponse, err: Error) => {
+				cleanup();
+				server?.close();
+				res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+				res.end(CLAUDE_CALLBACK_HTML("Sign-in failed", "Return to Agent Orchestrator and try signing in again."));
+				reject(err);
+			};
+
+			server = createServer((req, res) => {
+				const url = new URL(req.url ?? "/", "http://127.0.0.1");
+				if (url.pathname !== "/callback") {
+					res.writeHead(404, { "Content-Type": "text/plain" });
+					res.end("Not found");
+					return;
+				}
+				const errorParam = url.searchParams.get("error");
+				if (errorParam) {
+					failCallback(res, new Error(url.searchParams.get("error_description") || `Claude sign-in failed: ${errorParam}`));
+					return;
+				}
+				const code = url.searchParams.get("code");
+				const returnedState = url.searchParams.get("state");
+				if (!code || returnedState !== state) {
+					failCallback(res, new Error("Claude sign-in callback is invalid."));
+					return;
+				}
+				// The redirect_uri sent here must byte-for-byte match the one advertised
+				// in the authorize URL, or the PKCE token exchange is rejected.
+				const redirectUri = `http://localhost:${port}/callback`;
+				void (async () => {
 					try {
-						child.kill();
-					} catch {
-						// already gone
+						const tokenRes = await fetch(CLAUDE_OAUTH_TOKEN_URL, {
+							method: "POST",
+							redirect: "error",
+							headers: { "Content-Type": "application/json", Accept: "application/json" },
+							body: JSON.stringify({
+								grant_type: "authorization_code",
+								code,
+								redirect_uri: redirectUri,
+								client_id: CLAUDE_OAUTH_CLIENT_ID,
+								code_verifier: codeVerifier,
+								state,
+								expires_in: CLAUDE_OAUTH_TOKEN_TTL_SECONDS,
+							}),
+						});
+						if (!tokenRes.ok) throw new Error(`Claude token exchange failed (HTTP ${tokenRes.status}).`);
+						const tokenBody = (await tokenRes.json()) as Record<string, unknown>;
+						const accessToken = tokenBody.access_token;
+						// The setup token is an sk-ant-oat...; validate the shape so a
+						// changed response schema fails loudly instead of storing garbage.
+						if (typeof accessToken !== "string" || !extractClaudeOAuthToken(accessToken)) {
+							throw new Error("Claude did not return a valid setup token.");
+						}
+						cleanup();
+						server?.close();
+						res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+						res.end(
+							CLAUDE_CALLBACK_HTML(
+								"Signed in to Agent Orchestrator",
+								"You can close this tab and return to Agent Orchestrator.",
+							),
+						);
+						resolve({ provider: "claude-code", credentialType: "oauth_token", secret: accessToken });
+					} catch (err) {
+						failCallback(res, err instanceof Error ? err : new Error(String(err)));
 					}
-				};
-				const succeed = (token: string) => {
-					if (settled) return;
-					settled = true;
-					cleanup();
-					resolve(token);
-				};
-				const fail = (err: Error) => {
-					if (settled) return;
-					settled = true;
-					cleanup();
-					reject(err);
-				};
-
-				const capture = (chunk: Buffer) => {
-					if (captured.length <= MAX_AUTH_DOCUMENT_BYTES) captured += chunk.toString();
-					const token = extractClaudeOAuthToken(captured);
-					if (token) succeed(token);
-				};
-				child.stdout?.on("data", capture);
-				child.stderr?.on("data", capture);
-
-				// Some builds write the token to a file in the isolated config dir
-				// instead of stdout; poll for it so that path resolves promptly too.
-				poll = setInterval(() => {
-					void readClaudeOAuthTokenFromDir(pending)
-						.then((token) => {
-							if (token) succeed(token);
-						})
-						.catch(() => {});
-				}, 1000);
-
-				const onAbort = () => fail(new Error("Login was cancelled."));
-				if (signal?.aborted) return onAbort();
-				signal?.addEventListener("abort", onAbort);
-
-				timeout = setTimeout(() => fail(new Error("Login timed out after 5 minutes.")), 5 * 60 * 1000);
-
-				child.once("error", () =>
-					fail(new Error('Claude Code could not start. Connect with the "API key" credential type instead.')),
-				);
-				child.once("exit", (code) => {
-					// Last-chance check for a token the CLI wrote just before exiting,
-					// then treat the exit as terminal.
-					const token = extractClaudeOAuthToken(captured);
-					if (token) return succeed(token);
-					void readClaudeOAuthTokenFromDir(pending)
-						.then((fileToken) => {
-							if (fileToken) return succeed(fileToken);
-							fail(
-								new Error(
-									code === 0
-										? 'Claude sign-in did not return a token. Connect with the "API key" credential type instead.'
-										: "Claude sign-in did not complete.",
-								),
-							);
-						})
-						.catch(() => fail(new Error("Claude sign-in did not complete.")));
-				});
+				})();
 			});
-			return { provider: "claude-code", credentialType: "oauth_token", secret };
-		} finally {
-			await rm(pending, { recursive: true, force: true });
-		}
+
+			// Bind 127.0.0.1 but advertise http://localhost:<port>/callback: this is
+			// exactly what the claude CLI does (it binds 127.0.0.1 and hands the
+			// browser a localhost URL), and both loopback forms are registered redirect
+			// URIs for this client.
+			server.listen(0, "127.0.0.1", () => {
+				const addr = server!.address();
+				if (typeof addr === "string" || addr === null) {
+					cleanup();
+					server?.close();
+					reject(new Error("Failed to start local callback server."));
+					return;
+				}
+				port = addr.port;
+				void shell.openExternal(buildClaudeAuthorizeUrl(`http://localhost:${port}/callback`, codeChallenge, state));
+			});
+
+			server.on("error", (err) => {
+				cleanup();
+				server?.close();
+				reject(err);
+			});
+		});
 	},
 };
 

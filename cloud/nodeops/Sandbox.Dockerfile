@@ -28,6 +28,7 @@ RUN apt-get update && \
             "gh_${gh_version}_linux_${architecture}/bin/gh" && \
     npm install --global \
         @anthropic-ai/claude-code@2.1.228 \
+        @agentclientprotocol/claude-agent-acp@0.70.0 \
         @openai/codex@0.147.0 && \
     ln -sfn "$(npm root --global)/@anthropic-ai/claude-code/cli-wrapper.cjs" \
         /usr/local/bin/claude && \
@@ -38,6 +39,7 @@ RUN apt-get update && \
     chown -R ao-worker:ao-worker /workspace && \
     rm -rf /var/lib/apt/lists/* /root/.npm && \
     claude --version && \
+    test -x "$(command -v claude-agent-acp)" && \
     codex --version
 
 RUN gh --version

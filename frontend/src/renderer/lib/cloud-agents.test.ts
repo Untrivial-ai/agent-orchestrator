@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CloudCpProviderConnection } from "./cloud-cp";
-import { connectedCredentialType, credentialModelScope } from "./cloud-agents";
+import { cloudAgentInfos, connectedCredentialType, credentialModelScope, isCloudHarnessConnected } from "./cloud-agents";
 
 function connection(
 	provider: string,
@@ -61,5 +61,49 @@ describe("connectedCredentialType", () => {
 
 	it("returns empty for undefined connections", () => {
 		expect(connectedCredentialType(undefined, "opencode")).toBe("");
+	});
+});
+
+describe("cloudAgentInfos", () => {
+	it("offers Claude Code, Codex, Cursor, and OpenCode on cloud", () => {
+		expect(cloudAgentInfos([]).map((agent) => agent.id)).toEqual(["claude-code", "codex", "cursor", "opencode"]);
+	});
+
+	it("marks an agent ready only when its connection is valid", () => {
+		const agents = cloudAgentInfos([
+			connection("claude-code"),
+			connection("codex", { validationState: "invalid" }),
+			connection("github"),
+		]);
+		expect(agents.map((agent) => [agent.id, agent.effectiveReadiness])).toEqual([
+			["claude-code", "ready"],
+			["codex", "not_ready"],
+			["cursor", "not_ready"],
+			["opencode", "not_ready"],
+		]);
+	});
+});
+
+describe("isCloudHarnessConnected", () => {
+	it("uses the valid default connection, not whichever connection comes last", () => {
+		const connections = [
+			connection("codex"),
+			connection("codex", { id: "codex-2", label: "secondary", validationState: "invalid" }),
+		];
+		expect(isCloudHarnessConnected(connections, "codex")).toBe(true);
+		expect(cloudAgentInfos(connections).find((agent) => agent.id === "codex")?.effectiveReadiness).toBe("ready");
+	});
+
+	it("does not count a valid non-default connection", () => {
+		const connections = [
+			connection("claude-code", { validationState: "invalid" }),
+			connection("claude-code", { id: "claude-2", label: "secondary" }),
+		];
+		expect(isCloudHarnessConnected(connections, "claude-code")).toBe(false);
+		expect(cloudAgentInfos(connections).find((agent) => agent.id === "claude-code")?.effectiveReadiness).toBe("not_ready");
+	});
+
+	it("is false without connections", () => {
+		expect(isCloudHarnessConnected(undefined, "codex")).toBe(false);
 	});
 });

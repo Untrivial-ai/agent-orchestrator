@@ -70,6 +70,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 	const isProjectSettings = displaySettings?.scope === "project";
 	const [activeSection, setActiveSection] = useState<GlobalSettingsSection>("general");
 	const [focusAgentId, setFocusAgentId] = useState<string>();
+	const [harnessView, setHarnessView] = useState<"local" | "cloud">();
 	const [activeProjectSection, setActiveProjectSection] = useState<ProjectSettingsSection>("general");
 	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>(initialProjectSaveState);
 	const [cueBusy, setCueBusy] = useState(false);
@@ -145,6 +146,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 
 	useEffect(() => {
 		setFocusAgentId(settingsModal?.scope === "global" ? settingsModal.focusAgentId : undefined);
+		setHarnessView(settingsModal?.scope === "global" ? settingsModal.harnessView : undefined);
 	}, [settingsModal]);
 
 	useEffect(() => {
@@ -274,7 +276,7 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 									) : displaySettings?.scope === "project" ? (
 										<ProjectSettingsForm projectId={displaySettings.projectId} section={activeProjectSection as ProjectFormSection} onSaveState={setProjectSaveState} />
 									) : (
-										<GlobalSettingsForm cloudEnabled={cloudEnabled} focusAgentId={focusAgentId} section={activeSection} />
+										<GlobalSettingsForm cloudEnabled={cloudEnabled} focusAgentId={focusAgentId} harnessView={harnessView} section={activeSection} />
 									)
 								) : (
 									<div aria-hidden="true" className="h-full" data-testid="settings-dialog-body-pending" />

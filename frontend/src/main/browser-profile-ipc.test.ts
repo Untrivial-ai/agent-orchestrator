@@ -34,6 +34,7 @@ async function setup(confirmSwitch = vi.fn(async () => true)) {
 	const renderer = { getZoomFactor: vi.fn(() => 1) };
 	const handlers = new Map<string, Handler>();
 	const menuPopup = vi.fn();
+	const reportSwitchFailure = vi.fn();
 	let menuItems: BrowserProfileMenuItem[] = [];
 	let state: BrowserProfileViewState = { viewId: "1:worker-1", profileId: null, temporary: true };
 	let switchInfo = { hasNavigated: false, agentActive: false };
@@ -71,9 +72,10 @@ async function setup(confirmSwitch = vi.fn(async () => true)) {
 			return { popup: menuPopup };
 		},
 		confirmSwitch,
+		reportSwitchFailure,
 	});
 	const invoke = (channel: string, sender: object, ...args: unknown[]) => handlers.get(channel)!({ sender }, ...args);
-	return { host, importer, invoke, ipc, menuItems: () => menuItems, menuPopup, renderer, shell, state: () => state, store };
+	return { host, importer, invoke, ipc, menuItems: () => menuItems, menuPopup, renderer, reportSwitchFailure, shell, state: () => state, store };
 }
 
 describe("browser profile IPC", () => {
@@ -136,6 +138,21 @@ describe("browser profile IPC", () => {
 		});
 
 		expect(host.switchProfile).toHaveBeenCalledWith("1:worker-1", profile.id);
+	});
+
+	it("reports a failed switch instead of silently leaving the worker temporary", async () => {
+		const { invoke, renderer, store, host, reportSwitchFailure, state } = await setup();
+		const profile = await store.createProfile("Work");
+		host.switchProfile.mockRejectedValueOnce(new Error("Profile storage is unavailable."));
+
+		await invoke("browser:profile:select", renderer, {
+			viewId: "1:worker-1",
+			profileId: profile.id,
+			labels,
+		});
+
+		expect(state()).toMatchObject({ profileId: null, temporary: true });
+		expect(reportSwitchFailure).toHaveBeenCalledWith("Profile storage is unavailable.", labels);
 	});
 
 	it("requires confirmation for a loaded page and refuses switching during agent activity", async () => {

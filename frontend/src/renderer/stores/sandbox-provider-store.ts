@@ -27,6 +27,11 @@ export function readSelectedSandboxProvider(): string | null {
 	}
 }
 
+/** Only send a saved choice when this control plane currently offers it. */
+export function resolveSandboxProviderPreference(selected: string | null, available: readonly string[]): string | null {
+	return selected && available.includes(selected) ? selected : null;
+}
+
 function persistSelectedSandboxProvider(provider: string | null): void {
 	try {
 		const storage = getLocalStorage();

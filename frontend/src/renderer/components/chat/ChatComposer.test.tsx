@@ -799,6 +799,14 @@ describe("steering", () => {
 		expect(onSend).not.toHaveBeenCalled();
 	});
 
+	it("offers an explicit steer action for a running Cloud turn", async () => {
+		const { onSend, onSteer, field } = renderSteerable({ showSteerButton: true });
+		await typeInComposer(field, "change course");
+		await userEvent.click(screen.getByRole("button", { name: "Steer into running turn" }));
+		await waitFor(() => expect(onSteer).toHaveBeenCalledWith("change course"));
+		expect(onSend).not.toHaveBeenCalled();
+	});
+
 	it("steers on Ctrl+Enter, so the chord exists off macOS too", async () => {
 		const { onSend, onSteer, field } = renderSteerable();
 

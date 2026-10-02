@@ -8,10 +8,11 @@ import { OrchestratorActivityIndicator } from "./OrchestratorActivityIndicator";
 import { OrchestratorIcon } from "./icons";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
-export function ProjectBoardActions({ actions, placement, quiet = false, style }: {
+export function ProjectBoardActions({ actions, placement, quiet = false, cloud = false, style }: {
 	actions: ProjectOrchestratorAction;
 	placement: "header" | "empty";
 	quiet?: boolean;
+	cloud?: boolean;
 	style?: CSSProperties;
 }) {
 	const { t } = useTranslation();
@@ -55,7 +56,7 @@ export function ProjectBoardActions({ actions, placement, quiet = false, style }
 						data-priority={header ? "primary" : undefined}
 						disabled={isProjectRestarting || isProvisioning}
 						onClick={openNewTask}
-						variant={quiet ? "secondary" : "accent"}
+						variant={quiet || cloud ? "secondary" : "accent"}
 					>
 						<Plus className="size-icon-md" aria-hidden="true" />
 						<span data-compact-label={header ? "" : undefined}>{t(header ? "newTask.task" : "shell.newTask")}</span>

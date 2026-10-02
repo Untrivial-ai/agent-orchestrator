@@ -34,6 +34,10 @@ trigger: "Using the ao CLI in an AO workspace: creating Cues, spawning workers, 
 - Most read commands accept `--json` for machine-readable output.
 - `-p / --project` scopes session subcommand lookups to one project.
 - Session and project ids are shown by `ao session ls` and `ao project ls`.
+- To refer to a session in AO Chat or the AO terminal, use the canonical in-app
+  link `ao://sessions/{project-id}/{session-id}`. Read
+  [commands/session.md](commands/session.md) for identity, encoding, and safety
+  rules before constructing one.
 - When the user asks to save a repeatable task as a Cue, use `ao cue list --json` to check existing definitions, then `ao cue create`. An agent Cue stores a reusable instruction; a command Cue stores an exact shell command. This agent-facing command can create and read Cues, but cannot edit or delete them. Direct the user to project settings for changes to existing Cues.
 - `--agent` is an alias for `--harness` on `ao spawn`.
 - Every command accepts `-h / --help` for the full flag list.

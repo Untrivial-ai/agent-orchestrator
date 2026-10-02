@@ -43,6 +43,7 @@ export type BrowserProfileIpcOptions = {
 	importer: BrowserProfileImportService;
 	buildMenu: (items: BrowserProfileMenuItem[]) => BrowserProfileMenu;
 	confirmSwitch: (labels: BrowserProfileMenuInput["labels"]) => Promise<boolean>;
+	reportSwitchFailure: (message: string, labels: BrowserProfileMenuInput["labels"]) => void;
 };
 
 export type BrowserProfileIpc = {
@@ -257,5 +258,6 @@ async function selectFromMenu(
 		await options.host.switchProfile(viewId, profileId);
 	} catch (error) {
 		console.error("browser profile switch failed:", error);
+		options.reportSwitchFailure(error instanceof Error ? error.message : "Browser profile could not be switched.", labels);
 	}
 }

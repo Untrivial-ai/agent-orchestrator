@@ -76,6 +76,7 @@ type fakeSessionService struct {
 	orchestratorApproval       domain.PermissionMode
 	claimErr                   error
 	listPRErr                  error
+	linkedPRs                  []domain.ChangeRequestReference
 	workspaceErr               error
 	staged                     []ports.SpawnAttachment
 	stagedPaths                []string
@@ -566,6 +567,14 @@ func (f *fakeSessionService) ListPRSummaries(_ context.Context, id domain.Sessio
 		CreatedAt:      time.Date(2026, 6, 4, 9, 0, 0, 0, time.UTC),
 		UpdatedAt:      time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
 	}}, nil
+}
+
+func (f *fakeSessionService) ListPRListing(ctx context.Context, id domain.SessionID) (sessionsvc.PRListing, error) {
+	prs, err := f.ListPRSummaries(ctx, id)
+	if err != nil {
+		return sessionsvc.PRListing{}, err
+	}
+	return sessionsvc.PRListing{Tracked: prs, Linked: f.linkedPRs}, nil
 }
 
 func (f *fakeSessionService) ClaimPR(_ context.Context, id domain.SessionID, ref string, opts sessionsvc.ClaimPROptions) (sessionsvc.ClaimPRResult, error) {
@@ -3493,7 +3502,9 @@ type sessionBody struct {
 }
 
 func TestSessionsAPI_PRRoutes(t *testing.T) {
-	srv := newSessionTestServer(t, newFakeSessionService())
+	svc := newFakeSessionService()
+	svc.linkedPRs = []domain.ChangeRequestReference{{URL: "https://gitlab.com/release/notes/-/merge_requests/9", Provider: "gitlab", Host: "gitlab.com", Repository: "release/notes", Number: 9}}
+	srv := newSessionTestServer(t, svc)
 
 	body, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/pr", "")
 	if status != http.StatusOK {
@@ -3501,7 +3512,11 @@ func TestSessionsAPI_PRRoutes(t *testing.T) {
 	}
 	var listed struct {
 		SessionID string `json:"sessionId"`
-		PRs       []struct {
+		LinkedPRs []struct {
+			URL  string `json:"url"`
+			Repo string `json:"repo"`
+		} `json:"linkedPrs"`
+		PRs []struct {
 			URL            string `json:"url"`
 			Number         int    `json:"number"`
 			Title          string `json:"title"`
@@ -3545,6 +3560,9 @@ func TestSessionsAPI_PRRoutes(t *testing.T) {
 	mustJSON(t, body, &listed)
 	if listed.SessionID != "ao-1" || len(listed.PRs) != 1 || listed.PRs[0].State != "open" || listed.PRs[0].Title == "" {
 		t.Fatalf("GET shape = %#v", listed)
+	}
+	if len(listed.LinkedPRs) != 1 || listed.LinkedPRs[0].Repo != "release/notes" || listed.LinkedPRs[0].URL != svc.linkedPRs[0].URL {
+		t.Fatalf("linked PRs = %#v", listed.LinkedPRs)
 	}
 	if listed.PRs[0].StateChangedAt != "2026-06-04T11:30:00Z" {
 		t.Fatalf("stateChangedAt = %q, want backend-selected PR state time", listed.PRs[0].StateChangedAt)

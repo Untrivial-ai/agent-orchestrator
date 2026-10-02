@@ -1126,10 +1126,20 @@ type SessionPRConflictFile struct {
 	URL  string `json:"url,omitempty"`
 }
 
+// SessionPRReference is a worker-reported PR/MR without SCM tracking authority.
+type SessionPRReference struct {
+	URL      string `json:"url"`
+	Provider string `json:"provider" enum:"github,gitlab"`
+	Host     string `json:"host"`
+	Repo     string `json:"repo"`
+	Number   int    `json:"number"`
+}
+
 // ListSessionPRsResponse is the body of GET /sessions/{sessionId}/pr.
 type ListSessionPRsResponse struct {
-	SessionID domain.SessionID   `json:"sessionId"`
-	PRs       []SessionPRSummary `json:"prs"`
+	SessionID domain.SessionID     `json:"sessionId"`
+	PRs       []SessionPRSummary   `json:"prs"`
+	LinkedPRs []SessionPRReference `json:"linkedPrs"`
 }
 
 // NewSessionPRSummary maps the service PR summary model to its HTTP DTO.
@@ -1822,7 +1832,7 @@ type NotificationResponse struct {
 	SessionID string    `json:"sessionId"`
 	ProjectID string    `json:"projectId"`
 	PRURL     string    `json:"prUrl"`
-	Type      string    `json:"type" enum:"needs_input,ready_to_merge,pr_merged,pr_closed_unmerged"`
+	Type      string    `json:"type" enum:"needs_input,ready_to_merge,pr_merged,pr_closed_unmerged,review_completed,review_changes_requested"`
 	Title     string    `json:"title"`
 	Body      string    `json:"body"`
 	Status    string    `json:"status" enum:"unread,read" description:"Seen state. unread means the user has not opened the notification panel since it arrived."`
@@ -2836,6 +2846,9 @@ type SettingsResponse struct {
 	// CloudControlPlaneURL is the cloud control plane base URL; empty when no
 	// control plane is configured.
 	CloudControlPlaneURL string `json:"cloudControlPlaneUrl"`
+	// TrackerIntakeEnabled reports the AO_TRACKER_INTAKE gate, so a client can
+	// avoid offering a per-project intake control the daemon will ignore.
+	TrackerIntakeEnabled bool `json:"trackerIntakeEnabled"`
 }
 
 // AgentInstallerCatalogResponse is the body of GET /api/v1/agents/installers.

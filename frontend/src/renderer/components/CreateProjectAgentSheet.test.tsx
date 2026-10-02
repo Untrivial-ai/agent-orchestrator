@@ -1,13 +1,23 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { CreateProjectAgentSheet, RequiredAgentField } from "./CreateProjectAgentSheet";
 import { TooltipProvider } from "./ui/tooltip";
 import { useUiStore } from "../stores/ui-store";
+
+const { trackerIntakeGate } = vi.hoisted(() => ({ trackerIntakeGate: { enabled: true } }));
+
+vi.mock("../hooks/useSettings", () => ({
+	useSettings: () => ({ settings: { trackerIntakeEnabled: trackerIntakeGate.enabled }, isLoading: false, error: undefined }),
+}));
+
+beforeEach(() => {
+	trackerIntakeGate.enabled = true;
+});
 
 function renderSheet(
 	onSubmit = vi.fn().mockResolvedValue(undefined),
@@ -315,6 +325,18 @@ describe("CreateProjectAgentSheet", () => {
 			orchestratorAgent: "codex",
 			trackerIntake: { enabled: true, assignee: "octocat" },
 		});
+	});
+
+	it("omits the intake control, and submits no intake, when the daemon gate is off", async () => {
+		trackerIntakeGate.enabled = false;
+		const onSubmit = vi.fn().mockResolvedValue(undefined);
+		renderSheet(onSubmit);
+
+		expect(screen.queryByLabelText("Automatically work on assigned issues")).not.toBeInTheDocument();
+
+		await userEvent.click(screen.getByRole("button", { name: "Create and start" }));
+		await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+		expect(onSubmit.mock.calls[0]?.[0]?.trackerIntake).toBeUndefined();
 	});
 
 	it("keeps the create sheet minimal: no repo row or credential hint", async () => {

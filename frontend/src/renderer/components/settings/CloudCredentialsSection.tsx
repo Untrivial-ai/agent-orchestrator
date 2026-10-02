@@ -1,33 +1,23 @@
 import { KeyRound } from "lucide-react";
 import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { GitHubTokenField } from "../onboarding/GitHubTokenField";
 import { Button } from "../ui/button";
 import { useCloudGate } from "../../hooks/useCloudGate";
 import { useCloudCp } from "../../hooks/useCloudCp";
-import { useCloudOrg } from "../../hooks/useCloudOrg";
-import { hasValidAgentConnection, useProviderConnections } from "../../hooks/useProviderConnections";
+import { providerConnectionsQueryKey, useProviderConnections } from "../../hooks/useProviderConnections";
 import { useCloudSession } from "../../lib/cloud-session";
-import { useCredentialDialogStore } from "../../stores/credential-dialog-store";
+import { useUiStore } from "../../stores/ui-store";
 import { SettingsRow } from "./SettingsRow";
 import { SettingsSection } from "./SettingsSection";
 
-// Proper nouns; deliberately not translated.
-const AGENT_LABELS: Record<string, string> = {
-	"claude-code": "Claude Code",
-	codex: "Codex",
-	cursor: "Cursor",
-	github: "GitHub",
-};
-
 /**
- * Cloud coding-agent credentials in global settings. The outer component only
- * reads the daemon settings gate (a query the settings page already runs), so
- * a local-only app renders nothing and never mounts the cloud hooks — the
- * inner component is what subscribes to the cloud session/org/connection
- * queries. The connect flow reuses the globally mounted CloudCredentialDialog
- * via its shared open-store.
+ * Cloud credentials in global settings: the GitHub token for private
+ * repositories, plus a pointer to the Harnesses page, where coding agents are
+ * logged in for cloud. The outer component only reads the daemon settings gate
+ * (a query the settings page already runs), so a local-only app renders
+ * nothing and never mounts the cloud hooks.
  */
 export function CloudCredentialsSection({ titleHidden }: { titleHidden?: boolean }) {
 	const { cloudEnabled } = useCloudGate();
@@ -38,16 +28,10 @@ export function CloudCredentialsSection({ titleHidden }: { titleHidden?: boolean
 function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }) {
 	const { t } = useTranslation();
 	const { status } = useCloudSession();
-	const { org } = useCloudOrg();
 	const { client } = useCloudCp();
 	const queryClient = useQueryClient();
-	const connections = useProviderConnections(org?.id);
-	const userConnections = useQuery({
-		queryKey: ["cloud-user-provider-connections"],
-		enabled: status === "authenticated",
-		queryFn: async () => (await client.listUserProviderConnections()).providerConnections,
-	});
-	const openCredentialDialog = useCredentialDialogStore((s) => s.openDialog);
+	const userConnections = useProviderConnections();
+	const openGlobalSettings = useUiStore((state) => state.openGlobalSettings);
 	const [githubPAT, setGitHubPAT] = useState("");
 	const [githubPATBusy, setGitHubPATBusy] = useState(false);
 	const [githubPATError, setGitHubPATError] = useState<string | null>(null);
@@ -63,7 +47,6 @@ function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }
 		);
 	}
 
-	const rows = connections.data ?? [];
 	const githubPATConnected = (userConnections.data ?? []).some(
 		(connection) => connection.provider === "github" && connection.label === "default" && connection.validationState === "valid",
 	);
@@ -74,7 +57,7 @@ function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }
 		try {
 			await client.putGitHubPAT({ secret: githubPAT.trim() });
 			setGitHubPAT("");
-			await queryClient.invalidateQueries({ queryKey: ["cloud-user-provider-connections"] });
+			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey });
 		} catch (error) {
 			setGitHubPATError(error instanceof Error ? error.message : t("settings.cloudAgents.github.errorSave"));
 		} finally {
@@ -86,7 +69,7 @@ function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }
 		setGitHubPATError(null);
 		try {
 			await client.deleteGitHubPAT();
-			await queryClient.invalidateQueries({ queryKey: ["cloud-user-provider-connections"] });
+			await queryClient.invalidateQueries({ queryKey: providerConnectionsQueryKey });
 		} catch (error) {
 			setGitHubPATError(error instanceof Error ? error.message : t("settings.cloudAgents.github.errorRemove"));
 		} finally {
@@ -96,21 +79,9 @@ function CloudCredentialsSectionInner({ titleHidden }: { titleHidden?: boolean }
 	return (
 		<SettingsSection title={t("settings.cloudAgents")} sectionId="cloud-agents" titleHidden={titleHidden}>
 			<div className="flex w-full flex-col gap-1.5">
-				{rows.filter((connection) => connection.provider !== "github").map((connection) => (
-					<SettingsRow key={connection.id} icon={KeyRound} label={AGENT_LABELS[connection.provider] ?? connection.provider}>
-						<span className="text-sm leading-5 text-settings-muted">
-							{connection.validationState === "valid"
-								? t("settings.cloudAgents.valid")
-								: connection.validationState}
-						</span>
-					</SettingsRow>
-				))}
-				{connections.isSuccess && !hasValidAgentConnection(rows) ? (
-					<p className="px-3 text-xs leading-relaxed text-muted-foreground">{t("settings.cloudAgents.empty")}</p>
-				) : null}
 				<div className="flex items-center justify-between gap-4 px-3 pt-1">
 					<p className="text-xs leading-relaxed text-muted-foreground">{t("settings.cloudAgents.description")}</p>
-					<Button type="button" variant="footer" onClick={() => openCredentialDialog()}>
+					<Button type="button" variant="footer" onClick={() => openGlobalSettings("harness", { harnessView: "cloud", preserveProject: true })}>
 						{t("settings.cloudAgents.connect")}
 					</Button>
 				</div>

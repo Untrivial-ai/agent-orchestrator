@@ -13,6 +13,10 @@ func (s *Server) getWorkspaceReview(w http.ResponseWriter, r *http.Request) {
 	s.dispatchWorkspaceReview(w, r, "workspace.review.summary", struct{}{}, &worker.WorkspaceReviewResponse{})
 }
 
+func (s *Server) getChatModels(w http.ResponseWriter, r *http.Request) {
+	s.dispatchWorkspaceReview(w, r, "chat.models", struct{}{}, &worker.ChatModelsResponse{})
+}
+
 func (s *Server) getWorkspaceReviewTree(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if len(path) > maxWorkspacePath {

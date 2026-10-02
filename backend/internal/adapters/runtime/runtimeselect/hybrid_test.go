@@ -16,6 +16,7 @@ type fakeBackend struct {
 	createErr    error
 	calls        []string
 	handles      []ports.RuntimeHandle
+	processRefs  []ports.SupervisedProcessRef
 	childAlive   bool
 	childErr     error
 }
@@ -106,13 +107,20 @@ func (f *fakeBackend) SendMessage(_ context.Context, handle ports.RuntimeHandle,
 	return nil
 }
 
-func (f *fakeBackend) IsSupervisedProcessAlive(_ context.Context, handle ports.RuntimeHandle, _ ports.SupervisedProcessRef) (bool, error) {
+func (f *fakeBackend) IsSupervisedProcessAlive(_ context.Context, handle ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error) {
 	f.record("supervised", handle)
+	f.processRefs = append(f.processRefs, ref)
 	return true, nil
 }
 
-func (f *fakeBackend) IsExactSupervisedProcessAlive(_ context.Context, handle ports.RuntimeHandle, _ ports.SupervisedProcessRef) (bool, error) {
+func (f *fakeBackend) IsExactSupervisedProcessAlive(_ context.Context, handle ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error) {
 	f.record("exact", handle)
+	f.processRefs = append(f.processRefs, ref)
+	return true, nil
+}
+
+func (f *fakeBackend) HasSupervisedProcessRecord(_ context.Context, handle ports.RuntimeHandle) (bool, error) {
+	f.record("supervised-record", handle)
 	return true, nil
 }
 
@@ -196,8 +204,9 @@ func TestHybridRuntimeRoutesPersistedLegacyHandlesToTmux(t *testing.T) {
 	_, _ = runtime.GetStyledOutput(ctx, handle, 10)
 	_, _ = runtime.IsSupervisedProcessAlive(ctx, handle, ref)
 	_, _ = runtime.IsExactSupervisedProcessAlive(ctx, handle, ref)
+	_, _ = runtime.HasSupervisedProcessRecord(ctx, handle)
 
-	wantCalls := []string{"destroy", "alive", "attach", "interrupt", "input", "message", "output", "styled", "supervised", "exact"}
+	wantCalls := []string{"destroy", "alive", "attach", "interrupt", "input", "message", "output", "styled", "supervised", "exact", "supervised-record"}
 	if !reflect.DeepEqual(legacy.calls, wantCalls) {
 		t.Fatalf("legacy calls = %v, want %v", legacy.calls, wantCalls)
 	}
@@ -228,6 +237,30 @@ func TestHybridRuntimeRoutesVersionedHandlesToDirectHost(t *testing.T) {
 	}
 	if len(legacy.calls) != 0 {
 		t.Fatalf("legacy calls = %v, want none", legacy.calls)
+	}
+}
+
+func TestHybridRuntimeNormalizesPrefixedSessionInProcessRef(t *testing.T) {
+	legacy := &restartableFakeBackend{}
+	direct := &fakeBackend{}
+	runtime := newHybridRuntime(legacy, direct, nil, "macOS")
+	ctx := context.Background()
+	handle := ports.RuntimeHandle{ID: directHandlePrefix + "review-mer-1"}
+	ref := ports.SupervisedProcessRef{SessionID: domain.SessionID(handle.ID), LaunchID: "launch-1"}
+
+	if alive, err := runtime.IsExactSupervisedProcessAlive(ctx, handle, ref); err != nil || !alive {
+		t.Fatalf("IsExactSupervisedProcessAlive = (%v, %v), want (true, nil)", alive, err)
+	}
+	if alive, err := runtime.IsSupervisedProcessAlive(ctx, handle, ref); err != nil || !alive {
+		t.Fatalf("IsSupervisedProcessAlive = (%v, %v), want (true, nil)", alive, err)
+	}
+
+	want := ports.SupervisedProcessRef{SessionID: "review-mer-1", LaunchID: "launch-1"}
+	if len(direct.processRefs) != 2 || direct.processRefs[0] != want || direct.processRefs[1] != want {
+		t.Fatalf("process refs = %+v, want both normalized to %+v", direct.processRefs, want)
+	}
+	if !reflect.DeepEqual(direct.handles, []ports.RuntimeHandle{{ID: "review-mer-1"}, {ID: "review-mer-1"}}) {
+		t.Fatalf("direct handles = %+v, want unprefixed routed handles", direct.handles)
 	}
 }
 

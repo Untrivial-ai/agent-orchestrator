@@ -122,7 +122,8 @@ export function ReviewerSelect({
 			void queryClient.prefetchQuery(agentModelsQueryOptions(harness, menuProjectID));
 		}
 	}, [defaultHarness, menuOpen, menuProjectID, queryClient, selectableOptions]);
-	const selectedModelLabel = modelOrModeLabel(triggerCatalog.data, model, mode, t("settings.models.modelNotReported"));
+	// An unidentified model is left off the trigger rather than labelled.
+	const selectedModelLabel = modelOrModeLabel(triggerCatalog.data, model, mode, "");
 	const triggerLabel = [value ? agentLabel(value) : defaultHarnessLabel, harnessOnly ? null : selectedModelLabel]
 		.filter(Boolean)
 		.join(" · ");

@@ -67,9 +67,3 @@ func TestReportRecordValidatesSettlementDeadline(t *testing.T) {
 		t.Fatal("expected missing settlement deadline to fail")
 	}
 }
-
-func TestIsGitHubPullRequestURL(t *testing.T) {
-	if !IsGitHubPullRequestURL("https://github.com/owner/repo/pull/42") || IsGitHubPullRequestURL("https://github.example/owner/repo/pull/42") {
-		t.Fatal("PR URL validation mismatch")
-	}
-}

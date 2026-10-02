@@ -844,15 +844,31 @@ export function activeTurn(snapshot: ConversationSnapshot): ConversationTurn | u
 }
 
 /**
- * Turn ids whose human prompt must not appear in the timeline.
+ * Turn ids whose human prompt is represented in the queue dock instead.
  *
- * Queued turns live in the dock until dispatch. Turns cancelled from the dock
- * before dispatch must not reappear in the timeline after the snapshot refreshes.
+ * Human prompts for queued turns live in the dock until dispatch. Automation
+ * messages have no dock row, so their queued feedback stays visible in the
+ * timeline. Human turns cancelled from the dock must not reappear after refresh.
  */
 export function hiddenTimelineTurnIds(snapshot: ConversationSnapshot): Set<string> {
+	const humanPromptTurnIds = new Set<string>();
+	for (const item of snapshot.items) {
+		if (
+			item.kind === "message" &&
+			item.role === "user" &&
+			item.origin === "human" &&
+			item.turnId
+		) {
+			humanPromptTurnIds.add(item.turnId);
+		}
+	}
 	return new Set(
 		snapshot.turns
-			.filter((turn) => turn.state === "queued" || turn.state === "cancelled")
+			.filter(
+				(turn) =>
+					(turn.state === "queued" || turn.state === "cancelled") &&
+					humanPromptTurnIds.has(turn.id),
+			)
 			.map((turn) => turn.id),
 	);
 }

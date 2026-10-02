@@ -34,6 +34,15 @@ type fakeStore struct {
 	resolvedCommentIDs []string
 }
 
+type fakeNotificationSink struct {
+	intents []ports.NotificationIntent
+}
+
+func (f *fakeNotificationSink) Notify(_ context.Context, intent ports.NotificationIntent) error {
+	f.intents = append(f.intents, intent)
+	return nil
+}
+
 func (f *fakeStore) GetReviewByID(_ context.Context, id string) (domain.Review, bool, error) {
 	if f.reviewOK && f.review.ID == id {
 		return f.review, true, nil
@@ -447,6 +456,45 @@ func TestSubmitSnapshotsDisabledPolicyAndNeverDeliversOnRetry(t *testing.T) {
 	}
 	if run.Status != domain.ReviewRunComplete || run.AutoInjectReview || reducer.batchCalls != 0 || st.markCalls != 0 {
 		t.Fatalf("retry rewrote or delivered disabled review = %+v reducerCalls=%d markCalls=%d", run, reducer.batchCalls, st.markCalls)
+	}
+}
+
+func TestSubmitEmitsIdempotentReviewResultNotification(t *testing.T) {
+	st := &fakeStore{
+		ok:  true,
+		run: domain.ReviewRun{ID: "run-1", SessionID: "mer-1", PRURL: "https://github.com/acme/app/pull/42", Status: domain.ReviewRunRunning},
+		prs: []domain.PullRequest{{URL: "https://github.com/acme/app/pull/42", Number: 42, Title: "Fix checkout"}},
+	}
+	sink := &fakeNotificationSink{}
+	svc := New(nil, st, WithNotificationSink(sink))
+
+	for range 2 {
+		if _, err := svc.Submit(context.Background(), "mer-1", "run-1", domain.VerdictApproved, "looks good", "987"); err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+	}
+	if len(sink.intents) != 2 {
+		t.Fatalf("notification attempts = %d, want 2 so durable source-key dedupe can recover retries", len(sink.intents))
+	}
+	for _, intent := range sink.intents {
+		if intent.Type != domain.NotificationReviewCompleted || intent.SourceKey != "review_run:run-1" || intent.PRNumber != 42 || intent.PRTitle != "Fix checkout" {
+			t.Fatalf("notification intent = %+v", intent)
+		}
+	}
+}
+
+func TestSubmitEmitsChangesRequestedNotification(t *testing.T) {
+	st := &fakeStore{ok: true, run: domain.ReviewRun{
+		ID: "run-2", SessionID: "mer-1", PRURL: "https://github.com/acme/app/pull/43", Status: domain.ReviewRunRunning,
+	}}
+	sink := &fakeNotificationSink{}
+	svc := New(nil, st, WithNotificationSink(sink))
+
+	if _, err := svc.Submit(context.Background(), "mer-1", "run-2", domain.VerdictChangesRequested, "fix it", ""); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if len(sink.intents) != 1 || sink.intents[0].Type != domain.NotificationReviewChangesRequested {
+		t.Fatalf("notification intents = %+v", sink.intents)
 	}
 }
 

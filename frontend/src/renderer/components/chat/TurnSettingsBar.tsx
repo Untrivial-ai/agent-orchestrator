@@ -82,6 +82,8 @@ export function TurnSettingsBar({
 	models,
 	settings,
 	harness,
+	showApprovalMode = true,
+	approvalModes,
 	reroute,
 	onChange,
 	onRememberPermissions,
@@ -99,6 +101,9 @@ export function TurnSettingsBar({
 	settings: TurnSettings;
 	/** The active provider selects its own supported permission vocabulary. */
 	harness?: string;
+	/** Cloud permissions are fixed for the session, not a per-turn setting. */
+	showApprovalMode?: boolean;
+	approvalModes?: ApprovalMode[];
 	/**
 	 * The provider answered with a different model than the one chosen. Separate from
 	 * `settings` all the way down: settings are what the user asked for, this is what
@@ -182,7 +187,7 @@ export function TurnSettingsBar({
 			Remember for this project
 		</OptionMenuItem>
 	) : null;
-	const showRightDropdown = Boolean(children || (!planning && (onChange || modeOption)));
+	const showRightDropdown = Boolean(children || (!planning && ((showApprovalMode && onChange) || modeOption)));
 
 	return (
 		<div role="group" aria-label="Turn settings" className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -242,13 +247,13 @@ export function TurnSettingsBar({
 								onChange={(value) => applyOption(modeOption.id, value)}
 								footer={rememberAction}
 							/>
-						) : onChange ? (
+						) : showApprovalMode && onChange ? (
 							<Picker
 								label={approvalLabel}
 													title="Approval policy for the next turn"
 													disabled={optionDisabled}
 							>
-								{approvalOrder.map((mode) => (
+								{approvalOrder.filter((mode) => !approvalModes || approvalModes.includes(mode)).map((mode) => (
 									<OptionMenuItem
 										key={mode}
 										active={mode === (settings.approvalMode ?? "default")}

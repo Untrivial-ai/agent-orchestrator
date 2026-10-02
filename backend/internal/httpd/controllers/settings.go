@@ -116,5 +116,6 @@ func (c *SettingsController) response(snapshot settingssvc.Snapshot) SettingsRes
 		CloudOffering:        snapshot.CloudOffering,
 		CloudEnabled:         offering.CloudEnabled(snapshot),
 		CloudControlPlaneURL: offering.CloudControlPlaneURL,
+		TrackerIntakeEnabled: offering.TrackerIntakeEnabled,
 	}
 }

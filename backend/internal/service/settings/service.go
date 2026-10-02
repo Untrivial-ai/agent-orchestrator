@@ -46,6 +46,9 @@ type Offering struct {
 	// CloudControlPlaneURL is the cloud control plane base URL; empty when
 	// no control plane is configured.
 	CloudControlPlaneURL string
+	// TrackerIntakeEnabled reports the AO_TRACKER_INTAKE gate. Clients need it
+	// to avoid offering a per-project intake control the daemon will ignore.
+	TrackerIntakeEnabled bool
 }
 
 // OfferingFromConfig derives the offering gates from daemon config.
@@ -55,6 +58,7 @@ func OfferingFromConfig(cfg config.Config) Offering {
 		LocalEnabled:         cfg.LocalOffering,
 		CloudForced:          cfg.CloudOffering,
 		CloudControlPlaneURL: cfg.CloudControlPlaneURL,
+		TrackerIntakeEnabled: cfg.TrackerIntake,
 	}
 }
 

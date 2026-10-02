@@ -327,12 +327,22 @@ func (s *Server) disconnectGitHubUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) githubCallbackError(w http.ResponseWriter, r *http.Request, err error) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// A GitHub account already connected by another AO workspace is an expected,
+	// actionable outcome — render a specific page naming the account instead of
+	// the generic failure page, and do not log it as an unexpected error.
+	var ownedErr *postgres.InstallationOwnedByAnotherOrgError
+	if errors.As(err, &ownedErr) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write(s.github.InstallationConflictHTML(ownedErr.AccountLogin))
+		return
+	}
 	if !errors.Is(err, postgres.ErrInvalid) &&
 		!errors.Is(err, postgres.ErrForbidden) &&
-		!errors.Is(err, postgres.ErrNotFound) {
+		!errors.Is(err, postgres.ErrNotFound) &&
+		!errors.Is(err, postgres.ErrConflict) {
 		s.logger.Error("GitHub callback", "error", err, "request_id", requestID(r))
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusBadRequest)
 	_, _ = w.Write(s.github.CompletionHTML(false))
 }
@@ -489,7 +499,7 @@ func (s *Server) createGitHubProject(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 	if err != nil {
-		s.writeStoreError(w, r, err)
+		s.writeProjectStoreError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"project": toProjectResponse(project)})

@@ -763,12 +763,34 @@ describe("SessionsBoard", () => {
 		);
 		expect(within(noSignalCard).getByText("No signal").parentElement).toHaveAttribute(
 			"data-kanban-column",
-			"needs_review",
+			"building",
 		);
 		expect(within(draftCard).getByText("Draft PR").parentElement).toHaveAttribute(
 			"data-kanban-column",
 			"validating",
 		);
+	});
+
+	it("places a no-signal display status alongside idle even with a review column", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([
+				boardSession({
+					id: "no-signal-review",
+					title: "silent reviewer",
+					status: "review_pending",
+					kanbanColumn: "needs_review",
+					displayStatus: "No signal",
+				}),
+			])],
+			isError: false,
+		});
+
+		renderBoard("p1");
+		const card = screen.getByText("silent reviewer").closest('[data-testid="board-session-card"]') as HTMLElement;
+		expect(within(card).getByText("No signal").parentElement).toHaveAttribute("data-kanban-column", "building");
+		const building = screen.getAllByTestId("board-column").find((column) => column.dataset.column === "building");
+		expect(building).toBeDefined();
+		expect(within(building!).getByText("silent reviewer")).toBeInTheDocument();
 	});
 
 	it("keeps a PR-less exited session in the building lane with an Exited badge", () => {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -44,7 +45,7 @@ type Store interface {
 	ClaimGitHubWebhook(context.Context, string, time.Time) (domain.GitHubWebhookDelivery, error)
 	CompleteGitHubWebhook(context.Context, string, string) error
 	RetryGitHubWebhook(context.Context, string, string, string, time.Time, bool) error
-	GitHubInstallationRoute(context.Context, int64) (string, string, error)
+	GitHubInstallationRoutes(context.Context, int64) ([]domain.GitHubInstallationRoute, error)
 	GitHubInstallationByRoute(context.Context, string, string) (domain.GitHubInstallation, error)
 	ApplyGitHubInstallationEvent(context.Context, string, string, string) error
 	WorkerGitHubCheckoutContext(context.Context, string, string) (domain.GitHubCheckoutContext, error)
@@ -983,7 +984,9 @@ func (s *Service) processWebhook(
 	if delivery.GitHubInstallationID <= 0 {
 		return postgres.ErrInvalid
 	}
-	orgID, installationID, err := s.store.GitHubInstallationRoute(
+	// One GitHub App installation may be connected by several organizations, so
+	// a single delivery must be applied to every organization that routes it.
+	routes, err := s.store.GitHubInstallationRoutes(
 		ctx,
 		delivery.GitHubInstallationID,
 	)
@@ -993,8 +996,17 @@ func (s *Service) processWebhook(
 	switch delivery.Event {
 	case "pull_request", "check_suite", "check_run", "pull_request_review",
 		"pull_request_review_comment", "pull_request_review_thread", "status", "push":
-		return s.processSCMWebhook(ctx, orgID, delivery)
+		var processErr error
+		for _, route := range routes {
+			if err := s.processSCMWebhook(ctx, route.OrgID, delivery); err != nil {
+				processErr = errors.Join(processErr, err)
+			}
+		}
+		return processErr
 	case "installation":
+		// The installation's suspended/deleted state is a property of the GitHub
+		// installation itself, so resolve it once and apply it to every
+		// organization that connected the installation.
 		action := "unsuspend"
 		providerInstallation, err := s.client.GetInstallation(
 			ctx,
@@ -1010,25 +1022,48 @@ func (s *Service) processWebhook(
 		} else if providerInstallation.SuspendedAt != nil {
 			action = "suspend"
 		}
-		if err := s.store.ApplyGitHubInstallationEvent(
-			ctx,
-			orgID,
-			installationID,
-			action,
-		); err != nil {
-			return err
+		var processErr error
+		for _, route := range routes {
+			if err := s.store.ApplyGitHubInstallationEvent(
+				ctx,
+				route.OrgID,
+				route.InstallationID,
+				action,
+			); err != nil {
+				processErr = errors.Join(processErr, err)
+				continue
+			}
+			if action == "suspend" || action == "deleted" {
+				continue
+			}
+			if err := s.syncRoute(ctx, route); err != nil {
+				processErr = errors.Join(processErr, err)
+			}
 		}
-		if action == "suspend" || action == "deleted" {
-			return nil
-		}
+		return processErr
 	case "installation_repositories":
+		var processErr error
+		for _, route := range routes {
+			if err := s.syncRoute(ctx, route); err != nil {
+				processErr = errors.Join(processErr, err)
+			}
+		}
+		return processErr
 	default:
 		return postgres.ErrInvalid
 	}
+}
+
+// syncRoute loads one organization's installation record and reconciles its
+// repository grants.
+func (s *Service) syncRoute(
+	ctx context.Context,
+	route domain.GitHubInstallationRoute,
+) error {
 	installation, err := s.store.GitHubInstallationByRoute(
 		ctx,
-		orgID,
-		installationID,
+		route.OrgID,
+		route.InstallationID,
 	)
 	if err != nil {
 		return err
@@ -1148,9 +1183,33 @@ func (s *Service) completionHTML(success bool) []byte {
 		title = "GitHub connected"
 		message = "Return to AO. Your repositories will appear in the project picker as soon as they finish syncing. You can close this tab."
 	}
+	return renderCallbackHTML(title, message)
+}
+
+// InstallationConflictHTML renders the callback page shown when the GitHub
+// account the user tried to connect is already connected by a different AO
+// workspace. It names the GitHub account (public information the connecting
+// admin already has) but not the owning workspace, which is not disclosed
+// across the tenant boundary.
+func (s *Service) InstallationConflictHTML(accountLogin string) []byte {
+	subject := "This GitHub account"
+	if account := strings.TrimSpace(accountLogin); account != "" {
+		subject = "This GitHub account (" + account + ")"
+	}
+	return renderCallbackHTML(
+		"Already connected elsewhere",
+		subject+" is already connected to another AO workspace. Ask that workspace to"+
+			" disconnect it, or connect a different GitHub account.",
+	)
+}
+
+// renderCallbackHTML builds the plain callback page shared by every GitHub OAuth
+// completion outcome. Both the title and the message are HTML-escaped so a
+// value derived from GitHub (such as an account login) can be embedded safely.
+func renderCallbackHTML(title, message string) []byte {
 	return []byte(fmt.Sprintf(
 		`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title>
 <body style="font:15px -apple-system,system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.5rem;color:#111">
 <main><h1 style="font-size:1.25rem">%s</h1><p style="color:#555">%s</p></main></body></html>`,
-		title, title, message))
+		html.EscapeString(title), html.EscapeString(title), html.EscapeString(message)))
 }

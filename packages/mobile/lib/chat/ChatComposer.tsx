@@ -4,8 +4,8 @@ import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Image, Keyboard, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
-import Animated, { useAnimatedStyle } from "react-native-reanimated";
+import { ActivityIndicator, Image, Keyboard, PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import Animated, { Easing, interpolateColor, runOnJS, useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 import { useReanimatedKeyboardAnimation } from "react-native-keyboard-controller";
 import { haptics } from "../haptics";
 import type { Theme } from "../theme";
@@ -32,6 +32,8 @@ import type { RequestDockModel } from "./requestDockModel";
 import { createRequestGate } from "./requestGate";
 import { queuedConversationMessages } from "./timelineModel";
 import { userFacingError } from "../connectionError";
+import type { DashboardPR, SessionPRSummary } from "../api";
+import { PRReviewPrompt } from "./PRReviewPrompt";
 
 type Attachment =
 	| { id: string; kind: "image"; name: string; bytes: number; image: ChatImage }
@@ -60,6 +62,11 @@ const MAX_IMAGE_BYTES_TOTAL = 25 * 1024 * 1024;
 const SUPPORTED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/bmp"]);
 
 export function ChatComposer({
+	reviewPR,
+	reviewPRSummary,
+	reviewPRCollapsed,
+	onCollapseReviewPR,
+	onOpenReview,
 	sessionId,
 	snapshot,
 	skills,
@@ -91,6 +98,11 @@ export function ChatComposer({
 	onDismissRequest,
 	onRestoreRequest,
 }: {
+	reviewPR?: DashboardPR;
+	reviewPRSummary?: SessionPRSummary;
+	reviewPRCollapsed?: boolean;
+	onCollapseReviewPR?(): void;
+	onOpenReview?(): void;
 	sessionId: string;
 	snapshot: ConversationSnapshot;
 	skills: ChatSkill[];
@@ -136,6 +148,69 @@ export function ChatComposer({
 	// The keyboard's own progress, 0 closed to 1 open. This is the same value the
 	// keyboard is animating with, so the dock moves in lockstep with it.
 	const keyboard = useReanimatedKeyboardAnimation();
+	const reviewPromptAvailable = Boolean(reviewPR && onOpenReview);
+	const reviewCardDragY = useSharedValue(0);
+	const reviewCardHeaderHeight = useSharedValue(0);
+	const reviewCardHeaderMeasured = useSharedValue(false);
+	const wasReviewPromptCollapsed = useRef(Boolean(reviewPRCollapsed));
+	const reviewCardHeaderStyle = useAnimatedStyle(() => {
+		if (!reviewCardHeaderMeasured.value) return {};
+		const progress = Math.max(0, Math.min(reviewCardDragY.value / 180, 1));
+		return {
+			height: reviewCardHeaderHeight.value * (1 - progress),
+			opacity: 1 - progress,
+			transform: [{ translateY: -12 * progress }],
+		};
+	});
+	const finishReviewCardCollapse = useCallback(() => { onCollapseReviewPR?.(); }, [onCollapseReviewPR]);
+	const collapseReviewCard = useCallback(() => {
+		haptics.tap();
+		reviewCardDragY.value = withTiming(180, { duration: 150 }, (finished) => {
+			if (finished) runOnJS(finishReviewCardCollapse)();
+		});
+	}, [finishReviewCardCollapse, reviewCardDragY]);
+	const reviewCardPan = useMemo(() => PanResponder.create({
+		onMoveShouldSetPanResponderCapture: (_event, gesture) => gesture.dy > 5 && gesture.dy > Math.abs(gesture.dx),
+		onPanResponderTerminationRequest: () => false,
+		onPanResponderGrant: () => { reviewCardDragY.value = 0; },
+		onPanResponderMove: (_event, gesture) => { reviewCardDragY.value = Math.max(0, gesture.dy); },
+		onPanResponderRelease: (_event, gesture) => {
+			if (gesture.dy > 72) collapseReviewCard();
+			else reviewCardDragY.value = withSpring(0, { damping: 18, stiffness: 220 });
+		},
+		onPanResponderTerminate: () => {
+			if (reviewCardDragY.value > 72) collapseReviewCard();
+			else reviewCardDragY.value = withSpring(0, { damping: 18, stiffness: 220 });
+		},
+	}), [collapseReviewCard, reviewCardDragY]);
+	const reviewCardDragStyle = useAnimatedStyle(() => {
+		const progress = Math.max(0, Math.min(reviewCardDragY.value / 180, 1));
+		const expandedSurface = composerGlassSupported ? "transparent" : t.bgElevated;
+		return {
+			// Keep only the composer pill elevated while dragging. If this shell stays
+			// elevated too, it reads as a gray slab behind the composer until release.
+			backgroundColor: interpolateColor(progress, [0, 1], [expandedSurface, t.bgBase]),
+			borderColor: interpolateColor(progress, [0, 1], [t.accentBorder, t.bgBase]),
+			borderWidth: StyleSheet.hairlineWidth * (1 - progress),
+			borderRadius: 24 + (COMPOSER_RADIUS - 24) * progress,
+			paddingHorizontal: space.sm * (1 - progress),
+			paddingVertical: space.xs * (1 - progress),
+		};
+	});
+	const reviewCardGlassStyle = useAnimatedStyle(() => ({ opacity: 1 - Math.max(0, Math.min(reviewCardDragY.value / 180, 1)) }));
+	const reviewComposerSurfaceStyle = useAnimatedStyle(() => ({
+		backgroundColor: interpolateColor(Math.max(0, Math.min(reviewCardDragY.value / 180, 1)), [0, 1], ["transparent", t.bgElevated]),
+	}));
+	const reviewComposerGlassStyle = useAnimatedStyle(() => ({ opacity: Math.max(0, Math.min(reviewCardDragY.value / 180, 1)) }));
+	useEffect(() => {
+		if (reviewPRCollapsed) {
+			reviewCardDragY.value = 180;
+		} else if (wasReviewPromptCollapsed.current && reviewPromptAvailable) {
+			// Glide the card up from the composer shape without a spring or bounce.
+			reviewCardDragY.value = withTiming(0, { duration: 240, easing: Easing.out(Easing.cubic) });
+		}
+		wasReviewPromptCollapsed.current = Boolean(reviewPRCollapsed);
+	}, [reviewCardDragY, reviewPRCollapsed, reviewPromptAvailable]);
 	const dockRise = useAnimatedStyle(() => ({
 		transform: [{ translateY: (restingInset - KEYBOARD_DOCK_GAP) * keyboard.progress.value }],
 	}));
@@ -298,12 +373,14 @@ export function ChatComposer({
 		openingSuggestion.current = key;
 		void openPicker(suggestion.kind, suggestion);
 	}, [cursor, openPicker, pickerGate, text]);
-	return (
-		// The dock holds its resting inset at all times and rides the keyboard's own
-		// progress to close the difference, so its distance to the keyboard is
-		// `KEYBOARD_DOCK_GAP` at every frame of the animation rather than only once
-		// the keyboard has finished moving.
-		<Animated.View style={[styles.dock, { paddingBottom: restingInset }, dockRise]}>
+	const activeReviewPR = reviewPromptAvailable ? reviewPR : undefined;
+	const showReviewPrompt = Boolean(activeReviewPR);
+	const composerContents = (
+		<>
+				{activeReviewPR ? <Animated.View style={[styles.reviewCardHeader, reviewCardHeaderStyle]} onLayout={(event) => { if (!reviewCardHeaderMeasured.value && event.nativeEvent.layout.height > 0) { reviewCardHeaderHeight.value = event.nativeEvent.layout.height; reviewCardHeaderMeasured.value = true; } }}>
+					<PRReviewPrompt pr={activeReviewPR} summary={reviewPRSummary} onPress={onOpenReview ?? (() => {})} onCollapse={collapseReviewCard} />
+					<View style={styles.reviewDivider} />
+				</Animated.View> : null}
 			{voice.state === "starting" || voice.state === "recording" ? <View style={styles.voice}><Feather name="mic" size={12} color={t.red} /><Text style={styles.voiceText}>{voice.partial || (voice.state === "starting" ? "Keep holding…" : "Listening…")}</Text></View> : null}
 			{attachments.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.attachments}>{attachments.map((item) => <View key={item.id} style={styles.attachment}>{item.kind === "image" ? <Image accessibilityIgnoresInvertColors source={{ uri: `data:${item.image.mimeType};base64,${item.image.data}` }} style={styles.attachmentImage} /> : <Feather name="file-text" size={12} color={t.accent} />}<Text numberOfLines={1} style={styles.attachmentName}>{item.name}</Text><Pressable hitSlop={7} accessibilityLabel={`Remove ${item.name}`} onPress={() => { haptics.tap(); setAttachments((old) => old.filter((candidate) => candidate.id !== item.id)); }}><Feather name="x" size={12} color={t.textTertiary} /></Pressable></View>)}</ScrollView> : null}
 			{/* Composer-local only. Conversation and action failures are banners above
@@ -388,10 +465,10 @@ export function ChatComposer({
 				<Text numberOfLines={1} maxFontSizeMultiplier={fontScaleCap.chrome} style={styles.restoreText}>{request.title}</Text>
 				<Text maxFontSizeMultiplier={fontScaleCap.chrome} style={styles.restoreAction}>Answer</Text>
 			</Pressable> : null}
-			{requestCard ?? <View
-				style={[styles.composer, stopped && { opacity: 0.55 }]}
+			{requestCard ?? <Animated.View
+				style={[styles.composer, activeReviewPR && styles.reviewComposer, activeReviewPR && reviewComposerSurfaceStyle, stopped && { opacity: 0.55 }]}
 			>
-				<ComposerGlass radius={COMPOSER_RADIUS} />
+				{activeReviewPR ? <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, reviewComposerGlassStyle]}><ComposerGlass radius={COMPOSER_RADIUS} /></Animated.View> : <ComposerGlass radius={COMPOSER_RADIUS} />}
 				<ChatAttachmentMenu disabled={stopped} canAttachFile={Boolean(canEmbedFiles)} onChoosePhoto={() => void addImage()} onChooseFile={() => void addFile()} />
 				<TextInput
 					accessibilityLabel="Message the agent"
@@ -418,13 +495,32 @@ export function ChatComposer({
 				/>
 				<MicKey variant="plain" size={44} glyphSize={iconSize.lg} state={voice.state} mode={voice.mode} onPressIn={voice.pressIn} onPressOut={voice.pressOut} />
 				{primaryAction === "stop" ? <Pressable accessibilityRole="button" accessibilityLabel="Stop turn" accessibilityState={{ busy: interrupting, disabled: disabled || interrupting }} disabled={disabled || interrupting} onPress={() => { haptics.tap(); void onInterrupt(); }} style={[styles.stop, (disabled || interrupting) && { opacity: 0.55 }]}>{interrupting ? <ActivityIndicator size="small" color={t.textPrimary} /> : <Feather name="square" size={12} color={t.textPrimary} />}</Pressable> : <Pressable accessibilityRole="button" accessibilityLabel={active ? "Queue message" : "Send message"} accessibilityState={{ disabled: disabled || stopped || pending || submitting }} disabled={disabled || stopped || pending || submitting || (!text.trim() && attachments.length === 0)} onPress={() => { haptics.tap(); void submit("send"); }} style={({ pressed }) => [styles.send, pressed && { opacity: 0.8 }, (disabled || stopped || pending || submitting || (!text.trim() && attachments.length === 0)) && { opacity: 0.35 }]}>{pending || submitting ? <ActivityIndicator size="small" color={t.bgBase} /> : <Feather name="arrow-up" size={17} color={t.bgBase} />}</Pressable>}
-			</View>}
+			</Animated.View>}
+		</>
+	);
+	return (
+		// The dock holds its resting inset at all times and rides the keyboard's own
+		// progress to close the difference, so its distance to the keyboard is
+		// `KEYBOARD_DOCK_GAP` at every frame of the animation rather than only once
+		// the keyboard has finished moving.
+		<Animated.View style={[styles.dock, { paddingBottom: restingInset }, dockRise]}>
+			{showReviewPrompt ? <Animated.View style={[styles.reviewArea, styles.reviewAreaWithPrompt]}>
+				<Animated.View style={[styles.reviewContainer, reviewCardDragStyle]} {...(reviewPRCollapsed ? {} : reviewCardPan.panHandlers)}>
+					{activeReviewPR ? <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, reviewCardGlassStyle]}><ComposerGlass radius={24} /></Animated.View> : null}
+					{composerContents}
+				</Animated.View>
+			</Animated.View> : composerContents}
 		</Animated.View>
 	);
 }
 
 const makeStyles = (t: Theme) => StyleSheet.create({
 	dock: { paddingHorizontal: space.md, paddingTop: space.xs, gap: space.xs, backgroundColor: t.bgBase },
+	reviewArea: { width: "100%", gap: space.xs },
+	reviewAreaWithPrompt: { gap: 0 },
+	reviewDivider: { width: "100%", borderTopWidth: 1, borderTopColor: t.borderStrong },
+	reviewContainer: { width: "100%", paddingHorizontal: space.sm, paddingVertical: space.xs, backgroundColor: t.bgElevated, borderWidth: StyleSheet.hairlineWidth, borderColor: t.accentBorder, borderRadius: 24, borderCurve: "continuous", overflow: "hidden" },
+	reviewCardHeader: { overflow: "hidden" },
 	// Three things can share this row — the turn settings, the queued-message note
 	// and the context meter — and the settings label is the only one that can be
 	// long. It is the one that yields: `flex: 1` with `minWidth: 0` to allow the
@@ -445,6 +541,7 @@ const makeStyles = (t: Theme) => StyleSheet.create({
 	// text field grows above them. The pill grows around the row; the glass fills
 	// that pill rather than receiving a separately measured height.
 	composer: { minHeight: COMPOSER_HEIGHT, maxHeight: COMPOSER_MAX_HEIGHT, flexDirection: "row", alignItems: "flex-end", gap: space.xxs, paddingHorizontal: space.xs, paddingVertical: space.xs, backgroundColor: composerGlassSupported ? "transparent" : t.bgElevated, borderRadius: COMPOSER_RADIUS, borderCurve: "continuous" },
+	reviewComposer: { backgroundColor: "transparent" },
 	// The native content-size event grows this from its one-line resting height;
 	// at the cap, the multiline field scrolls while the controls remain in place.
 	input: { fontFamily: "Geist_400Regular", flex: 1, minHeight: COMPOSER_FIELD_HEIGHT, maxHeight: COMPOSER_FIELD_MAX_HEIGHT, color: t.textPrimary, fontSize: type.subheadline.fontSize, lineHeight: COMPOSER_LINE_HEIGHT, paddingVertical: space.md, textAlignVertical: "top" },

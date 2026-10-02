@@ -343,6 +343,7 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersClaimPRRequest":                           "ClaimPRRequest",
 	"ControllersSessionPRFacts":                           "SessionPRFacts",
 	"ControllersSessionPRSummary":                         "SessionPRSummary",
+	"ControllersSessionPRReference":                       "SessionPRReference",
 	"ControllersSessionPRCISummary":                       "SessionPRCISummary",
 	"ControllersSessionPRFailingCheck":                    "SessionPRFailingCheck",
 	"ControllersSessionPRReviewSummary":                   "SessionPRReviewSummary",

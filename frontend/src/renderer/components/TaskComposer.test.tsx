@@ -14,6 +14,8 @@ const h = vi.hoisted(() => ({
 	agentValues: [] as string[],
 	agentCatalog: undefined as { agents: ReturnType<typeof import("../test/agent-readiness-fixtures").agentReadiness>[] } | undefined,
 	cloudProjects: [] as Array<{ id: string; displayName: string; repositoryUrl: string; defaultBranch: string; config: Record<string, unknown> }>,
+	cloudCreateSession: vi.fn(),
+	cloudProviders: ["docker"] as string[],
 }));
 
 vi.mock("../hooks/useAgentReadinessQuery", async (importOriginal) => {
@@ -32,11 +34,13 @@ vi.mock("./CreateProjectAgentSheet", () => ({
 		onChange,
 		triggerClassName,
 		disabled,
+		manageView,
 	}: {
 		value: string;
 		onChange: (value: string) => void;
 		triggerClassName?: string;
 		disabled?: boolean;
+		manageView?: "local" | "cloud";
 	}) => {
 		h.agentValues.push(value);
 		return (
@@ -46,6 +50,7 @@ vi.mock("./CreateProjectAgentSheet", () => ({
 				className={triggerClassName}
 				data-testid="agent-field"
 				data-value={value}
+				data-manage-view={manageView}
 				disabled={disabled}
 				onClick={() => onChange(value === "codex" ? "claude-code" : "codex")}
 			/>
@@ -73,17 +78,22 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 }));
 
 vi.mock("../hooks/useCloudOrg", () => ({
-	useCloudOrg: () => ({ org: undefined }),
+	useCloudOrg: () => ({ org: { id: "org-1" } }),
 }));
 
 vi.mock("../hooks/useCloudCp", () => ({
-	useCloudCp: () => ({ client: undefined }),
+	useCloudCp: () => ({ client: { createSession: h.cloudCreateSession } }),
+}));
+
+vi.mock("../hooks/useCloudSandboxProviders", () => ({
+	useCloudSandboxProviders: () => ({ available: h.cloudProviders }),
 }));
 
 
 import { TaskComposer } from "./TaskComposer";
 import { agentReadiness } from "../test/agent-readiness-fixtures";
 import { agentReadinessQueryKey } from "../hooks/useAgentReadinessQuery";
+import { useSandboxProviderStore } from "../stores/sandbox-provider-store";
 
 function Wrap({ children, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }) }: {
 	children: ReactNode;
@@ -125,6 +135,10 @@ afterEach(() => {
 	h.ensureTargetedReadiness.mockReset();
 	h.agentCatalog = undefined;
 	h.cloudProjects.length = 0;
+	h.cloudCreateSession.mockReset();
+	h.cloudProviders = ["docker"];
+	window.localStorage.removeItem("ao.cloud.sandboxProvider");
+	useSandboxProviderStore.setState({ selectedProvider: null });
 	vi.unstubAllGlobals();
 	h.agentValues.length = 0;
 	window.localStorage.removeItem("ao.taskComposer.preferences.v1");
@@ -897,6 +911,17 @@ describe("TaskComposer", () => {
 		expect(body.attachments?.[0].data.length).toBeGreaterThan(0);
 	});
 
+	it("manages cloud harness connections from a cloud project's agent picker", async () => {
+		h.cloudProjects.push({ id: "cloud-1", displayName: "Cloud", repositoryUrl: "https://example.com/repo", defaultBranch: "main", config: {} });
+		const { unmount } = render(<Wrap><TaskComposer projectId="cloud-1" onCreated={vi.fn()} /></Wrap>);
+		// Only connected harnesses, with "Manage harness connections…" (Harness settings' Cloud view).
+		expect(await screen.findByLabelText("Agent")).toHaveAttribute("data-manage-view", "cloud");
+		unmount();
+
+		render(<Wrap><TaskComposer projectId="proj-1" onCreated={vi.fn()} /></Wrap>);
+		expect(await screen.findByLabelText("Agent")).toHaveAttribute("data-manage-view", "local");
+	});
+
 	it("rejects cloud task attachments instead of silently dropping them", async () => {
 		h.cloudProjects.push({ id: "cloud-1", displayName: "Cloud", repositoryUrl: "https://example.com/repo", defaultBranch: "main", config: {} });
 		const onCreated = vi.fn();
@@ -912,6 +937,21 @@ describe("TaskComposer", () => {
 		expect(await screen.findByRole("alert")).toHaveTextContent("File attachments are not supported for cloud tasks yet.");
 		expect(onCreated).not.toHaveBeenCalled();
 		expect(h.post).not.toHaveBeenCalled();
+	});
+
+	it("uses the control plane default when a saved sandbox provider is unavailable", async () => {
+		h.cloudProjects.push({ id: "cloud-1", displayName: "Cloud", repositoryUrl: "https://example.com/repo", defaultBranch: "main", config: {} });
+		useSandboxProviderStore.getState().setSelectedProvider("coder");
+		h.cloudCreateSession.mockResolvedValue({ session: { id: "session-1" } });
+		const onCreated = vi.fn();
+		render(<Wrap><TaskComposer projectId="cloud-1" onCreated={onCreated} /></Wrap>);
+
+		fireEvent.change(task(), { target: { value: "Fix the bug" } });
+		await waitForTaskReady();
+		fireEvent.click(startTask());
+
+		await waitFor(() => expect(onCreated).toHaveBeenCalledWith("session-1"));
+		expect(h.cloudCreateSession).toHaveBeenCalledWith("org-1", expect.not.objectContaining({ provider: "coder" }));
 	});
 
 	it("waits for a selected file read before submitting", async () => {
@@ -1414,7 +1454,7 @@ describe("TaskComposer", () => {
 		);
 
 		const picker = await screen.findByRole("button", { name: "Model" });
-		expect(picker).toHaveTextContent("Model not reported");
+		expect(picker).toHaveTextContent("Select model");
 
 		await userEvent.click(picker);
 		expect(await screen.findByRole("menuitem", { name: "GPT-5" })).toBeInTheDocument();

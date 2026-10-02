@@ -95,6 +95,44 @@ func (s *Service) ListPRSummaries(ctx context.Context, id domain.SessionID) ([]P
 	return out, nil
 }
 
+// PRListing keeps reported references separate from SCM facts and actions.
+type PRListing struct {
+	Tracked []PRSummary
+	Linked  []domain.ChangeRequestReference
+}
+
+// ListPRListing combines tracked PRs with created PRs reported by the worker.
+func (s *Service) ListPRListing(ctx context.Context, id domain.SessionID) (PRListing, error) {
+	tracked, err := s.ListPRSummaries(ctx, id)
+	if err != nil {
+		return PRListing{}, err
+	}
+	urls, err := s.store.ListReportedPRURLs(ctx, id)
+	if err != nil {
+		return PRListing{}, err
+	}
+	seen := make(map[string]bool, len(tracked)+len(urls))
+	for _, pr := range tracked {
+		ref, err := domain.ParseChangeRequestURL(pr.HTMLURL)
+		if err != nil {
+			ref, err = domain.ParseChangeRequestURL(pr.URL)
+		}
+		if err == nil {
+			seen[ref.Key()] = true
+		}
+	}
+	linked := make([]domain.ChangeRequestReference, 0, len(urls))
+	for _, raw := range urls {
+		ref, err := domain.ParseChangeRequestURL(raw)
+		if err != nil || seen[ref.Key()] {
+			continue
+		}
+		seen[ref.Key()] = true
+		linked = append(linked, ref)
+	}
+	return PRListing{Tracked: tracked, Linked: linked}, nil
+}
+
 func summarizePR(pr domain.PullRequest, checks []domain.PullRequestCheck, reviews []domain.PullRequestReview, threads []domain.PullRequestReviewThread, comments []domain.PullRequestComment, threadsExact bool) PRSummary {
 	return PRSummary{
 		URL:              pr.URL,

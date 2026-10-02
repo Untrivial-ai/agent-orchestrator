@@ -21,6 +21,8 @@ const screenRoutes = [
 	"pair.tsx",
 	"preview/[id].tsx",
 	"project/[id].tsx",
+	"review/[sessionId].tsx",
+	"reviewer/[reviewId].tsx",
 	"session/[id].tsx",
 	"settings.tsx",
 	"shell/[handleId].tsx",
@@ -37,6 +39,7 @@ const sheetRoutes = [
 	"sheets/conversation-rename.tsx",
 	"sheets/model.tsx",
 	"sheets/project.tsx",
+	"sheets/review-actions.tsx",
 	"sheets/store-update.tsx",
 ];
 

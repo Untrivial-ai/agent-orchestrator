@@ -90,6 +90,8 @@ type Config struct {
 	// replaces the input/output polling loops. Off means the polled
 	// store-and-forward behavior, byte for byte.
 	TerminalStreamEnabled bool
+	// InterfaceHandoffInterval is how often the durable controller handoff runs.
+	InterfaceHandoffInterval time.Duration
 	// TerminalRelayEnabled forwards terminal output to an attached browser
 	// directly from the worker stream, before the same frame is mirrored to
 	// durable replay storage.
@@ -221,12 +223,18 @@ func Load() (Config, error) {
 		WorkerHelperBinaryPath: strings.TrimSpace(os.Getenv("AO_CLOUD_WORKER_HELPER_BINARY_PATH")),
 		MaxSandboxesPerOrg:     intEnvOrDefault("AO_CLOUD_MAX_ACTIVE_SANDBOXES_PER_ORG", 1000),
 		ReconcileInterval:      durationEnv("AO_CLOUD_SANDBOX_RECONCILE_INTERVAL", 2*time.Second),
-		SandboxStartupTimeout:  durationEnv("AO_CLOUD_SANDBOX_STARTUP_TIMEOUT", 3*time.Minute),
-		WorkerHeartbeatTimeout: durationEnv("AO_CLOUD_WORKER_HEARTBEAT_TIMEOUT", time.Minute),
-		IdlePauseInterval:      durationEnv("AO_CLOUD_IDLE_PAUSE_INTERVAL", defaultIdlePauseInterval),
-		IdlePauseThreshold:     durationEnv("AO_CLOUD_IDLE_PAUSE_THRESHOLD", defaultIdlePauseThreshold),
-		PRStatusPollInterval:   durationEnv("AO_CLOUD_PR_STATUS_POLL_INTERVAL", defaultPRStatusPollInterval),
-		PRWebhookSilenceGrace:  durationEnv("AO_CLOUD_PR_WEBHOOK_SILENCE_GRACE", defaultPRWebhookSilenceGrace),
+		// Cold coder/Azure VMs routinely need >3 min to first-heartbeat (VM boot +
+		// snap/lxd, a fresh durable-disk mkfs, harness warming), which tripped the
+		// old 3m budget and triggered a needless worker reinstall mid-startup. This
+		// is the value the reconciler actually uses (it overrides the
+		// DefaultStartupTimeout fallback), so it is the one that has to change.
+		SandboxStartupTimeout:    durationEnv("AO_CLOUD_SANDBOX_STARTUP_TIMEOUT", 6*time.Minute),
+		WorkerHeartbeatTimeout:   durationEnv("AO_CLOUD_WORKER_HEARTBEAT_TIMEOUT", time.Minute),
+		IdlePauseInterval:        durationEnv("AO_CLOUD_IDLE_PAUSE_INTERVAL", defaultIdlePauseInterval),
+		IdlePauseThreshold:       durationEnv("AO_CLOUD_IDLE_PAUSE_THRESHOLD", defaultIdlePauseThreshold),
+		PRStatusPollInterval:     durationEnv("AO_CLOUD_PR_STATUS_POLL_INTERVAL", defaultPRStatusPollInterval),
+		PRWebhookSilenceGrace:    durationEnv("AO_CLOUD_PR_WEBHOOK_SILENCE_GRACE", defaultPRWebhookSilenceGrace),
+		InterfaceHandoffInterval: durationEnv("AO_CLOUD_INTERFACE_HANDOFF_INTERVAL", 500*time.Millisecond),
 
 		NodeOpsBaseURL:         strings.TrimSpace(os.Getenv("AO_CLOUD_NODEOPS_BASE_URL")),
 		NodeOpsAPIKey:          strings.TrimSpace(os.Getenv("AO_CLOUD_NODEOPS_API_KEY")),
@@ -503,6 +511,9 @@ func Load() (Config, error) {
 	}
 	if cfg.PRStatusPollInterval <= 0 {
 		return Config{}, errors.New("AO_CLOUD_PR_STATUS_POLL_INTERVAL must be positive")
+	}
+	if cfg.InterfaceHandoffInterval <= 0 {
+		return Config{}, errors.New("AO_CLOUD_INTERFACE_HANDOFF_INTERVAL must be positive")
 	}
 	if cfg.PRWebhookSilenceGrace <= 0 {
 		return Config{}, errors.New("AO_CLOUD_PR_WEBHOOK_SILENCE_GRACE must be positive")
