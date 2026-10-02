@@ -48,6 +48,7 @@ export function GlobalNewTaskDialog() {
 		<NewTaskDialog
 			open={open}
 			projectId={projectId}
+			onProjectChange={setProjectId}
 			onCreated={(sessionId) => void handleCreated(sessionId)}
 			onOpenChange={setOpen}
 		/>
