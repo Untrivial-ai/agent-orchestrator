@@ -837,6 +837,13 @@ func (m *Service) Remove(ctx context.Context, id domain.ProjectID) (RemoveResult
 			return RemoveResult{}, err
 		}
 	}
+	// Teardown swallows per-session failures into its skip report and returns
+	// nil, so an exhausted request deadline only surfaces here. Archive on a
+	// dead context would fail anyway; return the cause raw so the API layer
+	// maps it to a retryable 503 instead of a generic 500.
+	if err := ctx.Err(); err != nil {
+		return RemoveResult{}, err
+	}
 	ok, err = m.store.ArchiveProject(ctx, string(id), time.Now())
 	if err != nil {
 		return RemoveResult{}, apierr.Internal("PROJECT_REMOVE_FAILED", "Failed to remove project")
