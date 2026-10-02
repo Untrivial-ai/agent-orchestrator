@@ -654,6 +654,25 @@ describe("SessionInspector PR section", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("runs a review for the card's own PR", async () => {
+    renderWithQuery(
+      <SessionInspector session={session([pr(7, "open")])} />,
+      undefined,
+      (client) => {
+        seedPRSummaries(client, [prSummary(7, "open")]);
+      },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Run review for PR #7" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/reviews/trigger", {
+        params: { path: { sessionId: "sess-1" } },
+        body: { prUrl: "https://api.github.com/repos/acme/repo/pulls/7" },
+      }),
+    );
+  });
+
   it("merges a ready cloud pull request through the control plane", async () => {
     const requests: Array<{ path: string; method: string; body?: string }> = [];
     const originalBridge = (window as unknown as { aoBridge?: unknown }).aoBridge;

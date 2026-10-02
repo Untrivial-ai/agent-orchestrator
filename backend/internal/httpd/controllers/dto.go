@@ -2896,6 +2896,7 @@ func capabilityNames(caps ports.ChatCapabilities) []string {
 type TriggerReviewRequest struct {
 	Harness     domain.ReviewerHarness `json:"harness,omitempty" enum:"claude-code,codex,copilot,cursor,kilocode,opencode,opencode-v2,kiro,pi,agy,devin,droid,kimi,kimchi,muse,amp,aider,grok,crush,auggie,cline,autohand"`
 	AgentConfig domain.AgentConfig     `json:"agentConfig,omitempty"`
+	PRURL       string                 `json:"prUrl,omitempty" description:"Restrict the pass to this pull request. Omit to review every eligible PR on the session."`
 }
 
 // ResolveReviewCommentRequest is the body of POST /api/v1/sessions/{sessionId}/reviews/comments/resolve.

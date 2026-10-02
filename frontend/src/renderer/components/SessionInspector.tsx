@@ -1342,6 +1342,23 @@ function PRSummaryCard({
 		},
 	});
 	const mergeError = mergePr.error instanceof Error ? mergePr.error.message : null;
+	// Review runs are per-PR now: the trigger carries this card's PR URL so a
+	// multi-PR session reviews the PR the button belongs to, not every PR.
+	const canReview = pr.state === "open" || pr.state === "draft";
+	const runReview = useMutation({
+		mutationFn: async () => {
+			if (usePreviewData) return;
+			const { error } = await apiClient.POST("/api/v1/sessions/{sessionId}/reviews/trigger", {
+				params: { path: { sessionId } },
+				body: { prUrl: pr.url },
+			});
+			if (error) throw new Error(apiErrorMessage(error, t("inspector.unableStartReview")));
+		},
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: ["session-reviews", sessionId] });
+			void queryClient.invalidateQueries({ queryKey: workspaceQueryKey });
+		},
+	});
 	const viewModel: InspectorPullRequest = {
 		...pr,
 		card: presentation,
@@ -1359,28 +1376,53 @@ function PRSummaryCard({
 			externalIcon={<ArrowUpRight aria-hidden="true" className="size-icon-2xs shrink-0" strokeWidth={2} />}
 			externalLink={ProductExternalLink}
 			mergeAction={
-				canMerge ? (
-					<Button
-						aria-label={t("pr.merge.actionFor", { number: pr.number })}
-						className="gap-1 bg-success px-2 text-xs text-background hover:bg-success/80"
-						disabled={mergePr.isPending}
-						onClick={() => mergePr.mutate()}
-						size="sm"
-						type="button"
-					>
-						{mergePr.isPending ? (
-							<Loader2 className="size-icon-sm animate-spin" aria-hidden="true" />
-						) : (
-							<GitMerge className="size-icon-sm" aria-hidden="true" />
-						)}
-						{mergePr.isPending ? t("pr.merge.merging") : t("pr.merge.action")}
-					</Button>
-				) : undefined
+				<>
+					{canReview ? (
+						<Button
+							aria-label={t("pr.review.runFor", { number: pr.number })}
+							className="gap-1 px-2 text-xs"
+							disabled={runReview.isPending}
+							onClick={() => runReview.mutate()}
+							size="sm"
+							type="button"
+							variant="outline"
+						>
+							{runReview.isPending ? (
+								<Loader2 className="size-icon-sm animate-spin" aria-hidden="true" />
+							) : (
+								<Play className="size-icon-sm" aria-hidden="true" />
+							)}
+							{runReview.isPending ? t("inspector.review.reviewing") : t("inspector.review.run")}
+						</Button>
+					) : undefined}
+					{canMerge ? (
+						<Button
+							aria-label={t("pr.merge.actionFor", { number: pr.number })}
+							className="gap-1 bg-success px-2 text-xs text-background hover:bg-success/80"
+							disabled={mergePr.isPending}
+							onClick={() => mergePr.mutate()}
+							size="sm"
+							type="button"
+						>
+							{mergePr.isPending ? (
+								<Loader2 className="size-icon-sm animate-spin" aria-hidden="true" />
+							) : (
+								<GitMerge className="size-icon-sm" aria-hidden="true" />
+							)}
+							{mergePr.isPending ? t("pr.merge.merging") : t("pr.merge.action")}
+						</Button>
+					) : undefined}
+				</>
 			}
 			mergeError={mergeError}
 			openLabel={t("inspector.openPR", { number: pr.number })}
 			pr={viewModel}
 			pullRequestIcon={<GitPullRequest className="size-icon-sm shrink-0" aria-hidden="true" />}
+			statusNotice={runReview.error instanceof Error ? (
+				<p className="text-2xs leading-normal text-error" role="status">
+					{runReview.error.message}
+				</p>
+			) : undefined}
 		/>
 	);
 }

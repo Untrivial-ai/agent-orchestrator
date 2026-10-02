@@ -302,16 +302,18 @@ func newReviewCancelCommand(ctx *commandContext) *cobra.Command {
 
 func newReviewTriggerCommand(ctx *commandContext) *cobra.Command {
 	var opts reviewSessionOptions
+	var prURL string
 	cmd := &cobra.Command{
 		Use:     "trigger [worker-session-id]",
 		Aliases: []string{"execute", "restart"},
 		Short:   "Trigger a new review pass for a worker's PR",
 		Args:    atMostOneArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return ctx.restartReview(cmd, args, opts)
+			return ctx.restartReview(cmd, args, opts, prURL)
 		},
 	}
 	cmd.Flags().StringVar(&opts.session, "session", "", "Worker session id (or pass it as the positional argument)")
+	cmd.Flags().StringVar(&prURL, "pr", "", "Review only this pull request URL (default: every eligible PR on the session)")
 	return cmd
 }
 
@@ -331,7 +333,7 @@ func (c *commandContext) stopReview(cmd *cobra.Command, args []string, opts revi
 	return err
 }
 
-func (c *commandContext) restartReview(cmd *cobra.Command, args []string, opts reviewSessionOptions) error {
+func (c *commandContext) restartReview(cmd *cobra.Command, args []string, opts reviewSessionOptions, prURL string) error {
 	session := strings.TrimSpace(opts.session)
 	if len(args) == 1 {
 		session = strings.TrimSpace(args[0])
@@ -343,7 +345,10 @@ func (c *commandContext) restartReview(cmd *cobra.Command, args []string, opts r
 	// Decode the response so we can tell whether a new pass was started or an
 	// existing run for the same commit was reused, and report it accurately.
 	var res triggerReviewResponse
-	if err := c.postJSON(cmd.Context(), path, struct{}{}, &res); err != nil {
+	body := struct {
+		PRURL string `json:"prUrl,omitempty"`
+	}{PRURL: strings.TrimSpace(prURL)}
+	if err := c.postJSON(cmd.Context(), path, body, &res); err != nil {
 		return err
 	}
 	msg := "reused the existing review for %s\n"

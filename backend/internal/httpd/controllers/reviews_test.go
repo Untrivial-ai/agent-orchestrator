@@ -43,6 +43,7 @@ type fakeReviewService struct {
 	resolvePRURL      string
 	resolveCommentURL string
 	resolveErr        error
+	triggeredPRURL    string
 }
 
 func (*fakeReviewService) RecoverChatReviewers(context.Context) error { return nil }
@@ -52,9 +53,11 @@ func (f *fakeReviewService) Trigger(
 	_ domain.SessionID,
 	harness domain.ReviewerHarness,
 	config domain.AgentConfig,
+	prURL string,
 ) (reviewcore.TriggerResult, error) {
 	f.triggeredHarness = harness
 	f.triggeredConfig = config
+	f.triggeredPRURL = prURL
 	if f.triggerErr != nil {
 		return reviewcore.TriggerResult{}, f.triggerErr
 	}
@@ -178,6 +181,16 @@ func TestReviewsTrigger_UnauthenticatedReviewerReturns409(t *testing.T) {
 	mustJSON(t, body, &got)
 	if got.Message != "The reviewer agent is installed but not authenticated" {
 		t.Fatalf("message = %q", got.Message)
+	}
+}
+
+func TestReviewsTrigger_PassesPRURLThrough(t *testing.T) {
+	svc := &fakeReviewService{}
+	srv := newReviewTestServer(t, svc)
+
+	doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/trigger", `{"prUrl":"https://github.com/o/r/pull/2"}`)
+	if svc.triggeredPRURL != "https://github.com/o/r/pull/2" {
+		t.Fatalf("trigger prUrl = %q, want the request body value", svc.triggeredPRURL)
 	}
 }
 

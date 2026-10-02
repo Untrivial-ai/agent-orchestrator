@@ -878,7 +878,7 @@ func TestTriggerReportsWhoStartedThePass(t *testing.T) {
 		want string
 	}{
 		{"manual", func(s *Service) error {
-			_, err := s.Trigger(context.Background(), "worker-1", "", domain.AgentConfig{})
+			_, err := s.Trigger(context.Background(), "worker-1", "", domain.AgentConfig{}, "")
 			return err
 		}, "manual"},
 		{"auto", func(s *Service) error {
@@ -891,7 +891,7 @@ func TestTriggerReportsWhoStartedThePass(t *testing.T) {
 			sink := &recordingSink{}
 			svc := New(nil, &fakeStore{}, WithTelemetry(sink))
 			svc.engineTrigger = func(
-				_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
+				_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource, _ string,
 			) (reviewcore.TriggerResult, error) {
 				return reviewcore.TriggerResult{
 					Run:         domain.ReviewRun{Harness: "claude-code"},
@@ -919,7 +919,7 @@ func TestTriggerFailureReportsWhichPassFailed(t *testing.T) {
 	sink := &recordingSink{}
 	svc := New(nil, &fakeStore{}, WithTelemetry(sink))
 	svc.engineTrigger = func(
-		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
+		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource, _ string,
 	) (reviewcore.TriggerResult, error) {
 		return reviewcore.TriggerResult{}, fmt.Errorf("%w: no PR", reviewcore.ErrInvalid)
 	}
@@ -946,13 +946,13 @@ func TestTriggerRejectsInvalidReviewerConfigBeforeEngine(t *testing.T) {
 	svc := New(nil, &fakeStore{}, WithTelemetry(sink))
 	called := false
 	svc.engineTrigger = func(
-		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
+		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource, _ string,
 	) (reviewcore.TriggerResult, error) {
 		called = true
 		return reviewcore.TriggerResult{}, nil
 	}
 
-	if _, err := svc.Trigger(context.Background(), "worker-1", "", domain.AgentConfig{Mode: "turbo"}); !errors.Is(err, ErrInvalid) {
+	if _, err := svc.Trigger(context.Background(), "worker-1", "", domain.AgentConfig{Mode: "turbo"}, ""); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("err = %v, want ErrInvalid", err)
 	}
 	if called {
@@ -1002,12 +1002,12 @@ func TestRestartedManualPassIsNotReportedAsReused(t *testing.T) {
 	sink := &recordingSink{}
 	svc := New(nil, &fakeStore{}, WithTelemetry(sink))
 	svc.engineTrigger = func(
-		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
+		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource, _ string,
 	) (reviewcore.TriggerResult, error) {
 		return reviewcore.TriggerResult{Run: domain.ReviewRun{Harness: "codex"}, Created: true, CreatedRuns: nil}, nil
 	}
 
-	if _, err := svc.Trigger(context.Background(), "worker-1", "", domain.AgentConfig{Model: "gpt-5-mini"}); err != nil {
+	if _, err := svc.Trigger(context.Background(), "worker-1", "", domain.AgentConfig{Model: "gpt-5-mini"}, ""); err != nil {
 		t.Fatalf("Trigger: %v", err)
 	}
 	got := sink.named("ao.review.triggered")
@@ -1023,12 +1023,12 @@ func TestReusedManualPassStaysATrigger(t *testing.T) {
 	sink := &recordingSink{}
 	svc := New(nil, &fakeStore{}, WithTelemetry(sink))
 	svc.engineTrigger = func(
-		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
+		_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource, _ string,
 	) (reviewcore.TriggerResult, error) {
 		return reviewcore.TriggerResult{Run: domain.ReviewRun{Harness: "codex"}, CreatedRuns: nil}, nil
 	}
 
-	if _, err := svc.Trigger(context.Background(), "worker-1", "", domain.AgentConfig{}); err != nil {
+	if _, err := svc.Trigger(context.Background(), "worker-1", "", domain.AgentConfig{}, ""); err != nil {
 		t.Fatalf("Trigger: %v", err)
 	}
 	got := sink.named("ao.review.triggered")
@@ -1064,7 +1064,7 @@ func TestReusedOrSkippedAutoPassStillCountsAsTriggered(t *testing.T) {
 			sink := &recordingSink{}
 			svc := New(nil, &fakeStore{}, WithTelemetry(sink))
 			svc.engineTrigger = func(
-				_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource,
+				_ context.Context, _ domain.SessionID, _ domain.ReviewerHarness, _ domain.AgentConfig, _ domain.ReviewTriggerSource, _ string,
 			) (reviewcore.TriggerResult, error) {
 				return c.result, nil
 			}

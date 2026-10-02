@@ -5039,6 +5039,8 @@ export interface components {
             agentConfig?: components["schemas"]["AgentConfig"];
             /** @enum {string} */
             harness?: "claude-code" | "codex" | "copilot" | "cursor" | "kilocode" | "opencode" | "opencode-v2" | "kiro" | "pi" | "agy" | "devin" | "droid" | "kimi" | "kimchi" | "muse" | "amp" | "aider" | "grok" | "crush" | "auggie" | "cline" | "autohand";
+            /** @description Restrict the pass to this pull request. Omit to review every eligible PR on the session. */
+            prUrl?: string;
         };
         TriggerReviewResponse: {
             /** @description True when a new review pass was started; false when an existing run for the same commit was reused. */

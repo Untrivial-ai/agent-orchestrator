@@ -14427,6 +14427,10 @@ components:
           - cline
           - autohand
           type: string
+        prUrl:
+          description: Restrict the pass to this pull request. Omit to review every
+            eligible PR on the session.
+          type: string
       type: object
     TriggerReviewResponse:
       properties:
