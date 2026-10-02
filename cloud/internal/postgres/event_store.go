@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strconv"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
@@ -38,7 +37,8 @@ var clientEventTypes = []string{
 }
 
 type chatMessagePayload struct {
-	Text string `json:"text"`
+	Text   string `json:"text"`
+	Origin string `json:"origin,omitempty"`
 	domain.ChatTurnSettings
 }
 
@@ -539,7 +539,7 @@ func appendUserMessageEvent(
 	if len(selected) > 0 {
 		settings = selected[0]
 	}
-	payload, err := json.Marshal(chatMessagePayload{Text: text, ChatTurnSettings: settings})
+	payload, err := json.Marshal(chatMessagePayload{Text: text, Origin: "human", ChatTurnSettings: settings})
 	if err != nil {
 		return domain.ClientEvent{}, err
 	}
@@ -616,31 +616,41 @@ func (s *Store) ListClientEvents(
 			return err
 		}
 		rows.Close()
-		needsAttribution := false
-		for _, event := range events {
-			if event.Type == "chat.user_message" {
-				needsAttribution = true
-				break
+		legacySequences := make([]int64, 0)
+		bySequence := make(map[int64]*domain.ClientEvent)
+		for i := range events {
+			event := &events[i]
+			if event.Type != "chat.user_message" {
+				continue
 			}
+			var payload struct {
+				Origin string `json:"origin"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return err
+			}
+			if payload.Origin == "human" || payload.Origin == "automation" {
+				continue
+			}
+			legacySequences = append(legacySequences, event.Sequence)
+			bySequence[event.Sequence] = event
 		}
-		if !needsAttribution {
+		if len(legacySequences) == 0 {
 			return nil
 		}
 		// Older reports already have durable actor attribution in their audit row.
 		// Recover it without guessing from user-editable message prefixes.
-		audits, err := tx.Query(ctx, `SELECT metadata->>'sequence', metadata->>'actorSessionId'
-			FROM ao_audit_events WHERE org_id=$1 AND resource_id=$2 AND action='session.message_queued'
-			AND metadata ? 'actorSessionId' AND (metadata->>'sequence')::bigint BETWEEN $3 AND $4`, orgID, sessionID, events[0].Sequence, events[len(events)-1].Sequence)
+		audits, err := tx.Query(ctx, `SELECT (metadata->>'sequence')::bigint, metadata->>'actorSessionId'
+			FROM ao_audit_events WHERE org_id=$1 AND resource_id=$2
+			AND resource_type='session' AND action='session.message_queued'
+			AND metadata ? 'actorSessionId' AND (metadata->>'sequence')::bigint = ANY($3::bigint[])`, orgID, sessionID, legacySequences)
 		if err != nil {
 			return err
 		}
 		defer audits.Close()
-		bySequence := make(map[string]*domain.ClientEvent, len(events))
-		for i := range events {
-			bySequence[strconv.FormatInt(events[i].Sequence, 10)] = &events[i]
-		}
 		for audits.Next() {
-			var sequence, source string
+			var sequence int64
+			var source string
 			if err := audits.Scan(&sequence, &source); err != nil {
 				return err
 			}

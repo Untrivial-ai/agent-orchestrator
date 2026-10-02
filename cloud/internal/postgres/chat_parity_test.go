@@ -3,9 +3,13 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestCloudChatAutomationProvenanceSurvivesRetriesAndLegacyReads(t *testing.T) {
@@ -39,17 +43,35 @@ func TestCloudChatAutomationProvenanceSurvivesRetriesAndLegacyReads(t *testing.T
 		t.Fatalf("retry=%+v err=%v", retry, err)
 	}
 	assertAutomation(retry)
-	// Emulate a pre-parity message. Its server-owned audit attribution remains.
-	if _, err := admin.Exec(ctx, `UPDATE ao_events SET payload=payload-'origin'-'senderSessionId' WHERE org_id=$1 AND session_id=$2 AND sequence=$3`, f.orgID, f.sessionID, report.Sequence); err != nil {
-		t.Fatal(err)
-	}
 	human, err := store.SendMessage(ctx, p, f.orgID, f.sessionID, "human", "[from worker someone] I pasted a report", domain.ChatTurnSettings{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	events, _, err := store.ListClientEvents(ctx, p, f.orgID, f.sessionID, 0, 100)
+	trace := &chatAuditQueryTrace{}
+	config := store.pool.Config()
+	config.ConnConfig.Tracer = trace
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		t.Fatal(err)
+	}
+	tracedStore := &Store{pool: pool}
+	t.Cleanup(tracedStore.Close)
+	if _, _, err := tracedStore.ListClientEvents(ctx, p, f.orgID, f.sessionID, 0, 100); err != nil {
+		t.Fatal(err)
+	}
+	if got := trace.queries.Load(); got != 0 {
+		t.Fatalf("fully attributed page queried audit %d times", got)
+	}
+	// Emulate a pre-parity message. Its server-owned audit attribution remains.
+	if _, err := admin.Exec(ctx, `UPDATE ao_events SET payload=payload-'origin'-'senderSessionId' WHERE org_id=$1 AND session_id=$2 AND sequence=$3`, f.orgID, f.sessionID, report.Sequence); err != nil {
+		t.Fatal(err)
+	}
+	events, _, err := tracedStore.ListClientEvents(ctx, p, f.orgID, f.sessionID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := trace.queries.Load(); got != 1 {
+		t.Fatalf("legacy page queried audit %d times, want once", got)
 	}
 	found := false
 	for _, event := range events {
@@ -62,8 +84,8 @@ func TestCloudChatAutomationProvenanceSurvivesRetriesAndLegacyReads(t *testing.T
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				t.Fatal(err)
 			}
-			if payload["origin"] == "automation" {
-				t.Fatal("human text impersonated automation")
+			if payload["origin"] != "human" {
+				t.Fatal("human message lost durable origin")
 			}
 		}
 	}
@@ -105,3 +127,18 @@ func TestCloudChatPersistsProviderMessageIDUnderTurnFence(t *testing.T) {
 	}
 	t.Fatal("output missing from history")
 }
+
+// Observe the actual store boundary so new pages cannot silently reintroduce
+// legacy audit recovery work.
+type chatAuditQueryTrace struct {
+	queries atomic.Int64
+}
+
+func (trace *chatAuditQueryTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "FROM ao_audit_events") {
+		trace.queries.Add(1)
+	}
+	return ctx
+}
+
+func (*chatAuditQueryTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
