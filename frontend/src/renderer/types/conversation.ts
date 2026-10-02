@@ -834,10 +834,13 @@ export function needsReauth(snapshot: ConversationSnapshot): boolean {
  * and the one the agent is actually working on is what the user is waiting on.
  */
 export function activeTurn(snapshot: ConversationSnapshot): ConversationTurn | undefined {
-	return (
-		snapshot.turns.find((turn) => turn.state === "running") ??
-		snapshot.turns.find((turn) => turn.state === "queued")
-	);
+	// A stopped controller cannot be working on a turn. Keeping a running turn
+	// active held the "Working for…" spinner open forever over a dead controller,
+	// with no stop and no cancel anywhere (#6064). Queued turns are kept active:
+	// they dispatch as soon as the agent resumes.
+	const running = snapshot.turns.find((turn) => turn.state === "running");
+	if (running && snapshot.controller.state !== "stopped") return running;
+	return snapshot.turns.find((turn) => turn.state === "queued");
 }
 
 /**

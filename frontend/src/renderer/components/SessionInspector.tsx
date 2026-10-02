@@ -2352,7 +2352,10 @@ function ReviewPanel({
 			? t("inspector.review.cancelling")
 			: t("inspector.review.cancel")
 		: runAction;
-	const killDisabled = autoReviewEnabled || isKilling || isTriggering || isSwitchingReviewer || !hasReviewerSession;
+	// Kill stays available with auto-review on: a hung reviewer is exactly when
+	// it is needed, and the coordinator re-arms a fresh pass after the kill
+	// (the killed run carries the kill marker in its cancel body).
+	const killDisabled = isKilling || isTriggering || isSwitchingReviewer || !hasReviewerSession;
 
 	return (
 		<div className="mb-2.5 flex flex-col">

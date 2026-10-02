@@ -1213,6 +1213,32 @@ describe("ChatWorkspace timeline", () => {
 		expect(openShell).toHaveBeenCalledOnce();
 	});
 
+	// A controller that died mid-turn must not keep the "Working for…" spinner
+	// alive over a dead agent, with no stop and no cancel anywhere (#6064):
+	// without a controller the turn cannot be running, so the pane settles on
+	// the stopped banner — with an explicit outcome-unknown marker on the turn
+	// and a shell lever the reviewer pane can actually reach.
+	it("settles a running turn when the controller stops instead of spinning forever", async () => {
+		const user = userEvent.setup();
+		const openShell = vi.fn();
+		const snapshot = {
+			...chatFixture,
+			controller: { state: "stopped" as const },
+		};
+		render(<ChatWorkspace snapshot={snapshot} onResumeAgent={vi.fn()} onOpenShell={openShell} />);
+
+		expect(screen.getByRole("alert")).toHaveTextContent("The agent controller stopped");
+		expect(screen.queryByTestId("live-turn-status")).not.toBeInTheDocument();
+		expect(screen.queryByText(/^Working for /)).not.toBeInTheDocument();
+		// The daemon still holds the turn open, so its outcome is unknown — and a
+		// rollback of it would only ever be refused, so none is offered.
+		expect(screen.getByText("The agent controller stopped mid-turn")).toBeInTheDocument();
+		expect(screen.getByText("The outcome of this turn is unknown.")).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Roll back to here" })).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Open shell" }));
+		expect(openShell).toHaveBeenCalledOnce();
+	});
+
 	// An asynchronous spawn puts the session on screen before its agent exists.
 	// That is not a controller that stopped, and the composer has to stay open:
 	// what the user types while it starts is queued, not lost.

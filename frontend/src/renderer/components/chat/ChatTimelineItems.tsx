@@ -339,7 +339,7 @@ export function TurnOutcome({
 	error,
 	retry,
 }: {
-	state: "recovered" | "interrupted" | "failed";
+	state: "recovered" | "interrupted" | "stopped" | "failed";
 	error?: string;
 	retry?: TurnOutcomeRetryControl;
 }) {
@@ -351,6 +351,10 @@ export function TurnOutcome({
 		interrupted: {
 			label: "The agent was interrupted by you",
 			tone: "text-muted-foreground/70",
+		},
+		stopped: {
+			label: "The agent controller stopped mid-turn",
+			tone: "text-warning",
 		},
 		failed: { label: "The agent ran into a problem", tone: "text-destructive" },
 	}[state];

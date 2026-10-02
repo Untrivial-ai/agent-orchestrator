@@ -1084,8 +1084,22 @@ func (e *Engine) listLocked(ctx stdctx.Context, workerID domain.SessionID, selec
 	if err != nil {
 		return SessionReviews{}, err
 	}
+	handle := legacyReviewerHandle(reviewRow)
+	// Same cleared-handle gap as in TerminateReviewer: the DB handle can be
+	// gone while the deterministic terminal pane is still alive. Report the
+	// stable id when it probes alive, so the inspector's kill control stays
+	// visible and reviews/kill can reach the orphaned pane. Chat-mode handles
+	// are session-scoped and cannot be reconstructed from the worker id, so
+	// they keep the DB-only behavior (#6064).
+	if handle == "" && (reviewRow.ID == "" || reviewRow.InterfaceMode != domain.ReviewerInterfaceChat) {
+		// No launch id: the stable-id probe wants the plain child-alive check,
+		// which is what Alive does when launchID is blank.
+		if alive, err := e.launcher.Alive(ctx, reviewerHandleID(workerID), ""); err == nil && alive {
+			handle = reviewerHandleID(workerID)
+		}
+	}
 	return SessionReviews{
-		ReviewerHandleID:      legacyReviewerHandle(reviewRow),
+		ReviewerHandleID:      handle,
 		ReviewerHarness:       reviewerHarness,
 		ReviewerActivityState: reviewRow.ReviewerActivityState,
 		Runs:                  runs,
@@ -1305,6 +1319,17 @@ func (e *Engine) TerminateReviewer(ctx stdctx.Context, workerID domain.SessionID
 		if destroyedHandle == "" {
 			destroyedHandle = review.ReviewerHandleID
 		}
+	}
+	// A cleared DB handle does not mean a dead pane: teardown paths clear
+	// ReviewerHandleID on terminal-state writes while the deterministic
+	// terminal pane (stable per worker, launcher.go reviewerHandleID) can
+	// still be running. Destroy it by its stable id — Destroy on an absent
+	// pane is a no-op. Sessions with no review history at all stay a no-op.
+	if destroyedHandle == "" && len(reviews) > 0 {
+		if err := e.launcher.Destroy(ctx, reviewerHandleID(workerID)); err != nil {
+			return TerminateResult{}, err
+		}
+		destroyedHandle = reviewerHandleID(workerID)
 	}
 	if len(reviews) > 0 {
 		if err := e.store.ClearReviewerHandle(ctx, workerID); err != nil {

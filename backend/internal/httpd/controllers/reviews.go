@@ -278,7 +278,7 @@ func (c *ReviewsController) kill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workerID := sessionID(r)
-	if err := c.Svc.TerminateReviewer(r.Context(), workerID, "cancelled because reviewer session was killed"); err != nil {
+	if err := c.Svc.TerminateReviewer(r.Context(), workerID, domain.ReviewRunCancelledByKill); err != nil {
 		writeReviewError(w, r, err)
 		return
 	}

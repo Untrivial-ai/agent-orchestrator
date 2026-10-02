@@ -226,6 +226,54 @@ func TestEvaluateSessionReportsCancelledAfterStaleRunningReconciliation(t *testi
 	}
 }
 
+func TestExistingHeadReasonReviewerKillReArmsAutoReview(t *testing.T) {
+	prURL := "pr1"
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		runs []domain.ReviewRun
+		want string
+	}{
+		{
+			name: "reviewer kill re-arms the same sha",
+			runs: []domain.ReviewRun{
+				{PRURL: prURL, TargetSHA: "sha1", Status: domain.ReviewRunCancelled, Body: domain.ReviewRunCancelledByKill, CreatedAt: base},
+			},
+			want: "",
+		},
+		{
+			name: "user cancel keeps its veto",
+			runs: []domain.ReviewRun{
+				{PRURL: prURL, TargetSHA: "sha1", Status: domain.ReviewRunCancelled, Body: "cancelled by user", CreatedAt: base},
+			},
+			want: "cancelled_same_sha",
+		},
+		{
+			name: "newest cancel decides: user cancel after kill stays blocked",
+			runs: []domain.ReviewRun{
+				{PRURL: prURL, TargetSHA: "sha1", Status: domain.ReviewRunCancelled, Body: domain.ReviewRunCancelledByKill, CreatedAt: base},
+				{PRURL: prURL, TargetSHA: "sha1", Status: domain.ReviewRunCancelled, Body: "cancelled by user", CreatedAt: base.Add(time.Minute)},
+			},
+			want: "cancelled_same_sha",
+		},
+		{
+			name: "newest cancel decides: kill after user cancel re-arms",
+			runs: []domain.ReviewRun{
+				{PRURL: prURL, TargetSHA: "sha1", Status: domain.ReviewRunCancelled, Body: "cancelled by user", CreatedAt: base},
+				{PRURL: prURL, TargetSHA: "sha1", Status: domain.ReviewRunCancelled, Body: domain.ReviewRunCancelledByKill, CreatedAt: base.Add(time.Minute)},
+			},
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := existingHeadReason(tt.runs, prURL, "sha1"); got != tt.want {
+				t.Fatalf("existingHeadReason() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEvaluateSessionReviewerHarnessPrecedence(t *testing.T) {
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
