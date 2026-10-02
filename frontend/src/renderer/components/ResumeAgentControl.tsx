@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Play } from "lucide-react";
 import { aoBridge } from "../lib/bridge";
@@ -28,7 +28,9 @@ export function ResumeAgentControl({
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const canResume = useCanResumeAgent(session);
+	const mutationKey = ["resume-agent", session.id] as const;
 	const resume = useMutation({
+		mutationKey,
 		mutationFn: async () => {
 			if (usePreviewData) return;
 			const { data, error, response } = await apiClient.POST("/api/v1/sessions/{sessionId}/resume-agent", {
@@ -52,25 +54,31 @@ export function ResumeAgentControl({
 			}
 		},
 	});
+	const sharedResumeState = useMutationState({
+		filters: { exact: true, mutationKey },
+		select: (mutation) => ({ error: mutation.state.error, status: mutation.state.status }),
+	}).at(-1);
 
 	// Cloud sessions re-provision through the control plane (useRestoreSession),
 	// not this local-daemon route — the local daemon has never heard of them and
 	// would answer "Unknown session".
 	if (!canResume) return null;
 
-	const error = resume.error instanceof Error ? resume.error.message : null;
+	const resumeError = resume.error ?? sharedResumeState?.error;
+	const error = resumeError instanceof Error ? resumeError.message : null;
+	const isPending = resume.isPending || sharedResumeState?.status === "pending";
 	const control = (
 		<>
 			<Button
 				className={cn("shrink-0", className)}
-				disabled={resume.isPending}
+				disabled={isPending}
 				onClick={() => resume.mutate()}
 				size="sm"
 				type="button"
 				variant="outline"
 			>
 				<Play className="size-icon-sm" aria-hidden="true" />
-				{resume.isPending ? t("inspector.resumingAgent") : t("inspector.resumeAgent")}
+				{isPending ? t("inspector.resumingAgent") : t("inspector.resumeAgent")}
 			</Button>
 			{error ? (
 				<p className="mt-2 text-2xs leading-normal text-error" role="status">

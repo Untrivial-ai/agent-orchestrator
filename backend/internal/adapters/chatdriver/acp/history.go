@@ -184,6 +184,18 @@ func (c *conversation) abortHistoryReplay() {
 
 	c.mu.Lock()
 	c.activeTurn = ""
+	c.settlingTurn = ""
+	c.messages = make(map[string]string)
+	c.thoughts = make(map[string]string)
+	c.nestedMessages = make(map[string]nestedMessageState)
+	c.tools = make(map[string]*toolState)
+	c.turnDiffs = nil
+	c.turnDiffTurnID = ""
+	c.providerFailure = nil
+	c.compactingTurnID = ""
+	c.compactionBefore = 0
+	c.compactionSummary = ""
+	c.compactedTurn = ""
 	c.mu.Unlock()
 }
 

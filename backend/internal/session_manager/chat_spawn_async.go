@@ -415,8 +415,8 @@ func (m *Manager) runInBackground(work func()) {
 	go tracked()
 }
 
-// WaitBackgroundWorkers waits for daemon-owned spawn and task-preparation work
-// after the daemon context has been cancelled.
+// WaitBackgroundWorkers waits for daemon-owned spawn, task-preparation, and
+// startup-recovery work after the daemon context has been cancelled.
 func (m *Manager) WaitBackgroundWorkers(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {

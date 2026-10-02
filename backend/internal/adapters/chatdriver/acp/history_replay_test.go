@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,18 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+type cancelAfterErrChecks struct{ checks atomic.Int32 }
+
+func (c *cancelAfterErrChecks) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *cancelAfterErrChecks) Done() <-chan struct{}       { return nil }
+func (c *cancelAfterErrChecks) Value(any) any               { return nil }
+func (c *cancelAfterErrChecks) Err() error {
+	if c.checks.Add(1) > 2 {
+		return context.Canceled
+	}
+	return nil
+}
 
 // replayConversation builds the smallest conversation that can run a history
 // replay: the SDK delivery path only touches the capture, the maps, the log,
@@ -326,10 +339,18 @@ func TestACPReplayAbortDiscardsRawUpdates(t *testing.T) {
 	if err := conv.SessionUpdate(context.Background(), replayAgentChunk("session-1", "old", "discard")); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	if err := conv.SessionUpdate(context.Background(), replayAgentChunk("session-1", "later", "also discard")); err != nil {
+		t.Fatal(err)
+	}
+	ctx := &cancelAfterErrChecks{}
 	if err := conv.drainAndFinishReplay(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("drain error = %v", err)
+	}
+	conv.mu.Lock()
+	partiallyApplied := conv.activeTurn != "" || len(conv.messages) != 0
+	conv.mu.Unlock()
+	if !partiallyApplied {
+		t.Fatal("test did not cancel after replay normalization had begun")
 	}
 	conv.abortHistoryReplay()
 	if conv.replaying || len(conv.replayUpdates) != 0 {
@@ -338,6 +359,11 @@ func TestACPReplayAbortDiscardsRawUpdates(t *testing.T) {
 	if _, err := conv.ReadHistory(context.Background()); err == nil {
 		t.Fatal("aborted history reported as loaded")
 	}
+	conv.mu.Lock()
+	if conv.activeTurn != "" || len(conv.messages) != 0 {
+		t.Fatal("aborted replay retained partially normalized live state")
+	}
+	conv.mu.Unlock()
 	conv.beginHistoryReplay("session-1")
 	if err := conv.SessionUpdate(context.Background(), replayAgentChunk("session-1", "new", "keep")); err != nil {
 		t.Fatal(err)

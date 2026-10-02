@@ -661,6 +661,7 @@ type fakeAgent struct {
 	blockLoadCall       int
 	loadStarted         chan struct{}
 	failLoadFrom        int   // LoadSession calls >= this number return failLoadErr
+	loadErrAfterUpdates bool  // Emit replay updates before returning failLoadErr.
 	failLoadErr         error // the SDK coerces a plain error into -32603
 	loadCalls           int
 	resumeCalls         int
@@ -924,9 +925,10 @@ func (a *fakeAgent) LoadSession(ctx context.Context, params acpsdk.LoadSessionRe
 	block := a.blockLoadCall == loadCall
 	started := a.loadStarted
 	failLoad := a.failLoadFrom > 0 && loadCall >= a.failLoadFrom
+	failAfterUpdates := a.loadErrAfterUpdates
 	failLoadErr := a.failLoadErr
 	a.mu.Unlock()
-	if failLoad {
+	if failLoad && !failAfterUpdates {
 		return acpsdk.LoadSessionResponse{}, failLoadErr
 	}
 	if block {
@@ -940,6 +942,9 @@ func (a *fakeAgent) LoadSession(ctx context.Context, params acpsdk.LoadSessionRe
 		if err := a.conn.SessionUpdate(ctx, acpsdk.SessionNotification{SessionId: params.SessionId, Update: update}); err != nil {
 			return acpsdk.LoadSessionResponse{}, err
 		}
+	}
+	if failLoad {
+		return acpsdk.LoadSessionResponse{}, failLoadErr
 	}
 	return acpsdk.LoadSessionResponse{}, nil
 }
@@ -1832,7 +1837,12 @@ func TestACPDriverHistoryRefreshKeepsOwnDeadlineAsContextError(t *testing.T) {
 // before the first refresh also reports the rejection.
 func TestACPDriverResumeMapsProviderInternalLoadErrorToLoadFailed(t *testing.T) {
 	agent := &fakeAgent{
-		capabilities: &acpsdk.AgentCapabilities{LoadSession: true},
+		capabilities: &acpsdk.AgentCapabilities{
+			LoadSession: true,
+			SessionCapabilities: acpsdk.SessionCapabilities{
+				Resume: &acpsdk.SessionResumeCapabilities{},
+			},
+		},
 		failLoadFrom: 1,
 		failLoadErr:  errors.New("transcript replay failed"),
 	}
@@ -1850,6 +1860,68 @@ func TestACPDriverResumeMapsProviderInternalLoadErrorToLoadFailed(t *testing.T) 
 	})
 	if !errors.Is(err, ports.ErrChatResumeFailed) || !errors.Is(err, ports.ErrChatHistoryLoadFailed) {
 		t.Fatalf("Resume error = %v, want ErrChatResumeFailed wrapping ErrChatHistoryLoadFailed", err)
+	}
+	agent.mu.Lock()
+	resumeCalls := agent.resumeCalls
+	agent.mu.Unlock()
+	if resumeCalls != 0 {
+		t.Fatalf("session/resume calls = %d, want none for strict handoff", resumeCalls)
+	}
+}
+
+func TestACPDriverCanResumeContextWhenHistoryLoadFails(t *testing.T) {
+	agent := &fakeAgent{
+		capabilities: &acpsdk.AgentCapabilities{
+			LoadSession: true,
+			SessionCapabilities: acpsdk.SessionCapabilities{
+				Resume: &acpsdk.SessionResumeCapabilities{},
+			},
+		},
+		loadUpdates: []acpsdk.SessionUpdate{{AgentMessageChunk: &acpsdk.SessionUpdateAgentMessageChunk{
+			SessionUpdate: "agent_message_chunk",
+			MessageId:     acpsdk.Ptr("partial-replay-message"),
+			Content:       acpsdk.ContentBlock{Text: &acpsdk.ContentBlockText{Text: "partial history"}},
+		}}},
+		failLoadFrom:        1,
+		failLoadErr:         errors.New("transcript replay failed"),
+		loadErrAfterUpdates: true,
+	}
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityStreaming: true},
+		Probe:        func(context.Context) error { return nil },
+		Launch:       func(context.Context, LaunchConfig) (Launch, error) { return Launch{Command: "fake"}, nil },
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.useTestProcess(fakeSpawn(agent))
+
+	conv, err := driver.Resume(context.Background(), ports.ChatResumeConfig{
+		ProviderConversationID:    "provider-session-1",
+		WorkspacePath:             t.TempDir(),
+		AllowResumeWithoutHistory: true,
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	defer conv.Close()
+
+	agent.mu.Lock()
+	loadCalls, resumeCalls := agent.loadCalls, agent.resumeCalls
+	agent.mu.Unlock()
+	if loadCalls != 1 || resumeCalls != 1 {
+		t.Fatalf("session/load calls = %d, session/resume calls = %d, want 1 each", loadCalls, resumeCalls)
+	}
+	if conv.Capabilities().Has(ports.ChatCapabilityHistory) {
+		t.Fatal("history capability remained enabled after historyless resume")
+	}
+	state := conv.(*conversation)
+	state.mu.Lock()
+	activeTurn, messageCount := state.activeTurn, len(state.messages)
+	state.mu.Unlock()
+	if activeTurn != "" || messageCount != 0 {
+		t.Fatalf("partial history leaked into live conversation state: active turn %q, messages %d", activeTurn, messageCount)
+	}
+	if _, err := conv.(ports.ChatHistoryReader).ReadHistory(context.Background()); !errors.Is(err, ports.ErrChatHistoryUnavailable) {
+		t.Fatalf("ReadHistory error = %v, want ErrChatHistoryUnavailable", err)
 	}
 }
 

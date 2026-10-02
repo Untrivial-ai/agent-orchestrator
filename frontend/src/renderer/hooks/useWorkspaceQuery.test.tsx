@@ -81,6 +81,22 @@ describe("useWorkspaceQuery", () => {
 		expect(captureRendererEventMock).not.toHaveBeenCalled();
 	});
 
+	it("preserves an exited activity after recovery settles as unavailable", async () => {
+		respondWith({
+			projects: { data: { projects: [{ id: "p1", name: "Project", path: "/tmp/project" }] } },
+			sessions: { data: { sessions: [{ id: "s1", projectId: "p1", harness: "claude-code", status: "exited", statusReadiness: "unavailable",
+				activity: { state: "exited", lastActivityAt: "2026-01-01T00:00:00Z" }, updatedAt: "2026-01-01T00:00:00Z", prs: [] }] } },
+		});
+		const { result } = renderHook(() => useWorkspaceQuery(), { wrapper });
+		await waitFor(() => expect(result.current.isSuccess).toBe(true));
+		expect(result.current.data?.[0].sessions[0]).toMatchObject({
+			status: "unknown",
+			statusReadiness: "unavailable",
+			activity: { state: "exited" },
+		});
+		expect(captureRendererEventMock).not.toHaveBeenCalled();
+	});
+
 	it("rejects workspace reads while the daemon base URL is untrusted", async () => {
 		hasTrustedApiBaseUrlMock.mockReturnValue(false);
 

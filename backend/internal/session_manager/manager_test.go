@@ -53,6 +53,7 @@ type fakeStore struct {
 	deleteErr        error
 	upsertWTErr      error
 	listAllErr       error
+	listAllErrs      []error
 	getProjectErr    error
 	getSessionErr    error
 	updateSessionErr error
@@ -241,6 +242,13 @@ func (f *fakeStore) ListSessions(_ context.Context, p domain.ProjectID) ([]domai
 	return out, nil
 }
 func (f *fakeStore) ListAllSessions(context.Context) ([]domain.SessionRecord, error) {
+	if len(f.listAllErrs) > 0 {
+		err := f.listAllErrs[0]
+		f.listAllErrs = f.listAllErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if f.listAllErr != nil {
 		return nil, f.listAllErr
 	}
@@ -2066,6 +2074,7 @@ func TestExitAgentStopsOnlyControllerAndPreservesSessionIdentity(t *testing.T) {
 
 func newExitedResumeManager(t *testing.T, runtime runtimeController, agent ports.Agent) (*Manager, *fakeStore, *fakeWorkspace) {
 	t.Helper()
+	workspacePath := t.TempDir()
 	st := newFakeStore()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Config: testRoleAgents()}
 	st.sessions["mer-1"] = domain.SessionRecord{
@@ -2075,7 +2084,7 @@ func newExitedResumeManager(t *testing.T, runtime runtimeController, agent ports
 		Harness:   domain.HarnessCodex,
 		Activity:  domain.Activity{State: domain.ActivityExited},
 		Metadata: domain.SessionMetadata{
-			WorkspacePath:   "/ws/mer-1",
+			WorkspacePath:   workspacePath,
 			Branch:          "ao/mer-1",
 			RuntimeHandleID: "tmux-mer-1",
 			RuntimeLaunchID: "launch-old",
@@ -2181,6 +2190,64 @@ func TestResumeAgent_RequiresLiveExitedSession(t *testing.T) {
 	}
 	if runtime.created != 0 || runtime.destroyed != 0 {
 		t.Fatalf("invalid resume touched runtime: created=%d destroyed=%d", runtime.created, runtime.destroyed)
+	}
+}
+
+func TestResumeAgent_UnavailableExitedSessionRelaunchesInsteadOfAdoptingPane(t *testing.T) {
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-mer-1": true}}
+	runtime := &fakeRestartRuntime{fakeRuntime: baseRuntime}
+	agent := supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex", "resume", "agent-x"}}}
+	m, st, _ := newExitedResumeManager(t, runtime, agent)
+	rec := st.sessions["mer-1"]
+	m.finishStatusRecovery(context.Background(), rec, errors.New("startup probe failed"))
+
+	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.restarted != 1 {
+		t.Fatalf("runtime restarts = %d, want 1", runtime.restarted)
+	}
+}
+
+func TestResumeAgent_MissingWorkspaceIsCheckedAfterLifecycleState(t *testing.T) {
+	runtime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-mer-1": true}}
+	agent := supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex", "resume", "agent-x"}}}
+	m, st, _ := newExitedResumeManager(t, runtime, agent)
+	rec := st.sessions["mer-1"]
+	rec.Metadata.WorkspacePath = filepath.Join(t.TempDir(), "missing")
+	st.sessions[rec.ID] = rec
+	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); !errors.Is(err, ErrSessionWorkspaceUnavailable) {
+		t.Fatalf("missing workspace error = %v, want ErrSessionWorkspaceUnavailable", err)
+	}
+
+	rec.IsTerminated = true
+	st.sessions[rec.ID] = rec
+	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); !errors.Is(err, ErrTerminated) {
+		t.Fatalf("terminated missing-workspace error = %v, want ErrTerminated", err)
+	}
+}
+
+func TestResumeAgent_RestoresShutdownSavedWorkspaceBeforeCheckingPath(t *testing.T) {
+	baseRuntime := &fakeRuntime{aliveByHandle: map[string]bool{"tmux-mer-1": true}}
+	runtime := &fakeRestartRuntime{fakeRuntime: baseRuntime}
+	agent := supervisedLaunchAgent{launchArgvAgent{argv: []string{"codex", "resume", "agent-x"}}}
+	m, st, ws := newExitedResumeManager(t, runtime, agent)
+	rec := st.sessions["mer-1"]
+	rec.Metadata.WorkspacePath = filepath.Join(t.TempDir(), "removed-worktree")
+	st.sessions[rec.ID] = rec
+	st.worktrees[rec.ID] = []domain.SessionWorktreeRecord{{
+		SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName, Branch: rec.Metadata.Branch,
+		WorktreePath: rec.Metadata.WorkspacePath, State: "removed",
+	}}
+
+	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); err != nil {
+		t.Fatalf("ResumeAgentWithMode: %v", err)
+	}
+	if len(ws.restoreConfigs) != 1 || ws.restoreConfigs[0].Path != rec.Metadata.WorkspacePath {
+		t.Fatalf("restore configs = %+v, want one restore of removed path %q", ws.restoreConfigs, rec.Metadata.WorkspacePath)
+	}
+	if got := st.sessions[rec.ID].Metadata.WorkspacePath; got != "/ws/mer-1" {
+		t.Fatalf("restored workspace path = %q, want adapter path /ws/mer-1", got)
 	}
 }
 
@@ -8655,6 +8722,30 @@ func TestRestoreAll_RestoresLegacyShutdownMarkerWithoutState(t *testing.T) {
 	}
 }
 
+func TestRestoreAll_PromptlessUnresumableWorkerFinishesNeutral(t *testing.T) {
+	m, st, rt, _ := newLifecycleManager()
+	rec := domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		IsTerminated: true,
+		Metadata:     domain.SessionMetadata{WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1/root"},
+		Activity:     domain.Activity{State: domain.ActivityExited},
+	}
+	st.sessions[rec.ID] = rec
+	st.worktrees[rec.ID] = []domain.SessionWorktreeRecord{{
+		SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName, WorktreePath: rec.Metadata.WorkspacePath,
+	}}
+
+	if err := m.RestoreAll(ctx); err != nil {
+		t.Fatalf("RestoreAll: %v", err)
+	}
+	if got := m.SessionStatusReadiness(st.sessions[rec.ID]); got != "ready" {
+		t.Fatalf("readiness = %q, want neutral ready for intentionally terminated promptless worker", got)
+	}
+	if rt.created != 0 || !st.sessions[rec.ID].IsTerminated {
+		t.Fatalf("promptless worker changed: runtime creates=%d terminated=%v", rt.created, st.sessions[rec.ID].IsTerminated)
+	}
+}
+
 // TestRestoreAll_SkipsSessionsKilledBeforeShutdown verifies (c): a session
 // the user killed BEFORE shutdown has no session_worktrees row and must NOT
 // be resurrected.
@@ -9127,7 +9218,7 @@ func TestReconcileLive_RuntimeFailureAfterCapabilityUpdateLeavesSessionResumable
 		Activity:  domain.Activity{State: domain.ActivityActive, LastActivityAt: bootUpdatedAt},
 		UpdatedAt: bootUpdatedAt,
 		Metadata: domain.SessionMetadata{
-			Branch: "ao/s1/root", WorkspacePath: "/wt/s1", RuntimeHandleID: "old",
+			Branch: "ao/s1/root", WorkspacePath: t.TempDir(), RuntimeHandleID: "old",
 			RuntimeLaunchID: "old-launch", AgentSessionID: "native-conversation-1",
 		},
 	}
@@ -9147,7 +9238,7 @@ func TestReconcileLive_RuntimeFailureAfterCapabilityUpdateLeavesSessionResumable
 	if !failed.UpdatedAt.Equal(bootUpdatedAt) {
 		t.Fatalf("UpdatedAt = %v, want preserved recency %v", failed.UpdatedAt, bootUpdatedAt)
 	}
-	if failed.Metadata.AgentSessionID != "native-conversation-1" || failed.Metadata.WorkspacePath != "/wt/s1" {
+	if failed.Metadata.AgentSessionID != "native-conversation-1" || failed.Metadata.WorkspacePath != rec.Metadata.WorkspacePath {
 		t.Fatalf("native identity/worktree changed after failed relaunch: %+v", failed.Metadata)
 	}
 

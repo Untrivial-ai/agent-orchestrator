@@ -1659,10 +1659,11 @@ func TestInterfaceHandoffImportsOutcomeUnknownNativeHistoryAsRecovered(t *testin
 
 func TestInterfaceHandoffRejectsAProviderWithoutNativeHistoryReplay(t *testing.T) {
 	st := openStore(t)
+	var resumeCfg ports.ChatResumeConfig
 	conv := newFakeConversation()
 	svc := chatsvc.New(chatsvc.Options{
 		Store: st, Sessions: st,
-		Drivers: fakeRegistry{driver: fakeDriver{conv: conv}},
+		Drivers: fakeRegistry{driver: fakeDriver{conv: conv, resumeCfg: &resumeCfg}},
 		Log:     slog.New(slog.DiscardHandler),
 		NewID:   func() string { return fmt.Sprintf("no-history-%d", time.Now().UnixNano()) },
 	})
@@ -1674,6 +1675,9 @@ func TestInterfaceHandoffRejectsAProviderWithoutNativeHistoryReplay(t *testing.T
 	if !errors.Is(err, ports.ErrChatHistoryUnavailable) {
 		t.Fatalf("Start error = %v, want ErrChatHistoryUnavailable", err)
 	}
+	if resumeCfg.AllowResumeWithoutHistory {
+		t.Fatal("strict interface handoff enabled context-only ACP recovery")
+	}
 	if _, controllerErr := svc.Controller(testSession); !errors.Is(controllerErr, chatsvc.ErrNoController) {
 		t.Fatalf("Controller error = %v, want no target controller after failed replay", controllerErr)
 	}
@@ -1681,22 +1685,36 @@ func TestInterfaceHandoffRejectsAProviderWithoutNativeHistoryReplay(t *testing.T
 
 func TestOrdinaryResumeAllowsACPContextWithoutHistoryReplay(t *testing.T) {
 	st := openStore(t)
+	var resumeCfg ports.ChatResumeConfig
 	conv := &nativeHistoryConversation{
 		fakeConversation: newFakeConversation(),
 		err:              ports.ErrChatHistoryUnavailable,
 	}
 	svc := chatsvc.New(chatsvc.Options{
 		Store: st, Sessions: st,
-		Drivers: fakeRegistry{driver: fakeDriver{conv: conv}},
+		Drivers: fakeRegistry{driver: fakeDriver{conv: conv, resumeCfg: &resumeCfg}},
 		Log:     slog.New(slog.DiscardHandler),
 		NewID:   func() string { return fmt.Sprintf("context-only-%d", time.Now().UnixNano()) },
 	})
 
-	if _, err := svc.Start(context.Background(), chatsvc.StartConfig{
+	controller, err := svc.Start(context.Background(), chatsvc.StartConfig{
 		SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex,
 		WorkspacePath: t.TempDir(), ProviderConversationID: "thread-1",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("ordinary resume with provider context: %v", err)
+	}
+	if !resumeCfg.AllowResumeWithoutHistory {
+		t.Fatal("ordinary resume did not enable context-only ACP recovery")
+	}
+	if _, err := controller.Send(context.Background(), ports.ChatUserMessage{Text: "continue from the saved context"}); err != nil {
+		t.Fatalf("send after historyless resume: %v", err)
+	}
+	conv.mu.Lock()
+	sentCount := len(conv.sent)
+	conv.mu.Unlock()
+	if sentCount != 1 {
+		t.Fatalf("provider received %d messages after historyless resume, want 1", sentCount)
 	}
 	t.Cleanup(func() { _ = svc.Stop(context.Background(), testSession) })
 }

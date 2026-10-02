@@ -494,7 +494,7 @@ func TestReconcileLive_ChatCompatibilityFailureLeavesNativeResumeRecoverable(t *
 		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
 		Activity: domain.Activity{State: domain.ActivityActive},
 		Metadata: domain.SessionMetadata{
-			Branch: "ao/mer-1/root", WorkspacePath: "/ws/mer-1",
+			Branch: "ao/mer-1/root", WorkspacePath: t.TempDir(),
 			ProviderConversationID: "01a03c61-23a9-7111-95e9-2bacb04eb064",
 		},
 	}
@@ -766,7 +766,8 @@ func TestRestoreTerminatedChatOrchestratorPassesProvenProviderBoundary(t *testin
 	}
 }
 
-func seedChatResumeSession(store *fakeStore, state domain.ActivityState) {
+func seedChatResumeSession(t *testing.T, store *fakeStore, state domain.ActivityState) {
+	t.Helper()
 	store.sessions["mer-1"] = domain.SessionRecord{
 		ID:        "mer-1",
 		ProjectID: chatTestProject,
@@ -775,7 +776,7 @@ func seedChatResumeSession(store *fakeStore, state domain.ActivityState) {
 		Mode:      domain.SessionModeChat,
 		Activity:  domain.Activity{State: state},
 		Metadata: domain.SessionMetadata{
-			WorkspacePath:          "/ws/mer-1",
+			WorkspacePath:          t.TempDir(),
 			Branch:                 "ao/mer-1",
 			ProviderConversationID: "thread-existing",
 		},
@@ -785,7 +786,7 @@ func seedChatResumeSession(store *fakeStore, state domain.ActivityState) {
 func TestResumeExitedChatSessionDoesNotRequireTerminalRuntimeHandle(t *testing.T) {
 	launcher := &recordingLauncher{}
 	mgr, store, runtime := newChatManager(launcher)
-	seedChatResumeSession(store, domain.ActivityExited)
+	seedChatResumeSession(t, store, domain.ActivityExited)
 
 	result, err := mgr.ResumeAgentWithMode(context.Background(), "mer-1")
 	if err != nil {
@@ -805,10 +806,31 @@ func TestResumeExitedChatSessionDoesNotRequireTerminalRuntimeHandle(t *testing.T
 	}
 }
 
+func TestChatResumeRunsAgentPreLaunchForWorkspaceTrust(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, store, _ := newChatManager(launcher)
+	agent := &recordingPreLauncherAgent{}
+	mgr.agents = singleAgent{agent: agent}
+	seedChatResumeSession(t, store, domain.ActivityExited)
+	rec := store.sessions["mer-1"]
+	rec.Harness = domain.HarnessClaudeCode
+	store.sessions[rec.ID] = rec
+
+	if _, err := mgr.ResumeAgentWithMode(context.Background(), rec.ID); err != nil {
+		t.Fatalf("ResumeAgentWithMode: %v", err)
+	}
+	if len(agent.launches) != 1 {
+		t.Fatalf("PreLaunch calls = %d, want 1", len(agent.launches))
+	}
+	if got := agent.launches[0].WorkspacePath; got != rec.Metadata.WorkspacePath {
+		t.Fatalf("PreLaunch workspace = %q, want %q", got, rec.Metadata.WorkspacePath)
+	}
+}
+
 func TestResumeChatRotatesBrowserCapabilityBeforeControllerStart(t *testing.T) {
 	launcher := &recordingLauncher{}
 	mgr, store, _ := newChatManager(launcher)
-	seedChatResumeSession(store, domain.ActivityExited)
+	seedChatResumeSession(t, store, domain.ActivityExited)
 	rec := store.sessions["mer-1"]
 	authority := browsersvc.NewAuthority()
 	oldToken, oldVerifier, err := authority.Issue(rec.ID)
@@ -850,7 +872,7 @@ func TestResumeChatRotatesBrowserCapabilityBeforeControllerStart(t *testing.T) {
 func TestResumeChatKeepsExitReportedBeforeStartReturns(t *testing.T) {
 	launcher := &recordingLauncher{}
 	mgr, store, _ := newChatManager(launcher)
-	seedChatResumeSession(store, domain.ActivityExited)
+	seedChatResumeSession(t, store, domain.ActivityExited)
 	launcher.afterReady = func() {
 		rec := store.sessions["mer-1"]
 		rec.Activity = domain.Activity{State: domain.ActivityExited}
@@ -869,7 +891,7 @@ func TestResumeChatKeepsExitReportedBeforeStartReturns(t *testing.T) {
 func TestResumeStaleChatSessionWhenNoControllerIsLive(t *testing.T) {
 	launcher := &recordingLauncher{}
 	mgr, store, _ := newChatManager(launcher)
-	seedChatResumeSession(store, domain.ActivityIdle)
+	seedChatResumeSession(t, store, domain.ActivityIdle)
 
 	if _, err := mgr.ResumeAgentWithMode(context.Background(), "mer-1"); err != nil {
 		t.Fatalf("ResumeAgentWithMode: %v", err)
@@ -884,7 +906,7 @@ func TestResumeChatSessionRejectsLiveController(t *testing.T) {
 		t.Run(string(state), func(t *testing.T) {
 			launcher := &recordingLauncher{live: true}
 			mgr, store, _ := newChatManager(launcher)
-			seedChatResumeSession(store, state)
+			seedChatResumeSession(t, store, state)
 
 			if _, err := mgr.ResumeAgentWithMode(context.Background(), "mer-1"); !errors.Is(err, ErrAgentNotExited) {
 				t.Fatalf("ResumeAgentWithMode error = %v, want ErrAgentNotExited", err)
@@ -907,7 +929,7 @@ func TestResumeBranchlessScratchChatSession(t *testing.T) {
 		Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
 		Activity: domain.Activity{State: domain.ActivityExited},
 		Metadata: domain.SessionMetadata{
-			WorkspacePath:          "/ws/scratch-1",
+			WorkspacePath:          t.TempDir(),
 			ProviderConversationID: "thread-existing",
 		},
 	}
@@ -923,7 +945,7 @@ func TestResumeBranchlessScratchChatSession(t *testing.T) {
 func TestResumeChatSessionRequiresProviderConversation(t *testing.T) {
 	launcher := &recordingLauncher{}
 	mgr, store, _ := newChatManager(launcher)
-	seedChatResumeSession(store, domain.ActivityExited)
+	seedChatResumeSession(t, store, domain.ActivityExited)
 	rec := store.sessions["mer-1"]
 	rec.Metadata.ProviderConversationID = ""
 	store.sessions["mer-1"] = rec
@@ -939,7 +961,7 @@ func TestResumeChatSessionRequiresProviderConversation(t *testing.T) {
 func TestRestoreChatSessionRequiresProviderConversation(t *testing.T) {
 	launcher := &recordingLauncher{}
 	mgr, store, _ := newChatManager(launcher)
-	seedChatResumeSession(store, domain.ActivityExited)
+	seedChatResumeSession(t, store, domain.ActivityExited)
 	rec := store.sessions["mer-1"]
 	rec.IsTerminated = true
 	rec.Metadata.ProviderConversationID = ""
@@ -1249,6 +1271,39 @@ func TestChatSpawnStartsControllerAndNoRuntime(t *testing.T) {
 
 	if len(launcher.turns) != 1 || launcher.turns[0] == "" {
 		t.Fatalf("initial prompt was not delivered as a turn: %v", launcher.turns)
+	}
+}
+
+type recordingPreLauncherAgent struct {
+	fakeAgent
+	launches []ports.LaunchConfig
+}
+
+func (a *recordingPreLauncherAgent) PreLaunch(_ context.Context, cfg ports.LaunchConfig) error {
+	a.launches = append(a.launches, cfg)
+	return nil
+}
+
+func TestChatSpawnRunsAgentPreLaunchForWorkspaceTrust(t *testing.T) {
+	launcher := &recordingLauncher{}
+	mgr, _, _ := newChatManager(launcher)
+	agent := &recordingPreLauncherAgent{}
+	mgr.agents = singleAgent{agent: agent}
+
+	rec, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
+		ProjectID:     chatTestProject,
+		Kind:          domain.KindWorker,
+		Harness:       domain.HarnessClaudeCode,
+		RequestedMode: domain.SessionModeChat,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if len(agent.launches) != 1 {
+		t.Fatalf("PreLaunch calls = %d, want 1", len(agent.launches))
+	}
+	if got := agent.launches[0].WorkspacePath; got == "" || got != rec.Metadata.WorkspacePath {
+		t.Fatalf("PreLaunch workspace = %q, want spawned workspace %q", got, rec.Metadata.WorkspacePath)
 	}
 }
 

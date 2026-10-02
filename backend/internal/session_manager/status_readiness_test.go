@@ -3,6 +3,8 @@ package sessionmanager
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,8 +12,105 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-func TestStatusReadinessWaitsForRecoveryAndAllowsRetry(t *testing.T) {
+func configureFastRecoveryRetries(m *Manager) {
+	m.statusRecoveryRetryInitial = time.Millisecond
+	m.statusRecoveryRetryMax = 2 * time.Millisecond
+	m.statusRecoveryRetryAttempts = 3
+}
+
+type retryableAliveRuntime struct {
+	*fakeRuntime
+	failing atomic.Bool
+	calls   atomic.Int32
+}
+
+func (r *retryableAliveRuntime) IsAlive(_ context.Context, _ ports.RuntimeHandle) (bool, error) {
+	r.calls.Add(1)
+	if r.failing.Load() {
+		return false, errors.New("runtime probe unavailable")
+	}
+	return true, nil
+}
+
+func TestStatusReadinessPersistentRecoveryStopsAfterBoundedRetries(t *testing.T) {
 	m, st, rt, _ := newManager()
+	configureFastRecoveryRetries(m)
+	rec := domain.SessionRecord{ID: "s1", ProjectID: "mer", Harness: domain.HarnessClaudeCode,
+		Activity: domain.Activity{State: domain.ActivityActive},
+		Metadata: domain.SessionMetadata{Branch: "ao/s1", WorkspacePath: "/wt/s1", RuntimeHandleID: "s1"}}
+	st.sessions[rec.ID] = rec
+	retryRuntime := &retryableAliveRuntime{fakeRuntime: rt}
+	retryRuntime.failing.Store(true)
+	m.runtime = retryRuntime
+
+	if err := m.ReconcileBackground(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForStatusReadiness(t, m, rec, "unavailable") {
+		t.Fatal("persistent recovery failure never became actionable")
+	}
+	if got, want := retryRuntime.calls.Load(), int32(1+m.statusRecoveryRetryAttempts); got != want {
+		t.Fatalf("runtime probe calls = %d, want bounded initial plus retries = %d", got, want)
+	}
+}
+
+func TestResumeAgentRechecksUnavailableLiveSessionWithoutRelaunch(t *testing.T) {
+	m, st, rt, _ := newManager()
+	configureFastRecoveryRetries(m)
+	rec := domain.SessionRecord{ID: "s1", ProjectID: "mer", Harness: domain.HarnessClaudeCode,
+		Activity: domain.Activity{State: domain.ActivityActive},
+		Metadata: domain.SessionMetadata{Branch: "ao/s1", WorkspacePath: "/wt/s1", RuntimeHandleID: "s1"}}
+	st.sessions[rec.ID] = rec
+	retryRuntime := &retryableAliveRuntime{fakeRuntime: rt}
+	retryRuntime.failing.Store(true)
+	m.runtime = retryRuntime
+	if err := m.ReconcileBackground(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForStatusReadiness(t, m, rec, "unavailable") {
+		t.Fatal("persistent recovery failure never became actionable")
+	}
+	retryRuntime.failing.Store(false)
+	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	if rt.created != 0 {
+		t.Fatalf("resume created %d runtimes while the original was alive", rt.created)
+	}
+	if got := m.SessionStatusReadiness(st.sessions[rec.ID]); got != "ready" {
+		t.Fatalf("readiness after resume = %s, want ready", got)
+	}
+}
+
+func TestPermanentRecoveryDependenciesAreImmediatelyActionable(t *testing.T) {
+	for _, err := range []error{
+		ports.ErrAgentAuthRequired,
+		ports.ErrAgentBinaryNotFound,
+		ports.ErrChatDriverUnavailable,
+		ports.ErrChatDriverIncompatible,
+		ports.ErrChatAuthRequired,
+	} {
+		if !isUnrecoverableStartupRecoveryError(err) {
+			t.Errorf("isUnrecoverableStartupRecoveryError(%v) = false, want true", err)
+		}
+	}
+	if isUnrecoverableStartupRecoveryError(errors.New("transient pre-launch failure")) {
+		t.Fatal("untyped pre-launch error must retain a bounded transient retry window")
+	}
+	for _, err := range []error{
+		fmt.Errorf("%w: %w", ports.ErrChatResumeFailed, context.DeadlineExceeded),
+		fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, context.Canceled),
+		fmt.Errorf("%w: host ownership unknown", ports.ErrChatRecoveryInconclusive),
+	} {
+		if isUnrecoverableStartupRecoveryError(err) {
+			t.Errorf("isUnrecoverableStartupRecoveryError(%v) = true, want transient", err)
+		}
+	}
+}
+
+func TestStatusReadinessWaitsForRecoveryAndRetriesAutomatically(t *testing.T) {
+	m, st, rt, _ := newManager()
+	configureFastRecoveryRetries(m)
 	rec := domain.SessionRecord{ID: "s1", ProjectID: "mer", Harness: domain.HarnessClaudeCode,
 		Activity: domain.Activity{State: domain.ActivityActive, LastActivityAt: time.Unix(100, 0)},
 		Metadata: domain.SessionMetadata{Branch: "ao/s1", WorkspacePath: "/wt/s1", RuntimeHandleID: "s1"}}
@@ -19,23 +118,21 @@ func TestStatusReadinessWaitsForRecoveryAndAllowsRetry(t *testing.T) {
 	if got := m.SessionStatusReadiness(rec); got != "checking" {
 		t.Fatalf("before recovery = %s", got)
 	}
-	rt.aliveErr = errors.New("runtime probe unavailable")
+	retryRuntime := &retryableAliveRuntime{fakeRuntime: rt}
+	retryRuntime.failing.Store(true)
+	m.runtime = retryRuntime
 	if err := m.ReconcileBackground(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.SessionStatusReadiness(rec); got != "unavailable" {
-		t.Fatalf("failed probe = %s", got)
+	if got := m.SessionStatusReadiness(rec); got != "checking" {
+		t.Fatalf("failed probe = %s, want neutral checking while recovery retries", got)
 	}
 	if st.sessions[rec.ID].Activity != rec.Activity {
 		t.Fatal("failed probe changed activity")
 	}
-	rt.aliveErr = nil
-	rt.aliveByHandle = map[string]bool{"s1": true}
-	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); err != nil {
-		t.Fatal(err)
-	}
-	if got := m.SessionStatusReadiness(st.sessions[rec.ID]); got != "ready" {
-		t.Fatalf("retry = %s", got)
+	retryRuntime.failing.Store(false)
+	if !waitForStatusReadiness(t, m, st.sessions[rec.ID], "ready") {
+		t.Fatal("automatic liveness retry did not recover the session")
 	}
 	if rt.created != 0 {
 		t.Fatal("retry spawned a duplicate of a surviving runtime")
@@ -85,16 +182,21 @@ func TestStatusReadinessDoesNotOfferRetryWhileRecoveryOwnsSession(t *testing.T) 
 type deadlineAwareRuntime struct {
 	*fakeRuntime
 	entered chan struct{}
+	calls   atomic.Int32
 }
 
 func (r *deadlineAwareRuntime) IsAlive(ctx context.Context, _ ports.RuntimeHandle) (bool, error) {
-	close(r.entered)
-	<-ctx.Done()
-	return false, ctx.Err()
+	if r.calls.Add(1) == 1 {
+		close(r.entered)
+		<-ctx.Done()
+		return false, ctx.Err()
+	}
+	return true, nil
 }
 
 func TestStatusReadinessDeadlineReleasesSessionForRetry(t *testing.T) {
 	m, st, rt, _ := newManager()
+	configureFastRecoveryRetries(m)
 	rec := domain.SessionRecord{ID: "s1", ProjectID: "mer", Harness: domain.HarnessClaudeCode,
 		Activity: domain.Activity{State: domain.ActivityActive},
 		Metadata: domain.SessionMetadata{Branch: "ao/s1", WorkspacePath: "/wt/s1", RuntimeHandleID: "s1"}}
@@ -108,34 +210,99 @@ func TestStatusReadinessDeadlineReleasesSessionForRetry(t *testing.T) {
 	if err := <-finished; err != nil {
 		t.Fatal(err)
 	}
-	if got := m.SessionStatusReadiness(rec); got != "unavailable" {
-		t.Fatalf("deadline = %s, want unavailable", got)
+	if got := m.SessionStatusReadiness(rec); got != "checking" {
+		t.Fatalf("deadline = %s, want checking while recovery retries", got)
 	}
-	rt.aliveByHandle = map[string]bool{"s1": true}
-	m.runtime = rt
-	if _, err := m.ResumeAgentWithMode(context.Background(), rec.ID); err != nil {
-		t.Fatalf("retry after deadline: %v", err)
-	}
-	if got := m.SessionStatusReadiness(st.sessions[rec.ID]); got != "ready" {
-		t.Fatalf("retry = %s, want ready", got)
+	if !waitForStatusReadiness(t, m, st.sessions[rec.ID], "ready") {
+		t.Fatal("automatic retry after deadline did not recover the session")
 	}
 }
 
-func TestStatusReadinessDiscoveryFailureIsUnavailable(t *testing.T) {
+func TestStatusReadinessDiscoveryFailureDoesNotMarkSessionsUnavailable(t *testing.T) {
 	m, st, _, _ := newManager()
+	configureFastRecoveryRetries(m)
 	st.listAllErr = errors.New("storage unavailable")
 	if err := m.ReconcileBackground(context.Background()); err == nil {
 		t.Fatal("expected discovery failure")
 	}
-	if got := m.SessionStatusReadiness(domain.SessionRecord{ID: "s1"}); got != "unavailable" {
-		t.Fatalf("readiness = %s", got)
+	if got := m.SessionStatusReadiness(domain.SessionRecord{ID: "s1"}); got != "checking" {
+		t.Fatalf("readiness = %s, want checking because a global scan failure proves no individual session is dead", got)
 	}
+	if !waitForStatusReadiness(t, m, domain.SessionRecord{ID: "s1"}, "unavailable") {
+		t.Fatal("bounded discovery retries did not expose an actionable unavailable state")
+	}
+}
+
+func TestStatusReadinessDiscoveryRetryCanRecover(t *testing.T) {
+	m, st, _, _ := newManager()
+	configureFastRecoveryRetries(m)
+	st.listAllErrs = []error{errors.New("storage unavailable"), nil}
+	if err := m.ReconcileBackground(context.Background()); err == nil {
+		t.Fatal("expected discovery failure")
+	}
+	if !waitForStatusReadiness(t, m, domain.SessionRecord{ID: "s1"}, "ready") {
+		t.Fatal("successful discovery retry did not restore ready status")
+	}
+}
+
+func TestRetryRestoredRecoveryRestoresSavedSession(t *testing.T) {
+	m, st, rt, _ := newLifecycleManager()
+	configureFastRecoveryRetries(m)
+	rec := domain.SessionRecord{
+		ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessClaudeCode,
+		IsTerminated: true,
+		Metadata: domain.SessionMetadata{
+			WorkspacePath: "/ws/mer-1", Branch: "ao/mer-1/root", AgentSessionID: "agent-w",
+		},
+		Activity: domain.Activity{State: domain.ActivityExited},
+	}
+	st.sessions[rec.ID] = rec
+	st.worktrees[rec.ID] = []domain.SessionWorktreeRecord{{
+		SessionID: rec.ID, RepoName: domain.RootWorkspaceRepoName, State: "removed",
+	}}
+	m.beginStatusRecovery(rec.ID)
+	m.retryRestoredRecovery(context.Background(), rec.ID)
+	if rt.created != 1 || st.sessions[rec.ID].IsTerminated {
+		t.Fatalf("retry restore = creates %d terminated %v, want 1/false", rt.created, st.sessions[rec.ID].IsTerminated)
+	}
+	if got := m.SessionStatusReadiness(st.sessions[rec.ID]); got != "ready" {
+		t.Fatalf("readiness after restored retry = %s, want ready", got)
+	}
+}
+
+func waitForStatusReadiness(t *testing.T, m *Manager, rec domain.SessionRecord, want string) bool {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := m.SessionStatusReadiness(rec); got == want {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return m.SessionStatusReadiness(rec) == want
 }
 
 func TestStatusReadinessFreshSpawnAfterDiscoveryFailureIsReady(t *testing.T) {
 	m, st, _, _ := newManager()
+	// Keep the retry pending without letting it concurrently touch fakeStore,
+	// which is intentionally a lightweight, non-thread-safe test double. The
+	// production store is concurrency-safe; this test only needs to exercise a
+	// spawn inside the pending-recovery window.
+	m.statusRecoveryRetryInitial = time.Hour
+	m.statusRecoveryRetryMax = time.Hour
+	m.statusRecoveryRetryAttempts = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	m.backgroundContext = ctx
+	defer func() {
+		cancel()
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+		defer waitCancel()
+		if err := m.WaitBackgroundWorkers(waitCtx); err != nil {
+			t.Errorf("wait for recovery worker: %v", err)
+		}
+	}()
 	st.listAllErr = errors.New("storage unavailable")
-	if err := m.ReconcileBackground(context.Background()); err == nil {
+	if err := m.ReconcileBackground(ctx); err == nil {
 		t.Fatal("expected discovery failure")
 	}
 	st.listAllErr = nil
@@ -147,7 +314,7 @@ func TestStatusReadinessFreshSpawnAfterDiscoveryFailureIsReady(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := m.SessionStatusReadiness(rec); got != "ready" {
-		t.Fatalf("fresh spawn readiness = %s, want ready", got)
+		t.Fatalf("fresh spawn during discovery retry = %s, want ready", got)
 	}
 }
 
