@@ -50,6 +50,11 @@ type fakeConversationService struct {
 	approvalDecision  ports.ChatDecision
 	inputRequestID    string
 	inputResponse     ports.ChatInputResponse
+	sideChatSession   domain.SessionID
+	sideChatLabel     string
+	sideChatRequest   chatsvc.SideCreateRequest
+	sideChat          domain.SideConversation
+	sideChatErr       error
 	reviewSnapshot    chatsvc.Snapshot
 	reviewErr         error
 	reviewID          string
@@ -66,6 +71,68 @@ func (f *fakeConversationService) EditMessage(context.Context, domain.SessionID,
 
 func (f *fakeConversationService) ActivateBranch(context.Context, domain.SessionID, string) (string, error) {
 	return "", nil
+}
+
+func (f *fakeConversationService) CreateIndependentSideChat(_ context.Context, session domain.SessionID, req chatsvc.SideCreateRequest) (domain.SideConversation, error) {
+	f.sideChatSession = session
+	f.sideChatLabel = req.Label
+	f.sideChatRequest = req
+	return f.sideChat, f.sideChatErr
+}
+
+func (f *fakeConversationService) ListIndependentSideChats(context.Context, domain.SessionID) ([]domain.SideConversation, error) {
+	return []domain.SideConversation{f.sideChat}, nil
+}
+func (f *fakeConversationService) SideSnapshot(context.Context, domain.SessionID, string, time.Time, int) (domain.SideSnapshot, error) {
+	return domain.SideSnapshot{Side: f.sideChat}, nil
+}
+func (f *fakeConversationService) SendSideQuestion(context.Context, domain.SessionID, string, ports.ChatUserMessage) (domain.SideTurn, error) {
+	return domain.SideTurn{ID: "turn-1"}, nil
+}
+func (f *fakeConversationService) EditQueuedSideQuestion(context.Context, domain.SessionID, string, string, string) error {
+	return nil
+}
+func (f *fakeConversationService) RetrySideConnection(_ context.Context, session domain.SessionID, _ string) error {
+	f.sideChatSession = session
+	return f.sideChatErr
+}
+func (f *fakeConversationService) RetrySideQuestion(context.Context, domain.SessionID, string, string) error {
+	return nil
+}
+func (f *fakeConversationService) UpdateSideSettings(context.Context, domain.SessionID, string, string, string) error {
+	return nil
+}
+func (f *fakeConversationService) SaveSideDraft(context.Context, domain.SessionID, string, string) error {
+	return nil
+}
+func (f *fakeConversationService) SideDraft(context.Context, domain.SessionID, string) (string, error) {
+	return "", nil
+}
+func (f *fakeConversationService) InterruptSideQuestion(context.Context, domain.SessionID, string) error {
+	return nil
+}
+func (f *fakeConversationService) CompactSideChat(context.Context, domain.SessionID, string) (ports.ChatCompactionResult, error) {
+	return ports.ChatCompactionResult{}, nil
+}
+func (f *fakeConversationService) ResolveSideApproval(context.Context, domain.SessionID, string, string, string) error {
+	return nil
+}
+func (f *fakeConversationService) ResolveSideInput(context.Context, domain.SessionID, string, string, ports.ChatInputResponse) error {
+	return nil
+}
+func (f *fakeConversationService) CloseIndependentSideChat(context.Context, domain.SessionID, string) error {
+	return nil
+}
+func (f *fakeConversationService) ClaimSideChatLaunch(context.Context, string) error { return nil }
+func (f *fakeConversationService) ExportSideChatLaunch(context.Context, string) ([]chatsvc.SideRecoveryRecord, error) {
+	return nil, nil
+}
+func (f *fakeConversationService) RecoverSideChatLaunch(context.Context, string, []chatsvc.SideRecoveryRecord) error {
+	return nil
+}
+func (f *fakeConversationService) RetireSideChatLaunch(context.Context, string) error { return nil }
+func (f *fakeConversationService) WatchSideChat(context.Context, domain.SessionID, string) (string, <-chan struct{}, func(), error) {
+	return "generation-1", make(chan struct{}), func() {}, nil
 }
 
 func (f *fakeConversationService) Snapshot(context.Context, domain.SessionID) (chatsvc.Snapshot, error) {
@@ -215,6 +282,11 @@ func TestConversationSnapshotExposesSafeEditContentAndBranchMetadata(t *testing.
 				ID: "retry", TurnID: "turn-retry", Sequence: 4, Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman,
 				Text: "inspect", ClientMessageID: "retry/turn-source", CreatedAt: now,
 			},
+			{
+				ID: "excerpt", Sequence: 5, Role: domain.MessageRoleUser, Origin: domain.MessageOriginHuman,
+				Text: "explain", CreatedAt: now,
+				DeliveryContentJSON: `[{"type":"excerpt","excerpt":{"selection":"chosen words","sourceMessageId":"source","sourceRole":"assistant","sourceText":"full agent answer","messages":[{"role":"user","text":"original question"},{"role":"assistant","text":"full agent answer"}]}},{"type":"resource","uri":"ao://conversation-excerpt/legacy","name":"assistant message","text":"old selection"}]`,
+			},
 		},
 		BranchPoints: []domain.ConversationBranchPoint{{
 			TurnID: "turn-edited", Position: 2, Total: 2, PreviousBranchID: "branch-root",
@@ -267,6 +339,14 @@ func TestConversationSnapshotExposesSafeEditContentAndBranchMetadata(t *testing.
 	}
 	if messages[2].(map[string]any)["editAvailable"] != false {
 		t.Fatalf("malformed message is editable: %#v", messages[2])
+	}
+	excerptContent := messages[4].(map[string]any)["content"].([]any)
+	if len(excerptContent) != 2 || excerptContent[0].(map[string]any)["excerpt"].(map[string]any)["selection"] != "chosen words" || excerptContent[1].(map[string]any)["excerpt"].(map[string]any)["selection"] != "old selection" {
+		t.Fatalf("excerpt summaries = %#v", excerptContent)
+	}
+	excerptJSON, _ := json.Marshal(excerptContent)
+	if bytes.Contains(excerptJSON, []byte("ao://")) {
+		t.Fatalf("excerpt summary leaked internal URI: %s", excerptJSON)
 	}
 	turns := body["turns"].([]any)
 	if turns[0].(map[string]any)["hasRetryAttempt"] != true {
@@ -338,6 +418,75 @@ func TestSendConversationPreservesNativeImageAndResourceContent(t *testing.T) {
 	}
 	if service.sent.Content[0].Type != "image" || service.sent.Content[1].Type != "resource_link" || service.sent.Content[2].Type != "resource" {
 		t.Fatalf("content = %#v", service.sent.Content)
+	}
+}
+
+func TestSendConversationCarriesExcerptReferencesWithoutTrustingClientResources(t *testing.T) {
+	service := &fakeConversationService{}
+	server := conversationTestServer(t, service)
+	body := []byte(`{
+		"text":"use this context",
+		"excerpts":[{
+			"conversationId":"conversation-1",
+			"messageId":"message-7",
+			"revision":3,
+			"text":"the selected sentence"
+		}]
+	}`)
+	request, err := http.NewRequest(http.MethodPost,
+		server.URL+"/api/v1/sessions/p1-1/conversation/messages", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("POST message: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusAccepted {
+		got, _ := io.ReadAll(response.Body)
+		t.Fatalf("status = %d, body = %s", response.StatusCode, got)
+	}
+	if len(service.sent.Excerpts) != 1 || service.sent.Excerpts[0] != (ports.ChatExcerptReference{
+		ConversationID: "conversation-1", MessageID: "message-7", Revision: 3,
+		Text: "the selected sentence",
+	}) {
+		t.Fatalf("excerpts = %#v", service.sent.Excerpts)
+	}
+	if len(service.sent.Content) != 0 {
+		t.Fatalf("unverified excerpt became client content: %#v", service.sent.Content)
+	}
+}
+
+func TestCreateConversationSideChatReturnsIndependentSide(t *testing.T) {
+	service := &fakeConversationService{sideChat: domain.SideConversation{ID: "side-1", Label: "Explain this", State: "opening"}}
+	server := conversationTestServer(t, service)
+	response, err := http.Post(
+		server.URL+"/api/v1/sessions/p1-1/conversation/side-chats",
+		"application/json",
+		bytes.NewBufferString(`{"label":"Explain this","idempotencyKey":"create-1","reference":{"conversationId":"conversation-1","messageId":"message-7","revision":3,"text":"sun"}}`),
+	)
+	if err != nil {
+		t.Fatalf("POST side chat: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("status = %d, body = %s", response.StatusCode, body)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if service.sideChatSession != "p1-1" || service.sideChatLabel != "Explain this" {
+		t.Fatalf("create side chat input = %q/%q", service.sideChatSession, service.sideChatLabel)
+	}
+	if service.sideChatRequest.IdempotencyKey != "create-1" || service.sideChatRequest.Reference == nil || service.sideChatRequest.Reference.Text != "sun" {
+		t.Fatalf("create side chat reference = %#v", service.sideChatRequest)
+	}
+	if got["side"].(map[string]any)["id"] != "side-1" || got["side"].(map[string]any)["state"] != "opening" {
+		t.Fatalf("response = %#v", got)
 	}
 }
 
@@ -647,5 +796,39 @@ func TestSnapshotKeepsAggregateWhenNoStreamArrived(t *testing.T) {
 	}
 	if _, present := detail["outputTruncated"]; present {
 		t.Error("untruncated output still carried the truncation flag")
+	}
+}
+
+func TestRetrySideConnectionRouteAndErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{{"accepted", nil, 202, ""}, {"closed", chatsvc.ErrSideClosed, 404, "CHAT_SIDE_CLOSED"}, {"not ready", chatsvc.ErrSideNotReady, 409, "CHAT_SIDE_NOT_READY"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := &fakeConversationService{sideChatErr: tc.err}
+			server := conversationTestServer(t, service)
+			response, err := http.Post(server.URL+"/api/v1/sessions/p1-1/conversation/side-chats/side/recover", "application/json", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			if response.StatusCode != tc.status {
+				t.Fatalf("status=%d", response.StatusCode)
+			}
+			if service.sideChatSession != "p1-1" {
+				t.Fatal("recovery not scoped to session")
+			}
+			if tc.code != "" {
+				var body map[string]any
+				if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				if body["code"] != tc.code || body["requestId"] == "" {
+					t.Fatalf("error envelope: %+v", body)
+				}
+			}
+		})
 	}
 }

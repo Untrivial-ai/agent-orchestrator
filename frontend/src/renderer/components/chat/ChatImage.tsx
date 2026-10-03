@@ -98,6 +98,7 @@ export function ChatImage({ src, alt }: { src?: string | Blob; alt?: string }) {
 	return (
 		<>
 			<button
+				data-chat-selection-exclude=""
 				type="button"
 				onClick={() => setOpen(true)}
 				aria-label={label ? t("chat.image.open", { name: label }) : t("chat.image.openUnnamed")}

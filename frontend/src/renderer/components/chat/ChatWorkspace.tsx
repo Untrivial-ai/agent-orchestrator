@@ -29,10 +29,11 @@ import {
 	type ReactNode,
 	type WheelEvent as ReactWheelEvent,
 } from "react";
-import { ArrowDown, Loader2, TriangleAlert, Undo2 } from "lucide-react";
+import { ArrowDown, Loader2, MessageSquarePlus, TriangleAlert, Undo2 } from "lucide-react";
 import { Reorder, useDragControls } from "motion/react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
+import { SelectionActionToolbar } from "./SelectionActionToolbar";
 import {
 	acknowledgeChatInlineEditMutation,
 	beginChatInlineEditMutation,
@@ -50,9 +51,11 @@ import {
 	readChatSessionDraft,
 	subscribeChatDraftRuntime,
 	writeChatInlineEdit,
+	writeChatExcerptReferences,
 	writeChatQueuedEdit,
 	type ChatDraftQueuedEdit,
 	type ChatDraftAttachment,
+	type ChatDraftExcerptReference,
 	type ChatDraftRetainedAttachment,
 	type DraftClearResult,
 	type ChatDraftInlineEdit,
@@ -105,6 +108,7 @@ import { HumanMessageEditor } from "./HumanMessageEditor";
 import { ChatLinkProvider } from "./ChatMarkdown";
 import { ChatImageSourceProvider } from "./chat-image-source";
 import { ChatComposer, type StoredComposerAttachment } from "./ChatComposer";
+import type { SideChatDraft } from "./sideChatDraft";
 import { ContextMeter } from "./ContextMeter";
 import { stagedAttachmentParts, attachmentName } from "./messageAttachments";
 import type { QueuedMessageEditOptions } from "../../types/conversation";
@@ -308,6 +312,7 @@ export interface ChatWorkspaceProps {
 		text: string,
 		attachments?: { mimeType: string; data: string }[],
 		clientMessageId?: string,
+		excerpts?: ChatDraftExcerptReference[],
 	) => void | Promise<unknown>;
 	onDecide?: (requestId: string, decisionId: string) => void;
 	onResolveInput?: (
@@ -397,6 +402,10 @@ export interface ChatWorkspaceProps {
 	editMessageError?: string;
 	/** Switch the visible conversation to another branch. */
 	onActivateBranch?: (branchId: string) => void | Promise<unknown>;
+	/** Open an independent side conversation; the selection is its quoted reference. */
+	onCreateSideChat?: (excerpt?: ChatDraftExcerptReference) => Promise<{ id: string } | undefined>;
+	onBtwAction?: (draft?: SideChatDraft) => Promise<void>;
+	createSideChatError?: string;
 	activateBranchPending?: boolean;
 	activateBranchError?: string;
 	/** The provider's skills. Empty leaves `/` an ordinary character. */
@@ -608,6 +617,9 @@ function ChatWorkspaceContent({
 	onActivateBranch,
 	activateBranchPending,
 	activateBranchError,
+	onCreateSideChat,
+	onBtwAction,
+	createSideChatError,
 	skills,
 	filePaths,
 	filePathsTruncated,
@@ -632,6 +644,7 @@ function ChatWorkspaceContent({
 	draftScope,
 }: ChatWorkspaceProps & { draftScope: ChatDraftScope }) {
 	const draftScopeKey = chatDraftScopeKey(draftScope);
+	const activeSideChat = snapshot.sideChats?.find((sideChat) => sideChat.active);
 	const uiSessionId = draftScope.sessionId;
 	const activeRemoteHostId = remoteHostId ?? session?.hostId;
 	const remoteCreateMux = useMemo(
@@ -831,7 +844,7 @@ function ChatWorkspaceContent({
 	// Keep the dispatch target with this composer instance while attachment staging
 	// awaits. A newer queue editor must not redirect an older ordinary send.
 	const handleComposerSend = useCallback(
-		async (text: string, attachments?: Parameters<NonNullable<typeof onSend>>[1], clientMessageId?: string, retainedContent?: number[]) => {
+		async (text: string, attachments?: Parameters<NonNullable<typeof onSend>>[1], clientMessageId?: string, retainedContent?: number[], excerpts?: ChatDraftExcerptReference[]) => {
 			if (queueEdit) {
 				if (!onEditQueuedTurn) {
 					throw new Error("chat.draft.queueUnavailable");
@@ -878,10 +891,24 @@ function ChatWorkspaceContent({
 				}
 				return;
 			}
-			return onSend?.(text, attachments, clientMessageId);
+			return onSend?.(text, attachments, clientMessageId, excerpts);
 		},
 		[draftScope, onEditQueuedTurn, onSend, nativeImages, queueEdit, queuedMessages, updateQueueDraft],
 	);
+	const createSideChatWithExcerpt = useCallback(async (excerpt: ChatDraftExcerptReference) => {
+		if (!onCreateSideChat) return;
+		await onCreateSideChat(excerpt);
+	}, [onCreateSideChat]);
+	const addSideSelectionToMain = useCallback(async (excerpt: ChatDraftExcerptReference) => {
+		if (!activeSideChat || !onActivateBranch) return;
+		await onActivateBranch(activeSideChat.parentBranchId);
+		const current = readChatSessionDraft(draftScope).composer.excerpts ?? [];
+		const duplicate = current.some((item) =>
+			item.messageId === excerpt.messageId && item.revision === excerpt.revision && item.text === excerpt.text,
+		);
+		const result = writeChatExcerptReferences(draftScope, duplicate ? current : [...current, excerpt].slice(-8));
+		if (!result.ok) throw new Error("chat.draft.saveFailed");
+	}, [activeSideChat, draftScope, onActivateBranch]);
 	const stableInterrupt = useStableCallback(onInterrupt);
 	const stableSteer = useStableCallback(onSteer);
 	const beginQueuedEdit = useCallback(
@@ -1444,6 +1471,17 @@ function ChatWorkspaceContent({
 						turnInFlight={Boolean(turn)}
 						error={mcpReloadError}
 					/>
+					{((activeSideChat && onActivateBranch) || createSideChatError || activateBranchError) ? (
+						<div className="flex min-h-9 items-center gap-1 border-b border-border bg-sidebar/60 px-4 py-1.5 text-xs">
+							{activeSideChat && onActivateBranch ? <Button type="button" size="sm" variant="ghost"
+								onClick={() => void onActivateBranch(activeSideChat.parentBranchId)}>
+								Return to main
+							</Button> : null}
+							{createSideChatError || activateBranchError ? (
+								<span className="ml-auto text-destructive" role="alert">{createSideChatError ?? activateBranchError}</span>
+							) : null}
+						</div>
+					) : null}
 					<div
 						className={cn("flex min-h-0 flex-1 flex-col", conversationEmpty && "justify-center")}
 						data-composer-placement={conversationEmpty ? "center" : "dock"}
@@ -1474,6 +1512,9 @@ function ChatWorkspaceContent({
 									activateBranchError={activateBranchError}
 									newWorkDisabled={newWorkDisabled}
 									localEchos={localEchos}
+									minimumSequence={activeSideChat?.forkAfterSequence}
+									onAddSelectionToSideChat={!activeSideChat ? createSideChatWithExcerpt : undefined}
+									onAddSelectionToMainChat={activeSideChat ? addSideSelectionToMain : undefined}
 								/>
 							</ChatImageSourceProvider>
 						</ChatLinkProvider>
@@ -1486,6 +1527,7 @@ function ChatWorkspaceContent({
 							>
 								{discarded > 0 ? <RolledBackNotice count={discarded} /> : null}
 								<ChatComposer
+									excerptSnapshot={snapshot}
 									key={`${draftScopeKey}:${queueEdit ? `${queueEdit.turnId}:${queueEdit.ownerId ?? queueEdit.expectedRevision ?? "legacy"}` : "composer"}`}
 									queuedDock={composerQueuedDock}
 									approval={composerApproval}
@@ -1529,6 +1571,7 @@ function ChatWorkspaceContent({
 									steerPending={steerPending}
 									steerRefusal={steerRefusal}
 									onCompact={newWorkDisabled ? undefined : onCompact}
+									onBtwAction={onBtwAction}
 									compacting={compacting}
 									compactUnavailable={compactUnavailable}
 									compactBlocked={Boolean(turn)}
@@ -2075,6 +2118,9 @@ function Timeline({
 	activateBranchError,
 	newWorkDisabled,
 	localEchos = [],
+	minimumSequence,
+	onAddSelectionToSideChat,
+	onAddSelectionToMainChat,
 }: {
 	snapshot: ConversationSnapshot;
 	assetBaseUrl?: string;
@@ -2098,6 +2144,9 @@ function Timeline({
 	activateBranchError?: string;
 	newWorkDisabled?: boolean;
 	localEchos?: ConversationLocalEcho[];
+	minimumSequence?: number;
+	onAddSelectionToSideChat?: (excerpt: ChatDraftExcerptReference) => Promise<void>;
+	onAddSelectionToMainChat?: (excerpt: ChatDraftExcerptReference) => Promise<void>;
 }) {
 	const translateDraft = useChatDraftTranslation();
 	const uiSessionId = draftScope.sessionId;
@@ -2113,6 +2162,11 @@ function Timeline({
 	const pinnedRef = useRef(true);
 	const [pinned, setPinned] = useState(true);
 	const [hoveredMarker, setHoveredMarker] = useState<number | null>(null);
+	const [selectionAction, setSelectionAction] = useState<{
+		excerpt: ChatDraftExcerptReference;
+		anchorX: number;
+		top: number;
+	} | null>(null);
 	const hoveredMarkerRef = useRef<number | null>(null);
 	hoveredMarkerRef.current = hoveredMarker;
 	const [messageEdit, setMessageEdit] = useState<MessageEditDraft | undefined>(
@@ -2153,6 +2207,94 @@ function Timeline({
 	const inlineEditLocked = inlineEditPending || Boolean(durableInlineEditDelivery);
 	const inlineEditSendBlocked =
 		inlineEditPending || (acceptedEditClearFailed && !durableInlineEditDelivery);
+
+	const captureTranscriptSelection = useCallback(() => {
+		const selection = window.getSelection();
+		if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+			setSelectionAction(null);
+			return;
+		}
+		const anchor = selection.anchorNode instanceof Element
+			? selection.anchorNode
+			: selection.anchorNode?.parentElement;
+		const focus = selection.focusNode instanceof Element
+			? selection.focusNode
+			: selection.focusNode?.parentElement;
+		const source = anchor?.closest<HTMLElement>("[data-chat-message-id]");
+		const content = anchor?.closest<HTMLElement>("[data-chat-message-content]");
+		if (
+			!source ||
+			!content ||
+			content !== focus?.closest<HTMLElement>("[data-chat-message-content]") ||
+			!source.contains(content) ||
+			source !== focus?.closest<HTMLElement>("[data-chat-message-id]") ||
+			!scrollContent.current?.contains(source)
+		) {
+			setSelectionAction(null);
+			return;
+		}
+		const range = selection.getRangeAt(0);
+		if (
+			anchor?.closest("[data-chat-selection-exclude]") ||
+			focus?.closest("[data-chat-selection-exclude]") ||
+			Array.from(content.querySelectorAll("[data-chat-selection-exclude]"))
+				.some((node) => range.intersectsNode(node))
+		) {
+			setSelectionAction(null);
+			return;
+		}
+		const text = selection.toString();
+		const messageId = source.dataset.chatMessageId;
+		const revision = Number(source.dataset.chatMessageRevision);
+		const role = source.dataset.chatMessageRole;
+		if (
+			!text.trim() ||
+			!messageId ||
+			!Number.isSafeInteger(revision) ||
+			(role !== "user" && role !== "assistant")
+		) {
+			setSelectionAction(null);
+			return;
+		}
+		const rect = range.getBoundingClientRect();
+		const timelineRect = scroller.current?.getBoundingClientRect();
+		if (!timelineRect) return;
+		setSelectionAction({
+			excerpt: {
+				id: crypto.randomUUID(),
+				conversationId: snapshot.conversationId,
+				messageId,
+				revision,
+				text,
+				role,
+			},
+			anchorX: rect.left - timelineRect.left + rect.width / 2,
+			top: Math.max(8, rect.top - timelineRect.top - 42),
+		});
+	}, [snapshot.conversationId]);
+
+	const addSelectionToChat = useCallback(async () => {
+		if (!selectionAction) return;
+		if (onAddSelectionToMainChat) await onAddSelectionToMainChat(selectionAction.excerpt);
+		const current = readChatSessionDraft(draftScope).composer.excerpts ?? [];
+		const duplicate = current.some(
+			(item) =>
+				item.messageId === selectionAction.excerpt.messageId &&
+				item.revision === selectionAction.excerpt.revision &&
+				item.text === selectionAction.excerpt.text,
+		);
+		const next = duplicate ? current : [...current, selectionAction.excerpt].slice(-8);
+		const result = writeChatExcerptReferences(draftScope, next);
+		setDraftPersistenceError(result.ok ? undefined : "chat.draft.saveFailed");
+		setSelectionAction(null);
+		window.getSelection()?.removeAllRanges();
+	}, [draftScope, onAddSelectionToMainChat, selectionAction]);
+	const addSelectionToSideChat = useCallback(async () => {
+		if (!selectionAction || !onAddSelectionToSideChat) return;
+		await onAddSelectionToSideChat(selectionAction.excerpt);
+		setSelectionAction(null);
+		window.getSelection()?.removeAllRanges();
+	}, [onAddSelectionToSideChat, selectionAction]);
 	const inlineEditRecoveryLabel = durableInlineEditDelivery
 		? durableInlineEditDelivery.state === "accepted"
 			? "chat.draft.clearEdit"
@@ -2598,7 +2740,10 @@ function Timeline({
 		],
 	);
 
-	const readable = useMemo(() => readableItems(snapshot), [snapshot]);
+	const readable = useMemo(
+		() => readableItems(snapshot).filter((item) => minimumSequence === undefined || item.sequence > minimumSequence),
+		[minimumSequence, snapshot],
+	);
 	const items = useStableList(readable, itemKey, sameContent);
 	const seenHumanMessageIds = useRef<Set<string> | undefined>(undefined);
 	const lastSeenLatestSequence = useRef<number | undefined>(undefined);
@@ -2656,6 +2801,13 @@ function Timeline({
 				role: "user",
 				origin: "human",
 				text: echo.text,
+				content: echo.excerpts?.map((excerpt) => {
+					const source = items.find((item) => item.kind === "message" && item.id === excerpt.messageId);
+					return {
+						type: "excerpt",
+						excerpt: { selection: excerpt.text, sourceRole: source?.kind === "message" ? source.role : "user", sourceText: excerpt.text, messages: [] },
+					};
+				}),
 				streaming: false,
 				delivery: echo.turnId ? "accepted" : "sending",
 				createdAt: echo.createdAt,
@@ -2937,9 +3089,23 @@ function Timeline({
 			// cannot invalidate the complete mounted conversation history or shell.
 			style={{ contain: "layout paint" }}
 		>
+			{selectionAction ? (
+				<SelectionActionToolbar anchorX={selectionAction.anchorX} top={selectionAction.top}>
+					<button type="button" onClick={() => void addSelectionToChat()} className="flex shrink-0 items-center gap-1.5 whitespace-nowrap px-2.5 py-1.5 hover:bg-interactive-hover">
+						<MessageSquarePlus aria-hidden="true" className="size-3.5 shrink-0" /> Add to chat
+					</button>
+					{onAddSelectionToSideChat ? (
+						<button type="button" onClick={() => void addSelectionToSideChat()} className="shrink-0 whitespace-nowrap border-l border-border px-2.5 py-1.5 hover:bg-interactive-hover">
+							Add to side chat
+						</button>
+					) : null}
+				</SelectionActionToolbar>
+			) : null}
 			<div
 				ref={scroller}
 				onScroll={onScroll}
+				onMouseUp={captureTranscriptSelection}
+				onKeyUp={captureTranscriptSelection}
 				className="chat-scroll-viewport cursor-chat-timeline h-full min-w-0 select-text overflow-x-hidden overflow-y-auto px-4 pt-5 pb-0"
 				role="log"
 				aria-live="polite"

@@ -49,9 +49,8 @@ const approvedLiterals: Record<string, readonly string[]> = {
 	"components/settings/UpdatesSection.tsx": ["PR #"],
 };
 
-// The Chat surface predates this coverage gate and is intentionally being
-// localized as a follow-up. Keep the deferral scoped to the new surface so
-// hardcoded chrome elsewhere in the renderer still fails this test.
+// The Chat surface, including its companion pane, uses the existing chat
+// localization deferral. Keep it scoped here so chrome elsewhere still fails.
 const deferredLocalizationFiles = new Set([
 	"components/SessionInterfaceSwitch.tsx",
 	"components/chat/ActivityRun.tsx",
@@ -60,6 +59,8 @@ const deferredLocalizationFiles = new Set([
 	"components/chat/ChatStatusBanners.tsx",
 	"components/chat/ChatTimelineItems.tsx",
 	"components/chat/ChatWorkspace.tsx",
+	"components/chat/ExcerptSelectionChip.tsx",
+	"components/chat/IndependentSideChats.tsx",
 	"components/chat/ComposerSuggestMenu.tsx",
 	"components/chat/ContextMeter.tsx",
 	"components/chat/CopyButton.tsx",

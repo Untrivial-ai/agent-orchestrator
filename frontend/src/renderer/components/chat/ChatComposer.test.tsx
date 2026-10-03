@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { Activity, Profiler } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ChatComposer } from "./ChatComposer";
+import { chatFixture } from "../../lib/chat-fixture";
 import { attachmentURL } from "./messageAttachments";
 import { getApiBaseUrl } from "../../lib/api-client";
 import { TooltipProvider } from "../ui/tooltip";
@@ -17,6 +18,7 @@ import {
 	readChatSessionDraft,
 	writeChatComposerText,
 	writeChatAttachments,
+	writeChatExcerptReferences,
 } from "../../lib/chat-drafts";
 import {
 	getChatDraftBoundaries,
@@ -86,6 +88,76 @@ const textFile = (name = "notes.txt") => new File(["hello"], name, { type: "text
 /* ---- the keyboard contract the composer already had ---------------------- */
 
 describe("send keys", () => {
+	it("sends the exact durable transcript excerpts with the next message", async () => {
+		const sessionId = "composer-excerpts";
+		const excerpts = [{
+			id: "excerpt-1",
+			conversationId: "conversation-1",
+			messageId: "message-1",
+			revision: 4,
+			text: "selected transcript text",
+			role: "assistant" as const,
+		}];
+		writeChatExcerptReferences(sessionId, excerpts);
+		const { onSend, field } = renderComposer({ draftSessionId: sessionId });
+		await typeInComposer(field, "use this context");
+		fireEvent.keyDown(field, { key: "Enter" });
+		await waitFor(() => expect(onSend).toHaveBeenCalledWith(
+			"use this context",
+			undefined,
+			expect.any(String),
+			undefined,
+			excerpts,
+		));
+	});
+
+	it("does not reject a rendered Markdown selection before sending", async () => {
+		const sessionId = "composer-rendered-excerpt";
+		const excerpt = {
+			id: "rendered-excerpt",
+			conversationId: chatFixture.conversationId,
+			messageId: "m-2",
+			revision: 7,
+			text: "Check the worktree state",
+			role: "assistant" as const,
+		};
+		writeChatExcerptReferences(sessionId, [excerpt]);
+		const snapshot = {
+			...chatFixture,
+			items: chatFixture.items.map((item) =>
+				item.kind === "message" && item.id === "m-2"
+					? { ...item, text: "Check **the** worktree state" }
+				: item,
+			),
+		};
+		const { onSend, field } = renderComposer({ draftSessionId: sessionId, excerptSnapshot: snapshot });
+		await typeInComposer(field, "Follow up");
+		fireEvent.keyDown(field, { key: "Enter" });
+		await waitFor(() => expect(onSend).toHaveBeenCalledWith(
+			"Follow up", undefined, expect.any(String), undefined, [excerpt],
+		));
+	});
+
+	it("keeps the prompt when a referenced message revision changes", async () => {
+		const sessionId = "composer-stale-excerpt";
+		writeChatExcerptReferences(sessionId, [{
+			id: "stale-excerpt", conversationId: chatFixture.conversationId,
+			messageId: "m-1", revision: 0, text: "worktree state", role: "user",
+		}]);
+		const snapshot = {
+			...chatFixture,
+			items: chatFixture.items.map((item) =>
+				item.kind === "message" && item.id === "m-1" ? { ...item, revision: 1 } : item,
+			),
+		};
+		const { onSend, field } = renderComposer({ draftSessionId: sessionId, excerptSnapshot: snapshot });
+		await typeInComposer(field, "Keep my question");
+		expect(screen.getByText("The referenced message changed. Select the text again.")).toBeInTheDocument();
+		fireEvent.keyDown(field, { key: "Enter" });
+		expect(onSend).not.toHaveBeenCalled();
+		expect(readChatSessionDraft(sessionId).composer.text).toBe("Keep my question");
+	});
+
 	it("focuses the message field when the chat composer opens", () => {
 		const { field } = renderComposer({ autoFocusKey: "session-1" });
 		expect(document.activeElement).toBe(field);
@@ -1093,6 +1165,38 @@ describe("steering", () => {
 /* ---- slash commands ------------------------------------------------------ */
 
 describe("slash commands", () => {
+	it("runs the /btw menu action without sending or inserting a skill token", async () => {
+		const onBtwAction = vi.fn(async () => undefined);
+		const { onSend, field } = renderComposer({ onBtwAction, skills: SKILLS });
+		await typeInComposer(field, "Explain /");
+		await userEvent.click(screen.getByRole("option", { name: /\/btw/ }));
+		await waitFor(() => expect(onBtwAction).toHaveBeenCalledWith({ version: 1, text: "Explain", attachments: [], references: [] }));
+		expect(onSend).not.toHaveBeenCalled();
+		expect(field.querySelector('[data-composer-token="skill"]')).toBeNull();
+	});
+
+	it("moves main reference chips with a /btw draft", async () => {
+		const sessionId = "btw-transfer-references";
+		const reference = { id: "ref-1", conversationId: "conversation-1", messageId: "message-1", revision: 2,
+			text: "sun", role: "assistant" as const };
+		writeChatExcerptReferences(sessionId, [reference]);
+		const onBtwAction = vi.fn(async () => undefined);
+		const { field } = renderComposer({ draftSessionId: sessionId, onBtwAction });
+		await typeInComposer(field, "/");
+		await userEvent.click(screen.getByRole("option", { name: /\/btw/ }));
+		await waitFor(() => expect(onBtwAction).toHaveBeenCalledWith({ version: 1, text: "", attachments: [], references: [reference] }));
+		expect(readChatSessionDraft(sessionId).composer.excerpts ?? []).toEqual([]);
+	});
+
+	it("opens /btw on Enter and preserves an existing side draft when main has no content", async () => {
+		const onBtwAction = vi.fn(async () => undefined);
+		const { onSend, field } = renderComposer({ onBtwAction, skills: [] });
+		await typeInComposer(field, "/btw");
+		fireEvent.keyDown(field, { key: "Enter" });
+		await waitFor(() => expect(onBtwAction).toHaveBeenCalledWith(undefined));
+		expect(onBtwAction).toHaveBeenCalledTimes(1);
+		expect(onSend).not.toHaveBeenCalled();
+	});
 	it("opens the skill menu on a leading slash", async () => {
 		const { field } = renderComposer({ skills: SKILLS });
 		await typeInComposer(field, "/");

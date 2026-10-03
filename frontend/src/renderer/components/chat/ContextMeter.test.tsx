@@ -43,7 +43,7 @@ describe("ContextMeter", () => {
 	it("reports exact accessible values with compact numbers on hover", async () => {
 		render(<ContextMeter usage={usage({ cost: 0.4594, currency: "USD" })} />);
 		expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "7");
-		expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuetext", "18,055 / 258,400 tokens (7%)");
+		expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuetext", `${(18_055).toLocaleString()} / ${(258_400).toLocaleString()} tokens (7%)`);
 		await userEvent.hover(screen.getByRole("progressbar"));
 		const tooltip = await screen.findByRole("tooltip");
 		expect(tooltip).toHaveTextContent("18.1K / 258.4K tokens (7%)");
@@ -103,7 +103,7 @@ describe("ContextMeter", () => {
 
 	it("does not claim a failed turn with zero reported used is 0% full", () => {
 		render(<ContextMeter usage={usage({ contextUsed: 0, contextWindow: 262_144 })} />);
-		expect(screen.getByRole("img", { name: "Context unknown / 262,144" })).toBeInTheDocument();
+		expect(screen.getByRole("img", { name: `Context unknown / ${(262_144).toLocaleString()}` })).toBeInTheDocument();
 		expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
 	});
 

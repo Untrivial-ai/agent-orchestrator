@@ -13,7 +13,11 @@ const (
 	// PermissionModeDefault is special: adapters choose their own baseline
 	// behavior for it. Most defer to the agent's own config; some managed
 	// adapters may map it to a safer non-interactive default.
-	PermissionModeDefault           PermissionMode = "default"
+	PermissionModeDefault PermissionMode = "default"
+	// PermissionModeReadOnly is reserved for daemon-owned auxiliary conversations.
+	// It is never a project preference: adapters must enforce a no-write sandbox
+	// before accepting it rather than falling back to their ordinary default.
+	PermissionModeReadOnly          PermissionMode = "read-only"
 	PermissionModeAcceptEdits       PermissionMode = "accept-edits"
 	PermissionModeAuto              PermissionMode = "auto"
 	PermissionModeBypassPermissions PermissionMode = "bypass-permissions"

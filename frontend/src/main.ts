@@ -503,12 +503,54 @@ function focusMainWindow(): void {
 	mainWindow.focus();
 }
 
+let sideClaimedDaemonPID: number | undefined;
+let sideLaunchState: { appRunId: string; sides: unknown[] } | undefined;
+let sideStateTimer: ReturnType<typeof setInterval> | undefined;
+let sideStatePolling = false;
 function setDaemonStatus(nextStatus: DaemonStatus): void {
 	if (nextStatus.state !== "ready") disposeBrowserRuntimeLink();
+	if (nextStatus.state !== "ready") {
+		sideClaimedDaemonPID = undefined;
+		if (sideStateTimer) clearInterval(sideStateTimer);
+		sideStateTimer = undefined;
+	}
 	daemonStatus = nextStatus;
 	getShellWebContents()?.send("daemon:status", daemonStatus);
 	if (nextStatus.state === "ready" && browserViewHost) {
 		establishBrowserRuntimeLink();
+	}
+	const daemonIdentity = nextStatus.pid ?? daemonProcess?.pid;
+	if (nextStatus.state === "ready" && nextStatus.port && daemonIdentity && sideClaimedDaemonPID !== daemonIdentity) {
+		sideClaimedDaemonPID = daemonIdentity;
+		const sideBase = `http://127.0.0.1:${nextStatus.port}/api/v1/side-chats/launch`;
+		void fetch(`${sideBase}/claim`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ appRunId }),
+		}).then(async (response) => {
+			if (!response.ok) throw new Error(`side launch claim failed: ${response.status}`);
+			if (sideLaunchState?.appRunId === appRunId && sideLaunchState.sides.length > 0) {
+				const restored = await fetch(`${sideBase}/state`, {
+					method: "POST", headers: { "content-type": "application/json" },
+					body: JSON.stringify(sideLaunchState),
+				});
+				if (!restored.ok) throw new Error(`side chat recovery failed: ${restored.status}`);
+			}
+			const readState = async () => {
+				if (sideStatePolling || sideClaimedDaemonPID !== daemonIdentity) return;
+				sideStatePolling = true;
+				try {
+					const result = await fetch(`${sideBase}/state?appRunId=${encodeURIComponent(appRunId)}`);
+					if (result.ok) {
+						const state = await result.json() as { appRunId: string; sides: unknown[] };
+						if (sideClaimedDaemonPID === daemonIdentity && state.appRunId === appRunId) sideLaunchState = state;
+					}
+				} catch (error) { console.warn("AO: side chat memory snapshot failed", error); }
+				finally { sideStatePolling = false; }
+			};
+			await readState();
+			sideStateTimer = setInterval(() => void readState(), 500);
+		}).catch((error) => { sideClaimedDaemonPID = undefined; console.warn("AO: side chat launch claim failed", error); });
 	}
 }
 
@@ -1994,6 +2036,13 @@ ipcMain.handle("daemon:restart", async () => {
 		return reportDaemonRestartFailure(error);
 	}
 });
+ipcMain.handle("sideChats:capture", async (event) => {
+	if (event.sender !== getShellWebContents()) throw new Error("Untrusted side chat capture request.");
+	if (daemonStatus.state !== "ready" || !daemonStatus.port) return;
+	const result = await fetch(`http://127.0.0.1:${daemonStatus.port}/api/v1/side-chats/launch/state?appRunId=${encodeURIComponent(appRunId)}`);
+	if (!result.ok) throw new Error(`side chat capture failed: ${result.status}`);
+	sideLaunchState = await result.json() as { appRunId: string; sides: unknown[] };
+});
 ipcMain.handle("editorHandoff:getState", (event, sessionId: string) => {
 	if (event.sender !== getShellWebContents()) throw new Error("Untrusted editor handoff request.");
 	return editorHandoff.getState(typeof sessionId === "string" ? sessionId : "");
@@ -2944,10 +2993,22 @@ app.on("before-quit", (event) => {
 	if (!browserCleanupComplete) {
 		event.preventDefault();
 		if (!browserQuitCleanupPromise) {
+			const retireSides = async () => {
+				if (daemonStatus.state !== "ready" || !daemonStatus.port) return;
+				try {
+					const response = await fetch(`http://127.0.0.1:${daemonStatus.port}/api/v1/side-chats/launch/retire`, {
+						method: "POST", headers: { "content-type": "application/json" },
+						body: JSON.stringify({ appRunId }), signal: AbortSignal.timeout(3000),
+					});
+					if (!response.ok) console.warn("AO: side chat cleanup on quit failed", response.status);
+				} catch (error) { console.warn("AO: side chat cleanup on quit failed", error); }
+				sideLaunchState = undefined;
+			};
 			const cleanup = Promise.all([
 				disposeAllBrowserViewHosts(),
 				remoteRegistry.closeAll(),
 				telemetryPolicyController?.close() ?? Promise.resolve(),
+				retireSides(),
 			]);
 			const finishQuit = () => {
 				browserCleanupComplete = true;

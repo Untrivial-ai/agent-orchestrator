@@ -3120,6 +3120,7 @@ func newHarnessWithConversationAndStoreForHarness(
 	svc := chatsvc.New(chatsvc.Options{
 		Store:    chatStore,
 		Sessions: st,
+		Reader:   fullSnapshotReader(st),
 		StopProviderHost: func(context.Context, domain.SessionID) error {
 			h.hostStops.Add(1)
 			return nil
@@ -3201,6 +3202,163 @@ func TestStaleControllerEventsDoNotReachTheTimeline(t *testing.T) {
 }
 
 /* ---- tests ------------------------------------------------------------- */
+
+func TestSendVerifiesExcerptAndFallsBackToTextForProvider(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	seed, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "seed", ClientMessageID: "excerpt-seed", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatalf("send seed: %v", err)
+	}
+	h.conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: seed.ProviderTurnID},
+		ports.ChatEvent{Kind: ports.ChatEventMessageDelta, ProviderTurnID: seed.ProviderTurnID,
+			ProviderItemID: "excerpt-source", Delta: "Keep this exact sentence."},
+		ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: seed.ProviderTurnID,
+			ProviderItemID: "excerpt-source", Text: "Keep this exact sentence."},
+		ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: seed.ProviderTurnID,
+			ProviderItemID: "excerpt-source-2", Text: "This is the second answer block."},
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: seed.ProviderTurnID,
+			TurnState: domain.TurnStateCompleted},
+	)
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Messages) == 3 && len(s.Turns) == 1 && s.Turns[0].State == domain.TurnStateCompleted
+	})
+	source := snapshot.Messages[1]
+
+	_, err = h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "Use it", ClientMessageID: "excerpt-followup", Origin: domain.MessageOriginHuman,
+		Excerpts: []ports.ChatExcerptReference{{
+			ConversationID: h.ctrl.ConversationID(), MessageID: source.ID,
+			Revision: source.Revision, Text: "exact sentence",
+		}, {
+			ConversationID: h.ctrl.ConversationID(), MessageID: snapshot.Messages[0].ID,
+			Revision: snapshot.Messages[0].Revision, Text: "seed",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("send with excerpt: %v", err)
+	}
+	sent := h.conv.sentMessages()
+	if len(sent) != 2 || !strings.Contains(sent[1].Text, "Referenced conversation turn") ||
+		!strings.Contains(sent[1].Text, "exact sentence") ||
+		!strings.Contains(sent[1].Text, "seed") ||
+		!strings.Contains(sent[1].Text, "Keep this exact sentence.") ||
+		!strings.Contains(sent[1].Text, "This is the second answer block.") ||
+		strings.Contains(sent[1].Text, ports.ChatExcerptResourceURIPrefix) || len(sent[1].Content) != 0 {
+		t.Fatalf("provider delivery = %#v", sent)
+	}
+	duplicate, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "Use it", ClientMessageID: "excerpt-followup", Origin: domain.MessageOriginHuman,
+		Excerpts: []ports.ChatExcerptReference{{
+			ConversationID: h.ctrl.ConversationID(), MessageID: source.ID,
+			Revision: source.Revision, Text: "exact sentence",
+		}, {
+			ConversationID: h.ctrl.ConversationID(), MessageID: snapshot.Messages[0].ID,
+			Revision: snapshot.Messages[0].Revision, Text: "seed",
+		}},
+	})
+	if err != nil || duplicate.ID != "" {
+		t.Fatalf("idempotent excerpt retry = (%+v, %v), want duplicate success", duplicate, err)
+	}
+	// Upstream binds a client ID to its original request, including the selection.
+	_, err = h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "Use it", ClientMessageID: "excerpt-followup", Origin: domain.MessageOriginHuman,
+		Excerpts: []ports.ChatExcerptReference{{ConversationID: h.ctrl.ConversationID(), MessageID: source.ID, Revision: source.Revision + 1, Text: "changed selection"}},
+	})
+	if !errors.Is(err, domain.ErrClientMessageConflict) {
+		t.Fatalf("changed selected request = %v, want conflict", err)
+	}
+
+	_, err = h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "stale", Origin: domain.MessageOriginHuman,
+		Excerpts: []ports.ChatExcerptReference{{
+			ConversationID: h.ctrl.ConversationID(), MessageID: source.ID,
+			Revision: source.Revision + 1, Text: "exact sentence",
+		}},
+	})
+	if !errors.Is(err, chatsvc.ErrExcerptStale) {
+		t.Fatalf("stale excerpt error = %v, want ErrExcerptStale", err)
+	}
+}
+
+func TestSendAcceptsRenderedMarkdownSelectionWithFullTurn(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	seed, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "Why is this important?", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: seed.ProviderTurnID},
+		ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: seed.ProviderTurnID,
+			ProviderItemID: "formatted-answer", Text: "It's **very important** to say &quot;hello&quot;."},
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: seed.ProviderTurnID,
+			TurnState: domain.TurnStateCompleted},
+	)
+	snapshot := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Messages) == 2 && s.Turns[0].State == domain.TurnStateCompleted
+	})
+	source := snapshot.Messages[1]
+	reference := ports.ChatExcerptReference{
+		ConversationID: h.ctrl.ConversationID(), MessageID: source.ID,
+		Revision: source.Revision, Text: `very important to say "hello"`,
+	}
+	_, err = h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "Explain more", Origin: domain.MessageOriginHuman,
+		Excerpts: []ports.ChatExcerptReference{reference},
+	})
+	if err != nil {
+		t.Fatalf("send rendered selection: %v", err)
+	}
+	sent := h.conv.sentMessages()
+	if len(sent) != 2 || !strings.Contains(sent[1].Text, reference.Text) ||
+		!strings.Contains(sent[1].Text, "Why is this important?") ||
+		!strings.Contains(sent[1].Text, source.Text) {
+		t.Fatalf("provider did not receive exact selection and full turn: %#v", sent)
+	}
+	reference.Text = "words not present in the rendered message"
+	_, err = h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "Do not send", Origin: domain.MessageOriginHuman,
+		Excerpts: []ports.ChatExcerptReference{reference},
+	})
+	if !errors.Is(err, chatsvc.ErrExcerptInvalid) || !strings.Contains(err.Error(), "selection does not match") {
+		t.Fatalf("unrelated selection error = %v", err)
+	}
+}
+
+func TestSendExcerptWaitsForCompletedPairedTurn(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	seed, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "pending source prompt", ClientMessageID: "pending-excerpt-source", Origin: domain.MessageOriginHuman,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool { return len(s.Messages) == 1 })
+	source := before.Messages[0]
+	reference := ports.ChatExcerptReference{ConversationID: h.ctrl.ConversationID(), MessageID: source.ID, Revision: source.Revision, Text: "source prompt"}
+	_, err = h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "follow up", Origin: domain.MessageOriginHuman, Excerpts: []ports.ChatExcerptReference{reference}})
+	if !errors.Is(err, chatsvc.ErrExcerptStale) || !strings.Contains(err.Error(), "wait for a completed response") {
+		t.Fatalf("pending turn error = %v", err)
+	}
+	h.conv.emit(
+		ports.ChatEvent{Kind: ports.ChatEventTurnStarted, ProviderTurnID: seed.ProviderTurnID},
+		ports.ChatEvent{Kind: ports.ChatEventMessageCompleted, ProviderTurnID: seed.ProviderTurnID, ProviderItemID: "pending-answer", Text: "completed reply"},
+		ports.ChatEvent{Kind: ports.ChatEventTurnCompleted, ProviderTurnID: seed.ProviderTurnID, TurnState: domain.TurnStateCompleted},
+	)
+	h.awaitSnapshot(t, func(s store.ConversationSnapshot) bool {
+		return len(s.Messages) == 2 && s.Turns[0].State == domain.TurnStateCompleted
+	})
+	if _, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{Text: "follow up", Origin: domain.MessageOriginHuman, Excerpts: []ports.ChatExcerptReference{reference}}); err != nil {
+		t.Fatalf("send after completion: %v", err)
+	}
+}
 
 func TestProviderPromptFailureSettlesTurnAndRecordsRecoveryOnce(t *testing.T) {
 	h := newHarness(t)

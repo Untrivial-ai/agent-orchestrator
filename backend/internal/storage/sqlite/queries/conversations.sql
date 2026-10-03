@@ -53,13 +53,14 @@ INSERT INTO conversation_branches (
     id, conversation_id, session_id, provider_conversation_id,
     parent_branch_id, fork_after_turn_id, replaced_turn_id,
     replacement_turn_id, fork_after_sequence, strategy, replay_cutoff_sequence,
-    replay_truncated, provider_scope_id, provider_ids_scoped, created_at
+    replay_truncated, provider_scope_id, provider_ids_scoped, purpose, label, created_at
 ) VALUES (
     sqlc.arg(id), sqlc.arg(conversation_id), sqlc.narg(session_id),
     sqlc.arg(provider_conversation_id), sqlc.narg(parent_branch_id),
     sqlc.narg(fork_after_turn_id), sqlc.narg(replaced_turn_id),
     sqlc.narg(replacement_turn_id), sqlc.arg(fork_after_sequence), sqlc.arg(strategy),
-    sqlc.arg(replay_cutoff_sequence), sqlc.arg(replay_truncated), sqlc.arg(provider_scope_id), sqlc.arg(provider_ids_scoped), sqlc.arg(created_at)
+    sqlc.arg(replay_cutoff_sequence), sqlc.arg(replay_truncated), sqlc.arg(provider_scope_id), sqlc.arg(provider_ids_scoped),
+    sqlc.arg(purpose), sqlc.arg(label), sqlc.arg(created_at)
 );
 
 -- name: InsertReviewConversationBranch :exec
@@ -67,15 +68,15 @@ INSERT INTO conversation_branches (id, conversation_id, session_id, review_id, p
 VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0, 'native', 0, 0, '', 0, ?);
 
 -- name: SelectConversationBranch :one
-WITH RECURSIVE lineage(id, parent_branch_id, replaced_turn_id, provider_scope_id, depth) AS (
+WITH RECURSIVE lineage(id, parent_branch_id, replaced_turn_id, provider_scope_id, purpose, depth) AS (
     SELECT branch.id, branch.parent_branch_id, branch.replaced_turn_id,
-           branch.provider_scope_id, 0
+           branch.provider_scope_id, branch.purpose, 0
     FROM conversation_branches AS branch
     WHERE branch.conversation_id = sqlc.arg(conversation_id)
       AND branch.id = sqlc.arg(branch_id)
     UNION ALL
     SELECT parent.id, parent.parent_branch_id, parent.replaced_turn_id,
-           parent.provider_scope_id, lineage.depth + 1
+           parent.provider_scope_id, parent.purpose, lineage.depth + 1
     FROM lineage
     JOIN conversation_branches AS parent ON parent.id = lineage.parent_branch_id
     WHERE parent.conversation_id = sqlc.arg(conversation_id)
@@ -86,7 +87,7 @@ SELECT b.*, b.id = c.active_branch_id AS active,
            FROM lineage
            WHERE lineage.provider_scope_id <> ''
               OR lineage.parent_branch_id IS NULL
-              OR lineage.replaced_turn_id IS NULL
+              OR (lineage.replaced_turn_id IS NULL AND lineage.purpose <> 'side')
            ORDER BY lineage.depth
            LIMIT 1
        ), '') AS TEXT) AS effective_provider_scope_id,
@@ -94,7 +95,7 @@ SELECT b.*, b.id = c.active_branch_id AS active,
            SELECT lineage.id
            FROM lineage
            WHERE lineage.parent_branch_id IS NULL
-              OR lineage.replaced_turn_id IS NULL
+              OR (lineage.replaced_turn_id IS NULL AND lineage.purpose <> 'side')
            ORDER BY lineage.depth
            LIMIT 1
        ), '') AS TEXT) AS provider_binding_id
@@ -105,14 +106,14 @@ WHERE b.conversation_id = sqlc.arg(conversation_id)
 LIMIT 1;
 
 -- name: SelectConversationBranches :many
-WITH RECURSIVE lineages(branch_id, id, parent_branch_id, replaced_turn_id, provider_scope_id, depth) AS (
+WITH RECURSIVE lineages(branch_id, id, parent_branch_id, replaced_turn_id, provider_scope_id, purpose, depth) AS (
     SELECT branch.id, branch.id, branch.parent_branch_id, branch.replaced_turn_id,
-           branch.provider_scope_id, 0
+           branch.provider_scope_id, branch.purpose, 0
     FROM conversation_branches AS branch
     WHERE branch.conversation_id = sqlc.arg(conversation_id)
     UNION ALL
     SELECT lineage.branch_id, parent.id, parent.parent_branch_id,
-           parent.replaced_turn_id, parent.provider_scope_id, lineage.depth + 1
+           parent.replaced_turn_id, parent.provider_scope_id, parent.purpose, lineage.depth + 1
     FROM lineages AS lineage
     JOIN conversation_branches AS parent ON parent.id = lineage.parent_branch_id
     WHERE parent.conversation_id = sqlc.arg(conversation_id)
@@ -124,7 +125,7 @@ SELECT b.*, b.id = c.active_branch_id AS active,
            WHERE lineage.branch_id = b.id
              AND (lineage.provider_scope_id <> ''
                   OR lineage.parent_branch_id IS NULL
-                  OR lineage.replaced_turn_id IS NULL)
+                  OR (lineage.replaced_turn_id IS NULL AND lineage.purpose <> 'side'))
            ORDER BY lineage.depth
            LIMIT 1
        ), '') AS TEXT) AS effective_provider_scope_id,
@@ -132,7 +133,8 @@ SELECT b.*, b.id = c.active_branch_id AS active,
            SELECT lineage.id
            FROM lineages AS lineage
            WHERE lineage.branch_id = b.id
-             AND (lineage.parent_branch_id IS NULL OR lineage.replaced_turn_id IS NULL)
+             AND (lineage.parent_branch_id IS NULL
+                  OR (lineage.replaced_turn_id IS NULL AND lineage.purpose <> 'side'))
            ORDER BY lineage.depth
            LIMIT 1
        ), '') AS TEXT) AS provider_binding_id
@@ -169,7 +171,7 @@ WITH RECURSIVE active_path(branch_id, max_sequence, depth) AS (
     FROM active_path AS path
     JOIN conversation_branches AS branch ON branch.id = path.branch_id
     WHERE branch.parent_branch_id IS NULL
-       OR branch.replaced_turn_id IS NULL
+       OR (branch.replaced_turn_id IS NULL AND branch.purpose <> 'side')
     ORDER BY path.depth
     LIMIT 1
 ), active_opaque_scope_floor AS (
@@ -178,7 +180,7 @@ WITH RECURSIVE active_path(branch_id, max_sequence, depth) AS (
     JOIN conversation_branches AS branch ON branch.id = path.branch_id
     WHERE branch.provider_scope_id <> ''
        OR branch.parent_branch_id IS NULL
-       OR branch.replaced_turn_id IS NULL
+       OR (branch.replaced_turn_id IS NULL AND branch.purpose <> 'side')
     ORDER BY path.depth
     LIMIT 1
 ), active_branch AS (
@@ -297,7 +299,7 @@ WITH RECURSIVE active_path(branch_id, max_sequence, depth) AS (
     JOIN conversation_branches AS branch ON branch.id = path.branch_id
     WHERE branch.provider_scope_id <> ''
        OR branch.parent_branch_id IS NULL
-       OR branch.replaced_turn_id IS NULL
+       OR (branch.replaced_turn_id IS NULL AND branch.purpose <> 'side')
     ORDER BY path.depth
     LIMIT 1
 )
@@ -986,6 +988,11 @@ LIMIT 1;
 -- name: SelectConversationMessageByClientID :one
 SELECT * FROM conversation_messages
 WHERE conversation_id = ? AND client_message_id = ?
+LIMIT 1;
+
+-- name: SelectConversationMessageByID :one
+SELECT * FROM conversation_messages
+WHERE conversation_id = ? AND id = ?
 LIMIT 1;
 
 -- A native history import has the provider turn identity but not AO's turn id.

@@ -27,6 +27,19 @@ var ErrNoController = errors.New("no live chat controller for session")
 // fact later, but callers must route from the persisted mode they read now.
 var ErrNotChatMode = errors.New("session is not in chat mode")
 
+var (
+	// ErrExcerptInvalid reports an invalid or unverified excerpt selection.
+	ErrExcerptInvalid = errors.New("chat excerpt is invalid")
+	// ErrExcerptStale reports a reference to a changed or inactive source turn.
+	ErrExcerptStale = errors.New("chat excerpt is stale")
+)
+
+const (
+	maxExcerptReferences   = 8
+	maxExcerptTextBytes    = 24 * 1024
+	maxExcerptContextBytes = 128 * 1024
+)
+
 // SessionReader is the session-fact surface the service needs. It reads the
 // persisted mode rather than trusting the caller, so a client cannot talk its way
 // into the wrong dispatch path.
@@ -52,6 +65,7 @@ type Service struct {
 	onModelChanged   func(domain.SessionID, string)
 	stopProviderHost func(context.Context, domain.SessionID) error
 	reports          *reportsvc.Coordinator
+	sides            *sideManager
 
 	mu               sync.RWMutex
 	controllers      map[domain.SessionID]*Controller
@@ -120,6 +134,7 @@ type Options struct {
 	// StopProviderHost destroys current session ownership on explicit teardown,
 	// even if its daemon attachment already failed. Never used by StopAll.
 	StopProviderHost func(context.Context, domain.SessionID) error
+	AppRunID         string
 }
 
 // New builds a Chat service.
@@ -132,7 +147,7 @@ func New(opts Options) *Service {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Service{
+	svc := &Service{
 		store:                  opts.Store,
 		reader:                 opts.Reader,
 		pageReader:             opts.PageReader,
@@ -152,6 +167,8 @@ func New(opts Options) *Service {
 		gates:                  make(map[domain.ConversationOwner]controllerGate),
 		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
 	}
+	svc.sides = newSideManager(svc, newMemorySideStore(), opts.AppRunID)
+	return svc
 }
 
 func (s *Service) controllerGate(owner domain.ConversationOwner) controllerGate {
@@ -520,6 +537,12 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if err != nil {
 		return nil, fmt.Errorf("load active conversation branch: %w", err)
 	}
+	if domain.NormalizeConversationBranchPurpose(activeBranch.Purpose) == domain.ConversationBranchPurposeSide {
+		cfg.Permissions = domain.PermissionModeReadOnly
+		cfg.SystemPrompt = branchSystemPrompt(activeBranch, cfg.SystemPrompt)
+		cfg.MCPServers = nil
+		conversation.Settings.ApprovalMode = domain.PermissionModeReadOnly
+	}
 	providerScopeID := activeBranch.ProviderScopeID
 	providerHandleOwnedByActiveBranch := true
 	if cfg.ProviderScopeID != "" {
@@ -579,7 +602,8 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if cfg.ProviderConversationID != "" {
 		cfg.Effort = conversation.Settings.ReasoningEffort
 	}
-	if cfg.ProviderConversationID != "" && conversation.Settings.ApprovalMode != "" {
+	if cfg.ProviderConversationID != "" && conversation.Settings.ApprovalMode != "" &&
+		domain.NormalizeConversationBranchPurpose(activeBranch.Purpose) != domain.ConversationBranchPurposeSide {
 		cfg.Permissions = conversation.Settings.ApprovalMode
 	}
 	if cfg.ProviderConversationID == "" {
@@ -1079,16 +1103,22 @@ func (s *Service) Send(
 	}
 	var turn domain.ConversationTurn
 	if record.ProvisionState.IsProvisioning() {
-		// Keep messages on the durable queue until provisioning finishes so a
-		// new message cannot overtake the opening prompt during handoff.
-		turn, err = s.queueWithoutController(ctx, record, msg)
+		if len(msg.Excerpts) != 0 {
+			err = fmt.Errorf("%w: wait for the conversation to finish opening before referencing a message", ErrExcerptInvalid)
+		} else {
+			// Keep messages on the durable queue until provisioning finishes so a
+			// new message cannot overtake the opening prompt during handoff.
+			turn, err = s.queueWithoutController(ctx, record, msg)
+		}
 		if errors.Is(err, ErrNotProvisioning) {
 			// Startup may have become ready after the first read. The store
 			// refused a stale queue append; hand the message to its controller.
 			latest, readErr := s.requireChatSession(ctx, id)
 			if readErr == nil && !latest.IsTerminated && latest.ProvisionState.WithDefault() == domain.SessionProvisionReady {
 				if controller, controllerErr := s.Controller(id); controllerErr == nil {
-					turn, err = controller.Send(ctx, msg)
+					if err = s.prepareExcerptSend(ctx, controller, &msg); err == nil {
+						turn, err = controller.Send(ctx, msg)
+					}
 				}
 			}
 		}
@@ -1096,7 +1126,9 @@ func (s *Service) Send(
 		var controller *Controller
 		controller, err = s.Controller(id)
 		if err == nil {
-			turn, err = controller.Send(ctx, msg)
+			if err = s.prepareExcerptSend(ctx, controller, &msg); err == nil {
+				turn, err = controller.Send(ctx, msg)
+			}
 		}
 	}
 	if err != nil {
@@ -1124,7 +1156,129 @@ func (s *Service) SendForOwner(ctx context.Context, owner domain.ConversationOwn
 	if err != nil {
 		return domain.ConversationTurn{}, err
 	}
+	if err := s.prepareExcerptSend(ctx, controller, &msg); err != nil {
+		return domain.ConversationTurn{}, err
+	}
 	return controller.Send(ctx, msg)
+}
+
+func (s *Service) prepareExcerptSend(ctx context.Context, controller *Controller, msg *ports.ChatUserMessage) error {
+	if msg.ClientPayloadHash == "" {
+		hash, err := clientPayloadHash(*msg)
+		if err != nil {
+			return err
+		}
+		msg.ClientPayloadHash = hash
+	}
+
+	// A crash-safe retry may arrive after its source message changed. Once this
+	// client id is already durable, the controller's existing idempotency path is
+	// authoritative and must not be blocked by re-validating old selection text.
+	if msg.ClientMessageID != "" {
+		if _, found, lookupErr := controller.store.ConversationMessageByClientID(
+			ctx, controller.conversation.ID, msg.ClientMessageID,
+		); lookupErr != nil {
+			return fmt.Errorf("read message delivery: %w", lookupErr)
+		} else if found {
+			return nil
+		}
+	}
+	return hydrateExcerptReferences(ctx, controller, s.reader, msg)
+}
+
+func hydrateExcerptReferences(ctx context.Context, controller *Controller, reader SnapshotReader, msg *ports.ChatUserMessage) error {
+	if len(msg.Excerpts) == 0 {
+		return nil
+	}
+	if len(msg.Excerpts) > maxExcerptReferences {
+		return fmt.Errorf("%w: at most %d excerpts may be attached", ErrExcerptInvalid, maxExcerptReferences)
+	}
+	total := 0
+	contextBytes := 0
+	rows, err := reader.LoadConversationSnapshot(ctx, controller.conversation.ID)
+	if err != nil {
+		return fmt.Errorf("read excerpt conversation: %w", err)
+	}
+	for _, excerpt := range msg.Excerpts {
+		text := excerpt.Text
+		if excerpt.ConversationID != controller.conversation.ID || excerpt.MessageID == "" || text == "" || excerpt.Revision < 0 {
+			return fmt.Errorf("%w: source conversation, message, revision, and text are required", ErrExcerptInvalid)
+		}
+		total += len(text)
+		if total > maxExcerptTextBytes {
+			return fmt.Errorf("%w: attached excerpts exceed %d bytes", ErrExcerptInvalid, maxExcerptTextBytes)
+		}
+		var source domain.ConversationMessage
+		found := false
+		for _, candidate := range rows.Messages {
+			if candidate.ID == excerpt.MessageID {
+				source, found = candidate, true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("%w: source message disappeared or left the active conversation", ErrExcerptStale)
+		}
+		if source.Revision != excerpt.Revision {
+			return fmt.Errorf("%w: source message changed; select the text again", ErrExcerptStale)
+		}
+		if len(source.Text) > maxExcerptContextBytes {
+			return fmt.Errorf("%w: attached exchange exceeds %d bytes", ErrExcerptInvalid, maxExcerptContextBytes)
+		}
+		if !sourceContainsExcerptSelection(source, text) {
+			return fmt.Errorf("%w: selection does not match the referenced message; select text from its message body again", ErrExcerptInvalid)
+		}
+		if source.Streaming {
+			return fmt.Errorf("%w: source message is still streaming", ErrExcerptStale)
+		}
+		if source.TurnID == "" {
+			return fmt.Errorf("%w: source message has no paired turn", ErrExcerptInvalid)
+		}
+		var turn domain.ConversationTurn
+		turnFound := false
+		for _, candidate := range rows.Turns {
+			if candidate.ID == source.TurnID {
+				turn, turnFound = candidate, true
+				break
+			}
+		}
+		if !turnFound || turn.RolledBackAt != nil {
+			return fmt.Errorf("%w: source turn is no longer active", ErrExcerptStale)
+		}
+		if turn.State == domain.TurnStateRunning || turn.State == domain.TurnStateQueued {
+			return fmt.Errorf("%w: source turn is %s; wait for a completed response", ErrExcerptStale, turn.State)
+		}
+		if turn.State != domain.TurnStateCompleted {
+			return fmt.Errorf("%w: source turn is %s; a complete paired response is unavailable", ErrExcerptStale, turn.State)
+		}
+		excerptContext := ports.ChatExcerptContext{Selection: text, SourceMessageID: source.ID, SourceRole: string(source.Role), SourceText: source.Text}
+		var human, assistant bool
+		for _, related := range rows.Messages {
+			if related.TurnID != source.TurnID || related.Streaming || related.Text == "" {
+				continue
+			}
+			if related.Role == domain.MessageRoleUser && related.Origin == domain.MessageOriginHuman {
+				human = true
+			} else if related.Role == domain.MessageRoleAssistant {
+				assistant = true
+			} else {
+				continue
+			}
+			excerptContext.Messages = append(excerptContext.Messages, ports.ChatExcerptMessage{Role: string(related.Role), Text: related.Text})
+			contextBytes += len(related.Text)
+		}
+		if !human || !assistant {
+			return fmt.Errorf("%w: source turn has no complete human/agent text exchange", ErrExcerptStale)
+		}
+		if contextBytes > maxExcerptContextBytes {
+			return fmt.Errorf("%w: attached exchange exceeds %d bytes", ErrExcerptInvalid, maxExcerptContextBytes)
+		}
+		msg.Content = append(msg.Content, ports.ChatContent{
+			Type: "excerpt", Excerpt: &excerptContext,
+		})
+	}
+	msg.Excerpts = nil
+	return nil
 }
 
 // Resolve answers a pending approval.
@@ -1337,6 +1491,9 @@ func (s *Service) StopForOwner(ctx context.Context, owner domain.ConversationOwn
 
 // StopAll closes every controller, for daemon shutdown.
 func (s *Service) StopAll(ctx context.Context) {
+	if s.sides != nil {
+		s.sides.stopAll()
+	}
 	s.mu.Lock()
 	type shutdownTarget struct {
 		owner      domain.ConversationOwner
@@ -1404,6 +1561,7 @@ type Snapshot struct {
 	Messages                         []domain.ConversationMessage
 	Activities                       []domain.ConversationActivity
 	BranchPoints                     []domain.ConversationBranchPoint
+	SideChats                        []domain.ConversationBranch
 	BranchedFromEarlierMessage       bool
 	OldestSequence                   int64
 	HasMoreBefore                    bool
@@ -1496,6 +1654,16 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load conversation %s: %w", conversation.ID, err)
 	}
+	branches, err := s.store.ConversationBranches(ctx, conversation.ID)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("list conversation branches %s: %w", conversation.ID, err)
+	}
+	sideChats := make([]domain.ConversationBranch, 0)
+	for _, branch := range branches {
+		if domain.NormalizeConversationBranchPurpose(branch.Purpose) == domain.ConversationBranchPurposeSide {
+			sideChats = append(sideChats, branch)
+		}
+	}
 
 	state := idleControllerState(record)
 	var caps ports.ChatCapabilities
@@ -1517,6 +1685,7 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 		Messages:                         rows.Messages,
 		Activities:                       rows.Activities,
 		BranchPoints:                     rows.BranchPoints,
+		SideChats:                        sideChats,
 		BranchedFromEarlierMessage:       rows.BranchedFromEarlierMessage,
 		Capabilities:                     caps,
 		Usage:                            rows.Conversation.Usage,
@@ -1592,6 +1761,16 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load conversation page %s: %w", conversation.ID, err)
 	}
+	branches, err := s.store.ConversationBranches(ctx, conversation.ID)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("list conversation branches %s: %w", conversation.ID, err)
+	}
+	sideChats := make([]domain.ConversationBranch, 0)
+	for _, branch := range branches {
+		if domain.NormalizeConversationBranchPurpose(branch.Purpose) == domain.ConversationBranchPurposeSide {
+			sideChats = append(sideChats, branch)
+		}
+	}
 	state := idleControllerState(record)
 	var caps ports.ChatCapabilities
 	if controller, err := s.Controller(id); err == nil {
@@ -1611,6 +1790,7 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 		Messages:                         rows.Messages,
 		Activities:                       rows.Activities,
 		BranchPoints:                     rows.BranchPoints,
+		SideChats:                        sideChats,
 		BranchedFromEarlierMessage:       rows.BranchedFromEarlierMessage,
 		OldestSequence:                   rows.OldestSequence,
 		HasMoreBefore:                    rows.HasMoreBefore,
@@ -1865,6 +2045,13 @@ func (s *Service) SetConfigOption(
 	if err != nil {
 		return nil, err
 	}
+	activeBranch, err := s.store.ConversationBranch(ctx, controller.conversation.ID, controller.conversation.ActiveBranchID)
+	if err != nil {
+		return nil, err
+	}
+	if domain.NormalizeConversationBranchPurpose(activeBranch.Purpose) == domain.ConversationBranchPurposeSide {
+		return nil, ErrSideChatUnsupported
+	}
 	configurer, ok := controller.conv.(ports.ChatConfigOptionController)
 	if !ok {
 		return nil, ErrConfigOptionsUnsupported
@@ -2041,6 +2228,13 @@ func (s *Service) SetTurnSettings(
 	controller, err := s.Controller(id)
 	if err != nil {
 		return domain.ConversationSettings{}, err
+	}
+	activeBranch, err := s.store.ConversationBranch(ctx, controller.conversation.ID, controller.conversation.ActiveBranchID)
+	if err != nil {
+		return domain.ConversationSettings{}, err
+	}
+	if domain.NormalizeConversationBranchPurpose(activeBranch.Purpose) == domain.ConversationBranchPurposeSide {
+		return domain.ConversationSettings{}, ErrSideChatUnsupported
 	}
 	controller.configMu.Lock()
 	defer controller.configMu.Unlock()

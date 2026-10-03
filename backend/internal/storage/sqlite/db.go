@@ -303,6 +303,9 @@ func migrate(db *sql.DB) error {
 	if err := repairRenumberedChatMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered chat migration history: %w", err)
 	}
+	if err := repairRenumberedSideChatMigrationHistory(db); err != nil {
+		return fmt.Errorf("repair renumbered side-chat migration history: %w", err)
+	}
 	if err := repairRenumberedCueMigrationHistory(db); err != nil {
 		return fmt.Errorf("repair renumbered cue migration history: %w", err)
 	}
@@ -442,6 +445,91 @@ func repairRenumberedCueMigrationHistory(db *sql.DB) error {
 	}
 	if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = ?`, oldVersion); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+// This feature branch applied side-chat columns as 0156 before upstream used
+// that number for session provisioning. Move only the proven side-chat schema
+// to 0174, then let Goose apply upstream's real 0156, 0163, 0169 and 0171.
+func repairRenumberedSideChatMigrationHistory(db *sql.DB) error {
+	var gooseTable int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goose_db_version'`).Scan(&gooseTable); err != nil {
+		return err
+	}
+	if gooseTable == 0 {
+		return nil
+	}
+	var sideColumns, provisionColumns int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('conversation_branches') WHERE name IN ('purpose', 'label')`).Scan(&sideColumns); err != nil {
+		return err
+	}
+	if sideColumns != 2 {
+		return nil
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('provision_state', 'provision_error')`).Scan(&provisionColumns); err != nil {
+		return err
+	}
+	if provisionColumns != 0 && provisionColumns != 2 {
+		return fmt.Errorf("incomplete session provisioning schema: found %d of 2 columns", provisionColumns)
+	}
+	var sideApplied, oldApplied, old163Applied, old169Applied, old171Applied, shellPreviewColumn, prCDCTrigger, fxHarness int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id = 174 AND is_applied = 1`).Scan(&sideApplied); err != nil {
+		return err
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id = 156 AND is_applied = 1`).Scan(&oldApplied); err != nil {
+		return err
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id = 163 AND is_applied = 1`).Scan(&old163Applied); err != nil {
+		return err
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id = 169 AND is_applied = 1`).Scan(&old169Applied); err != nil {
+		return err
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id = 171 AND is_applied = 1`).Scan(&old171Applied); err != nil {
+		return err
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('shell_terminals') WHERE name = 'preview_capability_verifier'`).Scan(&shellPreviewColumn); err != nil {
+		return err
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'report_outputs_pr_created_cdc'`).Scan(&prCDCTrigger); err != nil {
+		return err
+	}
+	if err := db.QueryRow(`SELECT instr(sql, "'fx'") FROM sqlite_master WHERE type = 'table' AND name = 'sessions'`).Scan(&fxHarness); err != nil {
+		return err
+	}
+	if sideApplied != 0 && (provisionColumns == 2 || oldApplied == 0) && (old163Applied == 0 || fxHarness != 0) && (old169Applied == 0 || prCDCTrigger != 0) && (old171Applied == 0 || shellPreviewColumn != 0) {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if sideApplied == 0 {
+		if _, err := tx.Exec(`INSERT INTO goose_db_version (version_id, is_applied) VALUES (174, 1)`); err != nil {
+			return err
+		}
+	}
+	if provisionColumns == 0 && oldApplied != 0 {
+		if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = 156`); err != nil {
+			return err
+		}
+	}
+	if old163Applied != 0 && fxHarness == 0 {
+		if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = 163`); err != nil {
+			return err
+		}
+	}
+	if old169Applied != 0 && prCDCTrigger == 0 {
+		if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = 169`); err != nil {
+			return err
+		}
+	}
+	if old171Applied != 0 && shellPreviewColumn == 0 {
+		if _, err := tx.Exec(`DELETE FROM goose_db_version WHERE version_id = 171`); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

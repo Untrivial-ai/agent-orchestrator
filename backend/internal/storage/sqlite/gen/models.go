@@ -288,6 +288,8 @@ type ConversationBranch struct {
 	ProviderScopeID        string
 	ProviderIdsScoped      int64
 	ReviewID               sql.NullString
+	Purpose                string
+	Label                  string
 }
 
 type ConversationEditDelivery struct {

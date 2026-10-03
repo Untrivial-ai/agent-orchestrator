@@ -3,7 +3,9 @@ package chat_test
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -11,6 +13,42 @@ import (
 	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
 	"github.com/aoagents/agent-orchestrator/backend/internal/storage/sqlite/store"
 )
+
+func TestQueuedEditPreservesFrozenExcerpt(t *testing.T) {
+	h, provider := steerHarness(t)
+	ctx := context.Background()
+	turn, err := h.svc.Send(ctx, testSession, ports.ChatUserMessage{
+		Text: "original", Origin: domain.MessageOriginHuman,
+		Content: []ports.ChatContent{{Type: "excerpt", Excerpt: &ports.ChatExcerptContext{
+			Selection: "chosen", SourceMessageID: "source", SourceRole: "assistant", SourceText: "full answer",
+			Messages: []ports.ChatExcerptMessage{{Role: "user", Text: "prompt"}, {Role: "assistant", Text: "full answer"}},
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := int64(0)
+	if err := h.svc.EditQueuedTurn(ctx, testSession, turn.ID, chatsvc.QueuedMessageEdit{
+		Text: "edited request", RetainedContent: &[]int{}, ExpectedRevision: &zero,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := h.st.QueuedTurnMessage(ctx, h.ctrl.ConversationID(), turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var content []ports.ChatContent
+	if err := json.Unmarshal([]byte(queued.DeliveryContentJSON), &content); err != nil || len(content) != 1 || content[0].Excerpt.Selection != "chosen" {
+		t.Fatalf("frozen queued excerpt = %#v, decode error = %v", content, err)
+	}
+	if _, err := h.svc.PromoteQueuedTurn(ctx, testSession, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	calls := provider.steers()
+	if len(calls) != 1 || !strings.Contains(calls[0].msg.Text, "prompt") || !strings.Contains(calls[0].msg.Text, "full answer") || !strings.Contains(calls[0].msg.Text, "edited request") {
+		t.Fatalf("queued provider delivery = %#v", calls)
+	}
+}
 
 func TestQueuedEditAttachmentChanges(t *testing.T) {
 	zero := int64(0)

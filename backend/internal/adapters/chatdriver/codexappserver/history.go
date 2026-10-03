@@ -365,8 +365,13 @@ func (c *conversation) readTurns(ctx context.Context) ([]providerTurn, error) {
 // A nil anchor copies the whole history; a provider turn id copies through that
 // turn inclusively. In both cases, the original thread remains unchanged.
 func (c *conversation) Fork(ctx context.Context, lastProviderTurnID *string) (string, error) {
-	c.sendMu.Lock()
-	defer c.sendMu.Unlock()
+	if lastProviderTurnID == nil {
+		// A head fork must serialize with a new send so its boundary is stable.
+		// An anchored fork copies through an already completed turn and can run
+		// while the main thread accepts another request.
+		c.sendMu.Lock()
+		defer c.sendMu.Unlock()
+	}
 
 	params := codexproto.ThreadForkParams{ThreadID: c.threadID}
 	if lastProviderTurnID != nil {
@@ -387,6 +392,15 @@ func (c *conversation) Fork(ctx context.Context, lastProviderTurnID *string) (st
 		return "", errors.New("thread/fork returned no thread id")
 	}
 	return resp.Thread.ID, nil
+}
+
+func (c *conversation) DeleteFork(ctx context.Context, providerConversationID string) error {
+	id := strings.TrimSpace(providerConversationID)
+	if id == "" || id == c.threadID {
+		return errors.New("refusing to delete the active provider conversation")
+	}
+	return c.conn.request(ctx, codexproto.MethodThreadDelete,
+		codexproto.ThreadDeleteParams{ThreadID: id}, nil)
 }
 
 // SetTitle names the thread provider-side.

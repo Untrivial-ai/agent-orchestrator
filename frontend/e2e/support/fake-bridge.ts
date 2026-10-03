@@ -131,6 +131,7 @@ export async function installFakeBridge(page: Page, opts: FakeBridgeOptions = {}
 						return unsubscribe();
 					},
 				},
+				sideChats: { capture: async () => undefined },
 				editorHandoff: {
 					getState: async () => ({
 						targets: [
@@ -708,6 +709,7 @@ export async function installFakeAgent(page: Page, opts: FakeAgentOptions = {}):
 						return unsubscribe();
 					},
 				},
+				sideChats: { capture: async () => undefined },
 				editorHandoff: {
 					getState: async () => ({
 						targets: [

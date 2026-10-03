@@ -164,7 +164,7 @@ func (c *Controller) EditQueuedTurn(ctx context.Context, turnID string, edit Que
 		selected := make([]ports.ChatContent, 0, len(content))
 		index, next := 0, 0
 		for _, block := range content {
-			if block.Type == "text" || ports.IsInternalReplayContent(block) {
+			if block.Type == "text" || block.Type == "excerpt" || ports.IsInternalReplayContent(block) {
 				selected = append(selected, block)
 				continue
 			}
