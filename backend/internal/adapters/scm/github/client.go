@@ -79,9 +79,15 @@ type Client struct {
 	userAgent  string
 
 	mu       sync.Mutex
-	etagOut  map[string]string // key (method+path+query) -> last-seen ETag
-	bodyOut  map[string][]byte // key -> last-seen body for 304 replay
-	cacheLRU []string          // insertion-order keys for FIFO eviction
+	cache    map[string]*restCacheEntry // key (method+path+query) -> immutable entry
+	cacheLRU []string                   // insertion-order keys for FIFO eviction
+}
+
+// restCacheEntry keeps a validator paired with its representation. Entries and
+// their bytes are immutable so an in-flight request can retain their identity.
+type restCacheEntry struct {
+	etag string
+	body []byte
 }
 
 // cacheMaxEntries caps the number of distinct (method,path,query) tuples
@@ -101,8 +107,7 @@ func NewClient(opts ClientOptions) *Client {
 		restBase:   opts.RESTBase,
 		graphqlURL: opts.GraphQLURL,
 		userAgent:  opts.UserAgent,
-		etagOut:    map[string]string{},
-		bodyOut:    map[string][]byte{},
+		cache:      map[string]*restCacheEntry{},
 	}
 	if c.http == nil {
 		c.http = &http.Client{Timeout: 30 * time.Second}
@@ -120,8 +125,7 @@ func NewClient(opts ClientOptions) *Client {
 }
 
 // RESTResponse is what doREST returns to the Provider. NotModified=true
-// means the cached body is being served; the byte slice is unchanged from
-// the previous fresh fetch.
+// means a copy of the revalidated cached body is being served. Callers own Body.
 type RESTResponse struct {
 	StatusCode  int
 	NotModified bool
@@ -181,12 +185,10 @@ func (c *Client) doRESTWithETag(ctx context.Context, path string, q url.Values, 
 func (c *Client) doREST(ctx context.Context, method, path string, q url.Values, body any) (RESTResponse, error) {
 	cacheable := method == http.MethodGet
 	cacheKey := method + " " + path + "?" + q.Encode()
-	var prevETag string
-	var prevBody []byte
+	var prev *restCacheEntry
 	if cacheable {
 		c.mu.Lock()
-		prevETag = c.etagOut[cacheKey]
-		prevBody = c.bodyOut[cacheKey]
+		prev = c.cache[cacheKey]
 		c.mu.Unlock()
 	}
 
@@ -213,8 +215,8 @@ func (c *Client) doREST(ctx context.Context, method, path string, q url.Values, 
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", c.userAgent)
-	if prevETag != "" {
-		req.Header.Set("If-None-Match", prevETag)
+	if prev != nil {
+		req.Header.Set("If-None-Match", prev.etag)
 	}
 	if err := c.authorize(ctx, req); err != nil {
 		return RESTResponse{}, err
@@ -227,15 +229,20 @@ func (c *Client) doREST(ctx context.Context, method, path string, q url.Values, 
 	defer func() { _ = resp.Body.Close() }()
 
 	if cacheable && resp.StatusCode == http.StatusNotModified {
-		// Replay the cached body. Update the ETag if GitHub returned a
-		// fresher one — some endpoints rotate ETags on weak revalidation.
-		newETag := resp.Header.Get("ETag")
-		if newETag != "" && newETag != prevETag {
+		if prev == nil {
+			return RESTResponse{StatusCode: resp.StatusCode}, fmt.Errorf("github scm: GET %s returned 304 without a cached body", path)
+		}
+		newETag := firstNonEmptyHeader(resp.Header.Get("ETag"), prev.etag)
+		if newETag != prev.etag {
 			c.mu.Lock()
-			c.etagOut[cacheKey] = newETag
+			// A concurrent fetch or revalidation may have replaced this entry,
+			// or eviction may have removed it. Refresh only the pair we sent.
+			if c.cache[cacheKey] == prev {
+				c.cache[cacheKey] = &restCacheEntry{etag: newETag, body: prev.body}
+			}
 			c.mu.Unlock()
 		}
-		return RESTResponse{StatusCode: resp.StatusCode, NotModified: true, ETag: newETag, Body: prevBody}, nil
+		return RESTResponse{StatusCode: resp.StatusCode, NotModified: true, ETag: newETag, Body: bytes.Clone(prev.body)}, nil
 	}
 
 	b, readErr := io.ReadAll(resp.Body)
@@ -246,10 +253,7 @@ func (c *Client) doREST(ctx context.Context, method, path string, q url.Values, 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		etag := resp.Header.Get("ETag")
 		if cacheable && etag != "" {
-			// Defensive copy: GitHub's HTTP body is owned by net/http's
-			// buffer pool. Holding the raw slice in our cache would let a
-			// later caller mutate or alias the same backing array.
-			c.storeCacheEntry(cacheKey, etag, append([]byte(nil), b...))
+			c.storeCacheEntry(cacheKey, etag, b)
 		}
 		return RESTResponse{StatusCode: resp.StatusCode, ETag: etag, Body: b}, nil
 	}
@@ -371,18 +375,17 @@ func (c *Client) fetchPlainText(ctx context.Context, path string) ([]byte, error
 // the access pattern is "one PR per poll cycle"; an LRU would just add
 // bookkeeping without changing eviction order in practice.
 func (c *Client) storeCacheEntry(cacheKey, etag string, body []byte) {
+	entry := &restCacheEntry{etag: etag, body: bytes.Clone(body)}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, exists := c.etagOut[cacheKey]; !exists {
+	if _, exists := c.cache[cacheKey]; !exists {
 		c.cacheLRU = append(c.cacheLRU, cacheKey)
 	}
-	c.etagOut[cacheKey] = etag
-	c.bodyOut[cacheKey] = body
+	c.cache[cacheKey] = entry
 	for len(c.cacheLRU) > cacheMaxEntries {
 		evict := c.cacheLRU[0]
 		c.cacheLRU = c.cacheLRU[1:]
-		delete(c.etagOut, evict)
-		delete(c.bodyOut, evict)
+		delete(c.cache, evict)
 	}
 }
 
