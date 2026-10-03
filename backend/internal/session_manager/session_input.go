@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
@@ -16,6 +17,7 @@ const (
 	agentOperationSwitch            agentOperationKind = "switch"
 	agentOperationExit              agentOperationKind = "exit"
 	agentOperationResume            agentOperationKind = "resume"
+	agentOperationHibernate         agentOperationKind = "hibernate"
 	agentOperationKill              agentOperationKind = "kill"
 	agentOperationRestore           agentOperationKind = "restore"
 	agentOperationRetire            agentOperationKind = "retire"
@@ -333,11 +335,27 @@ func (m *Manager) releaseRetainedAgentSwitch(id domain.SessionID) {
 }
 
 func (m *Manager) beginAgentResume(ctx context.Context, id domain.SessionID) error {
-	if err := m.beginAgentOperation(ctx, id, agentOperationResume); err != nil {
+	waitCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	for {
+		err := m.beginAgentOperation(waitCtx, id, agentOperationResume)
+		if err == nil {
+			return nil
+		}
 		if errors.Is(err, errAgentOperationInProgress) {
 			m.agentOpMu.Lock()
 			activeOperation := m.agentOperations[id]
 			m.agentOpMu.Unlock()
+			if activeOperation == agentOperationHibernate {
+				// A human resume may arrive while the idle sweep is closing its
+				// process. Wait for the close and durable marker before launching.
+				select {
+				case <-waitCtx.Done():
+					return waitCtx.Err()
+				case <-time.After(20 * time.Millisecond):
+					continue
+				}
+			}
 			if activeOperation == agentOperationSwitch {
 				return ErrSwitchInProgress
 			}
@@ -345,7 +363,6 @@ func (m *Manager) beginAgentResume(ctx context.Context, id domain.SessionID) err
 		}
 		return err
 	}
-	return nil
 }
 
 func (m *Manager) endAgentResume(id domain.SessionID) {

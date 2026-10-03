@@ -36,7 +36,8 @@ flowchart LR
 
 The only persistent session state is:
 
-- `activity_state` — What the agent last reported (`active`, `idle`, `waiting_input`, `blocked`, `exited`). `waiting_input` is an agent at an empty prompt awaiting its next instruction; `blocked` is an agent stopped on a pending permission/approval decision — automation must never inject input into a blocked session.
+- `activity_state` — What the agent last reported (`active`, `idle`, `waiting_input`, `blocked`, `exited`). In Chat, `waiting_input` means an approval, input request, or reauthentication is pending. TUI hooks can use it for an empty prompt; `blocked` means a pending permission decision. Automation must never inject input into a blocked session.
+- `hibernated_at` — A Chat provider host was deliberately stopped after a completed idle turn; its native conversation can be resumed on new work.
 - `is_terminated` — Whether the session should be treated as over
 - `session_mode` plus its runtime/provider handle and generation — The currently committed controller epoch
 - `session_interface_transitions` — Durable checkpoints for an in-progress or completed TUI↔Chat handoff
@@ -45,6 +46,21 @@ The only persistent session state is:
 ### What is NOT Durable
 
 Display status like `working`, `needs_input`, `ci_failed`, `mergeable` are **computed at read time** by the service layer from the durable facts above.
+
+### Chat hibernation boundary
+
+| Agent and controller state | Hibernate? | Reason |
+| --- | --- | --- |
+| Provisioning, connecting, or recovering | No | Controller ownership or provider state is unsettled. |
+| Active or busy; queued/running turn | No | Work is in flight. |
+| Waiting for input or blocked on approval | No | A provider request is still pending. |
+| Idle after a failed, interrupted, or unconfirmed turn | No | Idle activity alone does not prove successful completion. |
+| Ready and idle after the latest primary turn completed, with the primary Chat tab open | No | A short view lease keeps the provider ready for interaction. |
+| Ready and idle after the latest primary turn completed, with no Chat view | Yes, while Developer Mode enables hibernation, if the native conversation supports resume and no transition or pending work exists | Leaving the Chat tab checks immediately; a 30-second sweep catches turns that finish later. |
+| Hibernated | Already cold | Opening the primary Chat tab, sending, or an AO relay wakes the native conversation in the background. |
+| Exited or terminated | No | Existing resume or restore behavior applies. |
+
+The daemon starts with Chat hibernation disabled; the desktop synchronizes its Developer Mode toggle when the daemon becomes ready. TUI sessions keep their runtime lifecycle. The Chat view renews its lease every 10 seconds; an abandoned lease expires after 30 seconds. A renewal only extends the lease: after a failed wake, reopening the view, sending work, or using the visible retry action can attempt native resume again. Hibernation records a process boundary, not a display status: the session's derived board status continues to use activity and PR facts.
 
 ---
 

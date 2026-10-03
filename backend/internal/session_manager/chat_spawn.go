@@ -538,7 +538,9 @@ func (m *Manager) resumeChatController(
 
 	restored, err := m.getRecord(ctx, rec.ID)
 	if err != nil {
-		return RestoreResult{}, err
+		// StartChat has published the new controller. A failed follow-up read
+		// cannot establish that it is safe to put the session back to sleep.
+		return RestoreResult{}, fmt.Errorf("%w: load resumed chat after native start: %w", ports.ErrChatRecoveryInconclusive, err)
 	}
 	// Native continuity: the provider still holds the conversation, so the agent
 	// resumes with its own history rather than a replayed prompt.

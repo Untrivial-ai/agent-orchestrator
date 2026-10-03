@@ -913,6 +913,7 @@ const (
 	ChatControllerReady      ChatControllerState = "ready"
 	ChatControllerBusy       ChatControllerState = "busy"
 	ChatControllerRecovering ChatControllerState = "recovering"
+	ChatControllerHibernated ChatControllerState = "hibernated"
 	ChatControllerStopped    ChatControllerState = "stopped"
 )
 
@@ -1090,6 +1091,12 @@ type ChatProviderPreserver interface {
 // destruction must do more than detach the controller.
 type ChatProviderTerminator interface {
 	Terminate() error
+}
+
+// ChatProviderHibernator stops the controller and provider process while
+// retaining the native conversation for a later Resume.
+type ChatProviderHibernator interface {
+	Hibernate() error
 }
 
 // ChatLiveReconnector identifies attachment to the same initialized provider

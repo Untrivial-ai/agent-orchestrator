@@ -2,16 +2,37 @@ package codexappserver
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
+
+func TestMain(m *testing.M) {
+	if len(os.Args) >= 7 && os.Args[1] == "chat-host" {
+		if os.Args[5] != "--" {
+			os.Exit(2)
+		}
+		err := persistenthost.Run(context.Background(), persistenthost.Config{
+			SessionID: os.Args[2], DataDir: os.Args[3], Workdir: os.Args[4],
+			Env: os.Environ(), Argv: os.Args[6:],
+		})
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 // TestLiveCodexAppServer drives a real `codex app-server`. It is skipped unless
 // AO_CODEX_LIVE=1, because it needs a local Codex install, working auth, and it
@@ -34,6 +55,8 @@ func TestLiveCodexAppServer(t *testing.T) {
 	}
 
 	workspace := t.TempDir()
+	dataDir := t.TempDir()
+	t.Cleanup(func() { _ = persistenthost.Shutdown(context.Background(), dataDir, "ao-live") })
 	seedGitWorkspace(t, workspace)
 
 	d := New(livePlugin{bin: bin}, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
@@ -51,6 +74,7 @@ func TestLiveCodexAppServer(t *testing.T) {
 
 	conv, err := d.Start(ctx, ports.ChatStartConfig{
 		SessionID:     "ao-live",
+		DataDir:       dataDir,
 		WorkspacePath: workspace,
 		Env:           envMap(),
 		Permissions:   ports.PermissionModeDefault,
@@ -66,9 +90,10 @@ func TestLiveCodexAppServer(t *testing.T) {
 		t.Fatal("no provider conversation id after Start")
 	}
 	t.Logf("thread %s", threadID)
+	const codeword = "teal-orbit-7319"
 
 	if _, err := conv.SendTurn(ctx, ports.ChatUserMessage{
-		Text:            "Reply with exactly the word: acknowledged",
+		Text:            "Remember this codeword for my next message: " + codeword + ". Reply with exactly the word: acknowledged",
 		ClientMessageID: "live-1",
 		Origin:          domain.MessageOriginHuman,
 	}); err != nil {
@@ -116,12 +141,13 @@ collect:
 
 	// Resume on a fresh process must recover the same thread — this is the
 	// daemon-restart path.
-	if err := conv.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if err := conv.(ports.ChatProviderHibernator).Hibernate(); err != nil {
+		t.Fatalf("Hibernate: %v", err)
 	}
 
 	resumed, err := d.Resume(ctx, ports.ChatResumeConfig{
 		SessionID:              "ao-live",
+		DataDir:                dataDir,
 		ProviderConversationID: threadID,
 		WorkspacePath:          workspace,
 		Env:                    envMap(),
@@ -135,7 +161,47 @@ collect:
 	if got := resumed.ProviderConversationID(); got != threadID {
 		t.Fatalf("resumed thread = %q, want %q", got, threadID)
 	}
-	t.Logf("resumed thread %s on a fresh app-server process", threadID)
+	if _, err := resumed.SendTurn(ctx, ports.ChatUserMessage{
+		Text:            "What codeword did I ask you to remember in my preceding message? Reply with only that codeword.",
+		ClientMessageID: "live-2",
+		Origin:          domain.MessageOriginHuman,
+	}); err != nil {
+		t.Fatalf("SendTurn after hibernation: %v", err)
+	}
+	var answer string
+	for {
+		select {
+		case ev, ok := <-resumed.Events():
+			if !ok {
+				t.Fatal("resumed event stream closed before the second turn completed")
+			}
+			switch ev.Kind {
+			case ports.ChatEventMessageDelta:
+				answer += ev.Delta
+			case ports.ChatEventMessageCompleted:
+				if ev.Text != "" {
+					answer = ev.Text
+				}
+			case ports.ChatEventTurnCompleted:
+				if ev.TurnState != domain.TurnStateCompleted {
+					t.Fatalf("resumed turn state = %q, want completed", ev.TurnState)
+				}
+				if !strings.Contains(strings.ToLower(answer), codeword) {
+					t.Fatalf("resumed thread lost earlier context: answer = %q, want %q", answer, codeword)
+				}
+				return
+			case ports.ChatEventApprovalRequested:
+				t.Errorf("unexpected approval request after resume: %s", ev.Summary)
+				_ = resumed.ResolveRequest(ctx, ev.RequestID, ports.ChatDecision{ID: "accept"})
+			case ports.ChatEventControllerState:
+				if ev.ControllerState == ports.ChatControllerStopped {
+					t.Fatalf("resumed controller stopped before the second turn completed: %v", ev.Err)
+				}
+			}
+		case <-ctx.Done():
+			t.Fatalf("resumed turn timed out: %v", ctx.Err())
+		}
+	}
 }
 
 // livePlugin stands in for AO's Codex agent plugin so this test exercises the

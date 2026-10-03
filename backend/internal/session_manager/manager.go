@@ -455,15 +455,18 @@ type Manager struct {
 	codexOperationGate             ports.CodexOperationGate
 	startupBackgroundReconcileDone chan struct{}
 	startupBackgroundReconcileOnce sync.Once
-	statusRecoveryMu               sync.RWMutex
-	statusRecoveryFailed           bool
-	statusRecoveryRevision         uint64
-	statusRecoveries               map[domain.SessionID]statusRecovery
-	statusVerificationLimit        time.Duration
-	agentOpMu                      sync.Mutex
-	agentOperations                map[domain.SessionID]agentOperationKind
-	interfaceRecoveryMu            sync.Mutex
-	deferredInterfaceRecovery      map[domain.SessionID]string
+	// A cold Chat resume must not launch a new persistent host while startup's
+	// orphan-host sweep is using its earlier snapshot of sleeping sessions.
+	persistentHostReconcileDone <-chan struct{}
+	statusRecoveryMu            sync.RWMutex
+	statusRecoveryFailed        bool
+	statusRecoveryRevision      uint64
+	statusRecoveries            map[domain.SessionID]statusRecovery
+	statusVerificationLimit     time.Duration
+	agentOpMu                   sync.Mutex
+	agentOperations             map[domain.SessionID]agentOperationKind
+	interfaceRecoveryMu         sync.Mutex
+	deferredInterfaceRecovery   map[domain.SessionID]string
 	// switchDecisionInput opens a narrow human-only terminal lane while the
 	// source is blocked on permission during a mandatory switch.
 	switchDecisionInput map[domain.SessionID]domain.AgentSwitchID
@@ -607,6 +610,13 @@ func (m *Manager) SetTerminalInputGate(gate TerminalInputGate) {
 // SetAgentReadiness completes daemon wiring before request handling begins.
 func (m *Manager) SetAgentReadiness(provider ports.AgentReadinessProvider) {
 	m.agentReadiness = provider
+}
+
+// SetPersistentHostReconcileDone fences cold Chat resumes until startup has
+// finished reaping hosts for sessions that were already hibernated on disk.
+// Daemon wiring installs the channel before opening the HTTP listener.
+func (m *Manager) SetPersistentHostReconcileDone(done <-chan struct{}) {
+	m.persistentHostReconcileDone = done
 }
 
 func (m *Manager) beginTerminalInputDrain(rec domain.SessionRecord) (lastInputAt time.Time, release func()) {
@@ -2692,11 +2702,116 @@ func (m *Manager) recordAgentExited(ctx context.Context, rec domain.SessionRecor
 	return m.lcm.ApplyActivitySignal(ctx, rec.ID, signal)
 }
 
+// HibernateIdleChats releases eligible Chat provider processes. The chat
+// service rechecks turn completion and controller quiescence under its send lock.
+func (m *Manager) HibernateIdleChats(ctx context.Context) error {
+	records, err := m.store.ListAllSessions(ctx)
+	if err != nil {
+		return fmt.Errorf("list chats for hibernation: %w", err)
+	}
+	var errs []error
+	for _, candidate := range records {
+		if !eligibleChatHibernation(candidate) {
+			continue
+		}
+		err := m.hibernateEligibleChat(ctx, candidate.ID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("hibernate chat %s: %w", candidate.ID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// HibernateChatIfIdle handles a view closing without waiting for the next
+// sweep. It shares the same operation and transition gates as the sweep.
+func (m *Manager) HibernateChatIfIdle(ctx context.Context, id domain.SessionID) error {
+	rec, found, err := m.store.GetSession(ctx, id)
+	if err != nil || !found || !eligibleChatHibernation(rec) {
+		return err
+	}
+	return m.hibernateEligibleChat(ctx, id)
+}
+
+func (m *Manager) hibernateEligibleChat(ctx context.Context, id domain.SessionID) error {
+	hibernator, ok := m.chat.(interface {
+		HibernateChat(context.Context, domain.SessionID) (bool, error)
+	})
+	if !ok {
+		return nil
+	}
+	operationCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := m.beginAgentOperation(operationCtx, id, agentOperationHibernate); err != nil {
+		if errors.Is(err, errAgentOperationInProgress) {
+			return nil
+		}
+		return err
+	}
+	defer m.endAgentOperation(id, agentOperationHibernate)
+	active, err := m.hasActiveInterfaceTransition(operationCtx, id)
+	if err != nil || active {
+		return err
+	}
+	_, err = hibernator.HibernateChat(operationCtx, id)
+	return err
+}
+
+func eligibleChatHibernation(rec domain.SessionRecord) bool {
+	return domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat &&
+		!rec.IsTerminated && !rec.IsTaskPreparation && rec.ProvisionState.WithDefault() == domain.SessionProvisionReady &&
+		rec.HibernatedAt == nil && rec.Activity.State == domain.ActivityIdle &&
+		!rec.Activity.LastActivityAt.IsZero() &&
+		strings.TrimSpace(rec.Metadata.ProviderConversationID) != ""
+}
+
+// WakeHibernatedChat waits for an in-flight hibernation or wake, then resumes
+// the native provider conversation when there is no live Chat controller. This
+// also retries a failed wake after its durable marker was cleared.
+func (m *Manager) WakeHibernatedChat(ctx context.Context, id domain.SessionID) error {
+	waitCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		m.agentOpMu.Lock()
+		operation := m.agentOperations[id]
+		m.agentOpMu.Unlock()
+		if operation == agentOperationHibernate || operation == agentOperationResume {
+			select {
+			case <-waitCtx.Done():
+				return waitCtx.Err()
+			case <-ticker.C:
+				continue
+			}
+		}
+		rec, found, err := m.store.GetSession(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return ErrNotFound
+		}
+		if rec.HibernatedAt == nil && m.chat != nil && m.chat.HasLiveChatController(id) {
+			return nil
+		}
+		_, err = m.ResumeAgentWithMode(ctx, id)
+		if errors.Is(err, ErrResumeInProgress) {
+			m.agentOpMu.Lock()
+			operation = m.agentOperations[id]
+			m.agentOpMu.Unlock()
+			if operation == agentOperationHibernate || operation == agentOperationResume {
+				continue
+			}
+		}
+		return err
+	}
+}
+
 // ResumeAgentWithMode replaces an exited agent inside its still-live session.
 // Unlike RestoreWithMode, it preserves the existing worktree and terminal
 // identity and never changes the durable terminated flag as an intermediate
 // step.
-func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (RestoreResult, error) {
+func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) (result RestoreResult, err error) {
 	if err := m.beginAgentResume(ctx, id); err != nil {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, err)
 	}
@@ -2717,6 +2832,13 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 	}
 	if !ok {
 		return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrNotFound)
+	}
+	if rec.HibernatedAt != nil && m.persistentHostReconcileDone != nil {
+		select {
+		case <-m.persistentHostReconcileDone:
+		case <-ctx.Done():
+			return RestoreResult{}, fmt.Errorf("resume agent %s: wait for persistent host reconciliation: %w", id, ctx.Err())
+		}
 	}
 	m.asyncChatSpawnsMu.Lock()
 	_, starting := m.asyncChatSpawns[id]
@@ -2747,7 +2869,7 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 		}
 		return result, err
 	}
-	if m.SessionStatusReadiness(rec) == "unavailable" {
+	if rec.HibernatedAt == nil && m.SessionStatusReadiness(rec) == "unavailable" {
 		m.beginStatusRecovery(id)
 		recoveryCtx, cancel := context.WithTimeout(ctx, m.statusVerificationLimit)
 		defer cancel()
@@ -2771,6 +2893,67 @@ func (m *Manager) ResumeAgentWithMode(ctx context.Context, id domain.SessionID) 
 		// existing durable-exited precondition.
 		if mode != domain.SessionModeChat || m.chat == nil {
 			return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrAgentNotExited)
+		}
+	}
+	if rec.HibernatedAt != nil {
+		store, ok := m.store.(interface {
+			SetSessionHibernated(context.Context, domain.SessionID, int64, *time.Time) (bool, error)
+		})
+		if !ok {
+			return RestoreResult{}, fmt.Errorf("resume agent %s: hibernation store unavailable", id)
+		}
+		asleepAt := rec.HibernatedAt
+		nativeID := rec.Metadata.ProviderConversationID
+		// Native resume can fail after the marker is cleared. Keep a failed
+		// automatic wake retryable and visibly asleep, including when the HTTP
+		// request was canceled while the provider was starting.
+		defer func() {
+			if err == nil || errors.Is(err, ports.ErrChatRecoveryInconclusive) {
+				return
+			}
+			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			for range 3 {
+				fresh, found, readErr := m.store.GetSession(recoveryCtx, id)
+				if readErr != nil {
+					err = errors.Join(err, fmt.Errorf("restore hibernation marker: %w", readErr))
+					return
+				}
+				if !found || fresh.HibernatedAt != nil || fresh.IsTerminated ||
+					domain.NormalizeSessionMode(fresh.Mode) != domain.SessionModeChat ||
+					fresh.Metadata.ProviderConversationID != nativeID ||
+					(m.chat != nil && m.chat.HasLiveChatController(id)) {
+					return
+				}
+				restored, restoreErr := store.SetSessionHibernated(recoveryCtx, id, fresh.Revision, asleepAt)
+				if restoreErr != nil {
+					err = errors.Join(err, fmt.Errorf("restore hibernation marker: %w", restoreErr))
+					return
+				}
+				if restored {
+					return
+				}
+			}
+			err = errors.Join(err, errors.New("restore hibernation marker: session changed concurrently"))
+		}()
+		for range 3 {
+			if rec.HibernatedAt == nil {
+				break
+			}
+			_, clearErr := store.SetSessionHibernated(ctx, id, rec.Revision, nil)
+			if clearErr != nil {
+				return RestoreResult{}, fmt.Errorf("resume agent %s: clear hibernation: %w", id, clearErr)
+			}
+			rec, err = m.getRecord(ctx, id)
+			if err != nil {
+				return RestoreResult{}, err
+			}
+			if rec.IsTerminated {
+				return RestoreResult{}, fmt.Errorf("resume agent %s: %w", id, ErrTerminated)
+			}
+		}
+		if rec.HibernatedAt != nil {
+			return RestoreResult{}, fmt.Errorf("resume agent %s: hibernation state changed: %w", id, ErrResumeInProgress)
 		}
 	}
 	return m.resumeAgentRecordWithPolicy(ctx, "resume agent", rec, false, false)
@@ -3202,6 +3385,9 @@ func (m *Manager) saveAndTeardownOne(ctx context.Context, rec domain.SessionReco
 // conversation identity. A restart-time dependency failure is not user intent
 // to terminate the session; the controller can be retried through Resume Agent.
 func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) error {
+	if rec.HibernatedAt != nil {
+		return nil
+	}
 	project, err := m.loadProject(ctx, rec.ProjectID)
 	if err != nil {
 		return err
@@ -3529,7 +3715,7 @@ func (m *Manager) reconcileLivePass(ctx context.Context, recs []domain.SessionRe
 	candidates := make([]domain.SessionRecord, 0, len(recs))
 	ids := make([]domain.SessionID, 0, len(recs))
 	for _, rec := range recs {
-		if rec.IsTerminated || rec.IsTaskPreparation || rec.ProvisionState.WithDefault() != domain.SessionProvisionReady {
+		if rec.IsTerminated || rec.IsTaskPreparation || rec.HibernatedAt != nil || rec.ProvisionState.WithDefault() != domain.SessionProvisionReady {
 			continue
 		}
 		candidates = append(candidates, rec)

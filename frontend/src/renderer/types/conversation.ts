@@ -624,8 +624,8 @@ export interface ChatSkill {
 	source?: string;
 }
 
-/** Health of the daemon's connection to the provider. */
-export type ControllerState = "connecting" | "ready" | "busy" | "recovering" | "stopped";
+/** State of the daemon's connection to the provider. */
+export type ControllerState = "connecting" | "ready" | "busy" | "recovering" | "stopped" | "hibernated";
 
 /**
  * How full this conversation is.

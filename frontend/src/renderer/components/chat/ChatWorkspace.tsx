@@ -317,7 +317,11 @@ export interface ChatWorkspaceProps {
 	) => Promise<unknown> | void;
 	onInterrupt?: () => void;
 	commandError?: string;
-	onResumeAgent?: () => void;
+	/** Failed background wake shown inside the existing composer. */
+	wakeError?: string;
+	wakeRetrying?: boolean;
+	onRetryWake?: () => void;
+	onResumeAgent?: () => void | Promise<unknown>;
 	resumingAgent?: boolean;
 	resumeError?: string;
 	onOpenShell?: () => void;
@@ -572,6 +576,9 @@ function ChatWorkspaceContent({
 	onResolveInput,
 	onInterrupt,
 	commandError,
+	wakeError,
+	wakeRetrying,
+	onRetryWake,
 	onResumeAgent,
 	resumingAgent,
 	resumeError,
@@ -639,6 +646,13 @@ function ChatWorkspaceContent({
 		[assetBaseUrl],
 	);
 	const turn = activeTurn(snapshot);
+	// The primary Chat view wakes a sleeping provider in the background. Its
+	// marker clears before the new controller is ready, so an intermediate
+	// "stopped" snapshot is still part of that wake, not a crashed agent.
+	const wakingFromHibernate = useRef(snapshot.controller.state === "hibernated");
+	if (snapshot.controller.state === "hibernated") wakingFromHibernate.current = true;
+	if (snapshot.controller.state === "ready" || snapshot.controller.state === "busy") wakingFromHibernate.current = false;
+	const suppressStopped = wakingFromHibernate.current && snapshot.controller.state === "stopped";
 	const hasPendingInteraction = snapshot.items.some(
 		(item) =>
 			item.kind === "activity" &&
@@ -1125,7 +1139,10 @@ function ChatWorkspaceContent({
 
 	// Offered only while the agent is idle. The daemon refuses a rollback mid-turn,
 	// and a control that exists to be refused is worse than one that waits.
-	const rollbackTarget = onRollback && !turn && !newWorkDisabled ? (id: string) => setConfirming(id) : undefined;
+	const rollbackTarget =
+		onRollback && !turn && !newWorkDisabled && snapshot.controller.state !== "hibernated"
+			? (id: string) => setConfirming(id)
+			: undefined;
 	const discarded = snapshot.turns.filter((t) => t.rolledBack).length;
 
 	const brokenServers = useMemo(() => brokenMcpServers(snapshot), [snapshot]);
@@ -1169,7 +1186,11 @@ function ChatWorkspaceContent({
 					configPending={configOptionPending}
 					error={configOptionError}
 					disabled={
-						snapshot.controller.state === "stopped" || controllerTransitioning || configOptionPending || newWorkDisabled
+						snapshot.controller.state === "stopped" ||
+						snapshot.controller.state === "hibernated" ||
+						controllerTransitioning ||
+						configOptionPending ||
+						newWorkDisabled
 					}
 				/>
 			) : null,
@@ -1314,6 +1335,23 @@ function ChatWorkspaceContent({
 		};
 	}, [conversationEmpty, uiSessionId]);
 
+	const controllerBanner = (
+		<ControllerBanner
+			controller={snapshot.controller}
+			agentName={agentLabel(snapshot.harness)}
+			provisionState={session?.provisionState}
+			provisionError={session?.provisionError}
+			transitioning={controllerTransitioning}
+			automaticWakePending={suppressStopped}
+			onResume={newWorkDisabled ? undefined : onResumeAgent}
+			resuming={resumingAgent}
+			resumeError={resumeError}
+			onOpenShell={onOpenShell}
+			openingShell={openingShell}
+			shellError={shellError}
+		/>
+	);
+
 	return (
 		<section
 			ref={surfaceRef}
@@ -1422,19 +1460,7 @@ function ChatWorkspaceContent({
 					{snapshot.account ? (
 						<ReauthBanner account={snapshot.account} harness={snapshot.harness} reasonInTimeline={reauthErrorInChat} />
 					) : null}
-					<ControllerBanner
-						controller={snapshot.controller}
-						agentName={agentLabel(snapshot.harness)}
-						provisionState={session?.provisionState}
-						provisionError={session?.provisionError}
-						transitioning={controllerTransitioning}
-						onResume={newWorkDisabled ? undefined : onResumeAgent}
-						resuming={resumingAgent}
-						resumeError={resumeError}
-						onOpenShell={onOpenShell}
-						openingShell={openingShell}
-						shellError={shellError}
-					/>
+					{controllerBanner}
 					{snapshot.threadState ? <ThreadStateBanner threadState={snapshot.threadState} /> : null}
 					<McpServerBanner
 						sessionId={uiSessionId}
@@ -1505,10 +1531,13 @@ function ChatWorkspaceContent({
 									onQueuedRetainedAttachmentsChange={changeQueuedRetainedAttachments}
 									onInterrupt={turn && !newWorkDisabled ? stableInterrupt : undefined}
 									commandError={queueDraftError ?? (queueEdit && !queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId) ? "chat.draft.queueMissing" : commandError)}
+									wakeError={wakeError}
+									wakeRetrying={wakeRetrying}
+									onRetryWake={onRetryWake}
 									settings={<><ContextMeter usage={snapshot.usage} />{composerSettings}</>}
 									busy={busy}
 									willQueue={Boolean(turn) || session?.provisionState === "provisioning"}
-									disabled={(snapshot.controller.state === "stopped" || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}
+									disabled={((snapshot.controller.state === "stopped" && !suppressStopped && (!resumingAgent || session?.provisionState === "failed")) || controllerTransitioning || newWorkDisabled) && !queueEdit?.clientMessageId}
 									// Switch/reconnect status is the topbar spinner beside ⋮ — not composer text.
 									disabledPlaceholder={
 										controllerTransitioning || newWorkDisabled ? "" : undefined
@@ -1528,7 +1557,7 @@ function ChatWorkspaceContent({
 									sendPending={sendPending}
 									steerPending={steerPending}
 									steerRefusal={steerRefusal}
-									onCompact={newWorkDisabled ? undefined : onCompact}
+									onCompact={newWorkDisabled || snapshot.controller.state === "hibernated" ? undefined : onCompact}
 									compacting={compacting}
 									compactUnavailable={compactUnavailable}
 									compactBlocked={Boolean(turn)}
@@ -1890,8 +1919,8 @@ function ChatHeader({
 }
 
 /**
- * Controller health. A stopped or recovering controller is announced, because a
- * silent surface is indistinguishable from an agent that is simply thinking.
+ * Controller health and hibernation. A silent surface is indistinguishable from
+ * an agent that is simply thinking.
  */
 function ControllerBanner({
 	controller,
@@ -1899,6 +1928,7 @@ function ControllerBanner({
 	provisionState,
 	provisionError,
 	transitioning,
+	automaticWakePending,
 	onResume,
 	resuming,
 	resumeError,
@@ -1911,7 +1941,8 @@ function ControllerBanner({
 	provisionState?: WorkspaceSession["provisionState"];
 	provisionError?: string;
 	transitioning?: boolean;
-	onResume?: () => void;
+	automaticWakePending?: boolean;
+	onResume?: () => void | Promise<unknown>;
 	resuming?: boolean;
 	resumeError?: string;
 	onOpenShell?: () => void;
@@ -1921,12 +1952,16 @@ function ControllerBanner({
 	const provisioning = provisionState === "provisioning";
 	const failed = provisionState === "failed";
 	const starting = provisioning || failed;
+	const waking = Boolean(resuming && controller.state === "stopped");
+	const resumeClick = () => {
+		void Promise.resolve().then(() => onResume?.()).catch(() => {});
+	};
 
 	// The transition coordinator intentionally stops one controller before it
 	// starts the other. The top-bar handoff state already explains that interval;
 	// presenting its intermediate snapshot as a crash produces a red false alarm.
-	if (!starting && transitioning && controller.state === "stopped") return null;
-	if (!starting && (controller.state === "ready" || controller.state === "busy")) return null;
+	if (!starting && (controller.state === "ready" || controller.state === "busy" || controller.state === "hibernated")) return null;
+	if (!starting && controller.state === "stopped" && (transitioning || automaticWakePending)) return null;
 
 	const copy: Partial<Record<ControllerState, { title: string; tone: string }>> = {
 		connecting: {
@@ -1938,8 +1973,8 @@ function ControllerBanner({
 			tone: "text-warning",
 		},
 		stopped: {
-			title: "The agent controller stopped",
-			tone: "text-destructive",
+			title: waking ? "Waking agent…" : "The agent controller stopped",
+			tone: waking ? "text-muted-foreground" : "text-destructive",
 		},
 	};
 	const shown = provisioning
@@ -1948,11 +1983,11 @@ function ControllerBanner({
 			? { title: "This session could not be started", tone: "text-destructive" }
 			: copy[controller.state];
 	if (!shown) return null;
-	const loading = provisioning || (!failed && controller.state === "connecting");
+	const loading = provisioning || (!failed && (controller.state === "connecting" || waking));
 
 	return (
 		<div
-			role={failed || controller.state === "stopped" ? "alert" : "status"}
+			role={failed || (controller.state === "stopped" && !waking) ? "alert" : "status"}
 			aria-atomic="true"
 			className="flex shrink-0 items-start gap-2.5 border-b border-border bg-surface px-4 py-2.5"
 		>
@@ -1985,15 +2020,17 @@ function ControllerBanner({
 							<span className="text-[11px] leading-snug text-destructive">{resumeError}</span>
 						) : null}
 						{onResume ? (
-							<Button type="button" size="sm" variant="outline" onClick={onResume} disabled={resuming}>
+							<Button type="button" size="sm" variant="outline" onClick={resumeClick} disabled={resuming}>
 								{resuming ? "Retrying…" : "Retry start"}
 							</Button>
 						) : null}
 					</>
-				) : controller.error ? (
+				) : controller.state === "stopped" && waking ? (
+					<span className="text-[11px] leading-snug text-muted-foreground">Restoring the agent. You can keep typing.</span>
+			) : controller.error ? (
 					<span className="text-[11px] leading-snug text-muted-foreground">{controller.error}</span>
 				) : null}
-				{!starting && controller.state === "stopped" ? (
+				{!starting && controller.state === "stopped" && !waking ? (
 					<>
 						<span className="text-[11px] leading-snug text-muted-foreground">
 							History is kept. Resume the agent or open a shell in the same worktree.
@@ -2009,7 +2046,7 @@ function ControllerBanner({
 									type="button"
 									size="sm"
 									variant="outline"
-									onClick={onResume}
+									onClick={resumeClick}
 									disabled={resuming}
 								>
 									{resuming ? "Resuming…" : "Resume agent"}

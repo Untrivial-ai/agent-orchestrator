@@ -53,6 +53,8 @@ const settingsState = vi.hoisted(() => ({
 	chatHarnesses: undefined as string[] | undefined,
 }));
 const reviewGetMock = vi.hoisted(() => vi.fn());
+const chatViewPostMock = vi.hoisted(() => vi.fn());
+const remoteChatViewPostMock = vi.hoisted(() => vi.fn());
 const inspectorVisibilityRenders = vi.hoisted(() => [] as boolean[]);
 const chatSurfaceRenders = vi.hoisted(() => [] as string[]);
 const chatSurfaceWorkState = vi.hoisted(() => ({
@@ -140,9 +142,26 @@ vi.mock("../hooks/useSessionInterfaceTransition", async (importOriginal) => ({
 vi.mock("../lib/api-client", () => ({
 	apiClient: {
 		GET: reviewGetMock,
+		POST: chatViewPostMock,
 	},
 	apiErrorCode: (error: { code?: string }) => error.code,
 	apiErrorMessage: (_error: unknown, fallback: string) => fallback,
+}));
+vi.mock("../lib/host-clients", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../lib/host-clients")>()),
+	clientForSessionHost: (hostId?: string) => ({
+		GET: reviewGetMock,
+		POST: hostId ? remoteChatViewPostMock : chatViewPostMock,
+	}),
+}));
+vi.mock("../hooks/useHostConnection", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../hooks/useHostConnection")>()),
+	useHostConnection: (hostId?: string) => ({
+		hostId,
+		isRemote: Boolean(hostId),
+		baseUrl: hostId ? "http://remote.test" : undefined,
+		label: hostId ? "Remote host" : undefined,
+	}),
 }));
 
 const { workspaces, workspaceQueryState, shellTerminalsState } = vi.hoisted(() => {
@@ -187,6 +206,8 @@ const { workspaces, workspaceQueryState, shellTerminalsState } = vi.hoisted(() =
 		isLoading: false,
 	};
 	const shellTerminalsState: {
+		loaded: boolean;
+		error: boolean;
 		data: Array<{
 			handleId: string;
 			projectId?: string;
@@ -196,6 +217,8 @@ const { workspaces, workspaceQueryState, shellTerminalsState } = vi.hoisted(() =
 			createdAt: string;
 		}>;
 	} = {
+		loaded: true,
+		error: false,
 		data: [],
 	};
 	return { workspaces, workspaceQueryState, shellTerminalsState };
@@ -259,6 +282,9 @@ vi.mock("./chat/SessionChatSurface", async () => {
 		workspaceTabs,
 		workspaceTabActions,
 		newWorkDisabled,
+		wakeError,
+		wakeRetrying,
+		onRetryWake,
 		onConversationWorkChange,
 		auxiliaryTabOrder,
 		onAuxiliaryTabOrderChange,
@@ -281,6 +307,9 @@ vi.mock("./chat/SessionChatSurface", async () => {
 		workspaceTabs?: Array<{ key: string; content: ReactNode; onSelect: () => void }>;
 		workspaceTabActions?: ReactNode;
 		newWorkDisabled?: boolean;
+		wakeError?: string;
+		wakeRetrying?: boolean;
+		onRetryWake?: () => void;
 		onConversationWorkChange?: (state: typeof chatSurfaceWorkState) => void;
 		auxiliaryTabOrder?: string[];
 		onAuxiliaryTabOrderChange?: (keys: string[]) => void;
@@ -293,6 +322,7 @@ vi.mock("./chat/SessionChatSurface", async () => {
 			data-new-work-disabled={newWorkDisabled ? "true" : "false"}
 		>
 			chat surface
+			{wakeError ? <div role="alert">{wakeError}{onRetryWake ? <button type="button" disabled={wakeRetrying} onClick={onRetryWake}>Try connecting again</button> : null}</div> : null}
 			<div data-testid={`auxiliary-tab-order-${session.id}`}>
 				{auxiliaryTabOrder?.join("|") ?? ""}
 			</div>
@@ -685,6 +715,7 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 		return cloudSessionQueryState;
 	},
 	cloudSessionsQueryKey: ["cloud-sessions"],
+	workspaceQueryKey: ["workspaces"],
 	useWorkspaceQuery: () => ({
 		data: workspaceQueryState.data,
 		isLoading: workspaceQueryState.isLoading,
@@ -702,7 +733,11 @@ vi.mock("../hooks/useWorkspaceQuery", () => ({
 // Standalone shell terminals are orthogonal to the split under test, and their
 // real hooks would need a QueryClientProvider this suite deliberately omits.
 vi.mock("../hooks/useShellTerminals", () => ({
-	useShellTerminals: () => ({ data: shellTerminalsState.data, isLoading: false }),
+	useShellTerminals: () => ({
+		data: shellTerminalsState.loaded ? shellTerminalsState.data : undefined,
+		isLoading: !shellTerminalsState.loaded && !shellTerminalsState.error,
+		isError: shellTerminalsState.error,
+	}),
 	useOpenShellTerminal: () => ({ open: openShellTerminalMock, isPending: false }),
 	useCloseShellTerminal: () => ({ mutate: closeShellTerminalMock }),
 	useRenameShellTerminal: () => ({ mutate: vi.fn() }),
@@ -830,6 +865,8 @@ describe("SessionView", () => {
 		browserViewState.url = "";
 		browserViewState.agentBrowserActive = false;
 		shellTerminalsState.data = [];
+		shellTerminalsState.loaded = true;
+		shellTerminalsState.error = false;
 		navigateMock.mockReset();
 		openShellTerminalMock.mockReset();
 		openShellTerminalMock.mockImplementation((input: { projectId?: string; sessionId?: string }) => ({
@@ -872,6 +909,8 @@ describe("SessionView", () => {
 		chatSurfaceWorkState.hasRunningTurn = false;
 		chatSurfaceWorkState.queuedTurnCount = 0;
 		reviewGetMock.mockReset();
+		chatViewPostMock.mockReset().mockResolvedValue({ error: undefined });
+		remoteChatViewPostMock.mockReset().mockResolvedValue({ error: undefined });
 		reviewGetMock.mockImplementation(async (path: string) => {
 			if (path === "/api/v1/sessions/{sessionId}/workspace/files") {
 				return {
@@ -1029,6 +1068,199 @@ describe("SessionView", () => {
 		fireEvent.click(screen.getByRole("button", { name: "select chat tab" }));
 		expect(screen.getByTestId("chat-surface")).toBeInTheDocument();
 		expect(screen.queryByTestId("terminal-target")).not.toBeInTheDocument();
+	});
+
+	it("keeps only the selected primary Chat tab awake", async () => {
+		workerSession("sess-1").mode = "chat";
+		shellTerminalsState.data = [{
+			handleId: "chat-shell",
+			sessionId: "sess-1",
+			title: "chat shell",
+			workingDir: "/p",
+			createdAt: "2026-08-04T00:00:00Z",
+		}];
+		const view = render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(chatViewPostMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/chat-view",
+			expect.objectContaining({
+				params: { path: { sessionId: "sess-1" } },
+				body: { viewId: expect.any(String), active: true },
+			}),
+		));
+		const viewId = chatViewPostMock.mock.calls[0][1].body.viewId;
+
+		act(() => useUiStore.getState().setActiveShellTerminal("chat-shell"));
+		await waitFor(() => expect(chatViewPostMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/chat-view",
+			{ params: { path: { sessionId: "sess-1" } }, body: { viewId, active: false } },
+		));
+		fireEvent.click(screen.getByRole("button", { name: "select chat tab" }));
+		await waitFor(() => expect(chatViewPostMock.mock.calls.filter(([, input]) => input.body.active)).toHaveLength(2));
+		view.unmount();
+		await waitFor(() => expect(chatViewPostMock.mock.calls.filter(([, input]) => !input.body.active)).toHaveLength(2));
+	});
+
+	it("registers and retries a remote Chat view on its owning host", async () => {
+		workerSession("sess-1").mode = "chat";
+		remoteChatViewPostMock.mockResolvedValueOnce({ error: { code: "CHAT_RESUME_FAILED" } })
+			.mockResolvedValue({ error: undefined });
+		const view = render(<SessionView hostId="box-a" sessionId="sess-1" />);
+		expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t reopen this chat");
+		expect(chatViewPostMock).not.toHaveBeenCalled();
+		await userEvent.click(screen.getByRole("button", { name: "Try connecting again" }));
+		await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+		expect(remoteChatViewPostMock.mock.calls.map(([, input]) => input.body.active)).toEqual([true, false, true]);
+		expect(chatViewPostMock).not.toHaveBeenCalled();
+		view.unmount();
+		await waitFor(() => expect(remoteChatViewPostMock.mock.calls.map(([, input]) => input.body.active)).toEqual([true, false, true, false]));
+	});
+
+	it("retries a failed automatic wake only after reopening Chat", async () => {
+		workerSession("sess-1").mode = "chat";
+		chatViewPostMock.mockReset()
+			.mockResolvedValueOnce({ error: { code: "CHAT_RESUME_FAILED" } })
+			.mockResolvedValue({ error: undefined });
+		const view = render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(chatViewPostMock.mock.calls.filter(([, input]) => input.body.active)).toHaveLength(1));
+
+		view.rerender(<SessionView sessionId="sess-2" />);
+		await waitFor(() => expect(chatViewPostMock.mock.calls.some(([, input]) => input.body.active === false)).toBe(true));
+		view.rerender(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(chatViewPostMock.mock.calls.filter(([, input]) => input.body.active)).toHaveLength(2));
+	});
+
+	it("shows a failed wake and retries it once without sending a message", async () => {
+		workerSession("sess-1").mode = "chat";
+		let failed = false;
+		chatViewPostMock.mockReset().mockImplementation(async (path: string, input: { body?: { active?: boolean } }) => {
+			if (path.endsWith("/chat-view") && input.body?.active && !failed) {
+				failed = true;
+				return { error: { code: "CHAT_RESUME_FAILED" } };
+			}
+			return { error: undefined };
+		});
+		const interval = vi.spyOn(window, "setInterval");
+		try {
+			render(<SessionView sessionId="sess-1" />);
+			await waitFor(() => expect(chatViewPostMock.mock.calls.filter(([path]) => path.endsWith("/chat-view"))).toHaveLength(1));
+			expect(failed).toBe(true);
+			expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t reopen this chat");
+			const renewal = interval.mock.calls.find(([, delay]) => delay === 10_000)?.[0];
+			expect(renewal).toBeTypeOf("function");
+			await act(async () => { (renewal as () => void)(); });
+			expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t reopen this chat");
+
+			await userEvent.click(screen.getByRole("button", { name: "Try connecting again" }));
+			await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+			const viewCalls = chatViewPostMock.mock.calls.map(([, input]) => input.body);
+			expect(viewCalls.map(({ active }: { active: boolean }) => active)).toEqual([true, true, false, true]);
+			expect(viewCalls.every(({ viewId }: { viewId: string }) => viewId === viewCalls[0].viewId)).toBe(true);
+		} finally {
+			interval.mockRestore();
+		}
+	});
+
+	it("keeps a failed reconnect visible after a 204 renewal until explicit retry succeeds", async () => {
+		workerSession("sess-1").mode = "chat";
+		let failed = false;
+		chatViewPostMock.mockReset().mockImplementation(async (path: string, input: { body?: { active?: boolean } }) => {
+			if (path.endsWith("/chat-view") && input.body?.active && !failed) {
+				failed = true;
+				return { error: { code: "INTERNAL_ERROR" } };
+			}
+			return { error: undefined };
+		});
+		const interval = vi.spyOn(window, "setInterval");
+		try {
+			render(<SessionView sessionId="sess-1" />);
+			expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t reconnect to this chat");
+			const renewal = interval.mock.calls.find(([, delay]) => delay === 10_000)?.[0];
+			expect(renewal).toBeTypeOf("function");
+			await act(async () => { (renewal as () => void)(); });
+			expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t reconnect to this chat");
+
+			await userEvent.click(screen.getByRole("button", { name: "Try connecting again" }));
+			await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+			expect(chatViewPostMock.mock.calls.map(([, input]) => input.body.active)).toEqual([true, true, false, true]);
+		} finally {
+			interval.mockRestore();
+		}
+	});
+
+	it("reports a missing session without offering a futile wake retry", async () => {
+		workerSession("sess-1").mode = "chat";
+		chatViewPostMock.mockReset().mockImplementation(async (path: string, input: { body?: { active?: boolean } }) =>
+			path.endsWith("/chat-view") && input.body?.active
+				? { error: { code: "SESSION_NOT_FOUND" } }
+				: { error: undefined },
+		);
+		render(<SessionView sessionId="sess-1" />);
+		expect(await screen.findByRole("alert")).toHaveTextContent("This chat no longer exists");
+		expect(screen.queryByRole("button", { name: "Try connecting again" })).not.toBeInTheDocument();
+	});
+
+	it("does not wake Chat while restoring its selected shell tab", async () => {
+		workerSession("sess-1").mode = "chat";
+		shellTerminalsState.data = [{
+			handleId: "chat-shell",
+			sessionId: "sess-1",
+			title: "chat shell",
+			workingDir: "/p",
+			createdAt: "2026-08-04T00:00:00Z",
+		}];
+		useUiStore.setState({ activeShellTerminalHandleId: "chat-shell" });
+		shellTerminalsState.loaded = false;
+
+		const view = render(<SessionView sessionId="sess-1" />);
+		expect(chatViewPostMock).not.toHaveBeenCalled();
+		shellTerminalsState.loaded = true;
+		view.rerender(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(screen.getByTestId("terminal-target")).toHaveTextContent("shell"));
+		expect(chatViewPostMock).not.toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/chat-view",
+			expect.objectContaining({ body: expect.objectContaining({ active: true }) }),
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "select chat tab" }));
+		await waitFor(() => expect(chatViewPostMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/chat-view",
+			expect.objectContaining({ body: expect.objectContaining({ active: true }) }),
+		));
+	});
+
+	it("keeps Chat awake when the selected shell belongs to another session", async () => {
+		workerSession("sess-1").mode = "chat";
+		shellTerminalsState.data = [{
+			handleId: "other-shell",
+			sessionId: "sess-2",
+			title: "other shell",
+			workingDir: "/p",
+			createdAt: "2026-08-04T00:00:00Z",
+		}];
+		useUiStore.setState({ activeShellTerminalHandleId: "other-shell" });
+
+		render(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(chatViewPostMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/chat-view",
+			expect.objectContaining({ body: expect.objectContaining({ active: true }) }),
+		));
+	});
+
+	it("wakes a visible Chat after shell lookup fails with a previous session's shell selected", async () => {
+		workerSession("sess-1").mode = "chat";
+		useUiStore.setState({ activeShellTerminalHandleId: "other-shell" });
+		shellTerminalsState.loaded = false;
+
+		const view = render(<SessionView sessionId="sess-1" />);
+		expect(screen.getByTestId("chat-surface")).toBeInTheDocument();
+		expect(chatViewPostMock).not.toHaveBeenCalled();
+
+		shellTerminalsState.error = true;
+		view.rerender(<SessionView sessionId="sess-1" />);
+		await waitFor(() => expect(chatViewPostMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/chat-view",
+			expect.objectContaining({ body: expect.objectContaining({ active: true }) }),
+		));
 	});
 
 	it("remounts the session-owned Chat surface when navigation selects another Chat session", () => {

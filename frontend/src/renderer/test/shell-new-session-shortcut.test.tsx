@@ -33,6 +33,7 @@ const shellMocks = vi.hoisted(() => {
 		daemonStatus: { state: "stopped" } as {
 			state: "ready" | "starting" | "stopped" | "error";
 			port?: number;
+			pid?: number;
 			code?: "not_ready";
 		},
 		shellValue: undefined as
@@ -176,7 +177,7 @@ vi.mock("../hooks/useDaemonStatus", () => ({
 
 vi.mock("../lib/api-client", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../lib/api-client")>()),
-	apiClient: { POST: vi.fn(), DELETE: vi.fn() },
+	apiClient: { POST: vi.fn(), DELETE: vi.fn(), PATCH: vi.fn() },
 	apiErrorCode: (error: { code?: string } | undefined) => error?.code,
 	apiErrorMessage: (error: { message?: string } | undefined) => error?.message ?? "request failed",
 	hasTrustedApiBaseUrl: () => true,
@@ -391,11 +392,13 @@ beforeEach(() => {
 	};
 	shellMocks.state.daemonStatus = { state: "error", code: "not_ready" };
 	shellMocks.state.shellValue = undefined;
+	vi.mocked(apiClient.PATCH).mockReset().mockResolvedValue({ error: undefined });
 	shellMocks.queryClient.fetchQuery.mockReset().mockResolvedValue(workspaces);
 	shellMocks.queryClient.getQueryData.mockReset().mockReturnValue(workspaces);
 	shellMocks.queryClient.getQueryState.mockReset().mockReturnValue({ dataUpdatedAt: 0 });
 	useUiStore.setState({
 		createProjectNonce: 0,
+		developerMode: false,
 		folderDropRequest: null,
 		globalToast: null,
 		isSidebarOpen: true,
@@ -408,6 +411,25 @@ beforeEach(() => {
 });
 
 describe("shell workspace startup", () => {
+	it("resyncs Developer Mode when an attached daemon restarts on the same port", async () => {
+		useUiStore.setState({ developerMode: true });
+		shellMocks.state.daemonStatus = { state: "ready", port: 4777, pid: 101 };
+		const view = await renderShell();
+		await waitFor(() => expect(apiClient.PATCH).toHaveBeenCalledTimes(1));
+		expect(apiClient.PATCH).toHaveBeenCalledWith("/api/v1/settings/chat-hibernation", {
+			body: { enabled: true },
+		});
+
+		shellMocks.state.daemonStatus = { state: "ready", port: 4777, pid: 202 };
+		view.rerender(
+			<Suspense fallback={null}>
+				<ShellRoute />
+			</Suspense>,
+		);
+
+		await waitFor(() => expect(apiClient.PATCH).toHaveBeenCalledTimes(2));
+	});
+
 	it("rechecks a connected host when its session queries fail", async () => {
 		useUiStore.setState({ developerMode: true, remoteHosts: true });
 		const view = await renderShell();

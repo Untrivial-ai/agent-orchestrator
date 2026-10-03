@@ -2215,6 +2215,29 @@ type UnregisterPushDeviceResponse struct {
 
 /* ---- chat conversations ------------------------------------------------ */
 
+// SetChatViewRequest renews or releases one renderer's Chat view lease.
+type SetChatViewRequest struct {
+	ViewID        string `json:"viewId"`
+	Active        bool   `json:"active"`
+	activePresent bool
+}
+
+// UnmarshalJSON distinguishes an omitted active value from an explicit false
+// while keeping the generated API schema non-nullable.
+func (r *SetChatViewRequest) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		ViewID string `json:"viewId"`
+		Active *bool  `json:"active"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	r.ViewID = wire.ViewID
+	r.Active = wire.Active != nil && *wire.Active
+	r.activePresent = wire.Active != nil
+	return nil
+}
+
 // SendConversationMessageRequest is a message for a Chat session's agent.
 type SendConversationMessageRequest struct {
 	Text string `json:"text"`
@@ -2616,7 +2639,7 @@ type ConversationSnapshotResponse struct {
 	Mode                       string `json:"mode" enum:"chat,tui"`
 	// Controller is reported separately from history so a client can tell "no
 	// messages yet" apart from "the agent is not running".
-	Controller     string `json:"controller" enum:"connecting,ready,busy,recovering,stopped"`
+	Controller     string `json:"controller" enum:"connecting,ready,busy,recovering,hibernated,stopped"`
 	LatestSequence int64  `json:"latestSequence"`
 	OldestSequence int64  `json:"oldestSequence,omitempty"`
 	HasMoreBefore  bool   `json:"hasMoreBefore"`
@@ -2851,6 +2874,8 @@ type SettingsResponse struct {
 	// CloudOffering is the user's persisted cloud toggle (Settings, Developer
 	// Mode). Distinct from CloudEnabled, which is the effective gate.
 	CloudOffering bool `json:"cloudOffering"`
+	// ChatHibernationEnabled is the developer-mode gate for idle Chat process shutdown.
+	ChatHibernationEnabled bool `json:"chatHibernationEnabled"`
 	// CloudEnabled reports whether the cloud offering is effectively available:
 	// the user's toggle (or the env override) plus a configured control plane.
 	CloudEnabled bool `json:"cloudEnabled"`
@@ -2875,6 +2900,11 @@ type UpdateSessionInterfaceRequest struct {
 // UpdateCloudOfferingRequest flips the user's cloud toggle.
 type UpdateCloudOfferingRequest struct {
 	// Enabled turns the cloud offering on or off for this machine's user.
+	Enabled *bool `json:"enabled"`
+}
+
+// UpdateChatHibernationRequest flips the daemon-owned idle Chat gate.
+type UpdateChatHibernationRequest struct {
 	Enabled *bool `json:"enabled"`
 }
 

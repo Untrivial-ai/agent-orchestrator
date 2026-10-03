@@ -1638,6 +1638,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/chat-view": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Keep a viewed chat awake or release its view lease */
+        post: operations["setSessionChatView"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/conversation": {
         parameters: {
             query?: never;
@@ -2722,6 +2739,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/settings/chat-hibernation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Turn idle Chat hibernation on or off for this machine */
+        patch: operations["updateChatHibernation"];
+        trace?: never;
+    };
     "/api/v1/settings/cloud-offering": {
         parameters: {
             query?: never;
@@ -3480,6 +3514,8 @@ export interface components {
             /** @enum {string} */
             displayStatus: "Working" | "Blocked" | "Exited" | "No signal" | "Awaiting PR" | "Fixing CI failures" | "Addressing comments" | "Needs review" | "Review scheduled" | "Reviewing" | "Review failed" | "Review pending" | "Draft" | "CI failing" | "Commented" | "Changes requested" | "Needs human review" | "Mergeable" | "Approved" | "Merged" | "Closed without merge" | "Terminated";
             harness?: string;
+            /** Format: date-time */
+            hibernatedAt?: null | string;
             id: string;
             isPinned: boolean;
             isTerminated: boolean;
@@ -3701,7 +3737,7 @@ export interface components {
             capabilities?: string[];
             compactedAt?: null | string;
             /** @enum {string} */
-            controller: "connecting" | "ready" | "busy" | "recovering" | "stopped";
+            controller: "connecting" | "ready" | "busy" | "recovering" | "hibernated" | "stopped";
             conversationId: string;
             harness?: string;
             hasMoreBefore: boolean;
@@ -4829,6 +4865,10 @@ export interface components {
             sessionId: string;
             state: string;
         };
+        SetChatViewRequest: {
+            active: boolean;
+            viewId: string;
+        };
         SetConversationConfigOptionRequest: {
             enabled?: null | boolean;
             value?: string;
@@ -4904,6 +4944,7 @@ export interface components {
         };
         SettingsResponse: {
             chatHarnesses: string[];
+            chatHibernationEnabled: boolean;
             client: string;
             cloudControlPlaneUrl: string;
             cloudEnabled: boolean;
@@ -5123,6 +5164,9 @@ export interface components {
             prompt?: null | string;
             rrule?: null | string;
             timezone?: null | string;
+        };
+        UpdateChatHibernationRequest: {
+            enabled: null | boolean;
         };
         UpdateProjectSettingsInput: {
             config: components["schemas"]["ProjectConfig"];
@@ -11209,6 +11253,76 @@ export interface operations {
             };
         };
     };
+    setSessionChatView: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetChatViewRequest"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
     getSessionConversation: {
         parameters: {
             query?: {
@@ -15797,6 +15911,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    updateChatHibernation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateChatHibernationRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SettingsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
                 };
             };
             /** @description Internal Server Error */

@@ -193,6 +193,9 @@ type SessionRecord struct {
 	// of the API read model.
 	FirstSignalAt time.Time `json:"-"`
 	IsTerminated  bool      `json:"isTerminated"`
+	// HibernatedAt records that the idle Chat controller was stopped while the
+	// session and conversation remain resumable. Nil means no recorded hibernation.
+	HibernatedAt *time.Time `json:"hibernatedAt,omitempty"`
 	// TerminateOnPRMerge is a user-controlled lifecycle policy. When enabled,
 	// completing the session's PR set through a merge tears down the session.
 	TerminateOnPRMerge bool            `json:"terminateOnPrMerge"`

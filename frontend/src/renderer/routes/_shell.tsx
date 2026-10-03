@@ -205,6 +205,8 @@ function ShellLayout() {
 	const themePreference = useUiStore((state) => state.themePreference);
 	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
 	const themeStyle = useUiStore((state) => state.themeStyle);
+	const developerMode = useUiStore((state) => state.developerMode);
+	const chatHibernationSyncRef = useRef<Promise<void>>(Promise.resolve());
 	const isSidebarOpen = useUiStore(sidebarIsVisible);
 	const toggleSidebar = useUiStore((state) => state.toggleSidebar);
 	const sidebarHasLayout = useUiStore(sidebarOccupiesLayout);
@@ -845,6 +847,31 @@ function ShellLayout() {
 	useEffect(() => {
 		applyDocumentThemeStyle(themeStyle);
 	}, [themeStyle]);
+
+	// The renderer owns Developer Mode; the daemon must know its value before
+	// either the view-close path or the idle sweep can hibernate a provider.
+	useEffect(() => {
+		if (usesPreviewWorkspaceData || daemonStatus.state !== "ready" || !daemonStatus.port) return;
+		let cancelled = false;
+		let retry: ReturnType<typeof setTimeout> | undefined;
+		const sync = () => {
+			// Serialize toggles so an older enable request cannot finish after disable.
+			chatHibernationSyncRef.current = chatHibernationSyncRef.current.then(async () => {
+				if (cancelled) return;
+				const { error } = await apiClient.PATCH("/api/v1/settings/chat-hibernation", {
+					body: { enabled: developerMode },
+				});
+				if (error) throw error;
+			}).catch(() => {
+				if (!cancelled) retry = setTimeout(sync, 5_000);
+			});
+		};
+		sync();
+		return () => {
+			cancelled = true;
+			clearTimeout(retry);
+		};
+	}, [daemonStatus.pid, daemonStatus.port, daemonStatus.state, developerMode]);
 
 	// A daemon port is not enough to render a trustworthy empty state: the
 	// route loader may have cached [] before Electron reported the port. Fetch

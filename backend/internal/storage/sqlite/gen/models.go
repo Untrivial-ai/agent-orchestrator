@@ -678,6 +678,7 @@ type Session struct {
 	ClientRequestID                  string
 	ClientRequestHash                string
 	ClientRequestCommitted           bool
+	HibernatedAt                     sql.NullTime
 }
 
 type SessionCleanupFact struct {

@@ -2,16 +2,19 @@ package daemon
 
 import (
 	"testing"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
 func TestPersistentChatHostKeepSetUsesDurableOwnership(t *testing.T) {
+	before := time.Now().UTC()
 	records := []domain.SessionRecord{
 		{ID: "live-chat", Mode: domain.SessionModeChat, Harness: domain.HarnessCodex},
 		{ID: "terminated-chat", Mode: domain.SessionModeChat, Harness: domain.HarnessCodex, IsTerminated: true},
 		{ID: "tui", Mode: domain.SessionModeTUI, Harness: domain.HarnessCodex},
 		{ID: "other-provider", Mode: domain.SessionModeChat, Harness: domain.HarnessClaudeCode},
+		{ID: "hibernated-chat", Mode: domain.SessionModeChat, Harness: domain.HarnessCodex, HibernatedAt: &before},
 	}
 	keep := persistentChatHostKeepSet(records)
 	if len(keep) != 2 {

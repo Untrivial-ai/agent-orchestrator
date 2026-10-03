@@ -101,6 +101,12 @@ jobs:
       - name: Test Windows Chat environment precedence
         run: go test -race -count=1 ./internal/adapters/chatdriver/processenv/ ./internal/agentlaunch/
 
+      - name: Test Windows Chat provider process cleanup
+        run: go test -race -count=1 -run '^TestWindowsProviderJobReapsGrandchild$' ./internal/adapters/chatdriver/persistenthost/
+
+      - name: Test Windows Chat hibernate and native resume
+        run: go test -race -count=1 -run '^(TestPersistentClaudeACPHibernateAndNativeResume|TestCodexHibernateStopsAppServerAndNativeResumesThread)$' ./internal/adapters/chatdriver/acp/ ./internal/adapters/chatdriver/codexappserver/
+
       - name: Test Windows background agent commands have no console
         run: go test -race -count=1 -run '^TestBackgroundCommandHasNoConsole$' ./internal/adapters/agent/pi ./internal/adapters/agent/omp ./internal/adapters/agent/primeagent
       - name: Test Windows mobile tunnel subprocesses

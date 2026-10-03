@@ -104,13 +104,11 @@ func (s *Service) Steer(
 	if strings.TrimSpace(msg.Text) == "" {
 		return SteerResult{}, ErrSteerTextRequired
 	}
-	if _, err := s.requireChatSession(ctx, id); err != nil {
-		return SteerResult{}, err
-	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return SteerResult{}, err
 	}
+	defer release()
 	return controller.Steer(ctx, msg)
 }
 
@@ -148,13 +146,11 @@ func (s *Service) SteerOrSend(
 	if msg.ClientMessageID == "" {
 		return SteerOrSendResult{}, ErrSteerDeliveryUncertain
 	}
-	if _, err := s.requireChatSession(ctx, id); err != nil {
-		return SteerOrSendResult{}, err
-	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return SteerOrSendResult{}, err
 	}
+	defer release()
 	return controller.SteerOrSend(ctx, msg, recoverOnly)
 }
 

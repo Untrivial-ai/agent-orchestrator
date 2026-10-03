@@ -35,6 +35,10 @@ func conversationTestServer(t *testing.T, service *fakeConversationService) *htt
 // JSON a client actually parses is what is checked.
 
 type fakeConversationService struct {
+	viewID            string
+	viewActive        bool
+	viewSessionID     domain.SessionID
+	viewCalls         int
 	snapshot          chatsvc.Snapshot
 	sendErr           error
 	skills            []ports.ChatSkill
@@ -58,6 +62,53 @@ type fakeConversationService struct {
 	reviewOwner       domain.ConversationOwner
 	reviewRequestID   string
 	reviewInterrupted bool
+}
+
+func (f *fakeConversationService) SetChatView(_ context.Context, sessionID domain.SessionID, viewID string, active bool) error {
+	f.viewSessionID = sessionID
+	f.viewID = viewID
+	f.viewActive = active
+	f.viewCalls++
+	return nil
+}
+
+func TestChatViewRouteValidatesAndForwardsLease(t *testing.T) {
+	service := &fakeConversationService{}
+	server := conversationTestServer(t, service)
+	for _, tc := range []struct {
+		body       string
+		status     int
+		code       string
+		wantActive bool
+	}{
+		{body: `{"viewId":"","active":true}`, status: http.StatusBadRequest},
+		{body: `{"viewId":"viewer-1"}`, status: http.StatusBadRequest, code: "CHAT_VIEW_ACTIVE_INVALID"},
+		{body: `{"viewId":"viewer-1","active":null}`, status: http.StatusBadRequest, code: "CHAT_VIEW_ACTIVE_INVALID"},
+		{body: `{"viewId":"viewer-1","active":true}`, status: http.StatusNoContent, wantActive: true},
+		{body: `{"viewId":"viewer-1","active":false}`, status: http.StatusNoContent},
+	} {
+		resp, err := http.Post(server.URL+"/api/v1/sessions/p1-1/chat-view", "application/json", bytes.NewBufferString(tc.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != tc.status {
+			t.Fatalf("POST %s status = %d, want %d", tc.body, resp.StatusCode, tc.status)
+		}
+		if tc.code != "" && !bytes.Contains(body, []byte(`"code":"`+tc.code+`"`)) {
+			t.Fatalf("POST %s body = %s, want code %s", tc.body, body, tc.code)
+		}
+		if tc.status == http.StatusNoContent && service.viewActive != tc.wantActive {
+			t.Fatalf("POST %s active = %v, want %v", tc.body, service.viewActive, tc.wantActive)
+		}
+	}
+	if service.viewCalls != 2 || service.viewSessionID != "p1-1" || service.viewID != "viewer-1" || service.viewActive {
+		t.Fatalf("forwarded view = %+v", service)
+	}
 }
 
 func (f *fakeConversationService) EditMessage(context.Context, domain.SessionID, string, ports.ChatUserMessage) (chatsvc.EditMessageResult, error) {

@@ -49,9 +49,16 @@ type Service struct {
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
 	// onModelChanged syncs ChatUI's model override (including clearing it) to
 	// session metadata before the next prompt routes or a later TUI rebuild.
-	onModelChanged   func(domain.SessionID, string)
-	stopProviderHost func(context.Context, domain.SessionID) error
-	reports          *reportsvc.Coordinator
+	onModelChanged     func(domain.SessionID, string)
+	stopProviderHost   func(context.Context, domain.SessionID) error
+	reports            *reportsvc.Coordinator
+	wakeChat           func(context.Context, domain.SessionID) error
+	hibernateChat      func(context.Context, domain.SessionID) error
+	hibernationEnabled func() bool
+	viewMu             sync.Mutex
+	viewLeases         map[domain.SessionID]map[string]time.Time
+	wakeMu             sync.Mutex
+	waking             map[domain.SessionID]int
 
 	mu               sync.RWMutex
 	controllers      map[domain.SessionID]*Controller
@@ -120,6 +127,8 @@ type Options struct {
 	// StopProviderHost destroys current session ownership on explicit teardown,
 	// even if its daemon attachment already failed. Never used by StopAll.
 	StopProviderHost func(context.Context, domain.SessionID) error
+	// HibernationEnabled reads the daemon-owned feature gate. Nil is disabled.
+	HibernationEnabled func() bool
 }
 
 // New builds a Chat service.
@@ -146,11 +155,13 @@ func New(opts Options) *Service {
 		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
 		onModelChanged:         opts.OnModelChanged,
 		stopProviderHost:       opts.StopProviderHost,
+		hibernationEnabled:     opts.HibernationEnabled,
 		controllers:            make(map[domain.SessionID]*Controller),
 		ownerControllers:       make(map[domain.ConversationOwner]*Controller),
 		startConfigs:           make(map[domain.ConversationOwner]StartConfig),
 		gates:                  make(map[domain.ConversationOwner]controllerGate),
 		probed:                 make(map[domain.AgentHarness]ports.ChatCapabilities),
+		waking:                 make(map[domain.SessionID]int),
 	}
 }
 
@@ -1087,16 +1098,22 @@ func (s *Service) Send(
 			// refused a stale queue append; hand the message to its controller.
 			latest, readErr := s.requireChatSession(ctx, id)
 			if readErr == nil && !latest.IsTerminated && latest.ProvisionState.WithDefault() == domain.SessionProvisionReady {
-				if controller, controllerErr := s.Controller(id); controllerErr == nil {
+				var controller *Controller
+				var release func()
+				controller, release, err = s.workingController(ctx, id)
+				if err == nil {
 					turn, err = controller.Send(ctx, msg)
+					release()
 				}
 			}
 		}
 	} else {
 		var controller *Controller
-		controller, err = s.Controller(id)
+		var release func()
+		controller, release, err = s.workingController(ctx, id)
 		if err == nil {
 			turn, err = controller.Send(ctx, msg)
+			release()
 		}
 	}
 	if err != nil {
@@ -1217,6 +1234,9 @@ func (s *Service) ArmChatHandoff(
 	if err != nil {
 		return err
 	}
+	if controller.State() == ports.ChatControllerStopped {
+		return nil
+	}
 	return controller.ArmHandoff(ctx, policy)
 }
 
@@ -1237,6 +1257,9 @@ func (s *Service) PrepareChatHandoff(
 	}
 	if err != nil {
 		return err
+	}
+	if controller.State() == ports.ChatControllerStopped {
+		return nil
 	}
 	return controller.BeginHandoff(ctx, policy)
 }
@@ -1267,9 +1290,11 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 		delete(s.startConfigs, owner)
 		s.mu.Unlock()
 		if s.stopProviderHost != nil {
-			return s.stopProviderHost(ctx, id)
+			if err := s.stopProviderHost(ctx, id); err != nil {
+				return err
+			}
 		}
-		return nil
+		return s.clearHibernation(ctx, id)
 	}
 	err := controller.Terminate(ctx)
 	controller.mu.Lock()
@@ -1295,6 +1320,9 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
 		delete(s.startConfigs, owner)
 		s.mu.Unlock()
 	default:
+	}
+	if err == nil {
+		err = s.clearHibernation(ctx, id)
 	}
 	return err
 }
@@ -1458,8 +1486,14 @@ type ConversationRows struct {
 // stopped, and a client that reads "stopped" hides the composer on a session
 // the user is meant to keep typing into.
 func idleControllerState(record domain.SessionRecord) ports.ChatControllerState {
+	if record.IsTerminated {
+		return ports.ChatControllerStopped
+	}
 	if record.ProvisionState.IsProvisioning() {
 		return ports.ChatControllerConnecting
+	}
+	if record.HibernatedAt != nil {
+		return ports.ChatControllerHibernated
 	}
 	return ports.ChatControllerStopped
 }
@@ -1497,11 +1531,17 @@ func (s *Service) Snapshot(ctx context.Context, id domain.SessionID) (Snapshot, 
 		return Snapshot{}, fmt.Errorf("load conversation %s: %w", conversation.ID, err)
 	}
 
+	waking := s.isWaking(id)
 	state := idleControllerState(record)
+	if waking && !record.IsTerminated && state == ports.ChatControllerStopped {
+		state = ports.ChatControllerHibernated
+	}
 	var caps ports.ChatCapabilities
 	if controller, err := s.Controller(id); err == nil {
-		state = controller.State()
-		caps = controller.Capabilities()
+		if live := controller.State(); (record.HibernatedAt == nil && !waking) || live != ports.ChatControllerStopped {
+			state = live
+			caps = controller.Capabilities()
+		}
 	}
 
 	return Snapshot{
@@ -1592,11 +1632,17 @@ func (s *Service) SnapshotPage(ctx context.Context, id domain.SessionID, beforeS
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load conversation page %s: %w", conversation.ID, err)
 	}
+	waking := s.isWaking(id)
 	state := idleControllerState(record)
+	if waking && !record.IsTerminated && state == ports.ChatControllerStopped {
+		state = ports.ChatControllerHibernated
+	}
 	var caps ports.ChatCapabilities
 	if controller, err := s.Controller(id); err == nil {
-		state = controller.State()
-		caps = controller.Capabilities()
+		if live := controller.State(); (record.HibernatedAt == nil && !waking) || live != ports.ChatControllerStopped {
+			state = live
+			caps = controller.Capabilities()
+		}
 	}
 	return Snapshot{
 		Conversation:                     rows.Conversation,
@@ -1809,13 +1855,11 @@ var ErrConfigOptionsUnsupported = errors.New("chat driver has no session config 
 // Read from the live conversation rather than a table in AO: models are added,
 // renamed, hidden per account and gated by entitlement the provider knows about.
 func (s *Service) Models(ctx context.Context, id domain.SessionID) ([]ports.ChatModel, domain.ConversationSettings, error) {
-	if _, err := s.requireChatSession(ctx, id); err != nil {
-		return nil, domain.ConversationSettings{}, err
-	}
-	controller, err := s.Controller(id)
+	controller, _, release, err := s.readingController(ctx, id)
 	if err != nil {
 		return nil, domain.ConversationSettings{}, err
 	}
+	defer release()
 	lister, ok := controller.conv.(ports.ChatModelLister)
 	if !ok {
 		return nil, controller.Settings(), ErrModelsUnsupported
@@ -1832,14 +1876,11 @@ func (s *Service) Models(ctx context.Context, id domain.SessionID) ([]ports.Chat
 // the connected conversation so model entitlements and model-dependent choices
 // cannot go stale in an AO table.
 func (s *Service) ConfigOptions(ctx context.Context, id domain.SessionID) ([]ports.ChatConfigOption, error) {
-	record, err := s.requireChatSession(ctx, id)
+	controller, record, release, err := s.readingController(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	controller, err := s.Controller(id)
-	if err != nil {
-		return nil, err
-	}
+	defer release()
 	configurer, ok := controller.conv.(ports.ChatConfigOptionController)
 	if !ok {
 		return nil, ErrConfigOptionsUnsupported
@@ -1861,10 +1902,11 @@ func (s *Service) SetConfigOption(
 	if err != nil {
 		return nil, err
 	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	configurer, ok := controller.conv.(ports.ChatConfigOptionController)
 	if !ok {
 		return nil, ErrConfigOptionsUnsupported
@@ -1969,13 +2011,11 @@ func settingsFromConfigOptions(
 // ten seconds or so; the settled figures arrive on the timeline as a compaction
 // entry.
 func (s *Service) Compact(ctx context.Context, id domain.SessionID) (ports.ChatCompactionResult, error) {
-	if _, err := s.requireChatSession(ctx, id); err != nil {
-		return ports.ChatCompactionResult{}, err
-	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return ports.ChatCompactionResult{}, err
 	}
+	defer release()
 	return controller.Compact(ctx)
 }
 
@@ -1994,13 +2034,11 @@ func (s *Service) ReloadMCPServers(
 	ctx context.Context,
 	id domain.SessionID,
 ) ([]domain.ConversationMCPServer, error) {
-	if _, err := s.requireChatSession(ctx, id); err != nil {
-		return nil, err
-	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	return controller.ReloadMCPServers(ctx)
 }
 
@@ -2012,13 +2050,11 @@ func (s *Service) RetryTurn(
 	id domain.SessionID,
 	turnID string,
 ) (domain.ConversationTurn, error) {
-	if _, err := s.requireChatSession(ctx, id); err != nil {
-		return domain.ConversationTurn{}, err
-	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return domain.ConversationTurn{}, err
 	}
+	defer release()
 	result, err := controller.RetryTurn(ctx, turnID)
 	if err != nil {
 		return domain.ConversationTurn{}, err
@@ -2035,13 +2071,11 @@ func (s *Service) SetTurnSettings(
 	id domain.SessionID,
 	settings domain.ConversationSettings,
 ) (domain.ConversationSettings, error) {
-	if _, err := s.requireChatSession(ctx, id); err != nil {
-		return domain.ConversationSettings{}, err
-	}
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return domain.ConversationSettings{}, err
 	}
+	defer release()
 	controller.configMu.Lock()
 	defer controller.configMu.Unlock()
 	// The turn-settings endpoint does not own provider session mode choices.
@@ -2102,10 +2136,11 @@ func (s *Service) relayChatTurn(
 	text, clientMessageID string,
 	authoredByUser bool,
 ) (string, error) {
-	controller, err := s.Controller(id)
+	controller, release, err := s.workingController(ctx, id)
 	if err != nil {
 		return "", err
 	}
+	defer release()
 	turn, err := controller.Send(ctx, ports.ChatUserMessage{
 		Text:            text,
 		ClientMessageID: clientMessageID,

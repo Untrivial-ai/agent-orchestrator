@@ -329,6 +329,31 @@ describe("send keys", () => {
 		expect(field.textContent).toBe("do not lose this task");
 	});
 
+	it("retries a failed background wake without sending or changing the draft", async () => {
+		const onSend = vi.fn().mockResolvedValue(undefined);
+		const onRetryWake = vi.fn();
+		const message = "Couldn’t reconnect to this chat. Check the agent provider, then try again.";
+		const view = render(
+			<ChatComposer onSend={onSend} onRetryWake={onRetryWake} wakeError={message} />,
+		);
+		const field = screen.getByLabelText("Message the agent");
+		await typeInComposer(field, "keep this draft");
+		expect(screen.getByRole("alert")).toHaveTextContent(message);
+
+		await userEvent.click(screen.getByRole("button", { name: "Try connecting again" }));
+		expect(onRetryWake).toHaveBeenCalledOnce();
+		expect(onSend).not.toHaveBeenCalled();
+		expect(field).toHaveTextContent("keep this draft");
+
+		view.rerender(<ChatComposer onSend={onSend} onRetryWake={onRetryWake} wakeError={message} wakeRetrying />);
+		expect(screen.getByRole("button", { name: "Connecting…" })).toBeDisabled();
+		view.rerender(<ChatComposer onSend={onSend} />);
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		fireEvent.keyDown(field, { key: "Enter" });
+		await waitFor(() => expect(onSend).toHaveBeenCalledOnce());
+		expect(onSend.mock.calls[0]?.[0]).toBe("keep this draft");
+	});
+
 	it("clears a plain-text draft as soon as the local send acknowledgement starts", async () => {
 		const pending = deferred<void>();
 		const onSend = vi.fn().mockReturnValue(pending.promise);
@@ -367,10 +392,13 @@ describe("send keys", () => {
 		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 	});
 
-	it("unlocks a definitively rejected first send and gives the edited send a new identity", async () => {
-		const sessionId = "composer-first-send-refused";
+	it.each([
+		["CHAT_CONTROLLER_NOT_READY", "Controller is not running"],
+		["CHAT_RESUME_FAILED", "The provider could not reopen the saved conversation"],
+	])("unlocks a definitively rejected %s send and gives the edited send a new identity", async (code, message) => {
+		const sessionId = `composer-first-send-refused-${code}`;
 		const onSend = vi.fn()
-			.mockRejectedValueOnce({ code: "CHAT_CONTROLLER_NOT_READY", message: "Controller is not running" })
+			.mockRejectedValueOnce({ code, message })
 			.mockResolvedValue(undefined);
 		const first = render(<ChatComposer draftSessionId={sessionId} onSend={onSend} />);
 		const field = screen.getByLabelText("Message the agent");
@@ -378,7 +406,7 @@ describe("send keys", () => {
 		fireEvent.keyDown(field, { key: "Enter" });
 		await waitFor(() => expect(onSend).toHaveBeenCalledOnce());
 		await waitFor(() => expect(field).toHaveAttribute("contenteditable", "true"));
-		expect(screen.getByRole("alert")).toHaveTextContent("Controller is not running");
+		expect(screen.getByRole("alert")).toHaveTextContent(message);
 		expect(readChatSessionDraft(sessionId).composer.delivery).toBeUndefined();
 		first.unmount();
 		render(<ChatComposer draftSessionId={sessionId} onSend={onSend} />);

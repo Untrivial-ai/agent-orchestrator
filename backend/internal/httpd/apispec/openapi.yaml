@@ -4532,6 +4532,59 @@ paths:
       summary: Enable or disable automatic review for a session
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/chat-view:
+    post:
+      operationId: setSessionChatView
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetChatViewRequest'
+        required: true
+      responses:
+        "204":
+          description: No Content
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "409":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Conflict
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Keep a viewed chat awake or release its view lease
+      tags:
+      - conversations
   /api/v1/sessions/{sessionId}/conversation:
     get:
       operationId: getSessionConversation
@@ -8383,6 +8436,43 @@ paths:
       summary: Read the daemon-owned user preferences
       tags:
       - settings
+  /api/v1/settings/chat-hibernation:
+    patch:
+      operationId: updateChatHibernation
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateChatHibernationRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettingsResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Turn idle Chat hibernation on or off for this machine
+      tags:
+      - settings
   /api/v1/settings/cloud-offering:
     patch:
       operationId: updateCloudOffering
@@ -10407,6 +10497,11 @@ components:
           type: string
         harness:
           type: string
+        hibernatedAt:
+          format: date-time
+          type:
+          - "null"
+          - string
         id:
           type: string
         isPinned:
@@ -11032,6 +11127,7 @@ components:
           - ready
           - busy
           - recovering
+          - hibernated
           - stopped
           type: string
         conversationId:
@@ -13999,6 +14095,16 @@ components:
       - sessionId
       - state
       type: object
+    SetChatViewRequest:
+      properties:
+        active:
+          type: boolean
+        viewId:
+          type: string
+      required:
+      - viewId
+      - active
+      type: object
     SetConversationConfigOptionRequest:
       properties:
         enabled:
@@ -14191,6 +14297,8 @@ components:
           items:
             type: string
           type: array
+        chatHibernationEnabled:
+          type: boolean
         client:
           type: string
         cloudControlPlaneUrl:
@@ -14214,6 +14322,7 @@ components:
       - client
       - localEnabled
       - cloudOffering
+      - chatHibernationEnabled
       - cloudEnabled
       - cloudControlPlaneUrl
       - trackerIntakeEnabled
@@ -14768,6 +14877,15 @@ components:
           type:
           - "null"
           - string
+      type: object
+    UpdateChatHibernationRequest:
+      properties:
+        enabled:
+          type:
+          - "null"
+          - boolean
+      required:
+      - enabled
       type: object
     UpdateProjectSettingsInput:
       properties:

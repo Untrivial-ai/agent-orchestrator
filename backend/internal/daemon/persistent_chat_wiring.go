@@ -26,7 +26,7 @@ func reconcilePersistentChatHosts(ctx context.Context, dataDir string, store per
 func persistentChatHostKeepSet(records []domain.SessionRecord) map[string]struct{} {
 	keep := make(map[string]struct{})
 	for _, rec := range records {
-		if rec.IsTerminated || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat {
+		if rec.IsTerminated || rec.HibernatedAt != nil || domain.NormalizeSessionMode(rec.Mode) != domain.SessionModeChat {
 			continue
 		}
 		keep[string(rec.ID)] = struct{}{}

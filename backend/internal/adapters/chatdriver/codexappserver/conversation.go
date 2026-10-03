@@ -91,6 +91,7 @@ type conversation struct {
 }
 
 var _ ports.ChatConversation = (*conversation)(nil)
+var _ ports.ChatProviderHibernator = (*conversation)(nil)
 
 // Asserted here so a refactor cannot silently drop model listing: the service
 // feature-detects this interface, and a missed method would just mean "no models"
@@ -935,6 +936,9 @@ func (c *conversation) Terminate() error {
 	})
 	return c.closeErr
 }
+
+// Hibernate stops the app-server but leaves its native thread on disk for Resume.
+func (c *conversation) Hibernate() error { return c.Terminate() }
 
 // approvalPayload is the subset of an approval request AO renders.
 type approvalPayload struct {

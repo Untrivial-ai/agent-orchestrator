@@ -332,6 +332,67 @@ func TestResumeReconnectsInitializedHostWithoutNativeResume(t *testing.T) {
 	}
 }
 
+func TestCodexHibernateStopsAppServerAndNativeResumesThread(t *testing.T) {
+	d, firstServer := newTestDriver(t)
+	workspace := t.TempDir()
+	first, err := d.Start(context.Background(), ports.ChatStartConfig{
+		SessionID: "hibernate-codex", WorkspacePath: workspace,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := first.ProviderConversationID()
+	if _, err := first.SendTurn(context.Background(), ports.ChatUserMessage{Text: "first turn"}); err != nil {
+		t.Fatal(err)
+	}
+	firstServer.push(`{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress","items":[]}}}`)
+	firstServer.push(`{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","items":[]}}}`)
+	if completed := nextEvent(t, first.Events(), ports.ChatEventTurnCompleted); completed.TurnState != domain.TurnStateCompleted {
+		t.Fatalf("first turn state = %q", completed.TurnState)
+	}
+	stopped := false
+	provider := first.(*conversation)
+	provider.proc.terminate = func() error {
+		stopped = true
+		return provider.proc.stop()
+	}
+	if err := first.(ports.ChatProviderHibernator).Hibernate(); err != nil {
+		t.Fatal(err)
+	}
+	if !stopped {
+		t.Fatal("hibernate detached the controller but left app-server alive")
+	}
+
+	replacement, server := newTestDriver(t)
+	server.reply("turn/start", `{"turn":{"id":"turn-2","status":"inProgress","items":[]}}`)
+	resumed, err := replacement.Resume(context.Background(), ports.ChatResumeConfig{
+		SessionID: "hibernate-codex", WorkspacePath: workspace, ProviderConversationID: threadID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resumed.Close() }()
+	if resumed.ProviderConversationID() != threadID || !server.sentMethod("thread/resume") {
+		t.Fatal("replacement app-server did not resume the same Codex thread")
+	}
+	second, err := resumed.SendTurn(context.Background(), ports.ChatUserMessage{Text: "second turn", ClientMessageID: "after-hibernate"})
+	if err != nil || second.ProviderTurnID != "turn-2" {
+		t.Fatalf("second turn = %+v, %v", second, err)
+	}
+	request := server.awaitFrame(func(f frame) bool { return f.Method == "turn/start" })
+	var params struct {
+		ThreadID            string `json:"threadId"`
+		ClientUserMessageID string `json:"clientUserMessageId"`
+	}
+	if err := json.Unmarshal(request.Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params.ThreadID != threadID || params.ClientUserMessageID != "after-hibernate" || server.sentMethod("thread/start") {
+		t.Fatalf("second turn targeted %q with key %q; fresh thread started=%v",
+			params.ThreadID, params.ClientUserMessageID, server.sentMethod("thread/start"))
+	}
+}
+
 func TestResumeDoesNotCompeteWithAttachedHostDuringDaemonOverlap(t *testing.T) {
 	d, srv := newTestDriver(t)
 	d.persistent = true

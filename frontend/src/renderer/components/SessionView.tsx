@@ -50,6 +50,7 @@ import {
 import { useSessionInterfaceSwitch } from "../hooks/useSessionInterfaceSwitch";
 import { discardCapturedPendingFileAttachments } from "../hooks/useFileAttachments";
 import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
+import { conversationQueryKey } from "../hooks/useConversation";
 import {
 	toCloudWorkspaceSession,
 	useCloudSessionQuery,
@@ -343,6 +344,14 @@ function CloudPausedStatus() {
 }
 
 export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: SessionViewProps) {
+	const [chatWakeError, setChatWakeError] = useState<{
+		uiSessionId: string;
+		message: string;
+		retryable: boolean;
+	} | null>(null);
+	const [chatWakeRetrying, setChatWakeRetrying] = useState(false);
+	const retryChatWakeRef = useRef<(() => Promise<void>) | null>(null);
+	const retryChatWake = useCallback(() => { void retryChatWakeRef.current?.(); }, []);
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const uiSessionId = sessionUiKey(sessionId, hostId);
@@ -657,7 +666,8 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 
 	// Shell terminals opened inside a session live beside its pane as extra tabs,
 	// scoped to the session on screen so each session has its own shell set.
-	const allShellTerminals = useShellTerminals(hostId).data ?? [];
+	const shellTerminalsQuery = useShellTerminals(hostId);
+	const allShellTerminals = shellTerminalsQuery.data ?? [];
 	const shellTerminals = useMemo(
 		() => allShellTerminals.filter((shell) => shell.sessionId === sessionId),
 		[allShellTerminals, sessionId],
@@ -1161,6 +1171,84 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 		session !== undefined &&
 		renderedSessionMode === "chat" &&
 		(chatTargetKind === "worker" || chatTargetKind === "reviewer" || chatTargetKind === "shell");
+	const chatViewActive =
+		session?.mode === "chat" &&
+		!session.cloud &&
+		(hostId ? Boolean(remoteBase) : daemonStatus.state === "ready") &&
+		routedTerminalTarget.kind === "worker" &&
+		(!activeShellTerminalHandleId ||
+			((shellTerminalsQuery.data !== undefined || shellTerminalsQuery.isError) &&
+				!shellTerminals.some((shell) => shell.handleId === activeShellTerminalHandleId))) &&
+		!reviewerChatId &&
+		!fileTabs.activePath;
+	useEffect(() => {
+		if (!chatViewActive) return;
+		setChatWakeError(null);
+		setChatWakeRetrying(false);
+		const viewId = crypto.randomUUID();
+		let left = false;
+		let refreshed = false;
+		let retrying = false;
+		let pending = Promise.resolve();
+		const setViewActive = (active: boolean) => {
+			pending = pending.catch(() => {}).then(async () => {
+				const { error } = await clientForSessionHost(hostId).POST("/api/v1/sessions/{sessionId}/chat-view", {
+					params: { path: { sessionId } },
+					body: { viewId, active },
+				});
+				if (error) throw error;
+				if (active && !left && !refreshed) {
+					refreshed = true;
+					void queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId, hostId) });
+				}
+			});
+			return pending;
+		};
+		const refreshAfterWakeError = (error: unknown) => {
+			if (left) return;
+			const code = apiErrorCode(error);
+			setChatWakeError({
+				uiSessionId,
+				message: code === "CHAT_RESUME_FAILED"
+					? "Couldn’t reopen this chat. Check the agent provider. Your conversation is saved."
+					: code === "SESSION_NOT_FOUND"
+						? "This chat no longer exists. Refresh the session list."
+						: "Couldn’t reconnect to this chat. Try again.",
+				retryable: code !== "SESSION_NOT_FOUND",
+			});
+			void queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId, hostId) });
+		};
+		retryChatWakeRef.current = async () => {
+			if (left || retrying) return;
+			retrying = true;
+			setChatWakeRetrying(true);
+			try {
+				// Renewal of a failed view deliberately does not retry native resume.
+				// Release it first so this activation is a new view registration.
+				await setViewActive(false);
+				if (left) return;
+				await setViewActive(true);
+				if (left) return;
+				setChatWakeError(null);
+				void queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId, hostId) });
+			} catch (error) {
+				refreshAfterWakeError(error);
+			} finally {
+				retrying = false;
+				if (!left) setChatWakeRetrying(false);
+			}
+		};
+		void setViewActive(true).catch(refreshAfterWakeError);
+		const renewal = window.setInterval(() => {
+			if (!retrying) void setViewActive(true).catch(refreshAfterWakeError);
+		}, 10_000);
+		return () => {
+			left = true;
+			retryChatWakeRef.current = null;
+			window.clearInterval(renewal);
+			void setViewActive(false).catch(() => {});
+		};
+	}, [chatViewActive, hostId, queryClient, remoteBase, sessionId, uiSessionId]);
 	const {
 		agentSwitch: handoffAgentSwitch,
 		switchControlPresentation: handoffControlPresentation,
@@ -1584,6 +1672,9 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 									onAuxiliaryTabOrderChange={setAuxiliaryTabOrder}
 									controllerTransitioning={interfaceUi.controllerTransitioning}
 									newWorkDisabled={interfaceUi.newWorkDisabled}
+									wakeError={chatViewActive && chatWakeError?.uiSessionId === uiSessionId ? chatWakeError.message : undefined}
+									wakeRetrying={chatWakeRetrying}
+									onRetryWake={chatViewActive && chatWakeError?.uiSessionId === uiSessionId && chatWakeError.retryable ? retryChatWake : undefined}
 									onConversationWorkChange={interfaceUi.onConversationWorkChange}
 									onOpenShell={addShellTerminal}
 									openingShell={openShellTerminal.isPending}
