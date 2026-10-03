@@ -3,6 +3,8 @@ package sessionguard
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,11 +22,14 @@ func (s *fakeStore) GetSession(_ context.Context, _ domain.SessionID) (domain.Se
 }
 
 type fakeMessenger struct {
+	mu   sync.Mutex
 	sent []string
 	err  error
 }
 
 func (m *fakeMessenger) Send(_ context.Context, _ domain.SessionID, msg string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.sent = append(m.sent, msg)
 	return m.err
 }
@@ -51,11 +56,18 @@ func (l *observedInputLease) AcquireSessionInput(domain.SessionID) (func(), bool
 type blockingMessenger struct {
 	started chan struct{}
 	unblock chan struct{}
+	once    sync.Once
 }
 
 func (m *blockingMessenger) Send(context.Context, domain.SessionID, string) error {
-	close(m.started)
-	<-m.unblock
+	if m.started != nil {
+		m.once.Do(func() {
+			close(m.started)
+		})
+	}
+	if m.unblock != nil {
+		<-m.unblock
+	}
 	return nil
 }
 
@@ -65,6 +77,252 @@ func record(state domain.ActivityState, terminated bool) domain.SessionRecord {
 		IsTerminated:  terminated,
 		Activity:      domain.Activity{State: state},
 		FirstSignalAt: time.Now(),
+	}
+}
+
+type serializingTestMessenger struct {
+	mu          sync.Mutex
+	inFlight    int
+	maxInFlight int
+
+	sendStarted chan string
+	unblockSend chan struct{}
+}
+
+func (m *serializingTestMessenger) Send(_ context.Context, _ domain.SessionID, msg string) error {
+	m.mu.Lock()
+	m.inFlight++
+	if m.inFlight > m.maxInFlight {
+		m.maxInFlight = m.inFlight
+	}
+	m.mu.Unlock()
+
+	m.sendStarted <- msg
+	<-m.unblockSend
+
+	m.mu.Lock()
+	m.inFlight--
+	m.mu.Unlock()
+	return nil
+}
+
+func TestGuard_ConcurrentDeliverSerializesWrites(t *testing.T) {
+	msgr := &serializingTestMessenger{
+		sendStarted: make(chan string, 2),
+		unblockSend: make(chan struct{}),
+	}
+	g := New(&fakeStore{rec: record(domain.ActivityIdle, false), ok: true}, msgr, nil)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		_, _ = g.Deliver(context.Background(), "s1", "msg1")
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = g.Deliver(context.Background(), "s1", "msg2")
+	}()
+
+	// Wait for the first delivery to reach Send
+	firstMsg := <-msgr.sendStarted
+
+	// While the first delivery is blocked inside Send (holding the per-session lock),
+	// verify that the second delivery has NOT entered Send.
+	select {
+	case secondMsg := <-msgr.sendStarted:
+		t.Fatalf("unexpected concurrent send: %s started while %s was in-flight", secondMsg, firstMsg)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	msgr.mu.Lock()
+	if msgr.inFlight != 1 || msgr.maxInFlight != 1 {
+		t.Fatalf("expected inFlight=1 and maxInFlight=1, got inFlight=%d, maxInFlight=%d", msgr.inFlight, msgr.maxInFlight)
+	}
+	msgr.mu.Unlock()
+
+	// Unblock the first send
+	msgr.unblockSend <- struct{}{}
+
+	// The second delivery must now deterministically reach Send
+	secondMsg := <-msgr.sendStarted
+	if secondMsg == firstMsg {
+		t.Fatalf("expected distinct message for second send, got %s", secondMsg)
+	}
+
+	// Unblock the second send
+	msgr.unblockSend <- struct{}{}
+
+	// Wait deterministically for both deliveries to finish
+	wg.Wait()
+
+	msgr.mu.Lock()
+	if msgr.maxInFlight != 1 {
+		t.Fatalf("expected maxInFlight=1, got %d", msgr.maxInFlight)
+	}
+	if msgr.inFlight != 0 {
+		t.Fatalf("expected inFlight=0 after completion, got %d", msgr.inFlight)
+	}
+	msgr.mu.Unlock()
+
+	g.deliveryMu.Lock()
+	defer g.deliveryMu.Unlock()
+	if len(g.deliveryLocks) != 0 {
+		t.Fatalf("expected deliveryLocks to be empty after completion, got %d", len(g.deliveryLocks))
+	}
+}
+
+func TestGuard_DeliveryLocksCleanedUpOnCompletion(t *testing.T) {
+	msgr := &fakeMessenger{}
+	g := New(&fakeStore{rec: record(domain.ActivityIdle, false), ok: true}, msgr, nil)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 15; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			id := domain.SessionID(fmt.Sprintf("s%d", n%3))
+			outcome, err := g.Deliver(context.Background(), id, fmt.Sprintf("msg-%d", n))
+			if err != nil || outcome != Sent {
+				t.Errorf("Deliver failed: outcome=%v, err=%v", outcome, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	g.deliveryMu.Lock()
+	defer g.deliveryMu.Unlock()
+	if len(g.deliveryLocks) != 0 {
+		t.Fatalf("expected deliveryLocks to be empty after all deliveries completed, got %d entries", len(g.deliveryLocks))
+	}
+}
+
+func TestGuard_DeliveryLockCleanedUpOnContextCancel(t *testing.T) {
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	msgr := &blockingMessenger{started: started, unblock: unblock}
+	g := New(&fakeStore{rec: record(domain.ActivityIdle, false), ok: true}, msgr, nil)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = g.Deliver(context.Background(), "s1", "msg1")
+	}()
+
+	<-started // first delivery is now holding the delivery lock
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := g.Deliver(ctx2, "s1", "msg2")
+		errCh <- err
+	}()
+
+	// Cancel second delivery while it's waiting for the lock
+	cancel2()
+
+	err := <-errCh
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled for second delivery, got %v", err)
+	}
+
+	// Unblock first delivery
+	close(unblock)
+	wg.Wait()
+
+	g.deliveryMu.Lock()
+	lockCount := len(g.deliveryLocks)
+	g.deliveryMu.Unlock()
+	if lockCount != 0 {
+		t.Fatalf("expected deliveryLocks to be empty after cancelled waiter and finished holder, got %d", lockCount)
+	}
+
+	// Verify subsequent delivery to the same session succeeds without deadlock
+	outcome, err := g.Deliver(context.Background(), "s1", "msg3")
+	if err != nil || outcome != Sent {
+		t.Fatalf("subsequent Deliver failed: outcome=%v, err=%v", outcome, err)
+	}
+
+	g.deliveryMu.Lock()
+	defer g.deliveryMu.Unlock()
+	if len(g.deliveryLocks) != 0 {
+		t.Fatalf("expected deliveryLocks to be empty after final delivery, got %d", len(g.deliveryLocks))
+	}
+}
+
+func TestGuard_DeliveryLockPreCancelledContext(t *testing.T) {
+	msgr := &fakeMessenger{}
+	g := New(&fakeStore{rec: record(domain.ActivityIdle, false), ok: true}, msgr, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	outcome, err := g.Deliver(ctx, "s1", "msg")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	if outcome != SuppressedUnknown {
+		t.Fatalf("expected SuppressedUnknown on cancelled context, got %v", outcome)
+	}
+
+	g.deliveryMu.Lock()
+	defer g.deliveryMu.Unlock()
+	if len(g.deliveryLocks) != 0 {
+		t.Fatalf("expected deliveryLocks to remain empty on pre-cancelled context, got %d", len(g.deliveryLocks))
+	}
+}
+
+type concurrentSessionMessenger struct {
+	started map[domain.SessionID]chan struct{}
+	unblock chan struct{}
+}
+
+func (m *concurrentSessionMessenger) Send(_ context.Context, id domain.SessionID, _ string) error {
+	if ch, ok := m.started[id]; ok {
+		close(ch)
+	}
+	<-m.unblock
+	return nil
+}
+
+func TestGuard_DistinctSessionsDoNotBlockEachOther(t *testing.T) {
+	started1 := make(chan struct{})
+	started2 := make(chan struct{})
+	unblock := make(chan struct{})
+
+	msgr := &concurrentSessionMessenger{
+		started: map[domain.SessionID]chan struct{}{
+			"s1": started1,
+			"s2": started2,
+		},
+		unblock: unblock,
+	}
+	g := New(&fakeStore{rec: record(domain.ActivityIdle, false), ok: true}, msgr, nil)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = g.Deliver(context.Background(), "s1", "msg1")
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = g.Deliver(context.Background(), "s2", "msg2")
+	}()
+
+	// Both deliveries should reach Send concurrently without blocking each other
+	<-started1
+	<-started2
+
+	close(unblock)
+	wg.Wait()
+
+	g.deliveryMu.Lock()
+	defer g.deliveryMu.Unlock()
+	if len(g.deliveryLocks) != 0 {
+		t.Fatalf("expected deliveryLocks to be empty after distinct session deliveries, got %d", len(g.deliveryLocks))
 	}
 }
 
