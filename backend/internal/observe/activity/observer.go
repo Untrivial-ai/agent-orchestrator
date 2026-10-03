@@ -12,18 +12,20 @@ import (
 
 // Default activity observation settings.
 const (
-	DefaultTickInterval = 30 * time.Second
-	DefaultStaleAfter   = 2 * time.Minute
-	DefaultOutputLines  = 40
+	DefaultTickInterval  = 30 * time.Second
+	DefaultStaleAfter    = 2 * time.Minute
+	DefaultStaleActiveTo = time.Hour
+	DefaultOutputLines   = 40
 )
 
 // Config controls activity reconciliation polling.
 type Config struct {
-	Tick        time.Duration
-	StaleAfter  time.Duration
-	OutputLines int
-	Clock       func() time.Time
-	Logger      *slog.Logger
+	Tick          time.Duration
+	StaleAfter    time.Duration
+	StaleActiveTo time.Duration
+	OutputLines   int
+	Clock         func() time.Time
+	Logger        *slog.Logger
 }
 
 type sessionSource interface {
@@ -40,29 +42,31 @@ type outputReader interface {
 
 // Observer reconciles stale hook activity from adapter-owned terminal markers.
 type Observer struct {
-	sessions    sessionSource
-	sink        activitySink
-	runtime     outputReader
-	agents      ports.AgentResolver
-	tick        time.Duration
-	staleAfter  time.Duration
-	outputLines int
-	clock       func() time.Time
-	logger      *slog.Logger
+	sessions      sessionSource
+	sink          activitySink
+	runtime       outputReader
+	agents        ports.AgentResolver
+	tick          time.Duration
+	staleAfter    time.Duration
+	outputLines   int
+	staleActiveTo time.Duration
+	clock         func() time.Time
+	logger        *slog.Logger
 }
 
 // New builds an activity observer.
 func New(sessions sessionSource, sink activitySink, runtime outputReader, agents ports.AgentResolver, cfg Config) *Observer {
 	o := &Observer{
-		sessions:    sessions,
-		sink:        sink,
-		runtime:     runtime,
-		agents:      agents,
-		tick:        cfg.Tick,
-		staleAfter:  cfg.StaleAfter,
-		outputLines: cfg.OutputLines,
-		clock:       cfg.Clock,
-		logger:      cfg.Logger,
+		sessions:      sessions,
+		sink:          sink,
+		runtime:       runtime,
+		agents:        agents,
+		tick:          cfg.Tick,
+		staleAfter:    cfg.StaleAfter,
+		outputLines:   cfg.OutputLines,
+		staleActiveTo: cfg.StaleActiveTo,
+		clock:         cfg.Clock,
+		logger:        cfg.Logger,
 	}
 	if o.tick <= 0 {
 		o.tick = DefaultTickInterval
@@ -72,6 +76,9 @@ func New(sessions sessionSource, sink activitySink, runtime outputReader, agents
 	}
 	if o.outputLines <= 0 {
 		o.outputLines = DefaultOutputLines
+	}
+	if o.staleActiveTo <= 0 {
+		o.staleActiveTo = DefaultStaleActiveTo
 	}
 	if o.clock == nil {
 		// UTC, not bare time.Now: this timestamp becomes sessions.activity_last_at,
@@ -106,7 +113,19 @@ func (o *Observer) Poll(ctx context.Context) error {
 }
 
 func (o *Observer) reconcile(ctx context.Context, session domain.SessionRecord, now time.Time) {
-	if session.IsTerminated || session.Metadata.RuntimeHandleID == "" || o.agents == nil {
+	if session.IsTerminated {
+		return
+	}
+	o.reconcileTerminal(ctx, session, now)
+	// The fallback runs after terminal reconciliation, never instead of it: a
+	// chat session proves nothing from terminal output but must still lose a
+	// quiet stale-active state, while a TUI session keeps its per-tick
+	// stale-after check regardless of whether the fallback applied.
+	o.demoteQuietActive(ctx, session, now)
+}
+
+func (o *Observer) reconcileTerminal(ctx context.Context, session domain.SessionRecord, now time.Time) {
+	if session.Metadata.RuntimeHandleID == "" || o.agents == nil {
 		return
 	}
 	agent, ok := o.agents.Agent(session.Harness)
@@ -157,5 +176,36 @@ func (o *Observer) reconcile(ctx context.Context, session domain.SessionRecord, 
 	})
 	if err != nil {
 		o.logger.Error("activity observer: reconciliation failed", "session", session.ID, "err", err)
+	}
+}
+
+// demoteQuietActive is the last-resort stale-active fallback (issue #6131): a
+// turn that ends without its Stop/settle hook leaves the session durably
+// active, and neither the hooks nor the terminal detector can prove idle (a
+// chat-driven or renderer-drifted surface proves nothing). After a full quiet
+// window with no hook traffic — live work keeps refreshing LastActivityAt —
+// demote active to idle. Only active is touched: blocked and waiting_input
+// need the user, so an hour of quiet is not evidence against them. The next
+// hook event flips the state back if the demotion was wrong.
+func (o *Observer) demoteQuietActive(ctx context.Context, session domain.SessionRecord, now time.Time) {
+	if session.Activity.State != domain.ActivityActive || session.Activity.LastActivityAt.IsZero() ||
+		now.Sub(session.Activity.LastActivityAt) < o.staleActiveTo {
+		return
+	}
+	err := o.sink.ApplyActivitySignal(ctx, session.ID, ports.ActivitySignal{
+		Valid:            true,
+		State:            domain.ActivityIdle,
+		Timestamp:        now,
+		ExpectedRevision: &session.Revision,
+		Event:            "stale-active-idle",
+		LaunchID:         session.Metadata.RuntimeLaunchID,
+		// Chat fencing: lifecycle drops untagged signals for chat sessions
+		// (lifecycle/manager.go currentChatController). Carrying the
+		// generation observed with this record fences the fallback to the
+		// same controller snapshot the revision fence uses.
+		ControllerGeneration: session.Metadata.ControllerGeneration,
+	})
+	if err != nil {
+		o.logger.Error("activity observer: stale-active demotion failed", "session", session.ID, "err", err)
 	}
 }

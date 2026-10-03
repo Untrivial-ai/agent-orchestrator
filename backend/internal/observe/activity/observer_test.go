@@ -332,3 +332,106 @@ func TestPollReturnsSessionListFailure(t *testing.T) {
 		t.Fatalf("error = %v, want %v", err, want)
 	}
 }
+
+// Issue #6131: a turn that ended without its Stop hook leaves the session
+// durably active, and a surface the detector cannot read proves nothing. After
+// the quiet window the fallback demotes it without consulting the terminal.
+func TestPollDemotesQuietActiveWithoutTerminalProof(t *testing.T) {
+	now := time.Unix(500, 0).UTC()
+	session := activeSession(now, domain.HarnessClaudeCode)
+	session.Activity.LastActivityAt = now.Add(-2 * time.Hour)
+	session.Metadata.ControllerGeneration = "gen-7"
+	sink := &fakeSink{}
+	runtime := &fakeRuntime{output: "unparseable surface"}
+	observer := New(
+		fakeSessions{rows: []domain.SessionRecord{session}},
+		sink,
+		runtime,
+		fakeAgents{domain.HarnessClaudeCode: claudecode.New()},
+		Config{Clock: func() time.Time { return now }, Logger: testLogger()},
+	)
+
+	if err := observer.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.signals) != 1 {
+		t.Fatalf("signals = %d, want 1", len(sink.signals))
+	}
+	signal := sink.signals[0]
+	if sink.id != session.ID || signal.State != domain.ActivityIdle || signal.Event != "stale-active-idle" {
+		t.Fatalf("unexpected demotion: id=%q signal=%+v", sink.id, signal)
+	}
+	if signal.ExpectedRevision == nil || *signal.ExpectedRevision != session.Revision || signal.LaunchID != "launch-1" {
+		t.Fatalf("demotion fence = %+v, want revision=%d launch=launch-1", signal, session.Revision)
+	}
+	// Chat fencing: lifecycle silently drops untagged signals for chat
+	// sessions, so the fallback must carry the observed controller generation.
+	if signal.ControllerGeneration != "gen-7" {
+		t.Fatalf("demotion controller generation = %q, want gen-7", signal.ControllerGeneration)
+	}
+	if runtime.calls != 1 {
+		t.Fatalf("terminal reconciliation calls = %d, want 1 before fallback", runtime.calls)
+	}
+}
+
+// The fallback must not fire inside the quiet window, must not touch states
+// that need the user, and applies even to harnesses the registry cannot
+// resolve (the #5050 family: the observer previously skipped them entirely).
+func TestPollFallbackRespectsQuietWindowAndStates(t *testing.T) {
+	now := time.Unix(500, 0).UTC()
+	cases := []struct {
+		name    string
+		state   domain.ActivityState
+		quiet   time.Duration
+		harness domain.AgentHarness
+	}{
+		{"inside window", domain.ActivityActive, DefaultStaleActiveTo - time.Minute, domain.HarnessClaudeCode},
+		{"waiting input stays", domain.ActivityWaitingInput, 2 * DefaultStaleActiveTo, domain.HarnessClaudeCode},
+		{"blocked stays", domain.ActivityBlocked, 2 * DefaultStaleActiveTo, domain.HarnessClaudeCode},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			session := activeSession(now, tt.harness)
+			session.Activity.State = tt.state
+			session.Activity.LastActivityAt = now.Add(-tt.quiet)
+			sink := &fakeSink{}
+			observer := New(
+				fakeSessions{rows: []domain.SessionRecord{session}},
+				sink,
+				&fakeRuntime{},
+				fakeAgents{domain.HarnessClaudeCode: claudecode.New()},
+				Config{Clock: func() time.Time { return now }, Logger: testLogger()},
+			)
+
+			if err := observer.Poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(sink.signals) != 0 {
+				t.Fatalf("unexpected signals: %+v", sink.signals)
+			}
+		})
+	}
+}
+
+// A harness the registry cannot resolve gets the fallback too: the #5050
+// family showed the observer previously skipped such sessions entirely.
+func TestPollFallbackCoversUnresolvedHarness(t *testing.T) {
+	now := time.Unix(500, 0).UTC()
+	session := activeSession(now, "unregistered-harness")
+	session.Activity.LastActivityAt = now.Add(-2 * DefaultStaleActiveTo)
+	sink := &fakeSink{}
+	observer := New(
+		fakeSessions{rows: []domain.SessionRecord{session}},
+		sink,
+		&fakeRuntime{},
+		fakeAgents{},
+		Config{Clock: func() time.Time { return now }, Logger: testLogger()},
+	)
+
+	if err := observer.Poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.signals) != 1 || sink.signals[0].State != domain.ActivityIdle || sink.signals[0].Event != "stale-active-idle" {
+		t.Fatalf("unexpected demotion: %+v", sink.signals)
+	}
+}
