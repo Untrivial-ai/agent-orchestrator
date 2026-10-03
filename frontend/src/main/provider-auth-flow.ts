@@ -9,15 +9,34 @@ import crypto from "node:crypto";
 
 const MAX_AUTH_DOCUMENT_BYTES = 64 << 10;
 
-// A Claude Code setup token. `claude setup-token` emits one of these for use in
-// headless/cloud contexts; matching on the token shape (rather than a specific
-// storage file) keeps extraction stable across claude versions, which have moved
-// the credential between settings.json, .credentials.json, and the OS keychain.
+// Claude Code emits two distinct token shapes:
+//   sk-ant-oat*  – OAuth/setup-token tied to a Pro/Max subscription → CLAUDE_CODE_OAUTH_TOKEN
+//   sk-ant-api*  – standard API key from the Anthropic console → ANTHROPIC_API_KEY
+// Matching on shape (rather than a fixed file path) keeps extraction stable across claude
+// versions that have moved credentials between settings.json, .credentials.json, and the
+// OS keychain.
 const CLAUDE_OAUTH_TOKEN_PATTERN = /sk-ant-oat[0-9A-Za-z_-]{10,}/;
+const CLAUDE_API_KEY_PATTERN      = /sk-ant-api[0-9A-Za-z_-]{10,}/;
 
-export function extractClaudeOAuthToken(text: string): string | null {
-	const match = text.match(CLAUDE_OAUTH_TOKEN_PATTERN);
-	return match ? match[0] : null;
+export type ClaudeTokenResult = {
+	secret: string;
+	credentialType: "oauth_token" | "api_key";
+};
+
+/**
+ * Extracts a Claude credential from text (e.g. PKCE token endpoint response or a
+ * credential file) and returns the token together with the credential type inferred
+ * from its shape. Returns null when no recognised token is present.
+ *
+ * Invariant: an `sk-ant-api*` value is NEVER classified as `oauth_token`, and an
+ * `sk-ant-oat*` value is NEVER classified as `api_key`.
+ */
+export function extractClaudeOAuthToken(text: string): ClaudeTokenResult | null {
+	const oatMatch = text.match(CLAUDE_OAUTH_TOKEN_PATTERN);
+	if (oatMatch) return { secret: oatMatch[0], credentialType: "oauth_token" };
+	const apiMatch = text.match(CLAUDE_API_KEY_PATTERN);
+	if (apiMatch) return { secret: apiMatch[0], credentialType: "api_key" };
+	return null;
 }
 
 // Fallback for claude builds that write the setup token to a file instead of (or
@@ -35,8 +54,11 @@ export async function readClaudeOAuthTokenFromDir(dir: string): Promise<string |
 		try {
 			const stat = await lstat(full);
 			if (!stat.isFile() || stat.size === 0 || stat.size > MAX_AUTH_DOCUMENT_BYTES) continue;
-			const token = extractClaudeOAuthToken(await readFile(full, "utf8"));
-			if (token) return token;
+			const result = extractClaudeOAuthToken(await readFile(full, "utf8"));
+			// This dir is an isolated claude config dir written by setup-token,
+			// which only ever emits sk-ant-oat* tokens. Ignore api_key shapes to
+			// prevent mis-routing a user's pasted API key as an OAuth credential.
+			if (result?.credentialType === "oauth_token") return result.secret;
 		} catch {
 			// unreadable entry; keep scanning
 		}
@@ -433,9 +455,15 @@ const claudeAuthFlow: ProviderAuthFlow = {
 						if (!tokenRes.ok) throw new Error(`Claude token exchange failed (HTTP ${tokenRes.status}).`);
 						const tokenBody = (await tokenRes.json()) as Record<string, unknown>;
 						const accessToken = tokenBody.access_token;
-						// The setup token is an sk-ant-oat...; validate the shape so a
-						// changed response schema fails loudly instead of storing garbage.
-						if (typeof accessToken !== "string" || !extractClaudeOAuthToken(accessToken)) {
+						// The PKCE flow returns an sk-ant-oat* OAuth token. Validate the
+						// shape and enforce it is an oauth_token — an api_key shape here
+						// would route through the wrong auth mechanism and clobber
+						// previously stored oauth credentials.
+						if (typeof accessToken !== "string") {
+							throw new Error("Claude did not return a valid setup token.");
+						}
+						const tokenResult = extractClaudeOAuthToken(accessToken);
+						if (!tokenResult || tokenResult.credentialType !== "oauth_token") {
 							throw new Error("Claude did not return a valid setup token.");
 						}
 						cleanup();
@@ -447,7 +475,7 @@ const claudeAuthFlow: ProviderAuthFlow = {
 								"You can close this tab and return to Agent Orchestrator.",
 							),
 						);
-						resolve({ provider: "claude-code", credentialType: "oauth_token", secret: accessToken });
+						resolve({ provider: "claude-code", credentialType: tokenResult.credentialType, secret: tokenResult.secret });
 					} catch (err) {
 						failCallback(res, err instanceof Error ? err : new Error(String(err)));
 					}

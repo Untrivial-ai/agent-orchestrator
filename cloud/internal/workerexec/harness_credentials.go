@@ -56,8 +56,17 @@ func (claudeCredential) configure(_ HarnessBuilder, command *Command, credential
 	switch credential.CredentialType {
 	case "api_key":
 		command.Env["ANTHROPIC_API_KEY"] = credential.Secret
+		// Explicitly clear OAuth env vars to prevent credential shadowing:
+		// Claude CLI prioritises CLAUDE_CODE_OAUTH_TOKEN over ANTHROPIC_API_KEY,
+		// so if an OAuth token is present in the inherited environment it would
+		// silently override the injected API key.
+		command.Env["CLAUDE_CODE_OAUTH_TOKEN"] = ""
+		command.Env["ANTHROPIC_AUTH_TOKEN"] = ""
 	case "oauth_token":
 		command.Env["CLAUDE_CODE_OAUTH_TOKEN"] = credential.Secret
+		// Explicitly clear API-key env vars to prevent credential shadowing.
+		command.Env["ANTHROPIC_API_KEY"] = ""
+		command.Env["ANTHROPIC_AUTH_TOKEN"] = ""
 	default:
 		return errors.New("unsupported Claude Code credential type")
 	}

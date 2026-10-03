@@ -63,13 +63,43 @@ describe("firstExecutable", () => {
 // The claude token is extracted by shape, not from a fixed file, so it survives
 // claude moving its credential store between versions.
 describe("extractClaudeOAuthToken", () => {
-	it("pulls an sk-ant-oat token out of setup-token stdout", () => {
+	it("extracts an sk-ant-oat* token and classifies it as oauth_token", () => {
 		const stdout = "Authenticated!\nYour token:\nsk-ant-oat01-AbC_dEf-123456789 \nDone.\n";
-		expect(extractClaudeOAuthToken(stdout)).toBe("sk-ant-oat01-AbC_dEf-123456789");
+		expect(extractClaudeOAuthToken(stdout)).toEqual({
+			secret: "sk-ant-oat01-AbC_dEf-123456789",
+			credentialType: "oauth_token",
+		});
 	});
 
-	it("returns null when no token is present", () => {
+	it("extracts an sk-ant-api* token and classifies it as api_key (not oauth_token)", () => {
+		// Inverse regression: an API key must never be mis-routed through the OAuth path.
+		const stdout = "Your key:\nsk-ant-api03-AbC_dEf-123456789 \n";
+		expect(extractClaudeOAuthToken(stdout)).toEqual({
+			secret: "sk-ant-api03-AbC_dEf-123456789",
+			credentialType: "api_key",
+		});
+	});
+
+	it("sk-ant-api* credential type is api_key, never oauth_token", () => {
+		// Explicit invariant check the maintainer requested.
+		const result = extractClaudeOAuthToken("sk-ant-api03-sometoken_xyz");
+		expect(result?.credentialType).toBe("api_key");
+		expect(result?.credentialType).not.toBe("oauth_token");
+	});
+
+	it("sk-ant-oat* credential type is oauth_token, never api_key", () => {
+		const result = extractClaudeOAuthToken("sk-ant-oat01-sometoken_xyz");
+		expect(result?.credentialType).toBe("oauth_token");
+		expect(result?.credentialType).not.toBe("api_key");
+	});
+
+	it("returns null when no recognised token is present", () => {
 		expect(extractClaudeOAuthToken("Opening browser to sign in...\nno token here")).toBeNull();
+	});
+
+	it("returns null for a generic sk-ant- prefix without a known subtype", () => {
+		// Should not match unknown shapes to avoid future misclassification.
+		expect(extractClaudeOAuthToken("sk-ant-unknownformat01-sometoken_xyz")).toBeNull();
 	});
 });
 
