@@ -25,7 +25,7 @@ function renderWithLinkHandler(
 	text: string,
 	onLinkOpen: (url: string) => void,
 	workspacePaths: string[] = [],
-	onFileOpen?: (path: string) => void,
+	onFileOpen?: (path: string, line?: number) => void,
 ) {
 	return render(
 		<ChatLinkProvider onLinkOpen={onLinkOpen} onFileOpen={onFileOpen} workspacePaths={workspacePaths}>
@@ -132,7 +132,7 @@ describe("ChatMarkdown", () => {
 
 		await userEvent.click(screen.getByRole("button", { name: "Open backend/service.go in Files" }));
 
-		expect(onFileOpen).toHaveBeenCalledWith("backend/service.go");
+		expect(onFileOpen).toHaveBeenCalledWith("backend/service.go", 42);
 		expect(screen.getByText("--resume").closest("button")).toBeNull();
 	});
 
@@ -148,7 +148,7 @@ describe("ChatMarkdown", () => {
 
 		await userEvent.click(screen.getByRole("link", { name: "the component" }));
 
-		expect(onFileOpen).toHaveBeenCalledWith("frontend/src/App.tsx");
+		expect(onFileOpen).toHaveBeenCalledWith("frontend/src/App.tsx", 42);
 		expect(openExternal).not.toHaveBeenCalled();
 		openExternal.mockRestore();
 	});
@@ -176,7 +176,7 @@ describe("ChatMarkdown", () => {
 
 		await userEvent.click(screen.getByRole("link", { name: "the new file" }));
 
-		expect(onFileOpen).toHaveBeenCalledWith("src/generated/new-file.ts");
+		expect(onFileOpen).toHaveBeenCalledWith("src/generated/new-file.ts", 8);
 	});
 
 	it("escapes raw HTML instead of rendering it", () => {

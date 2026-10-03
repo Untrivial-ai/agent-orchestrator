@@ -40,6 +40,16 @@ export function normalizeWorkspaceFileReference(reference: string): string {
 	return normalizeWorkspacePath(path);
 }
 
+/** Extract the first line from common editor/file-link location suffixes. */
+export function workspaceFileReferenceLine(reference: string): number | undefined {
+	const decoded = decodePath(reference.trim());
+	const match = decoded.match(/#L(\d+)(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/i)
+		?? decoded.match(/:(\d+)(?::\d+)?$/);
+	if (!match) return undefined;
+	const line = Number(match[1]);
+	return Number.isSafeInteger(line) && line > 0 ? line : undefined;
+}
+
 function fileBasename(path: string): string {
 	const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
 	return slash >= 0 ? path.slice(slash + 1) : path;

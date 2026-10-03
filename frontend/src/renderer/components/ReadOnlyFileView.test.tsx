@@ -1,9 +1,11 @@
-import { render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { render, screen, waitFor } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ReadOnlyFileView } from "./ReadOnlyFileView";
 import type { WorkspaceFileDetail } from "../hooks/useSessionWorkspaceFiles";
 import type { FileAnnotationModel } from "./WorkspaceDiffView";
+
+const { lineScrollIntoView } = vi.hoisted(() => ({ lineScrollIntoView: vi.fn() }));
 
 vi.mock("../lib/api-client", () => ({ getApiBaseUrl: () => "" }));
 vi.mock("@pierre/diffs/react", () => ({
@@ -13,11 +15,20 @@ vi.mock("@pierre/diffs/react", () => ({
 		file: { name: string; contents: string };
 		lineAnnotations?: Array<{ lineNumber: number }>;
 		onEditChange?: (event: { file: { contents: string } }) => void;
-		options: { enableGutterUtility?: boolean; overflow: string; unsafeCSS?: string };
+		options: { enableGutterUtility?: boolean; onPostRender?: () => void; overflow: string; unsafeCSS?: string };
 		renderAnnotation?: () => ReactNode;
 		renderGutterUtility?: (getHoveredLine: () => { lineNumber: number }) => ReactNode;
 	}) => (
 		<div data-edit={String(Boolean(edit))} data-edit-state-key={editStateKey} data-file-name={file.name} data-gutter-enabled={String(Boolean(options.enableGutterUtility))} data-overflow={options.overflow} data-surface-css={options.unsafeCSS}>
+			{createElement("diffs-container", { ref: (element: HTMLElement | null) => {
+				if (!element || element.shadowRoot) return;
+				const root = element.attachShadow({ mode: "open" });
+				const line = document.createElement("div");
+				line.dataset.line = "120";
+				line.scrollIntoView = lineScrollIntoView;
+				root.append(line);
+				options.onPostRender?.();
+			} })}
 			<code>{file.contents}</code>
 			{edit ? <button onClick={() => onEditChange?.({ file: { contents: "edited\n" } })} type="button">type edit</button> : null}
 			{renderGutterUtility?.(() => ({ lineNumber: 1 }))}
@@ -49,6 +60,12 @@ function baseDetail(overrides: Partial<WorkspaceFileDetail> = {}): WorkspaceFile
 }
 
 describe("ReadOnlyFileView", () => {
+	it("reveals a requested source line after Pierre renders", async () => {
+		lineScrollIntoView.mockClear();
+		render(<ReadOnlyFileView annotation={annotation()} detail={baseDetail()} revealLine={{ line: 120, requestKey: 1 }} sessionId="sess-1" />);
+		await waitFor(() => expect(lineScrollIntoView).toHaveBeenCalledWith({ block: "center" }));
+	});
+
 	it("renders source through the wrapped Pierre/Shiki surface", () => {
 		const { container } = render(<ReadOnlyFileView annotation={annotation()} detail={baseDetail()} sessionId="sess-1" />);
 		expect(screen.getByText("hello world")).toBeInTheDocument();

@@ -4,6 +4,7 @@ import {
 	findWorkspaceFilePath,
 	matchWorkspaceFilePath,
 	normalizeWorkspaceFileReference,
+	workspaceFileReferenceLine,
 } from "./workspace-file-path";
 
 describe("matchWorkspaceFilePath", () => {
@@ -71,5 +72,13 @@ describe("matchWorkspaceFilePath", () => {
 
 	it("normalizes Windows file references", () => {
 		expect(normalizeWorkspaceFileReference("C:\\repo\\src\\app.ts:9")).toBe("C:/repo/src/app.ts");
+	});
+
+	it("extracts editor line locations without confusing columns or ranges", () => {
+		expect(workspaceFileReferenceLine("src/app.ts:42")).toBe(42);
+		expect(workspaceFileReferenceLine("src/app.ts:42:7")).toBe(42);
+		expect(workspaceFileReferenceLine("src/app.ts#L12-L18")).toBe(12);
+		expect(workspaceFileReferenceLine("file:///repo/src/app.ts%3A27")).toBe(27);
+		expect(workspaceFileReferenceLine("src/app.ts")).toBeUndefined();
 	});
 });

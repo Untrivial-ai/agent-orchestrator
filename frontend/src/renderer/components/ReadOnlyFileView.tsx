@@ -1,4 +1,4 @@
-import { useId, useRef } from "react";
+import { useCallback, useEffect, useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { type FileContents, type LineAnnotation } from "@pierre/diffs";
 import { File } from "@pierre/diffs/react";
@@ -28,6 +28,7 @@ export function ReadOnlyFileView({
 	detail,
 	editing = false,
 	onEditChange,
+	revealLine,
 	scope = "combined",
 	sessionId,
 	side = "after",
@@ -36,6 +37,7 @@ export function ReadOnlyFileView({
 	detail: WorkspaceFileDetail;
 	editing?: boolean;
 	onEditChange?: (content: string) => void;
+	revealLine?: { line: number; requestKey: number };
 	scope?: WorkspaceDiffScope;
 	sessionId: string;
 	side?: "before" | "after";
@@ -43,8 +45,24 @@ export function ReadOnlyFileView({
 	const { t } = useTranslation();
 	const resolvedTheme = useUiStore((state) => state.resolvedTheme);
 	const containerRef = useRef<HTMLDivElement>(null);
+	const pendingRevealRef = useRef(revealLine);
 	const editorInstanceId = useId();
 	const gutterHover = usePersistentGutterUtility(containerRef);
+	const revealRequestedLine = useCallback(() => {
+		const target = pendingRevealRef.current;
+		if (!target) return;
+		const diffsContainer = containerRef.current?.querySelector("diffs-container");
+		const line = diffsContainer?.shadowRoot?.querySelector<HTMLElement>(`[data-line="${target.line}"]`);
+		if (!line) return;
+		line.scrollIntoView({ block: "center" });
+		pendingRevealRef.current = undefined;
+	}, []);
+	useEffect(() => {
+		pendingRevealRef.current = revealLine;
+		if (!revealLine) return;
+		const frame = requestAnimationFrame(revealRequestedLine);
+		return () => cancelAnimationFrame(frame);
+	}, [revealLine, revealRequestedLine]);
 	if (detail.binary) {
 		if (detail.imageMediaType) {
 			return (
@@ -111,7 +129,10 @@ export function ReadOnlyFileView({
 					disableFileHeader: true,
 					enableGutterUtility: true,
 					lineHoverHighlight: "line",
-					onPostRender: gutterHover.restoreAfterRender,
+					onPostRender: () => {
+						gutterHover.restoreAfterRender();
+						revealRequestedLine();
+					},
 					overflow: "wrap",
 					theme: { dark: "github-dark", light: "github-light" },
 					themeType: resolvedTheme,

@@ -1465,20 +1465,18 @@ export function BrowserPanelView({
 							</>
 						) : (
 							<>
-								<DropdownMenuItem
-									className="gap-2"
-									onSelect={() => onTogglePopOut(!poppedOut)}
-								>
-									{poppedOut ? (
-										<Minimize2 aria-hidden="true" className="size-icon-base shrink-0" />
-									) : (
+								{!poppedOut ? (
+									<>
+										<DropdownMenuItem
+											className="gap-2"
+											onSelect={() => onTogglePopOut(true)}
+										>
 										<Maximize2 aria-hidden="true" className="size-icon-base shrink-0" />
-									)}
-									<span className="flex-1">
-										{poppedOut ? t("browser.returnToPanel") : t("browser.popOut")}
-									</span>
-								</DropdownMenuItem>
-								<div className="my-1 h-px bg-border" role="separator" />
+											<span className="flex-1">{t("browser.popOut")}</span>
+										</DropdownMenuItem>
+										<div className="my-1 h-px bg-border" role="separator" />
+									</>
+								) : null}
 								<DropdownMenuItem
 									className="gap-2"
 									onSelect={(event) => {

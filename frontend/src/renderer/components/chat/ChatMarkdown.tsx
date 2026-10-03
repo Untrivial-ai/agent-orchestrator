@@ -51,6 +51,7 @@ import { AppLink } from "../AppLink";
 import {
 	explicitWorkspaceFilePath,
 	findWorkspaceFilePath,
+	workspaceFileReferenceLine,
 } from "../../lib/workspace-file-path";
 import { HighlightedCode } from "./HighlightedCode";
 import { MermaidBlock } from "./MermaidBlock";
@@ -87,7 +88,7 @@ const StreamingProse = createContext(false);
 const InsideMarkdownLink = createContext(false);
 const OpenChatLink = createContext<{
 	open?: (url: string) => void;
-	openFile?: (path: string) => void;
+	openFile?: (path: string, line?: number) => void;
 	openSession?: (url: string) => void;
 	workspacePaths: string[];
 }>({ workspacePaths: [] });
@@ -100,7 +101,7 @@ export function ChatLinkProvider({
 	children,
 }: {
 	onLinkOpen?: (url: string) => void;
-	onFileOpen?: (path: string) => void;
+	onFileOpen?: (path: string, line?: number) => void;
 	onSessionLinkOpen?: (url: string) => void;
 	workspacePaths?: string[];
 	children: ReactNode;
@@ -262,7 +263,7 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 				}
 				if (openInFiles && onFileOpen) {
 					event.preventDefault();
-					onFileOpen(openInFiles);
+					onFileOpen(openInFiles, workspaceFileReferenceLine(href ?? ""));
 					return;
 				}
 				if (href && !browserLink) {
@@ -327,7 +328,7 @@ function InlineCode({ children }: { children?: ReactNode }) {
 	return (
 		<button
 			type="button"
-			onClick={() => onFileOpen(filePath)}
+			onClick={() => onFileOpen(filePath, workspaceFileReferenceLine(text ?? ""))}
 			aria-label={`Open ${filePath} in Files`}
 			className="inline rounded text-left transition-colors hover:bg-interactive-hover"
 		>

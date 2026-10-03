@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { SessionFileWorkspace } from "./SessionFileWorkspace";
 import type { FileAnnotationModel } from "./WorkspaceDiffView";
@@ -64,5 +64,17 @@ describe("SessionFileWorkspace", () => {
 		expect(screen.getByTestId("file-content")).toHaveAttribute("data-editing", "true");
 		unmount();
 		expect(onInitialEditingConsumed).toHaveBeenCalledWith("src/App.tsx", 3);
+	});
+
+	it("restores a file's scroll position after leaving and returning", () => {
+		const { rerender } = render(<SessionFileWorkspace annotation={annotation} path="src/App.tsx" sessionId="scroll-session" split={false} />);
+		const appScroll = screen.getByTestId("session-file-scroll");
+		appScroll.scrollTop = 320;
+		fireEvent.scroll(appScroll);
+
+		rerender(<SessionFileWorkspace annotation={annotation} path="src/Other.tsx" sessionId="scroll-session" split={false} />);
+		rerender(<SessionFileWorkspace annotation={annotation} path="src/App.tsx" sessionId="scroll-session" split={false} />);
+
+		expect(screen.getByTestId("session-file-scroll").scrollTop).toBe(320);
 	});
 });

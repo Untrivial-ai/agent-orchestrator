@@ -37,7 +37,7 @@ import { MarkdownFileView } from "./markdown/MarkdownFileView";
 const EDIT_ACTION_CLASS = "h-6 gap-1 px-2 text-xs";
 
 export type FileViewMode = "diff" | "file" | "rendered";
-export type FileOpenOptions = { commitSha?: string; editing?: boolean; mode?: FileViewMode; scope?: WorkspaceDiffScope };
+export type FileOpenOptions = { commitSha?: string; editing?: boolean; line?: number; mode?: FileViewMode; scope?: WorkspaceDiffScope };
 
 const DEFAULT_FILES_SOURCE: FilesSource = { kind: "workspace" };
 
@@ -51,6 +51,7 @@ function canRenderMarkdown(path: string, detail: WorkspaceFileDetail): boolean {
 export function FileContentPane({
 	annotation,
 	initialEditing = false,
+	initialLine,
 	initialMode = "diff",
 	initialRequestKey = 0,
 	commitSha,
@@ -64,6 +65,7 @@ export function FileContentPane({
 }: {
 	annotation: FileAnnotationModel;
 	initialEditing?: boolean;
+	initialLine?: number;
 	initialMode?: FileViewMode;
 	initialRequestKey?: number;
 	commitSha?: string;
@@ -192,6 +194,7 @@ export function FileContentPane({
 			detail={detail}
 			editing={editing && effectiveMode === "file"}
 			onEditChange={setDraft}
+			revealLine={initialLine ? { line: initialLine, requestKey: initialRequestKey } : undefined}
 			scope={scope}
 			sessionId={sessionId}
 			commitSha={commitSha}
@@ -376,7 +379,7 @@ export function FileContentPane({
 	);
 }
 
-function CompleteFileView({ annotation, commitSha, detail, editing, onEditChange, scope, sessionId, source }: { annotation: FileAnnotationModel; commitSha?: string; detail: WorkspaceFileDetail; editing: boolean; onEditChange: (content: string) => void; scope: WorkspaceDiffScope; sessionId: string; source: FilesSource }) {
+function CompleteFileView({ annotation, commitSha, detail, editing, onEditChange, revealLine, scope, sessionId, source }: { annotation: FileAnnotationModel; commitSha?: string; detail: WorkspaceFileDetail; editing: boolean; onEditChange: (content: string) => void; revealLine?: { line: number; requestKey: number }; scope: WorkspaceDiffScope; sessionId: string; source: FilesSource }) {
 	const { t } = useTranslation();
 	const revision = useQuery({
 		...sessionSourceFileRevisionQueryOptions({ commitSha, path: detail.path, scope, sessionId, side: detail.deleted ? "before" : "after", source, workspaceVersion: detail.workspaceVersion }),
@@ -399,11 +402,12 @@ function CompleteFileView({ annotation, commitSha, detail, editing, onEditChange
 				}}
 				editing={editing}
 				onEditChange={onEditChange}
+				revealLine={revealLine}
 				sessionId={sessionId}
 				side={detail.deleted ? "before" : "after"}
 				scope={scope}
 			/>
 		);
 	}
-	return <ReadOnlyFileView annotation={annotation} detail={detail} editing={editing} onEditChange={onEditChange} scope={scope} sessionId={sessionId} />;
+	return <ReadOnlyFileView annotation={annotation} detail={detail} editing={editing} onEditChange={onEditChange} revealLine={revealLine} scope={scope} sessionId={sessionId} />;
 }

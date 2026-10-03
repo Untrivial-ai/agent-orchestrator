@@ -2542,7 +2542,7 @@ export function TurnChangedFiles({
 	/** Opens the session Files inspector for the full workspace diff. */
 	onReview?: () => void;
 	/** Opens the Files inspector focused on this path. */
-	onOpenFile?: (path: string) => void;
+	onOpenFile?: (path: string, line?: number) => void;
 	/**
 	 * Timeline items from the same turn. Turn diffs often carry repo-relative
 	 * basenames (`random_words.txt`); file_change rows and command cwds often
