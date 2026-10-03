@@ -33,8 +33,13 @@ type PRObservation struct {
 	CI           domain.CIState
 	Review       domain.ReviewDecision
 	Mergeability domain.Mergeability
-	Checks       []PRCheckObservation
-	Comments     []PRCommentObservation
+	// ConflictsCleared mirrors SCMMergeabilityObservation.ConflictsCleared: the
+	// provider positively reported no merge conflicts even though Mergeability
+	// may read blocked/unstable. Lifecycle re-arms the merge-conflict nudge dedup
+	// on it so a clean-but-blocked PR still notifies on the next conflict (#6104).
+	ConflictsCleared bool
+	Checks           []PRCheckObservation
+	Comments         []PRCommentObservation
 }
 
 // PRCheckObservation is one SCM check result on the observed PR.

@@ -1876,8 +1876,12 @@ func failedFingerprintFromCIHash(hash string) string {
 
 func mergeabilityObservationFromLocal(pr domain.PullRequest) ports.SCMMergeabilityObservation {
 	out := mergeabilityFromProviderFacts(pr.ProviderMergeable, pr.ProviderMergeStateStatus, string(pr.CI), string(pr.Review), pr.Draft)
+	// The persisted state is authoritative over the recomputed verdict, but the
+	// provider's cleared-conflict fact is independent of which state wins, so
+	// carry it across the reset below (#6104).
+	cleared := out.ConflictsCleared
 	if pr.Mergeability != "" && out.State != string(pr.Mergeability) {
-		out = ports.SCMMergeabilityObservation{State: string(pr.Mergeability)}
+		out = ports.SCMMergeabilityObservation{State: string(pr.Mergeability), ConflictsCleared: cleared}
 	} else if pr.Mergeability != "" {
 		out.State = string(pr.Mergeability)
 	}
@@ -1928,6 +1932,12 @@ func mergeabilityFromProviderFacts(providerMergeable, providerMergeState, ci, re
 		addBlocker("conflicts")
 		return out
 	}
+	// The provider's own mergeability rollup ruled conflicts out. Record that
+	// even when a policy/CI/draft/review blocker forces the derived state to
+	// `blocked`, so lifecycle can re-arm the merge-conflict nudge dedup (#6104).
+	// The provider only reports MERGEABLE once it has computed mergeability, so
+	// an UNKNOWN rollup never sets this.
+	out.ConflictsCleared = mergeable == "MERGEABLE"
 	if state == "BEHIND" || state == "BEHIND_BASE" {
 		out.BehindBase = true
 		addBlocker("behind_base")

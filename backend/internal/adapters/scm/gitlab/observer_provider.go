@@ -1030,15 +1030,21 @@ func mergeabilityFromMR(mr *restMR, ciState, reviewDecision string) ports.SCMMer
 			blockers = append(blockers, "draft")
 			mergeable = false
 		}
+		// `mergeable`/`can_be_merged` means GitLab computed the MR merges
+		// cleanly, so conflicts are positively ruled out. ConflictsCleared carries
+		// that across even when a CI/review/draft blocker forces MergeBlocked, so
+		// lifecycle can re-arm the merge-conflict nudge dedup (#6104).
 		if mergeable {
 			return ports.SCMMergeabilityObservation{
-				State:     string(domain.MergeMergeable),
-				Mergeable: true,
+				State:            string(domain.MergeMergeable),
+				Mergeable:        true,
+				ConflictsCleared: true,
 			}
 		}
 		return ports.SCMMergeabilityObservation{
-			State:    string(domain.MergeBlocked),
-			Blockers: blockers,
+			State:            string(domain.MergeBlocked),
+			Blockers:         blockers,
+			ConflictsCleared: true,
 		}
 
 	// Conflicting (current + legacy aliases).

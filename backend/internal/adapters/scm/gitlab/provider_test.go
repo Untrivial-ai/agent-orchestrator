@@ -1039,6 +1039,39 @@ func TestMergeabilityFromMR(t *testing.T) {
 	}
 }
 
+// TestMergeabilityFromMR_ClearsConflictsWhenMRMergeable is the GitLab half of
+// #6104: when GitLab reports the MR merges cleanly (mergeable/can_be_merged) but
+// a CI/review/draft blocker forces MergeBlocked, the observation must carry
+// ConflictsCleared so lifecycle re-arms the merge-conflict nudge dedup. Statuses
+// where GitLab has not positively ruled conflicts out (conflict/unknown/
+// need_rebase) leave it false.
+func TestMergeabilityFromMR_ClearsConflictsWhenMRMergeable(t *testing.T) {
+	cases := []struct {
+		name   string
+		mr     *restMR
+		ci     string
+		review string
+		want   bool
+	}{
+		{"mergeable", &restMR{DetailedMergeStatus: "mergeable"}, "passing", "approved", true},
+		{"mergeable but failing ci", &restMR{DetailedMergeStatus: "mergeable"}, "failing", "approved", true},
+		{"mergeable but review required", &restMR{DetailedMergeStatus: "mergeable"}, "passing", "review_required", true},
+		{"mergeable but draft", &restMR{DetailedMergeStatus: "mergeable", Draft: true}, "passing", "approved", true},
+		{"legacy can_be_merged", &restMR{MergeStatus: "can_be_merged"}, "passing", "approved", true},
+		{"conflict", &restMR{DetailedMergeStatus: "conflict"}, "passing", "approved", false},
+		{"checking", &restMR{DetailedMergeStatus: "checking"}, "passing", "approved", false},
+		{"need_rebase", &restMR{DetailedMergeStatus: "need_rebase"}, "passing", "approved", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeabilityFromMR(tc.mr, tc.ci, tc.review)
+			if got.ConflictsCleared != tc.want {
+				t.Fatalf("ConflictsCleared = %v for %+v, want %v", got.ConflictsCleared, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestFetchPullRequests_DetailedMergeStatus verifies that a current GitLab
 // detailed_merge_status value ("mergeable") flows through to the observation's
 // Mergeability.State rather than being misclassified as blocked (review

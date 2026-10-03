@@ -209,8 +209,13 @@ func (m *Manager) ApplyPRObservation(ctx context.Context, id domain.SessionID, o
 	// state must land regardless of current liveness. The error is deferred past
 	// the nudge send loop (returned as rearmErr) so a persist failure here cannot
 	// discard CI/review nudges an unstable PR still queues below.
+	//
+	// o.ConflictsCleared covers the case the mergeability enum alone cannot: a
+	// provider rollup that cleared conflicts while branch protection left the PR
+	// blocked (GitHub mergeable=MERGEABLE + mergeStateStatus=BLOCKED, awaiting a
+	// required review). See mergeabilityClearsConflict (#6104).
 	var rearmErr error
-	if mergeabilityClearsConflict(o.Mergeability) {
+	if mergeabilityClearsConflict(o.Mergeability) || o.ConflictsCleared {
 		rearmErr = m.rearmMergeConflict(ctx, o.URL)
 	}
 	// A genuinely dead session — terminated, or its pane already exited to a
@@ -419,7 +424,7 @@ func commentNudgeKey(prURL string, comment ports.PRCommentObservation) string {
 // The send path and the re-arm path share it so the two cannot drift.
 func mergeConflictKey(prURL string) string { return "merge-conflict:" + prURL }
 
-// mergeabilityClearsConflict reports whether an observation positively
+// mergeabilityClearsConflict reports whether the mergeability enum positively
 // establishes that a PR is no longer conflicting, which is what re-arms its
 // merge-conflict nudge (#4528).
 //
@@ -433,6 +438,12 @@ func mergeConflictKey(prURL string) string { return "merge-conflict:" + prURL }
 // even while provider mergeability is still unknown and cannot be read as proof
 // the conflict is gone. `mergeable` and `unstable` both require a computed
 // provider rollup that ruled conflicts out first, so both are definitive.
+//
+// A `blocked` observation produced by a rollup that *did* clear conflicts is
+// covered out of band by PRObservation.ConflictsCleared, which the caller ORs in
+// (#6104): that is the case of a provider that reported no conflicts while
+// branch protection still blocks the merge (GitHub mergeable=MERGEABLE +
+// mergeStateStatus=BLOCKED, awaiting a required review).
 func mergeabilityClearsConflict(state domain.Mergeability) bool {
 	return state == domain.MergeMergeable || state == domain.MergeUnstable
 }
@@ -651,6 +662,10 @@ func scmToPRObservation(o ports.SCMObservation) ports.PRObservation {
 		CI:           domain.CIState(o.CI.Summary),
 		Review:       domain.ReviewDecision(o.Review.Decision),
 		Mergeability: domain.Mergeability(o.Mergeability.State),
+		// Carry the provider's cleared-conflict fact through the projection so
+		// ApplyPRObservation can re-arm the merge-conflict dedup even when the
+		// derived state reads blocked (#6104).
+		ConflictsCleared: o.Mergeability.ConflictsCleared,
 	}
 	if pr.CI == "" {
 		pr.CI = domain.CIUnknown

@@ -1332,6 +1332,44 @@ func TestSCMMergeabilityBlocksReviewRequiredAndDraft(t *testing.T) {
 	}
 }
 
+// TestMergeabilityObservationClearsConflictsWhenProviderRuledThemOut is the
+// provider-level half of #6104: GitHub's mergeable=MERGEABLE rollup rules
+// conflicts out even when a required review (or failing CI / draft / behind)
+// leaves the derived state blocked/unstable, so the observation must carry
+// ConflictsCleared for lifecycle to re-arm the merge-conflict nudge dedup. An
+// UNKNOWN rollup never sets it, so a transient recompute window cannot be read
+// as a cleared conflict.
+func TestMergeabilityObservationClearsConflictsWhenProviderRuledThemOut(t *testing.T) {
+	cases := []struct {
+		name      string
+		mergeable string
+		state     string
+		ci        string
+		review    string
+		draft     bool
+		want      bool
+	}{
+		{"mergeable and clean", "MERGEABLE", "CLEAN", string(domain.CIPassing), string(domain.ReviewApproved), false, true},
+		{"mergeable but blocked by required review", "MERGEABLE", "BLOCKED", string(domain.CIPassing), string(domain.ReviewRequired), false, true},
+		{"mergeable but blocked by failing ci", "MERGEABLE", "CLEAN", string(domain.CIFailing), string(domain.ReviewApproved), false, true},
+		{"mergeable but draft", "MERGEABLE", "CLEAN", string(domain.CIPassing), string(domain.ReviewApproved), true, true},
+		{"mergeable but unstable", "MERGEABLE", "UNSTABLE", string(domain.CIPassing), string(domain.ReviewApproved), false, true},
+		{"mergeable but behind base", "MERGEABLE", "BEHIND", string(domain.CIPassing), string(domain.ReviewApproved), false, true},
+		{"conflicting", "CONFLICTING", "DIRTY", string(domain.CIPassing), string(domain.ReviewApproved), false, false},
+		{"conflicting by rollup only", "CONFLICTING", "", string(domain.CIPassing), string(domain.ReviewApproved), false, false},
+		{"unknown rollup", "UNKNOWN", "UNKNOWN", string(domain.CIPassing), string(domain.ReviewApproved), false, false},
+		{"blocked with unknown rollup", "UNKNOWN", "BLOCKED", string(domain.CIPassing), string(domain.ReviewRequired), false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeabilityObservation(tc.mergeable, tc.state, tc.ci, tc.review, tc.draft)
+			if got.ConflictsCleared != tc.want {
+				t.Fatalf("ConflictsCleared = %v for %+v, want %v", got.ConflictsCleared, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFetchPullRequestsMarksMissingPRNotFound(t *testing.T) {
 	fake := newFakeGH(t)
 	fx := basePRFixture()

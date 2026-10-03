@@ -620,6 +620,12 @@ func mergeabilityObservation(providerMergeable, providerMergeState, ci, review s
 		addBlocker("conflicts")
 		return out
 	}
+	// The provider's own mergeability rollup ruled conflicts out. Record that
+	// even when a policy/CI/draft/review blocker forces the derived state to
+	// `blocked`, so lifecycle can re-arm the merge-conflict nudge dedup (#6104).
+	// GitHub only reports MERGEABLE once it has computed mergeability, so an
+	// UNKNOWN rollup never sets this.
+	out.ConflictsCleared = mergeable == "MERGEABLE"
 	if state == "BEHIND" || state == "BEHIND_BASE" {
 		out.BehindBase = true
 		addBlocker("behind_base")

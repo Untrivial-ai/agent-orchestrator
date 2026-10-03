@@ -299,4 +299,15 @@ type SCMMergeabilityObservation struct {
 	BehindBase bool
 	// Blockers lists normalized reasons preventing merge.
 	Blockers []string
+	// ConflictsCleared is true when the provider's own mergeability rollup
+	// positively established that the PR has no merge conflicts, even though
+	// State may read `blocked`/`unstable` for unrelated policy, CI, draft, or
+	// review reasons (GitHub `mergeable=MERGEABLE` with `mergeStateStatus=BLOCKED`,
+	// i.e. clean but awaiting a required review). Lifecycle uses it to re-arm the
+	// merge-conflict nudge dedup: without it, a PR that was conflicting, then
+	// rebased clean but left blocked pending review, keeps its durable
+	// "conflicting" signature and silently swallows the next real conflict
+	// (#6104). It is false whenever the provider has not computed mergeability,
+	// so a transient `unknown` can never be read as a cleared conflict.
+	ConflictsCleared bool
 }

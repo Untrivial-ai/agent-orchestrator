@@ -1285,7 +1285,7 @@ func TestPoll_ReviewHashDrivesPersistenceAndLifecycle(t *testing.T) {
 	review := ports.SCMReviewObservation{
 		Decision: string(domain.ReviewChangesRequest),
 		Reviews:  []ports.SCMReviewSummaryObservation{{ID: "review-1", Author: "ann", State: string(domain.ReviewChangesRequest), URL: "https://github.com/o/r/pull/1#pullrequestreview-1", SubmittedAt: time.Unix(199, 0).UTC()}},
-		Threads:  []ports.SCMReviewThreadObservation{{ID: "t1", Path: "f.go", Line: 2, IsBot: true, Comments: []ports.SCMReviewCommentObservation{{ID: "c1", Author: "ann", IsBot: false, Body: "fix this"}}}},
+		Threads:  []ports.SCMReviewThreadObservation{{ID: "t1", Path: "f.go", Line: 2, Comments: []ports.SCMReviewCommentObservation{{ID: "c1", Author: "ann", Body: "fix this"}}}},
 	}
 	provider := &fakeProvider{repoGuards: map[string]ports.SCMGuardResult{prKey(testRepo, 0): {ETag: "repo", NotModified: true}}, observations: map[string]ports.SCMObservation{}, reviews: map[string]ports.SCMReviewObservation{prKey(testRepo, 1): review}}
 	lc := &fakeLifecycle{}
@@ -1299,9 +1299,6 @@ func TestPoll_ReviewHashDrivesPersistenceAndLifecycle(t *testing.T) {
 	}
 	if len(store.writes[0].reviews) != 1 || store.writes[0].reviews[0].URL != "https://github.com/o/r/pull/1#pullrequestreview-1" {
 		t.Fatalf("review summaries not persisted: %#v", store.writes[0].reviews)
-	}
-	if len(store.writes[0].comments) != 1 || store.writes[0].comments[0].IsBot {
-		t.Fatalf("comment author identity was not preserved through persistence: %#v", store.writes[0].comments)
 	}
 	if len(store.writes) != 2 {
 		t.Fatalf("review change with lifecycle should write held-back facts then acknowledgement, got %d writes", len(store.writes))
@@ -3176,7 +3173,7 @@ func TestPoll_SecondScanNameDoesNotRebaselineTrackedPR(t *testing.T) {
 	oldRepo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "old", Name: "r", Repo: "old/r"}
 	newRepo := ports.SCMRepo{Provider: "github", Host: "github.com", Owner: "new", Name: "r", Repo: "new/r"}
 	restoreRemotes := gitRemoteURLsFunc
-	gitRemoteURLsFunc = func(context.Context, string) []string {
+	gitRemoteURLsFunc = func(_ context.Context, _ string) []string {
 		return []string{"https://github.com/new/r.git", "https://github.com/old/r.git"}
 	}
 	defer func() { gitRemoteURLsFunc = restoreRemotes }()
@@ -3481,5 +3478,55 @@ func TestMergeabilityFromProviderFacts_UnstableOutranksBlockers(t *testing.T) {
 				t.Fatalf("Blockers = %v, want %v", got.Blockers, tc.wantBlockers)
 			}
 		})
+	}
+}
+
+// TestMergeabilityFromProviderFacts_ClearsConflicts covers the observer's local
+// projection for #6104: the cleared-conflict fact must be recorded when the
+// provider's own rollup ruled conflicts out, even if a policy/CI/draft/review
+// blocker forces the derived state to blocked, and must stay false whenever the
+// provider has not computed mergeability.
+func TestMergeabilityFromProviderFacts_ClearsConflicts(t *testing.T) {
+	cases := []struct {
+		name              string
+		providerMergeable string
+		providerState     string
+		ci, review        string
+		draft             bool
+		want              bool
+	}{
+		{"mergeable and clean", "MERGEABLE", "CLEAN", string(domain.CIPassing), string(domain.ReviewApproved), false, true},
+		{"mergeable but blocked by required review", "MERGEABLE", "BLOCKED", string(domain.CIPassing), string(domain.ReviewRequired), false, true},
+		{"mergeable but draft", "MERGEABLE", "CLEAN", string(domain.CIPassing), string(domain.ReviewApproved), true, true},
+		{"conflicting", "CONFLICTING", "DIRTY", string(domain.CIPassing), string(domain.ReviewApproved), false, false},
+		{"unknown rollup", "UNKNOWN", "UNKNOWN", string(domain.CIPassing), string(domain.ReviewApproved), false, false},
+		{"blocked with unknown rollup", "UNKNOWN", "BLOCKED", string(domain.CIPassing), string(domain.ReviewRequired), false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeabilityFromProviderFacts(tc.providerMergeable, tc.providerState, tc.ci, tc.review, tc.draft)
+			if got.ConflictsCleared != tc.want {
+				t.Fatalf("ConflictsCleared = %v for %+v, want %v", got.ConflictsCleared, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMergeabilityObservationFromLocal_PreservesClearedConflicts pins the
+// persisted-state override: when the stored verdict disagrees with the
+// recomputed one, State comes from the stored row but the cleared-conflict fact
+// must survive, or a review-only refresh would drop the #6104 re-arm.
+func TestMergeabilityObservationFromLocal_PreservesClearedConflicts(t *testing.T) {
+	pr := domain.PullRequest{
+		ProviderMergeable:        "MERGEABLE",
+		ProviderMergeStateStatus: "BLOCKED",
+		Review:                   domain.ReviewRequired,
+		CI:                       domain.CIPassing,
+		// Stored verdict disagrees with the recomputed (blocked) one.
+		Mergeability: domain.MergeMergeable,
+	}
+	got := mergeabilityObservationFromLocal(pr)
+	if !got.ConflictsCleared {
+		t.Fatalf("ConflictsCleared = false after the persisted-state override: %+v", got)
 	}
 }

@@ -857,6 +857,99 @@ func TestWiring_MergeConflictNudgeReArmsAfterConflictClears(t *testing.T) {
 	}
 }
 
+// TestWiring_MergeConflictNudgeReArmsAfterBlockedWithClearedConflicts is the
+// end-to-end counterpart for #6104 over the real sqlite store: a PR that was
+// conflicting, then rebased clean but left blocked pending a required review
+// (GitHub mergeable=MERGEABLE + mergeStateStatus=BLOCKED) must still re-arm the
+// persisted merge-conflict dedup, so the next conflict notifies again. Before the
+// fix the `blocked` observation never cleared the "conflicting" signature in
+// pr.last_nudge_signature and the recurrence was silently swallowed.
+func TestWiring_MergeConflictNudgeReArmsAfterBlockedWithClearedConflicts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store, err := sqlitetest.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertProject(ctx, domain.ProjectRecord{ID: "p", Path: "/repo/p", RegisteredAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := store.CreateSession(ctx, domain.SessionRecord{
+		ProjectID: "p",
+		Kind:      domain.KindWorker,
+		Activity:  domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const prURL = "https://github.com/o/r/pull/6104"
+	if err := store.WriteSCMObservation(ctx, domain.PullRequest{
+		URL:       prURL,
+		SessionID: rec.ID,
+		Number:    6104,
+		UpdatedAt: time.Now(),
+	}, nil, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
+		t.Fatalf("persist PR before lifecycle: %v", err)
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	messenger := &captureMessenger{}
+	stack := startLifecycle(ctx, t.TempDir(), store, tmux.New(tmux.Options{}), messenger, nil, nil, nil, log)
+	t.Cleanup(stack.Stop)
+	t.Cleanup(cancel)
+
+	observe := func(mo ports.SCMMergeabilityObservation) {
+		t.Helper()
+		if err := stack.LCM.ApplySCMObservation(ctx, rec.ID, ports.SCMObservation{
+			Fetched:      true,
+			PR:           ports.SCMPRObservation{URL: prURL, Number: 6104},
+			Mergeability: mo,
+		}); err != nil {
+			t.Fatalf("ApplySCMObservation(%+v): %v", mo, err)
+		}
+	}
+
+	observe(ports.SCMMergeabilityObservation{State: string(domain.MergeConflicting), Conflict: true})
+	if len(messenger.msgs) != 1 {
+		t.Fatalf("first conflict should nudge once, got %d: %v", len(messenger.msgs), messenger.msgs)
+	}
+
+	// Clean but awaiting a required review: the provider cleared conflicts while
+	// AO's derived state stayed blocked.
+	observe(ports.SCMMergeabilityObservation{
+		State:            string(domain.MergeBlocked),
+		Blockers:         []string{"blocked_by_provider", "review_required"},
+		ConflictsCleared: true,
+	})
+
+	// A base-branch advance reintroduces the conflict.
+	observe(ports.SCMMergeabilityObservation{State: string(domain.MergeConflicting), Conflict: true})
+	if len(messenger.msgs) != 2 {
+		t.Fatalf("a conflict returning after a clean-but-blocked observation should nudge again, got %d: %v", len(messenger.msgs), messenger.msgs)
+	}
+	if !strings.Contains(messenger.msgs[1].msg, "merge conflicts") {
+		t.Fatalf("second nudge is not the merge-conflict nudge: %+v", messenger.msgs[1])
+	}
+
+	// The re-arm must survive a restart: only pr.last_nudge_signature carries the
+	// dedup forward, so a conflict after the cleared-blocked observation must not
+	// be suppressed by a stale durable "conflicting" signature.
+	restarted := &captureMessenger{}
+	restartedLCM := lifecycle.New(store, restarted)
+	if err := restartedLCM.ApplySCMObservation(ctx, rec.ID, ports.SCMObservation{
+		Fetched:      true,
+		PR:           ports.SCMPRObservation{URL: prURL, Number: 6104},
+		Mergeability: ports.SCMMergeabilityObservation{State: string(domain.MergeConflicting), Conflict: true},
+	}); err != nil {
+		t.Fatalf("ApplySCMObservation after restart: %v", err)
+	}
+	if len(restarted.msgs) != 0 {
+		t.Fatalf("restart replayed an already-delivered conflict nudge: %v", restarted.msgs)
+	}
+}
+
 // TestProjectRepoResolver_ResolvesRegisteredProject asserts the DB-backed repo
 // resolver turns a registered project into its on-disk repo path (so spawns
 // materialise a worktree), and fails loudly for an unregistered project.

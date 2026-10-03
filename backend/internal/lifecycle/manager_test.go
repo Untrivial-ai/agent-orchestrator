@@ -3037,6 +3037,64 @@ func TestPRObservation_MergeConflictReArmsAfterConflictClears(t *testing.T) {
 	}
 }
 
+// TestSCMObservation_MergeConflictReArmsAfterBlockedWithClearedConflicts is the
+// regression test for #6104: a PR that was conflicting, then rebased clean but
+// left blocked pending a required review (GitHub mergeable=MERGEABLE +
+// mergeStateStatus=BLOCKED), must still re-arm the merge-conflict dedup so the
+// next real conflict notifies. The `blocked` enum alone cannot prove the conflict
+// is gone — the observer also synthesizes `blocked` from draft/CI/review facts
+// while provider mergeability is unknown — so the provider's cleared-conflict fact
+// travels out of band in Mergeability.ConflictsCleared and the projection carries
+// it into PRObservation.
+func TestSCMObservation_MergeConflictReArmsAfterBlockedWithClearedConflicts(t *testing.T) {
+	apply := func(t *testing.T, m *Manager, mo ports.SCMMergeabilityObservation) {
+		t.Helper()
+		if err := m.ApplySCMObservation(ctx, "mer-1", ports.SCMObservation{
+			Fetched:      true,
+			PR:           ports.SCMPRObservation{URL: "pr1", Number: 1},
+			Mergeability: mo,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("cleared conflicts while blocked re-arm", func(t *testing.T) {
+		m, st, msg := newManager()
+		st.sessions["mer-1"] = working("mer-1")
+
+		apply(t, m, ports.SCMMergeabilityObservation{State: string(domain.MergeConflicting), Conflict: true})
+		if len(msg.msgs) != 1 {
+			t.Fatalf("first conflict should nudge once, got %v", msg.msgs)
+		}
+		// Clean but blocked on a required review: provider ruled conflicts out.
+		apply(t, m, ports.SCMMergeabilityObservation{
+			State:            string(domain.MergeBlocked),
+			Blockers:         []string{"blocked_by_provider", "review_required"},
+			ConflictsCleared: true,
+		})
+		// A base-branch advance reintroduces the conflict.
+		apply(t, m, ports.SCMMergeabilityObservation{State: string(domain.MergeConflicting), Conflict: true})
+		if len(msg.msgs) != 2 {
+			t.Fatalf("a conflict returning after a clean-but-blocked observation should nudge again, got %d: %v", len(msg.msgs), msg.msgs)
+		}
+	})
+
+	// The boundary: `blocked` without the provider's cleared-conflict fact stays
+	// suppressed, so an unchanged conflict that merely flapped through the
+	// synthesized-blocked window cannot re-nudge on every poll.
+	t.Run("bare blocked does not re-arm", func(t *testing.T) {
+		m, st, msg := newManager()
+		st.sessions["mer-1"] = working("mer-1")
+
+		apply(t, m, ports.SCMMergeabilityObservation{State: string(domain.MergeConflicting), Conflict: true})
+		apply(t, m, ports.SCMMergeabilityObservation{State: string(domain.MergeBlocked), Blockers: []string{"review_required"}})
+		apply(t, m, ports.SCMMergeabilityObservation{State: string(domain.MergeConflicting), Conflict: true})
+		if len(msg.msgs) != 1 {
+			t.Fatalf("blocked without a cleared-conflict fact must not re-arm, got %d nudges: %v", len(msg.msgs), msg.msgs)
+		}
+	})
+}
+
 // TestPRObservation_ConsecutiveMergeConflictsStayDeduplicated pins the other
 // half of #4528: the re-arm must not weaken the dedup that stops an unchanged
 // conflict from re-nudging on every poll.
