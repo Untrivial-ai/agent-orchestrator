@@ -22,6 +22,7 @@ const POSTHOG_EVENT_NAME_ALIASES: Record<string, string> = {
 	"ao.renderer.loaded": "ao.v2.renderer.loaded",
 	"ao.renderer.api_error": "ao.v2.renderer.api_error",
 	"ao.renderer.daemon_failure": "ao.v2.renderer.daemon_failure",
+	"ao.renderer.session_management_summary": "ao.v2.renderer.session_management_summary",
 };
 
 let initPromise: Promise<boolean> | null = null;
@@ -631,6 +632,37 @@ export async function sanitizeRendererProperties(
 			if (typeof properties?.enabled === "boolean") safe.enabled = properties.enabled;
 			if (properties?.outcome === "succeeded" || properties?.outcome === "failed") safe.outcome = properties.outcome;
 			break;
+		case "ao.renderer.session_management_summary": {
+			const numericKeys = [
+				"measurement_schema_version",
+				"window_duration_seconds",
+				"orchestrator_active_seconds",
+				"worker_active_seconds",
+				"transition_orchestrator_to_worker_count",
+				"transition_orchestrator_same_count",
+				"transition_orchestrator_switch_count",
+				"transition_worker_to_orchestrator_count",
+				"transition_worker_same_count",
+				"transition_worker_switch_count",
+				"manual_worker_open_count",
+				"direct_worker_chat_steer_count",
+				"direct_worker_terminal_input_burst_count",
+				"direct_worker_lifecycle_action_count",
+				"pattern_orchestrator_worker_orchestrator_count",
+				"pattern_orchestrator_multiple_workers_count",
+			] as const;
+			for (const key of numericKeys) {
+				const value = properties?.[key];
+				if (typeof value === "number" && Number.isFinite(value) && value >= 0) safe[key] = value;
+			}
+			if (typeof properties?.window_id === "string" && /^[0-9a-f-]{36}$/i.test(properties.window_id)) {
+				safe.window_id = properties.window_id;
+			}
+			if (properties?.flush_reason === "interval" || properties?.flush_reason === "startup") {
+				safe.flush_reason = properties.flush_reason;
+			}
+			break;
+		}
 	}
 	return safe;
 }

@@ -43,6 +43,7 @@ import { DaemonStartupLoader } from "./DaemonStartupLoader";
 import { useBoardPresentation } from "../hooks/useBoardPresentation";
 import { useProjectOrchestratorAction } from "../hooks/useProjectOrchestratorAction";
 import { ProjectBoardActions } from "./ProjectBoardActions";
+import { recordManualWorkerOpen } from "../lib/session-management-telemetry";
 import {
 	ArchivedSessionCardAdapter,
 	BoardSessionCardAdapter,
@@ -142,6 +143,7 @@ export function SessionsBoard({ projectId }: SessionsBoardProps) {
 	activeProjectIdRef.current = projectId;
 
 	const openSession = useCallback((session: WorkspaceSession) => {
+		if (session.kind === "worker") recordManualWorkerOpen(session.id);
 		if (session.workspaceId === STANDALONE_WORKSPACE_ID) {
 			void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
 			return;

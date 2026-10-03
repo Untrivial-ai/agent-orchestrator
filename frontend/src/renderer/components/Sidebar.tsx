@@ -124,6 +124,7 @@ import { OrchestratorIcon } from "./icons";
 import { Badge } from "./ui/badge";
 import aoLogo from "../../../assets/ao-logo.svg";
 import { cn } from "../lib/utils";
+import { recordManualWorkerOpen } from "../lib/session-management-telemetry";
 import { useUiStore } from "../stores/ui-store";
 import { useKeybindingsStore } from "../stores/keybindings-store";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -957,7 +958,10 @@ export function Sidebar({
 										active={selection.activeSessionId === session.id}
 										layoutSettled={layoutSettled}
 										onKilled={handlePinnedSessionKilled}
-										onOpenSession={selection.goSession}
+										onOpenSession={(projectId, sessionId) => {
+											if (session.kind === "worker") recordManualWorkerOpen(sessionId);
+											selection.goSession(projectId, sessionId);
+										}}
 									/>
 								))}
 							</SidebarMenuSub>
@@ -1290,6 +1294,7 @@ const ProjectItem = memo(function ProjectItem({
 		[sessions],
 	);
 	const openSession = useCallback((sessionId: string) => {
+		recordManualWorkerOpen(sessionId);
 		selection.goSession(workspace.id, sessionId);
 	}, [selection, workspace.id]);
 	const handleSessionKilled = useCallback(
@@ -1810,7 +1815,10 @@ function ScratchpadSection({
 		[sessions],
 	);
 	const openSession = useCallback(
-		(sessionId: string) => selection.goSession(STANDALONE_WORKSPACE_ID, sessionId),
+		(sessionId: string) => {
+			recordManualWorkerOpen(sessionId);
+			selection.goSession(STANDALONE_WORKSPACE_ID, sessionId);
+		},
 		[selection],
 	);
 	const handleSessionKilled = useCallback(

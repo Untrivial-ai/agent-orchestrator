@@ -21,6 +21,7 @@ import { LOCAL_ECHO_ENABLED, withLineBufferedLocalInput } from "../lib/terminal-
 import { createTerminalMux, muxUrlFromApiBase, type TerminalMux } from "../lib/terminal-mux";
 import { sessionIsActive, type WorkspaceSession } from "../types/workspace";
 import { workspaceQueryKey } from "./useWorkspaceQuery";
+import { recordDirectWorkerInteraction } from "../lib/session-management-telemetry";
 
 /**
  * The slice of xterm's Terminal the attachment needs. Structural, so tests can
@@ -750,6 +751,7 @@ export function useTerminalSession(session: WorkspaceSession | undefined, option
 			// end the gate immediately.
 			if (r.replayBuffering) flushReplay();
 			else revealReplayTail();
+			if (session) recordDirectWorkerInteraction(session.id, "terminal", session.kind);
 			mux.sendInput(handle, data);
 			return true;
 		});

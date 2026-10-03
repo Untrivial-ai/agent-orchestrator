@@ -6,6 +6,7 @@ import { useOrchestratorChildren, type OrchestratorChildView } from "../hooks/us
 import { cn } from "../lib/utils";
 import { getSessionStatusDotView, getSessionStatusView } from "../lib/session-presentation";
 import { captureRendererEvent } from "../lib/telemetry";
+import { recordManualWorkerOpen } from "../lib/session-management-telemetry";
 import type { PullRequestFacts, WorkspaceSession } from "../types/workspace";
 import { AgentAvatar } from "./AgentAvatar";
 import { ProductExternalLink } from "./ProductExternalLink";
@@ -48,6 +49,7 @@ export function OrchestratorChildrenSection({ session }: { session: WorkspaceSes
 							key={child.id}
 							child={child}
 							onOpen={() => {
+								recordManualWorkerOpen(child.id);
 								void captureRendererEvent("ao.renderer.cloud_worker_opened", {
 									has_pr: child.prs.length > 0,
 								});
