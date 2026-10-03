@@ -60,6 +60,96 @@ describe("ElicitationDock", () => {
 		expect(screen.queryByLabelText("Other language")).not.toBeInTheDocument();
 	});
 
+	it("shows each question's text above its options, with the header as a short label", async () => {
+		const user = userEvent.setup();
+		const questions = {
+			type: "object" as const,
+			required: ["question_0", "question_1"],
+			properties: {
+				question_0: {
+					type: "string",
+					title: "403 handling",
+					description: "How should the client react to a 403 response?",
+					oneOf: [{ const: "Retry", title: "Retry" }],
+				},
+				question_1: {
+					type: "string",
+					title: "Language",
+					description: "Which language should the fix use?",
+					oneOf: [{ const: "Go", title: "Go" }],
+				},
+			},
+		};
+		render(
+			<ElicitationDock
+				activity={activity({
+					inputMode: "form",
+					message: "Please answer the following questions.",
+					schema: questions,
+				})}
+				onResolve={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("How should the client react to a 403 response?")).toBeInTheDocument();
+		expect(screen.getByText("403 handling")).toBeInTheDocument();
+		expect(screen.getByRole("group", { name: /^403 handling How should the client react to a 403 response\?$/ })).toBeInTheDocument();
+
+		await user.click(screen.getByRole("radio", { name: "Retry" }));
+		await user.click(screen.getByRole("button", { name: "Next" }));
+		expect(screen.getByText("Which language should the fix use?")).toBeInTheDocument();
+		expect(
+			screen.getByRole("group", { name: /^Language Which language should the fix use\?$/ }),
+		).toBeInTheDocument();
+	});
+
+	it("shows the question once when its description repeats the title", () => {
+		render(
+			<ElicitationDock
+				activity={activity({
+					inputMode: "form",
+					message: "Please answer.",
+					schema: {
+						type: "object",
+						properties: {
+							question_0: {
+								type: "string",
+								title: "Approach",
+								description: "Approach",
+								oneOf: [{ const: "Native", title: "Native" }],
+							},
+						},
+					},
+				})}
+				onResolve={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getAllByText("Approach")).toHaveLength(1);
+		expect(screen.getByRole("group", { name: /^Approach$/ })).toBeInTheDocument();
+	});
+
+	it("asks a single question with the elicitation message", () => {
+		render(
+			<ElicitationDock
+				activity={activity({
+					inputMode: "form",
+					message: "Which approach do you prefer?",
+					schema: {
+						type: "object",
+						properties: {
+							question_0: { type: "string", title: "Approach", oneOf: [{ const: "Native", title: "Native" }] },
+						},
+					},
+				})}
+				onResolve={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("Which approach do you prefer?")).toBeInTheDocument();
+		expect(screen.getByText("Approach")).toBeInTheDocument();
+	});
+
 	it("validates the active Claude question before moving forward", async () => {
 		const user = userEvent.setup();
 		render(

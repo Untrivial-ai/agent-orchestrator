@@ -68,12 +68,39 @@ export function ElicitationDock({
 }
 
 /** The dock's one-line header: what is being asked, and where you are in it. */
-function DockHeader({ id, title, pager }: { id?: string; title: string; pager?: string }) {
+function DockHeader({
+	id,
+	title,
+	label,
+	labelId,
+	pager,
+}: {
+	id?: string;
+	title: string;
+	label?: string;
+	labelId?: string;
+	pager?: string;
+}) {
 	return (
 		<div className="flex min-h-8 items-center gap-2 px-3 py-2">
-			<p id={id} className="min-w-0 flex-1 text-xs font-medium leading-relaxed text-foreground line-clamp-2" title={title}>
-				{title}
-			</p>
+			<div className="min-w-0 flex-1">
+				{label ? (
+					<p
+						id={labelId}
+						title={label}
+						className="line-clamp-1 break-words text-[11px] font-medium leading-relaxed text-muted-foreground"
+					>
+						{label}
+					</p>
+				) : null}
+				<p
+					id={id}
+					title={title}
+					className="line-clamp-2 break-words text-xs font-medium leading-relaxed text-foreground"
+				>
+					{title}
+				</p>
+			</div>
 			{pager ? (
 				<span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{pager}</span>
 			) : null}
@@ -184,11 +211,20 @@ function FormRequest({
 	const hasPreviousQuestion = questionGroups !== undefined && activeQuestion > 0;
 	const hasNextQuestion = questionGroups !== undefined && activeQuestion < questionGroups.length - 1;
 	const headerId = useId();
+	const labelId = useId();
 
 	// A Claude question carries its own prompt, so the header asks it and the
-	// field below drops the legend that would otherwise repeat it verbatim.
-	const askedQuestion = questionGroups ? propertyLabel(visibleProperties[0]) : undefined;
-	const title = askedQuestion ?? activity.detail?.message ?? schema?.title ?? activity.summary;
+	// field below drops the legend and description that would repeat it. The
+	// question is the property description, or the elicitation message when
+	// there is a single question; the property title becomes a short label.
+	const firstProperty = questionGroups ? visibleProperties[0] : undefined;
+	const propertyTitle = firstProperty ? propertyLabel(firstProperty) : undefined;
+	const propertyDescription =
+		firstProperty && typeof firstProperty[1].description === "string" ? firstProperty[1].description : undefined;
+	const askedQuestion =
+		propertyDescription || (questionGroups?.length === 1 ? activity.detail?.message : undefined) || undefined;
+	const title = askedQuestion ?? propertyTitle ?? activity.detail?.message ?? schema?.title ?? activity.summary;
+	const label = askedQuestion && askedQuestion !== propertyTitle ? propertyTitle : undefined;
 	const pager =
 		questionGroups && questionGroups.length > 1
 			? `${activeQuestion + 1} of ${questionGroups.length}`
@@ -212,7 +248,7 @@ function FormRequest({
 
 	return (
 		<form onSubmit={submit}>
-			<DockHeader id={headerId} title={title} pager={pager} />
+			<DockHeader id={headerId} title={title} label={label} labelId={labelId} pager={pager} />
 			{!questionGroups && schema?.description ? (
 				<p className="px-3 pb-1 text-[11px] leading-relaxed text-muted-foreground">{schema.description}</p>
 			) : null}
@@ -227,8 +263,11 @@ function FormRequest({
 						invalid={missing.has(name)}
 						disabled={disabled}
 						// Inside a Claude question the header is the prompt, so the first
-						// field borrows it as its accessible name instead of printing it.
-						labelledBy={questionGroups && index === 0 ? headerId : undefined}
+						// field borrows it (and the short label, when shown) as its
+						// accessible name instead of printing it.
+						labelledBy={
+							questionGroups && index === 0 ? (label ? `${labelId} ${headerId}` : headerId) : undefined
+						}
 						rows={Boolean(questionGroups)}
 						onChange={(value) => {
 							setValues((current) => ({ ...current, [name]: value }));
