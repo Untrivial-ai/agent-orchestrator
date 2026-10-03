@@ -9214,7 +9214,10 @@ export interface operations {
     };
     removeProject: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description When true, remove the project even when it has live sessions; those sessions are stopped and their workspaces reclaimed. Without it a project with live sessions is refused. */
+                force?: null | boolean;
+            };
             header?: never;
             path: {
                 /** @description Project identifier (registry key). */
@@ -9244,6 +9247,15 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -12,6 +12,7 @@ import (
 type projectCapture struct {
 	method string
 	path   string
+	query  string
 	body   []byte
 }
 
@@ -21,6 +22,7 @@ func projectServer(t *testing.T, status int, respBody string) (*httptest.Server,
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capture.method = r.Method
 		capture.path = r.URL.Path
+		capture.query = r.URL.RawQuery
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read request body: %v", err)
@@ -392,6 +394,22 @@ func TestProjectRemove_JSONDocumentedEnvelope(t *testing.T) {
 	}
 	if !got.OK || got.ID != "demo" || got.ProjectID != "" {
 		t.Fatalf("remove json = %#v, want documented ok/id envelope", got)
+	}
+}
+
+func TestProjectRemove_ForceSendsQueryParam(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := projectServer(t, http.StatusOK, `{"ok":true,"id":"demo"}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, errOut, err := executeCLI(t, Deps{
+		ProcessAlive: func(int) bool { return true },
+	}, "project", "rm", "demo", "--yes", "--force")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodDelete || capture.path != "/api/v1/projects/demo" || capture.query != "force=true" {
+		t.Fatalf("request = %s %s?%s, want DELETE /api/v1/projects/demo?force=true", capture.method, capture.path, capture.query)
 	}
 }
 

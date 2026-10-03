@@ -408,6 +408,19 @@ func TestProjectsAPI_Delete(t *testing.T) {
 
 	}
 
+	// The force query parameter gates removal of a project with live sessions;
+	// a non-boolean value must be rejected before any teardown runs.
+	body, status, _ = doRequest(t, srv, "POST", "/api/v1/projects", `{"path":`+quote(gitRepo(t, "repo-force"))+`,"projectId":"proj-force"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("seed create proj-force = %d, want 201; body=%s", status, body)
+	}
+	body, status, _ = doRequest(t, srv, "DELETE", "/api/v1/projects/proj-force?force=maybe", "")
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_QUERY")
+	body, status, _ = doRequest(t, srv, "DELETE", "/api/v1/projects/proj-force?force=true", "")
+	if status != http.StatusOK {
+		t.Fatalf("DELETE force=true = %d, want 200; body=%s", status, body)
+	}
+
 }
 
 // TestProjectsAPI_RejectsUnknownConfigKeys locks the strict-decoder gate on the
