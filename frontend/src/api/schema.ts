@@ -3530,7 +3530,13 @@ export interface components {
             enabled: null | boolean;
         };
         ConversationAccountPayload: {
+            authFailureId?: string;
             authMode?: string;
+            authVerifiedAt?: null | string;
+            /** @enum {string} */
+            authenticationState?: "unknown" | "required" | "authenticated";
+            lastAuthFailureAt?: null | string;
+            lastAuthFailureReason?: string;
             planLabel?: string;
             reauthReason?: string;
             reauthRequiredAt?: null | string;

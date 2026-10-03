@@ -435,6 +435,35 @@ support retain the causally newer idle-fact or legacy terminal-idle fallback. An
 unverified idle state has a bounded proof window; active work or a user-paced
 decision remains unbounded.
 
+### Conversation authentication facts
+
+The daemon projects provider credential rejections into `conversations.account_json`
+with explicit `authenticationState` (`unknown`, `required`, or `authenticated`).
+`reauthRequiredAt`/`reauthReason` describe an outstanding demand; the last failure
+and archived provider events remain after recovery. Partial account/plan reports
+never imply usable credentials. An auth-mode report establishes an account-change
+barrier for turns already in flight.
+
+Recovery requires an authoritative completed provider turn with no error, in the
+active provider branch and owning controller generation, started and completed
+after the outstanding demand/account-change barrier. Root-thread correlation
+excludes nested Codex child-thread completions. Imported or synthetic history,
+process readiness, local CLI login, and uncorrelated recovery reports cannot clear
+a demand. ACP and Codex use the same daemon reduction of their normalized turn
+completions; their credential verification and process reconnection remain provider
+specific.
+
+Before claiming a replacement generation, and when reading a snapshot with a
+persisted demand, SQLite reconciles legacy warnings against bounded durable turn
+and archived completion evidence. Evidence selection and clearing share the writer
+transaction with generation/account updates; uncertain or older-generation evidence
+leaves the demand intact. This is a targeted lazy repair, with no blanket database
+migration and no provider/session restart. The renderer may dismiss the current
+failure notice for that mounted conversation. Account JSON changes invalidate Chat
+through a DB-triggered `session_updated` event even without a timeline change;
+dismissal changes no auth fact or
+work authorization. A new failure identity shows a new notice.
+
 ### Observation Flow
 
 ```mermaid

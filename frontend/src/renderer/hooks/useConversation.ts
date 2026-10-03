@@ -1503,7 +1503,12 @@ export function toSnapshot(wire: WireSnapshot): ConversationSnapshot {
 			? {
 					authMode: wire.account.authMode || undefined,
 					planLabel: wire.account.planLabel || undefined,
-					reauthRequiredAt: wire.account.reauthRequiredAt ?? undefined,
+					authenticationState: wire.account.authenticationState,
+						authVerifiedAt: wire.account.authVerifiedAt ?? undefined,
+						lastAuthFailureAt: wire.account.lastAuthFailureAt ?? undefined,
+						lastAuthFailureReason: wire.account.lastAuthFailureReason || undefined,
+						authFailureId: wire.account.authFailureId || undefined,
+						reauthRequiredAt: wire.account.reauthRequiredAt ?? undefined,
 					reauthReason: wire.account.reauthReason || undefined,
 				}
 			: undefined,

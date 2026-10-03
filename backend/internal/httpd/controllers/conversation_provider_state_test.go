@@ -154,6 +154,26 @@ func TestSnapshotExposesAccountAndReauthDemand(t *testing.T) {
 	if account["reauthReason"] != "unauthorized" {
 		t.Errorf("reauthReason = %#v", account["reauthReason"])
 	}
+	if account["authenticationState"] != "required" {
+		t.Fatalf("legacy demand state = %#v", account)
+	}
+}
+
+func TestSnapshotSeparatesVerifiedAuthenticationFromFailureHistory(t *testing.T) {
+	failed := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	verified := failed.Add(time.Minute)
+	body := conversationSnapshotBody(t, chatsvc.Snapshot{Conversation: domain.ConversationRecord{
+		Account: &domain.ConversationAccount{AuthenticationState: "authenticated", AuthVerifiedAt: &verified,
+			LastAuthFailureAt: &failed, LastAuthFailureReason: "expired", AuthFailureID: "failure-1"},
+	}})
+	account := body["account"].(map[string]any)
+	if account["authenticationState"] != "authenticated" || account["authVerifiedAt"] != "2026-08-02T12:01:00Z" ||
+		account["lastAuthFailureAt"] != "2026-08-02T12:00:00Z" || account["lastAuthFailureReason"] != "expired" || account["authFailureId"] != "failure-1" {
+		t.Fatalf("recovered auth facts = %#v", account)
+	}
+	if _, ok := account["reauthRequiredAt"]; ok {
+		t.Fatalf("recovered account still demands credentials: %#v", account)
+	}
 }
 
 // Thread state is the provider's view, and it is not the session's status. Both can

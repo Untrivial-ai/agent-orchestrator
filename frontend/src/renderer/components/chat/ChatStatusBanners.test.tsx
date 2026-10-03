@@ -31,11 +31,11 @@ describe("ReauthBanner", () => {
 		expect(screen.getByText(/The stored session expired/)).toBeInTheDocument();
 	});
 
-	it("says the worktree is untouched, since nothing else about the session works", () => {
+	it("does not claim that failed work had no side effects", () => {
 		render(
 			<ReauthBanner account={{ reauthRequiredAt: "2026-08-03T00:00:00Z" }} harness="codex" />,
 		);
-		expect(screen.getByText(/worktree is untouched/i)).toBeInTheDocument();
+		expect(screen.queryByText(/worktree is untouched|Nothing will run/i)).not.toBeInTheDocument();
 	});
 
 	it("names Claude Code's non-interactive authentication command", () => {
@@ -59,6 +59,22 @@ describe("ReauthBanner", () => {
 		);
 		expect(container).toBeEmptyDOMElement();
 	});
+	it("dismisses only this failure and displays a new failure", async () => {
+		const account = { authenticationState: "required" as const, authFailureId: "first", reauthRequiredAt: "2026-08-03T00:00:00Z" };
+		const { rerender } = render(<ReauthBanner account={account} harness="codex" />);
+		await userEvent.click(screen.getByRole("button", { name: "Dismiss authentication notice" }));
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		rerender(<ReauthBanner account={{ ...account, planLabel: "Pro" }} harness="codex" />);
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		rerender(<ReauthBanner account={{ ...account, authFailureId: "second" }} harness="codex" />);
+		expect(screen.getByRole("alert")).toBeInTheDocument();
+	});
+
+	it("uses current authentication state even when historical failure evidence exists", () => {
+		render(<ReauthBanner account={{ authenticationState: "authenticated", reauthRequiredAt: "2026-08-03T00:00:00Z", lastAuthFailureReason: "expired" }} harness="codex" />);
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+	});
+
 });
 
 describe("ThreadStateBanner", () => {

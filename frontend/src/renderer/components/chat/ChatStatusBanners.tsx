@@ -18,15 +18,7 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import type { ConversationAccount, ConversationThreadState, McpServer } from "../../types/conversation";
 
-/**
- * The provider will not do any more work until someone signs in.
- *
- * The loudest thing on the surface, on purpose: nothing else the user does will
- * help, and every turn they send until they fix it will fail. It names the command
- * because "re-authenticate" is not an action anyone can take — the credentials live
- * with the agent's own CLI, not with AO, which is exactly why the daemon could not
- * fix this itself.
- */
+/** A current provider credential demand; dismissal affects presentation only. */
 export const ReauthBanner = memo(function ReauthBanner({
 	account,
 	harness,
@@ -36,7 +28,11 @@ export const ReauthBanner = memo(function ReauthBanner({
 	harness: string;
 	reasonInTimeline?: boolean;
 }) {
-	if (!account.reauthRequiredAt) return null;
+	const [dismissedFailure, setDismissedFailure] = useState<string>();
+	const failure = account.authFailureId ?? `${harness}:${account.reauthRequiredAt}:${account.reauthReason}`;
+	const required = account.authenticationState === "required" ||
+		(account.authenticationState === undefined && Boolean(account.reauthRequiredAt));
+	if (!required || dismissedFailure === failure) return null;
 	const command = signInCommand(harness);
 
 	return (
@@ -47,13 +43,12 @@ export const ReauthBanner = memo(function ReauthBanner({
 			<KeyRound aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-destructive" />
 			<div className="flex min-w-0 flex-col gap-1">
 				<strong className="text-xs font-semibold text-destructive">
-					Sign in again to keep going
+					Provider authentication needs attention
 				</strong>
 				{!reasonInTimeline ? (
 					<p className="text-[11px] leading-relaxed text-foreground">
 						{account.reauthReason ??
-							"The provider rejected this session's credentials."}{" "}
-						Nothing will run until it is fixed, and the worktree is untouched.
+							"The provider rejected this session's credentials."}
 					</p>
 				) : null}
 				<p className="text-[11px] leading-relaxed text-muted-foreground">
@@ -63,16 +58,20 @@ export const ReauthBanner = memo(function ReauthBanner({
 							<code className="rounded bg-background px-1 py-0.5 font-mono text-[10.5px] text-foreground">
 								{command}
 							</code>{" "}
-							in a terminal, then send your message again. AO holds no credentials of its own.
+							in a terminal if needed. This chat may need to reconnect before it can use updated credentials.
 						</>
 					) : (
 						<>
-							Sign in with the agent&rsquo;s own CLI, then send your message again. AO holds no
-							credentials of its own.
+							Sign in with the agent&rsquo;s own CLI if needed, then reconnect this chat.
 						</>
 					)}
 				</p>
 			</div>
+			<Button variant="ghost" size="icon" className="ml-auto size-6 shrink-0"
+				aria-label="Dismiss authentication notice" title="Hide this notice; authentication state is unchanged"
+				onClick={() => setDismissedFailure(failure)}>
+				<X aria-hidden="true" className="size-3.5" />
+			</Button>
 		</div>
 	);
 });

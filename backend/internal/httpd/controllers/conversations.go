@@ -1265,11 +1265,23 @@ func accountPayload(account *domain.ConversationAccount) *ConversationAccountPay
 	if account == nil {
 		return nil
 	}
+	state := account.AuthenticationState
+	if state == "" {
+		state = "unknown"
+		if account.ReauthRequiredAt != nil {
+			state = "required"
+		}
+	}
 	return &ConversationAccountPayload{
-		AuthMode:         account.AuthMode,
-		PlanLabel:        account.PlanLabel,
-		ReauthRequiredAt: optionalTimestamp(account.ReauthRequiredAt),
-		ReauthReason:     account.ReauthReason,
+		AuthenticationState:   state,
+		AuthVerifiedAt:        optionalTimestamp(account.AuthVerifiedAt),
+		LastAuthFailureAt:     optionalTimestamp(account.LastAuthFailureAt),
+		LastAuthFailureReason: account.LastAuthFailureReason,
+		AuthFailureID:         account.AuthFailureID,
+		AuthMode:              account.AuthMode,
+		PlanLabel:             account.PlanLabel,
+		ReauthRequiredAt:      optionalTimestamp(account.ReauthRequiredAt),
+		ReauthReason:          account.ReauthReason,
 	}
 }
 

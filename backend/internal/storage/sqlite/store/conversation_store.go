@@ -1650,6 +1650,84 @@ func (s *Store) RecordAccount(
 	return nil
 }
 
+// ConversationAccount reads account facts through the projection transaction when present.
+func (s *Store) ConversationAccount(ctx context.Context, conversationID string) (*domain.ConversationAccount, error) {
+	row, err := s.conversationReader(ctx).SelectConversationByID(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	return conversationToDomain(row).Account, nil
+}
+
+// ReconcileConversationAuthentication clears a demand only from durable provider
+// success in the owning generation and active branch. Empty providerTurnID permits
+// bounded legacy reconciliation on reconnect/read, never a liveness inference.
+// The writer transaction makes evidence selection and demand clearing atomic with
+// newer failures, generation claims, and branch/account changes.
+func (s *Store) ReconcileConversationAuthentication(ctx context.Context, conversationID, generation, providerTurnID string, now time.Time) (*domain.ConversationAccount, error) {
+	if _, ok := ctx.Value(conversationProjectionTxKey{}).(*gen.Queries); !ok {
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+		tx, err := s.writeDB.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = tx.Rollback() }()
+		account, err := s.ReconcileConversationAuthentication(context.WithValue(ctx, conversationProjectionTxKey{}, s.qw.WithTx(tx)), conversationID, generation, providerTurnID, now)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return account, nil
+	}
+	q := s.conversationReader(ctx)
+	row, err := q.SelectConversationByID(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	account := conversationToDomain(row).Account
+	if account == nil {
+		if providerTurnID == "" {
+			return nil, nil
+		}
+		account = &domain.ConversationAccount{AuthenticationState: "unknown"}
+	}
+	cutoff := row.CreatedAt
+	if account.ReauthRequiredAt != nil {
+		cutoff = *account.ReauthRequiredAt
+	}
+	if account.AuthChangedAt != nil && account.AuthChangedAt.After(cutoff) {
+		cutoff = *account.AuthChangedAt
+	}
+	turn, err := q.SelectVerifiedAuthenticationTurn(ctx, gen.SelectVerifiedAuthenticationTurnParams{
+		ConversationID: conversationID, Generation: generation, ProviderTurnID: providerTurnID,
+		AfterAt: sql.NullTime{Time: cutoff, Valid: true},
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return account, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if account.AuthVerifiedAt != nil && !turn.CompletedAt.Time.After(*account.AuthVerifiedAt) && account.ReauthRequiredAt == nil {
+		return account, nil
+	}
+	if account.ReauthRequiredAt != nil && account.LastAuthFailureAt == nil {
+		account.LastAuthFailureAt = account.ReauthRequiredAt
+		account.LastAuthFailureReason = account.ReauthReason
+	}
+	account.AuthenticationState = "authenticated"
+	account.AuthVerifiedAt = &turn.CompletedAt.Time
+	account.ReauthRequiredAt = nil
+	account.ReauthReason = ""
+	if err := s.RecordAccount(ctx, conversationID, *account, now); err != nil {
+		return nil, err
+	}
+	return account, nil
+}
+
 // RecordThreadState stores the provider's lifecycle view of the thread.
 //
 // updated_at is deliberately not bumped by the statement this runs: thread status
@@ -2788,6 +2866,21 @@ func (s *Store) LoadConversationSnapshotPage(
 	if err != nil {
 		return ConversationSnapshot{}, fmt.Errorf("select conversation %s: %w", conversationID, err)
 	}
+
+	// Targeted lazy reconciliation of legacy demands, using durable provider
+	// evidence. Ordinary snapshots remain read-only and avoid the writer lock.
+	if account := conversationToDomain(conv).Account; account != nil && account.ReauthRequiredAt != nil {
+		reconciled, reconcileErr := s.ReconcileConversationAuthentication(ctx, conversationID, "", "", time.Now())
+		if reconcileErr != nil {
+			return ConversationSnapshot{}, reconcileErr
+		}
+		if reconciled != nil && reconciled.ReauthRequiredAt == nil {
+			conv, err = s.qr.SelectConversationByID(ctx, conversationID)
+			if err != nil {
+				return ConversationSnapshot{}, err
+			}
+		}
+	}
 	if limit <= 0 {
 		limit = DefaultConversationPageSize
 	}
@@ -2983,6 +3076,21 @@ func (s *Store) LoadConversationSnapshot(
 	}
 	if err != nil {
 		return ConversationSnapshot{}, fmt.Errorf("select conversation %s: %w", conversationID, err)
+	}
+
+	// Targeted lazy reconciliation of legacy demands, using durable provider
+	// evidence. Ordinary snapshots remain read-only and avoid the writer lock.
+	if account := conversationToDomain(conv).Account; account != nil && account.ReauthRequiredAt != nil {
+		reconciled, reconcileErr := s.ReconcileConversationAuthentication(ctx, conversationID, "", "", time.Now())
+		if reconcileErr != nil {
+			return ConversationSnapshot{}, reconcileErr
+		}
+		if reconciled != nil && reconciled.ReauthRequiredAt == nil {
+			conv, err = s.qr.SelectConversationByID(ctx, conversationID)
+			if err != nil {
+				return ConversationSnapshot{}, err
+			}
+		}
 	}
 
 	turnRows, err := s.qr.SelectConversationTurns(ctx, conversationID)
@@ -3203,6 +3311,12 @@ func conversationToDomain(row gen.Conversation) domain.ConversationRecord {
 	}
 	rec.ModelReroute = decodeJSONColumn[domain.ConversationModelReroute](row.ModelRerouteJson)
 	rec.Account = decodeJSONColumn[domain.ConversationAccount](row.AccountJson)
+	if rec.Account != nil && rec.Account.AuthenticationState == "" {
+		rec.Account.AuthenticationState = "unknown"
+		if rec.Account.ReauthRequiredAt != nil {
+			rec.Account.AuthenticationState = "required"
+		}
+	}
 	rec.ThreadState = decodeJSONColumn[domain.ConversationThreadState](row.ThreadStateJson)
 	if servers := decodeJSONColumn[[]domain.ConversationMCPServer](row.McpServersJson); servers != nil {
 		rec.MCPServers = *servers

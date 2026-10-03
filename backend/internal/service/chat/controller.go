@@ -136,7 +136,9 @@ type Store interface {
 	// Latest-wins provider state that belongs to the conversation rather than to a
 	// turn. Each write replaces the last.
 	RecordModelReroute(ctx context.Context, conversationID string, reroute domain.ConversationModelReroute) error
+	ConversationAccount(ctx context.Context, conversationID string) (*domain.ConversationAccount, error)
 	RecordAccount(ctx context.Context, conversationID string, account domain.ConversationAccount, now time.Time) error
+	ReconcileConversationAuthentication(ctx context.Context, conversationID, generation, providerTurnID string, now time.Time) (*domain.ConversationAccount, error)
 	RecordThreadState(ctx context.Context, conversationID string, state domain.ConversationThreadState) error
 	RecordMCPServers(ctx context.Context, conversationID string, servers []domain.ConversationMCPServer) error
 
@@ -251,7 +253,6 @@ type Controller struct {
 	// auth mode and plan but never a credential demand, a thread-status report says
 	// nothing about archiving, and MCP servers are announced one at a time. Writing
 	// each report straight through would make every field blank the one before it.
-	account     domain.ConversationAccount
 	threadState domain.ConversationThreadState
 	// usage is merged in memory because providers may split context occupancy and
 	// cumulative accounting across separate events. Writing either half as a full
@@ -344,12 +345,6 @@ func newController(
 		mcpServers:             map[string]domain.ConversationMCPServer{},
 		mcpServerSeenRevision:  map[string]uint64{},
 		stopped:                make(chan struct{}),
-	}
-	// Seeded from the durable row so a reconnect merges onto what is already known
-	// rather than starting from blank and reporting a conversation as having no
-	// account until the provider next mentions one.
-	if conversation.Account != nil {
-		c.account = *conversation.Account
 	}
 	if conversation.ThreadState != nil {
 		c.threadState = *conversation.ThreadState
@@ -2786,6 +2781,10 @@ func (c *Controller) apply(ctx context.Context, event ports.ChatEvent) error {
 			}, now); err != nil {
 				return err
 			}
+		} else if state == domain.TurnStateCompleted && event.Err == nil && event.ProviderTurnID != "" &&
+			(event.ProviderConversationID == "" || event.ProviderConversationID == c.conv.ProviderConversationID()) {
+			_, err := c.store.ReconcileConversationAuthentication(ctx, c.conversation.ID, c.generation, event.ProviderTurnID, now)
+			return err
 		}
 		return nil
 
@@ -3276,13 +3275,10 @@ func (c *Controller) applyAccount(
 	update ports.ChatAccount,
 	now time.Time,
 ) error {
-	if update.ReauthRecovered {
-		c.mu.Lock()
-		reauthPending := c.account.ReauthRequiredAt != nil
-		c.mu.Unlock()
-		if !reauthPending {
-			return nil
-		}
+	// Uncorrelated account reports cannot establish recovery. Successful turn
+	// completion is projected separately with its provider identity and fence.
+	if update.ReauthRecovered && !update.ReauthRequired && update.AuthMode == "" && update.PlanLabel == "" {
+		return nil
 	}
 	if err := c.recordAccount(ctx, update, now); err != nil {
 		return err
@@ -3316,24 +3312,38 @@ func (c *Controller) recordAccount(
 	update ports.ChatAccount,
 	now time.Time,
 ) error {
-	c.mu.Lock()
+	// Read the durable projection in the event transaction. Snapshot reconciliation
+	// may have recovered it since this controller's last account report.
+	previous, err := c.store.ConversationAccount(ctx, c.conversation.ID)
+	if err != nil {
+		return err
+	}
+	account := domain.ConversationAccount{AuthenticationState: "unknown"}
+	if previous != nil {
+		account = *previous
+	}
 	if update.AuthMode != "" {
-		c.account.AuthMode = update.AuthMode
+		account.AuthChangedAt = &now
+		if account.AuthMode != "" && account.AuthMode != update.AuthMode {
+			account.AuthVerifiedAt = nil
+			if account.ReauthRequiredAt == nil {
+				account.AuthenticationState = "unknown"
+			}
+		}
+		account.AuthMode = update.AuthMode
 	}
 	if update.PlanLabel != "" {
-		c.account.PlanLabel = update.PlanLabel
+		account.PlanLabel = update.PlanLabel
 	}
 	if update.ReauthRequired {
-		at := now
-		c.account.ReauthRequiredAt = &at
-		c.account.ReauthReason = update.ReauthReason
-	} else if update.ReauthRecovered {
-		c.account.ReauthRequiredAt = nil
-		c.account.ReauthReason = ""
+		account.AuthenticationState = "required"
+		account.ReauthRequiredAt = &now
+		account.ReauthReason = update.ReauthReason
+		account.LastAuthFailureAt = &now
+		account.LastAuthFailureReason = update.ReauthReason
+		account.AuthFailureID = c.newID()
+		account.AuthVerifiedAt = nil
 	}
-	account := c.account
-	c.mu.Unlock()
-
 	return c.store.RecordAccount(ctx, c.conversation.ID, account, now)
 }
 

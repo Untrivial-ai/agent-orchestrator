@@ -1420,7 +1420,7 @@ function ChatWorkspaceContent({
 				>
 					{/* Keep sign-in guidance available without repeating the error from chat. */}
 					{snapshot.account ? (
-						<ReauthBanner account={snapshot.account} harness={snapshot.harness} reasonInTimeline={reauthErrorInChat} />
+						<ReauthBanner key={`${snapshot.sessionId}:${snapshot.conversationId}`} account={snapshot.account} harness={snapshot.harness} reasonInTimeline={reauthErrorInChat} />
 					) : null}
 					<ControllerBanner
 						controller={snapshot.controller}

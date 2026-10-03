@@ -2710,11 +2710,15 @@ type ConversationModelReroutePayload struct {
 // ConversationAccountPayload is what the provider says about the account behind a
 // conversation.
 type ConversationAccountPayload struct {
-	AuthMode  string `json:"authMode,omitempty"`
-	PlanLabel string `json:"planLabel,omitempty"`
+	AuthenticationState   string  `json:"authenticationState,omitempty" enum:"unknown,required,authenticated"`
+	AuthVerifiedAt        *string `json:"authVerifiedAt,omitempty"`
+	LastAuthFailureAt     *string `json:"lastAuthFailureAt,omitempty"`
+	LastAuthFailureReason string  `json:"lastAuthFailureReason,omitempty"`
+	AuthFailureID         string  `json:"authFailureId,omitempty"`
+	AuthMode              string  `json:"authMode,omitempty"`
+	PlanLabel             string  `json:"planLabel,omitempty"`
 	// ReauthRequiredAt is when the provider last asked for credentials the daemon
-	// does not hold. Present means the session has stopped working for a reason no
-	// retry will fix and the user has to sign in again.
+	// does not hold. Present means a demand has not yet been superseded by verified success.
 	ReauthRequiredAt *string `json:"reauthRequiredAt,omitempty"`
 	ReauthReason     string  `json:"reauthReason,omitempty"`
 }

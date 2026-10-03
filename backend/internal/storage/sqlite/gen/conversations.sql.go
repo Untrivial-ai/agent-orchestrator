@@ -3406,6 +3406,73 @@ func (q *Queries) SelectRetryableConversationPrompt(ctx context.Context, arg Sel
 	return i, err
 }
 
+const selectVerifiedAuthenticationTurn = `-- name: SelectVerifiedAuthenticationTurn :one
+SELECT t.id, t.conversation_id, t.handled_by_session_id, t.provider_turn_id, t.controller_generation, t.state, t.error_message, t.requested_at, t.started_at, t.completed_at, t.diff_json, t.rolled_back_at, t.plan_json, t.branch_id, t.promotion_started_at, t.promoted_to_turn_id, t.retry_of_turn_id, t.handled_by_review_id FROM conversation_turns t
+JOIN conversations c ON c.id = t.conversation_id
+WHERE t.conversation_id = ?1
+  AND t.controller_generation = COALESCE(
+    (SELECT controller_generation FROM review WHERE id = c.current_review_id),
+    (SELECT controller_generation FROM sessions WHERE id = c.current_session_id))
+  AND (?2 = '' OR t.controller_generation = ?2)
+  AND t.branch_id = c.active_branch_id
+  AND t.state = 'completed' AND t.rolled_back_at IS NULL
+  AND t.provider_turn_id <> ''
+  AND EXISTS (
+    SELECT 1 FROM conversation_provider_events e
+    JOIN conversation_branches b ON b.id = c.active_branch_id
+    WHERE e.conversation_id = c.id AND e.branch_id = c.active_branch_id
+      AND e.method = 'turn.completed'
+      AND json_extract(e.payload_json, '$.providerTurnId') = t.provider_turn_id
+      AND json_extract(e.payload_json, '$.turnState') = 'completed'
+      AND json_extract(e.payload_json, '$.error') IS NULL
+      AND COALESCE(json_extract(e.payload_json, '$.providerConversationId'), '') IN ('', b.provider_conversation_id)
+  )
+  AND (?3 = '' OR t.provider_turn_id = ?3)
+  AND t.started_at > ?4
+  AND t.completed_at > ?4
+ORDER BY t.completed_at DESC LIMIT 1
+`
+
+type SelectVerifiedAuthenticationTurnParams struct {
+	ConversationID string
+	Generation     interface{}
+	ProviderTurnID interface{}
+	AfterAt        sql.NullTime
+}
+
+// A completed turn proves usable authentication only for the current controller
+// and active provider branch, after the last rejection/account change.
+func (q *Queries) SelectVerifiedAuthenticationTurn(ctx context.Context, arg SelectVerifiedAuthenticationTurnParams) (ConversationTurn, error) {
+	row := q.db.QueryRowContext(ctx, selectVerifiedAuthenticationTurn,
+		arg.ConversationID,
+		arg.Generation,
+		arg.ProviderTurnID,
+		arg.AfterAt,
+	)
+	var i ConversationTurn
+	err := row.Scan(
+		&i.ID,
+		&i.ConversationID,
+		&i.HandledBySessionID,
+		&i.ProviderTurnID,
+		&i.ControllerGeneration,
+		&i.State,
+		&i.ErrorMessage,
+		&i.RequestedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.DiffJson,
+		&i.RolledBackAt,
+		&i.PlanJson,
+		&i.BranchID,
+		&i.PromotionStartedAt,
+		&i.PromotedToTurnID,
+		&i.RetryOfTurnID,
+		&i.HandledByReviewID,
+	)
+	return i, err
+}
+
 const settleConversationActivity = `-- name: SettleConversationActivity :exec
 UPDATE conversation_activities
 SET status = ?, summary = ?, detail_json = ?, revision = revision + 1, updated_at = ?

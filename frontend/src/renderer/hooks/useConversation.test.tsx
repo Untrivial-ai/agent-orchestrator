@@ -86,6 +86,9 @@ const WIRE = {
 		at: "2026-08-03T00:00:01Z",
 	},
 	account: {
+		authenticationState: "required",
+		authFailureId: "auth-failure-1",
+		lastAuthFailureReason: "expired",
 		authMode: "chatgpt",
 		planLabel: "Pro",
 		reauthRequiredAt: "2026-08-03T00:00:02Z",
@@ -764,6 +767,9 @@ describe("useConversation snapshot mapping", () => {
 			at: "2026-08-03T00:00:01Z",
 		});
 		expect(snapshot.account?.reauthRequiredAt).toBe("2026-08-03T00:00:02Z");
+		expect(snapshot.account?.authenticationState).toBe("required");
+		expect(snapshot.account?.authFailureId).toBe("auth-failure-1");
+		expect(snapshot.account?.lastAuthFailureReason).toBe("expired");
 		expect(snapshot.threadState).toEqual({
 			status: "system_error",
 			waitingOn: ["user_input"],

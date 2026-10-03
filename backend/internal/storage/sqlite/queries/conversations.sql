@@ -1514,3 +1514,31 @@ SET state = 'rejected',
 WHERE conversation_id = ?
   AND client_message_id = ?
   AND state = 'reserved';
+
+-- A completed turn proves usable authentication only for the current controller
+-- and active provider branch, after the last rejection/account change.
+-- name: SelectVerifiedAuthenticationTurn :one
+SELECT t.* FROM conversation_turns t
+JOIN conversations c ON c.id = t.conversation_id
+WHERE t.conversation_id = sqlc.arg(conversation_id)
+  AND t.controller_generation = COALESCE(
+    (SELECT controller_generation FROM review WHERE id = c.current_review_id),
+    (SELECT controller_generation FROM sessions WHERE id = c.current_session_id))
+  AND (sqlc.arg(generation) = '' OR t.controller_generation = sqlc.arg(generation))
+  AND t.branch_id = c.active_branch_id
+  AND t.state = 'completed' AND t.rolled_back_at IS NULL
+  AND t.provider_turn_id <> ''
+  AND EXISTS (
+    SELECT 1 FROM conversation_provider_events e
+    JOIN conversation_branches b ON b.id = c.active_branch_id
+    WHERE e.conversation_id = c.id AND e.branch_id = c.active_branch_id
+      AND e.method = 'turn.completed'
+      AND json_extract(e.payload_json, '$.providerTurnId') = t.provider_turn_id
+      AND json_extract(e.payload_json, '$.turnState') = 'completed'
+      AND json_extract(e.payload_json, '$.error') IS NULL
+      AND COALESCE(json_extract(e.payload_json, '$.providerConversationId'), '') IN ('', b.provider_conversation_id)
+  )
+  AND (sqlc.arg(provider_turn_id) = '' OR t.provider_turn_id = sqlc.arg(provider_turn_id))
+  AND t.started_at > sqlc.arg(after_at)
+  AND t.completed_at > sqlc.arg(after_at)
+ORDER BY t.completed_at DESC LIMIT 1;

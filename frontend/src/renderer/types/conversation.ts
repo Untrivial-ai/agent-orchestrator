@@ -684,11 +684,16 @@ export interface ModelReroute {
 
 /** The provider account this conversation runs under. */
 export interface ConversationAccount {
+	authenticationState?: "unknown" | "required" | "authenticated";
+	authVerifiedAt?: string;
+	lastAuthFailureAt?: string;
+	lastAuthFailureReason?: string;
+	authFailureId?: string;
 	authMode?: string;
 	planLabel?: string;
 	/**
 	 * When the provider last demanded credentials AO does not hold. Present means the
-	 * session has stopped working for a reason no retry will fix.
+	 * daemon has not yet verified recovery.
 	 */
 	reauthRequiredAt?: string;
 	reauthReason?: string;
@@ -824,7 +829,8 @@ export function brokenMcpServers(snapshot: ConversationSnapshot): McpServer[] {
 
 /** Whether the provider is demanding credentials the daemon does not hold. */
 export function needsReauth(snapshot: ConversationSnapshot): boolean {
-	return Boolean(snapshot.account?.reauthRequiredAt);
+	return snapshot.account?.authenticationState === "required" ||
+		(snapshot.account?.authenticationState === undefined && Boolean(snapshot.account?.reauthRequiredAt));
 }
 
 /**

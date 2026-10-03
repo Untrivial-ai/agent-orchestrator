@@ -705,6 +705,13 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 		}
 	}
 
+	// Reconcile legacy demands before replacing the owning generation, while
+	// durable successful turns can still prove recovery for that epoch.
+	if _, err := s.store.ReconcileConversationAuthentication(ctx, conversation.ID, "", "", s.now()); err != nil {
+		_ = cleanupUnpublishedConversation(conv, false)
+		return nil, fmt.Errorf("reconcile conversation authentication: %w", err)
+	}
+
 	// Claim the durable fence before the controller starts consuming events. A
 	// pending provider boundary claims it in ControllerReady's atomic ownership
 	// commit instead, so a failed provider connect or callback cannot split the

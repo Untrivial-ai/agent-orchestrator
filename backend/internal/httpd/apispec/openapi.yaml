@@ -10585,7 +10585,25 @@ components:
       type: object
     ConversationAccountPayload:
       properties:
+        authFailureId:
+          type: string
         authMode:
+          type: string
+        authVerifiedAt:
+          type:
+          - "null"
+          - string
+        authenticationState:
+          enum:
+          - unknown
+          - required
+          - authenticated
+          type: string
+        lastAuthFailureAt:
+          type:
+          - "null"
+          - string
+        lastAuthFailureReason:
           type: string
         planLabel:
           type: string
