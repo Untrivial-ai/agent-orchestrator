@@ -122,7 +122,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { OrchestratorIcon } from "./icons";
 import { Badge } from "./ui/badge";
-import aoLogo from "../../../assets/ao-logo.svg";
+import aoLogo from "../../../assets/ao-mascot.png";
 import { cn } from "../lib/utils";
 import { useUiStore } from "../stores/ui-store";
 import { useKeybindingsStore } from "../stores/keybindings-store";
@@ -911,7 +911,7 @@ export function Sidebar({
 							"group-data-[collapsible=icon]:size-control-board group-data-[collapsible=icon]:rounded-lg",
 						)}
 					>
-						<img src={aoLogo} alt="" aria-hidden="true" className="h-5.5 w-5.5 -translate-y-[3px] rounded-md object-cover" />
+						<img src={aoLogo} alt="" aria-hidden="true" className="h-5.5 w-5.5 object-contain" />
 					</span>
 					<span
 						className="sidebar-expanded-chrome min-w-0 flex-1 truncate text-sm font-bold leading-tight tracking-tight-lg text-foreground group-data-[collapsible=icon]:hidden"
