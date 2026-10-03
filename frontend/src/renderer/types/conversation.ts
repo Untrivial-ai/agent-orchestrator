@@ -219,6 +219,14 @@ export interface ApprovalDetail {
 export interface ProviderErrorDetail {
 	/** Optional provider destination; the renderer shows web URLs literally. */
 	actionUrl?: string;
+	/**
+	 * Client-only, never sent by the daemon. Set when the renderer folds a run of
+	 * consecutive reconnect/error rows for one turn into a single resolved summary
+	 * after that turn goes on to complete, so the collapsed row can still show what
+	 * each attempt said on expand. Every durable row stays on disk exactly as the
+	 * daemon wrote it; this only changes how the timeline draws them.
+	 */
+	collapsedReconnectErrors?: { headline: string; detail?: string }[];
 }
 
 export interface CommandDetail {
