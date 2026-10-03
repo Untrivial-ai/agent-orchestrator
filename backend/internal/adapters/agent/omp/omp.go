@@ -36,9 +36,17 @@ func New() *Plugin {
 // accepted prompt text in its user-prompt-submit callback.
 func (p *Plugin) EmitsSemanticMessageAcceptance() bool { return true }
 
+// ExitDetectionMode opts OMP into AO's process supervisor. OMP's
+// session_shutdown extension event is not guaranteed on every signal-driven
+// exit, including terminal Ctrl+C, so process exit must also be observed by AO.
+func (p *Plugin) ExitDetectionMode() ports.AgentExitDetectionMode {
+	return ports.AgentExitDetectionSupervisor
+}
+
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
 var _ ports.SemanticMessageAcceptanceSignaler = (*Plugin)(nil)
+var _ ports.AgentExitDetector = (*Plugin)(nil)
 var _ ports.AgentAuthChecker = (*Plugin)(nil)
 var _ ports.AgentBinaryResolver = (*Plugin)(nil)
 var _ ports.AgentInterfaceHandoffHistoryProbe = (*Plugin)(nil)
