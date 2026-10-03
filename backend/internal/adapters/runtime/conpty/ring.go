@@ -1,95 +1,153 @@
 package conpty
 
 import (
-	"strings"
+	"bytes"
 	"sync"
 )
 
-// MaxOutputLines is the rolling line-buffer cap, matching MAX_OUTPUT_LINES in pty-host.ts.
+// MaxOutputLines is the maximum number of completed lines retained.
 const MaxOutputLines = 1000
 
-// Ring is a bounded rolling buffer of terminal output lines, ANSI codes preserved.
-// It mirrors the appendOutput state machine from pty-host.ts.
-// Concurrent Append and Snapshot/Tail calls are safe.
+// MaxOutputBytes bounds retained output, including the unfinished line. A TUI
+// can repaint indefinitely without producing a newline.
+const MaxOutputBytes = 1 << 20
+
+// Ring stores a bounded suffix of terminal output. Bytes are preserved verbatim,
+// but eviction can cut through a line, UTF-8 character, or ANSI sequence. Replay
+// is truncated history, not a reconstructed screen snapshot.
+// All methods are safe to call concurrently.
 type Ring struct {
-	mu          sync.Mutex
-	lines       []string // each entry is "line\n" (or bare text on FlushPartial)
-	partialLine string
+	mu sync.Mutex
+
+	data  []byte // circular storage, grown lazily up to MaxOutputBytes
+	start int
+	size  int
+
+	lineLengths [MaxOutputLines]int
+	lineStart   int
+	lineCount   int
+	partial     int
 }
 
 // NewRing returns an empty Ring.
-func NewRing() *Ring {
-	return &Ring{}
-}
+func NewRing() *Ring { return &Ring{} }
 
-// Append mirrors appendOutput from pty-host.ts: prepend the current partialLine,
-// split on newlines, store completed lines with "\n" re-appended, keep the last
-// element as the new partialLine, then trim to MaxOutputLines.
+// Append retains completed lines and the trailing unfinished fragment. Appending
+// to a long unfinished line copies only new bytes once storage has grown.
 func (r *Ring) Append(raw []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	text := r.partialLine + string(raw)
-	parts := strings.Split(text, "\n")
-	// The last element is either "" (text ended with \n) or an incomplete line.
-	r.partialLine = parts[len(parts)-1]
-	for _, line := range parts[:len(parts)-1] {
-		r.lines = append(r.lines, line+"\n")
-	}
-	if len(r.lines) > MaxOutputLines {
-		// ponytail: slice off the head; ceiling: O(n) copy on every trim cycle.
-		// Upgrade path: circular buffer if trim rate is very high.
-		r.lines = r.lines[len(r.lines)-MaxOutputLines:]
+	for len(raw) > 0 {
+		end := bytes.IndexByte(raw, '\n')
+		if end < 0 {
+			r.appendBytes(raw)
+			return
+		}
+		r.appendBytes(raw[:end+1])
+		r.completeLine()
+		raw = raw[end+1:]
 	}
 }
 
-// FlushPartial pushes any in-progress partial line as a final entry.
-// Called on PTY exit to mirror the pty-host.ts onExit handler.
+// FlushPartial stores the unfinished fragment as a final line on PTY exit.
 func (r *Ring) FlushPartial() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	if r.partialLine == "" {
-		return
+	if r.partial > 0 {
+		r.completeLine()
 	}
-	r.lines = append(r.lines, r.partialLine)
-	r.partialLine = ""
 }
 
-// Snapshot returns all stored lines concatenated as raw bytes for scrollback replay.
-// The in-progress partialLine is NOT included (matches TS outputBuffer.join("")).
+// Snapshot returns completed output, excluding the unfinished fragment.
 func (r *Ring) Snapshot() []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	return []byte(strings.Join(r.lines, ""))
+	return r.copyRange(0, r.size-r.partial)
 }
 
-// Replay returns the complete terminal byte stream retained for a newly
-// attached viewer, including the current non-newline-terminated fragment.
-// Full-screen TUIs commonly repaint with cursor-control sequences and carriage
-// returns instead of newlines, so excluding partialLine can otherwise replay an
-// empty screen even though the process has already drawn its UI.
+// Replay includes the unfinished fragment, so newline-free TUI output is visible
+// to a newly attached viewer. The caller owns the returned bytes.
 func (r *Ring) Replay() []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	return []byte(strings.Join(r.lines, "") + r.partialLine)
+	return r.copyRange(0, r.size)
 }
 
-// Tail returns the last n stored lines joined as a string.
-// Mirrors the MSG_GET_OUTPUT_REQ handler: start = max(0, len-lines).
-// n <= 0 returns "".
+// Tail returns the newest n completed lines. n <= 0 returns an empty string.
 func (r *Ring) Tail(n int) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
 	if n <= 0 {
 		return ""
 	}
-	start := len(r.lines) - n
-	if start < 0 {
-		start = 0
+	length := 0
+	for i := 0; i < min(n, r.lineCount); i++ {
+		length += r.lineLengths[(r.lineStart+r.lineCount-1-i)%MaxOutputLines]
 	}
-	return strings.Join(r.lines[start:], "")
+	return string(r.copyRange(r.size-r.partial-length, length))
+}
+
+// The helpers below require mu.
+func (r *Ring) appendBytes(raw []byte) {
+	if len(raw) > MaxOutputBytes {
+		raw = raw[len(raw)-MaxOutputBytes:]
+	}
+	if excess := r.size + len(raw) - MaxOutputBytes; excess > 0 {
+		r.dropBytes(excess)
+	}
+	needed := r.size + len(raw)
+	if needed > len(r.data) {
+		capacity := min(MaxOutputBytes, max(4096, max(needed, 2*len(r.data))))
+		data := make([]byte, capacity)
+		r.copyInto(data[:r.size], 0)
+		r.data = data
+		r.start = 0
+	}
+	end := (r.start + r.size) % len(r.data)
+	n := copy(r.data[end:], raw)
+	copy(r.data, raw[n:])
+	r.size += len(raw)
+	r.partial += len(raw)
+}
+
+func (r *Ring) completeLine() {
+	if r.lineCount == MaxOutputLines {
+		r.dropBytes(r.lineLengths[r.lineStart])
+	}
+	r.lineLengths[(r.lineStart+r.lineCount)%MaxOutputLines] = r.partial
+	r.lineCount++
+	r.partial = 0
+}
+
+func (r *Ring) dropBytes(n int) {
+	r.start = (r.start + n) % len(r.data)
+	r.size -= n
+	for n > 0 && r.lineCount > 0 {
+		length := r.lineLengths[r.lineStart]
+		if n < length {
+			r.lineLengths[r.lineStart] -= n
+			return
+		}
+		n -= length
+		r.lineLengths[r.lineStart] = 0
+		r.lineStart = (r.lineStart + 1) % MaxOutputLines
+		r.lineCount--
+	}
+	r.partial -= n
+}
+
+func (r *Ring) copyRange(offset, length int) []byte {
+	out := make([]byte, length)
+	r.copyInto(out, offset)
+	return out
+}
+
+func (r *Ring) copyInto(out []byte, offset int) {
+	if len(out) == 0 {
+		return
+	}
+	start := (r.start + offset) % len(r.data)
+	n := copy(out, r.data[start:])
+	copy(out[n:], r.data)
 }
