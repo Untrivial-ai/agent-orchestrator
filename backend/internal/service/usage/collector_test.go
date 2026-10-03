@@ -2014,6 +2014,7 @@ func TestSourceKindForHarness(t *testing.T) {
 		{harness: domain.HarnessClaudeCode, want: domain.UsageSourceClaudeMain, ok: true},
 		{harness: domain.HarnessCodex, want: domain.UsageSourceCodexRollout, ok: true},
 		{harness: domain.HarnessKimi, want: domain.UsageSourceKimiWire, ok: true},
+		{harness: domain.HarnessQwen, want: domain.UsageSourceQwenMonthly, ok: true},
 		{harness: domain.HarnessAider, ok: false},
 	}
 	for _, tt := range tests {
@@ -2029,7 +2030,7 @@ func TestDiscoverClaudePathRejectsGlobMetadata(t *testing.T) {
 	writeUsageFixture(t, filepath.Join(root, "project", "native-session.jsonl"), "{}\n")
 	collector := NewCollector(collectorTestStore(t), SourceRoots{ClaudeProjects: root}, nil)
 
-	path, err := collector.discoverPath(context.Background(), domain.HarnessClaudeCode, "*")
+	path, err := collector.discoverPath(context.Background(), domain.HarnessClaudeCode, "*", "")
 	mustNoError(t, err)
 	if path != "" {
 		t.Fatalf("invalid Claude native ID discovered %q", path)

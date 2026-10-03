@@ -987,7 +987,7 @@ func usageAggregateFromGen(row gen.AggregateUsageBySessionHarnessModelRow) domai
 
 func validateUsageEvent(harness domain.AgentHarness, event domain.ModelUsageEvent) error {
 	expectedProvider := domain.UsageProviderAnthropic
-	if harness == domain.HarnessCodex {
+	if harness == domain.HarnessCodex || harness == domain.HarnessQwen {
 		expectedProvider = domain.UsageProviderOpenAI
 	}
 	if event.ProviderID != expectedProvider || event.ModelID == "" || event.SourceEventKey == "" {
