@@ -4,6 +4,7 @@ import { aoBridge } from "../lib/bridge";
 import { applyDaemonStatus, readDaemonStatus, type DaemonStatus } from "../lib/daemon-status";
 import { queryClient as defaultQueryClient } from "../lib/query-client";
 import { createEventTransport } from "../lib/event-transport";
+import { getEventsConnectionState, subscribeEventsConnection } from "../lib/events-connection";
 import {
 	agentReadinessQueryKey,
 	cacheAgentReadiness,
@@ -109,6 +110,14 @@ export function useDaemonStatus(queryClient: QueryClient = defaultQueryClient) {
 			applyStatus(nextStatus);
 		});
 
+		// External daemons have no child-exit push. A stream disconnect prompts
+		// a supervisor probe; the stream alone does not establish daemon liveness.
+		const stopEventsConnectionListener = subscribeEventsConnection(() => {
+			if (getEventsConnectionState() === "disconnected" && statusRef.current.state === "ready") {
+				void refreshStatus();
+			}
+		});
+
 		return () => {
 			active = false;
 			clearRefresh();
@@ -116,6 +125,7 @@ export function useDaemonStatus(queryClient: QueryClient = defaultQueryClient) {
 			document.removeEventListener("visibilitychange", refreshOnVisibility);
 			stopTransport();
 			stopStatusListener();
+			stopEventsConnectionListener();
 		};
 	}, [queryClient]);
 
