@@ -1,0 +1,98 @@
+{
+  "label": "after",
+  "commit": "1e4a394b20c470d281b2a7f6f63fd47c30af5019",
+  "timestamp": "2026-09-19T05:28:23.783Z",
+  "machine": {
+    "cpuModel": "Apple M4",
+    "cpus": 10,
+    "arch": "arm64",
+    "platform": "darwin",
+    "os": "macOS 26.5 (darwin arm64)",
+    "totalMemoryBytes": 17179869184,
+    "freeMemoryBytes": 259506176,
+    "node": "v22.23.2",
+    "hostnameHint": "developer-laptop"
+  },
+  "method": {
+    "sessions": "Default load is N attached shell terminals (same mux/PTY path as session terminals). Set AO_PERF_USE_SESSIONS=1 to spawn real claude-code sessions instead.",
+    "memory": "RSS via ps -o rss= on macOS/Linux for the daemon PID and Electron Helper (Renderer) PIDs when --electron.",
+    "latency": "Terminal mux WebSocket: write a unique marker to the PTY and measure time until that marker appears in a data frame (input-to-echo). Predictive local echo is not included.",
+    "coldStart": "Daemon: process spawn → /readyz 200 → GET /api/v1/projects 200. Electron (optional): forge start → daemon ready + Launched Electron app."
+  },
+  "daemonColdStart": {
+    "readyzMs": 3591.2132920000004,
+    "interactiveMs": 3604.3517079999983,
+    "pid": 43312
+  },
+  "electronColdStart": null,
+  "memoryBySessions": [
+    {
+      "sessionCount": 1,
+      "attached": 1,
+      "withElectron": false,
+      "daemonRssBytes": 43859968,
+      "rendererRssBytes": null,
+      "electronTreeRssBytes": null,
+      "sampledAt": "2026-09-19T05:28:44.265Z"
+    },
+    {
+      "sessionCount": 5,
+      "attached": 5,
+      "withElectron": false,
+      "daemonRssBytes": 34373632,
+      "rendererRssBytes": null,
+      "electronTreeRssBytes": null,
+      "sampledAt": "2026-09-19T05:28:49.573Z"
+    },
+    {
+      "sessionCount": 10,
+      "attached": 10,
+      "withElectron": false,
+      "daemonRssBytes": 31178752,
+      "rendererRssBytes": null,
+      "electronTreeRssBytes": null,
+      "sampledAt": "2026-09-19T05:29:00.418Z"
+    }
+  ],
+  "terminalLatency": {
+    "samples": [
+      49.77049999999872,
+      50.426040999998804,
+      50.515917000004265,
+      50.58758400000079,
+      50.73912500000006,
+      50.75725000000239,
+      50.7848340000055,
+      50.821750000002794,
+      50.83925000000454,
+      50.841332999996666,
+      50.86516700000357,
+      50.87320899999759,
+      50.894415999995545,
+      50.90149999999994,
+      50.924833999997645,
+      50.96254200000112,
+      51.03349999999773,
+      51.06645800000115,
+      51.4621660000048,
+      51.48999999999796,
+      51.65620900000067,
+      51.67658300000039,
+      51.80895900000178,
+      51.86541700000089,
+      52.19316699999763,
+      53.37837500000023,
+      54.32962499999849,
+      54.52416699999594,
+      55.21433299999626,
+      62.893542000005255
+    ],
+    "p50Ms": 50.924833999997645,
+    "p95Ms": 55.21433299999626,
+    "minMs": 49.77049999999872,
+    "maxMs": 62.893542000005255
+  },
+  "notes": [
+    "sessionMode=shell-terminals"
+  ]
+}
