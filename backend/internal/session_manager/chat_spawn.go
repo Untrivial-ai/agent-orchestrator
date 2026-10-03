@@ -417,6 +417,24 @@ func (m *Manager) resumeChatController(
 	controllerGeneration string,
 	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
 ) (RestoreResult, error) {
+	return m.resumeChatControllerWith(
+		ctx, operation, rec, project, ws, requireNativeHistory, controllerGeneration, historyPolicy, false,
+	)
+}
+
+// resumeChatControllerWith is resumeChatController with liveOnly, which admits
+// only an attachment to the same already-running provider.
+func (m *Manager) resumeChatControllerWith(
+	ctx context.Context,
+	operation string,
+	rec domain.SessionRecord,
+	project domain.ProjectRecord,
+	ws ports.WorkspaceInfo,
+	requireNativeHistory bool,
+	controllerGeneration string,
+	historyPolicy domain.SessionInterfaceTransitionHistoryPolicy,
+	liveOnly bool,
+) (RestoreResult, error) {
 	if m.chat == nil {
 		return RestoreResult{}, fmt.Errorf("%s %s: %w: chat mode is not available in this build",
 			operation, rec.ID, ports.ErrChatUnsupported)
@@ -498,6 +516,7 @@ func (m *Manager) resumeChatController(
 		ControllerGeneration: controllerGeneration,
 		HistoryMode:          historyMode,
 		HistoryPolicy:        historyPolicy,
+		RequireLiveReconnect: liveOnly,
 		ControllerReady: func(started ChatStarted) (ChatControllerCommit, error) {
 			metadata := rec.Metadata
 			metadata.WorkspacePath = ws.Path

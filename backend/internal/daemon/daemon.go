@@ -407,6 +407,9 @@ func Run() error {
 		StopProviderHost: func(ctx context.Context, id domain.SessionID) error {
 			return persistenthost.Shutdown(ctx, cfg.DataDir, string(id))
 		},
+		ProviderHostAlive: func(_ context.Context, id domain.SessionID) (bool, error) {
+			return persistenthost.Alive(cfg.DataDir, string(id))
+		},
 		// Adapts the store's own snapshot type, so the chat service never has to
 		// import the storage layer.
 		Reader: chatsvc.SnapshotReaderFunc(func(ctx context.Context, conversationID string) (chatsvc.ConversationRows, error) {

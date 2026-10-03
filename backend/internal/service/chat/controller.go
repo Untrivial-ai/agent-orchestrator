@@ -2502,6 +2502,36 @@ func (c *Controller) reportFailedBranchHandoff(ctx context.Context) {
 // Wait blocks until the controller's event stream has ended.
 func (c *Controller) Wait() { <-c.stopped }
 
+// recoverStaleExit clears a durable Exited left on a session whose provider
+// this controller has just adopted live. Lifecycle drops ordinary activity on
+// an exited row, so a false exit would otherwise outlive the reconnect.
+func (c *Controller) recoverStaleExit(ctx context.Context, sessions SessionReader, runningTurn bool) {
+	if sessions == nil || c.activity == nil || c.reviewID != "" {
+		return
+	}
+	rec, found, err := sessions.GetSession(ctx, c.sessionID)
+	if err != nil || !found || rec.Activity.State != domain.ActivityExited {
+		return
+	}
+	state := domain.ActivityIdle
+	if runningTurn {
+		state = domain.ActivityActive
+	}
+	c.log.Info("live provider reconnect cleared stale exited activity",
+		"session", c.sessionID, "generation", c.generation, "state", state)
+	if err := c.activity.ApplyActivitySignal(ctx, c.sessionID, ports.ActivitySignal{
+		Valid:                true,
+		State:                state,
+		Timestamp:            c.now(),
+		Event:                "chat.controller.reconnected",
+		ControllerGeneration: c.generation,
+		ExpectedRevision:     &rec.Revision,
+	}); err != nil {
+		c.log.Debug("chat activity signal rejected",
+			"session", c.sessionID, "event", "chat.controller.reconnected", "error", err)
+	}
+}
+
 // project consumes the driver's normalized events and writes them down. It runs
 // until this controller's stream closes. That can mean provider termination or a
 // deliberate detach from a provider that remains alive in a persistent host.
@@ -2590,6 +2620,8 @@ func (c *Controller) project() {
 	// does not remain durably active, idle, or blocked after its controller died.
 	// ControllerGeneration fences this write from a replacement controller.
 	if !suppressStoppedActivity {
+		c.log.Info("chat controller stream ended; recording session exited",
+			"session", c.sessionID, "generation", c.generation)
 		c.reportActivity(ctx, domain.ActivityExited, "chat.controller.stopped", now)
 	}
 	if _, err := c.store.CleanupOwnedControllerWork(

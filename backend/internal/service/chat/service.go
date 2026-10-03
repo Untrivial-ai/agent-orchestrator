@@ -49,9 +49,10 @@ type Service struct {
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
 	// onModelChanged syncs ChatUI's model override (including clearing it) to
 	// session metadata before the next prompt routes or a later TUI rebuild.
-	onModelChanged   func(domain.SessionID, string)
-	stopProviderHost func(context.Context, domain.SessionID) error
-	reports          *reportsvc.Coordinator
+	onModelChanged    func(domain.SessionID, string)
+	stopProviderHost  func(context.Context, domain.SessionID) error
+	providerHostAlive func(context.Context, domain.SessionID) (bool, error)
+	reports           *reportsvc.Coordinator
 
 	mu               sync.RWMutex
 	controllers      map[domain.SessionID]*Controller
@@ -120,6 +121,10 @@ type Options struct {
 	// StopProviderHost destroys current session ownership on explicit teardown,
 	// even if its daemon attachment already failed. Never used by StopAll.
 	StopProviderHost func(context.Context, domain.SessionID) error
+	// ProviderHostAlive reports whether a session's persistent provider host is
+	// still running. Startup recovery uses it to heal a falsely exited session
+	// without reviving a genuinely exited one. Nil disables that healing.
+	ProviderHostAlive func(context.Context, domain.SessionID) (bool, error)
 }
 
 // New builds a Chat service.
@@ -146,6 +151,7 @@ func New(opts Options) *Service {
 		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
 		onModelChanged:         opts.OnModelChanged,
 		stopProviderHost:       opts.StopProviderHost,
+		providerHostAlive:      opts.ProviderHostAlive,
 		controllers:            make(map[domain.SessionID]*Controller),
 		ownerControllers:       make(map[domain.ConversationOwner]*Controller),
 		startConfigs:           make(map[domain.ConversationOwner]StartConfig),
@@ -659,6 +665,11 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	if reconnected, ok := conv.(ports.ChatLiveReconnector); ok {
 		liveReconnect = reconnected.ReconnectedLive()
 	}
+	if cfg.RequireLiveReconnect && !liveReconnect {
+		// Nothing has been claimed yet. Destroy whatever the driver opened in
+		// place of the vanished provider rather than adopting it.
+		return nil, errors.Join(ports.ErrChatProviderNotLive, cleanupUnpublishedConversation(conv, true))
+	}
 	if (cfg.HistoryMode == ports.ChatHistoryRequired) && liveReconnect {
 		// A TUI handoff needs a fresh, verified native-history admission. A host
 		// left alive by an unpublished target is not an established Chat owner,
@@ -762,8 +773,9 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	controller := newController(
 		cfg.SessionID, owner, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
 	var commitProviderHistory func(context.Context) error
+	providerTurnID := ""
 	if liveReconnect {
-		providerTurnID := controller.restoreLiveTurnOwnership(liveRows.Turns)
+		providerTurnID = controller.restoreLiveTurnOwnership(liveRows.Turns)
 		if activator, ok := conv.(ports.ChatLiveReconnectActivator); ok {
 			if err := activator.ActivateLiveReconnect(ctx, providerTurnID); err != nil {
 				_ = cleanupUnpublishedConversation(conv, false)
@@ -932,11 +944,15 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// A committed reservation is consumed. Internal controller restarts must
 	// resume the now-current branch, not retry its old ownership snapshot.
 	cfg.ProviderHandoff = nil
+	cfg.RequireLiveReconnect = false
 	cfg.ProviderScopeID = ""
 	cfg.HistoryMode = ports.ChatHistoryImport
 	s.startConfigs[owner] = cloneStartConfig(cfg)
 	controller.start()
 	s.mu.Unlock()
+	if liveReconnect {
+		controller.recoverStaleExit(ctx, s.sessions, providerTurnID != "")
+	}
 
 	// Drop the registry entry when the provider stream ends, so a later command
 	// reports ErrNoController instead of writing into a dead controller.
@@ -954,6 +970,16 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	}()
 
 	return controller, nil
+}
+
+// ProviderHostAlive reports whether a session's persistent provider host is
+// still running. ok is false when this service has no host liveness authority.
+func (s *Service) ProviderHostAlive(ctx context.Context, id domain.SessionID) (alive, ok bool, err error) {
+	if s.providerHostAlive == nil {
+		return false, false, nil
+	}
+	alive, err = s.providerHostAlive(ctx, id)
+	return alive, true, err
 }
 
 // cleanupUnpublishedConversation rolls back a provider opened before its AO

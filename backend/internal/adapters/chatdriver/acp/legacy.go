@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	acpsdk "github.com/coder/acp-go-sdk"
 )
@@ -26,7 +27,25 @@ type legacyACPTransport struct {
 	mu      sync.Mutex
 	pending map[string]chan legacyACPResponse
 	models  *legacySessionModelState
+
+	// updates bounds session/update notifications handed to the SDK but not yet
+	// handled. The SDK closes the whole connection when its notification queue
+	// overflows, so a burst (such as a persistent host replaying its journal to
+	// a replacement daemon before the controller drains events) must wait in the
+	// socket instead of being read ahead (issue #5790).
+	updates      chan struct{}
+	updatesDone  chan struct{}
+	updatesClose sync.Once
 }
+
+const (
+	// updateWindow stays well below the SDK's 1024-notification queue.
+	updateWindow = 512
+	// updateStall bounds a wait whose release was lost (for example, an update
+	// the SDK rejected before calling the handler), degrading to read-ahead
+	// rather than stalling the connection indefinitely.
+	updateStall = 2 * time.Second
+)
 
 type lockedWriteCloser struct {
 	mu    sync.Mutex
@@ -63,8 +82,10 @@ type legacyACPResponse struct {
 func newLegacyACPTransport(stdin io.WriteCloser, stdout io.Reader) (*legacyACPTransport, io.WriteCloser, io.Reader) {
 	writer := &lockedWriteCloser{inner: stdin}
 	transport := &legacyACPTransport{
-		writer:  writer,
-		pending: make(map[string]chan legacyACPResponse),
+		writer:      writer,
+		pending:     make(map[string]chan legacyACPResponse),
+		updates:     make(chan struct{}, updateWindow),
+		updatesDone: make(chan struct{}),
 	}
 	sdkReader, sdkWriter := io.Pipe()
 	go transport.forward(stdout, sdkWriter)
@@ -75,7 +96,14 @@ func (t *legacyACPTransport) forward(source io.Reader, destination *io.PipeWrite
 	reader := bufio.NewReader(source)
 	for {
 		line, err := reader.ReadBytes('\n')
-		if len(line) > 0 && !t.intercept(line) {
+		intercepted, update := false, false
+		if len(line) > 0 {
+			intercepted, update = t.intercept(line)
+		}
+		if update {
+			t.acquireUpdate()
+		}
+		if len(line) > 0 && !intercepted {
 			if _, writeErr := destination.Write(line); writeErr != nil {
 				_ = destination.CloseWithError(writeErr)
 				return
@@ -92,14 +120,51 @@ func (t *legacyACPTransport) forward(source io.Reader, destination *io.PipeWrite
 	}
 }
 
-func (t *legacyACPTransport) intercept(line []byte) bool {
+// acquireUpdate waits for room in the SDK's notification queue before
+// forwarding one session/update.
+func (t *legacyACPTransport) acquireUpdate() {
+	timer := time.NewTimer(updateStall)
+	defer timer.Stop()
+	select {
+	case t.updates <- struct{}{}:
+	case <-t.updatesDone:
+	case <-timer.C:
+	}
+}
+
+// releaseUpdate records that the SDK handled one session/update.
+func (t *legacyACPTransport) releaseUpdate() {
+	if t == nil {
+		return
+	}
+	select {
+	case <-t.updates:
+	default:
+	}
+}
+
+// closeUpdates stops flow control once the SDK connection has ended.
+func (t *legacyACPTransport) closeUpdates() {
+	if t == nil {
+		return
+	}
+	t.updatesClose.Do(func() { close(t.updatesDone) })
+}
+
+// intercept consumes AO-owned legacy responses and reports whether line is a
+// session/update notification subject to flow control.
+func (t *legacyACPTransport) intercept(line []byte) (bool, bool) {
 	var envelope struct {
 		ID     json.RawMessage      `json:"id"`
+		Method string               `json:"method"`
 		Result json.RawMessage      `json:"result"`
 		Error  *acpsdk.RequestError `json:"error"`
 	}
 	if err := json.Unmarshal(line, &envelope); err != nil {
-		return false
+		return false, false
+	}
+	if envelope.Method == string(acpsdk.ClientMethodSessionUpdate) && len(envelope.ID) == 0 {
+		return false, true
 	}
 
 	var requestID string
@@ -116,7 +181,7 @@ func (t *legacyACPTransport) intercept(line []byte) bool {
 			}
 			pending <- legacyACPResponse{err: responseErr}
 		}
-		return true
+		return true, false
 	}
 
 	if len(envelope.Result) > 0 {
@@ -131,7 +196,7 @@ func (t *legacyACPTransport) intercept(line []byte) bool {
 			t.mu.Unlock()
 		}
 	}
-	return false
+	return false, false
 }
 
 func (t *legacyACPTransport) modelState() *legacySessionModelState {

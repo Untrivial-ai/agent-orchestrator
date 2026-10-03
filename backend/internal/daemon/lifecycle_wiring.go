@@ -666,6 +666,10 @@ func (c chatLauncher) DrainChatQueue(ctx context.Context, id domain.SessionID) e
 	return c.svc.DrainQueued(ctx, id)
 }
 
+func (c chatLauncher) ProviderHostAlive(ctx context.Context, id domain.SessionID) (bool, bool, error) {
+	return c.svc.ProviderHostAlive(ctx, id)
+}
+
 func (c chatLauncher) HasLiveChatController(id domain.SessionID) bool {
 	return c.svc.HasLiveChatController(id)
 }

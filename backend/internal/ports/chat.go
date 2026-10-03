@@ -44,6 +44,9 @@ var (
 	// must preserve the durable session and worktree rather than treating the
 	// failed attachment as proof that the provider died.
 	ErrChatRecoveryInconclusive = errors.New("chat conversation recovery is inconclusive")
+	// ErrChatProviderNotLive means a live-only reconnect found no running
+	// provider to adopt.
+	ErrChatProviderNotLive = errors.New("chat provider host is no longer live")
 	// ErrChatNoActiveTurn means an interrupt found nothing to cancel — either AO
 	// has no turn in flight, or the provider no longer considers the named turn
 	// active. A driver must translate its provider's refusal into this rather than

@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -101,6 +102,11 @@ func TestPersistentACPProviderHelper(t *testing.T) {
 				recordPersistentACPCall("session/request_permission")
 				_, _ = fmt.Fprintln(os.Stdout, `{"jsonrpc":"2.0","id":"permission-1","method":"session/request_permission","params":{"sessionId":"persistent-provider-session","toolCall":{"toolCallId":"tool-1","title":"Approve restart","kind":"edit"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}`)
 				continue
+			}
+			if burst, _ := strconv.Atoi(os.Getenv("AO_TEST_PERSISTENT_ACP_BURST")); burst > 0 {
+				for i := range burst {
+					_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"persistent-provider-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" %d"}}}}`+"\n", i)
+				}
 			}
 			time.Sleep(200 * time.Millisecond)
 			_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`+"\n", request.ID)
@@ -264,6 +270,93 @@ func testACPProcessDetach(t *testing.T, harness domain.AgentHarness) {
 	for _, method := range []string{"initialize", "session/new", "session/prompt"} {
 		if got := strings.Count(string(calls), method+"\n"); got != 1 {
 			t.Fatalf("provider method %s called %d times; calls:\n%s", method, got, calls)
+		}
+	}
+}
+
+// Issue #5790 end to end: a replacement daemon attaches to the real detached
+// host after a long prompt was journaled. The whole journal is replayed at
+// once, before AO's controller is published and draining events. The
+// attachment must survive until the replayed turn completes.
+func TestPersistentACPRealHostReplayBurstSurvivesReattachment(t *testing.T) {
+	dataDir := t.TempDir()
+	workdir := t.TempDir()
+	const burst = 3 * (eventBuffer + 1024)
+	cfg := Config{
+		Harness: domain.HarnessCursor,
+		Capabilities: ports.ChatCapabilities{
+			ports.ChatCapabilityStreaming: true, ports.ChatCapabilityResume: true,
+		},
+		Launch: func(context.Context, LaunchConfig) (Launch, error) {
+			return Launch{
+				Command: os.Args[0], Args: []string{"-test.run=TestPersistentACPProviderHelper"},
+				Env: map[string]string{
+					"AO_TEST_PERSISTENT_ACP_PROVIDER":  "1",
+					"AO_TEST_PERSISTENT_ACP_NO_RESUME": "1",
+					"AO_TEST_PERSISTENT_ACP_BURST":     strconv.Itoa(burst),
+				},
+			}, nil
+		},
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	first, err := New(cfg, log).Start(context.Background(), ports.ChatStartConfig{
+		SessionID: "persistent-acp-burst", DataDir: dataDir, WorkspacePath: workdir, ProviderScopeID: "scope",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_ = nextEvent(t, first.Events()) // controller.ready
+	ref, err := first.SendTurn(context.Background(), ports.ChatUserMessage{Text: "long answer"})
+	if err != nil {
+		t.Fatalf("SendTurn: %v", err)
+	}
+	if err := first.(ports.ChatDeferredTurnStarter).StartDeferredTurn(ref.ProviderTurnID); err != nil {
+		t.Fatalf("StartDeferredTurn: %v", err)
+	}
+	// Wait until the prompt is in flight at the provider.
+	var inFlight ports.ChatEvent
+	for inFlight.Kind != ports.ChatEventMessageDelta {
+		inFlight = nextEvent(t, first.Events())
+	}
+	// The daemon goes away mid-turn; the host journals the rest of the prompt.
+	if err := first.Close(); err != nil {
+		t.Fatalf("detach first daemon: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	opened, err := New(cfg, log).Resume(context.Background(), ports.ChatResumeConfig{
+		SessionID: "persistent-acp-burst", DataDir: dataDir, WorkspacePath: workdir,
+		ProviderConversationID: "persistent-provider-session", ProviderScopeID: "scope",
+	})
+	if err != nil {
+		t.Fatalf("Resume live host: %v", err)
+	}
+	second := opened.(*conversation)
+	defer func() { _ = second.Terminate() }()
+	if !second.ReconnectedLive() {
+		t.Fatal("replacement did not adopt the live host")
+	}
+	if err := second.ActivateLiveReconnect(context.Background(), ref.ProviderTurnID); err != nil {
+		t.Fatalf("activate replacement: %v", err)
+	}
+	// ControllerReady and registry publication happen before AO drains events.
+	select {
+	case <-second.conn.Done():
+		t.Fatal("journal replay closed the reattached ACP connection")
+	case <-time.After(300 * time.Millisecond):
+	}
+	deadline := time.After(20 * time.Second)
+	for {
+		select {
+		case event, ok := <-second.Events():
+			if !ok {
+				t.Fatal("reattached event stream ended before the replayed turn completed")
+			}
+			if event.Kind == ports.ChatEventTurnCompleted && event.ProviderTurnID == ref.ProviderTurnID {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for the replayed turn to complete")
 		}
 	}
 }
@@ -643,6 +736,96 @@ func TestPersistentACPReconnectAcknowledgesAlreadyCommittedPrompt(t *testing.T) 
 			t.Fatalf("already committed result projected again: %#v", event)
 		}
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// Issue #5790: a replacement daemon attaching to a live host receives the
+// host's journal and detached backlog in one burst, before the controller
+// starts draining events. The SDK closes the connection when its bounded
+// notification queue overflows, which AO projected as provider death while the
+// host kept the socket attached. Reads must apply backpressure instead.
+func TestPersistentACPLiveReconnectReplayBurstKeepsConnection(t *testing.T) {
+	initialize, err := json.Marshal(acpsdk.InitializeResponse{
+		ProtocolVersion: acpsdk.ProtocolVersionNumber,
+		AgentCapabilities: acpsdk.AgentCapabilities{
+			SessionCapabilities: acpsdk.SessionCapabilities{Resume: &acpsdk.SessionResumeCapabilities{}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := json.Marshal(acpsdk.NewSessionResponse{SessionId: "provider-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon, host := net.Pipe()
+	t.Cleanup(func() { _ = host.Close() })
+	driver := New(Config{
+		Harness:      domain.HarnessClaudeCode,
+		Capabilities: ports.ChatCapabilities{ports.ChatCapabilityResume: true},
+		Launch: func(context.Context, LaunchConfig) (Launch, error) {
+			return Launch{Command: "fake"}, nil
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	driver.connectHost = func(context.Context, persistenthost.Config) (*persistenthost.Transport, error) {
+		return &persistenthost.Transport{
+			Stdin: daemon, Stdout: daemon, Reconnected: true,
+			ACPState: &persistenthost.ACPState{
+				InitializeResult: initialize, SessionResult: session, SessionID: "provider-session",
+			},
+		}, nil
+	}
+	opened, err := driver.Resume(context.Background(), ports.ChatResumeConfig{
+		SessionID: "ao-session", DataDir: t.TempDir(), WorkspacePath: t.TempDir(),
+		ProviderConversationID: "provider-session",
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	conv := opened.(*conversation)
+	t.Cleanup(func() { _ = conv.Close() })
+
+	const burst = 3 * (eventBuffer + 1024)
+	replayed := make(chan error, 1)
+	go func() {
+		for i := range burst {
+			if _, err := fmt.Fprintf(host, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"provider-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"chunk %d"}}}}`+"\n", i); err != nil {
+				replayed <- err
+				return
+			}
+		}
+		replayed <- nil
+	}()
+	go func() { _, _ = io.Copy(io.Discard, host) }()
+	if err := conv.ActivateLiveReconnect(context.Background(), ""); err != nil {
+		t.Fatalf("ActivateLiveReconnect: %v", err)
+	}
+
+	// The controller is not consuming yet: ControllerReady has not published it.
+	select {
+	case <-conv.conn.Done():
+		t.Fatal("replay burst closed the ACP connection before the controller consumed it")
+	case <-time.After(200 * time.Millisecond):
+	}
+	go func() {
+		for event := range conv.Events() {
+			_ = event
+		}
+	}()
+	select {
+	case err := <-replayed:
+		if err != nil {
+			t.Fatalf("replay write: %v", err)
+		}
+	case <-conv.conn.Done():
+		t.Fatal("replay burst closed the ACP connection")
+	case <-time.After(10 * time.Second):
+		t.Fatal("replay burst was not consumed")
+	}
+	select {
+	case <-conv.conn.Done():
+		t.Fatal("ACP connection closed after the replay burst")
+	default:
 	}
 }
 

@@ -48,6 +48,12 @@ Codex app-server uses the original raw protocol profile:
   fail pending input. A live reconnect also skips the native-history settled
   barrier; buffered protocol events continue the turn immediately on the same
   initialized connection.
+- ACP reads apply backpressure so a journal replayed to a replacement daemon
+  cannot overflow the SDK's bounded notification queue, which closed the
+  connection and was recorded as a false exit (issue #5790). A durably exited
+  Chat row is reattached at startup only when its host is demonstrably alive,
+  through a live-only start that clears the stale exit; a dead or unverifiable
+  host leaves it exited for an explicit Resume Agent.
 - Startup orphan reconciliation only destroys a compatible host when durable
   state proves its Chat session is terminated, absent, or no longer Chat. An unreadable
   store, incompatible descriptor, live PID with an unreachable endpoint, or

@@ -56,6 +56,11 @@ type ChatControllerStart struct {
 	ControllerGeneration string
 	// HistoryMode chooses ordinary replay, required replay, or deferred import.
 	HistoryMode ChatHistoryMode
+	// RequireLiveReconnect admits only an attachment to the same already
+	// running provider. Anything else is rolled back before ownership is
+	// claimed and reported as ErrChatProviderNotLive; no provider is launched
+	// or natively resumed.
+	RequireLiveReconnect bool
 	// HistoryPolicy carries explicit, attempt-scoped consent to ignore only
 	// legacy/untrusted hook text during a TUI-to-Chat replay. Trusted checkpoints
 	// and AO high-water facts remain mandatory.

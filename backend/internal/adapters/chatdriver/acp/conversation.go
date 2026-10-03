@@ -995,6 +995,7 @@ func (c *conversation) AcknowledgeProviderEvent(ctx context.Context, providerEve
 
 func (c *conversation) watchConnection() {
 	<-c.conn.Done()
+	c.legacyWire.closeUpdates()
 	c.mu.Lock()
 	detaching := c.detaching
 	c.mu.Unlock()

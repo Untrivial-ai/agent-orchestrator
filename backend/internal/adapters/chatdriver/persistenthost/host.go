@@ -484,6 +484,21 @@ func bindConnToContext(ctx context.Context, conn net.Conn) func(error) error {
 	}
 }
 
+// Alive reports whether a host process still owns sessionID. A missing
+// descriptor or exited host is conclusive death: the host removes its
+// descriptor before its provider connection can close. An unreadable
+// descriptor is returned as an error, never as proof that the provider died.
+func Alive(dataDir, sessionID string) (bool, error) {
+	d, err := readDescriptor(dataDir, sessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return processalive.Alive(d.PID), nil
+}
+
 // Shutdown terminates current session ownership and waits for it to end.
 // Missing/dead hosts are harmless; unknown live owners fail closed.
 // The protocol acknowledgement only confirms that shutdown was requested.

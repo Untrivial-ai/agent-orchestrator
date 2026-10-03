@@ -569,6 +569,75 @@ func TestReconcileLive_ChatFailureAfterGenerationClaimLeavesSessionExited(t *tes
 	}
 }
 
+type probingRecordingLauncher struct {
+	*recordingLauncher
+	alive bool
+	err   error
+}
+
+func (l *probingRecordingLauncher) ProviderHostAlive(context.Context, domain.SessionID) (bool, bool, error) {
+	return l.alive, true, l.err
+}
+
+// Rows already persisted as falsely Exited by an older build heal on the next
+// daemon start only when their persistent host is demonstrably alive, and only
+// through a live-only attachment. A genuinely exited agent is never revived.
+func TestReconcileLive_ExitedChatSessionHealsOnlyWithLiveProviderHost(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		alive     bool
+		probeErr  error
+		startErr  error
+		wantStart bool
+	}{
+		{name: "live host reattaches", alive: true, wantStart: true},
+		{name: "host died during heal stays exited", alive: true, startErr: ports.ErrChatProviderNotLive, wantStart: true},
+		{name: "dead host stays exited", alive: false},
+		{name: "unverifiable host stays exited", probeErr: errors.New("descriptor unreadable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := &recordingLauncher{liveReconnect: true, startErr: tc.startErr}
+			m, st, rt := newChatManager(base)
+			m.chat = &probingRecordingLauncher{recordingLauncher: base, alive: tc.alive, err: tc.probeErr}
+			ws := m.workspace.(*fakeWorkspace)
+			lcm := m.lcm.(*fakeLCM)
+			exitedAt := time.Unix(100, 0).UTC()
+			rec := domain.SessionRecord{
+				ID: "mer-1", ProjectID: chatTestProject, Kind: domain.KindWorker,
+				Harness: domain.HarnessCursor, Mode: domain.SessionModeChat,
+				Activity: domain.Activity{State: domain.ActivityExited, LastActivityAt: exitedAt},
+				Metadata: domain.SessionMetadata{
+					Branch: "ao/mer-1/root", WorkspacePath: "/ws/mer-1",
+					ProviderConversationID: "thread-1", ControllerGeneration: "false-exit-generation",
+				},
+			}
+			st.sessions[rec.ID] = rec
+
+			if err := m.reconcileLive(context.Background(), rec); err != nil {
+				t.Fatalf("reconcileLive: %v", err)
+			}
+			if !tc.wantStart {
+				if len(base.started) != 0 {
+					t.Fatalf("exited session without a live host was relaunched: %+v", base.started)
+				}
+				if got := st.sessions[rec.ID]; got.Activity.State != domain.ActivityExited {
+					t.Fatalf("activity = %+v, want untouched Exited", got.Activity)
+				}
+			} else {
+				if len(base.started) != 1 || !base.started[0].RequireLiveReconnect ||
+					base.started[0].ProviderConversationID != "thread-1" {
+					t.Fatalf("heal starts = %+v, want one live-only reattach to thread-1", base.started)
+				}
+			}
+			if rt.created != 0 || rt.destroyed != 0 || ws.stashCalls != 0 || len(ws.restoreConfigs) != 0 ||
+				lcm.terminated[rec.ID] != 0 || st.sessions[rec.ID].IsTerminated {
+				t.Fatalf("exited-session reconcile touched runtime/workspace/lifecycle: runtime=(%d,%d) stash=%d restores=%d terminated=%d",
+					rt.created, rt.destroyed, ws.stashCalls, len(ws.restoreConfigs), lcm.terminated[rec.ID])
+			}
+		})
+	}
+}
+
 func TestRestoreTerminatedChatOrchestratorAfterCompatibilityRecoveryKeepsIdentity(t *testing.T) {
 	launcher := &recordingLauncher{startErr: fmt.Errorf("read Codex version: exit status 127: %w", ports.ErrChatDriverIncompatible)}
 	m, st, rt := newChatManager(launcher)

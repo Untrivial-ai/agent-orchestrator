@@ -3174,6 +3174,15 @@ func (m *Manager) reconcileLive(ctx context.Context, rec domain.SessionRecord) e
 		return nil
 	}
 	isChat := domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat
+	if isChat && rec.Activity.State == domain.ActivityExited {
+		if heal, ok := m.exitedChatHasLiveProvider(ctx, rec); ok {
+			if !heal {
+				// A genuinely exited agent waits for an explicit Resume Agent.
+				return nil
+			}
+			return m.healExitedChatSession(ctx, rec, project)
+		}
+	}
 
 	if !isChat {
 		handle := runtimeHandle(rec.Metadata)
@@ -3291,6 +3300,8 @@ func (m *Manager) preserveFailedReconcileRelaunch(ctx context.Context, before do
 		} else {
 			signal.LaunchID = current.Metadata.RuntimeLaunchID
 		}
+		m.logger.Warn("reconcile: recording failed relaunch as agent exited",
+			"sessionID", before.ID, "controllerGeneration", signal.ControllerGeneration, "launchID", signal.LaunchID)
 		if err := m.lcm.ApplyActivitySignal(ctx, before.ID, signal); err != nil {
 			return false, err
 		}
@@ -3310,6 +3321,55 @@ func (m *Manager) preserveFailedReconcileRelaunch(ctx context.Context, before do
 		}
 	}
 	return false, errors.New("session changed while recording failed relaunch")
+}
+
+// chatProviderHostProber is implemented by Chat launchers that can observe the
+// persistent host behind a session's provider.
+type chatProviderHostProber interface {
+	ProviderHostAlive(ctx context.Context, id domain.SessionID) (alive, ok bool, err error)
+}
+
+// exitedChatHasLiveProvider decides startup recovery for a Chat row that is
+// durably Exited. ok is false when this daemon cannot observe provider hosts.
+// heal is true only when the persistent host is demonstrably alive: an explicit
+// Exit Agent terminates the host, so a live host behind an exited row is a
+// false exit (issue #5790). A dead or unverifiable host leaves the row as-is.
+func (m *Manager) exitedChatHasLiveProvider(ctx context.Context, rec domain.SessionRecord) (heal, ok bool) {
+	prober, found := m.chat.(chatProviderHostProber)
+	if !found {
+		return false, false
+	}
+	alive, known, err := prober.ProviderHostAlive(ctx, rec.ID)
+	if !known {
+		return false, false
+	}
+	if err != nil {
+		m.logger.Warn("reconcile: exited Chat session host probe inconclusive; leaving it exited", "sessionID", rec.ID, "error", err)
+		return false, true
+	}
+	return alive && strings.TrimSpace(rec.Metadata.ProviderConversationID) != "", true
+}
+
+// healExitedChatSession reattaches a falsely exited Chat session to its still
+// running provider. The start is live-only, so a provider that died since the
+// probe is never launched or natively resumed; the row then stays Exited.
+func (m *Manager) healExitedChatSession(ctx context.Context, rec domain.SessionRecord, project domain.ProjectRecord) error {
+	m.logger.Info("reconcile: reattaching exited Chat session to its live provider host", "sessionID", rec.ID,
+		"controllerGeneration", rec.Metadata.ControllerGeneration)
+	_, err := m.resumeChatControllerWith(ctx, "restore", rec, project, workspaceInfo(rec), false, "",
+		domain.SessionInterfaceTransitionHistoryStrict, true)
+	if errors.Is(err, ports.ErrChatProviderNotLive) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reconcile %s: reattach live Chat provider: %w", rec.ID, err)
+	}
+	if rec.Kind == domain.KindWorker {
+		if err := m.restoreReviewer(ctx, rec.ID); err != nil {
+			m.logger.Warn("restore: reviewer terminal restore failed; worker remains restored", "sessionID", rec.ID, "error", err)
+		}
+	}
+	return nil
 }
 
 // reconcileReap kills the leaked tmux session of a session the DB already marks

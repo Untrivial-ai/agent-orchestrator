@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -703,6 +704,43 @@ func TestShutdownPreservesUnknownOwnerButAcceptsConclusiveDeath(t *testing.T) {
 				t.Fatalf("shutdown = %v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestAliveDistinguishesLiveDeadAndUnknownHosts(t *testing.T) {
+	dataDir := t.TempDir()
+	if alive, err := Alive(dataDir, "missing"); err != nil || alive {
+		t.Fatalf("missing host = %v, %v; want conclusively dead", alive, err)
+	}
+	for _, tc := range []struct {
+		name string
+		pid  int
+		want bool
+	}{
+		{"live", os.Getpid(), true},
+		{"dead", 2147483647, false},
+	} {
+		if err := writeDescriptor(dataDir, Descriptor{
+			Version: ProtocolVersion, SessionID: tc.name, Address: "127.0.0.1:1", PID: tc.pid, Token: "test",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if alive, err := Alive(dataDir, tc.name); err != nil || alive != tc.want {
+			t.Fatalf("%s host = %v, %v; want %v", tc.name, alive, err, tc.want)
+		}
+	}
+	path, err := descriptorPath(dataDir, "unreadable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Alive(dataDir, "unreadable"); err == nil {
+		t.Fatal("malformed descriptor was treated as conclusive")
 	}
 }
 
