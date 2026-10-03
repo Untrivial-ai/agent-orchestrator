@@ -93,7 +93,7 @@ function createWorkspaceStream(sessionId: string, queryClient: QueryClient, host
 	const invalidate = () => {
 		if (stream.debounce) clearTimeout(stream.debounce);
 		stream.debounce = setTimeout(() => {
-			for (const name of ["workspace-file-paths", "session-workspace-files", "session-workspace-file", "session-workspace-file-revision", "session-workspace-diffs", "session-workspace-search", "session-workspace-tree"]) {
+			for (const name of ["workspace-file-paths", "session-workspace-files", "session-workspace-file", "session-workspace-file-revision", "session-workspace-diffs", "files-review-end-of-file", "session-workspace-search", "session-workspace-tree"]) {
 				void queryClient.invalidateQueries({ queryKey: queryPrefix(hostId && name === "workspace-file-paths" ? "remote-workspace-file-paths" : name) });
 			}
 		}, INVALIDATE_DEBOUNCE_MS);

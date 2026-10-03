@@ -74,15 +74,15 @@ describe("prefetchDefaultWorkspaceReviewDiffs", () => {
 		expect(postMock).not.toHaveBeenCalled();
 	});
 
-	it("warms the default unstaged diff and the end-of-file contents the review pane waits on", async () => {
+	it("warms the default combined diff and the end-of-file contents the review pane waits on", async () => {
 		const queryClient = new QueryClient();
-		const sessionId = "sess-prefetch-unstaged";
+		const sessionId = "sess-prefetch-combined";
 		await prefetchDefaultWorkspaceReviewDiffs(queryClient, sessionId, workspace([file("README.md")]));
 
 		expect(postMock).toHaveBeenCalledTimes(1);
 		const body = postMock.mock.calls[0]?.[1]?.body;
-		expect(body).toMatchObject({ scope: "unstaged", paths: ["README.md"], contextLines: 3, workspaceVersion: "workspace-1" });
-		expect(queryClient.getQueryData(sessionWorkspaceDiffsQueryKey(sessionId, "unstaged", ["README.md"], 3, false, "workspace-1"))).toBeTruthy();
+		expect(body).toMatchObject({ scope: "combined", paths: ["README.md"], contextLines: 3, workspaceVersion: "workspace-1" });
+		expect(queryClient.getQueryData(sessionWorkspaceDiffsQueryKey(sessionId, "combined", ["README.md"], 3, false, "workspace-1"))).toBeTruthy();
 		const endOfFile = queryClient.getQueryCache().findAll({ queryKey: ["files-review-end-of-file", sessionId] });
 		expect(endOfFile).toHaveLength(1);
 		expect(endOfFile[0]?.state.data).toMatchObject({
@@ -92,6 +92,52 @@ describe("prefetchDefaultWorkspaceReviewDiffs", () => {
 
 		await prefetchDefaultWorkspaceReviewDiffs(queryClient, sessionId, workspace([file("README.md")]));
 		expect(postMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("warms all combined changes including staged, committed and untracked paths", async () => {
+		const files = [file("unstaged.ts"), file("staged.ts"), file("committed.ts"), file("new.ts", { status: "added" }), file("unchanged.ts", { status: "unmodified" })];
+		const data = workspace([files[0]!], {
+			files,
+			sections: { unstaged: [files[0]!], staged: [files[1]!], committed: [files[2]!], untracked: [files[3]!] },
+		});
+		await prefetchDefaultWorkspaceReviewDiffs(new QueryClient(), "sess-prefetch-mixed", data);
+		expect(postMock.mock.calls[0]?.[1]?.body).toMatchObject({ scope: "combined", paths: files.slice(0, 4).map((file) => file.path) });
+	});
+
+	it("warms the latest commit when there are no combined changes", async () => {
+		const files = [{ ...file("README.md"), editable: false, fileFingerprint: "commit:README.md" }];
+		const data = workspace([], { commits: [{ sha: "commit-1", subject: "Change", author: "Ada", timestamp: "2026-10-03T00:00:00Z", files }] });
+		await prefetchDefaultWorkspaceReviewDiffs(new QueryClient(), "sess-prefetch-commit", data);
+		expect(postMock.mock.calls[0]?.[1]?.body).toMatchObject({ scope: "committed", commitSha: "commit-1", paths: ["README.md"] });
+	});
+
+	it("warms matching 24-file batches and refills an evicted later batch", async () => {
+		const client = new QueryClient();
+		const sessionId = "sess-prefetch-batches";
+		const files = Array.from({ length: 57 }, (_, index) => file(`file-${index}.ts`));
+		await prefetchDefaultWorkspaceReviewDiffs(client, sessionId, workspace(files));
+		expect(postMock.mock.calls.map((call) => call[1].body.paths.length)).toEqual([24, 24, 9]);
+		client.removeQueries({ queryKey: sessionWorkspaceDiffsQueryKey(sessionId, "combined", files.slice(24, 48).map((file) => file.path), 3, false, "workspace-1"), exact: true });
+		await prefetchDefaultWorkspaceReviewDiffs(client, sessionId, workspace(files));
+		expect(postMock).toHaveBeenCalledTimes(4);
+		expect(postMock.mock.calls[3]?.[1]?.body.paths).toEqual(files.slice(24, 48).map((file) => file.path));
+	});
+
+	it("refetches invalidated diffs and full contents even when the summary version and patch stay the same", async () => {
+		const client = new QueryClient();
+		const sessionId = "sess-prefetch-invalidated";
+		const data = workspace([file("README.md")]);
+		await prefetchDefaultWorkspaceReviewDiffs(client, sessionId, data);
+		await client.invalidateQueries({ queryKey: ["session-workspace-diffs", sessionId], refetchType: "none" });
+		await client.invalidateQueries({ queryKey: ["files-review-end-of-file", sessionId], refetchType: "none" });
+		getMock.mockImplementation(async (_path: string, init: { params: { query: { side: string } } }) => ({ data: {
+			binary: false, truncated: false, content: "updated unchanged context", revision: `updated-${init.params.query.side}`,
+		} }));
+		await prefetchDefaultWorkspaceReviewDiffs(client, sessionId, data);
+		expect(postMock).toHaveBeenCalledTimes(2);
+		expect(getMock).toHaveBeenCalledTimes(4);
+		const cached = client.getQueryCache().findAll({ queryKey: ["files-review-end-of-file", sessionId] });
+		expect(cached[0]?.state.data).toMatchObject({ newFile: { contents: "updated unchanged context" } });
 	});
 
 	it("skips lockfiles the review pane defers", async () => {

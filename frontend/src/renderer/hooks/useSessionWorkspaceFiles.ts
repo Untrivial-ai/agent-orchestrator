@@ -5,6 +5,7 @@ import type { components } from "../../api/schema";
 import { apiErrorMessage } from "../lib/api-client";
 import { clientForSessionHost } from "../lib/host-clients";
 import { sessionUiKey } from "../lib/hosts";
+import { WORKSPACE_REVIEW_BATCH_SIZE } from "../lib/workspace-review";
 import {
 	getWorkspaceFileConnectionState,
 	subscribeWorkspaceFileChanges,
@@ -356,7 +357,6 @@ export function useSessionWorkspaceFilesChangedCount(sessionId: string | undefin
 // Must match WorkspaceReviewPane: the Files tab requests these batches, with
 // this context size, and then full contents for files whose patch ends on the
 // last hunk. A mismatch leaves the tab on "Loading diff…".
-const REVIEW_PREFETCH_BATCH_SIZE = 100;
 const REVIEW_PREFETCH_BATCHES = 4;
 const REVIEW_PREFETCH_EOF_MAX = 40;
 const REVIEW_PREFETCH_EOF_MAX_BYTES = 128 * 1024;
@@ -367,39 +367,37 @@ function isDeferredReviewFile(file: WorkspaceFileSummary) {
 	return file.size > 512 * 1024 || /^(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|go\.sum|cargo\.lock)$/.test(name);
 }
 
-function defaultReviewFiles(data: WorkspaceFilesResponse): { commitSha?: string; files: WorkspaceFileSummary[]; scope: WorkspaceDiffScope } {
+export function defaultWorkspaceReviewSelection(data: WorkspaceFilesResponse): { commitSha?: string; files: WorkspaceFileSummary[]; scope: WorkspaceDiffScope } {
 	// The Files tab count can be seeded from a files array alone. Prefetch only
 	// runs against a full workspace response.
 	const sections = data.sections;
 	if (!sections) return { scope: "combined", files: [] };
-	if (sections.unstaged.length > 0) return { scope: "unstaged", files: sections.unstaged };
-	if (sections.staged.length > 0) return { scope: "staged", files: sections.staged };
+	const files = (data.files ?? []).filter(isChangedWorkspaceFile);
+	if (files.length > 0) return { scope: "combined", files };
 	const commit = data.commits?.[0];
 	if (commit) return { scope: "committed", commitSha: commit.sha, files: commit.files ?? [] };
-	const untracked = new Set(sections.untracked.map((file) => file.path));
-	return {
-		scope: "combined",
-		files: (data.files ?? []).filter((file) => file.status !== "unmodified" && !untracked.has(file.path)),
-	};
+	return { scope: "combined", files };
 }
 
 export async function prefetchDefaultWorkspaceReviewDiffs(queryClient: QueryClient, sessionId: string, data: WorkspaceFilesResponse, hostId?: string) {
-	const selection = defaultReviewFiles(data);
-	const files = selection.files.filter((file) => !isDeferredReviewFile(file)).slice(0, REVIEW_PREFETCH_BATCH_SIZE * REVIEW_PREFETCH_BATCHES);
+	const selection = defaultWorkspaceReviewSelection(data);
+	const files = selection.files.filter((file) => !isDeferredReviewFile(file)).slice(0, WORKSPACE_REVIEW_BATCH_SIZE * REVIEW_PREFETCH_BATCHES);
 	if (files.length === 0) return;
 	const token = `${data.workspaceVersion ?? ""}:${selection.scope}:${selection.commitSha ?? ""}:${files.map((file) => file.path).join("\n")}`;
 
 	try {
 		const { REVIEW_CONTEXT_LINES, endsAtLastHunk, patchIdentity } = await import("../components/diffs/trailingContext");
 		const { parsePatchFiles } = await import("@pierre/diffs");
-		const headKey = sessionWorkspaceDiffsQueryKey(sessionId, selection.scope, files.slice(0, REVIEW_PREFETCH_BATCH_SIZE).map((file) => file.path), REVIEW_CONTEXT_LINES, false, data.workspaceVersion, selection.commitSha, hostId);
-		// Skip only while the diff cache is still warm. Garbage collection would
-		// otherwise leave the tab spinning and this function unwilling to refill it.
-		const cacheKey = sessionUiKey(sessionId, hostId);
-		if (lastPrefetchedReview.get(cacheKey) === token && queryClient.getQueryData(headKey)) return;
-		lastPrefetchedReview.set(cacheKey, token);
 		const batches: WorkspaceFileSummary[][] = [];
-		for (let index = 0; index < files.length; index += REVIEW_PREFETCH_BATCH_SIZE) batches.push(files.slice(index, index + REVIEW_PREFETCH_BATCH_SIZE));
+		for (let index = 0; index < files.length; index += WORKSPACE_REVIEW_BATCH_SIZE) batches.push(files.slice(index, index + WORKSPACE_REVIEW_BATCH_SIZE));
+		const cacheKey = sessionUiKey(sessionId, hostId);
+		// An existing entry can be invalidated by a file edit without its summary
+		// version changing. Skip only if every batch is still present and fresh.
+		if (lastPrefetchedReview.get(cacheKey) === token && batches.every((batch) => {
+			const state = queryClient.getQueryState(sessionWorkspaceDiffsQueryKey(sessionId, selection.scope, batch.map((file) => file.path), REVIEW_CONTEXT_LINES, false, data.workspaceVersion, selection.commitSha, hostId));
+			return state?.data !== undefined && !state.isInvalidated;
+		})) return;
+		lastPrefetchedReview.set(cacheKey, token);
 		const responses = await Promise.all(batches.map((batch) => queryClient.fetchQuery({
 			...sessionWorkspaceDiffsQueryOptions({
 				contextLines: REVIEW_CONTEXT_LINES,
@@ -435,7 +433,8 @@ export async function prefetchDefaultWorkspaceReviewDiffs(queryClient: QueryClie
 		await Promise.all(endOfFile.map(async ({ file, identity }) => {
 			const queryKey = hostId ? ["files-review-end-of-file", hostId, sessionId, selection.scope, selection.commitSha ?? "", file.path, file.fileFingerprint ?? "", identity] as const
 				: ["files-review-end-of-file", sessionId, selection.scope, selection.commitSha ?? "", file.path, file.fileFingerprint ?? "", identity] as const;
-			if (queryClient.getQueryData(queryKey)) return;
+			const cached = queryClient.getQueryState(queryKey);
+			if (cached?.data !== undefined && !cached.isInvalidated) return;
 			try {
 				const [before, after] = await Promise.all([
 					fetchWorkspaceFileRevision({ commitSha: selection.commitSha, sessionId, path: file.path, scope: selection.scope, side: "before", workspaceVersion: data.workspaceVersion, hostId }),

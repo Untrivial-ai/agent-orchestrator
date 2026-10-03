@@ -170,12 +170,13 @@ describe("subscribeWorkspaceFileChanges", () => {
 		expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
 		vi.advanceTimersByTime(1);
 
-		expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(7);
+		expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(8);
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["workspace-file-paths", "sess-1"] });
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-files", "sess-1"] });
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-file", "sess-1"] });
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-file-revision", "sess-1"] });
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-diffs", "sess-1"] });
+		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["files-review-end-of-file", "sess-1"] });
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-search", "sess-1"] });
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-tree", "sess-1"] });
 		unsubscribe();

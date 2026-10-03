@@ -5,6 +5,7 @@ import { CodeView } from "@pierre/diffs/react";
 import { ChevronRight, ChevronsDownUp, ChevronsUpDown, FileCode2, GitCommitHorizontal, MessageSquarePlus, MoreVertical, Pencil } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
+	defaultWorkspaceReviewSelection,
 	fetchWorkspaceFileRevision,
 	sessionWorkspaceDiffsQueryOptions,
 	type WorkspaceDiffScope,
@@ -13,6 +14,7 @@ import {
 	type WorkspaceFileSummary,
 } from "../../hooks/useSessionWorkspaceFiles";
 import { cn } from "../../lib/utils";
+import { WORKSPACE_REVIEW_BATCH_SIZE, WORKSPACE_REVIEW_INITIAL_BATCHES, WORKSPACE_REVIEW_BATCH_WAVE } from "../../lib/workspace-review";
 import { statusLabel, statusTone } from "../../lib/workspace-file-status";
 import { useUiStore } from "../../stores/ui-store";
 import { type FileOpenOptions } from "../FileContentPane";
@@ -32,8 +34,7 @@ import { AO_PIERRE_FILES_REVIEW_CSS, AO_PIERRE_SURFACE_CSS } from "./pierreTheme
 import { REVIEW_CONTEXT_LINES, diffContentVersion, endsAtLastHunk, hydratedCopy, patchIdentity, stableFileDiff } from "./trailingContext";
 import { usePersistentGutterUtility } from "./usePersistentGutterUtility";
 
-const PATCH_BATCH_SIZE = 100;
-const parsedPatchCache = new Map<string, FileDiffMetadata[]>();
+const parsedPatchCache = new Map<string, { patch: string; files: FileDiffMetadata[] }>();
 const MAX_PARSED_GROUPS = 24;
 const workingScopeOrder = ["unstaged", "staged", "untracked"] as const;
 const SOURCE_CONTROL = MENU_TRIGGER_CHROME;
@@ -68,14 +69,16 @@ function patchCacheKey(workspaceVersion: string | undefined, scope: WorkspaceDif
 function parseGroupPatch(workspaceVersion: string | undefined, scope: WorkspaceDiffScope, commitSha: string | undefined, repository: string | undefined, patch: string) {
 	const key = patchCacheKey(workspaceVersion, scope, commitSha, repository, patch);
 	const cached = parsedPatchCache.get(key);
-	if (cached) return cached;
+	// The bounded key is only a lookup hint: same-sized edits can preserve
+	// both outer slices and the metadata-based workspace version.
+	if (cached?.patch === patch) return cached.files;
 	const prefix = repository ? `${repository}/` : "";
 	const files = parsePatchFiles(patch, key, true).flatMap((entry) => entry.files);
 	for (const file of files) {
 		if (prefix && !file.name.startsWith(prefix)) file.name = prefix + file.name;
 		if (prefix && file.prevName && !file.prevName.startsWith(prefix)) file.prevName = prefix + file.prevName;
 	}
-	parsedPatchCache.set(key, files);
+	parsedPatchCache.set(key, { patch, files });
 	if (parsedPatchCache.size > MAX_PARSED_GROUPS) {
 		const oldest = parsedPatchCache.keys().next().value;
 		if (oldest) parsedPatchCache.delete(oldest);
@@ -91,10 +94,8 @@ function sectionFiles(data: WorkspaceFilesResponse, scope: WorkspaceDiffScope): 
 }
 
 function initialReviewSelection(data: WorkspaceFilesResponse): { commitSha?: string; scope: WorkspaceDiffScope } {
-	if (sectionFiles(data, "combined").length === 0 && data.commits[0]) {
-		return { scope: "committed", commitSha: data.commits[0].sha };
-	}
-	return { scope: "combined" };
+	const { scope, commitSha } = defaultWorkspaceReviewSelection(data);
+	return { scope, commitSha };
 }
 
 function isDeferredByDefault(file: WorkspaceFileSummary) {
@@ -189,7 +190,7 @@ export function WorkspaceReviewPane({
 	const [commitBrowserOpen, setCommitBrowserOpen] = useState(false);
 	const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(() => new Set());
 	const [loadedDeferredPaths, setLoadedDeferredPaths] = useState<Set<string>>(() => new Set());
-	const [activeBatchCount, setActiveBatchCount] = useState(4);
+	const [activeBatchCount, setActiveBatchCount] = useState(WORKSPACE_REVIEW_INITIAL_BATCHES);
 	const reviewRef = useRef<HTMLDivElement>(null);
 	const gutterHover = usePersistentGutterUtility(reviewRef);
 	// Set when a file row's overflow menu hands off to another surface (an editor,
@@ -241,7 +242,7 @@ export function WorkspaceReviewPane({
 		const savedViewed = readViewedRecords(viewedStorageKey(viewedSessionKey, reviewSelectionKey));
 		setCollapsedPaths(new Set(allFiles.filter((file) => isDeferredByDefault(file) || isViewedRecord(file, savedViewed)).map((file) => file.path)));
 		setLoadedDeferredPaths(new Set());
-		setActiveBatchCount(4);
+		setActiveBatchCount(WORKSPACE_REVIEW_INITIAL_BATCHES);
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- reset on review-target identity, not on allFiles' reference (which changes on every poll) or the filtered files (which changes per keystroke).
 	}, [data.workspaceVersion, reviewSelectionKey, viewedSessionKey]);
 
@@ -249,7 +250,7 @@ export function WorkspaceReviewPane({
 		() => files.filter((file) => !isDeferredByDefault(file) || loadedDeferredPaths.has(file.path)),
 		[files, loadedDeferredPaths],
 	);
-	const batches = useMemo(() => chunked(requestedFiles.map((file) => file.path), PATCH_BATCH_SIZE), [requestedFiles]);
+	const batches = useMemo(() => chunked(requestedFiles.map((file) => file.path), WORKSPACE_REVIEW_BATCH_SIZE), [requestedFiles]);
 	const patchQueries = useQueries({
 		queries: batches.map((paths, index) => ({
 			...sessionWorkspaceDiffsQueryOptions({
@@ -270,7 +271,7 @@ export function WorkspaceReviewPane({
 	useEffect(() => {
 		const active = patchQueries.slice(0, activeBatchCount);
 		if (active.length < activeBatchCount || active.some((query) => query.isPending || query.isFetching)) return;
-		if (activeBatchCount < batches.length) setActiveBatchCount((current) => Math.min(current + 4, batches.length));
+		if (activeBatchCount < batches.length) setActiveBatchCount((current) => Math.min(current + WORKSPACE_REVIEW_BATCH_WAVE, batches.length));
 	}, [activeBatchCount, batches.length, patchQueries]);
 
 	const { metadataByPath, endOfFilePaths } = useMemo(() => {
