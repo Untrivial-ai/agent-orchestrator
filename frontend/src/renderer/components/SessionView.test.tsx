@@ -1057,24 +1057,28 @@ describe("SessionView", () => {
 		}
 	});
 
-	it("clears a transient Chat-view error after the next successful renewal", async () => {
+	it("keeps a failed reconnect visible after a 204 renewal until explicit retry succeeds", async () => {
 		workerSession("sess-1").mode = "chat";
 		let failed = false;
 		chatViewPostMock.mockReset().mockImplementation(async (path: string, input: { body?: { active?: boolean } }) => {
 			if (path.endsWith("/chat-view") && input.body?.active && !failed) {
 				failed = true;
-				return { error: { code: "NETWORK_ERROR" } };
+				return { error: { code: "INTERNAL_ERROR" } };
 			}
 			return { error: undefined };
 		});
 		const interval = vi.spyOn(window, "setInterval");
 		try {
 			render(<SessionView sessionId="sess-1" />);
-			expect(await screen.findByRole("alert")).toHaveTextContent("Check the connection");
+			expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t reconnect to this chat");
 			const renewal = interval.mock.calls.find(([, delay]) => delay === 10_000)?.[0];
 			expect(renewal).toBeTypeOf("function");
 			await act(async () => { (renewal as () => void)(); });
+			expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t reconnect to this chat");
+
+			await userEvent.click(screen.getByRole("button", { name: "Try connecting again" }));
 			await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+			expect(chatViewPostMock.mock.calls.map(([, input]) => input.body.active)).toEqual([true, true, false, true]);
 		} finally {
 			interval.mockRestore();
 		}

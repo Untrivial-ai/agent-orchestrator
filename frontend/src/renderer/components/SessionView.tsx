@@ -607,7 +607,6 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 	const currentSessionIdRef = useRef<string | null>(sessionId);
 	const [chatWakeError, setChatWakeError] = useState<{
 		sessionId: string;
-		kind: "resume" | "request";
 		message: string;
 		retryable: boolean;
 	} | null>(null);
@@ -1884,11 +1883,6 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 					body: { viewId, active },
 				});
 				if (error) throw error;
-				if (active && !left) {
-					// A successful renewal proves that a transient request failure
-					// cleared. It does not retry a failed provider resume for this view.
-					setChatWakeError((current) => current?.sessionId === sessionId && current.kind === "request" ? null : current);
-				}
 				if (active && !left && !refreshed) {
 					refreshed = true;
 					void queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId) });
@@ -1902,12 +1896,11 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 			const code = apiErrorCode(error);
 			setChatWakeError({
 				sessionId,
-				kind: code === "CHAT_RESUME_FAILED" ? "resume" : "request",
 				message: code === "CHAT_RESUME_FAILED"
 					? "Couldn’t reopen this chat. Check the agent provider. Your conversation is saved."
 					: code === "SESSION_NOT_FOUND"
 						? "This chat no longer exists. Refresh the session list."
-						: "Couldn’t connect to this chat. Check the connection, then try again.",
+						: "Couldn’t reconnect to this chat. Try again.",
 				retryable: code !== "SESSION_NOT_FOUND",
 			});
 			void queryClient.invalidateQueries({ queryKey: conversationQueryKey(sessionId) });
