@@ -420,8 +420,13 @@ describe("ShellTopbar orchestrator actions", () => {
 		},
 	);
 
-	it.each(["worker", "orchestrator"] as const)("shows the play-icon cue runner for a %s session", (kind) => {
-		renderTopbar(sessionWith({ kind }));
+	it("keeps the cue runner off the orchestrator session", () => {
+		renderTopbar(orchestrator);
+		expect(screen.queryByRole("button", { name: "Run a cue" })).not.toBeInTheDocument();
+	});
+
+	it("shows the play-icon cue runner for a worker session", () => {
+		renderTopbar(sessionWith());
 
 		const runner = screen.getByRole("button", { name: "Run a cue" });
 		expect(runner.querySelector(".lucide-play")).not.toBeNull();

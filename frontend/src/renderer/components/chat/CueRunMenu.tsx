@@ -4,7 +4,6 @@ import { Loader2, MessageSquare, Play, Plus, TerminalSquare } from "lucide-react
 import { useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "../../stores/ui-store";
 import { apiErrorMessage } from "../../lib/api-client";
-import { useNavigateToSession, useNavigateToTerminals } from "../../lib/navigate-to-session";
 import { useInvokeCueMutation, useProjectCuesQuery } from "../../hooks/useCuesQuery";
 import { fetchProjectCues, projectCuesQueryKey, type CueDTO } from "../../lib/cues";
 import { shellTerminalsQueryKey, toShellTerminal, type ShellTerminal } from "../../hooks/useShellTerminals";
@@ -25,21 +24,21 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 // gap between the trigger and the menu without the menu vanishing underneath it.
 const CUE_MENU_CLOSE_MS = 150;
 
-// The cue runner targets the selected session from its topbar. Without a
-// sessionId, it starts a worker for agent cues or a project terminal for commands.
-// Keying by target drops in-flight menu state when switching project or session.
+// The one cue runner, mounted as a topbar icon button on worker session pages
+// only: every cue dispatches into the selected session. Keying by target drops
+// in-flight menu state when switching project or session.
 export function CueRunMenu({
 	projectId,
 	sessionId,
 	disabled = false,
 }: {
 	projectId: string;
-	sessionId?: string;
+	sessionId: string;
 	disabled?: boolean;
 }) {
 	return (
 		<CueRunMenuTrigger
-			key={JSON.stringify([projectId, sessionId ?? null])}
+			key={JSON.stringify([projectId, sessionId])}
 			projectId={projectId}
 			sessionId={sessionId}
 			disabled={disabled}
@@ -53,14 +52,12 @@ function CueRunMenuTrigger({
 	disabled,
 }: {
 	projectId: string;
-	sessionId?: string;
+	sessionId: string;
 	disabled: boolean;
 }) {
 	const { t } = useTranslation();
 	const showGlobalToast = useUiStore((state) => state.showGlobalToast);
 	const queryClient = useQueryClient();
-	const navigateToSession = useNavigateToSession();
-	const navigateToTerminals = useNavigateToTerminals();
 	const setActiveShellTerminal = useUiStore((state) => state.setActiveShellTerminal);
 	const [open, setOpen] = useState(false);
 	const [runningPrimary, setRunningPrimary] = useState(false);
@@ -153,12 +150,10 @@ function CueRunMenuTrigger({
 				if (origin !== generation.current) return;
 				setActiveShellTerminal(terminal.handleId);
 				showGlobalToast(t("cues.invokeCommandSent"), t("cues.invokeCommandSentBody", { name: cue.name }));
-				if (!sessionId) navigateToTerminals();
 				return;
 			}
 			if (origin !== generation.current) return;
 			showGlobalToast(t("cues.invokeSent"), t("cues.invokeSentBody", { name: cue.name }));
-			if (!sessionId && result.sessionId) navigateToSession(projectId, result.sessionId);
 		} catch (error) {
 			if (origin !== generation.current) return;
 			showGlobalToast(t("cues.invokeFailed"), apiErrorMessage(error, t("cues.invokeFailed")), "error");

@@ -291,8 +291,9 @@ export function ShellTopbar({
 								style={noDragStyle}
 							/>
 						) : null}
-						{/* Cues run from the topbar into the selected session. */}
-						{session && supportsLocalCues ? (
+						{/* Cues run from the worker session topbar only, not the composer,
+						    the board, or the orchestrator: they dispatch into this session. */}
+						{session && !isOrchestrator && supportsLocalCues ? (
 							<span className="inline-flex" style={noDragStyle}>
 								<CueRunMenu
 									projectId={session.workspaceId}

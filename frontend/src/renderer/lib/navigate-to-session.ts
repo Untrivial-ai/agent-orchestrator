@@ -41,10 +41,3 @@ export function useNavigateToSession(): (projectId: string | undefined, sessionI
 		[navigate],
 	);
 }
-
-export function useNavigateToTerminals(): () => void {
-	const navigate = useNavigate();
-	return useCallback(() => {
-		void navigate({ to: "/terminals" });
-	}, [navigate]);
-}
