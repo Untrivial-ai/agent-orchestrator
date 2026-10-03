@@ -35,6 +35,11 @@ export function createWindowComposition(options: {
 			nodeIntegration: false,
 			sandbox: true,
 			transparent: true,
+			// Keep sidebar polling and SSE invalidations live while backgrounded so
+			// newly created workers appear without an app restart. This intentionally
+			// trades Chromium's background power savings for correctness; see
+			// https://github.com/Untrivial-ai/agent-orchestrator/issues/5038.
+			backgroundThrottling: false,
 		},
 	});
 	shellView.setBackgroundColor("#00000000");
