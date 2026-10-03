@@ -307,6 +307,65 @@ func TestToolPrecedence_LegacySignalsKeepLastWriterWins(t *testing.T) {
 	}
 }
 
+func TestToolPrecedence_PostStopNeedsInputNotificationStaysIdle(t *testing.T) {
+	// #3738: Claude Code fires Notification(agent_needs_input) on a ~60s
+	// client-side idle timer even when the finished turn asked no question.
+	// A Stop has landed and no user-prompt-submit followed, so AO's own record
+	// says no turn is in flight — the notification is a timer artifact, not a
+	// question, and must not promote a known-idle session into sticky
+	// waiting_input (which suppresses automated delivery until a human acts).
+	// Grok routes its Notification hook through the claudecode deriver, so it
+	// shares both the contract and the phantom-timer exposure.
+	for _, harness := range []domain.AgentHarness{domain.HarnessClaudeCode, domain.HarnessGrok} {
+		t.Run(string(harness), func(t *testing.T) {
+			m, st, _ := newManager()
+			seedSignaled(st, "mer-1", domain.ActivityActive)
+			seeded := st.sessions["mer-1"]
+			seeded.Harness = harness
+			st.sessions["mer-1"] = seeded
+			mustApply(t, m, "mer-1", sig(domain.ActivityIdle, "stop", "", ""))
+
+			mustApply(t, m, "mer-1", sig(domain.ActivityWaitingInput, "notification", "", ""))
+			if got := stateOf(st, "mer-1"); got != domain.ActivityIdle {
+				t.Fatalf("state after phantom agent_needs_input = %q, want idle", got)
+			}
+
+			// A genuine agent_needs_input arrives mid-turn (a question tool holds
+			// the turn open), so it must still land once a new prompt is in flight.
+			mustApply(t, m, "mer-1", sig(domain.ActivityActive, "user-prompt-submit", "", ""))
+			mustApply(t, m, "mer-1", sig(domain.ActivityWaitingInput, "notification", "", ""))
+			if got := stateOf(st, "mer-1"); got != domain.ActivityWaitingInput {
+				t.Fatalf("state after genuine agent_needs_input = %q, want waiting_input", got)
+			}
+		})
+	}
+}
+
+func TestToolPrecedence_PostStopNeedsInputNotificationOnlySuppressedForClaudeFamily(t *testing.T) {
+	// The phantom 60s timer is Claude Code-specific. Harnesses whose
+	// notification → waiting_input is genuine must keep it even post-Stop:
+	// aider's completion notification is its ONLY activity signal (markSpawned
+	// seeds idle, so suppression would freeze it at idle/no_signal forever),
+	// and droid deliberately upgrades its post-Stop idle Notification to
+	// sticky waiting_input to suppress nudges (droid/activity.go).
+	for _, harness := range []domain.AgentHarness{
+		domain.HarnessAider, domain.HarnessDroid, domain.AgentHarness(""),
+	} {
+		t.Run(string(harness), func(t *testing.T) {
+			m, st, _ := newManager()
+			seedSignaled(st, "mer-1", domain.ActivityIdle)
+			seeded := st.sessions["mer-1"]
+			seeded.Harness = harness
+			st.sessions["mer-1"] = seeded
+
+			mustApply(t, m, "mer-1", sig(domain.ActivityWaitingInput, "notification", "", ""))
+			if got := stateOf(st, "mer-1"); got != domain.ActivityWaitingInput {
+				t.Fatalf("state after genuine post-idle notification = %q, want waiting_input", got)
+			}
+		})
+	}
+}
+
 func TestToolPrecedence_ToolEventsDoNotDemoteWaitingInput(t *testing.T) {
 	// waiting_input marks "the user's turn". Background subagent tool traffic
 	// must not clear it; an explicit user signal does.

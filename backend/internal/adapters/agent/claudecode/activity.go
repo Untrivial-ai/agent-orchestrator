@@ -60,7 +60,9 @@ func DeriveActivityState(event string, payload []byte) (domain.ActivityState, bo
 //     identity — waiting_input (automated nudges stay suppressed via
 //     NeedsInput, user sends deliver). It must NOT map to blocked: without a
 //     tool to correlate, the block could only lift at a turn boundary,
-//     rejecting user sends long after the question was answered.
+//     rejecting user sends long after the question was answered. Lifecycle
+//     drops the phantom post-Stop timer artifact (a ~60s idle ping that asks
+//     nothing) before it can freeze a known-idle session — #3738.
 //   - permission_prompt: a pending permission decision (blocked — a stray
 //     Enter could answer the dialog). It duplicates the earlier
 //     permission-request hook, whose payload names the blocking tool for the
