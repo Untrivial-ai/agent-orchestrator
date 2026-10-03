@@ -677,6 +677,25 @@ describe("SessionsBoard", () => {
 		expect(within(card).queryByText("Exited")).not.toBeInTheDocument();
 	});
 
+	it("shows start failure instead of Awaiting PR on a failed card", () => {
+		workspaceQueryMock.mockReturnValue({
+			data: [workspaceWithSessions([boardSession({
+				id: "s-setup-failed",
+				title: "failed-setup-task",
+				status: "idle",
+				displayStatus: "Awaiting PR",
+				provisionState: "failed",
+			})])],
+			isError: false,
+			isSuccess: true,
+		});
+
+		renderBoard("p1");
+		const card = screen.getByText("failed-setup-task").closest('[data-testid="board-session-card"]') as HTMLElement;
+		expect(within(card).getByTestId("session-status")).toHaveTextContent("Start failed");
+		expect(within(card).queryByText("Awaiting PR")).not.toBeInTheDocument();
+	});
+
 	it("shows switch progress instead of the exited source on a card", () => {
 		const worker = boardSession({
 			id: "s-switching",

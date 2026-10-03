@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -493,14 +494,23 @@ func TestApplySymlinksRejectsParentTraversal(t *testing.T) {
 
 func TestRunPostCreate(t *testing.T) {
 	workspace := t.TempDir()
-	if err := runPostCreate(context.Background(), workspace, []string{"echo hi > out.txt"}); err != nil {
+	source := t.TempDir()
+	command := `printf '%s|%s|%s' "$PROJECT_TOKEN" "$AO_SOURCE_TREE_PATH" "$AO_WORKTREE_PATH" > out.txt`
+	if runtime.GOOS == "windows" {
+		command = `if not defined AO_SOURCE_TREE_PATH exit 4 & if not defined AO_WORKTREE_PATH exit 5 & echo %PROJECT_TOKEN%> out.txt`
+	}
+	if err := runPostCreate(context.Background(), workspace, source, []string{command}, map[string]string{"PROJECT_TOKEN": "setup-value"}); err != nil {
 		t.Fatalf("runPostCreate: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(workspace, "out.txt")); err != nil {
+	output, err := os.ReadFile(filepath.Join(workspace, "out.txt"))
+	if err != nil {
 		t.Fatalf("post-create command did not run in workspace: %v", err)
 	}
+	if runtime.GOOS == "windows" && !strings.Contains(string(output), "setup-value") || runtime.GOOS != "windows" && !strings.Contains(string(output), "setup-value|"+source+"|"+workspace) {
+		t.Fatalf("post-create environment = %q", output)
+	}
 	// A failing command surfaces an error.
-	if err := runPostCreate(context.Background(), workspace, []string{"exit 3"}); err == nil {
+	if err := runPostCreate(context.Background(), workspace, source, []string{"exit 3"}, nil); err == nil {
 		t.Fatal("expected error from failing post-create command")
 	}
 }

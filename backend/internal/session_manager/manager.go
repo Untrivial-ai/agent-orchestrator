@@ -3644,6 +3644,19 @@ func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecor
 	if len(rows) == 0 {
 		return
 	}
+	recreated := false
+	for _, row := range rows {
+		path := row.WorktreePath
+		if path == "" {
+			path = rec.Metadata.WorkspacePath
+		}
+		missing, statErr := workspacePathMissing(path)
+		if statErr != nil {
+			m.logger.Error("restore-all: inspect workspace failed", "sessionID", rec.ID, "error", statErr)
+			return
+		}
+		recreated = recreated || missing
+	}
 
 	// Step 1: ensure the worktree exists. workspace.Restore re-creates it
 	// if it was removed by SaveAndTeardownAll.
@@ -3717,6 +3730,12 @@ func (m *Manager) restoreAllSession(ctx context.Context, rec domain.SessionRecor
 			}
 		}
 	}
+	if recreated {
+		if err := m.provisionWorkspace(ctx, project, ws.Path); err != nil {
+			m.logger.Error("restore-all: setup recreated workspace failed", "sessionID", rec.ID, "error", err)
+			return
+		}
+	}
 
 	// Step 3: relaunch the agent in the restored workspace.
 	if _, err := m.relaunchRestoredSession(ctx, rec, project, ws); err != nil {
@@ -3780,6 +3799,10 @@ func (m *Manager) markSessionWorktreesActive(ctx context.Context, rows []domain.
 
 func (m *Manager) restoreSessionWorkspace(ctx context.Context, project domain.ProjectRecord, rec domain.SessionRecord) (ports.WorkspaceInfo, error) {
 	if projectKindForSession(project, rec.ProjectID) != domain.ProjectKindWorkspace {
+		recreated, err := workspacePathMissing(rec.Metadata.WorkspacePath)
+		if err != nil {
+			return ports.WorkspaceInfo{}, err
+		}
 		ws, err := m.workspace.Restore(ctx, ports.WorkspaceConfig{
 			ProjectID:     rec.ProjectID,
 			SessionID:     rec.ID,
@@ -3796,11 +3819,24 @@ func (m *Manager) restoreSessionWorkspace(ctx context.Context, project domain.Pr
 		if err := m.restoreAttachments(ctx, rec.ID, ws); err != nil {
 			return ports.WorkspaceInfo{}, fmt.Errorf("restore attachments: %w", err)
 		}
+		if recreated {
+			if err := m.provisionWorkspace(ctx, project, ws.Path); err != nil {
+				return ports.WorkspaceInfo{}, fmt.Errorf("setup recreated workspace: %w", err)
+			}
+		}
 		return ws, nil
 	}
 	rows, err := m.workspaceProjectRestoreRows(ctx, project, rec)
 	if err != nil {
 		return ports.WorkspaceInfo{}, err
+	}
+	recreated := false
+	for _, row := range rows {
+		missing, statErr := workspacePathMissing(row.Path)
+		if statErr != nil {
+			return ports.WorkspaceInfo{}, statErr
+		}
+		recreated = recreated || missing
 	}
 	root, err := m.restoreWorkspaceProjectRows(ctx, rows)
 	if err != nil {
@@ -3815,7 +3851,20 @@ func (m *Manager) restoreSessionWorkspace(ctx context.Context, project domain.Pr
 	if err := m.restoreAttachments(ctx, rec.ID, ws); err != nil {
 		return ports.WorkspaceInfo{}, fmt.Errorf("restore attachments: %w", err)
 	}
+	if recreated {
+		if err := m.provisionWorkspace(ctx, project, ws.Path); err != nil {
+			return ports.WorkspaceInfo{}, fmt.Errorf("setup recreated workspace: %w", err)
+		}
+	}
 	return ws, nil
+}
+
+func workspacePathMissing(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	return false, err
 }
 
 func (m *Manager) workspaceProjectRestoreRows(ctx context.Context, project domain.ProjectRecord, rec domain.SessionRecord) ([]ports.WorkspaceRepoInfo, error) {
@@ -5358,7 +5407,7 @@ func (m *Manager) provisionWorkspace(ctx context.Context, project domain.Project
 	if err := applySymlinks(project.Path, workspacePath, project.Config.Symlinks); err != nil {
 		return err
 	}
-	return runPostCreate(ctx, workspacePath, project.Config.PostCreate)
+	return runPostCreate(ctx, workspacePath, project.Path, project.Config.PostCreate, project.Config.Env)
 }
 
 // applySymlinks links each repo-relative path into the workspace. A source that
@@ -5416,25 +5465,55 @@ func safeRelPath(rel string) (string, error) {
 // runPostCreate runs each post-create command in the workspace via the platform
 // shell, so OS-agnostic commands like "pnpm install" work. A non-zero exit
 // aborts the spawn with the command output.
-func runPostCreate(ctx context.Context, workspacePath string, commands []string) error {
-	for _, command := range commands {
+func runPostCreate(ctx context.Context, workspacePath, sourcePath string, commands []string, projectEnv map[string]string) error {
+	for index, command := range commands {
 		command = strings.TrimSpace(command)
 		if command == "" {
 			continue
 		}
+		stepCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 		var cmd *exec.Cmd
 		if runtime.GOOS == "windows" {
-			cmd = aoprocess.CommandContext(ctx, "cmd", "/c", command)
+			cmd = aoprocess.CommandContext(stepCtx, "cmd", "/c", command)
 		} else {
-			cmd = aoprocess.CommandContext(ctx, "sh", "-c", command)
+			cmd = aoprocess.CommandContext(stepCtx, "sh", "-c", command)
 		}
 		cmd.Dir = workspacePath
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("postCreate %q: %w: %s", command, err, strings.TrimSpace(string(out)))
+		cmd.Env = os.Environ()
+		for key, value := range projectEnv {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+		cmd.Env = append(cmd.Env, "AO_SOURCE_TREE_PATH="+sourcePath, "AO_WORKTREE_PATH="+workspacePath)
+		out := &setupOutput{}
+		cmd.Stdout, cmd.Stderr = out, out
+		err := cmd.Run()
+		cancel()
+		if err != nil {
+			message := strings.TrimSpace(out.String())
+			for _, value := range projectEnv {
+				if value != "" {
+					message = strings.ReplaceAll(message, value, "[REDACTED]")
+				}
+			}
+			return fmt.Errorf("setup step %d failed: %w: %s", index+1, err, message)
 		}
 	}
 	return nil
 }
+
+// setupOutput retains the last 8 KiB so a noisy installer cannot grow daemon memory.
+type setupOutput struct{ tail []byte }
+
+func (o *setupOutput) Write(p []byte) (int, error) {
+	n := len(p)
+	o.tail = append(o.tail, p...)
+	if len(o.tail) > 8192 {
+		o.tail = append([]byte(nil), o.tail[len(o.tail)-8192:]...)
+	}
+	return n, nil
+}
+
+func (o *setupOutput) String() string { return string(o.tail) }
 
 // preLauncher is an optional Agent capability: a step the manager runs before
 // launch. Claude Code implements it to record workspace trust in ~/.claude.json

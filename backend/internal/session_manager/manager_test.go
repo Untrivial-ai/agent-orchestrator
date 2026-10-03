@@ -4212,6 +4212,28 @@ func TestRestore_ScratchAllowsEmptyBranch(t *testing.T) {
 	}
 }
 
+func TestRestoreRecreatedWorkspaceRunsSetupOnce(t *testing.T) {
+	m, _, _, _ := newManager()
+	managed := filepath.Join(t.TempDir(), "workspaces")
+	adapter, err := scratch.New(scratch.Options{ManagedRoot: managed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.workspace = adapter
+	workspace := filepath.Join(managed, "scratch", "workers", "scratch-1")
+	project := domain.ProjectRecord{ID: "scratch", Kind: domain.ProjectKindScratch, Path: t.TempDir(), Config: domain.ProjectConfig{PostCreate: []string{"echo setup >> setup-runs"}}}
+	rec := domain.SessionRecord{ID: "scratch-1", ProjectID: "scratch", Kind: domain.KindWorker, Metadata: domain.SessionMetadata{WorkspacePath: workspace}}
+	for i := 0; i < 2; i++ {
+		if _, err := m.restoreSessionWorkspace(context.Background(), project, rec); err != nil {
+			t.Fatalf("restore %d: %v", i+1, err)
+		}
+	}
+	output, err := os.ReadFile(filepath.Join(workspace, "setup-runs"))
+	if err != nil || strings.Count(string(output), "setup") != 1 {
+		t.Fatalf("setup runs = %q, err = %v", output, err)
+	}
+}
+
 func TestRestore_WorkspaceProjectRestoresChildrenAndRecordsInventory(t *testing.T) {
 	m, st, rt, ws := newManager()
 	st.projects["mer"] = domain.ProjectRecord{ID: "mer", Path: "/repo/mer", Kind: domain.ProjectKindWorkspace, Config: testRoleAgents()}

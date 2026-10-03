@@ -1,4 +1,4 @@
-import { Bot, Loader2, MonitorCog, Play, TriangleAlert, X, type LucideIcon } from "lucide-react";
+import { Bot, Loader2, MonitorCog, Play, TriangleAlert, Wrench, X, type LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useRef, useState } from "react";
@@ -9,6 +9,7 @@ import { ensureCodexAccounts } from "../hooks/useCodexAccountsQuery";
 import { writeCodexAccounts } from "../hooks/codex-accounts-state";
 import { GlobalSettingsForm } from "./GlobalSettingsForm";
 import { ProjectSettingsForm, type ProjectSettingsSaveState, type ProjectSettingsSection as ProjectFormSection } from "./ProjectSettingsForm";
+import { ProjectSetupSettings } from "./ProjectSetupSettings";
 import { CuesSettings } from "./CuesDialog";
 import { DialogHeader, settingsDialogBodyClass, settingsDialogHeaderClass, settingsDialogSurfaceClass } from "./ui/dialog";
 import { type GlobalSettingsSection, type ProjectSettingsSection, type SettingsModal, useUiStore } from "../stores/ui-store";
@@ -82,15 +83,25 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 		{ id: "general", label: t("settings.project.general"), icon: MonitorCog },
 		{ id: "agents", label: t("settings.project.agents"), icon: Bot },
 	];
-	if (!remoteHostId) projectSections.push({ id: "cues", label: t("cues.title"), icon: Play });
+	if (!remoteHostId) {
+		projectSections.push({ id: "setup", label: t("settings.project.workspaceSetup"), icon: Wrench });
+		projectSections.push({ id: "cues", label: t("cues.title"), icon: Play });
+	}
 
 	const isProjectSettings = displaySettings?.scope === "project";
 	const [activeSection, setActiveSection] = useState<GlobalSettingsSection>("general");
 	const [focusAgentId, setFocusAgentId] = useState<string>();
 	const [harnessView, setHarnessView] = useState<"local" | "cloud">();
 	const [activeProjectSection, setActiveProjectSection] = useState<ProjectSettingsSection>("general");
+	const [pendingProjectSection, setPendingProjectSection] = useState<ProjectSettingsSection | null>(null);
 	const [projectSaveState, setProjectSaveState] = useState<ProjectSettingsSaveState>(initialProjectSaveState);
 	const [cueBusy, setCueBusy] = useState(false);
+	useEffect(() => {
+		if (pendingProjectSection && projectSaveState.phase === "saved" && !projectSaveState.dirty) {
+			setActiveProjectSection(pendingProjectSection);
+			setPendingProjectSection(null);
+		}
+	}, [pendingProjectSection, projectSaveState]);
 	const closeWhenSavedRef = useRef(false);
 	const globalSettingsWasOpen = useRef(false);
 
@@ -235,7 +246,14 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 							<nav aria-label={t("settings.navSectionsAria")} className="flex flex-col gap-0.5 p-2 pt-0">
 								{isProjectSettings
 									? projectSections.map(({ id, label, icon }) => (
-											<SettingsNavItem active={activeProjectSection === id} disabled={cueBusy} icon={icon} key={id} label={label} onClick={() => setActiveProjectSection(id)} />
+											<SettingsNavItem active={activeProjectSection === id} disabled={cueBusy} icon={icon} key={id} label={label} onClick={() => {
+												if (projectSaveState.dirty && id !== activeProjectSection) {
+													setPendingProjectSection(id);
+													(document.getElementById("project-settings-form") as HTMLFormElement | null)?.requestSubmit();
+												} else {
+													setActiveProjectSection(id);
+												}
+											}} />
 										))
 									: globalSections.map(({ id, label, icon }) => (
 											<SettingsNavItem
@@ -297,6 +315,8 @@ function SettingsDialogLayer({ settingsModal }: { settingsModal: SettingsModal }
 								{isBodyReady ? (
 									displaySettings?.scope === "project" && !remoteHostId && activeProjectSection === "cues" ? (
 										<CuesSettings projectId={displaySettings.projectId} onBusyChange={setCueBusy} />
+									) : displaySettings?.scope === "project" && !remoteHostId && activeProjectSection === "setup" ? (
+										<ProjectSetupSettings projectId={displaySettings.projectId} onSaveState={setProjectSaveState} />
 									) : displaySettings?.scope === "project" ? (
 										<ProjectSettingsForm projectId={displaySettings.projectId} hostId={remoteHostId} section={activeProjectSection as ProjectFormSection} onSaveState={setProjectSaveState} />
 									) : (
