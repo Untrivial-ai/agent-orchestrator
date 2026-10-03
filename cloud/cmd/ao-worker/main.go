@@ -380,9 +380,21 @@ func prepareWorkspace(
 		}
 		if err := worker.ConfigureWorkerGit(
 			ctx, worker.ExecGitRunner{}, workspace, dataDir, publicURL,
-			bootstrap.SessionID, bootstrap.Launch.Branch,
+			bootstrap.SessionID,
 		); err != nil {
 			return fmt.Errorf("configure repository tooling: %w", err)
+		}
+		// Restoring the session branch is best-effort: a skipped or failed
+		// restoration degrades lineage (the worker stays on a branch re-anchored
+		// at HEAD) but must never stop the session from starting, because
+		// prepareWorkspace failures hold the agent's prompts forever.
+		if err := worker.CheckoutSessionBranch(
+			ctx, worker.ExecGitRunner{}, workspace,
+			bootstrap.Launch.Branch, bootstrap.SessionID, bootstrap.Launch.SessionBranchTip,
+		); err != nil {
+			logger.Warn("session branch restore degraded; continuing on fallback lineage",
+				"branch", bootstrap.Launch.Branch, "error", err,
+			)
 		}
 		// Multi-repo dev kit: clone any additional repositories alongside the
 		// primary checkout. Non-fatal by design — an extra repo that cannot be

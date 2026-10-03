@@ -16,7 +16,7 @@ import (
 // concrete Postgres store so the backend can later be swapped for an object
 // store (S3) without touching the HTTP layer.
 type TranscriptStore interface {
-	Put(ctx context.Context, orgID, sessionID, agentSessionID, harness string, transcript []byte, preservedGitRef string) error
+	Put(ctx context.Context, orgID, sessionID, agentSessionID, harness string, transcript []byte, preservedGitRef, sessionBranchTip string) error
 	Get(ctx context.Context, orgID, sessionID string) (agentSessionID, harness string, transcript []byte, preservedGitRef string, err error)
 }
 
@@ -30,6 +30,10 @@ type workerTranscriptRequest struct {
 	Harness         string `json:"harness"`
 	Transcript      string `json:"transcript"`
 	PreservedGitRef string `json:"preservedGitRef"`
+	// SessionBranchTip is the branch commit the worker last reported; the
+	// control plane records it as the attested tip boot-time branch adoption
+	// gates on. Empty never clears a previously recorded tip.
+	SessionBranchTip string `json:"sessionBranchTip"`
 }
 
 type workerTranscriptResponse struct {
@@ -71,6 +75,7 @@ func (s *Server) workerPutTranscript(w http.ResponseWriter, r *http.Request) {
 		input.Harness,
 		transcript,
 		input.PreservedGitRef,
+		input.SessionBranchTip,
 	); err != nil {
 		s.writeStoreError(w, r, err)
 		return

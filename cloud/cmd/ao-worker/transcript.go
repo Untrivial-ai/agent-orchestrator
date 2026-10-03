@@ -35,6 +35,10 @@ type transcriptCheckpoint struct {
 	Harness         string `json:"harness"`
 	Transcript      string `json:"transcript"` // base64 of the transcript file bytes
 	PreservedGitRef string `json:"preservedGitRef"`
+	// SessionBranchTip is the session branch's commit SHA at capture time; the
+	// control plane records it as the attested tip boot-time branch adoption
+	// gates on. Empty never clears a previously recorded tip.
+	SessionBranchTip string `json:"sessionBranchTip"`
 }
 
 // putTranscript pushes a checkpoint. It reuses the worker's authenticated client

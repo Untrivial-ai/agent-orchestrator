@@ -34,6 +34,7 @@ var clientEventTypes = []string{
 	"chat.approval_requested",
 	"chat.approval_decided",
 	"chat.turn_capabilities",
+	"session.branch_backup_degraded",
 }
 
 type chatMessagePayload struct {

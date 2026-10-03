@@ -21,9 +21,9 @@ const testWorkerSessionID = testOrchestratorID
 // tests can assert the base64 decode/encode boundary and the 404 path without a
 // database.
 type stubTranscriptStore struct {
-	putOrg, putSession, putAgent, putHarness, putRef string
-	putTranscript                                    []byte
-	putErr                                           error
+	putOrg, putSession, putAgent, putHarness, putRef, putTip string
+	putTranscript                                            []byte
+	putErr                                                   error
 
 	getAgent, getHarness, getRef string
 	getTranscript                []byte
@@ -32,7 +32,7 @@ type stubTranscriptStore struct {
 
 func (s *stubTranscriptStore) Put(
 	_ context.Context, orgID, sessionID, agentSessionID, harness string,
-	transcript []byte, preservedGitRef string,
+	transcript []byte, preservedGitRef, sessionBranchTip string,
 ) error {
 	s.putOrg = orgID
 	s.putSession = sessionID
@@ -40,6 +40,7 @@ func (s *stubTranscriptStore) Put(
 	s.putHarness = harness
 	s.putTranscript = transcript
 	s.putRef = preservedGitRef
+	s.putTip = sessionBranchTip
 	return s.putErr
 }
 
@@ -60,13 +61,15 @@ func transcriptServer(store TranscriptStore) *Server {
 }
 
 // A worker capture decodes the base64 transcript, stores it under the worker's
-// own claimed org/session, and returns 204 with no body.
+// own claimed org/session — including the attested session branch tip — and
+// returns 204 with no body.
 func TestWorkerPutTranscriptStoresDecodedBlob(t *testing.T) {
 	store := &stubTranscriptStore{}
 	srv := transcriptServer(store)
 	raw := []byte("{\"type\":\"message\"}\n{\"type\":\"result\"}\n")
 	body := `{"agentSessionId":"agent-7","harness":"claude-code","transcript":"` +
-		base64.StdEncoding.EncodeToString(raw) + `","preservedGitRef":"refs/ao/preserved/abc"}`
+		base64.StdEncoding.EncodeToString(raw) + `","preservedGitRef":"refs/ao/preserved/abc",` +
+		`"sessionBranchTip":"deadbeef"}`
 
 	w := httptest.NewRecorder()
 	srv.workerPutTranscript(w, workerRequest(t, http.MethodPut, "/worker/transcript", body, "worker:connect"))
@@ -82,6 +85,9 @@ func TestWorkerPutTranscriptStoresDecodedBlob(t *testing.T) {
 	}
 	if store.putAgent != "agent-7" || store.putHarness != "claude-code" || store.putRef != "refs/ao/preserved/abc" {
 		t.Fatalf("stored metadata mismatch: agent=%q harness=%q ref=%q", store.putAgent, store.putHarness, store.putRef)
+	}
+	if store.putTip != "deadbeef" {
+		t.Fatalf("stored session branch tip = %q, want deadbeef", store.putTip)
 	}
 }
 

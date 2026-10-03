@@ -835,7 +835,13 @@ func (s *Store) WorkerLaunchSpec(
 				session.display_name, session.branch, session.prompt,
 				session.agent_session_id, session.mode, session.model, session.denied_commands, session.interface,
 				COALESCE(session.parent_session_id::text, ''),
-				project.repository_url, project.default_branch
+				project.repository_url, project.default_branch,
+				COALESCE((
+					SELECT transcript.session_branch_tip
+					FROM ao_session_transcripts transcript
+					WHERE transcript.org_id = session.org_id
+						AND transcript.session_id = session.id
+				), '')
 			FROM ao_sessions session
 			JOIN ao_projects project ON project.id = session.project_id
 			WHERE session.id = $1 AND session.org_id = $2`,
@@ -859,6 +865,7 @@ func (s *Store) WorkerLaunchSpec(
 			&launch.ParentSessionID,
 			&launch.RepositoryURL,
 			&launch.DefaultBranch,
+			&launch.SessionBranchTip,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound

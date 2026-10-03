@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 )
@@ -20,25 +21,48 @@ import (
 // refs/ao/preserved/<session-id> convention so both implementations agree.
 const preservedRefPrefix = "refs/ao/preserved/"
 
+const (
+	// branchPushTimeout bounds one checkpoint push so a stalled remote cannot
+	// hold the single checkpoint consumer (and thus the agent's turn pipeline)
+	// indefinitely; git's own low-speed abort only covers transfers in flight.
+	branchPushTimeout = 45 * time.Second
+	// branchPushRetryInterval suppresses retries of a branch tip already known
+	// to be rejected (non-fast-forward or failed). The checkpoint fires on every
+	// turn completion, so without the latch a permanently blocked branch would
+	// burn a credential-brokered network push — and a doomed Warn — thousands of
+	// times a day. The tip moving clears the suppression naturally.
+	branchPushRetryInterval = 5 * time.Minute
+)
+
 // checkpointer captures a session's resume state to the control plane so a
 // deleted (and later restored) sandbox can be rebuilt. Every method is
 // best-effort: a failure is logged and never blocks the agent or crashes the
 // worker.
 type checkpointer struct {
-	client    *client
-	resolver  transcriptResolver
-	git       worker.GitRunner
-	workspace string
-	sessionID string
-	harness   string
-	scratch   bool
-	logger    *slog.Logger
+	client        *client
+	resolver      transcriptResolver
+	git           worker.GitRunner
+	workspace     string
+	sessionID     string
+	branch        string
+	defaultBranch string
+	harness       string
+	scratch       bool
+	logger        *slog.Logger
 
 	mu sync.Mutex
 	// change detection: an identical checkpoint is neither re-pushed nor re-sent.
 	lastTranscriptHash string
 	lastPreservedRef   string
 	lastTreeSHA        string
+	lastBranchTip      string
+	// push failure latch: a tip already known to be rejected is not retried
+	// (and not re-warned) until branchPushRetryInterval elapses. nowFn is a
+	// test seam.
+	failedTip string
+	failedAt  time.Time
+	warnedTip string
+	nowFn     func() time.Time
 }
 
 func newCheckpointer(
@@ -59,19 +83,34 @@ func newCheckpointer(
 		git:       worker.ExecGitRunner{},
 		workspace: workspace,
 		sessionID: bootstrap.SessionID,
-		harness:   bootstrap.Launch.Harness,
-		scratch:   worker.IsScratchRepositoryURL(bootstrap.Launch.RepositoryURL),
-		logger:    logger,
+		branch:    strings.TrimSpace(bootstrap.Launch.Branch),
+		// defaultBranch lets pushSessionBranch skip a branch that has not moved
+		// past the freshly cloned default (no commits yet), so no empty ao/* branch
+		// is published for sessions that never committed.
+		defaultBranch: strings.TrimSpace(bootstrap.Launch.DefaultBranch),
+		harness:       bootstrap.Launch.Harness,
+		scratch:       worker.IsScratchRepositoryURL(bootstrap.Launch.RepositoryURL),
+		logger:        logger,
+		nowFn:         time.Now,
 	}
 }
 
 // checkpoint captures the transcript and uncommitted work once. It is invoked by
 // the checkpoint bridge on each turn-completion (Stop hook) event; the capture is
 // change-detected, so a poke with nothing new to save is a no-op.
+//
+// Ordering matters: the transcript is captured and durably PUT before the branch
+// push runs, so a slow or failing push (network stall, non-fast-forward
+// rejection) can never delay or prevent transcript capture — the agent's
+// --resume path depends on it, and the push is independently recoverable.
 func (cp *checkpointer) checkpoint(ctx context.Context) {
 	agentSessionID, path, ok := cp.resolver.locate()
 	if !ok {
 		// No transcript yet (agent still booting or first turn incomplete).
+		// Committed work still has no other backup (the preserve ref only
+		// carries uncommitted changes), so publish it now — there is nothing
+		// captured to delay.
+		cp.pushSessionBranch(ctx)
 		return
 	}
 	data, err := os.ReadFile(path)
@@ -88,31 +127,230 @@ func (cp *checkpointer) checkpoint(ctx context.Context) {
 		ref, treeSHA = "", ""
 	}
 
+	// The session branch tip rides the transcript capture so the control plane
+	// can attest what boot-time branch adoption may restore. Empty when there is
+	// nothing to attest (scratch, no branch, or no commits); an empty tip never
+	// clears a previously recorded one.
+	branchTip := cp.currentBranchTip(ctx)
+
 	hash := sha256Hex(data)
 	cp.mu.Lock()
 	unchanged := hash == cp.lastTranscriptHash &&
 		ref == cp.lastPreservedRef &&
-		treeSHA == cp.lastTreeSHA
+		treeSHA == cp.lastTreeSHA &&
+		branchTip == cp.lastBranchTip
 	cp.mu.Unlock()
 	if unchanged {
+		// Nothing new to capture; the push below still runs so a previously
+		// failed push retries (subject to its failure latch).
+		cp.pushSessionBranch(ctx)
 		return
 	}
 
 	if err := cp.client.putTranscript(ctx, transcriptCheckpoint{
-		AgentSessionID:  agentSessionID,
-		Harness:         cp.harness,
-		Transcript:      base64.StdEncoding.EncodeToString(data),
-		PreservedGitRef: ref,
+		AgentSessionID:   agentSessionID,
+		Harness:          cp.harness,
+		Transcript:       base64.StdEncoding.EncodeToString(data),
+		PreservedGitRef:  ref,
+		SessionBranchTip: branchTip,
 	}); err != nil {
 		cp.logger.Warn("checkpoint: push to control plane", "error", err)
+		// Still push the branch: the transcript PUT failing must not stop
+		// committed work from being published.
+		cp.pushSessionBranch(ctx)
 		return
 	}
 
 	cp.mu.Lock()
-	cp.lastTranscriptHash, cp.lastPreservedRef, cp.lastTreeSHA = hash, ref, treeSHA
+	cp.lastTranscriptHash, cp.lastPreservedRef, cp.lastTreeSHA, cp.lastBranchTip =
+		hash, ref, treeSHA, branchTip
 	cp.mu.Unlock()
 	cp.logger.Info("captured durable checkpoint",
 		"agent_session_id", agentSessionID, "preserved_ref", ref)
+
+	cp.pushSessionBranch(ctx)
+}
+
+// currentBranchTip resolves the session branch's local tip for the checkpoint's
+// attestation record. Empty for scratch repositories, sessions without a
+// branch, or a branch that does not exist locally yet.
+func (cp *checkpointer) currentBranchTip(ctx context.Context) string {
+	if cp.scratch || cp.branch == "" {
+		return ""
+	}
+	tip, ok := cp.revParse(ctx, "refs/heads/"+cp.branch)
+	if !ok {
+		return ""
+	}
+	return tip
+}
+
+// pushSessionBranch publishes the session's branch (refs/heads/<branch>) to
+// origin so committed work survives a sandbox destroy and the branch is visible
+// on GitHub even when the agent never opened a pull request. It never
+// force-pushes: a non-fast-forward update (someone else advanced the remote
+// branch) fails loudly instead of discarding remote commits. The decision is a
+// local comparison of the branch tip against the origin remote-tracking ref (or
+// the default branch when the remote does not have the branch yet), so a tick
+// with nothing new to publish costs no network, and it stays correct across
+// worker restarts and after the agent pushes manually. Scratch repositories
+// have no origin, so this is skipped entirely.
+//
+// Failure handling is deliberately loud but bounded:
+//   - a tip already known to be rejected is suppressed for
+//     branchPushRetryInterval, so a permanently blocked branch retries every
+//     5 minutes instead of on every turn completion;
+//   - each new failing tip is warned and announced on the session stream
+//     exactly once (session.branch_backup_degraded);
+//   - when the visible branch rejects the tip, the tip is force-pushed to the
+//     AO-owned preserved-branch ref so boot-time restore still has an
+//     attestable fetch location for the session's own lineage;
+//   - the push itself runs under branchPushTimeout.
+//
+// Best-effort like every checkpoint step: failures are logged and never block
+// the agent.
+func (cp *checkpointer) pushSessionBranch(ctx context.Context) {
+	if cp.scratch || cp.branch == "" {
+		return
+	}
+	ref := "refs/heads/" + cp.branch
+	out, err := cp.git.Run(ctx, cp.workspace, nil, "rev-parse", "--verify", ref)
+	if err != nil {
+		// The branch does not exist locally yet — nothing committed.
+		return
+	}
+	tip := strings.TrimSpace(out)
+
+	remoteTip, remoteExists := cp.revParse(ctx, "refs/remotes/origin/"+cp.branch)
+	if remoteExists {
+		if remoteTip == tip {
+			// The remote already has this exact commit (our last push, or the
+			// agent's own git push — which updates the remote-tracking ref).
+			cp.noteBranchPushSuccess()
+			return
+		}
+	} else if cp.defaultBranch != "" {
+		// The remote does not have the branch yet. Publish only once the branch
+		// has moved past the freshly cloned default, so a session that never
+		// committed does not litter the repository with an empty ao/* branch.
+		if defaultTip, ok := cp.revParse(ctx, "refs/remotes/origin/"+cp.defaultBranch); ok && defaultTip == tip {
+			return
+		}
+	}
+	if cp.branchPushSuppressed(tip) {
+		return
+	}
+	if remoteExists && !cp.isAncestor(ctx, remoteTip, tip) {
+		// The remote has commits this workspace lacks; the push would be
+		// rejected as non-fast-forward. Skip the doomed network attempt, keep
+		// the tip fetchable via the preserved-branch ref, and announce once.
+		cp.logger.Warn("checkpoint: session branch diverged from origin; skipping push",
+			"branch", cp.branch, "sha", tip, "remote_sha", remoteTip)
+		cp.recordBranchPushFailure(ctx, tip, "non-fast-forward")
+		cp.preserveBlockedTip(ctx, tip)
+		return
+	}
+
+	// GIT_TERMINAL_PROMPT=0 makes a missing credential helper fail fast instead
+	// of hanging the single checkpoint consumer; the repo-local helper written by
+	// ConfigureWorkerGit brokers a fresh write-scoped token on demand.
+	pushCtx, cancel := context.WithTimeout(ctx, branchPushTimeout)
+	defer cancel()
+	if _, err := cp.git.Run(pushCtx, cp.workspace,
+		map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		"push", "--", "origin", ref+":"+ref); err != nil {
+		cp.recordBranchPushFailure(ctx, tip, "push-failed")
+		// Fresh budget: pushCtx may already be spent after a stall.
+		cp.preserveBlockedTip(ctx, tip)
+		return
+	}
+	cp.noteBranchPushSuccess()
+	cp.logger.Info("checkpoint: pushed session branch", "branch", cp.branch, "sha", tip)
+}
+
+// now returns the checkpointer's clock, defaulting to time.Now for
+// zero-value fixtures.
+func (cp *checkpointer) now() time.Time {
+	if cp.nowFn != nil {
+		return cp.nowFn()
+	}
+	return time.Now()
+}
+
+// branchPushSuppressed reports whether this exact tip already failed within
+// branchPushRetryInterval and must not be retried (or re-announced) yet.
+func (cp *checkpointer) branchPushSuppressed(tip string) bool {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	return cp.failedTip == tip && cp.now().Before(cp.failedAt.Add(branchPushRetryInterval))
+}
+
+// recordBranchPushFailure latches the tip for branchPushRetryInterval and, the
+// first time this tip fails, warns and publishes session.branch_backup_degraded
+// so the user learns their committed work is not backing up instead of
+// watching every push fail silently in the worker log.
+func (cp *checkpointer) recordBranchPushFailure(ctx context.Context, tip, reason string) {
+	cp.mu.Lock()
+	cp.failedTip, cp.failedAt = tip, cp.now()
+	announce := cp.warnedTip != tip
+	cp.warnedTip = tip
+	cp.mu.Unlock()
+	if !announce {
+		return
+	}
+	cp.logger.Warn("checkpoint: session branch backup degraded",
+		"branch", cp.branch, "sha", tip, "reason", reason)
+	if cp.client == nil {
+		return
+	}
+	if err := cp.client.publishEvent(ctx, "session.branch_backup_degraded", map[string]any{
+		"branch": cp.branch,
+		"sha":    tip,
+		"reason": reason,
+	}); err != nil {
+		cp.logger.Warn("checkpoint: publish branch backup degraded event", "error", err)
+	}
+}
+
+// noteBranchPushSuccess clears the failure latch: the tip is on origin (our
+// push or the agent's), so a later failure for a different tip must warn again.
+func (cp *checkpointer) noteBranchPushSuccess() {
+	cp.mu.Lock()
+	cp.failedTip, cp.failedAt, cp.warnedTip = "", time.Time{}, ""
+	cp.mu.Unlock()
+}
+
+// preserveBlockedTip force-pushes the session's tip to the AO-owned
+// refs/ao/preserved-branch/<session-id> ref when origin/<branch> itself
+// rejected it (or the divergence gate predicted the rejection). The ref has no
+// remote counterpart to conflict with, so the tip stays fetchable for
+// boot-time restore even while the visible branch is blocked. Best-effort:
+// failure only logs — the latch already bounds retries for this tip.
+func (cp *checkpointer) preserveBlockedTip(ctx context.Context, tip string) {
+	pushCtx, cancel := context.WithTimeout(ctx, branchPushTimeout)
+	defer cancel()
+	if _, err := cp.git.Run(pushCtx, cp.workspace,
+		map[string]string{"GIT_TERMINAL_PROMPT": "0"},
+		"push", "--force", "origin", tip+":"+worker.PreservedBranchRef(cp.sessionID),
+	); err != nil {
+		cp.logger.Warn("checkpoint: preserve blocked session branch tip",
+			"branch", cp.branch, "sha", tip, "error", err)
+	}
+}
+
+// isAncestor reports whether ancestor is an ancestor of — or equals — descendant.
+func (cp *checkpointer) isAncestor(ctx context.Context, ancestor, descendant string) bool {
+	_, err := cp.git.Run(ctx, cp.workspace, nil, "merge-base", "--is-ancestor", ancestor, descendant)
+	return err == nil
+}
+
+// revParse resolves a ref to its commit SHA; ok is false when the ref is absent.
+func (cp *checkpointer) revParse(ctx context.Context, ref string) (string, bool) {
+	out, err := cp.git.Run(ctx, cp.workspace, nil, "rev-parse", "--verify", "--quiet", ref)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(out), true
 }
 
 // preserveWork commits any uncommitted work in the checkout to

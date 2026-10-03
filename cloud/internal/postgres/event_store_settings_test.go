@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
@@ -23,5 +24,11 @@ func TestChatMessagePayloadKeepsLegacyIdempotencyShapeWithoutSettings(t *testing
 	}
 	if string(with) != `{"text":"hello","model":"codex-test","reasoningEffort":"high","mode":"standard","approvalMode":"auto"}` {
 		t.Fatalf("selected payload = %s", with)
+	}
+}
+
+func TestClientEventTypesIncludeSessionBranchBackupDegraded(t *testing.T) {
+	if !slices.Contains(clientEventTypes, "session.branch_backup_degraded") {
+		t.Fatal("session.branch_backup_degraded must stay in clientEventTypes or poll/SSE consumers silently stop seeing degraded branch backups")
 	}
 }

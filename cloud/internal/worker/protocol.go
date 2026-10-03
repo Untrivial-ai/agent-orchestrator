@@ -14,15 +14,20 @@ type BootstrapRequest struct {
 
 // LaunchContext is the durable session context handed to a bootstrapped worker.
 type LaunchContext struct {
-	SessionID      string `json:"sessionId"`
-	ProjectID      string `json:"projectId"`
-	Kind           string `json:"kind"`
-	Harness        string `json:"harness"`
-	DisplayName    string `json:"displayName"`
-	Branch         string `json:"branch"`
-	Prompt         string `json:"prompt,omitempty"`
-	AgentSessionID string `json:"agentSessionId,omitempty"`
-	Interface      string `json:"interface"`
+	SessionID   string `json:"sessionId"`
+	ProjectID   string `json:"projectId"`
+	Kind        string `json:"kind"`
+	Harness     string `json:"harness"`
+	DisplayName string `json:"displayName"`
+	Branch      string `json:"branch"`
+	// SessionBranchTip is the commit SHA the control plane last attested as
+	// pushed to origin/<branch> (empty when no push has been attested). The
+	// worker adopts an origin-only branch only when this tip is an ancestor of
+	// the remote ref, so a force-pushed remote tip is never silently trusted.
+	SessionBranchTip string `json:"sessionBranchTip,omitempty"`
+	Prompt           string `json:"prompt,omitempty"`
+	AgentSessionID   string `json:"agentSessionId,omitempty"`
+	Interface        string `json:"interface"`
 	// ParentSessionID is the orchestrator that spawned this session; empty for
 	// top-level sessions.
 	ParentSessionID string `json:"parentSessionId,omitempty"`

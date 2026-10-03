@@ -9,17 +9,20 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// PutSessionTranscript upserts the latest captured harness transcript and
-// preserved git ref for a session. It is the worker capture path: the worker
-// periodically pushes its transcript blob so a later RESTORE can rehydrate a
-// fresh sandbox under the same session_id. Scoped to the worker's own
-// organization (withOrg), so row-level security still confines the write to one
-// tenant even though there is no user principal on this path.
+// PutSessionTranscript upserts the latest captured harness transcript,
+// preserved git ref, and session branch tip for a session. It is the worker
+// capture path: the worker periodically pushes its transcript blob so a later
+// RESTORE can rehydrate a fresh sandbox under the same session_id. Scoped to
+// the worker's own organization (withOrg), so row-level security still confines
+// the write to one tenant even though there is no user principal on this path.
+// An empty sessionBranchTip never clears a previously recorded tip: the tip is
+// only ever advanced by a non-empty value (the control plane's attestation of
+// what the worker last reported).
 func (s *Store) PutSessionTranscript(
 	ctx context.Context,
 	orgID, sessionID, agentSessionID, harness string,
 	transcript []byte,
-	preservedGitRef string,
+	preservedGitRef, sessionBranchTip string,
 ) error {
 	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		// INSERT ... SELECT FROM ao_sessions gates the write on the session
@@ -29,9 +32,9 @@ func (s *Store) PutSessionTranscript(
 			ctx,
 			`INSERT INTO ao_session_transcripts (
 				org_id, session_id, agent_session_id, harness,
-				transcript, preserved_git_ref, captured_at, updated_at
+				transcript, preserved_git_ref, session_branch_tip, captured_at, updated_at
 			)
-			SELECT $1, $2, $3, $4, $5, $6, now(), now()
+			SELECT $1, $2, $3, $4, $5, $6, $7, now(), now()
 			FROM ao_sessions
 			WHERE id = $2 AND org_id = $1
 			ON CONFLICT (org_id, session_id) DO UPDATE
@@ -39,9 +42,15 @@ func (s *Store) PutSessionTranscript(
 				harness = EXCLUDED.harness,
 				transcript = EXCLUDED.transcript,
 				preserved_git_ref = EXCLUDED.preserved_git_ref,
+				session_branch_tip = CASE
+					WHEN EXCLUDED.session_branch_tip = ''
+						THEN ao_session_transcripts.session_branch_tip
+					ELSE EXCLUDED.session_branch_tip
+				END,
 				captured_at = now(),
 				updated_at = now()`,
-			orgID, sessionID, agentSessionID, harness, transcript, preservedGitRef,
+			orgID, sessionID, agentSessionID, harness, transcript,
+			preservedGitRef, sessionBranchTip,
 		)
 		if err != nil {
 			return fmt.Errorf("put session transcript: %w", err)
@@ -216,15 +225,17 @@ func (s *Store) SessionTranscripts() *SessionTranscriptStore {
 	return &SessionTranscriptStore{store: s}
 }
 
-// Put stores the latest captured transcript for a session.
+// Put stores the latest captured transcript for a session. An empty
+// sessionBranchTip never clears a previously recorded tip.
 func (t *SessionTranscriptStore) Put(
 	ctx context.Context,
 	orgID, sessionID, agentSessionID, harness string,
 	transcript []byte,
-	preservedGitRef string,
+	preservedGitRef, sessionBranchTip string,
 ) error {
 	return t.store.PutSessionTranscript(
-		ctx, orgID, sessionID, agentSessionID, harness, transcript, preservedGitRef,
+		ctx, orgID, sessionID, agentSessionID, harness, transcript,
+		preservedGitRef, sessionBranchTip,
 	)
 }
 

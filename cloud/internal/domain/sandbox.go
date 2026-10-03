@@ -119,18 +119,22 @@ type AccessTicket struct {
 // WorkerLaunch is the durable session context a bootstrapped worker needs in
 // order to clone the repository and start a harness.
 type WorkerLaunch struct {
-	OrgID          string
-	SessionID      string
-	ProjectID      string
-	ProjectName    string
-	ProjectConfig  json.RawMessage
-	Kind           string
-	Harness        string
-	DisplayName    string
-	Branch         string
-	Prompt         string
-	AgentSessionID string
-	Interface      SessionInterface
+	OrgID         string
+	SessionID     string
+	ProjectID     string
+	ProjectName   string
+	ProjectConfig json.RawMessage
+	Kind          string
+	Harness       string
+	DisplayName   string
+	Branch        string
+	// SessionBranchTip is the commit SHA the control plane last recorded as the
+	// session branch tip (empty when never captured). The worker adopts an
+	// origin-only branch only when this tip is an ancestor of the remote ref.
+	SessionBranchTip string
+	Prompt           string
+	AgentSessionID   string
+	Interface        SessionInterface
 	// ParentSessionID is the orchestrator that spawned this session, empty for
 	// top-level sessions. It gates the worker:report scope and the report
 	// guidance in the worker prompt.

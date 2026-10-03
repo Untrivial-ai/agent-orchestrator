@@ -21,7 +21,18 @@ const (
 	// WorkspaceReviewBaseRef is an immutable, AO-owned baseline stored with the
 	// checkout so committed changes survive worker restarts and restores.
 	WorkspaceReviewBaseRef = "refs/ao/diff-base"
+	// PreservedBranchRefPrefix namespaces the AO-owned ref that carries a
+	// session's branch tip when origin/<branch> itself is blocked
+	// (non-fast-forward) or has been rewritten, so boot-time restore always has
+	// an attestable fetch location for the session's own lineage. Force-pushed
+	// by the checkpoint, gated by the control plane's attested tip on restore.
+	PreservedBranchRefPrefix = "refs/ao/preserved-branch/"
 )
+
+// PreservedBranchRef is the full AO-owned fallback ref for a session's branch.
+func PreservedBranchRef(sessionID string) string {
+	return PreservedBranchRefPrefix + sessionID
+}
 
 type GitRunner interface {
 	Run(context.Context, string, map[string]string, ...string) (string, error)
@@ -247,20 +258,22 @@ func cloneIntoNonEmptyWorkspace(ctx context.Context, runner GitRunner, workspace
 	return nil
 }
 
-// ConfigureWorkerGit prepares the assigned branch and a repo-local credential
-// helper that brokers a fresh scoped token for each GitHub network operation.
-// The helper stores only the rotating worker-token path, never a GitHub token.
+// ConfigureWorkerGit prepares a repo-local credential helper that brokers a
+// fresh scoped token for each GitHub network operation. The helper stores only
+// the rotating worker-token path, never a GitHub token. Restoring the session
+// branch is deliberately separate: it is best-effort (CheckoutSessionBranch)
+// and never blocks startup.
 func ConfigureWorkerGit(
 	ctx context.Context,
 	runner GitRunner,
-	workspace, dataDir, publicURL, sessionID, branch string,
+	workspace, dataDir, publicURL, sessionID string,
 ) error {
 	if runner == nil {
 		return errors.New("git runner is required")
 	}
 	for label, value := range map[string]string{
 		"workspace": workspace, "data directory": dataDir, "public URL": publicURL,
-		"session ID": sessionID, "branch": branch,
+		"session ID": sessionID,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s is required", label)
@@ -385,7 +398,6 @@ GH_TOKEN="$github_token" exec "$real_gh" "$@"
 		{"config", "--local", "--replace-all", "credential.useHttpPath", "true"},
 		{"config", "--local", "--replace-all", "user.name", cloudGitAuthorName},
 		{"config", "--local", "--replace-all", "user.email", cloudGitAuthorEmail},
-		{"checkout", "-B", branch},
 	}
 	for _, command := range commands {
 		if _, err := runner.Run(ctx, workspace, nil, command...); err != nil {
@@ -393,6 +405,173 @@ GH_TOKEN="$github_token" exec "$real_gh" "$@"
 		}
 	}
 	return nil
+}
+
+// CheckoutSessionBranch restores the workspace onto the session's branch as a
+// best-effort, lineage-preserving operation. The restoration intent is chosen
+// from durable facts only:
+//
+//  1. Local branch exists: switch to it, but only when HEAD cannot move the
+//     tree backwards (HEAD is an ancestor of — or equal to — the branch).
+//  2. Only origin/<branch> exists: recreate the branch from it ONLY when the
+//     control plane attested a tip that is an ancestor of the remote ref. An
+//     unattested remote tip may be attacker-controlled (force-push race), so it
+//     is never adopted silently.
+//  3. When a tip was attested but the visible branch is blocked or rewritten,
+//     recover the session's own lineage from the AO-owned preserved-branch ref,
+//     gated by the same attestation.
+//  4. Otherwise (fresh branch, or every intent failed): fall back to
+//     `checkout -B <branch>` at the current HEAD — a tree no-op that keeps the
+//     worker on a well-named branch.
+//
+// Dirty worktrees are carried across tree-moving switches with a stash (popped
+// after the switch; retained by git on conflict). A returned error means the
+// intended lineage was NOT restored — callers must treat it as a degraded,
+// non-fatal warning, never a startup failure.
+func CheckoutSessionBranch(
+	ctx context.Context,
+	runner GitRunner,
+	workspace, branch, sessionID, attestedTip string,
+) error {
+	if runner == nil {
+		return errors.New("git runner is required")
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return errors.New("session branch is required")
+	}
+	attestedTip = strings.TrimSpace(attestedTip)
+	attested := attestedTip != ""
+	branchRef := "refs/heads/" + branch
+	originRef := "refs/remotes/origin/" + branch
+	var degraded error
+
+	if refExists(ctx, runner, workspace, branchRef) {
+		// Persistent workspace: switch only when the branch cannot move the tree
+		// backwards. The local branch is authoritative here, so no fallback ref is
+		// consulted when the switch is skipped or fails.
+		if !isAncestor(ctx, runner, workspace, "HEAD", branchRef) {
+			degraded = fmt.Errorf("workspace has commits ahead of local session branch %q; not switching backwards", branch)
+		} else if err := checkoutWithDirtyCarry(ctx, runner, workspace, "checkout", branch); err != nil {
+			degraded = fmt.Errorf("switch to local session branch %q: %w", branch, err)
+		} else {
+			return nil
+		}
+	} else {
+		originExists := refExists(ctx, runner, workspace, originRef)
+		switch {
+		case originExists && attested &&
+			isAncestor(ctx, runner, workspace, attestedTip, originRef):
+			if err := checkoutWithDirtyCarry(ctx, runner, workspace, "checkout", "-B", branch, "origin/"+branch); err == nil {
+				return nil
+			} else {
+				degraded = fmt.Errorf("restore session branch %q from origin: %w", branch, err)
+			}
+		case originExists && !attested:
+			degraded = fmt.Errorf("origin/%s tip is not attested by the control plane; not adopting it", branch)
+		case originExists:
+			degraded = fmt.Errorf("origin/%s does not contain the attested session tip", branch)
+		default:
+			if attested {
+				degraded = fmt.Errorf("origin/%s is unavailable for the attested session tip", branch)
+			}
+		}
+		if attested {
+			if err := checkoutFromPreservedBranch(ctx, runner, workspace, branch, sessionID, attestedTip); err == nil {
+				return nil
+			} else if degraded != nil {
+				degraded = fmt.Errorf("%w (preserved-branch fallback: %v)", degraded, err)
+			} else {
+				degraded = err
+			}
+		}
+	}
+
+	// Fallback: put the workspace on the branch name at the current HEAD without
+	// moving the tree. Safe on any state; the branch may re-anchor to HEAD, which
+	// is why degraded cases report the lost lineage explicitly (recoverable via
+	// reflog and, when previously pushed, origin/<branch>).
+	if _, err := runner.Run(ctx, workspace, nil, "checkout", "-B", branch); err != nil {
+		if degraded != nil {
+			return fmt.Errorf("%w; fallback checkout failed: %v", degraded, err)
+		}
+		return fmt.Errorf("checkout session branch %q: %w", branch, err)
+	}
+	if degraded != nil {
+		return degraded
+	}
+	return nil
+}
+
+// checkoutFromPreservedBranch fetches the AO-owned preserved-branch ref for the
+// session and checks it out as the session branch, but only when the ref
+// contains the control plane's attested tip — the same gate as origin/<branch>.
+// An error means nothing was checked out (ref absent, unattested, or the
+// checkout itself failed); callers fall through to the no-op fallback.
+func checkoutFromPreservedBranch(
+	ctx context.Context,
+	runner GitRunner,
+	workspace, branch, sessionID, attestedTip string,
+) error {
+	ref := PreservedBranchRef(sessionID)
+	if _, err := runner.Run(ctx, workspace, nil, "fetch", "origin", ref+":"+ref); err != nil {
+		return fmt.Errorf("fetch preserved branch ref: %w", err)
+	}
+	if !isAncestor(ctx, runner, workspace, attestedTip, ref) {
+		return fmt.Errorf("preserved branch ref does not contain the attested session tip")
+	}
+	return checkoutWithDirtyCarry(ctx, runner, workspace, "checkout", "-B", branch, ref)
+}
+
+// checkoutWithDirtyCarry runs a tree-moving checkout while carrying uncommitted
+// work across the switch: a dirty workspace is stashed first and popped after.
+// A failed pop is reported even when the checkout itself succeeded (the stash
+// entry is retained by git so no work is lost).
+func checkoutWithDirtyCarry(ctx context.Context, runner GitRunner, workspace string, args ...string) error {
+	dirty, err := workspaceDirty(ctx, runner, workspace)
+	if err != nil {
+		return fmt.Errorf("inspect workspace state: %w", err)
+	}
+	stashed := false
+	if dirty {
+		if _, err := runner.Run(ctx, workspace, nil,
+			"stash", "push", "--include-untracked", "-m", "ao-session-branch-boot"); err != nil {
+			return fmt.Errorf("stash dirty workspace: %w", err)
+		}
+		stashed = true
+	}
+	_, checkoutErr := runner.Run(ctx, workspace, nil, args...)
+	if stashed {
+		if _, popErr := runner.Run(ctx, workspace, nil, "stash", "pop"); popErr != nil {
+			if checkoutErr != nil {
+				return fmt.Errorf("checkout %v: %v (stash pop failed: %v; stash retained)", args, checkoutErr, popErr)
+			}
+			return fmt.Errorf("restore stashed workspace state: %w (stash retained)", popErr)
+		}
+	}
+	if checkoutErr != nil {
+		return fmt.Errorf("checkout %v: %w", args, checkoutErr)
+	}
+	return nil
+}
+
+func workspaceDirty(ctx context.Context, runner GitRunner, workspace string) (bool, error) {
+	out, err := runner.Run(ctx, workspace, nil, "status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
+// isAncestor reports whether ancestor is an ancestor of — or equals — descendant.
+func isAncestor(ctx context.Context, runner GitRunner, workspace, ancestor, descendant string) bool {
+	_, err := runner.Run(ctx, workspace, nil, "merge-base", "--is-ancestor", ancestor, descendant)
+	return err == nil
+}
+
+func refExists(ctx context.Context, runner GitRunner, workspace, ref string) bool {
+	_, err := runner.Run(ctx, workspace, nil, "rev-parse", "--verify", "--quiet", ref)
+	return err == nil
 }
 
 func ToolingBinDir(dataDir string) string {

@@ -78,10 +78,11 @@ func (s *Server) patWriteGrant(ctx context.Context, claims worker.Claims) (worke
 // Worker events are namespaced so a compromised sandbox cannot forge a
 // control-plane or billing event onto its own session stream.
 var workerEventTypes = map[string]struct{}{
-	"agent.activity":       {},
-	"agent.ready":          {},
-	"worker.ready":         {},
-	"chat.assistant_delta": {},
+	"agent.activity":                 {},
+	"agent.ready":                    {},
+	"worker.ready":                   {},
+	"chat.assistant_delta":           {},
+	"session.branch_backup_degraded": {},
 }
 
 const (
@@ -267,23 +268,24 @@ func launchContextFrom(launch domain.WorkerLaunch) (worker.LaunchContext, error)
 		ExtraRepos:        promptExtras,
 	})
 	return worker.LaunchContext{
-		SessionID:       launch.SessionID,
-		ProjectID:       launch.ProjectID,
-		Kind:            launch.Kind,
-		Harness:         launch.Harness,
-		DisplayName:     launch.DisplayName,
-		Branch:          launch.Branch,
-		Prompt:          launch.Prompt,
-		AgentSessionID:  launch.AgentSessionID,
-		Interface:       string(launch.Interface),
-		ParentSessionID: launch.ParentSessionID,
-		Mode:            launch.Mode,
-		Model:           launch.Model,
-		DeniedCommands:  launch.DeniedCommands,
-		RepositoryURL:   launch.RepositoryURL,
-		DefaultBranch:   launch.DefaultBranch,
-		ExtraRepos:      extraRepos,
-		SystemPrompt:    systemPrompt,
+		SessionID:        launch.SessionID,
+		ProjectID:        launch.ProjectID,
+		Kind:             launch.Kind,
+		Harness:          launch.Harness,
+		DisplayName:      launch.DisplayName,
+		Branch:           launch.Branch,
+		SessionBranchTip: launch.SessionBranchTip,
+		Prompt:           launch.Prompt,
+		AgentSessionID:   launch.AgentSessionID,
+		Interface:        string(launch.Interface),
+		ParentSessionID:  launch.ParentSessionID,
+		Mode:             launch.Mode,
+		Model:            launch.Model,
+		DeniedCommands:   launch.DeniedCommands,
+		RepositoryURL:    launch.RepositoryURL,
+		DefaultBranch:    launch.DefaultBranch,
+		ExtraRepos:       extraRepos,
+		SystemPrompt:     systemPrompt,
 	}, nil
 }
 

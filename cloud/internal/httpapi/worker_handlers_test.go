@@ -71,3 +71,28 @@ func TestIssuedWorkerScopesDoesNotMutateTicket(t *testing.T) {
 		t.Fatal("issuedWorkerScopes mutated the ticket's scope slice")
 	}
 }
+
+func TestAllowedWorkerEventTypeIncludesSessionBranchBackupDegraded(t *testing.T) {
+	if !allowedWorkerEventType("session.branch_backup_degraded") {
+		t.Fatal("session.branch_backup_degraded must pass allowedWorkerEventType so a degraded branch backup reaches the control plane")
+	}
+	if allowedWorkerEventType("session.branch_backup_degraded.forge") {
+		t.Fatal("event types outside the worker allowlist must stay rejected")
+	}
+	if allowedWorkerEventType("") {
+		t.Fatal("empty event types must stay rejected")
+	}
+}
+
+func TestLaunchContextFromCarriesSessionBranchTip(t *testing.T) {
+	launch, err := launchContextFrom(domain.WorkerLaunch{
+		SessionID:        "session-1",
+		SessionBranchTip: "deadbeef",
+	})
+	if err != nil {
+		t.Fatalf("launchContextFrom: %v", err)
+	}
+	if launch.SessionBranchTip != "deadbeef" {
+		t.Fatalf("SessionBranchTip = %q, want %q", launch.SessionBranchTip, "deadbeef")
+	}
+}

@@ -104,7 +104,7 @@ func TestConfigureWorkerGitCredentialHelperScopesRepo(t *testing.T) {
 	workspace := t.TempDir()
 	if err := ConfigureWorkerGit(
 		context.Background(), noopGitRunner{},
-		workspace, dataDir, "https://cp.example.com", "sess-xyz", "ao/branch",
+		workspace, dataDir, "https://cp.example.com", "sess-xyz",
 	); err != nil {
 		t.Fatalf("ConfigureWorkerGit: %v", err)
 	}
@@ -349,4 +349,176 @@ func TestCloneExtraRepoDoesNotPersistToken(t *testing.T) {
 	if strings.Contains(origin, token) || strings.Contains(origin, "x-access-token") {
 		t.Fatalf("origin url is credentialed: %s", origin)
 	}
+}
+
+// TestCheckoutSessionBranchStartPoints covers the lineage decisions of the
+// best-effort session-branch restore: a local branch is switched to only when
+// the switch cannot move the tree backwards, an origin-only branch is adopted
+// only when the control plane attested its tip, and every skipped or failed
+// intent falls back to `checkout -B <branch>` at the current HEAD (a tree
+// no-op) while reporting the lost lineage as a degraded error.
+func TestCheckoutSessionBranchStartPoints(t *testing.T) {
+	t.Run("local branch exists: switch only", func(t *testing.T) {
+		repo := initReviewBaseRepository(t)
+		gitRun(t, repo, "checkout", "-b", "ao/sess")
+		if err := os.WriteFile(filepath.Join(repo, "work.txt"), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitRun(t, repo, "add", "work.txt")
+		gitRun(t, repo, "commit", "-m", "session commit")
+		branchTip := gitOutput(t, repo, "rev-parse", "HEAD")
+		gitRun(t, repo, "checkout", "main")
+
+		if err := CheckoutSessionBranch(context.Background(), ExecGitRunner{}, repo, "ao/sess", "sess-1", ""); err != nil {
+			t.Fatalf("CheckoutSessionBranch: %v", err)
+		}
+		if got := gitOutput(t, repo, "rev-parse", "--abbrev-ref", "HEAD"); got != "ao/sess" {
+			t.Fatalf("HEAD=%q, want ao/sess", got)
+		}
+		if got := gitOutput(t, repo, "rev-parse", "HEAD"); got != branchTip {
+			t.Fatalf("branch tip %s, want %s (local branch must not be reset)", got, branchTip)
+		}
+	})
+
+	t.Run("origin-only branch: adopt attested tip", func(t *testing.T) {
+		repo := initReviewBaseRepository(t)
+		// Build a commit that exists only as origin/ao/sess: main tip + one commit.
+		gitRun(t, repo, "checkout", "-b", "tmp")
+		if err := os.WriteFile(filepath.Join(repo, "pushed.txt"), []byte("p\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitRun(t, repo, "add", "pushed.txt")
+		gitRun(t, repo, "commit", "-m", "pushed commit")
+		remoteTip := gitOutput(t, repo, "rev-parse", "HEAD")
+		gitRun(t, repo, "checkout", "main")
+		gitRun(t, repo, "branch", "-D", "tmp")
+		gitRun(t, repo, "update-ref", "refs/remotes/origin/ao/sess", remoteTip)
+
+		if err := CheckoutSessionBranch(context.Background(), ExecGitRunner{}, repo, "ao/sess", "sess-1", remoteTip); err != nil {
+			t.Fatalf("CheckoutSessionBranch: %v", err)
+		}
+		if got := gitOutput(t, repo, "rev-parse", "--abbrev-ref", "HEAD"); got != "ao/sess" {
+			t.Fatalf("HEAD=%q, want ao/sess", got)
+		}
+		if got := gitOutput(t, repo, "rev-parse", "HEAD"); got != remoteTip {
+			t.Fatalf("branch tip %s, want %s (must start at origin/ao/sess, not default tip)", got, remoteTip)
+		}
+	})
+
+	t.Run("origin-only branch: unattested tip is not adopted", func(t *testing.T) {
+		repo := initReviewBaseRepository(t)
+		gitRun(t, repo, "checkout", "-b", "tmp")
+		if err := os.WriteFile(filepath.Join(repo, "pushed.txt"), []byte("p\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitRun(t, repo, "add", "pushed.txt")
+		gitRun(t, repo, "commit", "-m", "pushed commit")
+		remoteTip := gitOutput(t, repo, "rev-parse", "HEAD")
+		gitRun(t, repo, "checkout", "main")
+		gitRun(t, repo, "branch", "-D", "tmp")
+		gitRun(t, repo, "update-ref", "refs/remotes/origin/ao/sess", remoteTip)
+		headTip := gitOutput(t, repo, "rev-parse", "HEAD")
+
+		// No attestation: the remote tip is untrusted, so the workspace stays at
+		// HEAD on a branch re-anchored there, with a degraded error.
+		err := CheckoutSessionBranch(context.Background(), ExecGitRunner{}, repo, "ao/sess", "sess-1", "")
+		if err == nil {
+			t.Fatal("want degraded error for unattested origin tip, got nil")
+		}
+		if got := gitOutput(t, repo, "rev-parse", "--abbrev-ref", "HEAD"); got != "ao/sess" {
+			t.Fatalf("HEAD=%q, want ao/sess", got)
+		}
+		if got := gitOutput(t, repo, "rev-parse", "HEAD"); got != headTip {
+			t.Fatalf("HEAD tip %s, want %s (unattested origin tip must not be adopted)", got, headTip)
+		}
+	})
+
+	t.Run("origin-only branch: attested tip not on origin is not adopted", func(t *testing.T) {
+		repo := initReviewBaseRepository(t)
+		gitRun(t, repo, "checkout", "-b", "tmp")
+		if err := os.WriteFile(filepath.Join(repo, "pushed.txt"), []byte("p\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitRun(t, repo, "add", "pushed.txt")
+		gitRun(t, repo, "commit", "-m", "pushed commit")
+		remoteTip := gitOutput(t, repo, "rev-parse", "HEAD")
+		gitRun(t, repo, "checkout", "main")
+		gitRun(t, repo, "branch", "-D", "tmp")
+		// An attested tip that is not an ancestor of the origin ref (here a
+		// commit object that does not exist locally) cannot vouch for the remote
+		// state, so adoption is refused.
+		unrelated := strings.Repeat("f", 40)
+		gitRun(t, repo, "update-ref", "refs/remotes/origin/ao/sess", remoteTip)
+		headTip := gitOutput(t, repo, "rev-parse", "HEAD")
+
+		err := CheckoutSessionBranch(context.Background(), ExecGitRunner{}, repo, "ao/sess", "sess-1", unrelated)
+		if err == nil {
+			t.Fatalf("want degraded error when attested tip %s is not on origin", unrelated)
+		}
+		if got := gitOutput(t, repo, "rev-parse", "HEAD"); got != headTip {
+			t.Fatalf("HEAD tip %s, want %s", got, headTip)
+		}
+	})
+
+	t.Run("local branch behind HEAD: no backward switch", func(t *testing.T) {
+		repo := initReviewBaseRepository(t)
+		gitRun(t, repo, "branch", "ao/sess")
+		if err := os.WriteFile(filepath.Join(repo, "newer.txt"), []byte("n\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitRun(t, repo, "add", "newer.txt")
+		gitRun(t, repo, "commit", "-m", "ahead commit")
+		headTip := gitOutput(t, repo, "rev-parse", "HEAD")
+
+		// HEAD is not an ancestor of ao/sess (ao/sess is behind): switching would
+		// roll the tree backwards, so the intent is skipped, the branch re-anchors
+		// to HEAD without moving the tree, and a degraded error is reported.
+		err := CheckoutSessionBranch(context.Background(), ExecGitRunner{}, repo, "ao/sess", "sess-1", "")
+		if err == nil {
+			t.Fatal("want degraded error for backward switch, got nil")
+		}
+		if got := gitOutput(t, repo, "rev-parse", "--abbrev-ref", "HEAD"); got != "ao/sess" {
+			t.Fatalf("HEAD=%q, want ao/sess", got)
+		}
+		if got := gitOutput(t, repo, "rev-parse", "HEAD"); got != headTip {
+			t.Fatalf("HEAD tip %s, want %s (tree must not move backwards)", got, headTip)
+		}
+	})
+
+	t.Run("new branch: start at HEAD", func(t *testing.T) {
+		repo := initReviewBaseRepository(t)
+		mainTip := gitOutput(t, repo, "rev-parse", "HEAD")
+
+		if err := CheckoutSessionBranch(context.Background(), ExecGitRunner{}, repo, "ao/newsession", "sess-1", ""); err != nil {
+			t.Fatalf("CheckoutSessionBranch: %v", err)
+		}
+		if got := gitOutput(t, repo, "rev-parse", "--abbrev-ref", "HEAD"); got != "ao/newsession" {
+			t.Fatalf("HEAD=%q, want ao/newsession", got)
+		}
+		if got := gitOutput(t, repo, "rev-parse", "HEAD"); got != mainTip {
+			t.Fatalf("branch tip %s, want %s", got, mainTip)
+		}
+	})
+
+	t.Run("dirty workspace: uncommitted work carried across the switch", func(t *testing.T) {
+		repo := initReviewBaseRepository(t)
+		gitRun(t, repo, "checkout", "-b", "ao/sess")
+		gitRun(t, repo, "checkout", "main")
+		if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("d\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := CheckoutSessionBranch(context.Background(), ExecGitRunner{}, repo, "ao/sess", "sess-1", ""); err != nil {
+			t.Fatalf("CheckoutSessionBranch: %v", err)
+		}
+		if got := gitOutput(t, repo, "rev-parse", "--abbrev-ref", "HEAD"); got != "ao/sess" {
+			t.Fatalf("HEAD=%q, want ao/sess", got)
+		}
+		if _, err := os.Stat(filepath.Join(repo, "dirty.txt")); err != nil {
+			t.Fatalf("uncommitted file lost across the switch: %v", err)
+		}
+		if out := gitOutput(t, repo, "stash", "list"); out != "" {
+			t.Fatalf("stash not consumed: %q", out)
+		}
+	})
 }
