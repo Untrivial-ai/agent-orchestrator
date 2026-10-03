@@ -17,7 +17,7 @@ Give every coding task its own agent, workspace, and feedback loop.<br />
 Plan and delegate larger outcomes with a project-aware orchestrator.<br />
 Follow every worker, pull request, CI run, and review in a live Kanban.
 
-[**Download AO**](#install) &nbsp;&bull;&nbsp; [Documentation](https://docs.aoagents.dev) &nbsp;&bull;&nbsp; [Releases](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [Contributing](CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
+[**Download AO**](#install) &nbsp;&bull;&nbsp; [Documentation](https://docs.orchestrator.inc) &nbsp;&bull;&nbsp; [Releases](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [Contributing](CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
 
 **English** · [简体中文](translations/README.zh-CN.md) · [日本語](translations/README.ja.md) · [한국어](translations/README.ko.md) · [Español](translations/README.es.md) · [Français](translations/README.fr.md) · [Deutsch](translations/README.de.md) · [Português (Brasil)](translations/README.pt-BR.md)
 
@@ -48,9 +48,9 @@ Download the latest AO desktop app for your platform. AO checks for updates auto
 | Linux (Fedora/RHEL)   | [Download](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.rpm)      |
 
 On macOS, if the app will not open and says the developer cannot be verified, right-click it and choose **Open**, then **Open** again.
-If that still does not open it, please [open an issue](https://github.com/Untrivial-ai/agent-orchestrator/issues/new?template=bug_report.yml) with Gatekeeper diagnostics — see the [installation guide](https://docs.aoagents.dev/installation) for what to include.
+If that still does not open it, please [open an issue](https://github.com/Untrivial-ai/agent-orchestrator/issues/new?template=bug_report.yml) with Gatekeeper diagnostics — see the [installation guide](https://docs.orchestrator.inc/installation) for what to include.
 
-Open Agent Orchestrator and point it at the repository you want AO to manage. The desktop app runs the daemon for you, so no CLI is required. See the [installation guide](https://docs.aoagents.dev/installation) for agent CLI setup and troubleshooting.
+Open Agent Orchestrator and point it at the repository you want AO to manage. The desktop app runs the daemon for you, so no CLI is required. See the [installation guide](https://docs.orchestrator.inc/installation) for agent CLI setup and troubleshooting.
 
 <img src="docs/assets/readme/tui.png" alt="Agent Orchestrator workspace showing a coding agent's native terminal UI" width="100%" />
 
@@ -189,7 +189,7 @@ AO works with the coding agents and source-control workflow you already use. Age
   </tr>
 </table>
 
-[Browse agent setup guides →](https://docs.aoagents.dev/plugins/agents)
+[Browse agent setup guides →](https://docs.orchestrator.inc/plugins/agents)
 
 **Use the interface that fits the moment: structured Chat or the agent's native terminal UI.**
 
@@ -216,7 +216,7 @@ Start with the [development guide](docs/development.md) for prerequisites, local
 
 | Document                                                         | Start here when you need                                                                     |
 | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| [Product documentation](https://docs.aoagents.dev)                  | Installation, agent setup, and day-to-day product usage.                                     |
+| [Product documentation](https://docs.orchestrator.inc)           | Installation, agent setup, and day-to-day product usage.                                     |
 | [docs/documentation-map.md](docs/documentation-map.md)           | Which docs are human-facing, which are machine-readable contracts, and which wins on drift.  |
 | [docs/architecture.md](docs/architecture.md)                     | Backend mental model, lifecycle, persistence, CDC, status derivation, and daemon boundaries. |
 | [docs/backend-code-structure.md](docs/backend-code-structure.md) | Package ownership and where each backend concern belongs.                                    |
