@@ -70,6 +70,15 @@ let previewShellSeq = 0;
 // their tab metadata for this Electron renderer lifetime; the terminal itself
 // is created when its ticketed control-plane WebSocket connects.
 let cloudShellTerminals: ShellTerminal[] = [];
+// Shells whose close is still in flight, per host. Closing several tabs in a
+// row refetches the list as each close settles, and the daemon can answer one
+// refetch before it has processed the other pending deletes; without this, a
+// tab the user already closed would reappear until its own close settles.
+const closingShellHandles = new Map<string, Set<string>>();
+
+function closingHostKey(hostId?: HostId): string {
+	return hostId && hostId !== LOCAL_HOST ? hostId : LOCAL_HOST;
+}
 
 async function fetchShellTerminals(hostId?: HostId): Promise<ShellTerminal[]> {
 	const remote = Boolean(hostId && hostId !== LOCAL_HOST);
@@ -81,7 +90,13 @@ async function fetchShellTerminals(hostId?: HostId): Promise<ShellTerminal[]> {
 	}
 	const { data, error } = await clientForSessionHost(hostId).GET("/api/v1/shell-terminals");
 	if (error) throw error;
-	return [...(data?.shellTerminals ?? []).map((terminal) => toShellTerminal(terminal, hostId)), ...(remote ? [] : cloudShellTerminals)];
+	const closing = closingShellHandles.get(closingHostKey(hostId));
+	return [
+		...(data?.shellTerminals ?? [])
+			.filter((terminal) => !closing?.has(terminal.handleId))
+			.map((terminal) => toShellTerminal(terminal, hostId)),
+		...(remote ? [] : cloudShellTerminals),
+	];
 }
 
 // No refetchInterval: shell terminals only change when this client opens or
@@ -297,6 +312,8 @@ export function useCloseShellTerminal(hostId?: HostId) {
 			await closeShellTerminal(handleId, hostId);
 		},
 		onMutate: async (handleId) => {
+			const hostKey = closingHostKey(hostId);
+			closingShellHandles.set(hostKey, new Set(closingShellHandles.get(hostKey)).add(handleId));
 			const previous = queryClient.getQueryData<ShellTerminal[]>(queryKey);
 			const isCloud = Boolean(previous?.find((shell) => shell.handleId === handleId)?.cloud);
 			const removeClosedShell = () => {
@@ -323,7 +340,8 @@ export function useCloseShellTerminal(hostId?: HostId) {
 		},
 		// Settled, not success: a close that 404s means the daemon already lost
 		// the shell, and the stale tab still needs to disappear.
-		onSettled: (_data, _error, _handleId, context) => {
+		onSettled: (_data, _error, handleId, context) => {
+			closingShellHandles.get(closingHostKey(hostId))?.delete(handleId);
 			if (!context?.isCloud) void queryClient.invalidateQueries({ queryKey });
 		},
 	});
