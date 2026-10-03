@@ -1,9 +1,10 @@
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type AnimationEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useCommandPaletteEnabled } from "../hooks/useCommandPaletteEnabled";
+import { useCloudCp } from "../hooks/useCloudCp";
 import { useRestoreSession } from "../hooks/useRestoreSession";
 import { cloudSessionsQueryKey, useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
@@ -11,13 +12,23 @@ import { aoBridge } from "../lib/bridge";
 import { spawnCloudOrchestrator } from "../lib/cloud-orchestrator";
 import {
 	buildCommands,
+	buildFileSessionCommands,
 	buildSessionActions,
+	buildWorkspaceFileCommands,
 	displayGroups,
 	filterCommands,
 	findSession,
 	type CommandItem as CommandItemModel,
 	type NavigateTarget,
+	type WorkspaceFileSearchTarget,
+	sessionSupportsFileSearch,
+	workspaceFileSearchTarget,
 } from "../lib/command-palette";
+import {
+	type CommandPaletteFileSearchResponse,
+	commandPaletteFileSearchAvailable,
+	commandPaletteFileSearchQueryOptions,
+} from "../lib/command-palette-file-search";
 import { iconForCommand } from "../lib/command-palette-icons";
 import { isDialogOrMenuOpen } from "../lib/dom-selectors";
 import { isMacPlatform } from "../lib/platform";
@@ -40,11 +51,15 @@ import { CommandDialog, CommandEmpty, CommandFooter, CommandGroup, CommandInput,
 
 const PALETTE_REVIEW_STALE_TIME_MS = 60_000;
 const PALETTE_REVIEW_DEFER_MS = 120;
+const PALETTE_FILE_SEARCH_DEBOUNCE_MS = 200;
+const PALETTE_FILE_SEARCH_MIN_CHARS = 2;
 const EMPTY_REVIEW_STATES: Readonly<Record<string, PRReviewState[]>> = {};
 type PaletteView =
 	| { mode: "root" }
 	| { mode: "session-actions"; sessionId: string }
-	| { mode: "new-task"; projectId: string };
+	| { mode: "new-task"; projectId: string }
+	| { mode: "file-session-picker"; projectId: string }
+	| { mode: "file-search"; target: WorkspaceFileSearchTarget; parent: "root" | "picker" };
 
 function terminalHasFocus(): boolean {
 	if (typeof document === "undefined") return false;
@@ -57,8 +72,9 @@ export function CommandPalette() {
 	const enabled = useCommandPaletteEnabled();
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
+	const cloud = useCloudCp();
 	const restoreSessionById = useRestoreSession();
-	const params = useParams({ strict: false }) as { projectId?: string; sessionId?: string };
+	const params = useParams({ strict: false }) as { hostId?: string; projectId?: string; sessionId?: string };
 	const { cloneProject, createProject, initializeProjectRepository } = useShell();
 	const resolvedTheme = useUiStore((s) => s.resolvedTheme);
 	const setThemePreference = useUiStore((s) => s.setThemePreference);
@@ -72,6 +88,7 @@ export function CommandPalette() {
 
 	const [view, setView] = useState<PaletteView>({ mode: "root" });
 	const [query, setQuery] = useState("");
+	const [debouncedQuery, setDebouncedQuery] = useState("");
 	const [selectedValue, setSelectedValue] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const [pendingId, setPendingId] = useState<string | null>(null);
@@ -89,8 +106,51 @@ export function CommandPalette() {
 	viewRef.current = view;
 	const closeResetTimerRef = useRef<number | null>(null);
 
-	const currentSession = params.sessionId ? findSession(workspaces, params.sessionId)?.session : undefined;
+	const currentSessionContext = useMemo(() => {
+		if (!params.sessionId) return undefined;
+		for (const workspace of workspaces) {
+			if ((workspace.hostId ?? "") !== (params.hostId ?? "")) continue;
+			const session = workspace.sessions.find((candidate) => candidate.id === params.sessionId);
+			if (session) return { workspace, session };
+		}
+		return undefined;
+	}, [params.hostId, params.sessionId, workspaces]);
+	const currentSession = currentSessionContext?.session;
 	const currentProjectId = currentSession?.workspaceId ?? params.projectId;
+	const currentWorkspace = useMemo(
+		() => currentSessionContext?.workspace ?? workspaces.find((workspace) =>
+			workspace.id === currentProjectId && (workspace.hostId ?? "") === (params.hostId ?? "")),
+		[currentProjectId, currentSessionContext, params.hostId, workspaces],
+	);
+	const currentFileTarget = currentWorkspace && currentSession && sessionSupportsFileSearch(currentSession)
+		? workspaceFileSearchTarget(currentWorkspace, currentSession)
+		: undefined;
+
+	useEffect(() => {
+		if (!isOpen || view.mode === "new-task") {
+			setDebouncedQuery("");
+			return;
+		}
+		const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), PALETTE_FILE_SEARCH_DEBOUNCE_MS);
+		return () => window.clearTimeout(timer);
+	}, [isOpen, query, view.mode]);
+
+	const activeFileTarget = view.mode === "file-search"
+		? view.target
+		: view.mode === "root"
+			? currentFileTarget
+			: undefined;
+	const normalizedFileQuery = debouncedQuery.trim();
+	const fileSearchEnabled = isOpen
+		&& normalizedFileQuery.length >= PALETTE_FILE_SEARCH_MIN_CHARS
+		&& commandPaletteFileSearchAvailable(activeFileTarget, cloud.ready);
+	const fileSearchOptions = commandPaletteFileSearchQueryOptions({
+		target: activeFileTarget ?? { projectId: "", sessionId: "" },
+		query: normalizedFileQuery,
+		errorMessage: t("command.searchFilesError"),
+		cloud,
+	});
+	const fileSearchQuery = useQuery<CommandPaletteFileSearchResponse>({ ...fileSearchOptions, enabled: fileSearchEnabled });
 
 	const sessionsWithOpenPRs = useMemo(
 		() =>
@@ -160,10 +220,11 @@ export function CommandPalette() {
 				workspaces,
 				currentProjectId,
 				currentSessionId: params.sessionId,
+				currentHostId: params.hostId,
 				restartingProjectIds,
 				reviewStatesBySessionId: reviewStatesForCommands,
 			}, t),
-		[workspaces, currentProjectId, params.sessionId, restartingProjectIds, reviewStatesForCommands, t, i18n.resolvedLanguage],
+		[workspaces, currentProjectId, params.hostId, params.sessionId, restartingProjectIds, reviewStatesForCommands, t, i18n.resolvedLanguage],
 	);
 	const scoped = useMemo(
 		() => (view.mode === "session-actions" ? findSession(workspaces, view.sessionId) : undefined),
@@ -173,13 +234,33 @@ export function CommandPalette() {
 		() => (scoped ? buildSessionActions(scoped.workspace, scoped.session, t) : []),
 		[scoped, t],
 	);
+	const filePickerWorkspace = view.mode === "file-session-picker"
+		? workspaces.find((workspace) => workspace.id === view.projectId && (workspace.hostId ?? "") === (params.hostId ?? ""))
+		: undefined;
+	const fileSessionItems = useMemo(
+		() => filePickerWorkspace ? buildFileSessionCommands(filePickerWorkspace) : [],
+		[filePickerWorkspace],
+	);
+	const fileItems = useMemo(
+		() => activeFileTarget && fileSearchQuery.data
+			? buildWorkspaceFileCommands(activeFileTarget, fileSearchQuery.data.results)
+			: [],
+		[activeFileTarget, fileSearchQuery.data],
+	);
 
 	const groups = useMemo(() => {
 		if (view.mode === "session-actions") {
 			return [{ id: "actions", label: "", items: filterCommands(sessionActionItems, query) }];
 		}
-		return displayGroups(rootItems, query, t);
-	}, [view.mode, rootItems, sessionActionItems, query, t, i18n.resolvedLanguage]);
+		if (view.mode === "file-session-picker") {
+			return [{ id: "file-sessions", label: "", items: filterCommands(fileSessionItems, query) }];
+		}
+		if (view.mode === "file-search") {
+			return displayGroups(fileItems, normalizedFileQuery, t);
+		}
+		const settledFileItems = normalizedFileQuery === query.trim() ? fileItems : [];
+		return displayGroups([...rootItems, ...settledFileItems], query, t);
+	}, [view.mode, rootItems, sessionActionItems, fileSessionItems, fileItems, query, normalizedFileQuery, t, i18n.resolvedLanguage]);
 
 	const visibleItems = useMemo(() => groups.flatMap((group) => group.items), [groups]);
 	const value =
@@ -190,6 +271,7 @@ export function CommandPalette() {
 	const resetTransient = useCallback(() => {
 		runGenerationRef.current += 1;
 		setQuery("");
+		setDebouncedQuery("");
 		setSelectedValue("");
 		setError(null);
 	}, []);
@@ -257,8 +339,13 @@ export function CommandPalette() {
 		[resetAfterClose],
 	);
 
-	const popToRoot = useCallback(() => {
-		setView({ mode: "root" });
+	const popView = useCallback(() => {
+		const current = viewRef.current;
+		if (current.mode === "file-search" && current.parent === "picker") {
+			setView({ mode: "file-session-picker", projectId: current.target.projectId });
+		} else {
+			setView({ mode: "root" });
+		}
 		setPendingDismiss(null);
 		resetTransient();
 	}, [resetTransient]);
@@ -283,10 +370,10 @@ export function CommandPalette() {
 			if (target === "close" || current.mode === "root") {
 				closePalette();
 			} else {
-				popToRoot();
+				popView();
 			}
 		},
-		[closePalette, popToRoot],
+		[closePalette, popView],
 	);
 
 	const onComposerDirtyChange = useCallback((dirty: boolean) => {
@@ -304,8 +391,8 @@ export function CommandPalette() {
 		composerDirtyRef.current = false;
 		setPendingDismiss(null);
 		if (target === "close") closePalette();
-		else popToRoot();
-	}, [pendingDismiss, closePalette, popToRoot]);
+		else popView();
+	}, [pendingDismiss, closePalette, popView]);
 
 	useEffect(() => {
 		if (view.mode === "session-actions" && !scoped) {
@@ -337,6 +424,8 @@ export function CommandPalette() {
 					useUiStore.getState().openProjectSettings(target.params.projectId);
 					break;
 				case "/projects/$projectId/sessions/$sessionId":
+				case "/host/$hostId/project/$projectId/session/$sessionId":
+				case "/host/$hostId/session/$sessionId":
 					void navigate({ to: target.to, params: target.params });
 					break;
 			}
@@ -352,6 +441,18 @@ export function CommandPalette() {
 		},
 		[],
 	);
+
+	const fileSessionRoute = useCallback((target: WorkspaceFileSearchTarget): NavigateTarget => {
+		if (target.hostId) {
+			return target.projectId === STANDALONE_WORKSPACE_ID
+				? { to: "/host/$hostId/session/$sessionId", params: { hostId: target.hostId, sessionId: target.sessionId } }
+				: {
+					to: "/host/$hostId/project/$projectId/session/$sessionId",
+					params: { hostId: target.hostId, projectId: target.projectId, sessionId: target.sessionId },
+				};
+		}
+		return sessionRoute(target.projectId, target.sessionId);
+	}, [sessionRoute]);
 
 	const blockedByRestart = useCallback((projectId: string) => {
 		if (!useUiStore.getState().restartingProjectIds.has(projectId)) return false;
@@ -448,6 +549,29 @@ export function CommandPalette() {
 				case "open-session-actions":
 					pushView({ mode: "session-actions", sessionId: action.sessionId });
 					break;
+				case "open-file-search":
+					if (action.target) {
+						pushView({
+							mode: "file-search",
+							target: action.target,
+							parent: viewRef.current.mode === "file-session-picker" ? "picker" : "root",
+						});
+					} else {
+						pushView({ mode: "file-session-picker", projectId: action.projectId });
+					}
+					break;
+				case "open-workspace-file": {
+					useUiStore.getState().requestWorkspaceFileOpen(
+						action.target.sessionId,
+						action.path,
+						action.target.hostId,
+					);
+					const alreadyOpen = params.sessionId === action.target.sessionId
+						&& (params.hostId ?? "") === (action.target.hostId ?? "");
+					if (!alreadyOpen) navigateToTarget(fileSessionRoute(action.target));
+					closePalette();
+					break;
+				}
 				case "resume-session": {
 					const message = await resumeSession(action.sessionId);
 					if (!isCurrentRun()) break;
@@ -477,7 +601,7 @@ export function CommandPalette() {
 				setPendingId(null);
 			}
 		},
-		[navigateToTarget, closePalette, toggleTheme, openOrchestrator, resumeSession, pushView, blockedByRestart, openNewProject, queryClient, t],
+		[navigateToTarget, closePalette, toggleTheme, openOrchestrator, resumeSession, pushView, blockedByRestart, openNewProject, queryClient, t, params.hostId, params.sessionId, fileSessionRoute],
 	);
 
 	const onSelectItem = useCallback(
@@ -537,12 +661,28 @@ export function CommandPalette() {
 
 	if (!enabled) return null;
 
+	const fileSearchSession = view.mode === "file-search"
+		? workspaces
+			.find((workspace) => workspace.id === view.target.projectId
+				&& (workspace.hostId ?? "") === (view.target.hostId ?? ""))
+			?.sessions.find((session) => session.id === view.target.sessionId)
+		: undefined;
 	const contextLabel =
 		view.mode === "session-actions"
 			? (scoped?.session.title ?? t("command.sessionFallback"))
 			: view.mode === "new-task"
 				? t("command.newTask")
-				: "";
+				: view.mode === "file-session-picker"
+					? t("command.chooseFileSession")
+					: view.mode === "file-search"
+						? (fileSearchSession?.title ?? t("command.sessionFallback"))
+						: "";
+	const fileSearchActive = view.mode === "file-search"
+		|| (view.mode === "root" && Boolean(activeFileTarget) && query.trim().length >= PALETTE_FILE_SEARCH_MIN_CHARS);
+	const fileSearchSettled = normalizedFileQuery === query.trim();
+	const fileSearchError = fileSearchActive && fileSearchSettled && fileSearchQuery.error
+		? (fileSearchQuery.error instanceof Error ? fileSearchQuery.error.message : t("command.searchFilesError"))
+		: null;
 
 	return (
 		<>
@@ -621,7 +761,13 @@ export function CommandPalette() {
 									setError(null);
 								}}
 							placeholder={
-								view.mode === "session-actions" ? t("command.searchActionsPlaceholder") : t("command.searchPlaceholder")
+								view.mode === "session-actions"
+									? t("command.searchActionsPlaceholder")
+									: view.mode === "file-session-picker"
+										? t("command.chooseFileSession")
+										: view.mode === "file-search"
+											? t("command.searchFilesPlaceholder", { session: fileSearchSession?.title ?? t("command.sessionFallback") })
+											: t("command.searchPlaceholder")
 							}
 							onKeyDown={(event) => {
 								if (
@@ -636,7 +782,15 @@ export function CommandPalette() {
 							}}
 						/>
 						<CommandList>
-							<CommandEmpty>{t("command.noResults")}</CommandEmpty>
+							<CommandEmpty>
+								{view.mode === "file-search"
+									? query.trim().length < PALETTE_FILE_SEARCH_MIN_CHARS
+										? t("command.searchFilesHint")
+										: fileSearchQuery.isFetching || !fileSearchSettled
+											? t("command.searchFilesLoading")
+											: t("command.searchFilesEmpty")
+									: t("command.noResults")}
+							</CommandEmpty>
 							{error && (
 								<div
 									role="alert"
@@ -644,6 +798,14 @@ export function CommandPalette() {
 								>
 									{error}
 								</div>
+							)}
+							{fileSearchError && (
+								<div role="alert" className="mx-1 mb-1 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+									{fileSearchError}
+								</div>
+							)}
+							{view.mode === "file-search" && fileSearchQuery.isFetching && fileItems.length > 0 && (
+								<div role="status" className="px-3 py-1 text-xs text-muted-foreground">{t("command.searchFilesLoading")}</div>
 							)}
 							{groups.map((group) => (
 								<CommandGroup key={group.id} heading={group.label || undefined}>
@@ -674,6 +836,9 @@ export function CommandPalette() {
 									})}
 								</CommandGroup>
 							))}
+							{fileSearchActive && fileSearchSettled && fileSearchQuery.data?.truncated && (
+								<div role="status" className="px-3 py-2 text-xs text-muted-foreground">{t("command.searchFilesTruncated")}</div>
+							)}
 						</CommandList>
 						<CommandFooter aria-hidden="true">
 							<span className="inline-flex items-center gap-1.5">

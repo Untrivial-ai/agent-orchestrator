@@ -5,10 +5,30 @@ import {
 	cloudWorkspaceReviewDiffsQueryOptions,
 	cloudWorkspaceReviewFileQueryOptions,
 	cloudWorkspaceReviewQueryKey,
+	cloudWorkspaceReviewSearchQueryOptions,
 	invalidateCloudWorkspaceReviewEvent,
 } from "./useCloudWorkspaceReview";
 
 describe("Cloud workspace review queries", () => {
+	it("keys search by query and limit and forwards cancellation", async () => {
+		const searchWorkspaceReview = vi.fn().mockResolvedValue({ results: [], truncated: false });
+		const search = cloudWorkspaceReviewSearchQueryOptions({
+			client: { searchWorkspaceReview } as unknown as CloudCpClient,
+			baseUrl: "https://cloud.example",
+			orgId: "org-1",
+			sessionId: "session-1",
+			query: { query: "app", limit: 20 },
+		});
+		const controller = new AbortController();
+		expect(search.queryKey).toEqual([
+			"cloud-workspace-review", "https://cloud.example", "org-1", "session-1", "search", "app", "", 20,
+		]);
+		await search.queryFn({ signal: controller.signal });
+		expect(searchWorkspaceReview).toHaveBeenCalledWith(
+			"org-1", "session-1", { query: "app", limit: 20 }, { signal: controller.signal },
+		);
+	});
+
 	it("keys every review request by control plane, tenant, session, scope, commit, and path", () => {
 		const client = {} as CloudCpClient;
 		const file = cloudWorkspaceReviewFileQueryOptions({

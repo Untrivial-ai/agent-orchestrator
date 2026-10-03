@@ -56,7 +56,8 @@ export function cloudWorkspaceReviewSearchQueryOptions(args: {
 }) {
 	return {
 		queryKey: [...cloudWorkspaceReviewQueryKey(args.baseUrl, args.orgId, args.sessionId), "search", args.query.query, args.query.cursor ?? "", args.query.limit ?? 50] as const,
-		queryFn: () => args.client.searchWorkspaceReview(args.orgId, args.sessionId, args.query),
+		queryFn: ({ signal }: { signal?: AbortSignal } = {}) =>
+			args.client.searchWorkspaceReview(args.orgId, args.sessionId, args.query, { signal }),
 		retry: cloudWorkspaceReviewRetry,
 	};
 }

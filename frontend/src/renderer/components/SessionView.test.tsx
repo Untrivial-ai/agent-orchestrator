@@ -813,6 +813,7 @@ describe("SessionView", () => {
 		workspaceQueryState.isLoading = false;
 		useUiStore.setState({
 			activeShellTerminalHandleId: null,
+			workspaceFileOpenRequest: null,
 			// Opening a session leaves the inspector closed (covered by the
 			// "keeps the inspector closed" test); most tests here exercise the
 			// open rail, so start the workers the way a user left them: open.
@@ -4315,6 +4316,33 @@ describe("SessionView", () => {
 		expect(screen.getByText("terminal center")).toBeInTheDocument();
 		expect(useUiStore.getState().inspectorSessions["sess-1"]?.view).toBe("files");
 		expect(screen.queryByRole("button", { name: "files center" })).not.toBeInTheDocument();
+	});
+
+	it("consumes an initial Command-K file request through the existing Files reveal flow", async () => {
+		reviewGetMock.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/sessions/{sessionId}/workspace/files") {
+				return {
+					data: {
+						sessionId: "sess-1",
+						files: [{ path: "src/from-command.ts", status: "added", additions: 1, deletions: 0, binary: false, size: 10 }],
+						truncated: false,
+						sections: { staged: [], unstaged: [], untracked: [], committed: [] },
+						commits: [],
+						summary: { files: 1, additions: 1, deletions: 0 },
+					},
+					error: undefined,
+				};
+			}
+			return { data: { reviewerHandleId: "", reviews: [], runs: [] }, error: undefined };
+		});
+		act(() => useUiStore.getState().requestWorkspaceFileOpen("sess-1", "src/from-command.ts"));
+
+		render(<SessionView sessionId="sess-1" />);
+
+		await waitFor(() => expect(screen.getByText("selected src/from-command.ts")).toBeInTheDocument());
+		expect(screen.getByRole("tab", { name: "from-command.ts" })).toHaveAttribute("aria-selected", "true");
+		expect(useUiStore.getState().workspaceFileOpenRequest).toBeNull();
+		expect(useUiStore.getState().inspectorSessions["sess-1"]?.view).toBe("files");
 	});
 
 	it("resolves a basename against workspace files before opening on a cold cache", async () => {
