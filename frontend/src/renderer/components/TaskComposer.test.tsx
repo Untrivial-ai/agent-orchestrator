@@ -444,6 +444,113 @@ describe("TaskComposer", () => {
 		expect(h.get.mock.calls.some(([path]) => path === "/api/v1/projects/{id}")).toBe(false);
 	});
 
+	it("sends the visible default model when starting a standalone worker", async () => {
+		h.agentCatalog = { agents: [agentReadiness("codex", "Codex")] };
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "codex",
+						selectionMode: "catalog",
+						models: [
+							{ id: "gpt-6-astra", label: "GPT-6 Astra", isDefault: true },
+							{ id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+						],
+						allowCustom: true,
+						refreshRecommended: false,
+					},
+				};
+			}
+			return { data: { status: "ok", project: { config: {} } } };
+		});
+		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-1" } } });
+
+		render(<Wrap><TaskComposer projectId="__standalone__" onCreated={vi.fn()} /></Wrap>);
+
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("GPT-6 Astra");
+		fireEvent.click(screen.getByText("Start task"));
+
+		await waitFor(() =>
+			expect(h.post).toHaveBeenCalledWith(
+				"/api/v1/sessions",
+				expect.objectContaining({ body: expect.objectContaining({ model: "gpt-6-astra" }) }),
+			),
+		);
+	});
+
+	it("sends the visible default mode when starting a standalone mode-list worker", async () => {
+		h.agentCatalog = { agents: [agentReadiness("amp", "Amp")] };
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "amp",
+						selectionMode: "mode",
+						models: [
+							{ id: "high", label: "High", isDefault: true },
+							{ id: "low", label: "Low" },
+						],
+						allowCustom: false,
+						refreshRecommended: false,
+					},
+				};
+			}
+			return { data: { status: "ok", project: { config: {} } } };
+		});
+		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-1" } } });
+
+		render(<Wrap><TaskComposer projectId="__standalone__" onCreated={vi.fn()} /></Wrap>);
+
+		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("High");
+		fireEvent.click(screen.getByText("Start task"));
+
+		await waitFor(() =>
+			expect(h.post).toHaveBeenCalledWith(
+				"/api/v1/sessions",
+				expect.objectContaining({ body: expect.objectContaining({ model: "high" }) }),
+			),
+		);
+	});
+
+	it("sends the visible default effort when starting a standalone worker", async () => {
+		h.agentCatalog = { agents: [agentReadiness("codex", "Codex")] };
+		h.get.mockImplementation(async (path: string) => {
+			if (path.includes("/models")) {
+				return {
+					data: {
+						agent: "codex",
+						selectionMode: "catalog",
+						models: [{
+							id: "gpt-5.6-sol",
+							label: "GPT-5.6 Sol",
+							isDefault: true,
+							efforts: ["low", "high"],
+							defaultEffort: "high",
+						}],
+						allowCustom: true,
+						refreshRecommended: false,
+					},
+				};
+			}
+			return { data: { status: "ok", project: { config: {} } } };
+		});
+		h.post.mockResolvedValueOnce({ data: { session: { id: "standalone-1" } } });
+
+		render(<Wrap><TaskComposer projectId="__standalone__" onCreated={vi.fn()} /></Wrap>);
+
+		expect(await screen.findByRole("button", { name: "Effort" })).toHaveTextContent("High");
+		fireEvent.click(screen.getByText("Start task"));
+
+		await waitFor(() =>
+			expect(h.post).toHaveBeenCalledWith(
+				"/api/v1/sessions",
+				expect.objectContaining({
+					body: expect.objectContaining({ model: "gpt-5.6-sol", effort: "high" }),
+				}),
+			),
+		);
+	});
+
 	it("sends the selected effort when starting a standalone worker", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
