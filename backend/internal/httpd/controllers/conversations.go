@@ -128,6 +128,10 @@ func (c *ConversationsController) setChatView(w http.ResponseWriter, r *http.Req
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "CHAT_VIEW_ID_INVALID", "viewId must be a nonempty identifier of at most 128 bytes", nil)
 		return
 	}
+	if !req.activePresent {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "validation", "CHAT_VIEW_ACTIVE_INVALID", "active must be true or false", nil)
+		return
+	}
 	if err := svc.SetChatView(r.Context(), sessionID(r), req.ViewID, req.Active); err != nil {
 		writeConversationError(w, r, err)
 		return

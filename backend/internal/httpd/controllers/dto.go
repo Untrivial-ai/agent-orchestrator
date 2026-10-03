@@ -2206,8 +2206,25 @@ type UnregisterPushDeviceResponse struct {
 
 // SetChatViewRequest renews or releases one renderer's Chat view lease.
 type SetChatViewRequest struct {
-	ViewID string `json:"viewId"`
-	Active bool   `json:"active"`
+	ViewID        string `json:"viewId"`
+	Active        bool   `json:"active"`
+	activePresent bool
+}
+
+// UnmarshalJSON distinguishes an omitted active value from an explicit false
+// while keeping the generated API schema non-nullable.
+func (r *SetChatViewRequest) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		ViewID string `json:"viewId"`
+		Active *bool  `json:"active"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	r.ViewID = wire.ViewID
+	r.Active = wire.Active != nil && *wire.Active
+	r.activePresent = wire.Active != nil
+	return nil
 }
 
 // SendConversationMessageRequest is a message for a Chat session's agent.

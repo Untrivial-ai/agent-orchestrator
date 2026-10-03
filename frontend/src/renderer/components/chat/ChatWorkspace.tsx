@@ -329,6 +329,10 @@ export interface ChatWorkspaceProps {
 	) => Promise<unknown> | void;
 	onInterrupt?: () => void;
 	commandError?: string;
+	/** Failed background wake shown inside the existing composer. */
+	wakeError?: string;
+	wakeRetrying?: boolean;
+	onRetryWake?: () => void;
 	onResumeAgent?: () => void | Promise<unknown>;
 	resumingAgent?: boolean;
 	resumeError?: string;
@@ -577,6 +581,9 @@ function ChatWorkspaceContent({
 	onResolveInput,
 	onInterrupt,
 	commandError,
+	wakeError,
+	wakeRetrying,
+	onRetryWake,
 	onResumeAgent,
 	resumingAgent,
 	resumeError,
@@ -1517,6 +1524,9 @@ function ChatWorkspaceContent({
 									onQueuedRetainedAttachmentsChange={changeQueuedRetainedAttachments}
 									onInterrupt={turn && !newWorkDisabled ? stableInterrupt : undefined}
 									commandError={queueDraftError ?? (queueEdit && !queueEdit.clientMessageId && !queuedMessages.some((entry) => entry.turnId === queueEdit.turnId) ? "chat.draft.queueMissing" : commandError)}
+									wakeError={wakeError}
+									wakeRetrying={wakeRetrying}
+									onRetryWake={onRetryWake}
 									settings={<><ContextMeter usage={snapshot.usage} />{composerSettings}</>}
 									busy={busy}
 									willQueue={Boolean(turn) || session?.provisionState === "provisioning"}

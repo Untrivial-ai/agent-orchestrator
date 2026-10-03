@@ -261,6 +261,9 @@ vi.mock("./chat/SessionChatSurface", async () => {
 		workspaceTabs,
 		workspaceTabActions,
 		newWorkDisabled,
+		wakeError,
+		wakeRetrying,
+		onRetryWake,
 		onConversationWorkChange,
 		auxiliaryTabOrder,
 		onAuxiliaryTabOrderChange,
@@ -283,6 +286,9 @@ vi.mock("./chat/SessionChatSurface", async () => {
 		workspaceTabs?: Array<{ key: string; content: ReactNode; onSelect: () => void }>;
 		workspaceTabActions?: ReactNode;
 		newWorkDisabled?: boolean;
+		wakeError?: string;
+		wakeRetrying?: boolean;
+		onRetryWake?: () => void;
 		onConversationWorkChange?: (state: typeof chatSurfaceWorkState) => void;
 		auxiliaryTabOrder?: string[];
 		onAuxiliaryTabOrderChange?: (keys: string[]) => void;
@@ -295,6 +301,7 @@ vi.mock("./chat/SessionChatSurface", async () => {
 			data-new-work-disabled={newWorkDisabled ? "true" : "false"}
 		>
 			chat surface
+			{wakeError ? <div role="alert">{wakeError}{onRetryWake ? <button type="button" disabled={wakeRetrying} onClick={onRetryWake}>Try connecting again</button> : null}</div> : null}
 			<div data-testid={`auxiliary-tab-order-${session.id}`}>
 				{auxiliaryTabOrder?.join("|") ?? ""}
 			</div>
@@ -1017,6 +1024,72 @@ describe("SessionView", () => {
 		await waitFor(() => expect(chatViewPostMock.mock.calls.some(([, input]) => input.body.active === false)).toBe(true));
 		view.rerender(<SessionView sessionId="sess-1" />);
 		await waitFor(() => expect(chatViewPostMock.mock.calls.filter(([, input]) => input.body.active)).toHaveLength(2));
+	});
+
+	it("shows a failed wake and retries it once without sending a message", async () => {
+		workerSession("sess-1").mode = "chat";
+		let failed = false;
+		chatViewPostMock.mockReset().mockImplementation(async (path: string, input: { body?: { active?: boolean } }) => {
+			if (path.endsWith("/chat-view") && input.body?.active && !failed) {
+				failed = true;
+				return { error: { code: "CHAT_RESUME_FAILED" } };
+			}
+			return { error: undefined };
+		});
+		const interval = vi.spyOn(window, "setInterval");
+		try {
+			render(<SessionView sessionId="sess-1" />);
+			await waitFor(() => expect(chatViewPostMock.mock.calls.filter(([path]) => path.endsWith("/chat-view"))).toHaveLength(1));
+			expect(failed).toBe(true);
+			expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t reopen this chat");
+			const renewal = interval.mock.calls.find(([, delay]) => delay === 10_000)?.[0];
+			expect(renewal).toBeTypeOf("function");
+			await act(async () => { (renewal as () => void)(); });
+			expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t reopen this chat");
+
+			await userEvent.click(screen.getByRole("button", { name: "Try connecting again" }));
+			await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+			const viewCalls = chatViewPostMock.mock.calls.map(([, input]) => input.body);
+			expect(viewCalls.map(({ active }: { active: boolean }) => active)).toEqual([true, true, false, true]);
+			expect(viewCalls.every(({ viewId }: { viewId: string }) => viewId === viewCalls[0].viewId)).toBe(true);
+		} finally {
+			interval.mockRestore();
+		}
+	});
+
+	it("clears a transient Chat-view error after the next successful renewal", async () => {
+		workerSession("sess-1").mode = "chat";
+		let failed = false;
+		chatViewPostMock.mockReset().mockImplementation(async (path: string, input: { body?: { active?: boolean } }) => {
+			if (path.endsWith("/chat-view") && input.body?.active && !failed) {
+				failed = true;
+				return { error: { code: "NETWORK_ERROR" } };
+			}
+			return { error: undefined };
+		});
+		const interval = vi.spyOn(window, "setInterval");
+		try {
+			render(<SessionView sessionId="sess-1" />);
+			expect(await screen.findByRole("alert")).toHaveTextContent("Check the connection");
+			const renewal = interval.mock.calls.find(([, delay]) => delay === 10_000)?.[0];
+			expect(renewal).toBeTypeOf("function");
+			await act(async () => { (renewal as () => void)(); });
+			await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+		} finally {
+			interval.mockRestore();
+		}
+	});
+
+	it("reports a missing session without offering a futile wake retry", async () => {
+		workerSession("sess-1").mode = "chat";
+		chatViewPostMock.mockReset().mockImplementation(async (path: string, input: { body?: { active?: boolean } }) =>
+			path.endsWith("/chat-view") && input.body?.active
+				? { error: { code: "SESSION_NOT_FOUND" } }
+				: { error: undefined },
+		);
+		render(<SessionView sessionId="sess-1" />);
+		expect(await screen.findByRole("alert")).toHaveTextContent("This chat no longer exists");
+		expect(screen.queryByRole("button", { name: "Try connecting again" })).not.toBeInTheDocument();
 	});
 
 	it("does not wake Chat while restoring its selected shell tab", async () => {

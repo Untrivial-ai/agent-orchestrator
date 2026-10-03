@@ -122,6 +122,9 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	onAuxiliaryTabOrderChange,
 	controllerTransitioning,
 	newWorkDisabled,
+	wakeError,
+	wakeRetrying,
+	onRetryWake,
 	onConversationWorkChange,
 }: {
 	session: WorkspaceSession;
@@ -168,6 +171,10 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	controllerTransitioning?: boolean;
 	/** An interface handoff fences new agent work while current-turn decisions remain available. */
 	newWorkDisabled?: boolean;
+	/** A failed automatic wake; normal wakes remain silent. */
+	wakeError?: string;
+	wakeRetrying?: boolean;
+	onRetryWake?: () => void;
 	/** Reports accepted Chat work that must inform an interface-switch policy choice. */
 	onConversationWorkChange?: (state: ConversationWorkState) => void;
 }) {
@@ -484,6 +491,9 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				snapshot={renderSnapshot}
 				agentInputDisabled={switchLocksChat || handoffDialogOpen}
 				newWorkDisabled={newWorkDisabled}
+				wakeError={renderSnapshot.controller.state === "ready" || renderSnapshot.controller.state === "busy" ? undefined : wakeError}
+				wakeRetrying={wakeRetrying}
+				onRetryWake={onRetryWake}
 				onLinkOpen={openLinkInBrowser}
 				onSessionLinkOpen={openSessionLink}
 				sessionTitle={session.title}

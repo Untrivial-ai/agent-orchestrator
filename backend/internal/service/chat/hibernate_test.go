@@ -102,13 +102,32 @@ func settledHibernationHarness(t *testing.T, state domain.TurnState, gate ...fun
 func TestHibernationGateKeepsCompletedIdleProviderWarmUntilEnabled(t *testing.T) {
 	var enabled atomic.Bool
 	h, conv := settledHibernationHarness(t, domain.TurnStateCompleted, enabled.Load)
+	var snapshotReads atomic.Int32
+	conv.onSnapshot = func() { snapshotReads.Add(1) }
 	ctx := context.Background()
 	if stopped, err := h.svc.HibernateChat(ctx, testSession); err != nil || stopped || conv.calls.Load() != 0 || !h.svc.HasLiveChatController(testSession) {
 		t.Fatalf("disabled hibernation: stopped=%v err=%v calls=%d live=%v", stopped, err, conv.calls.Load(), h.svc.HasLiveChatController(testSession))
 	}
+	if got := snapshotReads.Load(); got != 0 {
+		t.Fatalf("disabled hibernation read %d conversation snapshots, want 0", got)
+	}
 	enabled.Store(true)
 	if stopped, err := h.svc.HibernateChat(ctx, testSession); err != nil || !stopped || conv.calls.Load() != 1 {
 		t.Fatalf("enabled hibernation: stopped=%v err=%v calls=%d", stopped, err, conv.calls.Load())
+	}
+	if got := snapshotReads.Load(); got != 1 {
+		t.Fatalf("enabled hibernation read %d conversation snapshots, want 1", got)
+	}
+}
+
+func TestHibernationGateRechecksAfterSnapshot(t *testing.T) {
+	var enabled atomic.Bool
+	enabled.Store(true)
+	h, conv := settledHibernationHarness(t, domain.TurnStateCompleted, enabled.Load)
+	conv.onSnapshot = func() { enabled.Store(false) }
+	stopped, err := h.svc.HibernateChat(context.Background(), testSession)
+	if err != nil || stopped || conv.calls.Load() != 0 || !h.svc.HasLiveChatController(testSession) {
+		t.Fatalf("hibernation disabled during snapshot: stopped=%v err=%v calls=%d live=%v", stopped, err, conv.calls.Load(), h.svc.HasLiveChatController(testSession))
 	}
 }
 

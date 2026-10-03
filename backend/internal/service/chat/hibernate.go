@@ -139,6 +139,11 @@ func (s *Service) liveViewLeasesLocked(id domain.SessionID) map[string]time.Time
 // HibernateChat stops a quiescent provider without ending its AO session. A
 // false result means the final locked eligibility check found useful work.
 func (s *Service) HibernateChat(ctx context.Context, id domain.SessionID) (bool, error) {
+	// Skip snapshot and queue reads while the feature is off. Recheck before
+	// stopping the provider in case the setting changes during those reads.
+	if s.hibernationEnabled == nil || !s.hibernationEnabled() {
+		return false, nil
+	}
 	marker, ok := s.sessions.(hibernationStore)
 	if !ok {
 		return false, errors.New("chat hibernation store is unavailable")

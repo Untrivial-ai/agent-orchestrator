@@ -329,6 +329,31 @@ describe("send keys", () => {
 		expect(field.textContent).toBe("do not lose this task");
 	});
 
+	it("retries a failed background wake without sending or changing the draft", async () => {
+		const onSend = vi.fn().mockResolvedValue(undefined);
+		const onRetryWake = vi.fn();
+		const message = "Couldn’t reconnect to this chat. Check the agent provider, then try again.";
+		const view = render(
+			<ChatComposer onSend={onSend} onRetryWake={onRetryWake} wakeError={message} />,
+		);
+		const field = screen.getByLabelText("Message the agent");
+		await typeInComposer(field, "keep this draft");
+		expect(screen.getByRole("alert")).toHaveTextContent(message);
+
+		await userEvent.click(screen.getByRole("button", { name: "Try connecting again" }));
+		expect(onRetryWake).toHaveBeenCalledOnce();
+		expect(onSend).not.toHaveBeenCalled();
+		expect(field).toHaveTextContent("keep this draft");
+
+		view.rerender(<ChatComposer onSend={onSend} onRetryWake={onRetryWake} wakeError={message} wakeRetrying />);
+		expect(screen.getByRole("button", { name: "Connecting…" })).toBeDisabled();
+		view.rerender(<ChatComposer onSend={onSend} />);
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+		fireEvent.keyDown(field, { key: "Enter" });
+		await waitFor(() => expect(onSend).toHaveBeenCalledOnce());
+		expect(onSend.mock.calls[0]?.[0]).toBe("keep this draft");
+	});
+
 	it("clears a plain-text draft as soon as the local send acknowledgement starts", async () => {
 		const pending = deferred<void>();
 		const onSend = vi.fn().mockReturnValue(pending.promise);

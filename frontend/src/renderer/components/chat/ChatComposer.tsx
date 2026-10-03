@@ -174,6 +174,9 @@ export const ChatComposer = memo(function ChatComposer({
 	savingQueuedEditPending,
 	queuedEditRecovery,
 	commandError,
+	wakeError,
+	wakeRetrying,
+	onRetryWake,
 	attachedTop = false,
 	queuedDock,
 	onCompact,
@@ -249,6 +252,11 @@ export const ChatComposer = memo(function ChatComposer({
 	queuedEditRecovery?: boolean;
 	/** A failed send, approval, interrupt, or settings mutation. */
 	commandError?: string;
+	/** An automatic Chat wake failed. Shown only after a real failure. */
+	wakeError?: string;
+	wakeRetrying?: boolean;
+	/** Retry native wake without sending or changing the draft. */
+	onRetryWake?: () => void;
 	/** A queued-message dock owns the shared rounded top edge. */
 	attachedTop?: boolean;
 	/** Queued messages rendered above the composer. */
@@ -1538,6 +1546,22 @@ export const ChatComposer = memo(function ChatComposer({
 					onKeyDown={onKeyDown}
 					onPaste={onPaste}
 				/>
+
+				{wakeError ? (
+					<div role="alert" className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1.5 text-[11px] leading-snug text-destructive">
+						<span>{wakeError}</span>
+						{onRetryWake ? (
+							<button
+								type="button"
+								onClick={onRetryWake}
+								disabled={wakeRetrying}
+								className="shrink-0 rounded-sm font-medium underline underline-offset-2 hover:text-foreground focus-visible:outline focus-visible:outline-ring disabled:cursor-wait disabled:opacity-60"
+							>
+								{wakeRetrying ? "Connecting…" : "Try connecting again"}
+							</button>
+						) : null}
+					</div>
+				) : null}
 
 				{attachmentError ? (
 					<p role="alert" className="px-1.5 text-[11px] leading-snug text-destructive">

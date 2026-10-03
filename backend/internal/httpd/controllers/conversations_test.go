@@ -75,20 +75,34 @@ func TestChatViewRouteValidatesAndForwardsLease(t *testing.T) {
 	service := &fakeConversationService{}
 	server := conversationTestServer(t, service)
 	for _, tc := range []struct {
-		body   string
-		status int
+		body       string
+		status     int
+		code       string
+		wantActive bool
 	}{
-		{`{"viewId":"","active":true}`, http.StatusBadRequest},
-		{`{"viewId":"viewer-1","active":true}`, http.StatusNoContent},
-		{`{"viewId":"viewer-1","active":false}`, http.StatusNoContent},
+		{body: `{"viewId":"","active":true}`, status: http.StatusBadRequest},
+		{body: `{"viewId":"viewer-1"}`, status: http.StatusBadRequest, code: "CHAT_VIEW_ACTIVE_INVALID"},
+		{body: `{"viewId":"viewer-1","active":null}`, status: http.StatusBadRequest, code: "CHAT_VIEW_ACTIVE_INVALID"},
+		{body: `{"viewId":"viewer-1","active":true}`, status: http.StatusNoContent, wantActive: true},
+		{body: `{"viewId":"viewer-1","active":false}`, status: http.StatusNoContent},
 	} {
 		resp, err := http.Post(server.URL+"/api/v1/sessions/p1-1/chat-view", "application/json", bytes.NewBufferString(tc.body))
 		if err != nil {
 			t.Fatal(err)
 		}
+		body, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if resp.StatusCode != tc.status {
 			t.Fatalf("POST %s status = %d, want %d", tc.body, resp.StatusCode, tc.status)
+		}
+		if tc.code != "" && !bytes.Contains(body, []byte(`"code":"`+tc.code+`"`)) {
+			t.Fatalf("POST %s body = %s, want code %s", tc.body, body, tc.code)
+		}
+		if tc.status == http.StatusNoContent && service.viewActive != tc.wantActive {
+			t.Fatalf("POST %s active = %v, want %v", tc.body, service.viewActive, tc.wantActive)
 		}
 	}
 	if service.viewCalls != 2 || service.viewSessionID != "p1-1" || service.viewID != "viewer-1" || service.viewActive {
