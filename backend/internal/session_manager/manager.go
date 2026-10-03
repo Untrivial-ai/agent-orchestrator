@@ -24,6 +24,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
+	"github.com/aoagents/agent-orchestrator/backend/internal/sessiontemp"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/termtheme"
 	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
@@ -3779,6 +3780,16 @@ func (m *Manager) markSessionWorktreesActive(ctx context.Context, rows []domain.
 }
 
 func (m *Manager) restoreSessionWorkspace(ctx context.Context, project domain.ProjectRecord, rec domain.SessionRecord) (ports.WorkspaceInfo, error) {
+	// The per-run temp folder must be provably usable before saved work is
+	// touched: a restore that relaunches into shared OS temp would mix the
+	// revived session's files with other applications' leftovers (issue #5933).
+	// A blank data dir (focused tests/embedders) configures no scratch root,
+	// so there is nothing to check; production always sets one.
+	if strings.TrimSpace(m.dataDir) != "" {
+		if _, err := sessiontemp.EnsureProjectRoot(m.dataDir, string(rec.ProjectID)); err != nil {
+			return ports.WorkspaceInfo{}, fmt.Errorf("session temp: %w", err)
+		}
+	}
 	if projectKindForSession(project, rec.ProjectID) != domain.ProjectKindWorkspace {
 		ws, err := m.workspace.Restore(ctx, ports.WorkspaceConfig{
 			ProjectID:     rec.ProjectID,
@@ -5170,9 +5181,23 @@ func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.I
 // command, which fails every callback and silently kills activity tracking).
 // When the pin cannot be applied the inherited PATH is kept and a warning is
 // logged so the degradation isn't silent.
-func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) map[string]string {
+func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) (map[string]string, error) {
 	caseInsensitive := envKeysCaseInsensitive
 	env := spawnEnvForOS(id, project, issue, m.dataDir, projectEnv, caseInsensitive)
+	// Managed sessions own their temp files: point TMPDIR/TEMP/TMP at the
+	// project's per-run scratch folder so worker output never lands in the
+	// shared OS temp location (issue #5933). An unusable scratch root refuses
+	// the launch clearly instead of silently inheriting shared temp. A blank
+	// data dir means no scratch root is configured (focused tests/embedders);
+	// production always resolves a real data dir, so the pin always applies
+	// there.
+	if strings.TrimSpace(m.dataDir) != "" {
+		tmpDir, err := sessiontemp.Prepare(m.dataDir, string(project), string(id))
+		if err != nil {
+			return nil, fmt.Errorf("session temp: %w", err)
+		}
+		sessiontemp.ApplyToEnv(env, tmpDir, caseInsensitive)
+	}
 	// Project configuration must never redirect AO-owned hook callbacks to a
 	// different daemon. New receives the resolved absolute path in production;
 	// the environment fallback keeps focused embedders and tests compatible.
@@ -5191,10 +5216,10 @@ func (m *Manager) runtimeEnv(id domain.SessionID, project domain.ProjectID, issu
 	if err != nil {
 		m.logger.Warn("session PATH not pinned to the daemon binary; `ao hooks` callbacks may resolve to a different ao and activity tracking will stall",
 			"session", id, "error", err)
-		return env
+		return env, nil
 	}
 	setProtectedEnv(env, "PATH", path, caseInsensitive)
-	return env
+	return env, nil
 }
 
 func deleteProtectedEnv(env map[string]string, key string, caseInsensitive bool) {
@@ -5245,7 +5270,10 @@ func pinRuntimePermissionEnv(env map[string]string, mode domain.PermissionMode) 
 }
 
 func (m *Manager) launchRuntimeEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string) (map[string]string, string, error) {
-	env := m.runtimeEnv(id, project, issue, projectEnv)
+	env, err := m.runtimeEnv(id, project, issue, projectEnv)
+	if err != nil {
+		return nil, "", err
+	}
 	if m.browserCapabilities == nil {
 		return env, "", nil
 	}
@@ -5524,7 +5552,12 @@ func (m *Manager) cleanupAgentWorkspace(ctx context.Context, rec domain.SessionR
 	}
 	env := spawnEnv(rec.ID, rec.ProjectID, rec.IssueID, m.dataDir, nil)
 	if project, err := m.loadProject(ctx, rec.ProjectID); err == nil {
-		env = m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+		if runtimeEnv, err := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env); err == nil {
+			env = runtimeEnv
+		} else {
+			m.logger.Warn("workspace cleanup: session temp unavailable; agent cleanup using AO env only",
+				"sessionID", rec.ID, "projectID", rec.ProjectID, "error", err)
+		}
 	} else {
 		m.logger.Warn("workspace cleanup: project env unavailable; agent cleanup using AO env only",
 			"sessionID", rec.ID, "projectID", rec.ProjectID, "error", err)

@@ -297,7 +297,10 @@ func (m *Manager) admitAgentSwitch(ctx context.Context, id domain.SessionID, cfg
 		// the target generation is always a real AO_RUNTIME_LAUNCH_ID.
 		sourceGeneration = domain.AgentGenerationID("legacy-" + uuid.NewString())
 	}
-	sourceEnv := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	sourceEnv, err := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	if err != nil {
+		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w", id, err)
+	}
 	m.augmentAgentRuntimeEnv(sourceAgent, sourceEnv)
 	sourceRecord := rec
 	if mode == domain.SessionModeChat {
@@ -1382,7 +1385,10 @@ func (m *Manager) prepareTargetActivation(ctx context.Context, store ports.Agent
 	if err != nil {
 		return preparedTargetActivation{}, fmt.Errorf("target config: %w", err)
 	}
-	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	env, err := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	if err != nil {
+		return preparedTargetActivation{}, fmt.Errorf("session temp: %w", err)
+	}
 	pinRuntimePermissionEnv(env, config.Permissions)
 	m.augmentAgentRuntimeEnv(agent, env)
 	if validator, ok := agent.(ports.AgentLaunchAuthValidator); ok {
@@ -3478,7 +3484,10 @@ func (m *Manager) cleanupRecoveredTargetWorkspace(ctx context.Context, rec domai
 	if err != nil {
 		return fmt.Errorf("agent switch recovery: load project for target workspace cleanup: %w", err)
 	}
-	env := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	env, err := m.runtimeEnv(rec.ID, rec.ProjectID, rec.IssueID, project.Config.Env)
+	if err != nil {
+		return fmt.Errorf("agent switch recovery: session temp: %w", err)
+	}
 	m.augmentAgentRuntimeEnv(agent, env)
 	if err := m.cleanupPreparedAgentWorkspaceStrict(ctx, agent, rec.ID, rec.Metadata.WorkspacePath, env); err != nil {
 		return fmt.Errorf("agent switch recovery: clean target workspace state: %w", err)

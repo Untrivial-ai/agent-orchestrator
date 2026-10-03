@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // EnvSpecPath is the environment variable that holds the path to the launch spec file.
@@ -18,8 +19,41 @@ type Spec struct {
 }
 
 // WriteTemp serialises spec to a temporary JSON file and returns its path.
+// It keeps the historical shared-OS-temp behavior for callers without a
+// session folder; managed launches should prefer WriteTempDir so the spec
+// lives inside the session's project-owned temp folder (issue #5933).
 func WriteTemp(spec Spec) (string, error) {
 	file, err := os.CreateTemp(os.TempDir(), "ao-launch-*.json")
+	if err != nil {
+		return "", fmt.Errorf("create launch spec: %w", err)
+	}
+	path := file.Name()
+	enc := json.NewEncoder(file)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(spec); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("write launch spec: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("close launch spec: %w", err)
+	}
+	return path, nil
+}
+
+// WriteTempDir serialises spec to a temporary JSON file inside dir,
+// creating dir when missing, and returns its path. Managed launches pass
+// their session's project-owned temp folder so the spec file is attributable
+// to that session and never lands in shared OS temp.
+func WriteTempDir(dir string, spec Spec) (string, error) {
+	if strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("create launch spec: directory is required")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create launch spec directory: %w", err)
+	}
+	file, err := os.CreateTemp(dir, "ao-launch-*.json")
 	if err != nil {
 		return "", fmt.Errorf("create launch spec: %w", err)
 	}

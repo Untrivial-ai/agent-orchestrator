@@ -151,7 +151,7 @@ func TestCancelledClaimedPreparationAccountsForPartialWorkspace(t *testing.T) {
 		{name: "clean worktree is removed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m, st, _ := newChatManager(&recordingLauncher{})
+			m, st, _ := newChatManager(t, &recordingLauncher{})
 			workspace := &cancelledClaimedWorkspace{fakeWorkspace: m.workspace.(*fakeWorkspace),
 				entered: make(chan struct{}), release: make(chan struct{}), destroyErr: tc.destroyErr}
 			m.workspace = workspace
@@ -373,7 +373,7 @@ func TestTaskPreparationSerializesWorkspaceCreationPerProject(t *testing.T) {
 }
 
 func TestAsyncPreparedSpawnAnswersWhilePreparationOwnsWorkspaceGate(t *testing.T) {
-	m, st, _ := newChatManager(&recordingLauncher{})
+	m, st, _ := newChatManager(t, &recordingLauncher{})
 	ws := &blockedPreparationWorkspace{
 		fakeWorkspace: m.workspace.(*fakeWorkspace),
 		firstEntered:  make(chan struct{}), secondEntered: make(chan struct{}), releaseFirst: make(chan struct{}),
@@ -770,7 +770,7 @@ func TestCancelTaskPreparationCanRetryAfterCleanupFailure(t *testing.T) {
 
 func TestClaimedPreparationRollsBackWhenChatQueueFails(t *testing.T) {
 	launcher := &recordingLauncher{queueErr: errors.New("queue unavailable")}
-	m, st, _ := newChatManager(launcher)
+	m, st, _ := newChatManager(t, launcher)
 	m.runBackground = func(work func()) { work() }
 	ws := m.workspace.(*fakeWorkspace)
 

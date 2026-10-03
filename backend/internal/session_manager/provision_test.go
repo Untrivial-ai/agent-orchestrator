@@ -77,7 +77,7 @@ func TestSpawnEnvWindowsRemovesCaseVariantsOfProtectedVariables(t *testing.T) {
 
 func TestRuntimeEnvInjectsBrowserCapability(t *testing.T) {
 	manager := &Manager{
-		dataDir:             "/data",
+		dataDir:             t.TempDir(),
 		browserCapabilities: fixedBrowserCapability("capability-1"),
 		executable:          func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
 		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -96,14 +96,17 @@ func TestRuntimeEnvInjectsBrowserCapability(t *testing.T) {
 
 func TestRuntimeEnvClearsDaemonBrowserRuntimeSecrets(t *testing.T) {
 	manager := &Manager{
-		dataDir:    "/data",
+		dataDir:    t.TempDir(),
 		executable: func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
+	env, err := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
 		EnvBrowserRuntimeToken:      "runtime-secret",
 		EnvBrowserRuntimeTokenStdin: "1",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if env[EnvBrowserRuntimeToken] != "" || env[EnvBrowserRuntimeTokenStdin] != "" {
 		t.Fatalf("daemon browser runtime credentials leaked to worker: token=%q stdin=%q", env[EnvBrowserRuntimeToken], env[EnvBrowserRuntimeTokenStdin])
 	}
@@ -115,13 +118,14 @@ func TestRuntimeEnvWindowsRemovesCaseVariantsOfProtectedVariables(t *testing.T) 
 	envKeysCaseInsensitive = true
 	t.Cleanup(func() { envKeysCaseInsensitive = previous })
 
+	dataDir := t.TempDir()
 	manager := &Manager{
-		dataDir:     `C:\ao`,
+		dataDir:     dataDir,
 		runFilePath: daemonRunFile,
 		executable:  func() (string, error) { return filepath.Join(t.TempDir(), "ao"), nil },
 		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	env := manager.runtimeEnv("mer-1", "mer", "issue-9", map[string]string{
+	env, err := manager.runtimeEnv("mer-1", "mer", "issue-9", map[string]string{
 		"Path":                           `C:\project\bin`,
 		"ao_session_id":                  "hacked",
 		"Ao_Project_Id":                  "hacked",
@@ -132,6 +136,9 @@ func TestRuntimeEnvWindowsRemovesCaseVariantsOfProtectedVariables(t *testing.T) 
 		"ao_browser_runtime_token_stdin": "1",
 		"buildMode":                      "production",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, key := range []string{
 		"Path",
@@ -150,7 +157,7 @@ func TestRuntimeEnvWindowsRemovesCaseVariantsOfProtectedVariables(t *testing.T) 
 	if env["PATH"] == "" {
 		t.Fatalf("PATH was not pinned: %v", env)
 	}
-	if env[EnvSessionID] != "mer-1" || env[EnvProjectID] != "mer" || env[EnvIssueID] != "issue-9" || env[EnvDataDir] != `C:\ao` {
+	if env[EnvSessionID] != "mer-1" || env[EnvProjectID] != "mer" || env[EnvIssueID] != "issue-9" || env[EnvDataDir] != dataDir {
 		t.Fatalf("protected AO env = %v", env)
 	}
 	if env[EnvRunFile] != daemonRunFile || env[EnvBrowserRuntimeToken] != "" || env[EnvBrowserRuntimeTokenStdin] != "" {
@@ -165,14 +172,17 @@ func TestRuntimeEnvPinsHooksToDaemonRunFile(t *testing.T) {
 	daemonRunFile := filepath.Join(t.TempDir(), "daemon-running.json")
 	t.Setenv("AO_RUN_FILE", filepath.Join(t.TempDir(), "inherited-wrong-daemon.json"))
 	manager := &Manager{
-		dataDir:     "/data",
+		dataDir:     t.TempDir(),
 		runFilePath: daemonRunFile,
 		executable:  func() (string, error) { return filepath.Join("/opt", "aod", "ao"), nil },
 		logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	env := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
+	env, err := manager.runtimeEnv("mer-1", "mer", "", map[string]string{
 		"AO_RUN_FILE": "/project/cannot-redirect-hooks.json",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got, want := env["AO_RUN_FILE"], daemonRunFile; got != want {
 		t.Fatalf("AO_RUN_FILE = %q, want daemon run-file %q", got, want)
 	}
