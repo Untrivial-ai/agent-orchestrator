@@ -49,6 +49,13 @@ export function MobileDevicesSection() {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
 	const [confirmingRemoval, setConfirmingRemoval] = useState<string | null>(null);
+	// installIds with a mute PATCH still in flight. Tracked per device (not via
+	// the mutation's own isPending/variables, which only reflect the latest
+	// call) so concurrent toggles on different rows each stay disabled until
+	// their own request settles, and a second click on the same row can't fire
+	// while its first request is still out — out-of-order completions would
+	// otherwise leave the switch disagreeing with the server.
+	const [mutingIds, setMutingIds] = useState<ReadonlySet<string>>(new Set());
 
 	const query = useQuery({
 		queryKey: mobileDevicesQueryKey,
@@ -71,19 +78,35 @@ export function MobileDevicesSection() {
 		onMutate: async ({ installId, muted }) => {
 			await queryClient.cancelQueries({ queryKey: mobileDevicesQueryKey });
 			const previous = queryClient.getQueryData<MobileDevice[]>(mobileDevicesQueryKey);
+			const prevMuted = previous?.find((d) => d.installId === installId)?.muted;
 			if (previous) {
 				queryClient.setQueryData<MobileDevice[]>(mobileDevicesQueryKey, (old) =>
 					(old ?? previous).map((d) => (d.installId === installId ? { ...d, muted } : d)),
 				);
 			}
-			return { previous };
+			setMutingIds((ids) => new Set(ids).add(installId));
+			return { installId, prevMuted };
 		},
 		onError: (_err, _vars, context) => {
-			if (context?.previous) {
-				queryClient.setQueryData(mobileDevicesQueryKey, context.previous);
+			// Restore only this device's preference onto the current list: a
+			// 3s poll may have landed fresher data for other rows between the
+			// optimistic flip and the failure, and wholesale restoring the
+			// snapshot would clobber it.
+			if (context?.prevMuted !== undefined) {
+				const { installId, prevMuted } = context;
+				queryClient.setQueryData<MobileDevice[]>(mobileDevicesQueryKey, (old) =>
+					(old ?? []).map((d) => (d.installId === installId ? { ...d, muted: prevMuted } : d)),
+				);
 			}
 		},
-		onSettled: invalidate,
+		onSettled: (_data, _error, variables) => {
+			setMutingIds((ids) => {
+				const next = new Set(ids);
+				next.delete(variables.installId);
+				return next;
+			});
+			invalidate();
+		},
 	});
 
 	const remove = useMutation({
@@ -146,7 +169,7 @@ export function MobileDevicesSection() {
 					<ul className="mt-2 divide-y divide-[var(--color-border-settings-input)]">
 						{sortedDevices.map((device) => {
 							const name = device.deviceName || t("mobile.devices.unnamed");
-							const mutingThis = mute.isPending && mute.variables?.installId === device.installId;
+							const mutingThis = mutingIds.has(device.installId);
 							return (
 								<li
 									key={device.installId}

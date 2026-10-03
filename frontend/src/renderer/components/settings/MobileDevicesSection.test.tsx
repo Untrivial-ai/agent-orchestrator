@@ -244,4 +244,30 @@ describe("MobileDevicesSection", () => {
 		expect(await screen.findByText(/Device not found/i)).toBeInTheDocument();
 		await waitFor(() => expect(toggle).toHaveAttribute("data-state", "checked"));
 	});
+
+	it("tracks each row's in-flight mute separately so concurrent toggles don't unlock each other", async () => {
+		vi.spyOn(apiClient, "GET").mockResolvedValue(twoDevices as never);
+		const resolvers: Array<(value: unknown) => void> = [];
+		vi.spyOn(apiClient, "PATCH").mockImplementation(
+			() => new Promise((resolve) => void resolvers.push(resolve)),
+		);
+		renderSection();
+
+		const iPhone = await screen.findByRole("switch", { name: /notifications for iPhone/i });
+		const m31s = await screen.findByRole("switch", { name: /notifications for M31s/i });
+
+		fireEvent.click(iPhone);
+		await waitFor(() => expect(iPhone).toBeDisabled());
+		// The other row is unaffected by the first row's in-flight request.
+		expect(m31s).toBeEnabled();
+
+		fireEvent.click(m31s);
+		await waitFor(() => expect(m31s).toBeDisabled());
+		expect(iPhone).toBeDisabled();
+
+		// Both settle: each row unlocks and shows its saved state.
+		resolvers.forEach((resolve) => resolve({ data: { muted: true } }));
+		await waitFor(() => expect(iPhone).toBeEnabled());
+		await waitFor(() => expect(m31s).toBeEnabled());
+	});
 });
