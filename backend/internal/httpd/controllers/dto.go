@@ -526,6 +526,35 @@ type ListWorkspaceFilesResponse struct {
 	Behind *int `json:"behind,omitempty"`
 }
 
+// WorkspaceManifestResponse is the compact, latency-sensitive response used
+// for the initial Changes paint. Complete repository inventory and commit
+// history remain on their dedicated/legacy routes.
+type WorkspaceManifestResponse struct {
+	SessionID        domain.SessionID                `json:"sessionId"`
+	WorkspaceVersion string                          `json:"workspaceVersion"`
+	CompareBaseSHA   string                          `json:"compareBaseSha,omitempty"`
+	CompareBaseRef   string                          `json:"compareBaseRef,omitempty"`
+	CompareMode      sessionsvc.WorkspaceCompareMode `json:"compareMode,omitempty" enum:"base,head_fallback"`
+	Files            []WorkspaceFileSummary          `json:"files"`
+	Sections         WorkspaceFileSections           `json:"sections"`
+	Summary          WorkspaceSummary                `json:"summary"`
+	Truncated        bool                            `json:"truncated"`
+	Stale            bool                            `json:"stale"`
+	Refreshing       bool                            `json:"refreshing"`
+	Degraded         bool                            `json:"degraded"`
+	DegradedCode     string                          `json:"degradedCode,omitempty"`
+}
+
+// WorkspaceHistoryResponse is lazy commit/upstream metadata for the review
+// header. It is intentionally separate from the first-paint manifest.
+type WorkspaceHistoryResponse struct {
+	SessionID        domain.SessionID         `json:"sessionId"`
+	Commits          []WorkspaceCommitSummary `json:"commits"`
+	CommitsTruncated bool                     `json:"commitsTruncated,omitempty"`
+	Ahead            *int                     `json:"ahead,omitempty"`
+	Behind           *int                     `json:"behind,omitempty"`
+}
+
 // ListPRFilesResponse is the exact base...head changed-file set for one PR.
 type ListPRFilesResponse struct {
 	SessionID domain.SessionID       `json:"sessionId"`

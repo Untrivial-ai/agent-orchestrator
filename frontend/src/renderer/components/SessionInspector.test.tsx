@@ -208,7 +208,7 @@ function commonGetsResponder(
         error: undefined,
       };
     }
-    if (path === "/api/v1/sessions/{sessionId}/workspace/files") {
+    if (path === "/api/v1/sessions/{sessionId}/workspace/manifest") {
       return {
         data: { sessionId: "sess-1", files: [], truncated: false },
         error: undefined,
@@ -401,7 +401,7 @@ describe("SessionInspector tabs", () => {
     expect(within(filesTab).getByTestId("files-viewer-icon")).toBeInTheDocument();
     await waitFor(() =>
       expect(getMock).toHaveBeenCalledWith(
-        "/api/v1/sessions/{sessionId}/workspace/files",
+        "/api/v1/sessions/{sessionId}/workspace/manifest",
         {
           params: { path: { sessionId: "sess-1" } },
         },
@@ -428,7 +428,7 @@ describe("SessionInspector tabs", () => {
 
     expect(
       getMock.mock.calls.some(
-        ([path]) => path === "/api/v1/sessions/{sessionId}/workspace/files",
+        ([path]) => path === "/api/v1/sessions/{sessionId}/workspace/manifest",
       ),
     ).toBe(false);
   });
@@ -2225,7 +2225,7 @@ describe("SessionInspector summary reviews", () => {
         const agents = ["claude-code", "codex", "opencode"].map((id) => agentReadiness(id));
         return { data: { agents } };
       }
-      if (path === "/api/v1/sessions/{sessionId}/workspace/files") {
+      if (path === "/api/v1/sessions/{sessionId}/workspace/manifest") {
         return {
           data: { sessionId: "sess-1", files: [], truncated: false },
           error: undefined,

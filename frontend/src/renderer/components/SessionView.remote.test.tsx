@@ -231,12 +231,13 @@ it("shows a normal inspector and reads its changed files from the remote host on
 		if (path.endsWith("/projects")) return Response.json({ projects: [{ id: "project-1", name: "Remote", path: "/remote" }] });
 		if (path.endsWith("/sessions")) return Response.json({ sessions: [{ id: "session-1", projectId: "project-1", displayName: "Fix login", harness: "codex", status: "working", mode: "chat", branch: "fix/login", prs: [{ url: "https://github.com/acme/app/pull/42", number: 42, state: "open", ci: "passing", review: "none", mergeability: "mergeable", reviewComments: false, updatedAt: "2026-09-28T00:00:00Z" }] }] });
 		if (path.endsWith("/conversation")) return Response.json(conversationBody());
-		if (path.endsWith("/workspace/files")) return Response.json({
+		if (path.endsWith("/workspace/manifest")) return Response.json({
 			sessionId: "session-1", workspaceVersion: "version-1",
 			files: [{ path: "app/page.tsx", status: "modified", additions: 1, deletions: 1, size: 6, binary: false }],
 			sections: { committed: [], staged: [], unstaged: [{ path: "app/page.tsx", status: "modified", additions: 1, deletions: 1, size: 6, binary: false }], untracked: [] },
 			commits: [], summary: { additions: 1, deletions: 1, files: 1 }, truncated: false,
 		});
+		if (path.endsWith("/workspace/history")) return Response.json({ sessionId: "session-1", commits: [] });
 		if (path.endsWith("/workspace/diffs")) return Response.json({
 			sessionId: "session-1", workspaceVersion: "version-1",
 			groups: [{ repository: "", patch: "diff --git a/app/page.tsx b/app/page.tsx\n--- a/app/page.tsx\n+++ b/app/page.tsx\n@@ -1 +1 @@\n-old\n+new\n", truncated: false, includedPaths: ["app/page.tsx"], deferred: [] }],
@@ -267,7 +268,7 @@ it("shows a normal inspector and reads its changed files from the remote host on
 	await userEvent.click(screen.getByRole("button", { name: "Maximize files" }));
 	expect(screen.getByTestId("files-popout-topbar")).toBeInTheDocument();
 	await userEvent.click(screen.getByRole("button", { name: "Minimize files" }));
-	expect(requests).toContain("http://127.0.0.1:4000/api/v1/sessions/session-1/workspace/files");
+	expect(requests).toContain("http://127.0.0.1:4000/api/v1/sessions/session-1/workspace/manifest");
 	expect(requests).toContain("http://127.0.0.1:4000/api/v1/sessions/session-1/workspace/diffs");
 	await waitFor(() => expect(requests.some((url) => url.startsWith("http://127.0.0.1:4000/api/v1/sessions/session-1/workspace/file?path="))).toBe(true));
 	expect(localGet).not.toHaveBeenCalled();
@@ -293,7 +294,8 @@ it("opens the frontend file from an absolute remote turn diff without a cwd", as
 			turns: [{ id: "turn-1", state: "completed", requestedAt: "2026-09-28T00:00:00Z", diff: { files: [{ path: `/home/ao/.ao/data/worktrees/demo/session-1/${expectedPath}`, status: "added", additions: 1, deletions: 0 }] } }],
 			messages: [{ id: "message-1", turnId: "turn-1", role: "assistant", origin: "provider", text: "Changed index.", sequence: 1, revision: 0, streaming: false, createdAt: "2026-09-28T00:00:01Z" }],
 		}));
-		if (url.pathname.endsWith("/workspace/files")) return Response.json({ sessionId: "session-1", workspaceVersion: "version-1", files, sections: { committed: [], staged: [], unstaged: [], untracked: files }, commits: [], summary: { additions: 2, deletions: 0, files: 2 }, truncated: false });
+		if (url.pathname.endsWith("/workspace/manifest")) return Response.json({ sessionId: "session-1", workspaceVersion: "version-1", files, sections: { committed: [], staged: [], unstaged: [], untracked: files }, commits: [], summary: { additions: 2, deletions: 0, files: 2 }, truncated: false });
+		if (url.pathname.endsWith("/workspace/history")) return Response.json({ sessionId: "session-1", commits: [] });
 		if (url.pathname.endsWith("/workspace/file")) {
 			fileRequests.push(url.searchParams.get("path") ?? "");
 			return url.searchParams.get("path") === expectedPath
@@ -381,7 +383,8 @@ it("opens a TUI host file in a shared center tab and renames on that host", asyn
 			title = (await request.json() as { displayName: string }).displayName;
 			return Response.json({});
 		}
-		if (path.endsWith("/workspace/files")) return Response.json({ sessionId: "session-1", workspaceVersion: "version-1", files: [{ path: "app/page.tsx", status: "modified", additions: 1, deletions: 1, size: 6, binary: false }], sections: { committed: [], staged: [], unstaged: [{ path: "app/page.tsx", status: "modified", additions: 1, deletions: 1, size: 6, binary: false }], untracked: [] }, commits: [], summary: { additions: 1, deletions: 1, files: 1 }, truncated: false });
+		if (path.endsWith("/workspace/manifest")) return Response.json({ sessionId: "session-1", workspaceVersion: "version-1", files: [{ path: "app/page.tsx", status: "modified", additions: 1, deletions: 1, size: 6, binary: false }], sections: { committed: [], staged: [], unstaged: [{ path: "app/page.tsx", status: "modified", additions: 1, deletions: 1, size: 6, binary: false }], untracked: [] }, commits: [], summary: { additions: 1, deletions: 1, files: 1 }, truncated: false });
+		if (path.endsWith("/workspace/history")) return Response.json({ sessionId: "session-1", commits: [] });
 		if (path.endsWith("/workspace/diffs")) return Response.json({ sessionId: "session-1", workspaceVersion: "version-1", groups: [{ repository: "", patch: "diff --git a/app/page.tsx b/app/page.tsx\n--- a/app/page.tsx\n+++ b/app/page.tsx\n@@ -1 +1 @@\n-old\n+new\n", truncated: false, includedPaths: ["app/page.tsx"], deferred: [] }] });
 		if (path.endsWith("/workspace/file")) return Response.json({ path: "app/page.tsx", diff: "@@ -1 +1 @@\n-old\n+new", content: "new", binary: false, contentTruncated: false, diffTruncated: false });
 		return Response.json({});

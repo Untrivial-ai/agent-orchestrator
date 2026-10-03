@@ -27,6 +27,7 @@ vi.mock("./host-clients", () => ({
 import { getWorkspaceFileConnectionState, subscribeWorkspaceFileChanges } from "./workspace-file-events";
 
 let baseUrlListener: (() => void) | undefined;
+const INVALIDATE_TEST_WINDOW_MS = 150;
 let hostListeners: Array<() => void> = [];
 
 class EventSourceStub {
@@ -37,7 +38,7 @@ class EventSourceStub {
 	readyState = 0;
 	onopen: (() => void) | null = null;
 	onerror: (() => void) | null = null;
-	listeners = new Map<string, Set<() => void>>();
+	listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
 
 	constructor(url: string) {
 		if (EventSourceStub.throwNext) {
@@ -48,14 +49,14 @@ class EventSourceStub {
 		EventSourceStub.instances.push(this);
 	}
 
-	addEventListener(type: string, listener: () => void) {
+	addEventListener(type: string, listener: (event: MessageEvent<string>) => void) {
 		const listeners = this.listeners.get(type) ?? new Set();
 		listeners.add(listener);
 		this.listeners.set(type, listeners);
 	}
 
-	dispatch(type: string) {
-		for (const listener of this.listeners.get(type) ?? []) listener();
+	dispatch(type: string, data = "") {
+		for (const listener of this.listeners.get(type) ?? []) listener({ data } as MessageEvent<string>);
 	}
 
 	close() {
@@ -65,7 +66,7 @@ class EventSourceStub {
 }
 
 function fakeQueryClient() {
-	return { invalidateQueries: vi.fn() } as unknown as Parameters<typeof subscribeWorkspaceFileChanges>[1];
+	return { getQueryData: vi.fn(), invalidateQueries: vi.fn() } as unknown as Parameters<typeof subscribeWorkspaceFileChanges>[1];
 }
 
 beforeEach(() => {
@@ -170,14 +171,48 @@ describe("subscribeWorkspaceFileChanges", () => {
 		expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
 		vi.advanceTimersByTime(1);
 
-		expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(7);
+		expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(8);
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["workspace-file-paths", "sess-1"] });
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-files", "sess-1"] });
+		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-history", "sess-1"] });
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-file", "sess-1"] });
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-file-revision", "sess-1"] });
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-diffs", "sess-1"] });
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-search", "sess-1"] });
 		expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["session-workspace-tree", "sess-1"] });
+		unsubscribe();
+	});
+
+	it("waits for the completed manifest version and ignores duplicate versions", () => {
+		vi.useFakeTimers();
+		const queryClient = fakeQueryClient();
+		const unsubscribe = subscribeWorkspaceFileChanges("sess-version", queryClient);
+		const source = EventSourceStub.instances[0];
+
+		source.dispatch("workspace_changed", JSON.stringify({ kind: "dirty", refreshing: true }));
+		vi.advanceTimersByTime(INVALIDATE_TEST_WINDOW_MS);
+		expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+
+		const completed = JSON.stringify({ kind: "version", workspaceVersion: "v2" });
+		source.dispatch("workspace_changed", completed);
+		vi.advanceTimersByTime(INVALIDATE_TEST_WINDOW_MS);
+		expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(8);
+
+		vi.mocked(queryClient.invalidateQueries).mockClear();
+		source.dispatch("workspace_changed", completed);
+		vi.advanceTimersByTime(INVALIDATE_TEST_WINDOW_MS);
+		expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
+		unsubscribe();
+	});
+
+	it("does not refetch a manifest version already in the shared cache", () => {
+		vi.useFakeTimers();
+		const queryClient = fakeQueryClient();
+		vi.mocked(queryClient.getQueryData).mockReturnValue({ workspaceVersion: "v2" });
+		const unsubscribe = subscribeWorkspaceFileChanges("sess-current", queryClient);
+		EventSourceStub.instances[0].dispatch("workspace_changed", JSON.stringify({ kind: "version", workspaceVersion: "v2" }));
+		vi.advanceTimersByTime(INVALIDATE_TEST_WINDOW_MS);
+		expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
 		unsubscribe();
 	});
 

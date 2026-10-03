@@ -1,11 +1,8 @@
-import { createContext, forwardRef, useCallback, useContext, useEffect, useRef, useState, type HTMLAttributes, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Tree, type NodeApi, type NodeRendererProps, type RowRendererProps, type TreeApi } from "react-arborist";
-import { ChevronRight } from "lucide-react";
-import { cn } from "../lib/utils";
-import { WorkspaceEntryIcon } from "./WorkspaceEntryIcon";
-import { statusLabel, statusTone } from "../lib/workspace-file-status";
+import { preparePresortedFileTreeInput, type GitStatus, type GitStatusEntry } from "@pierre/trees";
+import { FileTree as PierreFileTree, useFileTree } from "@pierre/trees/react";
 import {
 	buildWorkspaceFileTree,
 	sessionWorkspaceTreeQueryOptions,
@@ -13,16 +10,9 @@ import {
 	type WorkspaceTreeEntry,
 } from "../hooks/useSessionWorkspaceTree";
 import { sessionWorkspaceSearchQueryOptions } from "../hooks/useSessionWorkspaceFiles";
+import { markFileViewerPerformance } from "../lib/file-viewer-performance";
 
 const ROW_HEIGHT = 30;
-const INDENT = 16;
-const ROW_INSET = 8;
-
-const FileTreeScrollElement = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
-	function FileTreeScrollElement({ className, ...props }, ref) {
-		return <div ref={ref} className={cn("board-scrollbar", className)} {...props} />;
-	},
-);
 
 function entryToNode(entry: WorkspaceTreeEntry): TreeNode {
 	if (entry.type === "dir") {
@@ -56,23 +46,6 @@ function mergeRootEntries(current: TreeNode[], entries: WorkspaceTreeEntry[]): T
 	});
 }
 
-function useContainerSize(): [RefObject<HTMLDivElement | null>, { width: number; height: number }] {
-	const ref = useRef<HTMLDivElement>(null);
-	const [size, setSize] = useState({ width: 0, height: 0 });
-	useEffect(() => {
-		const el = ref.current;
-		if (!el) return;
-		const observer = new ResizeObserver(([entry]) => {
-			if (!entry) return;
-			const { width, height } = entry.contentRect;
-			setSize({ width, height });
-		});
-		observer.observe(el);
-		return () => observer.disconnect();
-	}, []);
-	return [ref, size];
-}
-
 export function FileTree({
 	filterText,
 	sessionId,
@@ -93,18 +66,59 @@ export function FileTree({
 	selectedPath: string | null;
 	onSelectPath: (node: TreeNode) => void;
 }) {
+	if (changedOnly) {
+		return (
+			<ChangedFileTree
+				data={changedOnlyData}
+				filterText={filterText}
+				flushTop={flushTop}
+				onSelectPath={onSelectPath}
+				selectedPath={selectedPath}
+				sessionId={sessionId}
+			/>
+		);
+	}
+
+	return (
+		<WorkspaceFileTree
+			filterText={filterText}
+			flushTop={flushTop}
+			hostId={hostId}
+			onSelectPath={onSelectPath}
+			selectedPath={selectedPath}
+			sessionId={sessionId}
+		/>
+	);
+}
+
+function WorkspaceFileTree({
+	filterText,
+	hostId,
+	sessionId,
+	selectedPath,
+	onSelectPath,
+	flushTop,
+}: {
+	filterText: string;
+	hostId?: string;
+	sessionId: string;
+	selectedPath: string | null;
+	onSelectPath: (node: TreeNode) => void;
+	flushTop: boolean;
+}) {
 	const { t } = useTranslation();
 	const queryClient = useQueryClient();
-	const treeApiRef = useRef<TreeApi<TreeNode> | null>(null);
 	const loadedDirsRef = useRef<Set<string>>(new Set());
 	const [lazyData, setLazyData] = useState<TreeNode[]>([]);
-	const [containerRef, size] = useContainerSize();
 	const normalizedFilter = filterText.trim();
 
-	const rootQuery = useQuery({ ...sessionWorkspaceTreeQueryOptions(sessionId, "", "Unable to load workspace tree", hostId), enabled: !changedOnly && normalizedFilter.length === 0 });
+	const rootQuery = useQuery({
+		...sessionWorkspaceTreeQueryOptions(sessionId, "", "Unable to load workspace tree", hostId),
+		enabled: normalizedFilter.length === 0,
+	});
 	const searchQuery = useQuery({
 		...sessionWorkspaceSearchQueryOptions(sessionId, normalizedFilter, t("files.error.searchWorkspace"), hostId),
-		enabled: !changedOnly && normalizedFilter.length > 0,
+		enabled: normalizedFilter.length > 0,
 	});
 
 	useEffect(() => {
@@ -113,10 +127,10 @@ export function FileTree({
 	}, [sessionId, hostId]);
 
 	useEffect(() => {
-		if (changedOnly || !rootQuery.data) return;
+		if (!rootQuery.data) return;
 		loadedDirsRef.current.add("");
 		setLazyData((current) => mergeRootEntries(current, rootQuery.data.entries));
-	}, [changedOnly, rootQuery.data]);
+	}, [rootQuery.data]);
 
 	const loadChildren = useCallback(
 		async (dir: string) => {
@@ -136,30 +150,14 @@ export function FileTree({
 		[queryClient, sessionId, hostId, t],
 	);
 
-	const handleToggle = useCallback(
-		(id: string) => {
-			if (changedOnly) return;
-			const node = treeApiRef.current?.get(id);
-			if (node?.isOpen && node.data.type === "dir") void loadChildren(node.data.path);
-		},
-		[changedOnly, loadChildren],
-	);
-
-	const handleActivate = useCallback(
-		(node: NodeApi<TreeNode>) => {
-			if (node.data.type === "file") onSelectPath(node.data);
-		},
-		[onSelectPath],
-	);
-
 	const searchData = buildWorkspaceFileTree(searchQuery.data?.results ?? []);
-	const data = changedOnly ? changedOnlyData : normalizedFilter ? searchData : lazyData;
-	const isPending = !changedOnly && (normalizedFilter ? searchQuery.isPending : rootQuery.isPending);
-	const activeError = !changedOnly && (normalizedFilter ? searchQuery.error : rootQuery.error);
-	const isEmpty = data.length === 0 && (changedOnly || (!isPending && !activeError));
+	const data = normalizedFilter ? searchData : lazyData;
+	const isPending = normalizedFilter ? searchQuery.isPending : rootQuery.isPending;
+	const activeError = normalizedFilter ? searchQuery.error : rootQuery.error;
+	const isEmpty = data.length === 0 && !isPending && !activeError;
 
 	return (
-		<div className="flex h-full min-h-0 min-w-0 flex-col bg-background px-2" ref={containerRef}>
+		<div className="flex h-full min-h-0 min-w-0 flex-col bg-background px-2">
 			{isPending ? (
 				<p className="p-3 text-xs text-muted-foreground">{t("files.loading")}</p>
 			) : null}
@@ -167,108 +165,264 @@ export function FileTree({
 				<p className="p-3 text-xs text-error">{activeError.message || t("files.error.loadWorkspaceTree")}</p>
 			) : null}
 			{isEmpty ? <p className="p-3 text-xs text-muted-foreground">{t("files.explorer.empty")}</p> : null}
-			{size.width > 0 && size.height > 0 ? (
-				<FlatTreeContext.Provider value={!data.some((node) => node.type === "dir")}>
-					<Tree<TreeNode>
-						data={data}
-						ref={treeApiRef}
-						idAccessor="path"
-						onToggle={handleToggle}
-						onActivate={handleActivate}
-						openByDefault={!changedOnly && normalizedFilter.length > 0}
-						selection={selectedPath ?? undefined}
-						disableDrag
-						disableDrop
-						disableEdit
-						disableMultiSelection
-						searchTerm={changedOnly ? filterText : ""}
-						rowHeight={ROW_HEIGHT}
-						indent={INDENT}
-						width={size.width}
-						height={size.height}
-						paddingBottom={4}
-						paddingTop={flushTop ? 0 : 4}
-						aria-label={t("files.explorer.tree")}
-						outerElementType={FileTreeScrollElement}
-						renderRow={FileTreeRowContainer}
-					>
-						{FileTreeRow}
-					</Tree>
-				</FlatTreeContext.Provider>
-			) : null}
-		</div>
-	);
-}
-
-// react-arborist's default row wrapper sets `minWidth: max-content` so a
-// selection highlight never clips at the viewport edge under a long/deeply
-// nested name — but that also means a row never shrinks to the panel's
-// width, so name truncation (below) never has anything to truncate against
-// and the whole tree scrolls horizontally instead. A file-tree sidebar
-// should truncate long names with an ellipsis, not require horizontal
-// scrolling to read them, so this only overrides that one property.
-function FileTreeRowContainer<T>({ node, attrs, innerRef, children }: RowRendererProps<T>) {
-	return (
-		<div
-			{...attrs}
-			className="min-w-0!"
-			onClick={node.handleClick}
-			onFocus={(event) => event.stopPropagation()}
-			ref={innerRef}
-			style={{ ...attrs.style, minWidth: 0 }}
-		>
-			{children}
-		</div>
-	);
-}
-
-// A tree with no folders anywhere (e.g. a flat list of changed files) has no
-// chevrons to line file icons up with, so rows drop the empty chevron slot.
-const FlatTreeContext = createContext(false);
-
-function FileTreeRow({ node, style, dragHandle }: NodeRendererProps<TreeNode>) {
-	const { t } = useTranslation();
-	const flat = useContext(FlatTreeContext);
-	const entry = node.data;
-	const isDir = entry.type === "dir";
-	return (
-		<div
-			className={cn(
-				"flex h-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 text-[length:var(--font-size-base)] text-foreground",
-				node.isSelected ? "bg-interactive-active" : "hover:bg-interactive-hover",
-			)}
-			onClick={() => (isDir ? node.toggle() : node.activate())}
-			ref={dragHandle}
-			// react-arborist writes the indent as an inline paddingLeft, which
-			// overrides px-2; add the row inset back so the chevron never sits
-			// flush against the selection highlight.
-			style={{ ...style, paddingLeft: (Number.parseFloat(String(style.paddingLeft ?? 0)) || 0) + ROW_INSET }}
-		>
-			{isDir ? (
-				<ChevronRight
-					aria-hidden="true"
-					className={cn("size-3.5 shrink-0 text-passive transition-transform", node.isOpen && "rotate-90")}
+			{!isPending && !activeError && !isEmpty ? (
+				<PierreTreeSurface
+					data={data}
+					expandAll={normalizedFilter.length > 0}
+					flushTop={flushTop}
+					id={`workspace-files-${sessionId}`}
+					onDirectoryExpanded={normalizedFilter ? undefined : loadChildren}
+					onSelectPath={onSelectPath}
+					selectedPath={selectedPath}
 				/>
-			) : flat ? null : (
-				<span aria-hidden="true" className="size-3.5 shrink-0" />
-			)}
-			{isDir ? (
-				<WorkspaceEntryIcon className="size-icon-base" kind="dir" name={entry.name} testId={`folder-icon-${entry.name}`} />
-			) : (
-				<WorkspaceEntryIcon className="size-icon-base" kind="file" name={entry.name} testId={`file-icon-${entry.name}`} />
-			)}
-			<span className="min-w-0 flex-1 truncate">{entry.name}</span>
-			{isDir && entry.hasChanges ? (
-				<span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-warning" />
 			) : null}
-			{!isDir && entry.status && entry.status !== "unmodified" ? (
-				<span
-					className={cn("shrink-0 text-xs font-medium", statusTone[entry.status])}
-					title={t(`files.status.${entry.status}`)}
-				>
-					{statusLabel[entry.status]}
-				</span>
-			) : null}
+		</div>
+	);
+}
+
+function flattenChangedFiles(nodes: TreeNode[], files: TreeNode[] = []): TreeNode[] {
+	for (const node of nodes) {
+		if (node.type === "file") files.push(node);
+		else flattenChangedFiles(node.children ?? [], files);
+	}
+	return files;
+}
+
+function toPierreGitStatus(status: TreeNode["status"]): GitStatus | null {
+	switch (status) {
+		case "added":
+		case "deleted":
+		case "modified":
+		case "renamed":
+			return status;
+		default:
+			return null;
+	}
+}
+
+function flattenTreeNodes(nodes: TreeNode[], entries: TreeNode[] = []): TreeNode[] {
+	for (const node of nodes) {
+		entries.push(node);
+		if (node.type === "dir") flattenTreeNodes(node.children ?? [], entries);
+	}
+	return entries;
+}
+
+function pierrePath(entry: TreeNode): string {
+	return entry.type === "dir" ? `${entry.path}/` : entry.path;
+}
+
+function PierreTreeSurface({
+	data,
+	expandAll,
+	flushTop,
+	id,
+	onDirectoryExpanded,
+	onSelectPath,
+	selectedPath,
+}: {
+	data: TreeNode[];
+	expandAll: boolean;
+	flushTop: boolean;
+	id: string;
+	onDirectoryExpanded?: (path: string) => void;
+	onSelectPath: (node: TreeNode) => void;
+	selectedPath: string | null;
+}) {
+	const { t } = useTranslation();
+	const entries = useMemo(() => flattenTreeNodes(data), [data]);
+	const entriesByPath = useMemo(() => new Map(entries.map((entry) => [entry.path, entry])), [entries]);
+	const entriesByPathRef = useRef(entriesByPath);
+	entriesByPathRef.current = entriesByPath;
+	const onSelectPathRef = useRef(onSelectPath);
+	onSelectPathRef.current = onSelectPath;
+	const onDirectoryExpandedRef = useRef(onDirectoryExpanded);
+	onDirectoryExpandedRef.current = onDirectoryExpanded;
+	const paths = useMemo(() => entries.map(pierrePath), [entries]);
+	const preparedInput = useMemo(() => preparePresortedFileTreeInput(paths), [paths]);
+	const gitStatus = useMemo(
+		() => entries.flatMap<GitStatusEntry>((entry) => {
+			if (entry.type !== "file") return [];
+			const status = toPierreGitStatus(entry.status);
+			return status ? [{ path: entry.path, status }] : [];
+		}),
+		[entries],
+	);
+	const syncingSelection = useRef(false);
+	const { model } = useFileTree({
+		preparedInput,
+		flattenEmptyDirectories: false,
+		initialExpansion: expandAll ? "open" : "closed",
+		initialSelectedPaths: selectedPath && entriesByPath.get(selectedPath)?.type === "file" ? [selectedPath] : [],
+		itemHeight: ROW_HEIGHT,
+		overscan: 8,
+		gitStatus,
+		onSelectionChange: (selectedPaths) => {
+			if (syncingSelection.current) return;
+			const path = selectedPaths.at(-1);
+			const entry = path ? entriesByPathRef.current.get(path) : undefined;
+			if (entry?.type === "file") onSelectPathRef.current(entry);
+		},
+	});
+
+	useLayoutEffect(() => {
+		const expandedPaths = expandAll
+			? entries.filter((entry) => entry.type === "dir").map(pierrePath)
+			: model.getVisibleRows(0, model.getVisibleCount())
+				.filter((row) => row.kind === "directory" && row.isExpanded)
+				.map((row) => row.path);
+		model.resetPaths({ preparedInput, initialExpandedPaths: expandedPaths });
+		model.setGitStatus(gitStatus);
+	}, [entries, expandAll, gitStatus, model, preparedInput]);
+
+	useEffect(() => {
+		const loadExpandedDirectories = () => {
+			const load = onDirectoryExpandedRef.current;
+			if (!load) return;
+			for (const entry of entriesByPathRef.current.values()) {
+				const item = model.getItem(pierrePath(entry));
+				if (entry.type === "dir" && item && "isExpanded" in item && item.isExpanded()) {
+					load(entry.path);
+				}
+			}
+		};
+		loadExpandedDirectories();
+		return model.subscribe(loadExpandedDirectories);
+	}, [model]);
+
+	useLayoutEffect(() => {
+		if (!selectedPath || entriesByPath.get(selectedPath)?.type !== "file") return;
+		if (model.getSelectedPaths().length === 1 && model.getSelectedPaths()[0] === selectedPath) return;
+		syncingSelection.current = true;
+		model.getItem(selectedPath)?.select();
+		syncingSelection.current = false;
+	}, [entriesByPath, model, selectedPath]);
+	useLayoutEffect(() => markFileViewerPerformance("tree-painted"), [model, preparedInput]);
+
+	return (
+		<PierreFileTree
+			aria-label={t("files.explorer.tree")}
+			className="min-h-0 flex-1"
+			data-testid="workspace-file-tree"
+			id={id}
+			model={model}
+			style={{
+				"--trees-bg-override": "transparent",
+				"--trees-fg-override": "var(--foreground)",
+				"--trees-selected-bg-override": "var(--interactive-active)",
+				"--trees-padding-inline-override": "0px",
+				"--trees-font-family-override": "inherit",
+				"--trees-font-size-override": "var(--font-size-base)",
+				paddingTop: flushTop ? 0 : 4,
+			} as React.CSSProperties}
+		/>
+	);
+}
+
+/**
+ * The changed-files view is a warm, path-first model. Pierre Trees owns the
+ * canonical path index and virtualized rows; manifest refreshes update that
+ * stable model instead of rebuilding a React node for every visible file.
+ */
+function ChangedFileTree({
+	data,
+	filterText,
+	flushTop,
+	onSelectPath,
+	selectedPath,
+	sessionId,
+}: {
+	data: TreeNode[];
+	filterText: string;
+	flushTop: boolean;
+	onSelectPath: (node: TreeNode) => void;
+	selectedPath: string | null;
+	sessionId: string;
+}) {
+	const { t } = useTranslation();
+	const onSelectPathRef = useRef(onSelectPath);
+	onSelectPathRef.current = onSelectPath;
+
+	const files = useMemo(() => {
+		const normalizedFilter = filterText.trim().toLocaleLowerCase();
+		const allFiles = flattenChangedFiles(data);
+		return normalizedFilter
+			? allFiles.filter((file) => file.path.toLocaleLowerCase().includes(normalizedFilter))
+			: allFiles;
+	}, [data, filterText]);
+	const filesByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
+	const filesByPathRef = useRef(filesByPath);
+	filesByPathRef.current = filesByPath;
+	const paths = useMemo(() => files.map((file) => file.path), [files]);
+	const preparedInput = useMemo(() => preparePresortedFileTreeInput(paths), [paths]);
+	const gitStatus = useMemo(
+		() => files.flatMap<GitStatusEntry>((file) => {
+			const status = toPierreGitStatus(file.status);
+			return status ? [{ path: file.path, status }] : [];
+		}),
+		[files],
+	);
+	const syncingSelection = useRef(false);
+	const { model } = useFileTree({
+		preparedInput,
+		flattenEmptyDirectories: false,
+		initialExpansion: "closed",
+		initialSelectedPaths: selectedPath && filesByPath.has(selectedPath) ? [selectedPath] : [],
+		itemHeight: ROW_HEIGHT,
+		overscan: 8,
+		gitStatus,
+		onSelectionChange: (selectedPaths) => {
+			if (syncingSelection.current) return;
+			const path = selectedPaths.at(-1);
+			const file = path ? filesByPathRef.current.get(path) : undefined;
+			if (file) onSelectPathRef.current(file);
+		},
+	});
+
+	useLayoutEffect(() => {
+		const expandedPaths = model
+			.getVisibleRows(0, model.getVisibleCount())
+			.filter((row) => row.kind === "directory" && row.isExpanded)
+			.map((row) => row.path);
+		model.resetPaths({ preparedInput, initialExpandedPaths: expandedPaths });
+		model.setGitStatus(gitStatus);
+	}, [gitStatus, model, preparedInput]);
+
+	useLayoutEffect(() => {
+		if (!selectedPath || !filesByPath.has(selectedPath)) return;
+		if (model.getSelectedPaths().length === 1 && model.getSelectedPaths()[0] === selectedPath) return;
+		syncingSelection.current = true;
+		model.getItem(selectedPath)?.select();
+		syncingSelection.current = false;
+	}, [filesByPath, model, selectedPath]);
+	useLayoutEffect(() => markFileViewerPerformance("tree-painted"), [model, preparedInput]);
+
+	if (files.length === 0) {
+		return (
+			<div className="flex h-full min-h-0 min-w-0 flex-col bg-background px-2">
+				<p className="p-3 text-xs text-muted-foreground">{t("files.explorer.empty")}</p>
+			</div>
+		);
+	}
+
+	return (
+		<div className="flex h-full min-h-0 min-w-0 flex-col bg-background px-2">
+			<PierreFileTree
+				aria-label={t("files.explorer.tree")}
+				className="min-h-0 flex-1"
+				data-testid="changed-file-tree"
+				id={`changed-files-${sessionId}`}
+				model={model}
+				style={{
+					"--trees-bg-override": "transparent",
+					"--trees-fg-override": "var(--foreground)",
+					"--trees-selected-bg-override": "var(--interactive-active)",
+					"--trees-padding-inline-override": "0px",
+					"--trees-font-family-override": "inherit",
+					"--trees-font-size-override": "var(--font-size-base)",
+					paddingTop: flushTop ? 0 : 4,
+				} as React.CSSProperties}
+			/>
 		</div>
 	);
 }

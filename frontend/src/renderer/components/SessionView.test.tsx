@@ -873,7 +873,7 @@ describe("SessionView", () => {
 		chatSurfaceWorkState.queuedTurnCount = 0;
 		reviewGetMock.mockReset();
 		reviewGetMock.mockImplementation(async (path: string) => {
-			if (path === "/api/v1/sessions/{sessionId}/workspace/files") {
+			if (path === "/api/v1/sessions/{sessionId}/workspace/manifest") {
 				return {
 					data: {
 						sessionId: "sess-1",
@@ -4319,7 +4319,7 @@ describe("SessionView", () => {
 
 	it("resolves a basename against workspace files before opening on a cold cache", async () => {
 		reviewGetMock.mockImplementation(async (path: string) => {
-			if (path === "/api/v1/sessions/{sessionId}/workspace/files") {
+			if (path === "/api/v1/sessions/{sessionId}/workspace/manifest") {
 				return {
 					data: {
 						sessionId: "sess-1",
@@ -4359,7 +4359,7 @@ describe("SessionView", () => {
 	it("resolves a chat basename against workspace files before opening on a cold cache", async () => {
 		workspaces[0].sessions[0].mode = "chat";
 		reviewGetMock.mockImplementation(async (path: string) => {
-			if (path === "/api/v1/sessions/{sessionId}/workspace/files") {
+			if (path === "/api/v1/sessions/{sessionId}/workspace/manifest") {
 				return {
 					data: {
 						sessionId: "sess-1",

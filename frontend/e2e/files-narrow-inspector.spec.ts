@@ -25,7 +25,7 @@ const patch = [
 async function stubWorkspaceFiles(page: Page) {
 	await installFakeBridge(page);
 	const file = { path: filePath, status: "modified", additions: 3, deletions: 0, size: 512, binary: false, editable: true, fileFingerprint: "fp-1" };
-	await page.route(`http://127.0.0.1:8080/api/v1/sessions/${sessionId}/workspace/files*`, (route) =>
+	await page.route(`http://127.0.0.1:8080/api/v1/sessions/${sessionId}/workspace/manifest*`, (route) =>
 		route.fulfill({
 			json: {
 				sessionId,

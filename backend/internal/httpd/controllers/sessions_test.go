@@ -629,6 +629,47 @@ func (f *fakeSessionService) ListWorkspaceFiles(_ context.Context, id domain.Ses
 	return sessionsvc.WorkspaceFiles{SessionID: id}, nil
 }
 
+func (f *fakeSessionService) GetWorkspaceManifest(ctx context.Context, id domain.SessionID) (sessionsvc.WorkspaceManifest, error) {
+	files, err := f.ListWorkspaceFiles(ctx, id)
+	if err != nil {
+		return sessionsvc.WorkspaceManifest{}, err
+	}
+	changed := make([]sessionsvc.WorkspaceFileSummary, 0, len(files.Files))
+	for _, file := range files.Files {
+		if file.Status != sessionsvc.WorkspaceFileUnmodified {
+			changed = append(changed, file)
+		}
+	}
+	return sessionsvc.WorkspaceManifest{
+		SessionID:        files.SessionID,
+		WorkspaceVersion: files.WorkspaceVersion,
+		CompareBaseSHA:   files.CompareBaseSHA,
+		CompareBaseRef:   files.CompareBaseRef,
+		CompareMode:      files.CompareMode,
+		Files:            changed,
+		Sections:         files.Sections,
+		Summary:          files.Summary,
+		Truncated:        files.Truncated,
+		Degraded:         files.Degraded,
+		DegradedCode:     files.DegradedCode,
+	}, nil
+}
+
+func (f *fakeSessionService) RefreshWorkspaceManifest(ctx context.Context, id domain.SessionID) (sessionsvc.WorkspaceManifest, error) {
+	return f.GetWorkspaceManifest(ctx, id)
+}
+
+func (f *fakeSessionService) GetWorkspaceHistory(ctx context.Context, id domain.SessionID) (sessionsvc.WorkspaceHistory, error) {
+	files, err := f.ListWorkspaceFiles(ctx, id)
+	if err != nil {
+		return sessionsvc.WorkspaceHistory{}, err
+	}
+	return sessionsvc.WorkspaceHistory{
+		SessionID: files.SessionID, Commits: files.Commits, CommitsTruncated: files.CommitsTruncated,
+		Ahead: files.Ahead, Behind: files.Behind,
+	}, nil
+}
+
 func (f *fakeSessionService) ListPRFiles(_ context.Context, id domain.SessionID, _ int, _ string) (sessionsvc.PRFiles, error) {
 	if _, ok := f.sessions[id]; !ok {
 		return sessionsvc.PRFiles{}, apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
@@ -2905,6 +2946,40 @@ func TestSessionsAPI_ListWorkspaceFiles(t *testing.T) {
 	}
 	if got.Files[1].Path != "notes.txt" || got.Files[1].PreviousPath != "old-notes.txt" || got.Files[1].Status != "renamed" {
 		t.Fatalf("second file = %#v", got.Files[1])
+	}
+}
+
+func TestSessionsAPI_GetWorkspaceManifestOmitsUnchangedInventory(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.workspaceFiles = sessionsvc.WorkspaceFiles{
+		SessionID:        "ao-1",
+		WorkspaceVersion: "version-1",
+		CompareBaseSHA:   "base-sha",
+		CompareBaseRef:   "main",
+		CompareMode:      sessionsvc.WorkspaceCompareBase,
+		Files: []sessionsvc.WorkspaceFileSummary{
+			{Path: "README.md", Status: sessionsvc.WorkspaceFileModified, Additions: 2, Deletions: 1},
+			{Path: "src/app.go", Status: sessionsvc.WorkspaceFileUnmodified},
+		},
+		Sections: sessionsvc.WorkspaceFileSections{
+			Unstaged: []sessionsvc.WorkspaceFileSummary{{Path: "README.md", Status: sessionsvc.WorkspaceFileModified, Additions: 2, Deletions: 1}},
+		},
+		Summary: sessionsvc.WorkspaceSummary{Files: 1, Additions: 2, Deletions: 1},
+	}
+	srv := newSessionTestServer(t, svc)
+
+	body, status, headers := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/ao-1/workspace/manifest", "")
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("GET workspace manifest = %d, want 200; body=%s", status, body)
+	}
+	var got controllers.WorkspaceManifestResponse
+	mustJSON(t, body, &got)
+	if got.WorkspaceVersion != "version-1" || got.CompareBaseSHA != "base-sha" || got.Summary.Files != 1 {
+		t.Fatalf("manifest metadata = %+v", got)
+	}
+	if len(got.Files) != 1 || got.Files[0].Path != "README.md" {
+		t.Fatalf("manifest files = %+v, want only changed README.md", got.Files)
 	}
 }
 

@@ -43,6 +43,15 @@ function treeResponse(path: string, entries: unknown[]) {
 	return { data: { sessionId: "sess-1", path, entries, truncated: false } };
 }
 
+async function findTreeRow(testId: "workspace-file-tree" | "changed-file-tree", path: string) {
+	const tree = await screen.findByTestId(testId);
+	return waitFor(() => {
+		const row = tree.shadowRoot?.querySelector<HTMLElement>(`[data-item-path="${path}"]`);
+		expect(row).not.toBeNull();
+		return row!;
+	});
+}
+
 describe("FileTree", () => {
 	beforeEach(() => {
 		resizeCallbacks.length = 0;
@@ -62,12 +71,14 @@ describe("FileTree", () => {
 			<FileTree changedOnly={false} changedOnlyData={[]} onSelectPath={vi.fn()} selectedPath={null} sessionId="sess-1" filterText="" />,
 		);
 
-		expect(await screen.findByText("src")).toBeInTheDocument();
-		expect(screen.getByText("README.md")).toBeInTheDocument();
+		expect(await findTreeRow("workspace-file-tree", "src/")).toBeInTheDocument();
+		expect(await findTreeRow("workspace-file-tree", "README.md")).toBeInTheDocument();
 		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/tree", {
 			params: { path: { sessionId: "sess-1" }, query: {} },
 		});
-		expect(screen.getByRole("tree", { name: "File tree" }).firstElementChild).toHaveClass("board-scrollbar");
+		const tree = screen.getByTestId("workspace-file-tree");
+		expect(tree).toHaveAttribute("aria-label", "File tree");
+		expect(tree.shadowRoot?.querySelector('[data-file-tree-virtualized-scroll="true"]')).not.toBeNull();
 	});
 
 	it("renders distinct technology icons from file and folder names", async () => {
@@ -83,11 +94,10 @@ describe("FileTree", () => {
 			<FileTree changedOnly={false} changedOnlyData={[]} onSelectPath={vi.fn()} selectedPath={null} sessionId="sess-1" filterText="" />,
 		);
 
-		const sourceFolderIcon = await screen.findByTestId("folder-icon-src");
-		const reactFileIcon = screen.getByTestId("file-icon-App.tsx");
-		const markdownFileIcon = screen.getByTestId("file-icon-README.md");
-		expect(sourceFolderIcon.tagName).toBe("svg");
-		expect(reactFileIcon.innerHTML).not.toBe(markdownFileIcon.innerHTML);
+		const reactFile = await findTreeRow("workspace-file-tree", "App.tsx");
+		const markdownFile = await findTreeRow("workspace-file-tree", "README.md");
+		expect(reactFile.querySelector("[data-icon-token]")?.getAttribute("data-icon-token")).toBe("react");
+		expect(markdownFile.querySelector("[data-icon-token]")?.getAttribute("data-icon-token")).toBe("markdown");
 	});
 
 	it("lazily fetches a directory's children on expand", async () => {
@@ -104,14 +114,14 @@ describe("FileTree", () => {
 			<FileTree changedOnly={false} changedOnlyData={[]} onSelectPath={vi.fn()} selectedPath={null} sessionId="sess-1" filterText="" />,
 		);
 
-		await userEvent.click(await screen.findByText("src"));
+		await userEvent.click(await findTreeRow("workspace-file-tree", "src/"));
 
 		await waitFor(() =>
 			expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/tree", {
 				params: { path: { sessionId: "sess-1" }, query: { path: "src" } },
 			}),
 		);
-		expect(await screen.findByText("app.go")).toBeInTheDocument();
+		expect(await findTreeRow("workspace-file-tree", "src/app.go")).toBeInTheDocument();
 	});
 
 	it("calls onSelectPath when a file row is activated", async () => {
@@ -122,7 +132,7 @@ describe("FileTree", () => {
 			<FileTree changedOnly={false} changedOnlyData={[]} onSelectPath={onSelectPath} selectedPath={null} sessionId="sess-1" filterText="" />,
 		);
 
-		await userEvent.click(await screen.findByText("README.md"));
+		await userEvent.click(await findTreeRow("workspace-file-tree", "README.md"));
 		expect(onSelectPath).toHaveBeenCalledWith(expect.objectContaining({ path: "README.md", type: "file" }));
 	});
 
@@ -140,7 +150,7 @@ describe("FileTree", () => {
 			<FileTree changedOnly={false} changedOnlyData={[]} onSelectPath={vi.fn()} selectedPath={null} sessionId="sess-1" filterText="target" />,
 		);
 
-		expect(await screen.findByText("target.ts")).toBeInTheDocument();
+		expect(await findTreeRow("workspace-file-tree", "src/nested/target.ts")).toBeInTheDocument();
 		expect(getMock).toHaveBeenCalledTimes(1);
 		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/search", {
 			params: { path: { sessionId: "sess-1" }, query: { query: "target", limit: 100 } },
@@ -161,7 +171,33 @@ describe("FileTree", () => {
 			/>,
 		);
 
-		expect(await screen.findByText("notes.txt")).toBeInTheDocument();
+		const tree = await screen.findByTestId("changed-file-tree");
+		await waitFor(() => expect(tree.shadowRoot?.querySelector('[data-item-path="notes.txt"]')).not.toBeNull());
 		expect(getMock).not.toHaveBeenCalled();
+	});
+
+	it("selects a changed file from Pierre's path-first tree", async () => {
+		const changedOnlyData: TreeNode[] = [{ name: "notes.txt", path: "notes.txt", type: "file", status: "modified" }];
+		const onSelectPath = vi.fn();
+
+		renderWithQuery(
+			<FileTree
+				changedOnly={true}
+				changedOnlyData={changedOnlyData}
+				onSelectPath={onSelectPath}
+				selectedPath={null}
+				sessionId="sess-1"
+				filterText=""
+			/>,
+		);
+
+		const tree = await screen.findByTestId("changed-file-tree");
+		const row = await waitFor(() => {
+			const match = tree.shadowRoot?.querySelector<HTMLElement>('[data-item-path="notes.txt"]');
+			expect(match).not.toBeNull();
+			return match!;
+		});
+		await userEvent.click(row);
+		expect(onSelectPath).toHaveBeenCalledWith(expect.objectContaining({ path: "notes.txt", type: "file" }));
 	});
 });

@@ -70,6 +70,7 @@ import { sessionReviewsQueryKey } from "../lib/session-reviews";
 import { sessionUiKey } from "../lib/hosts";
 import { sessionWorkspaceFilesQueryOptions } from "../hooks/useSessionWorkspaceFiles";
 import { matchWorkspaceFilePath } from "../lib/workspace-file-path";
+import { markFileViewerPerformance } from "../lib/file-viewer-performance";
 import { aoBridge } from "../lib/bridge";
 import {
 	chatDraftDialogCopy,
@@ -1266,6 +1267,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId, hostId }: Sessio
 	}, [uiSessionId]);
 
 	const handleOpenFiles = useCallback(() => {
+		markFileViewerPerformance("files-click");
 		prepareFilesInspector();
 		void fetchWorkspaceFiles();
 	}, [fetchWorkspaceFiles, prepareFilesInspector]);

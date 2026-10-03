@@ -2654,6 +2654,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/workspace/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get lazy commit and upstream metadata for a workspace review */
+        get: operations["getSessionWorkspaceHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{sessionId}/workspace/manifest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the compact changed-file manifest for the initial workspace review paint */
+        get: operations["getSessionWorkspaceManifest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/workspace/search": {
         parameters: {
             query?: never;
@@ -5290,6 +5324,29 @@ export interface components {
             size: number;
             /** @enum {string} */
             status: "unmodified" | "modified" | "added" | "deleted" | "renamed";
+        };
+        WorkspaceHistoryResponse: {
+            ahead?: null | number;
+            behind?: null | number;
+            commits: components["schemas"]["WorkspaceCommitSummary"][];
+            commitsTruncated?: boolean;
+            sessionId: string;
+        };
+        WorkspaceManifestResponse: {
+            compareBaseRef?: string;
+            compareBaseSha?: string;
+            /** @enum {string} */
+            compareMode?: "base" | "head_fallback";
+            degraded: boolean;
+            degradedCode?: string;
+            files: components["schemas"]["WorkspaceFileSummary"][];
+            refreshing: boolean;
+            sections: components["schemas"]["WorkspaceFileSections"];
+            sessionId: string;
+            stale: boolean;
+            summary: components["schemas"]["WorkspaceSummary"];
+            truncated: boolean;
+            workspaceVersion: string;
         };
         WorkspaceRepo: {
             gitStatus?: string;
@@ -15581,6 +15638,106 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListWorkspaceFilesResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionWorkspaceHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceHistoryResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    getSessionWorkspaceManifest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceManifestResponse"];
                 };
             };
             /** @description Not Found */

@@ -32,7 +32,10 @@ import { AO_PIERRE_FILES_REVIEW_CSS, AO_PIERRE_SURFACE_CSS } from "./pierreTheme
 import { REVIEW_CONTEXT_LINES, diffContentVersion, endsAtLastHunk, hydratedCopy, patchIdentity, stableFileDiff } from "./trailingContext";
 import { usePersistentGutterUtility } from "./usePersistentGutterUtility";
 
-const PATCH_BATCH_SIZE = 100;
+// Keep the first request close to one viewport. A large all-files batch made
+// the first visible diff wait behind patches the user could not see yet.
+const PATCH_BATCH_SIZE = 24;
+const PATCH_PREFETCH_WAVE_SIZE = 2;
 const parsedPatchCache = new Map<string, FileDiffMetadata[]>();
 const MAX_PARSED_GROUPS = 24;
 const workingScopeOrder = ["unstaged", "staged", "untracked"] as const;
@@ -189,7 +192,7 @@ export function WorkspaceReviewPane({
 	const [commitBrowserOpen, setCommitBrowserOpen] = useState(false);
 	const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(() => new Set());
 	const [loadedDeferredPaths, setLoadedDeferredPaths] = useState<Set<string>>(() => new Set());
-	const [activeBatchCount, setActiveBatchCount] = useState(4);
+	const [activeBatchCount, setActiveBatchCount] = useState(1);
 	const reviewRef = useRef<HTMLDivElement>(null);
 	const gutterHover = usePersistentGutterUtility(reviewRef);
 	// Set when a file row's overflow menu hands off to another surface (an editor,
@@ -241,7 +244,7 @@ export function WorkspaceReviewPane({
 		const savedViewed = readViewedRecords(viewedStorageKey(viewedSessionKey, reviewSelectionKey));
 		setCollapsedPaths(new Set(allFiles.filter((file) => isDeferredByDefault(file) || isViewedRecord(file, savedViewed)).map((file) => file.path)));
 		setLoadedDeferredPaths(new Set());
-		setActiveBatchCount(4);
+		setActiveBatchCount(1);
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- reset on review-target identity, not on allFiles' reference (which changes on every poll) or the filtered files (which changes per keystroke).
 	}, [data.workspaceVersion, reviewSelectionKey, viewedSessionKey]);
 
@@ -270,7 +273,9 @@ export function WorkspaceReviewPane({
 	useEffect(() => {
 		const active = patchQueries.slice(0, activeBatchCount);
 		if (active.length < activeBatchCount || active.some((query) => query.isPending || query.isFetching)) return;
-		if (activeBatchCount < batches.length) setActiveBatchCount((current) => Math.min(current + 4, batches.length));
+		if (activeBatchCount < batches.length) {
+			setActiveBatchCount((current) => Math.min(current + PATCH_PREFETCH_WAVE_SIZE, batches.length));
+		}
 	}, [activeBatchCount, batches.length, patchQueries]);
 
 	const { metadataByPath, endOfFilePaths } = useMemo(() => {

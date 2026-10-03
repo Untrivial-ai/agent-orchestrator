@@ -13,6 +13,38 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 )
 
+func TestWorkspaceManifestMatchesReviewSnapshotWithoutUnchangedInventory(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeWorkspaceFile(t, repo, "README.md", "hello\nchanged\n")
+	writeWorkspaceFile(t, repo, "notes.txt", "new\n")
+	st := newFakeStore()
+	st.sessions["ao-1"] = domain.SessionRecord{ID: "ao-1", Metadata: domain.SessionMetadata{WorkspacePath: repo}}
+	svc := NewWithDeps(Deps{Store: st})
+
+	manifest, err := svc.GetWorkspaceManifest(context.Background(), "ao-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := svc.ListWorkspaceFiles(context.Background(), "ao-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.WorkspaceVersion != files.WorkspaceVersion {
+		t.Fatalf("manifest version = %q, files version = %q", manifest.WorkspaceVersion, files.WorkspaceVersion)
+	}
+	if len(manifest.Files) != 2 {
+		t.Fatalf("manifest files = %+v, want only two changed files", manifest.Files)
+	}
+	for _, file := range manifest.Files {
+		if file.Status == WorkspaceFileUnmodified {
+			t.Fatalf("manifest contains unchanged file %+v", file)
+		}
+	}
+	if len(files.Files) <= len(manifest.Files) {
+		t.Fatalf("legacy files = %d, manifest files = %d; want unchanged inventory only in legacy response", len(files.Files), len(manifest.Files))
+	}
+}
+
 func workspaceReviewService(t *testing.T, repo string) *Service {
 	t.Helper()
 	store := newFakeStore()
@@ -125,6 +157,13 @@ func TestCommitReviewUsesOnlyTheSelectedCommit(t *testing.T) {
 	}
 	if len(files.Commits) != 2 || files.Commits[0].Subject != "second change" || files.Commits[1].Subject != "first change" {
 		t.Fatalf("commits = %+v, want newest first", files.Commits)
+	}
+	history, err := svc.GetWorkspaceHistory(context.Background(), "ao-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Commits) != 2 || history.Commits[0].Subject != "second change" || history.Commits[1].Subject != "first change" {
+		t.Fatalf("history commits = %+v, want newest first", history.Commits)
 	}
 
 	diffs, err := svc.GetWorkspaceDiffs(context.Background(), "ao-1", WorkspaceDiffInput{

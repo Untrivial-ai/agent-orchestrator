@@ -8204,6 +8204,85 @@ paths:
       summary: List files in a session workspace with git change status
       tags:
       - sessions
+  /api/v1/sessions/{sessionId}/workspace/history:
+    get:
+      operationId: getSessionWorkspaceHistory
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceHistoryResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get lazy commit and upstream metadata for a workspace review
+      tags:
+      - sessions
+  /api/v1/sessions/{sessionId}/workspace/manifest:
+    get:
+      operationId: getSessionWorkspaceManifest
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceManifestResponse'
+          description: OK
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Get the compact changed-file manifest for the initial workspace review
+        paint
+      tags:
+      - sessions
   /api/v1/sessions/{sessionId}/workspace/search:
     get:
       operationId: searchSessionWorkspaceFiles
@@ -15254,6 +15333,72 @@ components:
       - binary
       - editable
       - fileFingerprint
+      type: object
+    WorkspaceHistoryResponse:
+      properties:
+        ahead:
+          type:
+          - "null"
+          - integer
+        behind:
+          type:
+          - "null"
+          - integer
+        commits:
+          items:
+            $ref: '#/components/schemas/WorkspaceCommitSummary'
+          type: array
+        commitsTruncated:
+          type: boolean
+        sessionId:
+          type: string
+      required:
+      - sessionId
+      - commits
+      type: object
+    WorkspaceManifestResponse:
+      properties:
+        compareBaseRef:
+          type: string
+        compareBaseSha:
+          type: string
+        compareMode:
+          enum:
+          - base
+          - head_fallback
+          type: string
+        degraded:
+          type: boolean
+        degradedCode:
+          type: string
+        files:
+          items:
+            $ref: '#/components/schemas/WorkspaceFileSummary'
+          type: array
+        refreshing:
+          type: boolean
+        sections:
+          $ref: '#/components/schemas/WorkspaceFileSections'
+        sessionId:
+          type: string
+        stale:
+          type: boolean
+        summary:
+          $ref: '#/components/schemas/WorkspaceSummary'
+        truncated:
+          type: boolean
+        workspaceVersion:
+          type: string
+      required:
+      - sessionId
+      - workspaceVersion
+      - files
+      - sections
+      - summary
+      - truncated
+      - stale
+      - refreshing
+      - degraded
       type: object
     WorkspaceRepo:
       properties:

@@ -23,6 +23,7 @@ type WorkspaceStream = {
 	 * so would inflate the backoff exponent past what we actually retried.
 	 */
 	retries: number;
+	lastVersion?: string;
 	source?: EventSource;
 	poll?: ReturnType<typeof setInterval>;
 	stopRemote?: () => void;
@@ -93,7 +94,7 @@ function createWorkspaceStream(sessionId: string, queryClient: QueryClient, host
 	const invalidate = () => {
 		if (stream.debounce) clearTimeout(stream.debounce);
 		stream.debounce = setTimeout(() => {
-			for (const name of ["workspace-file-paths", "session-workspace-files", "session-workspace-file", "session-workspace-file-revision", "session-workspace-diffs", "session-workspace-search", "session-workspace-tree"]) {
+			for (const name of ["workspace-file-paths", "session-workspace-files", "session-workspace-history", "session-workspace-file", "session-workspace-file-revision", "session-workspace-diffs", "session-workspace-search", "session-workspace-tree"]) {
 				void queryClient.invalidateQueries({ queryKey: queryPrefix(hostId && name === "workspace-file-paths" ? "remote-workspace-file-paths" : name) });
 			}
 		}, INVALIDATE_DEBOUNCE_MS);
@@ -207,8 +208,23 @@ function createWorkspaceStream(sessionId: string, queryClient: QueryClient, host
 				stream.failures += 1;
 				setWorkspaceFileConnectionState(key, stream.failures >= 3 ? "degraded" : "connecting");
 			};
-			source.addEventListener("workspace_changed", () => {
-				if (!stream.disposed && generation === stream.generation && stream.source === source) invalidate();
+			source.addEventListener("workspace_changed", (event) => {
+				if (stream.disposed || generation !== stream.generation || stream.source !== source) return;
+				let payload: { kind?: string; workspaceVersion?: string } = {};
+				try {
+					payload = JSON.parse((event as MessageEvent<string>).data || "{}") as typeof payload;
+				} catch {
+					// Older daemons emitted an untyped invalidation edge. Preserve that
+					// compatibility path instead of dropping the refresh.
+				}
+				if (payload.kind === "dirty") return;
+				if (payload.kind === "version" && payload.workspaceVersion) {
+					if (stream.lastVersion === payload.workspaceVersion) return;
+					stream.lastVersion = payload.workspaceVersion;
+					const cached = queryClient.getQueryData<{ workspaceVersion?: string }>(queryPrefix("session-workspace-files"));
+					if (cached?.workspaceVersion === payload.workspaceVersion) return;
+				}
+				invalidate();
 			});
 		} catch {
 			stream.source = undefined;

@@ -16,6 +16,7 @@ import {
 import { usePierreFileHighlightReady } from "../hooks/usePierreFileHighlight";
 import { sessionUiKey } from "../lib/hosts";
 import { cn } from "../lib/utils";
+import { markFileViewerPerformance } from "../lib/file-viewer-performance";
 import { rememberedFileDisplayMode, useUiStore, type FileDisplayMode } from "../stores/ui-store";
 import { statusLabel, statusTone } from "../lib/workspace-file-status";
 import {
@@ -110,6 +111,14 @@ export function FileContentPane({
 	});
 	const hasUnsavedChanges = Boolean(editing && query.data && draft !== query.data.content);
 	useEffect(() => {
+		if (path) markFileViewerPerformance("file-selected");
+	}, [path]);
+	useEffect(() => {
+		if (!query.data) return;
+		markFileViewerPerformance("file-header-painted");
+		markFileViewerPerformance("file-content-painted");
+	}, [query.data]);
+	useEffect(() => {
 		setMode(restoredMode());
 		setEditing(initialEditing);
 		setDraft("");
@@ -144,6 +153,7 @@ export function FileContentPane({
 				predicate: ({ queryKey }) => queryKey[1] === (hostId ?? sessionId)
 					&& (!hostId || queryKey[2] === sessionId) && [
 					"session-workspace-files",
+					"session-workspace-history",
 					"session-workspace-tree",
 					"session-workspace-search",
 					"session-workspace-file-revision",

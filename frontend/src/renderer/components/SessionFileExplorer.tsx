@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import {
 	sessionSourceFilesQueryOptions,
+	sessionWorkspaceHistoryQueryOptions,
 	type FilesSource,
 	useWorkspaceFileConnectionState,
 	workspaceFilesRefetchInterval,
@@ -46,6 +47,7 @@ import { FileContentPane, type FileOpenOptions } from "./FileContentPane";
 import { PanelMessage, RetryButton } from "./WorkspaceDiffView";
 import { WorkspaceReviewPane, type ReviewSourceMenu } from "./diffs/WorkspaceReviewPane";
 import { formatTimeTerse } from "../lib/format-time";
+import { markFileViewerPerformance } from "../lib/file-viewer-performance";
 import { sessionUiKey } from "../lib/hosts";
 
 const WORKSPACE_SOURCE: FilesSource = { kind: "workspace" };
@@ -96,6 +98,7 @@ export function SessionFileExplorer({
 	const prSummaries = scmQuery.data?.prs ?? [];
 	const queryClient = useQueryClient();
 	const connectionState = useWorkspaceFileConnectionState(sessionId, hostId);
+	useLayoutEffect(() => markFileViewerPerformance("files-shell-painted"), []);
 
 	const changedOnly = useUiStore((state) => state.inspectorSessions[uiKey]?.filesChangedOnly ?? true);
 	const source = useUiStore((state) => state.inspectorSessions[uiKey]?.filesSource ?? WORKSPACE_SOURCE);
@@ -112,19 +115,43 @@ export function SessionFileExplorer({
 		...sessionSourceFilesQueryOptions(sessionId, querySource, t("files.error.loadWorkspace"), hostId),
 		refetchInterval: (query) => workspaceFilesRefetchInterval(connectionState, Boolean(query.state.data?.degraded)),
 	});
+	useLayoutEffect(() => {
+		if (filesQuery.data) markFileViewerPerformance("manifest-ready");
+	}, [filesQuery.data?.workspaceVersion]);
+	// Commit history and ahead/behind are not part of the latency-sensitive
+	// manifest. Load the legacy enrichment only after the first useful Changes
+	// snapshot is already available, so it can never gate opening Files.
+	const historyQuery = useQuery({
+		...sessionWorkspaceHistoryQueryOptions(sessionId, t("files.error.loadWorkspace"), hostId),
+		enabled: source.kind === "workspace" && Boolean(filesQuery.data),
+	});
+	const filesData = useMemo(
+		() => source.kind === "workspace" && filesQuery.data
+			? {
+				...filesQuery.data,
+				...(historyQuery.data ? {
+					ahead: historyQuery.data.ahead,
+					behind: historyQuery.data.behind,
+					commits: historyQuery.data.commits,
+					commitsTruncated: historyQuery.data.commitsTruncated,
+				} : {}),
+			}
+			: filesQuery.data,
+		[filesQuery.data, historyQuery.data, source.kind],
+	);
 	// A PR's own commits (the Workspace's live in its Changes review). Picking one
 	// narrows the tree and the preview to that commit.
-	const prCommits = source.kind === "pull_request" ? filesQuery.data?.commits ?? [] : [];
+	const prCommits = source.kind === "pull_request" ? filesData?.commits ?? [] : [];
 	const prCommit = source.kind === "pull_request" && selectedPRCommit?.url === source.url
 		? prCommits.find((commit) => commit.sha === selectedPRCommit.sha)
 		: undefined;
-	const sourceFiles = prCommit?.files ?? filesQuery.data?.files;
+	const sourceFiles = prCommit?.files ?? filesData?.files;
 	const changedOnlyData = useMemo(
 		() => (sourceFiles ? buildChangedOnlyTree(sourceFiles) : []),
 		[sourceFiles],
 	);
-	const hasChanges = filesQuery.data?.files.some((file) => file.status !== "unmodified") ?? false;
-	const showChanges = source.kind === "workspace" && changedOnly && (!filesQuery.data || hasChanges);
+	const hasChanges = filesData?.files.some((file) => file.status !== "unmodified") ?? false;
+	const showChanges = source.kind === "workspace" && changedOnly && (!filesData || hasChanges);
 	const splitView = !showChanges && (isMaximized || source.kind === "pull_request");
 	const sourceUnavailable = source.kind === "pull_request"
 		&& (filesQuery.isError || Boolean(scmQuery.data && !prSummaries.some((pr) => pr.url === source.url)));
@@ -440,11 +467,11 @@ export function SessionFileExplorer({
 					<PanelMessage action={<RetryButton onClick={() => void filesQuery.refetch()} />}>
 						{filesQuery.error.message || t("files.error.loadWorkspace")}
 					</PanelMessage>
-				) : filesQuery.data ? (
+				) : filesData ? (
 					<WorkspaceReviewPane
 						annotation={annotation}
+						data={filesData}
 						hostId={hostId}
-						data={filesQuery.data}
 						filter={filter}
 						onBrowseAll={() => source.kind === "workspace" && handleViewChange(false)}
 						canOpenInCenter={!isMaximized && Boolean(onOpenFile)}

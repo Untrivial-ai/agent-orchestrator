@@ -20,6 +20,7 @@ export type WorkspaceFileSummary = Omit<components["schemas"]["WorkspaceFileSumm
 };
 export type WorkspaceFileSections = components["schemas"]["WorkspaceFileSections"];
 export type WorkspaceCommitSummary = components["schemas"]["WorkspaceCommitSummary"];
+export type WorkspaceHistoryResponse = components["schemas"]["WorkspaceHistoryResponse"];
 export type WorkspaceSummary = components["schemas"]["WorkspaceSummary"];
 export type WorkspaceFilesResponse = Omit<components["schemas"]["ListWorkspaceFilesResponse"], "files" | "sections" | "workspaceVersion" | "degraded" | "degradedCode"> & {
 	compareMode?: WorkspaceCompareMode;
@@ -33,6 +34,8 @@ export type WorkspaceFilesResponse = Omit<components["schemas"]["ListWorkspaceFi
 	workspaceVersion?: string;
 	degraded?: boolean;
 	degradedCode?: string;
+	stale?: boolean;
+	refreshing?: boolean;
 };
 export type WorkspaceFileDetail = Omit<components["schemas"]["WorkspaceFileResponse"], "editable" | "fileFingerprint" | "workspaceVersion"> & {
 	editable?: boolean;
@@ -52,11 +55,11 @@ export const sessionWorkspaceFilesQueryKey = (sessionId: string, hostId?: string
 const WORKSPACE_FILES_DEGRADED_REFETCH_MS = 30_000;
 
 async function fetchSessionWorkspaceFiles(sessionId: string, errorMessage: string, hostId?: string): Promise<WorkspaceFilesResponse> {
-	const { data, error } = await clientForSessionHost(hostId).GET("/api/v1/sessions/{sessionId}/workspace/files", {
+	const { data, error } = await clientForSessionHost(hostId).GET("/api/v1/sessions/{sessionId}/workspace/manifest", {
 		params: { path: { sessionId } },
 	});
 	if (error) throw new Error(apiErrorMessage(error, errorMessage));
-	const response = (data ?? {
+	const response = (data ? { ...data, commits: [] } : {
 		sessionId,
 		files: [],
 		truncated: false,
@@ -70,6 +73,18 @@ async function fetchSessionWorkspaceFiles(sessionId: string, errorMessage: strin
 		files: response.files ?? [],
 		sections: response.sections ?? { staged: [], unstaged: [], untracked: [], committed: [] },
 	};
+}
+
+async function fetchSessionWorkspaceHistory(sessionId: string, errorMessage: string, hostId?: string): Promise<WorkspaceHistoryResponse> {
+	const { data, error } = await clientForSessionHost(hostId).GET("/api/v1/sessions/{sessionId}/workspace/history", {
+		params: { path: { sessionId } },
+	});
+	if (error) throw new Error(apiErrorMessage(error, errorMessage));
+	if (!data) throw new Error(errorMessage);
+	return {
+		...data,
+		commits: (data.commits ?? []).map((commit) => ({ ...commit, files: commit.files ?? [] })),
+	} as WorkspaceHistoryResponse;
 }
 
 async function fetchSessionPRFiles(sessionId: string, number: number, sourceUrl: string, errorMessage: string, hostId?: string): Promise<WorkspaceFilesResponse> {
@@ -299,6 +314,14 @@ export function sessionWorkspaceFilesQueryOptions(sessionId: string, errorMessag
 	return {
 		queryKey: sessionWorkspaceFilesQueryKey(sessionId, hostId),
 		queryFn: () => fetchSessionWorkspaceFiles(sessionId, errorMessage, hostId),
+	};
+}
+
+export function sessionWorkspaceHistoryQueryOptions(sessionId: string, errorMessage = "Unable to load workspace history", hostId?: string) {
+	return {
+		queryKey: hostId ? ["session-workspace-history", hostId, sessionId] as const : ["session-workspace-history", sessionId] as const,
+		queryFn: () => fetchSessionWorkspaceHistory(sessionId, errorMessage, hostId),
+		staleTime: Infinity,
 	};
 }
 
