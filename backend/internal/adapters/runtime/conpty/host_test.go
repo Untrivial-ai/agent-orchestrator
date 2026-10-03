@@ -1,6 +1,7 @@
 package conpty
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -762,4 +763,119 @@ func TestShutdownViaCtxCancel(t *testing.T) {
 	if !closed {
 		t.Fatal("expected pty.Close() on ctx cancel")
 	}
+}
+
+// TestHostAnswersTerminalQueryWhenNoClientAttached: with nothing attached the
+// host is the agent's only terminal, so a startup cursor-position query must be
+// answered or a TUI that waits for it never draws (Muse Code 1.2.1).
+func TestHostAnswersTerminalQueryWhenNoClientAttached(t *testing.T) {
+	f := startServe(t, 110)
+	defer f.cancel()
+
+	if _, err := f.pty.WriteOutput([]byte("\x1b[6n")); err != nil {
+		t.Fatalf("write output: %v", err)
+	}
+
+	want := []byte("\x1b[1;1R")
+	buf := make([]byte, len(want))
+	if _, err := io.ReadFull(f.pty.inR, buf); err != nil {
+		t.Fatalf("read host reply from pty input: %v", err)
+	}
+	if !bytes.Equal(buf, want) {
+		t.Fatalf("pty input = %q, want %q", buf, want)
+	}
+}
+
+// TestHostDefersTerminalQueryToAttachedClient: an attached client is a terminal
+// emulator and answers for itself. The host must stay silent, or the app gets
+// two cursor reports for one query — the classic phantom-keystroke bug.
+func TestHostDefersTerminalQueryToAttachedClient(t *testing.T) {
+	f := startServe(t, 111)
+	defer f.cancel()
+
+	// Seed scrollback so attaching produces a replay frame; receiving it proves
+	// the client is registered in the host's client set.
+	f.ring.Append([]byte("seed\n"))
+	c := newTestClient(t, f.addr)
+	defer c.close()
+	c.readFrame(t)
+
+	if _, err := f.pty.WriteOutput([]byte("\x1b[6n")); err != nil {
+		t.Fatalf("write output: %v", err)
+	}
+	// The query is recorded in the ring by the same loop that decides whether to
+	// answer, so waiting for it proves the host has already made that decision.
+	waitForRingContains(t, f.ring, "\x1b[6n")
+
+	reply := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 16)
+		n, _ := f.pty.inR.Read(buf)
+		reply <- buf[:n]
+	}()
+	select {
+	case got := <-reply:
+		t.Fatalf("host answered while a client was attached: %q", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestHostAnswersAgainAfterClientLeaves: the deferral is about who is attached
+// now, not a permanent switch-off.
+func TestHostAnswersAgainAfterClientLeaves(t *testing.T) {
+	f := startServe(t, 112)
+	defer f.cancel()
+
+	f.ring.Append([]byte("seed\n"))
+	c := newTestClient(t, f.addr)
+	c.readFrame(t)
+	c.close()
+
+	replies := make(chan []byte, 8)
+	go func() {
+		for {
+			buf := make([]byte, 16)
+			n, err := f.pty.inR.Read(buf)
+			if n > 0 {
+				replies <- append([]byte(nil), buf[:n]...)
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Detach is asynchronous (the host notices when its read returns), so retry
+	// the query until the host answers again rather than sleeping a fixed time.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := f.pty.WriteOutput([]byte("\x1b[6n")); err != nil {
+			t.Fatalf("write output: %v", err)
+		}
+		select {
+		case got := <-replies:
+			if !bytes.Equal(got, []byte("\x1b[1;1R")) {
+				t.Fatalf("pty input = %q, want the cursor report", got)
+			}
+			return
+		case <-time.After(50 * time.Millisecond):
+			if time.Now().After(deadline) {
+				t.Fatal("host never resumed answering after the client detached")
+			}
+		}
+	}
+}
+
+// waitForRingContains polls until the ring replay holds want, proving the output
+// pump has processed that chunk.
+func waitForRingContains(t *testing.T, ring *Ring, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if bytes.Contains(ring.Replay(), []byte(want)) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("ring never recorded %q", want)
 }
