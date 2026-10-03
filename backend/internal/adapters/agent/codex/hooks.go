@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hooksjson"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
@@ -48,16 +49,10 @@ type codexHookFile struct {
 	Hooks map[string][]codexMatcherGroup `json:"hooks"`
 }
 
-type codexMatcherGroup struct {
-	Matcher *string          `json:"matcher,omitempty"`
-	Hooks   []codexHookEntry `json:"hooks"`
-}
-
-type codexHookEntry struct {
-	Type    string `json:"type"`
-	Command string `json:"command"`
-	Timeout int    `json:"timeout,omitempty"`
-}
+// Reuse the lossless hook types so removing an AO entry preserves fields on
+// user hooks and matcher groups that Codex added before AO knew about them.
+type codexMatcherGroup = hooksjson.MatcherGroup
+type codexHookEntry = hooksjson.HookEntry
 
 // codexHookSpec describes one hook AO delivers via launch-command config.
 type codexHookSpec struct {
