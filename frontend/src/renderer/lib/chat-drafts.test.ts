@@ -606,6 +606,65 @@ describe("Chat draft storage", () => {
 		});
 	});
 
+	it("distinguishes a stale/superseded delivery from a genuine storage write failure", () => {
+		// No delivery was ever prepared for this session: the load itself succeeds
+		// (empty draft), but there is no delivery matching the given identity —
+		// this is the "session was reset elsewhere" class, not an IO failure.
+		const emptyStorage = new MemoryStorage();
+		const stale = markChatComposerDeliveryAccepted("session-never-prepared", "ghost-1", 1, emptyStorage);
+		if (stale.ok) throw new Error("expected stale delivery acceptance to fail");
+		expect(stale.reason).toBe("stale");
+
+		// A delivery exists and matches, but the underlying write genuinely fails —
+		// this is the retry-worthy case the current message is written for.
+		const backing = new MemoryStorage();
+		const prepared = prepareChatComposerDelivery(
+			"session-write-fails",
+			{
+				kind: "send",
+				composerText: "will fail to record",
+				attachments: [],
+				requestText: "will fail to record",
+				clientMessageId: "write-fail-1",
+			},
+			backing,
+		);
+		expect(prepared.ok).toBe(true);
+		const writeFailure: DraftStorage = {
+			getItem: (key) => backing.getItem(key),
+			setItem: () => {
+				throw new DOMException("full", "QuotaExceededError");
+			},
+			removeItem: (key) => backing.removeItem(key),
+		};
+		const storageFailure = markChatComposerDeliveryAccepted(
+			"session-write-fails",
+			"write-fail-1",
+			prepared.mutation!.revision,
+			writeFailure,
+		);
+		if (storageFailure.ok) throw new Error("expected storage write failure to fail");
+		expect(storageFailure.reason).toBe("storage");
+
+		// Storage that cannot even be read is a storage failure too, not a
+		// superseded delivery: retrying can succeed once it is readable again.
+		const unreadable: DraftStorage = {
+			getItem: () => {
+				throw new DOMException("blocked", "SecurityError");
+			},
+			setItem: (key, value) => backing.setItem(key, value),
+			removeItem: (key) => backing.removeItem(key),
+		};
+		const readFailure = markChatComposerDeliveryAccepted(
+			"session-write-fails",
+			"write-fail-1",
+			prepared.mutation!.revision,
+			unreadable,
+		);
+		if (readFailure.ok) throw new Error("expected unreadable storage to fail");
+		expect(readFailure.reason).toBe("storage");
+	});
+
 	it("clears only the accepted delivery journal when a later composer revision exists", () => {
 		const storage = new MemoryStorage();
 		const prepared = prepareChatComposerDelivery(

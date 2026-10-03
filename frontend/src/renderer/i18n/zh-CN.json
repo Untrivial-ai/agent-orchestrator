@@ -2363,5 +2363,6 @@
 	"standalone.archive.heading_other": "{{count}} 个已归档会话",
 	"standalone.archive.newAgent": "新建代理",
 	"standalone.archive.empty.title": "没有已归档的独立代理",
-	"standalone.archive.empty.body": "从草稿区归档的独立代理会显示在这里。活跃的独立代理会保留在草稿区列表中。"
+	"standalone.archive.empty.body": "从草稿区归档的独立代理会显示在这里。活跃的独立代理会保留在草稿区列表中。",
+	"chat.draft.recordMessageSuperseded": "This message was superseded by a session reset before it could be recorded locally. It was not sent automatically — resend it if it's still needed."
 }

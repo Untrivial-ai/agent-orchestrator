@@ -2381,5 +2381,6 @@
 	"standalone.archive.heading_other": "{{count}} 件のアーカイブ済みセッション",
 	"standalone.archive.newAgent": "新しいエージェント",
 	"standalone.archive.empty.title": "アーカイブ済みのスタンドアロンエージェントはありません",
-	"standalone.archive.empty.body": "スクラッチパッドからアーカイブしたスタンドアロンエージェントがここに表示されます。アクティブなスタンドアロンエージェントはスクラッチパッドの一覧に残ります。"
+	"standalone.archive.empty.body": "スクラッチパッドからアーカイブしたスタンドアロンエージェントがここに表示されます。アクティブなスタンドアロンエージェントはスクラッチパッドの一覧に残ります。",
+	"chat.draft.recordMessageSuperseded": "This message was superseded by a session reset before it could be recorded locally. It was not sent automatically — resend it if it's still needed."
 }

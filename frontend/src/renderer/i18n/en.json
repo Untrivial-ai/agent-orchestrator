@@ -2361,5 +2361,6 @@
 	"standalone.archive.heading_other": "{{count}} Archived Sessions",
 	"standalone.archive.newAgent": "New agent",
 	"standalone.archive.empty.title": "No archived standalone agents",
-	"standalone.archive.empty.body": "Standalone agents you archive from Scratchpad will appear here. Active standalone agents stay in the Scratchpad list."
+	"standalone.archive.empty.body": "Standalone agents you archive from Scratchpad will appear here. Active standalone agents stay in the Scratchpad list.",
+	"chat.draft.recordMessageSuperseded": "This message was superseded by a session reset before it could be recorded locally. It was not sent automatically — resend it if it's still needed."
 }

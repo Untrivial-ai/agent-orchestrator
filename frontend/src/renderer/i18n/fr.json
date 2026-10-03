@@ -2412,5 +2412,6 @@
 	"standalone.archive.heading_other": "{{count}} sessions archivées",
 	"standalone.archive.newAgent": "Nouvel agent",
 	"standalone.archive.empty.title": "Aucun agent autonome archivé",
-	"standalone.archive.empty.body": "Les agents autonomes que vous archivez depuis le bloc-notes apparaîtront ici. Les agents autonomes actifs restent dans la liste du bloc-notes."
+	"standalone.archive.empty.body": "Les agents autonomes que vous archivez depuis le bloc-notes apparaîtront ici. Les agents autonomes actifs restent dans la liste du bloc-notes.",
+	"chat.draft.recordMessageSuperseded": "This message was superseded by a session reset before it could be recorded locally. It was not sent automatically — resend it if it's still needed."
 }

@@ -2381,5 +2381,6 @@
 	"standalone.archive.heading_other": "보관된 세션 {{count}}개",
 	"standalone.archive.newAgent": "새 에이전트",
 	"standalone.archive.empty.title": "보관된 독립 실행형 에이전트가 없습니다",
-	"standalone.archive.empty.body": "스크래치패드에서 보관한 독립 실행형 에이전트가 여기에 표시됩니다. 활성 독립 실행형 에이전트는 스크래치패드 목록에 남아 있습니다."
+	"standalone.archive.empty.body": "스크래치패드에서 보관한 독립 실행형 에이전트가 여기에 표시됩니다. 활성 독립 실행형 에이전트는 스크래치패드 목록에 남아 있습니다.",
+	"chat.draft.recordMessageSuperseded": "This message was superseded by a session reset before it could be recorded locally. It was not sent automatically — resend it if it's still needed."
 }

@@ -983,13 +983,38 @@ export function prepareChatComposerDelivery(
 		: { ok: false, recovered: false, draft: loaded.draft };
 }
 
+/** Whether the draft store for this scope can be read at all (lease and entry). */
+function draftStorageReadable(scopeInput: ChatDraftScopeInput, storage: DraftStorage | undefined): boolean {
+	const scope = normalizeScope(scopeInput);
+	if (!scope.sessionId || !storage) return false;
+	if (!readScopeLease(scope.sessionId, storage).ok) return false;
+	try {
+		storage.getItem(storageKey(scope.sessionId));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Result of accepting a durable delivery, distinguishing WHY acceptance could
+ * not be recorded: "stale" means the expected delivery no longer matches what
+ * this renderer holds a lease for (the session was reset or superseded
+ * elsewhere) — retrying with the same identity cannot succeed. "storage"
+ * means the write itself failed (quota, blocked storage) — retrying is the
+ * right advice. Callers must not offer the same "retry" affordance for both.
+ */
+export type AcceptDeliveryResult =
+	| { ok: true; draft: ChatSessionDraft }
+	| { ok: false; reason: "stale" | "storage"; draft: ChatSessionDraft };
+
 /** Persist the daemon's acceptance before attempting to remove the draft. */
 export function markChatComposerDeliveryAccepted(
 	scope: ChatDraftScopeInput,
 	clientMessageId: string,
 	revision: number,
 	storage: DraftStorage | undefined = rendererStorage(),
-): DraftWriteResult {
+): AcceptDeliveryResult {
 	const loaded = loadChatSessionDraft(scope, storage);
 	const delivery = loaded.draft.composer.delivery;
 	if (
@@ -998,7 +1023,10 @@ export function markChatComposerDeliveryAccepted(
 		delivery.clientMessageId !== clientMessageId ||
 		delivery.revision !== revision
 	) {
-		return { ok: false, draft: loaded.draft };
+		// An unreadable store is a storage failure, not a superseded delivery:
+		// retrying can still succeed once storage is readable again.
+		const reason = loaded.ok || draftStorageReadable(scope, storage) ? "stale" : "storage";
+		return { ok: false, reason, draft: loaded.draft };
 	}
 	if (delivery.state === "accepted") return { ok: true, draft: loaded.draft };
 	const result = persistDraftProven(
@@ -1011,7 +1039,7 @@ export function markChatComposerDeliveryAccepted(
 		},
 		storage,
 	);
-	return result.ok ? result : { ok: false, draft: loaded.draft };
+	return result.ok ? result : { ok: false, reason: "storage", draft: loaded.draft };
 }
 
 /**

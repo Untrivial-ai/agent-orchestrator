@@ -700,8 +700,19 @@ export const ChatComposer = memo(function ChatComposer({
 			if (!accepted.ok) {
 				if (mutationToken) cancelChatComposerMutation(draftScope, mutationToken);
 				setDurableDelivery(delivery);
+				// "stale" (the session was reset or superseded elsewhere, OR this
+				// delivery was already durably cleared by a synchronous race) can
+				// never succeed by retrying the same delivery identity — the message
+				// says so instead of promising a retry that cannot work. A genuine
+				// "storage" write failure IS retry-worthy, so it keeps that wording.
+				// `durableDelivery` stays set to the original `delivery` either way:
+				// the boundary-suppression effect above needs it to recognize an
+				// already-synchronously-cleared delivery and stay silent for that
+				// case, exactly as it did before this reason was introduced.
 				setTextDraftPersistenceError(
-					"chat.draft.recordMessageFailed",
+					accepted.reason === "stale"
+						? "chat.draft.recordMessageSuperseded"
+						: "chat.draft.recordMessageFailed",
 				);
 				return false;
 			}

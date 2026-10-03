@@ -2381,5 +2381,6 @@
 	"standalone.archive.heading_other": "{{count}} archivierte Sitzungen",
 	"standalone.archive.newAgent": "Neuer Agent",
 	"standalone.archive.empty.title": "Keine archivierten eigenständigen Agenten",
-	"standalone.archive.empty.body": "Eigenständige Agenten, die du aus dem Notizblock archivierst, erscheinen hier. Aktive eigenständige Agenten bleiben in der Notizblockliste."
+	"standalone.archive.empty.body": "Eigenständige Agenten, die du aus dem Notizblock archivierst, erscheinen hier. Aktive eigenständige Agenten bleiben in der Notizblockliste.",
+	"chat.draft.recordMessageSuperseded": "This message was superseded by a session reset before it could be recorded locally. It was not sent automatically — resend it if it's still needed."
 }
