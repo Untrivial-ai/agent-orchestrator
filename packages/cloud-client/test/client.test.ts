@@ -599,6 +599,31 @@ describe("CloudClient", () => {
     );
   });
 
+  it("exposes server-owned automation provenance on replayed messages", async () => {
+    const event: ClientEvent = {
+      sessionId: "session",
+      sequence: 43,
+      type: "chat.user_message",
+      payload: {
+        text: "Search complete.",
+        origin: "automation",
+        senderSessionId: "00000000-0000-0000-0000-000000000002",
+      },
+      createdAt: "2026-08-09T00:00:00Z",
+    };
+    const client = createCloudClient({
+      baseUrl: "https://cloud.example.com",
+      getAccessToken: () => "access-token",
+      fetch: vi.fn(async () => jsonResponse({ events: [event], hasMore: false, nextAfter: 43 })) as typeof fetch,
+    });
+    const page = await client.replayEvents("tenant", "session");
+    const replayed = page.events[0];
+    expect(replayed?.type).toBe("chat.user_message");
+    if (replayed?.type !== "chat.user_message") throw new Error("Expected user message");
+    expect(replayed.payload.origin).toBe("automation");
+    expect(replayed.payload.senderSessionId).toBe(event.payload.senderSessionId);
+  });
+
   it("sends idempotency keys on mutating commands", async () => {
     const fetchMock = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>

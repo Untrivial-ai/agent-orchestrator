@@ -283,12 +283,8 @@ func (s *Supervisor) runCodex(ctx context.Context, turn worker.Turn, command Com
 				session.mu.Unlock()
 			}
 		case "item/agentMessage/delta":
-			var event struct {
-				ThreadID string `json:"threadId"`
-				Delta    string `json:"delta"`
-			}
-			if json.Unmarshal(frame.Params, &event) == nil && event.Delta != "" && (event.ThreadID == "" || event.ThreadID == threadID) {
-				if err := publish(Output{Stream: "stdout", Text: event.Delta}); err != nil {
+			if output, ok := codexAgentMessageOutput(frame.Params, threadID); ok {
+				if err := publish(output); err != nil {
 					select {
 					case completed <- err:
 					default:
@@ -494,4 +490,16 @@ func handleCodexApproval(ctx context.Context, conn *codexRPC, control approvalCo
 		case <-ticker.C:
 		}
 	}
+}
+
+func codexAgentMessageOutput(raw json.RawMessage, threadID string) (Output, bool) {
+	var event struct {
+		ThreadID string `json:"threadId"`
+		Delta    string `json:"delta"`
+		ItemID   string `json:"itemId"`
+	}
+	if json.Unmarshal(raw, &event) != nil || event.Delta == "" || (event.ThreadID != "" && event.ThreadID != threadID) {
+		return Output{}, false
+	}
+	return Output{Stream: "stdout", Text: event.Delta, ItemID: event.ItemID}, true
 }

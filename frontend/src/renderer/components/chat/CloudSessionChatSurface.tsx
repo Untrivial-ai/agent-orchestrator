@@ -8,6 +8,9 @@ import type { WorkspaceSession } from "../../types/workspace";
 import { ChatWorkspace } from "./ChatWorkspace";
 
 type EventPayload = {
+	origin?: unknown;
+	senderLabel?: unknown;
+	itemId?: unknown;
 	attempt?: unknown;
 	clientMessageId?: unknown;
 	requestId?: unknown;
@@ -49,7 +52,7 @@ function eventPayload(event: CloudCpClientEvent): EventPayload {
 
 function eventText(event: CloudCpClientEvent): string | undefined {
 	const text = eventPayload(event).text;
-	return typeof text === "string" && text.trim() !== "" ? text : undefined;
+	return typeof text === "string" && text !== "" ? text : undefined;
 }
 
 function eventTurnID(event: CloudCpClientEvent): string | undefined {
@@ -82,6 +85,7 @@ export async function loadCloudChatEvents(
 export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent[]): ConversationSnapshot {
 	const turns = new Map<string, ConversationTurn>();
 	const assistant = new Map<string, ConversationMessage>();
+	const latestAssistant = new Map<string, ConversationMessage>();
 	const approvals = new Map<string, ConversationActivity>();
 	const steerableTurns = new Set<string>();
 	const items: ConversationItem[] = [];
@@ -91,6 +95,8 @@ export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent
 			turns.set(turnID, { id: turnID, state: "queued", requestedAt: event.createdAt });
 		}
 		if (turnID && event.type === "chat.turn_started") {
+			const priorLive = latestAssistant.get(turnID);
+			if (priorLive) priorLive.streaming = false;
 			const turn = turns.get(turnID)!;
 			turn.state = "running";
 			turn.startedAt = event.createdAt;
@@ -139,7 +145,9 @@ export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent
 		if (event.type === "chat.user_message") {
 			items.push({
 				kind: "message", id: `cloud-event-${event.sequence}`, sequence: event.sequence, revision: 1,
-				turnId: turnID, role: "user", origin: "human", text, streaming: false, delivery: "accepted", createdAt: event.createdAt,
+				turnId: turnID, role: "user", origin: eventPayload(event).origin === "automation" ? "automation" : "human",
+				senderLabel: typeof eventPayload(event).senderLabel === "string" ? eventPayload(event).senderLabel as string : undefined,
+				text, streaming: false, delivery: "accepted", createdAt: event.createdAt,
 			});
 			continue;
 		}
@@ -156,11 +164,17 @@ export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent
 		if (event.type !== "chat.assistant_delta") continue;
 		// Older Cloud workers persisted this Codex CLI status as assistant text.
 		if (session.provider === "codex" && text.trim() === "Reading additional input from stdin...") continue;
-		const assistantKey = turnID ?? `event-${event.sequence}`;
+		const payload = eventPayload(event);
+		const itemID = typeof payload.itemId === "string" && payload.itemId !== "" ? payload.itemId : null;
+		const assistantKey = turnID ? JSON.stringify([turnID, payload.attempt ?? 1, itemID]) : `event-${event.sequence}`;
 		const previous = assistant.get(assistantKey);
+		const priorLive = turnID ? latestAssistant.get(turnID) : undefined;
+		if (priorLive && priorLive !== previous) priorLive.streaming = false;
 		if (previous) {
 			previous.text += text;
 			previous.revision += 1;
+			previous.streaming = true;
+			if (turnID) latestAssistant.set(turnID, previous);
 			continue;
 		}
 		const message: ConversationMessage = {
@@ -168,6 +182,7 @@ export function toSnapshot(session: WorkspaceSession, events: CloudCpClientEvent
 			revision: 1, role: "assistant", origin: "provider", text, streaming: true, createdAt: event.createdAt,
 		};
 		assistant.set(assistantKey, message);
+		if (turnID) latestAssistant.set(turnID, message);
 		items.push(message);
 	}
 	for (const message of assistant.values()) {

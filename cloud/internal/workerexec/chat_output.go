@@ -101,6 +101,7 @@ func (p *chatOutputProjector) projectCodexJSONLine(line string) []Output {
 		ConversationID      string `json:"conversation_id"`
 		ConversationIDCamel string `json:"conversationId"`
 		Item                struct {
+			ID   string `json:"id"`
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"item"`
@@ -123,7 +124,7 @@ func (p *chatOutputProjector) projectCodexJSONLine(line string) []Output {
 		return nil
 	}
 	if event.Type == "item.completed" && event.Item.Type == "agent_message" && strings.TrimSpace(event.Item.Text) != "" {
-		return []Output{{Stream: "stdout", Text: event.Item.Text}}
+		return []Output{{Stream: "stdout", Text: event.Item.Text, ItemID: event.Item.ID}}
 	}
 	return nil
 }

@@ -331,7 +331,7 @@ func (s *Store) AppendWorkerTurnOutput(
 	orgID, sessionID, workerID, turnID string,
 	epoch int64,
 	attempt int,
-	stream, text string,
+	stream, text, itemID string,
 ) error {
 	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
 		if err := requireCurrentWorker(ctx, tx, orgID, sessionID, workerID, epoch); err != nil {
@@ -345,6 +345,7 @@ func (s *Store) AppendWorkerTurnOutput(
 		return appendTypedEvent(ctx, tx, orgID, sessionID, "chat.assistant_delta", map[string]any{
 			"turnId":  turnID,
 			"attempt": attempt,
+			"itemId":  itemID,
 			"stream":  stream,
 			"text":    text,
 		})

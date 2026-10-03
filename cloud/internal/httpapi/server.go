@@ -84,7 +84,7 @@ type Store interface {
 	WorkerChatApprovalDecision(context.Context, string, string, string, int64, string, int, string) (string, error)
 	DecideChatApproval(context.Context, domain.Principal, string, string, string, string) error
 	WorkerTurnCancellationRequested(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int) (bool, error)
-	AppendWorkerTurnOutput(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int, stream, text string) error
+	AppendWorkerTurnOutput(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int, stream, text, itemID string) error
 	AppendWorkerTurnCapabilities(context.Context, string, string, string, string, int64, int, bool) error
 	FinishWorkerTurn(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int, outcome, errorMessage string) (bool, error)
 	WorkerAgentCredential(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (domain.WorkerCredential, error)

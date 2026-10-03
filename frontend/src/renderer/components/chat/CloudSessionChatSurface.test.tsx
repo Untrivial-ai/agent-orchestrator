@@ -346,3 +346,86 @@ describe("CloudSessionChatSurface", () => {
 		}]).capabilities).toEqual(["steer"]);
 	});
 });
+
+describe("Cloud chat message boundaries", () => {
+	const event = (sequence: number, type: string, payload: object): CloudCpClientEvent => ({
+		sessionId: session.id, sequence, type, payload, createdAt: `2026-09-22T00:00:${String(sequence).padStart(2, "0")}Z`,
+	});
+	it("preserves whitespace and separates provider messages and attempts within a turn", () => {
+		const snapshot = toSnapshot(session, [
+			event(1, "chat.user_message", { turnId: "turn-1", text: "Find a home" }),
+			event(2, "chat.turn_started", { turnId: "turn-1", attempt: 1 }),
+			event(3, "chat.assistant_delta", { turnId: "turn-1", attempt: 1, itemId: "progress", text: "Checking." }),
+			event(4, "chat.assistant_delta", { turnId: "turn-1", attempt: 1, itemId: "answer", text: "## Homes" }),
+			event(5, "chat.assistant_delta", { turnId: "turn-1", attempt: 1, itemId: "answer", text: "\n\n" }),
+			event(6, "chat.assistant_delta", { turnId: "turn-1", attempt: 1, itemId: "answer", text: "Two options." }),
+			event(7, "chat.turn_started", { turnId: "turn-1", attempt: 2 }),
+			event(8, "chat.assistant_delta", { turnId: "turn-1", attempt: 2, itemId: "answer", text: "Replacement worker reply." }),
+			event(9, "chat.turn_completed", { turnId: "turn-1" }),
+		]);
+		const messages = snapshot.items.filter((item) => item.kind === "message" && item.role === "assistant");
+		expect(messages.map((item) => item.kind === "message" && item.text)).toEqual([
+			"Checking.", "## Homes\n\nTwo options.", "Replacement worker reply.",
+		]);
+		expect(snapshot.turns[0]).toMatchObject({ state: "completed", startedAt: "2026-09-22T00:00:07Z", completedAt: "2026-09-22T00:00:09Z" });
+		expect(messages.every((item) => item.kind === "message" && !item.streaming)).toBe(true);
+	});
+	it("keeps a literal provider ID distinct from output without an ID", () => {
+		const snapshot = toSnapshot(session, [
+			event(1, "chat.turn_started", { turnId: "turn-1" }),
+			event(2, "chat.assistant_delta", { turnId: "turn-1", text: "Older worker output." }),
+			event(3, "chat.assistant_delta", { turnId: "turn-1", itemId: "legacy", text: "Provider message." }),
+		]);
+		expect(snapshot.items.map((item) => item.kind === "message" && item.text)).toEqual([
+			"Older worker output.", "Provider message.",
+		]);
+	});
+
+	it("stops streaming an earlier provider message when the next one begins", () => {
+		const snapshot = toSnapshot(session, [
+			event(1, "chat.turn_started", { turnId: "turn-1" }),
+			event(2, "chat.assistant_delta", { turnId: "turn-1", itemId: "progress", text: "Checking." }),
+			event(3, "chat.assistant_delta", { turnId: "turn-1", itemId: "answer", text: "Found a home." }),
+		]);
+		expect(snapshot.items.map((item) => item.kind === "message" && item.streaming)).toEqual([false, true]);
+	});
+
+	it("settles the previous attempt before the replacement emits output", () => {
+		const events = [
+			event(1, "chat.turn_started", { turnId: "turn-1", attempt: 1 }),
+			event(2, "chat.assistant_delta", { turnId: "turn-1", attempt: 1, itemId: "answer", text: "Original reply." }),
+		];
+		expect(toSnapshot(session, events).items[0]).toMatchObject({ streaming: true });
+		events.push(event(3, "chat.turn_started", { turnId: "turn-1", attempt: 2 }));
+		const waiting = toSnapshot(session, events);
+		expect(waiting.turns[0]).toMatchObject({ state: "running" });
+		expect(waiting.items[0]).toMatchObject({ text: "Original reply.", streaming: false });
+		events.push(event(4, "chat.assistant_delta", { turnId: "turn-1", attempt: 2, itemId: "answer", text: "Replacement reply." }));
+		expect(toSnapshot(session, events).items).toMatchObject([
+			{ text: "Original reply.", streaming: false },
+			{ text: "Replacement reply.", streaming: true },
+		]);
+	});
+
+	it("uses durable provenance rather than report-looking text", () => {
+		const snapshot = toSnapshot(session, [
+			event(1, "chat.user_message", { text: "[from worker someone] A human pasted this." }),
+			event(2, "chat.user_message", { text: "Search complete.", origin: "automation", senderSessionId: "worker-1" }),
+		]);
+		expect(snapshot.items.map((item) => item.kind === "message" && item.origin)).toEqual(["human", "automation"]);
+	});
+	it("keeps completed and queued tasks distinct when the next prompt arrives before the answer", () => {
+		const snapshot = toSnapshot(session, [
+			event(1, "chat.user_message", { text: "First task", turnId: "first" }),
+			event(2, "chat.turn_started", { turnId: "first" }),
+			event(3, "chat.user_message", { text: "Next task", turnId: "next" }),
+			event(4, "chat.assistant_delta", { turnId: "first", itemId: "answer", text: "First result" }),
+			event(5, "chat.turn_completed", { turnId: "first" }),
+		]);
+		expect(snapshot.turns).toEqual([
+			expect.objectContaining({ id: "first", state: "completed" }),
+			expect.objectContaining({ id: "next", state: "running" }),
+		]);
+		expect(snapshot.items.map((item) => item.turnId)).toEqual(["first", "next", "first"]);
+	});
+});
