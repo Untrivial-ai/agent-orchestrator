@@ -12,6 +12,25 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
+const countActiveSessionWorktreesForRepo = `-- name: CountActiveSessionWorktreesForRepo :one
+SELECT COUNT(*)
+FROM session_worktrees w
+JOIN sessions s ON s.id = w.session_id
+WHERE s.project_id = ? AND w.repo_name = ? AND s.is_terminated = 0
+`
+
+type CountActiveSessionWorktreesForRepoParams struct {
+	ProjectID *domain.ProjectID
+	RepoName  string
+}
+
+func (q *Queries) CountActiveSessionWorktreesForRepo(ctx context.Context, arg CountActiveSessionWorktreesForRepoParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countActiveSessionWorktreesForRepo, arg.ProjectID, arg.RepoName)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteSessionWorktrees = `-- name: DeleteSessionWorktrees :exec
 DELETE FROM session_worktrees WHERE session_id = ?
 `
@@ -19,6 +38,23 @@ DELETE FROM session_worktrees WHERE session_id = ?
 func (q *Queries) DeleteSessionWorktrees(ctx context.Context, sessionID domain.SessionID) error {
 	_, err := q.db.ExecContext(ctx, deleteSessionWorktrees, sessionID)
 	return err
+}
+
+const deleteWorkspaceRepo = `-- name: DeleteWorkspaceRepo :execrows
+DELETE FROM workspace_repos WHERE project_id = ? AND name = ?
+`
+
+type DeleteWorkspaceRepoParams struct {
+	ProjectID domain.ProjectID
+	Name      string
+}
+
+func (q *Queries) DeleteWorkspaceRepo(ctx context.Context, arg DeleteWorkspaceRepoParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteWorkspaceRepo, arg.ProjectID, arg.Name)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteWorkspaceReposByProject = `-- name: DeleteWorkspaceReposByProject :exec

@@ -95,6 +95,54 @@ func (s *Store) ListWorkspaceRepos(ctx context.Context, projectID string) ([]dom
 	return out, nil
 }
 
+// UpsertWorkspaceRepo inserts or replaces a single registered child repo.
+// Callers that replace the whole child set must keep using
+// UpsertWorkspaceProject so the set stays authoritative.
+func (s *Store) UpsertWorkspaceRepo(ctx context.Context, repo domain.WorkspaceRepoRecord) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.qw.UpsertWorkspaceRepo(ctx, gen.UpsertWorkspaceRepoParams{
+		ProjectID:     repo.ProjectID,
+		Name:          repo.Name,
+		RelativePath:  repo.RelativePath,
+		RepoOriginURL: repo.RepoOriginURL,
+		DefaultBranch: repo.DefaultBranch,
+		RegisteredAt:  repo.RegisteredAt,
+		GitStatus:     string(repo.GitStatus.WithDefault()),
+	})
+}
+
+// DeleteWorkspaceRepo removes a single registered child repo, reporting
+// whether a row was affected.
+func (s *Store) DeleteWorkspaceRepo(ctx context.Context, projectID, name string) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.DeleteWorkspaceRepo(ctx, gen.DeleteWorkspaceRepoParams{
+		ProjectID: domain.ProjectID(projectID),
+		Name:      name,
+	})
+	if err != nil {
+		return false, fmt.Errorf("delete workspace repo %s/%s: %w", projectID, name, err)
+	}
+	return n > 0, nil
+}
+
+// CountActiveSessionWorktreesForRepo reports how many live (non-terminated)
+// sessions of a project still hold a worktree row for the named child repo.
+// Destructive repo detach consults it so deleting the shared checkout cannot
+// strand live session worktrees.
+func (s *Store) CountActiveSessionWorktreesForRepo(ctx context.Context, projectID, repoName string) (int64, error) {
+	pid := domain.ProjectID(projectID)
+	n, err := s.qr.CountActiveSessionWorktreesForRepo(ctx, gen.CountActiveSessionWorktreesForRepoParams{
+		ProjectID: &pid,
+		RepoName:  repoName,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("count active session worktrees for %s/%s: %w", projectID, repoName, err)
+	}
+	return n, nil
+}
+
 func upsertProject(ctx context.Context, q *gen.Queries, r domain.ProjectRecord, config sql.NullString) error {
 	kind := r.Kind.WithDefault()
 	return q.UpsertProject(ctx, gen.UpsertProjectParams{

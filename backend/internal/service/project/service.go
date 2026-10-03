@@ -54,6 +54,15 @@ type Manager interface {
 	// read-model.
 	SetConfig(ctx context.Context, id domain.ProjectID, in SetConfigInput) (Project, error)
 
+	// AddWorkspaceRepo attaches one child repository to a workspace project,
+	// returning the updated read-model.
+	AddWorkspaceRepo(ctx context.Context, id domain.ProjectID, in AddWorkspaceRepoInput) (Project, error)
+
+	// RemoveWorkspaceRepo drops one child repository from a workspace
+	// project's registry, returning the updated read-model. Files on disk
+	// are removed only when deleteFiles is true.
+	RemoveWorkspaceRepo(ctx context.Context, id domain.ProjectID, name string, deleteFiles bool) (Project, error)
+
 	// Remove unregisters a project, stopping its sessions and reclaiming
 	// managed workspaces.
 	Remove(ctx context.Context, id domain.ProjectID) (RemoveResult, error)

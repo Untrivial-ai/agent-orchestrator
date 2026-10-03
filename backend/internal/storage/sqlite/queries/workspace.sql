@@ -1,6 +1,9 @@
 -- name: DeleteWorkspaceReposByProject :exec
 DELETE FROM workspace_repos WHERE project_id = ?;
 
+-- name: DeleteWorkspaceRepo :execrows
+DELETE FROM workspace_repos WHERE project_id = ? AND name = ?;
+
 -- name: UpsertWorkspaceRepo :exec
 INSERT INTO workspace_repos (project_id, name, relative_path, repo_origin_url, default_branch, registered_at, git_status)
 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -42,3 +45,9 @@ ORDER BY CASE WHEN repo_name = '__root__' THEN 0 ELSE 1 END, repo_name;
 
 -- name: DeleteSessionWorktrees :exec
 DELETE FROM session_worktrees WHERE session_id = ?;
+
+-- name: CountActiveSessionWorktreesForRepo :one
+SELECT COUNT(*)
+FROM session_worktrees w
+JOIN sessions s ON s.id = w.session_id
+WHERE s.project_id = ? AND w.repo_name = ? AND s.is_terminated = 0;

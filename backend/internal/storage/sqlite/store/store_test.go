@@ -2242,3 +2242,82 @@ func TestClaimChatControllerGenerationPreservesRecency(t *testing.T) {
 		t.Fatalf("claim changed user-visible facts: before=%+v after=%+v", before, after)
 	}
 }
+
+func TestWorkspaceRepoSingleUpsertDelete(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := s.UpsertWorkspaceProject(ctx, domain.ProjectRecord{
+		ID: "ws", Path: "/tmp/ws", Kind: domain.ProjectKindWorkspace, RegisteredAt: now,
+	}, []domain.WorkspaceRepoRecord{{
+		ProjectID: "ws", Name: "api", RelativePath: "api",
+		RepoOriginURL: "https://example.com/api.git", RegisteredAt: now,
+	}}); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if err := s.UpsertWorkspaceRepo(ctx, domain.WorkspaceRepoRecord{
+		ProjectID: "ws", Name: "cli", RelativePath: "cli",
+		RepoOriginURL: "https://example.com/cli.git", DefaultBranch: "main",
+		RegisteredAt: now, GitStatus: domain.GitStatusReady,
+	}); err != nil {
+		t.Fatalf("upsert single repo: %v", err)
+	}
+	repos, err := s.ListWorkspaceRepos(ctx, "ws")
+	if err != nil || len(repos) != 2 {
+		t.Fatalf("repos = %#v err = %v, want api + cli", repos, err)
+	}
+	removed, err := s.DeleteWorkspaceRepo(ctx, "ws", "cli")
+	if err != nil || !removed {
+		t.Fatalf("delete cli: removed=%v err=%v", removed, err)
+	}
+	removed, err = s.DeleteWorkspaceRepo(ctx, "ws", "cli")
+	if err != nil || removed {
+		t.Fatalf("second delete: removed=%v err=%v, want false", removed, err)
+	}
+	repos, err = s.ListWorkspaceRepos(ctx, "ws")
+	if err != nil || len(repos) != 1 || repos[0].Name != "api" {
+		t.Fatalf("repos after delete = %#v err = %v, want [api]", repos, err)
+	}
+}
+
+func TestCountActiveSessionWorktreesForRepo(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "ws")
+	live, err := s.CreateSession(ctx, sampleRecord("ws"))
+	if err != nil {
+		t.Fatalf("create live session: %v", err)
+	}
+	dead, err := s.CreateSession(ctx, sampleRecord("ws"))
+	if err != nil {
+		t.Fatalf("create dead session: %v", err)
+	}
+	dead.IsTerminated = true
+	if err := s.UpdateSession(ctx, dead); err != nil {
+		t.Fatalf("terminate session: %v", err)
+	}
+	plant := []domain.SessionWorktreeRecord{
+		{SessionID: live.ID, RepoName: "cli", Branch: "ao/ws-1", BaseSHA: "a", WorktreePath: "/managed/ws/ws-1/cli", State: "active"},
+		{SessionID: dead.ID, RepoName: "cli", Branch: "ao/ws-2", BaseSHA: "b", WorktreePath: "/managed/ws/ws-2/cli", State: "active"},
+		{SessionID: live.ID, RepoName: "api", Branch: "ao/ws-1", BaseSHA: "c", WorktreePath: "/managed/ws/ws-1/api", State: "active"},
+	}
+	for _, row := range plant {
+		if err := s.UpsertSessionWorktree(ctx, row); err != nil {
+			t.Fatalf("plant worktree %s/%s: %v", row.SessionID, row.RepoName, err)
+		}
+	}
+	for _, tc := range []struct {
+		project, repo string
+		want          int64
+	}{
+		{"ws", "cli", 1}, // the terminated session's row must not count
+		{"ws", "api", 1},
+		{"ws", "missing", 0},
+		{"nope", "cli", 0},
+	} {
+		n, err := s.CountActiveSessionWorktreesForRepo(ctx, tc.project, tc.repo)
+		if err != nil || n != tc.want {
+			t.Fatalf("count %s/%s = %d,%v want %d", tc.project, tc.repo, n, err, tc.want)
+		}
+	}
+}
