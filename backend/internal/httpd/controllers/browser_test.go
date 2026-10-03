@@ -24,13 +24,14 @@ type fakeBrowserRuntime struct {
 	err    error
 }
 
-func (f *fakeBrowserRuntime) Status(_ context.Context, _ domain.SessionID, _ string) (browserruntime.Status, error) {
-	return f.status, nil
+func (f *fakeBrowserRuntime) Status(_ context.Context, _ domain.SessionID, _, _ string) (browserruntime.Status, string, error) {
+	return f.status, "electron-webcontents-debugger", nil
 }
 
 func (f *fakeBrowserRuntime) Execute(
 	_ context.Context,
 	_ domain.SessionID,
+	_ string,
 	_ string,
 	action string,
 	args map[string]interface{},

@@ -57,6 +57,7 @@ import Italic from "lucide-react-native/icons/italic";
 import KeyRound from "lucide-react-native/icons/key-round";
 import Layers from "lucide-react-native/icons/layers";
 import Link from "lucide-react-native/icons/link";
+import Lock from "lucide-react-native/icons/lock";
 import List from "lucide-react-native/icons/list";
 import LoaderCircle from "lucide-react-native/icons/loader-circle";
 import LogOut from "lucide-react-native/icons/log-out";
@@ -91,6 +92,7 @@ import Repeat from "lucide-react-native/icons/repeat";
 import RotateCcw from "lucide-react-native/icons/rotate-ccw";
 import RotateCw from "lucide-react-native/icons/rotate-cw";
 import Save from "lucide-react-native/icons/save";
+import Share2 from "lucide-react-native/icons/share-2";
 import Search from "lucide-react-native/icons/search";
 import Send from "lucide-react-native/icons/send";
 import Server from "lucide-react-native/icons/server";
@@ -179,6 +181,7 @@ export const glyphs = {
 	"key": KeyRound,
 	"layers": Layers,
 	"link": Link,
+	"lock": Lock,
 	"list": List,
 	"loader": LoaderCircle,
 	"log-out": LogOut,
@@ -211,6 +214,7 @@ export const glyphs = {
 	"rotate-cw": RotateCw,
 	"route-off": RouteOff,
 	"save": Save,
+	"share": Share2,
 	"search": Search,
 	"send": Send,
 	"server": Server,

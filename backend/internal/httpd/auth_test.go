@@ -275,6 +275,29 @@ func TestAuthExemptsIdentityProbe(t *testing.T) {
 	}
 }
 
+func TestAuthMarksOnlyPasswordAuthenticatedRequestsAsMobile(t *testing.T) {
+	state := &authState{}
+	state.setHash(mobilebridge.HashPassword("secret12"))
+	handler := authMiddleware(state, newLockout(5, time.Minute, time.Now), nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isMobileAuthenticated(r) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	authenticated := httptest.NewRecorder()
+	handler.ServeHTTP(authenticated, req("Bearer secret12"))
+	if authenticated.Code != http.StatusNoContent {
+		t.Fatalf("authenticated marker status = %d, want 204", authenticated.Code)
+	}
+	identity := httptest.NewRecorder()
+	handler.ServeHTTP(identity, reqTo(http.MethodGet, identityProbePath, ""))
+	if identity.Code != http.StatusOK {
+		t.Fatalf("identity marker status = %d, want 200", identity.Code)
+	}
+}
+
 // The exemption is one method on one exact path. These are the guards that
 // stop it widening into a general hole in the LAN listener.
 func TestAuthExemptionIsNarrow(t *testing.T) {

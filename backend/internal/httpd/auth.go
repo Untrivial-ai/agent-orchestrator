@@ -1,6 +1,7 @@
 package httpd
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"strings"
@@ -11,6 +12,17 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/envelope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
 )
+
+type mobileAuthContextKey struct{}
+
+func withMobileAuth(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), mobileAuthContextKey{}, true))
+}
+
+func isMobileAuthenticated(r *http.Request) bool {
+	authenticated, _ := r.Context().Value(mobileAuthContextKey{}).(bool)
+	return authenticated
+}
 
 // authState holds the current password hash for the LAN listener. Swapped
 // atomically on regenerate so an in-flight request never sees a torn value.
@@ -201,7 +213,7 @@ func authMiddleware(state *authState, lock *lockout, connected *mobileConnectRep
 				lock.reset(src)
 				connected.report(src)
 				maybeSetPreviewAuthCookie(w, r, tok)
-				next.ServeHTTP(w, r)
+				next.ServeHTTP(w, withMobileAuth(r))
 				return
 			}
 			lock.fail(src)

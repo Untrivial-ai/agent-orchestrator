@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ServerConfig } from "./config";
-import { adoptManualConnection } from "./manualConnect";
+import { adoptManualConnection, normalizeManualConfig } from "./manualConnect";
 
 // A literal rather than DEFAULT_CONFIG: config.ts reaches native storage at
 // import time, and this is pure logic that needs none of it.
@@ -66,5 +66,28 @@ describe("adopting a manual connection", () => {
 
 		expect(d.saveHost).toHaveBeenCalledWith(expect.objectContaining({ id: "" }));
 		expect(id).toBe("");
+	});
+});
+
+describe("normalizing a manual address", () => {
+	it("splits a copied host:port address", () => {
+		expect(normalizeManualConfig({ ...cfg, host: "10.7.34.148:3011", httpPort: "9999" })).toMatchObject({
+			host: "10.7.34.148",
+			httpPort: "3011",
+		});
+	});
+
+	it("strips a pasted scheme and path", () => {
+		expect(normalizeManualConfig({ ...cfg, host: "http://ao.local:4011/anything" })).toMatchObject({
+			host: "ao.local",
+			httpPort: "4011",
+		});
+	});
+
+	it("keeps the separate port when the host has none", () => {
+		expect(normalizeManualConfig({ ...cfg, host: " ao.local ", httpPort: " 3011 " })).toMatchObject({
+			host: "ao.local",
+			httpPort: "3011",
+		});
 	});
 });

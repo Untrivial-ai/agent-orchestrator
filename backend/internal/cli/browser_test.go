@@ -89,11 +89,14 @@ func TestBrowserStatusAndSnapshot(t *testing.T) {
 	if err != nil || !strings.Contains(out, "Browser runtime: connected") {
 		t.Fatalf("status err=%v stderr=%s stdout=%s", err, errOut, out)
 	}
-	if capture.path != "/api/v1/browser/status?sessionId=ao-1" {
+	if capture.path != "/api/v1/browser/status?sessionId=ao-1&surface=auto" {
 		t.Fatalf("status path = %q", capture.path)
 	}
 	if capture.capability != "capability-1" {
 		t.Fatalf("status capability = %q", capture.capability)
+	}
+	if _, _, err = executeCLI(t, deps, "browser", "status", "--surface", "mobile"); err != nil || capture.path != "/api/v1/browser/status?sessionId=ao-1&surface=mobile" {
+		t.Fatalf("mobile status err=%v path=%q", err, capture.path)
 	}
 	out, errOut, err = executeCLI(t, deps, "browser", "snapshot", "--interactive")
 	if err != nil || !strings.Contains(out, "button Save [ref=e1]") ||
@@ -101,7 +104,7 @@ func TestBrowserStatusAndSnapshot(t *testing.T) {
 		!strings.Contains(out, "<<<END UNTRUSTED EXTERNAL CONTENT>>>") {
 		t.Fatalf("snapshot err=%v stderr=%s stdout=%s", err, errOut, out)
 	}
-	if capture.body.SessionID != "ao-1" || capture.body.Action != "snapshot" || capture.body.Args["interactive"] != true {
+	if capture.body.SessionID != "ao-1" || capture.body.Surface != "auto" || capture.body.Action != "snapshot" || capture.body.Args["interactive"] != true {
 		t.Fatalf("command = %#v", capture.body)
 	}
 	out, errOut, err = executeCLI(t, deps, "browser", "get", "text")
@@ -747,6 +750,7 @@ func TestBrowserScreenshotHelpExplainsJSONAndBase64Modes(t *testing.T) {
 
 func TestBrowserRequiresSessionAndValidWait(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "")
+	t.Setenv("AO_BROWSER_CAPABILITY", "")
 	if _, _, err := executeCLI(t, Deps{}, "browser", "status"); ExitCode(err) != 2 {
 		t.Fatalf("status error = %v code=%d", err, ExitCode(err))
 	}
