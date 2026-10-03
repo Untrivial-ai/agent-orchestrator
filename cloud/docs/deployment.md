@@ -3,13 +3,13 @@
 ## Staging
 
 AO Cloud staging runs the control plane as a stateless ECS/Fargate service.
-PostgreSQL is the durable source of truth, so any healthy replica can serve a
-request. The service starts at two replicas and can scale from two to six on
-average CPU utilization.
+PostgreSQL is the durable source of truth, so any healthy task can serve a
+request. The current release scripts and verifier use one configured desired
+task for staging.
 
 ## Release flow
 
-Run from a clean private `main` checkout:
+Run from a clean checkout of the release commit, inside `cloud/`:
 
 ```bash
 AWS_PROFILE=ao-cloud ./scripts/deploy-staging.sh
@@ -24,8 +24,10 @@ AO_CLOUD_SANDBOX_PROVIDER=coder \
   ./scripts/deploy-staging.sh
 ```
 
-The script requires `AO_CLOUD_RELEASE` to resolve to the clean checkout's
-current full Git SHA and:
+The script takes an optional release tag or Git SHA as its first positional
+argument (default: the current commit). That ref must resolve to the clean
+checkout's current commit. `AO_CLOUD_RELEASE` labels the running hosted
+service; it does not select the input to this deployment script. The script:
 
 1. Builds separate non-root, read-only `linux/amd64` control-plane and worker
    images.
@@ -36,13 +38,12 @@ current full Git SHA and:
    registers a digest-pinned API task with `/ao-worker` as its packaged worker
    path and records the worker image digest on the task definition.
 5. Runs `/ao-cloud-migrate` as a one-off Fargate task and stops on failure.
-6. Rolls both API replicas only after migrations succeed.
-7. Waits for ECS and both ALB targets to become healthy.
+6. Rolls the API service with its configured one task only after migrations succeed.
+7. Waits for ECS and the ALB target to become healthy.
 
-The verifier rejects fewer than two desired tasks, pending tasks, mixed
-task-definition revisions, an incomplete primary deployment, an empty target
-group, unhealthy targets, or a deployment alarm that is not `OK`. Interrupted
-deployment scripts stop an unfinished migration task.
+The verifier requires exactly one desired/running task, no pending task, one task
+definition revision, one target, healthy targets, and a deployment alarm that is
+`OK`. Interrupted deployment scripts stop an unfinished migration task.
 
 Re-running the same release reuses its immutable ECR image. A new code version
 creates new task-definition revisions; it never mutates an older image tag.
@@ -62,8 +63,9 @@ creates new task-definition revisions; it never mutates an older image tag.
   tags, 30-image retention)
 
 The ALB probes `/readyz`, which checks both draining state and database
-connectivity. ECS keeps at least 100% of the desired replicas healthy during a
-rollout. Its deployment circuit breaker rolls back failed starts, and the
+connectivity. Deployment scripts set one desired task and `minimumHealthyPercent: 0`,
+so a rollout can briefly leave no healthy task. The deployment circuit breaker
+rolls back failed starts, and the
 `ao-cloud-staging-target-5xx` alarm rolls back a release with sustained target
 5xx responses. `ao-cloud-staging-unhealthy-targets` tracks unhealthy replicas.
 
@@ -115,11 +117,11 @@ intentionally absent from this deployment configuration.
 not a deployment-wide assumption about the Coder user's home. It must be an
 absolute normalized non-root path. `parameters_json` must be a JSON object whose
 values are strings; use `{}` when the approved template has no parameters. The
-deployment validates only the selected provider and removes the other
-provider's environment variables and secret references from the new task
-definition. The ECS execution role needs
-`secretsmanager:GetSecretValue` for the selected environment-scoped provider
-secret.
+deployment validates every provider in `AO_CLOUD_SANDBOX_PROVIDERS`. A
+single-provider deployment removes the other provider's environment variables
+and secret references. A multi-provider deployment, such as `nodeops,coder`,
+retains both. The ECS execution role needs `secretsmanager:GetSecretValue` for
+each configured provider's environment-scoped secret.
 
 `ao-cloud/repository-broker` is shared only by the production control plane,
 environment control planes, and the server-side web BFF. It is a JSON secret
@@ -200,7 +202,7 @@ digest-pinned artifacts from the healthy staging service, requires each ECR
 scan to be complete with no high or critical findings, and refuses a requested
 release that is not currently running in staging. It verifies both services
 before changing production. New production task revisions are derived from the
-existing production definitions—not staging—so production-only secrets survive
+existing production definitions, not staging, so production-only secrets survive
 and staging variables, URLs, log groups, or secret ARNs cannot cross the
 environment boundary. It then:
 
@@ -213,8 +215,8 @@ environment boundary. It then:
    for objects created by future migrations.
 5. Leaves the existing API service untouched if migration or grant application
    fails.
-6. Rolls two production replicas, waits for ECS stability, and requires every
-   ALB target to be healthy.
+6. Rolls one production task, waits for ECS stability, and requires the ALB target
+   to be healthy.
 7. Verifies that production is running the same image digests and release as
    staging.
 

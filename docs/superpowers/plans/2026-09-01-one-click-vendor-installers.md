@@ -1,5 +1,11 @@
 # One-Click Vendor Installers Implementation Plan
 
+> **Status:** Implemented in the current remote-script runner and official
+> installer paths. This file preserves the original PR #4221 task sequence;
+> its unchecked steps do not mean the implementation is absent. See [the
+> remote-script runner](../../../backend/internal/adapters/systemexec/remote_script.go)
+> and [installer plans](../../../backend/internal/service/systeminstall/agentplans.go).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make first-party remote installer scripts a one-click automatic fallback for every natively supported harness in PR #4221.

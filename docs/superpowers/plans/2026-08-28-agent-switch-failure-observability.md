@@ -1,5 +1,11 @@
 # Agent Switch Failure-Only Observability Implementation Plan
 
+> **Status:** Implemented in the current backend and frontend observability
+> paths. Production capture remains disabled until the documented privacy and
+> release gates pass. This file preserves the original phased plan and its
+> unchecked task list. See [the approved design](../specs/2026-08-28-agent-switch-failure-observability-design.md)
+> and [telemetry policy](../../telemetry.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build end-to-end, consent-aware, failure-only Sentry observability for asynchronous TUI and Chat agent switching, from durable classification through recovery and frontend visibility, while successful switches emit nothing.

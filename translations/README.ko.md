@@ -17,7 +17,7 @@
 프로젝트를 이해하는 오케스트레이터와 더 큰 목표를 계획하고 위임하세요.<br />
 모든 워커, 풀 리퀘스트, CI 실행, 리뷰를 실시간 Kanban에서 확인하세요.
 
-[**AO 다운로드**](#설치) &nbsp;&bull;&nbsp; [문서](https://docs.aoagents.dev) &nbsp;&bull;&nbsp; [릴리스](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [기여하기](../CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
+[**AO 다운로드**](#설치) &nbsp;&bull;&nbsp; [문서](https://docs.orchestrator.inc) &nbsp;&bull;&nbsp; [릴리스](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [기여하기](../CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · **한국어** · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md) · [Português (Brasil)](README.pt-BR.md)
 
@@ -111,7 +111,7 @@ AO는 이미 사용 중인 코딩 에이전트와 소스 제어 워크플로와 
 
 ## 지원 에이전트
 
-하나의 감독된 워크플로에서 **26개의 코딩 에이전트**를 지원합니다.
+코딩 에이전트를 하나의 감독 워크플로에서 사용할 수 있습니다. 현재 지원되는 에이전트와 모드는 [기능 목록](https://docs.orchestrator.inc/plugins/agents)을 확인하세요.
 
 <table>
   <tr valign="middle">
@@ -157,11 +157,21 @@ AO는 이미 사용 중인 코딩 에이전트와 소스 제어 워크플로와 
   <tr valign="middle">
     <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/kimchi.svg" alt="Kimchi" width="24" height="24" align="middle" /> &nbsp; <b>Kimchi</b></td>
     <td valign="middle" nowrap><img src="../docs/assets/readme/agents/prime-agent.svg" alt="Prime Agent" width="24" height="24" align="middle" /> &nbsp; <b>Prime Agent</b></td>
-    <td valign="middle" nowrap></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/omp.png" alt="OMP" width="24" height="24" align="middle" /> &nbsp; <b>OMP</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/fx.svg" alt="fx" width="24" height="24" align="middle" /> &nbsp; <b>fx</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/unreal-agent.png" alt="Unreal Agent" width="24" height="24" align="middle" /> &nbsp; <b>Unreal Agent</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/mimo-code.svg" alt="MiMo Code" width="24" height="24" align="middle" /> &nbsp; <b>MiMo Code</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/gemini.svg" alt="Gemini CLI" width="24" height="24" align="middle" /> &nbsp; <b>Gemini CLI</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/deepseek-harness.svg" alt="DeepSeek" width="24" height="24" align="middle" /> &nbsp; <b>DeepSeek</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/opencode.svg" alt="OpenCode 2" width="24" height="24" align="middle" /> &nbsp; <b>OpenCode 2</b></td>
   </tr>
 </table>
 
-[에이전트 설정 가이드 살펴보기 →](https://docs.aoagents.dev/plugins/agents)
+[에이전트 설정 가이드 살펴보기 →](https://docs.orchestrator.inc/plugins/agents)
 
 **상황에 맞는 인터페이스를 사용하세요. 구조화된 Chat과 에이전트 고유의 터미널 UI를 모두 지원합니다.**
 
@@ -178,23 +188,15 @@ AO는 이미 사용 중인 코딩 에이전트와 소스 제어 워크플로와 
 | Linux (Debian/Ubuntu) | [다운로드](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.deb)      |
 | Linux (Fedora/RHEL)   | [다운로드](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.rpm)      |
 
-Agent Orchestrator를 열고 AO가 관리할 저장소를 지정하세요. 데스크톱 앱이 데몬을 실행하므로 CLI는 필요하지 않습니다. 에이전트 CLI 설정 및 문제 해결은 [설치 가이드](https://docs.aoagents.dev/installation)를 참고하세요.
+Agent Orchestrator를 열고 AO가 관리할 저장소를 지정하세요. 데스크톱 앱이 데몬을 실행하므로 CLI는 필요하지 않습니다. 에이전트 CLI 설정 및 문제 해결은 [설치 가이드](https://docs.orchestrator.inc/installation)를 참고하세요.
 
 ## 버그 신고
 
-버그를 신고할 때는 코딩 에이전트에게 이 저장소의 [bug-triage skill](https://github.com/Untrivial-ai/agent-orchestrator/blob/main/.agents/skills/bug-triage/SKILL.md)을 따르도록 요청하는 방법을 권장합니다. 이 skill은 에이전트가 현재 코드에서 문제를 재현하고, 진단 정보를 수집하고, 관련 코드 경로를 추적하고, 중복 이슈를 확인한 뒤, 상세한 GitHub 이슈를 생성하거나 업데이트하도록 안내합니다.
+[버그 신고를 열 때](https://github.com/Untrivial-ai/agent-orchestrator/issues/new?template=bug_report.yml)는 본인의 GitHub 계정을 사용하세요. 무엇을 했고 어떤 문제가 발생했는지 자신의 말로 몇 문장만 적으면 됩니다. 예상한 결과, 재현 단계, AO 버전과 운영체제, 스크린샷이 있다면 추가하세요. 도움이 되지만 필수는 아닙니다.
 
-로컬 코딩 에이전트나 Discord의 AO Bot 중 어느 쪽에 요청하더라도 스크린샷을 첨부하고 가능한 한 많은 관련 정보를 공유하세요. 무엇이, 어디에서, 언제 발생했는지, 재현 단계, OS 및 AO 버전, 문제가 항상 발생하는지 간헐적으로 발생하는지를 포함하세요. 이런 정보는 에이전트가 버그를 재현하고 담당자가 바로 조치할 수 있는 보고서를 제출할 가능성을 높입니다.
+로컬 코딩 에이전트는 [bug-triage skill](https://github.com/Untrivial-ai/agent-orchestrator/blob/main/.agents/skills/bug-triage/SKILL.md)을 사용해 신고 내용을 정리하고 증거를 수집하는 일을 도울 수 있습니다. 이슈 본문에는 본인의 관찰만 담고, 에이전트가 수집한 로그, 데이터베이스 발췌, 조사 메모는 내용을 알 수 있는 별도 첨부 파일로 제공하세요. 본인 계정으로 제출하기 전에 초안을 검토하세요. AO Bot에게 대신 이슈를 등록해 달라고 요청하지 마세요. 신고자 정보가 정확히 남아야 합니다.
 
-```text
-Read and follow https://github.com/Untrivial-ai/agent-orchestrator/blob/main/.agents/skills/bug-triage/SKILL.md. Please reproduce and triage this bug, then file or update the GitHub issue. Context: <what happened, where, when, reproduction steps, OS, AO version, and frequency>. Screenshots: <attach any screenshots>.
-```
-
-[Discord의 bug-triaging 채널](https://discord.com/channels/1476302178913357958/1491735678156013588)에서도 버그를 신고할 수 있습니다. `@AO Bot#8425`를 태그하고, 어떤 일이 발생했는지 설명한 뒤 bug-triage skill을 사용하도록 요청하세요.
-
-```text
-@AO Bot#8425 Please reproduce and triage this bug using the bug-triage skill, then file or update the GitHub issue. Context: <what happened, where, when, reproduction steps, OS, AO version, and frequency>. Screenshots: <attach any screenshots>.
-```
+문제 설명에 도움이 필요하면 [Discord bug-triaging 채널](https://discord.com/channels/1476302178913357958/1491735678156013588)을 이용하세요. 자세한 내용은 [기여 가이드](../CONTRIBUTING.md#bugs-and-features)를 참고하세요.
 
 ## 개발 및 기여
 
@@ -211,7 +213,7 @@ cd agent-orchestrator
 
 | 문서                                                                | 다음 정보가 필요할 때                                               |
 | ------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| [제품 문서](https://docs.aoagents.dev)                                 | 설치, 에이전트 설정, 일상적인 제품 사용법.                          |
+| [제품 문서](https://docs.orchestrator.inc)                                 | 설치, 에이전트 설정, 일상적인 제품 사용법.                          |
 | [docs/architecture.md](../docs/architecture.md)                     | 백엔드 멘탈 모델, 라이프사이클, 영속성, CDC, 상태 도출, 데몬 경계.  |
 | [docs/backend-code-structure.md](../docs/backend-code-structure.md) | 패키지 소유권과 각 백엔드 관심사가 속하는 위치.                     |
 | [docs/cli/README.md](../docs/cli/README.md)                         | CLI 동작과 데몬 라우트 매핑.                                        |
@@ -239,9 +241,9 @@ cd agent-orchestrator
 
 도움 및 기여자 논의를 위해 [Discord](https://discord.com/invite/UZv7JjxbwG)에 참여하고, 업데이트를 보려면 [@ao_build](https://x.com/ao_build)를 팔로우하세요. [GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues)에서 대화를 시작할 수도 있습니다.
 
-## 익명 텔레메트리
+## 제품 텔레메트리
 
-AO는 PII와 프로젝트 콘텐츠를 제외하도록 설계된 개인정보 보호 중심의 제품 사용 및 안정성 지표를 사용합니다. 이 지표는 도입 현황을 파악하고 제품을 개선하는 데 도움이 됩니다. [텔레메트리와 개인정보 보호에 대해 자세히 알아보세요](../docs/telemetry.md).
+AO는 프로젝트 내용을 제외한 사용 및 안정성 지표를 수집합니다. 프로젝트의 GitHub 소유자와 로그인한 GitHub 사용자 이름은 개인을 식별할 수 있으므로 이 텔레메트리는 익명이 아닙니다. 텔레메트리를 끄면 이 정보 전송도 중단됩니다. [세부 정보와 설정](../docs/telemetry.md).
 
 ## 라이선스
 

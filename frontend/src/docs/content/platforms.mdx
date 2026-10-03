@@ -3,16 +3,16 @@ title: Platforms
 description: Install and use AO on macOS, Windows, Linux, and mobile.
 ---
 
-AO ships as a desktop application for macOS, Windows, and Linux. The core workflow is the same everywhere: register a repository, create an isolated worktree, run an agent in Chat or Terminal UI, and follow its pull request.
+AO has a desktop app for macOS, Windows, and Linux. The basic workflow is the same on each platform: add a repository, start an isolated worker, and follow its pull request in Chat or Terminal UI.
 
 <PlatformSupport
 	macos="full"
 	linux="full"
 	windows="full"
-	note={<>Terminal UI uses tmux on macOS/Linux and a native conpty host on Windows. Chat uses native provider controllers.</>}
+	note={<>New Terminal UI sessions use AO's native terminal hosts on macOS/Linux and ConPTY on Windows. Older sessions and fallback launches can use tmux. Available agents vary by platform.</>}
 />
 
-## Desktop Downloads
+## Desktop downloads
 
 | Platform | Available packages |
 | --- | --- |
@@ -25,31 +25,21 @@ Use the download selector on [Installation](/installation) for the current relea
 
 ## macOS
 
-Both Chat and Terminal UI are supported. Install tmux if you want to use native terminal sessions:
+Both Chat and Terminal UI are supported when the selected agent allows them. New terminal sessions use AO's native pseudo-terminal (PTY) host. Packaged builds include tmux for older sessions and fallback launches. macOS still checks that tmux is available when starting a session. Source builds can install it with:
 
 ```bash
 brew install tmux
 ```
 
-If you launch the app with `ao start` from a terminal and tmux is missing, it warns you and names this exact command to run.
+macOS packages include both a `.dmg` for first installation and a `.zip` used by the updater. Keep both release artifacts available.
 
-macOS packages include both a `.dmg` and `.zip`. The disk image is convenient for first installation; the zip is also part of the release because the desktop updater uses it for future updates.
-
-If macOS says the developer cannot be verified, follow the Gatekeeper steps in [Common Installation Problems](/installation#common-installation-problems).
+If macOS says the developer cannot be verified, follow [Common Installation Problems](/installation#common-installation-problems).
 
 ## Linux
 
-Linux supports the desktop app, Chat, tmux-backed Terminal UI, and the in-app browser inspector. Install tmux with your distribution package manager when needed:
+Linux supports the desktop app, Chat, AO's native terminal host, and the browser inspector. Older sessions and fallback launches still use tmux; desktop packages include it. Source builds can install tmux with the distribution package manager, for example `sudo apt install tmux`.
 
-```bash
-sudo apt install tmux
-```
-
-If you launch the app with `ao start` from a terminal and tmux is missing, it warns you and names the exact
-`sudo` command for whichever package manager it finds (`apt-get`, `dnf`, `pacman`, `zypper`, or `apk`). Run it
-yourself: AO never asks for your administrator password.
-
-Choose the AppImage for a portable launch, or the `.deb`/`.rpm` package that matches your distribution.
+Choose the AppImage for a portable launch, or the `.deb`/`.rpm` package that matches your distribution. `ao doctor` still probes tmux even though new Linux sessions normally use the native host.
 
 ## Windows
 
@@ -57,27 +47,31 @@ Windows supports the desktop workflow, structured Chat, and native Terminal UI t
 
 Use PowerShell, Command Prompt, or Git Bash for optional CLI commands. AO suppresses transient console windows for tools launched by the desktop daemon.
 
-## Mobile Companion
+## Mobile companion
 
-AO's Expo mobile app is a second interface to the desktop daemon, not a cloud relay. In desktop settings, choose **Connect Mobile** to enable a separate LAN listener and pair the phone.
+AO's Expo mobile app is a second interface to the desktop daemon. In desktop settings, choose **Connect Mobile** to enable a separate LAN listener and pair the phone.
 
 Security properties:
 
 - The LAN listener is off by default and exists only while Connect Mobile is enabled.
 - It is protected by a rotating connection password.
 - Scanning the pairing QR fills the advertised host, port, connection password, and any secure transport mode automatically. Treat the QR as a bearer credential: do not share it or screenshots of it, and rotate the connection password if it is exposed.
-- Traffic is plaintext HTTP and intended only for a trusted home network.
+- Direct LAN traffic is plaintext and belongs on a trusted network. Managed HTTPS access and current Tailscale pairing limits are described in [Connect Mobile](/configuration/remote-access).
 - Daemon control, telemetry, and browser-control routes remain loopback-only.
 
 Mobile defaults new workers and orchestrators to Chat when the selected harness supports it. Terminal UI remains available as a compatibility choice.
 
-## Remote And Server Use
+## Remote and server use
 
-The desktop daemon's primary listener is deliberately bound to `127.0.0.1` without authentication. Do not expose it through a public bind or reverse proxy. Connect Mobile is the only built-in off-device listener and is deliberately limited to an explicitly enabled home-network workflow.
+The primary desktop listener is fixed to `127.0.0.1` and has no authentication. Do not expose it with a public bind or reverse proxy. Connect Mobile provides a separate authenticated listener for local or secure remote connections. Never publish the primary listener.
 
 For unattended work, keep the desktop host awake and reachable on its local network. AO does not turn the local desktop product into a hosted multi-user service.
 
-## Next
+When Cloud is enabled for your build and account, its remote sessions use a separate control plane. Availability and provider choices are gated; local desktop installation alone does not grant Cloud access.
+
+<span id="next" />
+
+## Next steps
 
 <Cards>
 	<Card title="Installation" href="/installation" description="Download AO and connect GitHub and an agent harness." />

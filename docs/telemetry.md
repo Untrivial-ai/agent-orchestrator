@@ -1,10 +1,11 @@
 # Product telemetry
 
 AO collects limited product-usage and reliability data to learn which parts of
-the app are useful and whether releases are working as expected. The data is
-not account-linked: AO does not attach a name or email address. It is
-pseudonymous rather than unlinkable, because a random installation identifier
-lets events from the same installation be counted together over time.
+the app are useful and whether releases are working as expected. AO does not
+attach an email address. Some events include a GitHub project owner or an
+authenticated username, so they can identify an account. Other events use a
+random installation identifier to group activity. Telemetry is not wholly
+anonymous.
 
 Remote telemetry is enabled in production desktop and mobile releases. A
 packaged desktop release also enables telemetry for the daemon it starts.
@@ -39,12 +40,13 @@ AO sends structured events in a few broad categories:
 - Coarse mobile-app usage, such as pairing, reconnecting, completing onboarding,
   opening a notification, or using a core action
 - Coarse geographic location (country, and where available region and city),
-  derived by PostHog from the connection's IP address at the time each event is
-  received. AO does not resolve or send precise coordinates, and does not store
-  your IP address itself. This is on for all installs and is used only in
-  aggregate, to understand which areas AO is used in. It is not tied to your
-  GitHub handle and there is no separate opt-out for it; turning telemetry off
-  (see below) stops it along with everything else
+  derived by PostHog from the connection's IP address when it receives each
+  event. AO does not resolve or send precise coordinates, and does not store
+  your IP address itself. PostHog may associate this geography with other
+  events from the same installation, including a session-start event that
+  carries a GitHub handle. AO uses the geography for aggregate analysis, and
+  there is no separate opt-out. Turning telemetry off (see below) stops it
+  along with everything else
 
 AO uses [PostHog](https://posthog.com/privacy) to process remote product
 telemetry. PostHog receives standard connection and device metadata, including
@@ -55,7 +57,9 @@ available for aggregate analysis.
 The installation identifier lets PostHog group activity from one AO
 installation over time. Hashed project and session identifiers can likewise
 group events for the same project or session without sending those identifiers
-in plain text. Neither is linked to an AO account.
+in plain text. These identifiers are distinct from the explicit GitHub account
+attribution on session-start events, but events that share an installation
+identifier can still be associated with that attribution in PostHog.
 
 ## What AO does not intentionally send
 
@@ -68,11 +72,13 @@ Product telemetry is designed not to include:
 - API keys, access tokens, passwords, or other credentials
 - Names or email addresses
 
-The two exceptions are the GitHub owner segment and your authenticated GitHub
-username. Both are described under "What AO sends". The owner segment is limited
-to the owning organization or account and never includes the repository, path, or
-URL. Aside from these, product telemetry is designed not to carry account
-identities.
+The two explicit account fields are the GitHub owner segment and your
+authenticated GitHub username. Both are described under "What AO sends". The
+owner segment is limited to the owning organization or account and never
+includes the repository, path, or URL. AO does not intentionally send other
+account identity fields, but PostHog can associate related events when they
+share an installation identifier with a session-start event that carries your
+GitHub handle.
 
 The optional website waitlist is separate from product telemetry. If you submit
 an email address, company role, and social profile there, they are used to manage
@@ -81,8 +87,10 @@ that waitlist as described in the [privacy policy](https://orchestrator.inc/priv
 ## How AO limits the data
 
 - AO generates a random installation identifier on first run. It is stored at
-  `~/.ao/data/telemetry_install_id` (or under `AO_DATA_DIR`) and is not linked to
-  a personal account.
+  `~/.ao/data/telemetry_install_id` (or under `AO_DATA_DIR`) and does not encode
+  a personal account. Because AO uses it to group events, events from that
+  installation may be associated with the GitHub handle sent on a session-start
+  event.
 - Project and session identifiers included in telemetry are one-way hashed.
   Hashing hides the plain text but still allows related events to be grouped.
 - Absolute local paths and local application URLs detected in desktop events
@@ -97,7 +105,8 @@ that waitlist as described in the [privacy policy](https://orchestrator.inc/priv
   carries your GitHub handle. That one event sets a person property so activity
   can be grouped by GitHub username, and clears build details (version,
   platform, surface, build mode) that older AO versions stored on the profile;
-  every other event stays anonymous.
+  other events do not set a person profile. Project-add events still carry the
+  GitHub owner segment described above, so this is not an anonymity guarantee.
 
 Separately from remote telemetry, the daemon can keep a local copy of
 operational events in AO's SQLite database. While local telemetry is active, AO
@@ -113,22 +122,27 @@ transient condition that is proven recovered creates no failure receipt, no
 outbox payload, and no Sentry event.
 
 When enabled in a future release, an eligible failure event is limited to a
-closed set of operational fields: event ID and occurrence time; bounded title,
-level, environment, platform, operating system, release, and channel; report
-kind, subsystem, classifier callsite, durable phase, failure point, broad
-error/fault code, execution and session mode, source and target harness,
-target-start mode, runtime backend, call outcome, ownership, compensation, user
-impact, elapsed-time bucket, and tri-state source-stop, target-owner, and
-recovery-gate facts. The local outbox schema/envelope versions are not exported
-as event fields. Eligible semantic and process events may attach a bounded,
-sanitized stack containing repository-relative filenames, line numbers,
-packages, and function names; panic events require those sanitized frames but
-never include the panic value. The event does not contain prompts, conversation
-content, terminal output, commands, provider payloads, repository or branch
-names, local paths, runtime handles, native identities, switch/session/project
-identifiers, raw errors, or panic values. Local identifiers used to decide
-whether a frontend failure is still current are stripped before event
-construction.
+closed set of operational fields. It includes:
+
+- Event ID and occurrence time.
+- Bounded title, level, environment, platform, operating system, release, and
+  channel.
+- Report kind, subsystem, classifier callsite, durable phase, failure point,
+  broad error or fault code, execution and session mode, source and target
+  harness, target-start mode, runtime backend, call outcome, ownership,
+  compensation, user impact, elapsed-time bucket, and tri-state source-stop,
+  target-owner, and recovery-gate facts.
+
+The local outbox schema and envelope versions are not exported as event fields.
+Eligible semantic and process events may attach a bounded, sanitized stack with
+repository-relative filenames, line numbers, packages, and function names.
+Panic events require those sanitized frames but never include the panic value.
+
+The event never contains prompts, conversation content, terminal output,
+commands, provider payloads, repository or branch names, local paths, runtime
+handles, native identities, switch/session/project identifiers, raw errors, or
+panic values. Local identifiers used to decide whether a frontend failure is
+still current are stripped before event construction.
 
 Eligible daemon events are stored in a dedicated local delivery outbox before
 network delivery. Every pending, leased, delivered, or discarded payload row
@@ -148,16 +162,21 @@ accepts an event but its response is lost, AO may retry the same event ID. This
 can produce more than one provider occurrence, while the stable fingerprint
 groups the occurrences into one issue.
 
-The required opt-out sequence is: Electron main closes and drains its sender;
-the daemon closes and drains its delivery gate; main durably writes the disabled
-consent generation; the daemon rereads that generation, mirrors it, and purges
-every pending, leased, delivered, or discarded outbox payload; main purges its
-local transport cache and renderer queue; only then may the UI acknowledge the
-change. If the daemon is unavailable or any cleanup cannot be proven, the UI
-reports `cleanup_pending` rather than claiming completion. Payload-free receipts
-remain solely to prevent a later duplicate enrollment. A provider may already
-have accepted a request that was in flight before cancellation; AO cannot recall
-data already received by the provider.
+The required opt-out sequence is:
+
+1. Electron main closes and drains its sender.
+2. The daemon closes and drains its delivery gate.
+3. Main durably writes the disabled consent generation.
+4. The daemon rereads that generation, mirrors it, and purges every pending,
+   leased, delivered, or discarded outbox payload.
+5. Main purges its local transport cache and renderer queue.
+
+Only then may the UI acknowledge the change. If the daemon is unavailable or
+any cleanup cannot be proven, the UI reports `cleanup_pending` rather than
+claiming completion. Payload-free receipts remain solely to prevent a later
+duplicate enrollment. A provider may already have accepted a request that was
+in flight before cancellation. AO cannot recall data already received by the
+provider.
 
 This path uses Sentry as the intended processor. Like any remote endpoint,
 Sentry receives connection metadata such as the source IP address even though
@@ -176,7 +195,8 @@ AO resolves the GitHub account signed in to its GitHub integration and includes
 that username on session-start events. It is sent both as the event property
 `github_actor` and as a PostHog person property on AO's shared installation
 person, which lets us group product activity by GitHub username and reach out to
-active users for feedback.
+active users for feedback. Other events from the same installation can be
+associated with that person in PostHog.
 
 AO only sends the handle when the signed-in account is a personal (human)
 account; it never sends an organization or a bot token, and if no GitHub token is

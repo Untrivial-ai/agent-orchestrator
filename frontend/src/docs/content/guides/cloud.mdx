@@ -1,0 +1,42 @@
+---
+title: Cloud sessions
+description: Set up a hosted project and work on a remote session from the desktop app.
+---
+
+AO Cloud is the hosted service for running a project's worker in a remote workspace. Its control plane handles sign-in, projects, sessions, messages, and worker connections. Cloud is separate from a local desktop project and from Connect Mobile, which reaches your own computer. Cloud requires an enabled desktop build, an account with access, and a reachable service. The Cloud choice may be absent in your app. The local product still works without Cloud.
+
+## Before you start
+
+1. Install the current [desktop release](/installation) and sign in using **Sign in to AO Cloud** in the sidebar. If that entry is missing, Cloud is not enabled for your build or account. Contact the team that granted access; a local GitHub sign-in alone does not enable it.
+2. In **Settings → Cloud**, connect a supported provider. The Cloud worker picker offers Claude Code, Codex, Cursor, and OpenCode only when the corresponding Cloud connection is valid. A local agent installation or local CLI login does not supply a Cloud credential.
+3. Have access to the GitHub repository you want to work on. Cloud project creation uses a GitHub installation and repository grant, separate from the `gh` login used by local projects. Follow the **Connect GitHub** flow in project setup if the repository is missing.
+
+Cloud authorization is scoped to the signed-in account and its organizations. The desktop currently uses the first organization returned for that account, creates one if none exists, and has no organization switcher. If the wrong organization appears, sign in with the account that has the intended access or contact the team that manages your Cloud access. If access expires, sign in again and retry the action. Do not paste provider keys or GitHub tokens into a task prompt.
+
+## Create a project and session
+
+Choose **Add project → Cloud**, select a granted GitHub repository, then choose worker and orchestrator agents from the connected Cloud providers. Complete the project setup and open it from the sidebar. A Cloud project is labeled as such; it does not use a local folder picker or create a worktree on your computer.
+
+Create a task inside that Cloud project. Choose an available agent and enter a focused prompt. Cloud tasks currently reject file attachments at creation, so put required files in the repository or send supported content after the session starts. The control plane provisions a remote workspace and starts the worker; initial setup can take time. If creation fails, check the account session, repository grant, provider connection, and the error shown in the app before retrying. Avoid repeatedly creating the same task while provisioning is in progress.
+
+## Follow the work
+
+Open the session to use Chat, inspect activity, and follow its terminal when available. The **Files** inspector reads the remote workspace; the source picker separates workspace changes from pull-request changes and available commits. The session terminal connects to the remote worker, not a shell on your desktop. A Cloud PR and its reviews still live on the repository host; check the PR link and current head before merging. Availability of individual controls depends on the selected provider, account access, and session state.
+
+Cloud stores project, session, conversation, and event records in its hosted control plane. Workspace persistence belongs to the selected remote sandbox provider. In the desktop, the action is labeled **Archive session** and archived rows use **Restore session**. Archiving terminates the Cloud session and requests teardown of its provider sandbox. The control plane retains the session and event history. Restore reactivates the session. After teardown, it provisions a fresh sandbox and restores the captured conversation. It restores preserved uncommitted work only when the checkpoint includes a preserved Git ref. Commit and push important work to the repository because a provider failure or missing checkpoint can leave work unavailable. Signing out clears the desktop's Cloud view but does not itself delete remote sessions.
+
+## Costs and limits
+
+This repository does not publish Cloud pricing or account entitlements. The desktop does not show a billing or plan page, so provider defaults in development files are not customer pricing. Your account, organization, and selected sandbox provider determine which Cloud option and agents you can use.
+
+Cloud also has a configurable concurrent-sandbox limit. A provider can have a lower capacity or reject a request while it is full. If session creation reports that the organization has reached its limit, archive an unused session, wait for provider teardown to finish, and try again. Ask the team that granted Cloud access or your organization admin for current pricing, limits, or an access change.
+
+## If access stops working
+
+- **Cloud option missing:** verify that the build and account have Cloud enabled. A local project remains available.
+- **Repository missing:** reconnect GitHub or check installation and repository grants for the organization shown in the desktop.
+- **Agent unavailable:** reconnect its Cloud credential in **Settings → Cloud**. Local harness readiness is a separate check.
+- **Session stuck or disconnected:** reopen the session and check its state. A sleeping or replacing remote worker can need time to reconnect; retry a failed action only after checking whether it already completed.
+- **Provider or organization access changed:** sign in again with the account that has the intended organization access. The desktop uses the first organization returned for that account and has no organization switcher. Do not copy a local project into Cloud merely to work around an authorization error.
+
+This guide was checked against the desktop Cloud source and the control-plane implementation on 3 October 2026. An authenticated production session was not tested. Cloud entitlements, sandbox providers, capacity, and available agents can differ by organization; use the choices shown in your app as the final check.

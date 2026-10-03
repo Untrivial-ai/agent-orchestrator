@@ -3,7 +3,7 @@ title: Troubleshooting
 description: Diagnose desktop, daemon, agent, session, GitHub, preview, and mobile problems.
 ---
 
-## Start With The Desktop App
+## Start with the desktop app
 
 The desktop app owns the local daemon. First quit and reopen Agent Orchestrator, then confirm the project and selected session still appear. The app discovers or restarts its daemon and reconnects live event and terminal streams.
 
@@ -17,7 +17,7 @@ ao doctor --json
 
 `ao doctor` checks daemon/config state, the data directory and database, Git, and tmux on macOS/Linux. It is not required for a normal desktop-only install.
 
-## Desktop And Daemon
+## Desktop and daemon
 
 <Accordions>
 	<Accordion title="The app opens but no projects appear">
@@ -34,17 +34,17 @@ ao doctor --json
 	</Accordion>
 </Accordions>
 
-## Agents And Sessions
+## Agents and sessions
 
 <Accordions>
 	<Accordion title="No agent harness is offered">
 		Install the harness, run it once to authenticate, and restart AO. The desktop daemon inherits a login-shell environment and reuses each provider's installed binary and authentication.
 	</Accordion>
 	<Accordion title="Chat preflight fails">
-		Confirm the selected harness supports native Chat and its binary is authenticated. Chat currently supports Codex, Claude Code, OpenCode, and Droid. Choose Terminal UI when the harness lacks Chat support or preflight cannot connect.
+		Confirm the selected harness supports native Chat and its binary is authenticated. Chat support depends on the harness and installed version; see the [agent capability catalog](/plugins/agents#chat-versus-terminal-ui). Check **Settings → Harnesses** and provider version/permission requirements. Choose Terminal UI when the harness lacks Chat support or preflight cannot connect.
 	</Accordion>
 	<Accordion title="A TUI session will not start on macOS or Linux">
-		Run `tmux -V` and install tmux if it is missing. On Windows, AO uses its native conpty host instead.
+		New macOS/Linux sessions use detached native PTY hosts. Packaged builds bundle tmux for old sessions/fallback; macOS still validates it. For source runs check configured/system tmux and the native-host launch error. Windows uses ConPTY. See [Runtime](/plugins/runtimes).
 	</Accordion>
 	<Accordion title="The session is blocked">
 		Open the session and answer the pending approval or permission prompt. AO deliberately does not inject lifecycle messages while a controller is blocked.
@@ -53,15 +53,15 @@ ao doctor --json
 		Status is derived from activity, termination, controller, and pull-request facts. A failed runtime probe is not treated as death. Reopen the session and inspect its Chat or terminal before killing it.
 	</Accordion>
 	<Accordion title="A session will not restore">
-		Use the desktop restore action or `ao session restore <session-id>`. Restore reuses the same session and worktree when the selected adapter supports recovery. Check that the harness remains installed and authenticated.
+		Use the desktop restore action or `ao session restore <session-id>`. Restore reuses the same session and worktree when the selected adapter supports recovery. Check that the harness remains installed and authenticated. For a stopped controller on a non-terminated session use `ao session resume-agent <id>` instead. A disabled interface switch can indicate unavailable native history, an unsupported direction, or pending recovery; inspect its reason before retrying.
 	</Accordion>
 </Accordions>
 
-## GitHub And Pull Requests
+## GitHub and pull requests
 
 <Accordions>
 	<Accordion title="Repository or pull-request data is missing">
-		Run `gh auth status` and confirm the active account can access the repository. GitHub authentication is lazy so an auth failure does not need to block unrelated local session work.
+		Run `gh auth status` and confirm the active account can access the repository. GitHub authentication is lazy so an auth failure does not need to block unrelated local session work. For GitLab check token/`glab` authentication and self-managed-host configuration in [SCM setup](/plugins/scm).
 	</Accordion>
 	<Accordion title="The agent opened a PR but AO did not link it">
 		Claim it from the session UI or, inside the worker, run `ao session claim-pr <pr-number-or-url>`; AO reads the worker from `AO_SESSION_ID`. From another shell, use `ao session claim-pr <session-id> <pr-number-or-url>`.
@@ -74,7 +74,7 @@ ao doctor --json
 	</Accordion>
 </Accordions>
 
-## Browser Preview
+## Browser preview
 
 <Accordions>
 	<Accordion title="The Browser tab is blank">
@@ -84,7 +84,7 @@ ao doctor --json
 		Run `ao preview start <configuration>` and inspect the returned error. Verify the command and working directory in the session's `.ao/launch.json`, then run the same command in its worktree shell.
 	</Accordion>
 	<Accordion title="Browser automation targets the wrong page">
-		Select the correct session and browser tab. Browser profiles are isolated per worker, and commands are authorized for the selected session only.
+		Select the correct session and browser tab. Commands are authorized for the selected session. Temporary profiles are isolated; named profiles deliberately reuse saved browser state. Check the selected profile, and refresh snapshots after navigation. Keep the panel visible for screenshots/human pointer actions. Profile imports have platform-dependent cookie support; a missing login may require signing in again.
 	</Accordion>
 </Accordions>
 
@@ -92,20 +92,20 @@ ao doctor --json
 
 <Accordions>
 	<Accordion title="The phone cannot connect">
-		Confirm Connect Mobile is still enabled, both devices are on the same trusted LAN, and the phone used the current connection password. Rotating the password disconnects the previous phone.
+		Confirm Connect Mobile is enabled and the QR is ready, then use the latest offer/password. Direct LAN needs the same trusted network; remote access needs an advertised, ready secure endpoint. Inspect connector/Tailscale setup failures, and update both apps for identity/contract mismatches. Rotating the password invalidates old credentials.
 	</Accordion>
 	<Accordion title="The QR code was shared">
-		The QR carries the host, port, connection password, and any secure transport mode needed for pairing. Treat it as a bearer credential: do not share the QR or screenshots of it. Rotate the connection password in desktop settings if it may have been exposed.
+		The current QR carries the host identity, available endpoints, and connection password in a v2 pairing link. Treat it as a bearer credential: do not share the QR or screenshots of it. Rotate the connection password in desktop settings if it may have been exposed.
 	</Accordion>
 	<Accordion title="Can I use Connect Mobile on public Wi-Fi?">
-		Do not. Transport is plaintext HTTP by deliberate design. Use it only on a trusted home network, and disable it when finished.
+		Do not use a plaintext LAN endpoint on an untrusted network. Use an available secure endpoint from [Connect Mobile](/configuration/remote-access). Keep the primary daemon private. If mobile push is missing, check phone notification permission, device mute state, and daemon connectivity.
 	</Accordion>
 </Accordions>
 
-## Still Stuck
+## Still stuck
 
 | Symptom | Where to go |
 | --- | --- |
 | macOS Gatekeeper says the developer cannot be verified | Follow the Gatekeeper steps in [Common Installation Problems](/installation#common-installation-problems). |
 
-Open an issue in the [Agent Orchestrator repository](https://github.com/AgentWrapper/agent-orchestrator/issues). Include the desktop version, operating system, agent harness and interface mode, reproduction steps, and sanitized `ao doctor --json` output when the CLI is available. Never attach credentials, provider transcripts, or the entire `~/.ao` directory.
+Open an issue in the [Agent Orchestrator repository](https://github.com/Untrivial-ai/agent-orchestrator/issues). Include the desktop version, operating system, agent harness and interface mode, reproduction steps, and sanitized `ao doctor --json` output when the CLI is available. Never attach credentials, provider transcripts, or the entire `~/.ao` directory.

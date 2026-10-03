@@ -1,6 +1,6 @@
 ---
 title: Cursor
-description: Built-in Terminal UI support for the Cursor Agent CLI.
+description: Built-in Terminal UI and native ACP Chat support for the Cursor Agent CLI.
 ---
 
 AO's Cursor adapter resolves the Cursor Agent CLI from your machine and checks its local readiness through the agent catalog.
@@ -10,6 +10,6 @@ ao agent ls --refresh
 ao spawn --project my-app --name cursor-task --agent cursor --mode tui
 ```
 
-Cursor is currently Terminal UI-only; requesting `--mode chat` fails with an unsupported-Chat error rather than silently creating a different interface.
+Cursor supports Terminal UI and Chat through `cursor-agent acp`. Use `--mode chat` to request Chat explicitly. Provider execution modes include Ask and Agent; permission changes such as auto-approve or bypass may require a controller restart. Chat availability alone does not imply that a running terminal session can hand off its history; follow the switch capability shown by the UI.
 
 AO records activity through the adapter's supported hooks and terminal signals. There is no Cursor npm plugin or `agent-orchestrator.yaml` block to install.

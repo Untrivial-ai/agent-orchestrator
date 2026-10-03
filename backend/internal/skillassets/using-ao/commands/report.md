@@ -17,8 +17,8 @@ Output flags are repeatable:
 
 ```text
 --artifact <opaque-reference>
---pr-created <github-pr-url>
---pr-reviewed <github-pr-url>
+--pr-created <pr-or-mr-url>
+--pr-reviewed <pr-or-mr-url>
 ```
 
 Use reports for meaningful transitions, decisions, blockers, required input,
@@ -32,7 +32,17 @@ directly — a published Claude Artifact link, a generated document, a rendered
 dashboard, or similar output. `--artifact` takes any opaque reference string;
 it is not validated as a URL.
 
+`--pr-created` and `--pr-reviewed` accept complete GitHub PR or GitLab MR URLs.
+
 `--needs-input` requests immediate non-interrupting delivery. `--stuck`
 requests immediate delivery plus a rate-limited interrupt. Informational work
 batches for up to one hour, while the first done report opens a fixed five
 minute settlement window.
+
+**Examples:**
+
+```bash
+ao report "The focused tests pass; I am checking the generated diff."
+ao report --done --note "Ready for review." \
+  --pr-created https://github.com/owner/repo/pull/88
+```

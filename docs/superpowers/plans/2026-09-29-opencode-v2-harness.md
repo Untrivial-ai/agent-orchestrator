@@ -1,5 +1,10 @@
 # OpenCode 2 Harness Implementation Plan
 
+> **Status:** Implemented in the current `opencode-v2` adapters, reviewer, and
+> storage migration. This file preserves the original rollout plan; its
+> unchecked tasks do not mean the harness is absent. See [the v2 agent adapter](../../../backend/internal/adapters/agent/opencodev2/opencodev2.go)
+> and [the migration](../../../backend/internal/storage/sqlite/migrations/0167_allow_opencode_v2_harness.sql).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship `opencode-v2` as a distinct AO worker, Chat, and reviewer harness while keeping saved OpenCode 1 sessions bound to v1.

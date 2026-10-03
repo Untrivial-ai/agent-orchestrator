@@ -15,9 +15,9 @@ permissions:
 jobs:
   # Primary tier: the cross-platform Go E2E suite (build tag `e2e`) runs the real
   # `ao` binary against isolated state on every OS GitHub hosts. These runners
-  # are the "VMs" — the only place that exercises the OS-specific process-detach
-  # paths (unix Setsid vs Windows CREATE_NEW_PROCESS_GROUP) and os.UserConfigDir
-  # resolution. The suite builds its own binary and self-allocates a free port.
+  # exercise the real CLI and daemon on each host OS. The suite builds its own
+  # binary and uses explicit AO_RUN_FILE/AO_DATA_DIR overrides plus a free port.
+  # Default state-path resolution is covered by config unit tests.
   native:
     strategy:
       fail-fast: false

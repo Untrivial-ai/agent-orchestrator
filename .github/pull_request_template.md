@@ -1,3 +1,7 @@
+Code changes: +<added> -<deleted>\
+Tests: +<added> -<deleted>\
+Others: +<added> -<deleted>
+
 ## What
 
 Brief description of the change.
@@ -19,6 +23,6 @@ How you validated this locally (commands, scenarios, screenshots if UI).
 
 - [ ] Branched from `main` (or continuing an existing PR branch)
 - [ ] One focused change; links the related issue when applicable
-- [ ] Follows [AGENTS.md](https://github.com/AgentWrapper/agent-orchestrator/blob/main/AGENTS.md) conventions and PR hygiene
+- [ ] Follows [AGENTS.md](https://github.com/Untrivial-ai/agent-orchestrator/blob/main/AGENTS.md) conventions and PR hygiene
 - [ ] Tests added/updated for user-visible behavior where it makes sense
 - [ ] Relevant CI checks pass for the area touched (`go`, frontend, etc.)

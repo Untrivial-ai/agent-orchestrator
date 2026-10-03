@@ -1,9 +1,11 @@
 ---
-title: Lifecycle automation
-description: How AO currently routes CI failures, review feedback, and merge conflicts to the correct session.
+title: Automation reference
+description: Built-in event rules, recurring Automations, Cues, and notifications.
 ---
 
-AO has built-in lifecycle automation. It is not currently a user-configurable `reactions:` schema: YAML keys such as `retries`, `escalateAfter`, `auto-merge`, and notifier routing belong to the retired implementation and are not accepted by current project configuration.
+AO routes CI failures, review feedback, and merge conflicts with built-in rules. Project settings do not accept the retired `reactions:` configuration. See [Migration](/migration) before reusing an old YAML example.
+
+For a step-by-step pull-request workflow, see [Handle CI and review feedback](/guides/reactions).
 
 ## What AO handles
 
@@ -18,6 +20,31 @@ AO has built-in lifecycle automation. It is not currently a user-configurable `r
 
 Messages are signature-deduplicated, so an unchanged set of failures or comments is not sent on every poll. A changed failure set or changed unresolved feedback can produce a fresh nudge.
 
+Recurring **Automations** are separate from these event rules. In the sidebar, create an automation with a project, prompt, agent, role, time zone, and schedule. You can inspect its run history, edit it, pause or resume it, and delete it. The CLI supports the same saved definitions:
+
+```bash
+ao automation create --project my-app --name "Daily checks" \
+  --prompt "Run the project checks and summarize failures" \
+  --cron "0 9 * * *" --timezone UTC
+ao automation list --project my-app
+ao automation runs <automation-id>
+ao automation update <automation-id> --enabled=false
+```
+
+Choose one schedule format: a five-field cron expression or an RRULE, a calendar recurrence rule. Set the time zone with an IANA name, such as `America/New_York`.
+
+Cron accepts numeric minute and hour fields, `*` for day and month, and supported weekday choices. It does not accept arbitrary ranges or steps. RRULE does not accept `COUNT` or `UNTIL`, or intervals faster than one minute.
+
+Automations run in the local daemon, so the computer must be awake and AO must be running. After a restart, AO runs at most three missed occurrences. The same automation will not start another run while its current run is active. Deleting an automation also deletes its run history.
+
+To try an automation, create one in **Automations** with a short prompt and a schedule a few minutes ahead. Then open its run history and linked session. If it does not run, check the time zone, confirm the automation is enabled, and make sure AO stayed open and the computer stayed awake. Pause the automation before changing a schedule you are testing.
+
+Project **Cues** save reusable instructions or exact shell commands for manual use. They do not run on a schedule. An agent Cue sends a prompt to an eligible session or starts a worker. A command Cue opens a fresh local terminal. Manage Cues in the project dialog and choose **Run a cue** from a session.
+
+For example, create an agent Cue named **Check tests** with the prompt `Run the focused tests and report failures`, then choose **Run a cue** in a project session. If the session cannot accept a prompt, start a worker from the offered option or wait until the session can accept one.
+
+A command Cue such as `npm test` runs that exact command in a new local shell. An agent does not review or interpret it, so check the command and working directory before running it.
+
 ## Mode-aware delivery
 
 Lifecycle messages go through the same session manager as user messages:
@@ -29,7 +56,9 @@ AO does not run both controllers at once. A handoff between compatible interface
 
 ## Notifications
 
-The desktop notification center keeps durable read/unread history for input requests, merge-ready PRs, merged PRs, and PRs closed without merging. Electron also shows an app toast while the app is running.
+The desktop notification center keeps alerts for input requests, pull requests ready to merge, merged pull requests, and pull requests closed without merging. Desktop toasts appear while AO is running. Marking an alert read keeps it in history; clearing one or all removes it from the center.
+
+Paired phones can receive push notifications when permissions allow, the device is not muted, and the daemon can connect to the push service.
 
 AO does not currently configure Slack, Discord, webhook notifiers, per-reaction retry budgets, or automatic merge from project config. Merge explicitly from the desktop or with:
 
@@ -39,10 +68,12 @@ ao pr merge <pr-number>
 
 ## Reviews
 
-SCM observation and AO reviewer agents are related but distinct:
+Repository observation and AO reviewer agents are related but separate:
 
-- The GitHub observer watches a claimed PR and feeds CI/review/merge facts into lifecycle.
-- AO review runs launch a configured reviewer agent against a worker PR. Use the desktop Reviews view or `ao review trigger`, `ao review ls`, and `ao review cancel`.
+- The GitHub/GitLab observer watches a claimed pull request or merge request and records CI, review, and merge data.
+- An AO review run starts a configured reviewer against a worker's pull request. Use **Reviews** in the desktop app or `ao review trigger`, `ao review ls`, and `ao review cancel`.
+
+`autoReview` is a project default copied to new worker sessions. Each session also has its own toggle. Automatic review waits for an eligible pull-request revision and an idle worker. It does not merge the pull request or publish every workspace inspection as a review. See the [agent catalog](/plugins/agents) for reviewer support.
 
 <Cards>
 	<Card title="CI recovery" href="/guides/ci-recovery" description="Follow the built-in CI feedback loop." />

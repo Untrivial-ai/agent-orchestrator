@@ -129,7 +129,7 @@ graph TD
     DoesNot[Does NOT Contain] --> HTTP[HTTP DTOs]
     DoesNot --> CLI[CLI Output]
     DoesNot --> Generated[sqlc Generated Rows]
-    DoesNot --> External[External Payloads<br/>GitHub, Claude, etc.]
+    DoesNot --> External[External Payloads<br/>SCM providers, Claude, etc.]
 
 ```
 
@@ -146,9 +146,9 @@ graph TD
 - CLI output shapes
 - OpenAPI wrapper types
 - sqlc generated rows
-- External system payloads (GitHub, tmux, agent-specific)
+- External system payloads (SCM providers, tmux, agent-specific)
 
-**Rule of thumb:** If AO would still use the concept after replacing HTTP, CLI, SQLite, GitHub, tmux, and every agent adapter, it belongs in domain.
+**Rule of thumb:** If AO would still use the concept after replacing HTTP, CLI, SQLite, SCM providers, tmux, and every agent adapter, it belongs in domain.
 
 ---
 
@@ -187,11 +187,11 @@ graph LR
 
 | Port             | Purpose                 | Implementations         |
 | ---------------- | ----------------------- | ----------------------- |
-| `Runtime`        | Process isolation       | `tmux`, `conpty`        |
+| `Runtime`        | Process isolation       | `runtimeselect` (`native PTY`, `tmux`, `conpty`) |
 | `Workspace`      | Git worktree management | `gitworktree`           |
-| `Agent`          | Agent launching         | 23+ agent adapters      |
-| `SCM`            | PR/CI observation       | `github`                |
-| `Tracker`        | Issue tracking          | `github` (adapter only) |
+| `Agent`          | Agent launching         | Agent adapters          |
+| `SCM`            | PR/CI observation       | `github`, `gitlab`, `multi` |
+| `Tracker`        | Issue tracking          | `github`, `gitlab`, `multi` |
 | `AgentMessenger` | Agent communication     | Agent hooks             |
 | `PRWriter`       | PR persistence          | `pr.Manager`            |
 
@@ -376,8 +376,8 @@ graph TD
     end
 
     subgraph External
-        GitHub[GitHub API]
-        Runtimes[tmux/conpty]
+        SCMProviders[SCM providers<br/>GitHub, GitLab]
+        Runtimes[native PTY, tmux, ConPTY]
     end
 
     subgraph Internal
@@ -385,7 +385,7 @@ graph TD
         Store[SQLite Store]
     end
 
-    SCM -->|polls| GitHub
+    SCM -->|polls| SCMProviders
     SCM -->|writes| Store
     SCM -->|notifies| LCM
 
@@ -396,7 +396,7 @@ graph TD
 
 **Current observation packages:**
 
-- `internal/observe/scm` — SCM (GitHub) observer loop
+- `internal/observe/scm` — provider-neutral SCM observer loop for GitHub and GitLab
 - `internal/observe/reaper` — Runtime liveness observation loop
 
 **Belongs here:**
@@ -600,11 +600,11 @@ graph LR
 graph TD
     Ports[Ports Interfaces] -->|implemented by| Adapters[Adapters]
 
-    Adapters --> Agent[agent/*<br/>23+ harnesses]
-    Adapters --> Runtime[runtime/*<br/>tmux, conpty]
+    Adapters --> Agent[agent/*<br/>agent adapters]
+    Adapters --> Runtime[runtime/*<br/>native PTY, tmux, conpty]
     Adapters --> Workspace[workspace/*<br/>gitworktree]
-    Adapters --> SCM[scm/*<br/>github]
-    Adapters --> Tracker[tracker/*<br/>github]
+    Adapters --> SCM[scm/*<br/>github, gitlab, multi]
+    Adapters --> Tracker[tracker/*<br/>github, gitlab, multi]
 
     Agent --> Codex[codex]
     Agent --> Claude[claude-code]

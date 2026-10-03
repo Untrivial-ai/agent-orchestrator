@@ -3,6 +3,10 @@
 Branch: `pr-5023` (Untrivial-ai/agent-orchestrator PR #5023 head `680e1bdb2`, mirrors `main`).
 Status: design approved in Discord thread + mockups. Not yet implemented.
 
+Historical note: This is a PR #5023 design snapshot. The demo-mode seam
+described below is not present in current main, so those paths remain proposed.
+Current onboarding code is in [CreateProjectFlow](../../../frontend/src/renderer/components/CreateProjectFlow.tsx).
+
 ## 0. What this fixes
 
 Today, cloud project creation asks for a repo URL/name/branch with no agent key and no

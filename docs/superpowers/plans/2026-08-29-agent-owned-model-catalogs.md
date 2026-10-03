@@ -1,5 +1,11 @@
 # Agent-Owned Model Catalogs Implementation Plan
 
+> **Status:** Historical proposal, partly superseded. Current catalogs keep
+> Claude Code and Muse model lists static; the runtime-discovery design below
+> is not current guidance. Codex has a separate structured discovery path. See
+> [the current catalog](../../../backend/internal/adapters/agent/modelcatalog/catalog.go)
+> and [the design record](../specs/2026-08-29-agent-owned-model-catalogs-design.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Replace AO-owned Claude Code, Muse, and Codex model lists with catalogs discovered from each installed agent, while preserving Amp's static mode list.

@@ -3,36 +3,42 @@ title: Architecture
 description: How the Go daemon, Electron app, storage, controllers, and adapters fit together.
 ---
 
-Agent Orchestrator is a local, single-user system built around a long-running Go daemon. The Electron/React desktop app, optional CLI, and Expo mobile app are thin clients over the daemon's HTTP, SSE, and terminal interfaces.
+Agent Orchestrator is a local, single-user system built around a long-running Go daemon. The Electron/React desktop app, optional CLI, and Expo mobile app connect to it over HTTP, server-sent events (SSE), and terminal streams.
 
-## System Overview
+<Callout type="info">
+	This page is a technical reference for contributors and users who want to understand AO internals. For everyday controls and workflows, start with the [Dashboard guide](/dashboard).
+</Callout>
+
+## System overview
 
 ```text
 Electron + React desktop ─┐
 ao CLI ──────────────────┼─> Go daemon ─> services/managers ─> SQLite
-Expo mobile (opt-in LAN) ┘       │                 │
+Expo mobile (opt-in)     ┘       │                 │
                                 │                 ├─> agent/runtime/workspace adapters
                                 ├─> SSE events    ├─> native Chat drivers
-                                ├─> terminal mux  └─> GitHub SCM observer
+                                ├─> terminal mux  └─> GitHub/GitLab SCM observer
                                 └─> browser bridge to Electron
 ```
 
-The desktop app discovers, launches, and supervises the daemon. The renderer uses a generated typed client rather than importing backend logic. The CLI is also a thin HTTP client; it never opens SQLite or launches agent adapters directly.
+The desktop app finds, starts, and supervises the daemon. Its renderer uses a generated typed client to call the API. The CLI is also an HTTP client; it does not open SQLite or launch agent adapters directly.
 
-## Sessions And Worktrees
+## Sessions and worktrees
 
-Workers in Git projects own isolated worktrees; workspace projects can materialize a root plus child-repository worktrees, while Scratch sessions use an AO-managed directory. A session also commits to exactly one agent interface at a time:
+Workers in Git projects use isolated worktrees. A workspace can include its root repository and child repositories. Scratch and standalone sessions use AO-managed directories. Each session uses one agent interface at a time:
 
-- **Terminal UI** runs the harness inside a tmux runtime on macOS/Linux or a conpty host on Windows.
+- **Terminal UI** runs the harness in a detached native pseudo-terminal (PTY) host on macOS/Linux. Older sessions and fallback launches can use tmux. Windows uses ConPTY.
 - **Chat** runs a native provider controller without an agent terminal runtime.
 
-Chat conversations are durable and include provider identity, turns, messages, activities, approvals, structured input, usage, compaction, and rollback state.
+AO saves Chat conversation history, including provider identity, messages, activities, approvals, structured input, usage, compaction, and rollback state.
 
-For compatible Claude Code and Codex sessions, an interface transition can move the same provider conversation between TUI and Chat. AO drains or interrupts the old controller before committing the replacement, so both controllers are never live at once. The session and worktree do not change.
+Compatible Claude Code and Codex sessions can move the same provider conversation between Terminal UI and Chat. AO finishes or interrupts the old controller before starting the replacement, so both controllers are never active at once. The session and worktree stay the same.
 
-## Durable Facts, Derived Status
+## Saved facts and derived status
 
-AO stores durable facts rather than a display status. Important session facts include:
+<span id="durable-facts-derived-status" />
+
+AO saves session facts and derives the status shown in the app when it reads a session. Saved facts include:
 
 - Agent activity: active, idle, waiting for input, blocked, or exited.
 - Whether the session has been terminated.
@@ -40,45 +46,51 @@ AO stores durable facts rather than a display status. Important session facts in
 - Interface-transition checkpoints and queued messages.
 - Pull request, check, and review-comment facts.
 
-The service layer computes labels such as working, needs input, CI failed, or ready to merge when a client reads a session. This prevents stored status from drifting away from source facts.
+The service layer combines these facts to show labels such as working, needs input, CI failed, or ready to merge. This keeps a displayed status tied to the underlying activity and pull-request data.
 
 Failed or unknown runtime probes are observations, not proof of death. Cleanup also refuses to force-delete a dirty registered worktree.
 
-## Storage And Live Updates
+## Storage and live updates
 
-Durable state is stored in SQLite under `~/.ao/data` by default. Database triggers append changes to a `change_log`; a CDC poller tails that log and broadcasts invalidations to in-process subscribers and `GET /api/v1/events`.
+AO stores local data in SQLite under `~/.ao/data` by default. Database triggers append changes to `change_log`. A background poller reads that log and tells in-process subscribers and `GET /api/v1/events` which data to refresh.
 
 The event stream supports replay with `Last-Event-ID`. Clients use it to invalidate targeted queries rather than transferring every full session or Chat payload on each update.
 
-All application state remains under `~/.ao`, including the run file, managed worktrees, Electron data, and mobile configuration. `AO_DATA_DIR` and `AO_RUN_FILE` provide advanced overrides for daemon storage and discovery.
+All application state stays under `~/.ao`, including the run file, managed worktrees, Electron data, and mobile configuration. `AO_DATA_DIR` and `AO_RUN_FILE` override the daemon's data and discovery paths.
 
-## Services And Adapters
+## Services and adapters
 
-HTTP controllers validate requests and call domain services. Services own read/write policy; session and lifecycle managers coordinate multi-step work. External systems sit behind Go port interfaces and leaf adapters.
+HTTP controllers validate requests and call domain services. Services decide how data is read and changed. Session and lifecycle managers coordinate multi-step work. External systems connect through Go interfaces and adapters.
 
-Current adapters include more than twenty agent harnesses, tmux/conpty runtime support, git-worktree isolation, native Chat drivers, and GitHub SCM observation. AO reuses installed provider binaries and their existing authentication.
+Adapters currently support more than twenty agent harnesses, native PTY and ConPTY hosts, tmux for older sessions and fallback launches, Git worktrees, native Chat drivers, and GitHub/GitLab source-control observation. AO uses the provider binaries and sign-ins already installed on the machine.
 
-GitHub PR observation is shipped. The broader tracker lane is still incomplete, so historical claims that every tracker plugin participates in lifecycle automation should not be treated as current behavior.
+Issue intake from GitHub or GitLab requires opt-in in both daemon and project settings. AO reads issues but does not change them. Recurring Automations run through a local scheduler. Project Cues save reusable prompts or commands. These features are separate from repository lifecycle reactions.
 
-## Pull Requests And Lifecycle Reactions
+## Pull requests and lifecycle reactions
 
-The SCM observer polls GitHub using lazy authentication, ETag guards, and semantic diffing. It writes pull-request facts to SQLite and notifies lifecycle logic when CI fails, reviews request changes, or merge conflicts appear.
+The source-control observer connects to GitHub and GitLab. GitHub authentication happens only when needed. AO uses HTTP ETags to avoid fetching unchanged data and compares changed pull-request details before updating SQLite. The observer notifies lifecycle logic when CI fails, a review requests changes, or a merge conflict appears.
 
 The daemon also exposes pull-request merge and comment-resolution actions plus reviewer-agent routes. Desktop clients receive concise summaries rather than raw CI logs or complete review bodies.
 
-## Network Boundaries
+## Network boundaries
 
 The primary daemon listener binds `127.0.0.1:3001` and is unauthenticated. It serves the desktop app and CLI and is never configurable to a public bind.
 
-Connect Mobile creates a second listener only when explicitly enabled. It binds the LAN interface behind bearer-password authentication and serves the app API and authenticated terminal mux, but excludes shutdown, telemetry, mobile-control, and browser-control routes. Transport is plaintext and intended only for a trusted home network.
+Connect Mobile starts a second listener only when you enable it. The listener is protected by a bearer password and serves the mobile app API and terminal connection. It does not serve shutdown, telemetry, mobile-control, or browser-control routes.
 
-## Terminal And Browser Bridges
+Direct connections use plain HTTP and are intended for trusted networks. A managed connector can provide an HTTPS endpoint to this authenticated listener for remote access. Current Tailscale pairing has additional limits described in the access guide. Only `GET /api/v1/identity` is public; the phone uses it to verify the computer and app version before sending the password. See [Connect Mobile](/configuration/remote-access).
 
-`/mux` provides per-client terminal attachment. TUI sessions attach to the agent runtime; Chat sessions can use it for a separate worktree shell.
+## Terminal and browser bridges
 
-Browser automation crosses a dedicated local daemon-to-Electron socket. The daemon authorizes and correlates commands; Electron owns the selected session's isolated `WebContentsView`. Browser control is blocked on the mobile LAN listener.
+`/mux` lets clients connect to a terminal. Terminal UI sessions attach to the agent runtime. Chat sessions can use a separate shell in the worktree.
 
-## Load-Bearing Rules
+Browser automation uses a local connection between the daemon and Electron. The daemon authorizes and matches commands to results. Electron displays each session's browser in an isolated `WebContentsView`. The mobile listener cannot control the browser.
+
+The temporary browser profile is isolated per session. Named profiles save cookies and storage and can be reused across sessions. Sessions using the same named profile share its browser state. AO copies imported browser data into AO-owned storage and does not change the source profile.
+
+The architecture above describes local sessions. Cloud execution is a separate gated integration requiring build enablement, account access, and a reachable control plane. Standalone local workers are projectless; they are not Cloud sessions.
+
+## Load-bearing rules
 
 1. Never store display status; derive it from durable facts.
 2. Never treat failed probes as proof that a session died.
@@ -86,10 +98,12 @@ Browser automation crosses a dedicated local daemon-to-Electron socket. The daem
 4. Keep all app state under `~/.ao` unless an explicit supported override applies.
 5. Keep the primary listener on loopback; only Connect Mobile may create the authenticated opt-in LAN listener.
 6. Keep the CLI and UI thin; domain logic belongs in the daemon.
-7. Emit durable change events through SQLite triggers and CDC.
+7. Emit change events through SQLite triggers and the background poller.
 8. Add new migrations; never modify an already-merged migration.
 
-## Next
+<span id="next" />
+
+## Next steps
 
 <Cards>
 	<Card title="Dashboard" href="/dashboard" description="See how these capabilities appear in the desktop app." />

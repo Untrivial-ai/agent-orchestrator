@@ -9,19 +9,22 @@ with `SCOPE_REQUIRED`.
 ## ao spawn — create a worker session
 
 ```
-ao spawn --name "<label>" --prompt "<clear worker task>" [--agent claude-code] [--mode standard|trusted]
+ao spawn --name "<label>" --prompt "<clear worker task>" [--agent <harness>] [--mode standard|trusted]
 ```
 
 - `--name` (required): the label the human sees in the sidebar. Keep it short
-  and specific — 20 characters or fewer is ideal (80 is the hard cap). Count it
-  before running the command; an over-long label wastes a turn on a rejection.
+  and specific. Twenty characters or fewer is ideal; 100 characters is the
+  hard cap. Count it before running the command; an over-long label wastes a
+  turn on a rejection.
 - `--prompt` (required): the worker's complete task. Write it like a brief for
   a competent engineer with no other context: goal, constraints, and the
   expected outcome (usually a pull request). Before you name a specific file,
   class, or path, confirm it exists in the checked-out repository (`ls`,
   `find`, `grep`). A prompt pointing at a file that does not exist wastes the
   whole worker.
-- `--agent` / `--harness`: `claude-code` (default), `codex`, or `cursor`.
+- `--agent` / `--harness`: `claude-code`, `codex`, `cursor`, or `opencode`. If
+  omitted, the project-configured worker harness is used; when the project has
+  no worker harness, the control plane falls back to `claude-code`.
 - `--mode`: `trusted` (default) or `standard`.
 
 Prints `spawned <session-id> (<status>)`. The worker provisions its own
@@ -48,8 +51,10 @@ and CI state) once one exists. Terminated workers are hidden unless `--all`.
 mergeability, source/target branch) plus `activityState` and `isTerminated`.
 
 Status vocabulary: `working`, `idle`, `needs_input`, `pr_open`, `draft`,
-`ci_failed`, `review_pending`, `changes_requested`, `approved`, `mergeable`,
-`merged`, `exited`, `terminated`.
+`ci_failed`, `review_pending`, `changes_requested`, `commented`, `approved`,
+`mergeable`, `merged`, `exited`, `terminated`, and `no_signal`. These are
+derived session and pull-request states, so a worker can move between them as
+activity and repository facts change.
 
 ## ao send — message a worker
 

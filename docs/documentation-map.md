@@ -9,12 +9,13 @@ so the split is intentional rather than incidental.
 
 | Layer                     | Audience                      | Examples                                                        | How it stays correct                                    |
 | ------------------------- | ----------------------------- | --------------------------------------------------------------- | ------------------------------------------------------- |
-| Human-facing docs         | Contributors, users           | `README.md`, `CONTRIBUTING.md`, `docs/`, https://docs.aoagents.dev | Review. Prose describes code; it can lag behind it.     |
+| Human-facing docs         | Contributors, users           | `README.md`, `CONTRIBUTING.md`, `docs/`, https://docs.orchestrator.inc | Review. Prose describes code; it can lag behind it.     |
 | Machine-readable contract | Coding agents, CI, generators | `openapi.yaml`, `AGENTS.md`, `skills/`, sqlc `gen/`             | Generated from source and/or checked by CI drift gates. |
 
 The rule of thumb: **if an artifact in the contract layer disagrees with prose,
-the contract layer wins**, because it is either generated from the code or gated
-in CI. Fix the prose.
+generated contracts and their source win** for implemented behavior. Handwritten
+operating rules and skills still need comparison with current code and tests;
+being listed in the contract layer does not make their prose drift-proof.
 
 ## Human-facing layer
 
@@ -27,12 +28,24 @@ in CI. Fix the prose.
 | [docs/backend-code-structure.md](backend-code-structure.md) | Package ownership rules for the Go backend.                                  |
 | [docs/development.md](development.md)                       | Prerequisites, build, test, and troubleshooting for local development.       |
 | [docs/STATUS.md](STATUS.md)                                 | What ships on `main` today and what is in flight.                            |
+| [docs/documentation-coverage.md](documentation-coverage.md) | Public-manual coverage, release baseline, and unverified hands-on paths.     |
 | [docs/adr/](adr/)                                           | Architecture decision records: why a boundary exists, not just what it is.   |
-| https://docs.aoagents.dev                                          | Published product documentation for end users.                               |
+| https://docs.orchestrator.inc                                          | Published product documentation for end users.                               |
+| [frontend/src/docs/content/](../frontend/src/docs/content/)  | MDX sources for the public manual; `meta.json` files preserve navigation and order. |
 
 These documents explain intent and rationale. They are reviewed by people and
 are not machine-checked, so treat them as the _why_ and confirm the _what_
 against the contract layer below.
+
+For capability claims, compare the worker, Chat-driver, and reviewer registries
+separately. For user flows, check the renderer and daemon wiring as well as
+DTOs. The public manual uses the latest stable desktop release as its user
+baseline: **v0.13.3, published 1 October 2026 UTC** at the time of this review.
+Contributor docs such as `docs/STATUS.md` describe the checked-out revision of
+`main`, which can be ahead of that release. Gated Cloud behavior needs a
+separate deployed-environment check; source and a healthy public endpoint do
+not prove an authenticated user journey. The [coverage checklist](documentation-coverage.md)
+records those limits and any post-release differences.
 
 ## Machine-readable contract layer
 
@@ -66,7 +79,7 @@ covered by tests rather than a generator. See "API contract changes" in
 
 ## Where to add new documentation
 
-- A user needs it to use the product: https://docs.aoagents.dev (source under
+- A user needs it to use the product: https://docs.orchestrator.inc (source under
   `frontend/src/docs/content/`).
 - A contributor needs it to change the code: `docs/`, and add a row to
   [docs/README.md](README.md).

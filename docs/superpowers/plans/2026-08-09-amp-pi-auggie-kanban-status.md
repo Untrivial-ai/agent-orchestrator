@@ -1,5 +1,11 @@
 # Amp, Pi, and Auggie Kanban Status Implementation Plan
 
+> **Status:** Implemented in the current Amp, Pi, and Auggie adapters and
+> activity dispatch paths. This file preserves the original rollout plan; its
+> unchecked tasks do not mean those paths are absent. See [Amp activity](../../../backend/internal/adapters/agent/amp/activity.go),
+> [Pi activity](../../../backend/internal/adapters/agent/pi/activity.go), and
+> [Auggie activity](../../../backend/internal/adapters/agent/auggie/activity.go).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make Amp, Pi, and Auggie sessions report normalized live activity and native restore IDs to AO's Kanban pipeline.

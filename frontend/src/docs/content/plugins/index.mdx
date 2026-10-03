@@ -3,18 +3,18 @@ title: Built-in capabilities
 description: Agent, runtime, workspace, tracker, SCM, notification, and terminal support compiled into AO.
 ---
 
-AO's current Go backend uses built-in adapters and services. These capabilities ship with the desktop app; they are not npm plugins and cannot be installed through a marketplace.
+To use a built-in capability, choose an agent or project type in AO. Capabilities ship with the desktop app; they are not npm plugins and cannot be installed through a marketplace. For an agent, install its CLI, sign in, then run `ao agent ls --refresh` to check readiness.
 
 ## Capability map
 
 | Area | Shipped support | Selection |
 | --- | --- | --- |
-| [Agents](/plugins/agents) | 24 terminal agent adapters; four also support structured Chat | Per project or session |
-| [Runtime](/plugins/runtimes) | `tmux` on macOS/Linux; ConPTY on Windows | Automatic by platform |
-| [Workspace](/plugins/workspaces) | Git worktrees and AO-managed Scratch directories | Automatic by project kind |
-| [Tracker](/plugins/trackers) | GitHub issue intake | Per-project opt-in, plus `AO_TRACKER_INTAKE` on the daemon |
-| [SCM](/plugins/scm) | GitHub PR, checks, reviews, and mergeability | Derived from the Git repository |
-| [Notifications](/plugins/notifiers) | Durable in-app history and Electron toasts | Built in |
+| [Agents](/plugins/agents) | Worker, Chat, and reviewer adapters with separate capability sets | Per project or session |
+| [Runtime](/plugins/runtimes) | Native PTY hosts on macOS/Linux, legacy/fallback tmux, ConPTY on Windows | Automatic by platform |
+| [Workspace](/plugins/workspaces) | Git worktrees, Scratch, and standalone directories | Automatic by project kind |
+| [Tracker](/plugins/trackers) | GitHub and GitLab issue intake | Per-project opt-in, plus `AO_TRACKER_INTAKE` on the daemon |
+| [SCM](/plugins/scm) | GitHub/GitLab PR or MR, checks, reviews, and mergeability | Derived from the Git repository |
+| [Notifications](/plugins/notifiers) | Durable history, desktop toasts, and paired-device mobile push | Built in |
 | [Terminal](/plugins/terminals) | Desktop xterm surface over AO's terminal mux | Built in |
 
 ## Agents are the configurable adapter set

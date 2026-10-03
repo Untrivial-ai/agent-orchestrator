@@ -18,10 +18,10 @@ Creating a session commits one PostgreSQL transaction containing:
 6. an audit event; and
 7. the completed command result.
 
-The sandbox row is desired-state intent only. This service does not call ECS,
-Daytona, Docker, or any worker API. A future reconciler can claim requested
-sandboxes and update their observed state without changing the client-facing
-creation flow.
+The sandbox row is desired-state intent only. The request handler does not
+provision a worker inline. A reconciler claims requested sandboxes and updates
+their observed state through the configured provider without changing the
+client-facing creation flow.
 
 `AO_CLOUD_SANDBOX_PROVIDER` selects the default provider recorded on new
 sandboxes. An explicit provider connection, when supplied, determines the
@@ -71,6 +71,21 @@ Session list and detail responses expose `sandboxProvider`, `desiredState`, and
 `runtimeError`. The desktop derives paused/resume progress from those durable
 intent and observation fields; clients must not infer a resume from a
 successful ticket mint or a retained terminal connection.
+
+Archiving a Cloud session marks it terminated and sets the sandbox's desired
+state to deleted. The reconciler tears down the provider environment and keeps
+the session and event history. Restore changes the desired state back to
+running. After teardown completes, it provisions a new environment. The worker
+can rehydrate a captured conversation transcript. It restores preserved
+uncommitted work only when the checkpoint includes a preserved Git ref. The provider's own storage and retention rules still apply, so code
+that must survive a teardown should be committed and pushed.
+
+The server also enforces a configurable concurrent-sandbox limit per
+organization. The implementation default is `1000` when a deployment does not
+set another value. This is an operational default, not a customer pricing or
+entitlement statement. Provider capacity can reject a create request before
+the Cloud limit is reached. The API reports an organization limit as
+`SANDBOX_QUOTA_EXCEEDED`.
 
 ## Worker workspace and terminal transport
 

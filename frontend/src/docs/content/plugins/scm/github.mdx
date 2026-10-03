@@ -3,7 +3,7 @@ title: GitHub SCM
 description: Pull request observation, lifecycle feedback, and explicit PR actions.
 ---
 
-AO uses GitHub for the current pull-request lane. Authentication is lazy and non-blocking at daemon startup; use `ao doctor` to inspect local GitHub readiness.
+This page describes the GitHub pull-request lane; see [SCM support](/plugins/scm) for GitLab. Authentication is lazy and non-blocking at daemon startup; use `ao doctor` to inspect local GitHub readiness.
 
 ## Associate a pull request
 
@@ -20,9 +20,11 @@ Inside a worker, the one-argument form reads the target session from `AO_SESSION
 
 PR ownership prevents multiple active workers from silently driving the same pull request. Add `--no-takeover` when a conflicting owner must be treated as an error.
 
+A claim attaches ownership metadata and observation. It does not check out the pull request branch; prepare the correct branch/worktree separately before asking the agent to change it.
+
 ## Observation and feedback
 
-The daemon polls active PRs with ETag guards and semantic diffing. New CI failures, human review feedback, and merge conflicts are reduced into durable facts and can nudge the owning agent. The desktop consumes concise summaries; raw CI logs and full review comment bodies are not part of the current summary API.
+AO checks active PRs for new CI failures, review feedback, and merge conflicts, then can notify the owning agent. The desktop shows concise summaries, not raw CI logs or full review comment bodies.
 
 ## Explicit actions
 
@@ -32,4 +34,4 @@ ao pr resolve-comments 42
 ao review trigger <worker-session-id>
 ```
 
-Reviewer agents are configured separately from worker agents. The shipped reviewer harnesses are `claude-code`, `codex`, and `opencode`.
+Reviewer agents are configured separately from worker agents. See the [capability catalog](/plugins/agents) for the reviewer set and its limits.

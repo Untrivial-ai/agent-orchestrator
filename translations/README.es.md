@@ -17,7 +17,7 @@ Asigna a cada tarea de programación su propio agente, espacio de trabajo y cicl
 Planifica y delega objetivos más amplios con un orquestador que conoce tu proyecto.<br />
 Sigue a cada worker, pull request, ejecución de CI y revisión en un Kanban en vivo.
 
-[**Descargar AO**](#instalación) &nbsp;&bull;&nbsp; [Documentación](https://docs.aoagents.dev) &nbsp;&bull;&nbsp; [Versiones](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [Contribuir](../CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
+[**Descargar AO**](#instalación) &nbsp;&bull;&nbsp; [Documentación](https://docs.orchestrator.inc) &nbsp;&bull;&nbsp; [Versiones](https://github.com/Untrivial-ai/agent-orchestrator/releases) &nbsp;&bull;&nbsp; [Contribuir](../CONTRIBUTING.md) &nbsp;&bull;&nbsp; [Discord](https://discord.com/invite/UZv7JjxbwG)
 
 [English](../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · **Español** · [Français](README.fr.md) · [Deutsch](README.de.md) · [Português (Brasil)](README.pt-BR.md)
 
@@ -111,7 +111,7 @@ AO funciona con los agentes de programación y el flujo de control de versiones 
 
 ## Agentes compatibles
 
-**26 agentes de programación compatibles** dentro de un único flujo supervisado.
+Los agentes de programación trabajan en un mismo flujo supervisado. Consulta el [catálogo de capacidades](https://docs.orchestrator.inc/plugins/agents) para ver los agentes y modos actuales.
 
 <table>
   <tr valign="middle">
@@ -157,11 +157,21 @@ AO funciona con los agentes de programación y el flujo de control de versiones 
   <tr valign="middle">
     <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/kimchi.svg" alt="Kimchi" width="24" height="24" align="middle" /> &nbsp; <b>Kimchi</b></td>
     <td valign="middle" nowrap><img src="../docs/assets/readme/agents/prime-agent.svg" alt="Prime Agent" width="24" height="24" align="middle" /> &nbsp; <b>Prime Agent</b></td>
-    <td valign="middle" nowrap></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/omp.png" alt="OMP" width="24" height="24" align="middle" /> &nbsp; <b>OMP</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/fx.svg" alt="fx" width="24" height="24" align="middle" /> &nbsp; <b>fx</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/unreal-agent.png" alt="Unreal Agent" width="24" height="24" align="middle" /> &nbsp; <b>Unreal Agent</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/mimo-code.svg" alt="MiMo Code" width="24" height="24" align="middle" /> &nbsp; <b>MiMo Code</b></td>
+  </tr>
+  <tr valign="middle">
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/gemini.svg" alt="Gemini CLI" width="24" height="24" align="middle" /> &nbsp; <b>Gemini CLI</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/deepseek-harness.svg" alt="DeepSeek" width="24" height="24" align="middle" /> &nbsp; <b>DeepSeek</b></td>
+    <td valign="middle" nowrap><img src="../frontend/src/renderer/assets/agents/opencode.svg" alt="OpenCode 2" width="24" height="24" align="middle" /> &nbsp; <b>OpenCode 2</b></td>
   </tr>
 </table>
 
-[Consulta las guías de configuración de agentes →](https://docs.aoagents.dev/plugins/agents)
+[Consulta las guías de configuración de agentes →](https://docs.orchestrator.inc/plugins/agents)
 
 **Usa la interfaz que mejor encaje en cada momento: el Chat estructurado o la interfaz de terminal nativa del agente.**
 
@@ -178,23 +188,15 @@ Descarga la última aplicación de escritorio de AO para tu plataforma. AO compr
 | Linux (Debian/Ubuntu) | [Descargar](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.deb)      |
 | Linux (Fedora/RHEL)   | [Descargar](https://github.com/Untrivial-ai/agent-orchestrator/releases/latest/download/agent-orchestrator-linux-x64.rpm)      |
 
-Abre Agent Orchestrator y selecciona el repositorio que quieres que AO gestione. La aplicación de escritorio ejecuta el daemon por ti, así que no necesitas ninguna CLI. Consulta la [guía de instalación](https://docs.aoagents.dev/installation) para configurar las CLI de los agentes y resolver problemas.
+Abre Agent Orchestrator y selecciona el repositorio que quieres que AO gestione. La aplicación de escritorio ejecuta el daemon por ti, así que no necesitas ninguna CLI. Consulta la [guía de instalación](https://docs.orchestrator.inc/installation) para configurar las CLI de los agentes y resolver problemas.
 
 ## Informar de un bug
 
-La forma recomendada de informar de un bug es pedir a tu agente de programación que siga la [skill de triaje de bugs](https://github.com/Untrivial-ai/agent-orchestrator/blob/main/.agents/skills/bug-triage/SKILL.md) del repositorio. La skill guía al agente para reproducir el problema con el código actual, recopilar diagnósticos, rastrear la ruta de código pertinente, comprobar si hay duplicados y crear o actualizar un issue detallado en GitHub.
+[Abre un informe de bug](https://github.com/Untrivial-ai/agent-orchestrator/issues/new?template=bug_report.yml) desde tu propia cuenta de GitHub. Bastan unas frases, escritas con tus propias palabras, sobre lo que hiciste y lo que salió mal. Si los tienes, añade lo que esperabas, los pasos para reproducirlo, tu versión de AO y tu sistema operativo, o una captura de pantalla. Estos datos ayudan, pero no son requisitos.
 
-Tanto si se lo pides a un agente local como a AO Bot en Discord, adjunta capturas de pantalla y comparte toda la información pertinente que puedas. Incluye qué ocurrió, dónde y cuándo, los pasos para reproducirlo, tu sistema operativo, la versión de AO y si sucede siempre o de forma intermitente. Así, el agente tendrá más posibilidades de reproducir el bug y presentar un informe accionable.
+Un agente de programación local puede ayudarte a precisar el informe y recopilar pruebas con la [skill de triaje de bugs](https://github.com/Untrivial-ai/agent-orchestrator/blob/main/.agents/skills/bug-triage/SKILL.md). Mantén el contenido del issue centrado en tus observaciones. Coloca los registros, extractos de la base de datos y notas de investigación recopilados por el agente en archivos adjuntos claramente identificados. Revisa el borrador antes de enviarlo desde tu propia cuenta. No pidas a AO Bot que presente issues en tu nombre; la atribución del informe es importante.
 
-```text
-Lee y sigue https://github.com/Untrivial-ai/agent-orchestrator/blob/main/.agents/skills/bug-triage/SKILL.md. Reproduce e investiga este bug siguiendo el proceso de triaje y, después, crea o actualiza el issue de GitHub. Contexto: <qué ocurrió, dónde, cuándo, pasos para reproducirlo, sistema operativo, versión de AO y frecuencia>. Capturas: <adjunta las capturas disponibles>.
-```
-
-También puedes informar de un bug en el [canal de triaje de bugs de Discord](https://discord.com/channels/1476302178913357958/1491735678156013588). Menciona a `@AO Bot#8425`, describe lo ocurrido y pídele que use la skill de triaje de bugs.
-
-```text
-@AO Bot#8425 Reproduce e investiga este bug usando la skill de triaje de bugs y, después, crea o actualiza el issue de GitHub. Contexto: <qué ocurrió, dónde, cuándo, pasos para reproducirlo, sistema operativo, versión de AO y frecuencia>. Capturas: <adjunta las capturas disponibles>.
-```
+Si necesitas ayuda para describir un problema, únete al [canal de triaje de bugs en Discord](https://discord.com/channels/1476302178913357958/1491735678156013588). Consulta la [guía para contribuir](../CONTRIBUTING.md#bugs-and-features) para obtener más detalles.
 
 ## Desarrollar y contribuir
 
@@ -211,7 +213,7 @@ Empieza por la [guía de desarrollo](../docs/development.md), donde encontrarás
 
 | Documento                                                           | Empieza aquí si necesitas                                                                                |
 | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| [Documentación del producto](https://docs.aoagents.dev)                | Instalación, configuración de agentes y uso cotidiano del producto.                                      |
+| [Documentación del producto](https://docs.orchestrator.inc)                | Instalación, configuración de agentes y uso cotidiano del producto.                                      |
 | [docs/architecture.md](../docs/architecture.md)                     | Modelo mental del backend, ciclo de vida, persistencia, CDC, derivación del estado y límites del daemon. |
 | [docs/backend-code-structure.md](../docs/backend-code-structure.md) | Responsabilidad de los paquetes y ubicación de cada aspecto del backend.                                 |
 | [docs/cli/README.md](../docs/cli/README.md)                         | Comportamiento de la CLI y correspondencia con las rutas del daemon.                                     |
@@ -239,9 +241,9 @@ Empieza por la [guía de desarrollo](../docs/development.md), donde encontrarás
 
 Únete a [Discord](https://discord.com/invite/UZv7JjxbwG) para pedir ayuda y hablar con otros colaboradores, sigue a [@ao_build](https://x.com/ao_build) para conocer las novedades o inicia una conversación en [GitHub Issues](https://github.com/Untrivial-ai/agent-orchestrator/issues).
 
-## Telemetría anónima
+## Telemetría del producto
 
-AO utiliza métricas de uso y fiabilidad que protegen la privacidad y están diseñadas para excluir información de identificación personal y contenido de los proyectos. Estas métricas nos ayudan a entender la adopción y mejorar el producto. [Más información sobre telemetría y privacidad](../docs/telemetry.md).
+AO recopila métricas de uso y fiabilidad sin contenido de los proyectos. El propietario de un proyecto en GitHub y el nombre de usuario conectado pueden identificar a una persona; la telemetría no es anónima. Desactivarla también detiene el envío de esos datos. [Detalles y controles](../docs/telemetry.md).
 
 ## Licencia
 

@@ -5,7 +5,7 @@ Orchestrator, Settings — plus a Chat-first spawn flow, a native conversation s
 the existing live terminal, and a preview browser. Chat sessions expose durable history,
 streaming activity, approvals, provider controls, attachments, voice input, and a plain
 worktree-shell escape hatch. It is a **thin client**: it talks to the AO daemon running on your
-computer over your local network (or Tailscale). It never runs agents itself.
+computer through the endpoints advertised by the desktop pairing offer. It never runs agents itself.
 
 > **Development builds only — Expo Go is not supported.** The app depends on native modules,
 > so it must be compiled onto the device (`npx expo run:ios|run:android`). Expo Go can't load
@@ -24,8 +24,8 @@ computer over your local network (or Tailscale). It never runs agents itself.
 
 ## How the phone reaches your machine
 
-The daemon's primary listener is loopback-only (`127.0.0.1:3001`) and unauthenticated — a
-phone can never reach it. To let a phone in, the desktop app opens a **second, opt-in LAN
+The daemon's primary listener is loopback-only (`127.0.0.1:3001`) and unauthenticated, so a
+phone cannot reach it. To let a phone in, the desktop app opens a **second, opt-in LAN
 listener** (default port **3011**) bound to `0.0.0.0`, protected by a rotating bearer
 password, serving only the app API. It exists only while **Connect Mobile** is switched on
 in the desktop app; switching it off closes the socket.
@@ -38,16 +38,20 @@ phone ──HTTP/WS── 0.0.0.0:3011   (LAN listener, bearer password, opt-in)
 desktop/CLI ───── 127.0.0.1:3001 (loopback, no auth, unchanged)
 ```
 
-Transport is **plaintext HTTP by design** — this is a trusted-home-network tool. On
-untrusted Wi-Fi, use Tailscale instead and point the app at the `100.x` address or MagicDNS
-name. Background: [`docs/adr/0001-lan-listener-for-mobile.md`](../../docs/adr/0001-lan-listener-for-mobile.md).
+LAN transport is **plaintext HTTP by design** and is for trusted home networks. A raw
+Tailscale `100.x` endpoint is plaintext unless its pairing record has `secure: true`; iOS
+blocks cleartext requests to `100.64.0.0/10`, so raw Tailscale is not an iOS path. The
+desktop source contains an automatic secure-pairing attempt, but fresh configurations
+report no secure-pairing availability while the mode is off, and current v2 endpoint data
+do not establish a verified working path. Use a managed HTTPS endpoint whose pairing
+record is marked `secure: true` for remote access. Background: [`docs/adr/0001-lan-listener-for-mobile.md`](../../docs/adr/0001-lan-listener-for-mobile.md).
 
 ## Prerequisites
 
 | For             | You need                                                                              |
 | --------------- | ------------------------------------------------------------------------------------- |
 | Everything      | Node 20+, and AO running on your machine (desktop app, or the daemon from source)     |
-| Phone ↔ machine | Same Wi-Fi network, or both on the same Tailnet                                       |
+| Phone ↔ machine | Same Wi-Fi network for LAN, or a reachable HTTPS endpoint for remote access         |
 | iOS build       | macOS, Xcode 16+, an Apple ID (a free one gives a 7-day signing profile), a USB cable |
 | Android build   | Android Studio (SDK + platform-tools for `adb`), a USB cable                          |
 
@@ -78,15 +82,17 @@ Nothing on the phone works until the desktop opens the LAN bridge. Do this first
 cd frontend && npm run dev      # Electron supervisor + daemon
 ```
 
-**2. Open the pairing modal:** in the desktop app, **Sidebar → Settings menu → Connect Mobile**.
+**2. Open the pairing modal:** in the desktop app, **Settings → Connect Mobile**.
 
-**3. Flip the "Enable mobile" toggle on.** The bridge binds immediately and the modal reveals
-the pairing details:
+**3. Choose **Generate**.** The bridge binds immediately and the panel reveals the pairing
+details:
 
-- a **QR code** (encodes `{v:1, host, port, password}`),
-- the plaintext **host:port**, e.g. `192.168.1.84:3011`,
-- the 8-character **connection password** (copyable),
-- **Regenerate password**, which rotates the secret and drops any connected phone.
+- a v2 **QR code** with `hostId`, name, platform, every endpoint's `kind`, `host`, `port`,
+  and `secure`, plus the bearer `token` in the link fragment. The QR or copied link is a
+  secret;
+- the current address and port, for example `192.168.1.84:3011`;
+- the 8-character **connection password** (copyable);
+- **Regenerate password**, which rotates the secret and invalidates every old token.
 
 Leave the modal open — you scan that QR in step 3. Toggling **off** tears the bridge down,
 so the phone goes offline until you turn it back on.
@@ -98,7 +104,7 @@ loopback:
 cd backend && go run .
 
 curl -X POST http://127.0.0.1:3001/api/v1/mobile/enable
-curl -s      http://127.0.0.1:3001/api/v1/mobile/status    # → {enabled, host, port, password}
+curl -s      http://127.0.0.1:3001/api/v1/mobile/status    # includes current endpoint records
 curl -X POST http://127.0.0.1:3001/api/v1/mobile/disable
 ```
 
@@ -156,9 +162,14 @@ gitignored** — the run commands prebuild them for you.
 
 Cleartext HTTP to the bridge works on Android everywhere via `usesCleartextTraffic` in
 `app.json`. On iOS, `NSAllowsLocalNetworking` in the prebuilt `Info.plist` only permits
-cleartext to link-local, `.local`, and RFC 1918 (LAN) addresses — Tailscale's
-`100.64.0.0/10` range is RFC 6598, so iOS blocks plaintext to it. Tailscale pairing on iOS
-requires the desktop's secure-pairing mode (TLS via `tailscale serve`).
+cleartext to link-local, `.local`, and RFC 1918 (LAN) addresses. Tailscale's
+`100.64.0.0/10` range is RFC 6598, so iOS blocks plaintext to it. The desktop source
+contains an automatic secure-pairing attempt, but fresh configurations report no
+secure-pairing availability while the mode is off, and current v2 endpoint records do not
+establish a working Tailscale TLS route. Raw Tailscale is therefore not an iOS path. The
+Android build permits cleartext bridge traffic, but this path was not tested on a physical
+device. Use `secure: true` only for a genuinely HTTPS endpoint, and do not infer a physical
+iOS or Android result from source inspection.
 
 > **On `expo-dev-client`:** this package doesn't depend on it today, so the debug build
 > connects straight to Metro and has no in-app launcher or URL switcher. If you want the
@@ -176,26 +187,34 @@ npx expo run:ios         # iOS Simulator    → daemon host 127.0.0.1
 npx expo run:android     # Android emulator → daemon host 10.0.2.2
 ```
 
-Port is `3011` either way. The pairing QR encodes your LAN IP, which usually works here too;
-if it doesn't, type the host above by hand (step 3).
+Port is `3011` either way. The pairing QR advertises all current endpoint records. If the
+simulator or emulator cannot use one of them, type its host by hand in step 3.
 
 ## Step 3 — Pair the phone
 
-In the app: **Settings → scan the pairing QR** (grant camera access when asked). One scan
-writes host, port, and password, then reconnects — no typing.
+During onboarding, tap **Pair a machine**, or tap **Scan pairing code** from an unpaired
+screen, and grant camera access when asked. The pairing screen opens the scanner and offers
+manual entry. The v2 offer carries the desktop identity, endpoint records, and bearer token.
+The phone verifies the identity, races the endpoints, stores the winning desktop, and
+reconnects without typing.
 
 Manual entry, if you prefer (or for simulators / Tailscale):
 
 | Field             | Value                                                                                |
 | ----------------- | ------------------------------------------------------------------------------------ |
-| **Host**          | Your machine's LAN IP (`ipconfig getifaddr en0` on macOS), or Tailscale name/`100.x` |
-| **API Port**      | `3011` — the Connect Mobile bridge, **not** the loopback `3001`                      |
-| **Password**      | The 8-character password from the Connect Mobile modal                               |
-| **Terminal Port** | Legacy, ignored. The daemon serves REST and the `/mux` terminal on the API port      |
-| **Use TLS**       | Off for the LAN bridge. On only for real HTTPS, e.g. a Tailscale funnel              |
+| **Host**          | Your machine's LAN IP (`ipconfig getifaddr en0` on macOS), or a reachable endpoint host |
+| **API Port**      | `3011`, the Connect Mobile bridge, not the loopback `3001`                              |
+| **Password**      | The 8-character connection password from the desktop panel                              |
+| **Terminal Port** | Legacy and ignored. REST and `/mux` use the API port                                    |
+| **Use TLS**       | Off for LAN. On only for a genuinely HTTPS endpoint marked `secure: true`               |
 
-Tap **Test connection**, then **Save**. The password lives in the device keystore (iOS
-Keychain / Android Keystore), never in AsyncStorage.
+Tap **Connect**. A new manual connection tries the public identity endpoint first, but
+ordinary probe errors do not stop it from sending the password to test the connection.
+An incompatible contract version does stop it. Enter only a host you trust. The app
+saves the connection after authentication succeeds. The password lives in the device
+keystore, iOS Keychain or Android Keystore, never in AsyncStorage. A phone can keep
+multiple desktops, and one desktop can authorize multiple phones. Rotating the desktop
+password invalidates every old token.
 
 ## Everyday dev loop
 
@@ -370,7 +389,7 @@ Play Store** checks on demand.
 | Symptom                                           | Fix                                                                                                                                                          |
 | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Crash at launch, _"main has not been registered"_ | Two React copies. Keep `metro.config.js` intact, reinstall with plain `npm install` (never `--force`), then `npx expo prebuild --clean`.                     |
-| **Test connection** fails, everything times out   | Connect Mobile is off on the desktop, wrong port (`3011`, not `3001`), phone on a different network, or the macOS firewall is blocking incoming connections. |
+| **Connect** fails, everything times out            | Connect Mobile is off on the desktop, wrong port (`3011`, not `3001`), phone on a different network, or the macOS firewall is blocking incoming connections. |
 | 401 / invalid password                            | The password was regenerated on the desktop. Re-scan the QR.                                                                                                 |
 | Locked out after repeated failures                | The bridge locks out a source after 5 failed attempts. Wait it out, or toggle Connect Mobile off and on.                                                     |
 | `adb devices` shows `unauthorized`                | Re-accept the USB debugging prompt on the phone.                                                                                                             |

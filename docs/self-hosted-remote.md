@@ -14,10 +14,11 @@ ssh -i /path/to/private-key USER@HOST_ADDRESS
 Run **one** command on the VM. Both install AO, prerequisites, a persistent
 user service, and a Cloudflare quick tunnel, then print the connection details.
 
-**Testing this PR** (builds from its branch):
+**Testing an unreleased branch** (builds from that branch): replace
+`codex/your-pr-branch` with the branch name published on GitHub.
 
 ```bash
-bash -c 'set -o pipefail; sudo apt-get update && sudo apt-get install -y curl && curl -fsSL https://raw.githubusercontent.com/Untrivial-ai/agent-orchestrator/codex/remote-hosts-integrated/scripts/bootstrap-self-hosted.sh | bash -s -- --source-ref codex/remote-hosts-integrated'
+SOURCE_REF=codex/your-pr-branch bash -c 'set -o pipefail; sudo apt-get update && sudo apt-get install -y curl && curl -fsSL "https://raw.githubusercontent.com/Untrivial-ai/agent-orchestrator/${SOURCE_REF}/scripts/bootstrap-self-hosted.sh" | bash -s -- --source-ref "${SOURCE_REF}"'
 ```
 
 **After merge and release** (installs the published binary):

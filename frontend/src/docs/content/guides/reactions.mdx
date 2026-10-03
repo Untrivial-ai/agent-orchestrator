@@ -1,9 +1,9 @@
 ---
-title: Lifecycle automation
+title: Handle CI and review feedback
 description: Practical guidance for AO's built-in CI, review, conflict, and notification behavior.
 ---
 
-Current AO ships lifecycle policy rather than a configurable reaction recipe engine. Do not add `reactions:` to project configuration: unknown fields are rejected, and legacy keys such as `auto`, `retries`, `escalateAfter`, `threshold`, and `auto-merge` have no current consumer.
+AO routes CI failures, review feedback, and merge conflicts with built-in rules. These rules are not configured through a project `reactions:` field. See [Migration](/migration) before reusing old configuration examples.
 
 ## Let AO route repository feedback
 
@@ -21,7 +21,7 @@ AO then routes failing checks, requested changes, unresolved comments, and eligi
 
 ## Avoid duplicate nudges
 
-AO stores or remembers signatures for observed feedback. It sends again when the meaningful content changes, not merely because another poll happened. This keeps long-lived agent sessions from receiving the same CI failure or review body repeatedly.
+AO remembers the feedback it has already sent. It sends another message when the content changes, not on every poll. This prevents the same CI failure or review comment from being repeated to a long-running session.
 
 ## Know what requires a human
 
@@ -50,12 +50,12 @@ Merge is always an explicit action:
 ao pr merge <pr-number>
 ```
 
+For work on a schedule, use **Automations** rather than lifecycle reaction keys. For a reusable manual instruction or command, use project **Cues**. See [Automation reference](/configuration/lifecycle-automation) for both workflows and local-daemon scheduling limits.
+
 ## Switch interfaces when useful
 
-For compatible Claude Code and Codex sessions, use **Open Chat** or **Open Terminal UI**. AO preserves the session and worktree, drains or interrupts active work according to your choice, and commits only one controller at a time.
+For compatible Claude Code and Codex sessions, choose **Switch to chat UI** or **Switch to terminal UI**. AO keeps the session and worktree, then finishes or interrupts active work as directed before replacing the controller.
 
 <Callout type="info">
-	A first Terminal UI → Chat switch preserves provider-native context where supported, but it does not convert old terminal screen output into structured Chat cards.
+	The [Dashboard guide](/dashboard#switch-interfaces) explains what happens to conversation history when you switch interfaces.
 </Callout>
-
-See [Lifecycle automation configuration](/configuration/lifecycle-automation) for the current event and notification reference.

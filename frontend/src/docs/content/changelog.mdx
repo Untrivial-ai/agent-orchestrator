@@ -1,34 +1,13 @@
 ---
 title: Changelog
-description: Where to find current AO desktop and mobile release notes.
+description: Read current AO product updates and release notes.
 ---
 
-AO now ships continuously through GitHub Releases. The release page is the source of truth for desktop versions, supported artifacts, changes, and upgrade notes.
+Read the [AO changelog](https://orchestrator.inc/changelog/) for product updates. For version numbers, downloads, and technical release notes, see the [GitHub releases](https://github.com/Untrivial-ai/agent-orchestrator/releases).
 
-The desktop app checks for updates automatically. Open **Settings → Updates** to see the installed version or check manually. The optional CLI also reports its own version with `ao version`.
+<span id="historical-release" />
+<span id="030-the-rebuild" />
 
-- [Current desktop releases](https://github.com/AgentWrapper/agent-orchestrator/releases)
-- [Current source history](https://github.com/AgentWrapper/agent-orchestrator/commits/main)
+## Historical releases
 
-macOS releases include both a DMG for first installation and a ZIP used by the updater. Windows and Linux artifacts are listed on each release.
-
-## Historical release
-
-The entry below describes the legacy JavaScript product and is retained only as project history. Its dashboard, package, plugin, and CLI details do not describe the current desktop application.
-
-## 0.3.0 "The Rebuild"
-
-April 25, 2026
-
-- Shipped a dashboard rebuild from the ground up with the Warm Terminal design system, a 10x JavaScript bundle reduction, loading and not-found pages, a terminal layout overhaul, mobile UX, sidebar navigation, and instant session switching.
-- Added the multi-project dashboard: one unified view across all configured projects, with portfolio registration, migration flows, project settings, and CLI alignment with the multi-project registry.
-- Launched the website and docs at [aoagents.dev](https://aoagents.dev), with setup guides, API reference material, and plugin documentation in one place.
-- Added Cursor as a first-class agent alongside Claude Code, Codex, Aider, OpenCode, and Hermes, using the same worktrees and PR workflow.
-- Redesigned session lifecycle reporting and UI flow. Session titles are stable through pinned summary metadata, display names are derived from task context, and sessions auto-terminate after PR merge.
-- Promoted Windows to first-class support with cross-platform shell resolution, PID checks, process management, and symlink handling.
-- Hardened the CLI with install-aware `ao update`, startup update notifications, doctor version checks, JSON output for `ao session ls`, config error handling, version mismatch fixes, and default filtering for terminated sessions.
-- Moved terminals and sessions onto a single multiplexed WebSocket connection, reducing connection churn and resource leaks.
-- Added prompt-driven spawn: `ao spawn` can now create sessions from freeform tasks without requiring a tracker issue.
-- Added macOS idle sleep prevention while agents are running, reducing silent CI drops during long sessions.
-- Resolved a critical SSRF vulnerability by overriding Axios to `>=1.15.0` and matched the Gitleaks binary for arm64 runners.
-- Renamed all packages from `@composio` to `@aoagents` for a cleaner ecosystem identity.
+Older release notes describe the product as it shipped at that time. Browse the [GitHub release history](https://github.com/Untrivial-ai/agent-orchestrator/releases) for those versions. Use this manual for current installation and workflows.

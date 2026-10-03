@@ -1,5 +1,10 @@
 # Cloud Workspace Review Parity Implementation Plan
 
+> **Status:** Implemented in the current Cloud worker and control-plane review
+> paths. This file preserves the original task sequence; its unchecked steps
+> do not mean the review routes are absent. See [the review worker](../../../cloud/internal/worker/workspace_review.go)
+> and [the HTTP routes](../../../cloud/internal/httpapi/server.go).
+
 > **For Codex:** REQUIRED SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Follow superpowers:test-driven-development for every behavior change and superpowers:verification-before-completion before claiming success.
 
 **Goal:** Reproduce the complete local File Diff and File View experience for Cloud sessions across Docker, NodeOps, and Coder without modifying the local workspace implementation.

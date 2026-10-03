@@ -3,13 +3,15 @@ title: Notification center
 description: Persistent notification history and live updates in the desktop app.
 ---
 
-The daemon enriches and stores notification records in SQLite. The desktop reads cursor-paginated history, listens for live updates, and preserves read state across restarts.
+Use the notification center to review new and older alerts, open the related session or pull request, and clear items you no longer need. Notification history and read state persist across app restarts.
 
 ## Available controls
 
-- filter Unread or All notifications;
+- browse one newest-first feed and load older records by scrolling;
 - open the related session or pull request;
-- mark individual records as read;
+- open the panel to mark loaded unread records as read;
 - catch up through paginated history after the app reconnects.
 
 Electron app toasts are a presentation of the same durable records while the desktop is running. There is no `ao notify`, `ao setup`, routing preset, JSONL notification store, or external notifier configuration in the current CLI.
+
+Opening the panel marks loaded unread items as read; it does not clear them. Clear one item or the whole feed to remove alerts from the center. Paired mobile devices can receive push notifications when permission is granted and the daemon can reach the push service. Use Connect Mobile device controls to mute or unpair a device. This does not enable legacy Slack, Discord, or webhook notifier plugins.

@@ -1,5 +1,11 @@
 # Cloud-shared refactor
 
+> Historical design note. The Cloud Go control plane and desktop integration
+> now live in this repository under `cloud/` and `frontend/`. Statements below
+> about a future private control plane describe the original extraction plan,
+> not the current build. Use [Cloud development](cloud-development.md) and
+> [`cloud/README.md`](../cloud/README.md) for current commands and ownership.
+
 This refactor makes AO's stable product language, client contracts, and presentation
 layer reusable by the future private `ao-cloud` repository. Public AO remains a
 complete local product; no hosted control-plane, database, provisioner, or worker

@@ -1,5 +1,11 @@
 # Session File Tabs Implementation Plan
 
+> **Status:** Historical plan. The file-tab work is present in the current
+> renderer, but Task 5's branch badge is superseded. Current session UI keeps
+> branch context out of the session top bar. Do not implement that task. See
+> [SessionView](../../../frontend/src/renderer/components/SessionView.tsx) and
+> [its tests](../../../frontend/src/renderer/components/SessionView.test.tsx).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Open files from the docked Files rail as language-aware, closeable tabs in the center workspace while preserving the live agent surface and showing the current branch read-only.

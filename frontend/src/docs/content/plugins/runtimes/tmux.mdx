@@ -1,9 +1,9 @@
 ---
 title: tmux runtime
-description: The built-in Terminal UI runtime on macOS and Linux.
+description: Legacy and fallback tmux sessions, bundled runtime, and source-install prerequisites.
 ---
 
-AO uses `tmux` on macOS and Linux to keep each Terminal UI agent process attachable and to feed the desktop terminal mux. Runtime selection is automatic.
+This page covers AO's legacy and fallback tmux runtime. New macOS/Linux Terminal UI sessions use a detached native PTY host; existing tmux sessions and native-host startup fallback use tmux. Windows uses ConPTY. Runtime selection is automatic.
 
 The macOS and Linux desktop packages include their own pinned tmux and use an
 AO-owned socket. Desktop users do not need to install tmux, and AO never shares
@@ -11,7 +11,7 @@ the machine tmux server.
 
 ## Standalone daemon and development
 
-Standalone daemon and source development runs still resolve tmux from `PATH`:
+Source runs resolve configured or system tmux when needed. macOS still validates tmux before terminal spawn; Linux native-host spawn bypasses that check, although `ao doctor` still probes it:
 
 ```bash
 # macOS
@@ -26,6 +26,6 @@ configured, packaged, or system tmux. There is no `runtime: tmux` YAML setting.
 
 ## Desktop terminal
 
-The desktop xterm surface connects through AO's WebSocket terminal mux. On macOS/Linux the daemon opens a PTY-backed `tmux attach` stream for that client. Closing the desktop terminal view does not discard the underlying agent session.
+The desktop xterm surface connects through AO's WebSocket terminal mux. New macOS/Linux Terminal UI sessions use a detached native PTY host; existing tmux sessions and native-host startup fallback use tmux. Windows uses ConPTY. Closing the view does not discard the underlying session. Detached hosts can reconnect after daemon replacement.
 
-On Windows AO automatically uses its ConPTY runtime instead. There is no selectable `process` fallback.
+There is no project-selectable `process` runtime. Source installs may need tmux for fallback or old sessions even when a new native-host session succeeds.

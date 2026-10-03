@@ -1,15 +1,15 @@
 ---
 title: Runtime
-description: AO automatically uses tmux on macOS/Linux and ConPTY on Windows.
+description: Native terminal hosts, legacy tmux compatibility, and platform prerequisites.
 ---
 
-The runtime owns a Terminal UI process and exposes attach, interrupt, messaging, output, and liveness operations to the daemon. It is selected by platform, not by project configuration.
+AO selects a terminal runtime by platform. New macOS and Linux Terminal UI sessions use a native PTY host; existing sessions and startup fallback use tmux. Windows uses ConPTY.
 
 | Platform | Runtime | Requirement |
 | --- | --- | --- |
-| macOS / Linux | [tmux](/plugins/runtimes/tmux) | Install `tmux`. |
+| macOS / Linux | Detached native PTY host for new sessions; [tmux](/plugins/runtimes/tmux) for legacy/fallback | Desktop bundles tmux; macOS preflight still requires it. |
 | Windows | ConPTY | Built into supported Windows versions. |
 
-Structured Chat sessions use provider controllers instead of an agent terminal runtime. They can still open a separate session-scoped worktree shell in the desktop app.
+Chat sessions use the provider's Chat interface instead of an agent terminal runtime. They can still open a separate shell in the session worktree from the desktop app.
 
-Run `ao doctor` to check the runtime required on the current platform.
+Run `ao doctor` for runtime diagnostics. It still checks tmux on macOS/Linux; that check alone does not describe which host a new session uses.

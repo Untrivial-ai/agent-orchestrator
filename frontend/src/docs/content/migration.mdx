@@ -3,11 +3,11 @@ title: Migration
 description: Move from the frozen npm CLI and older AO architecture to the desktop app.
 ---
 
-## Move To The Desktop App
+## Move to the desktop app
 
-The desktop application is the current, supported distribution. It owns the Go daemon and checks for updates automatically.
+The desktop app is the current supported install. It runs the Go daemon and checks for updates automatically.
 
-The npm package `@aoagents/ao` is frozen at `0.10.0`. It remains available for existing users but will not receive new features or fixes. Do not use npm for a new AO installation.
+The npm package `@aoagents/ao` is frozen at `0.10.0`. Existing users can still use it, but it will receive no new features or fixes. New users should install the desktop app instead.
 
 <Steps>
 <Step>
@@ -34,7 +34,9 @@ The frozen CLI uses this as a bridge to fetch and open the desktop build. It no 
 
 ### Add or import projects
 
-Open the desktop app and add each local repository you want AO to manage. If your installation exposes a legacy import flow, review the projects it finds before accepting them. Do not copy old flat-file session directories over the current database by hand.
+Open the desktop app and add each local repository you want to use.
+
+To import legacy projects with the optional CLI, first run `ao import --dry-run` to see what AO will import and which settings it will drop. Then run `ao import`. Use `--yes` only in an intentional script. Do not copy old session folders into the current database by hand.
 
 </Step>
 <Step>
@@ -52,7 +54,7 @@ Run the agent harness once outside AO if its sign-in expired, then restart the d
 </Step>
 </Steps>
 
-## What Changed Since The npm Product
+## What changed since the npm product
 
 | Older documentation | Current product |
 | --- | --- |
@@ -62,11 +64,14 @@ Run the agent harness once outside AO if its sign-in expired, then restart the d
 | Stored lifecycle status | Status derived at read time from durable facts |
 | Runtime plugin matrix and YAML-first setup | Daemon adapters and project settings through the app/API |
 | Browser dashboard on port 3000 | Packaged desktop interface over a loopback daemon |
-| Terminal-only sessions | One committed Chat or Terminal UI controller per session |
+| Terminal-only sessions | One committed Chat or Terminal UI controller per session; native PTY/ConPTY hosts and legacy tmux compatibility |
+| Repository-only work | Git workspaces plus projectless standalone workers |
+
+<span id="historical-package-names" />
 
 Old `agent-orchestrator.yaml` examples and Node plugin packages are not authoritative for the Go rewrite. Reconfigure projects through the desktop app instead of copying unsupported legacy fields.
 
-## Data Locations
+## Data locations
 
 Current AO state defaults to `~/.ao`:
 
@@ -74,7 +79,7 @@ Current AO state defaults to `~/.ao`:
 - `~/.ao/running.json` advertises the supervised daemon process and port.
 - Managed worktrees and AO metadata remain under the AO home.
 - `~/.ao/electron` contains the desktop app's Chromium data.
-- `~/.ao/mobile/config.json` contains mobile-listener configuration with a hashed password.
+- `~/.ao/data/mobile/config.json` contains mobile-listener settings and its rotating password. AO writes the file with mode `0600` and keeps a comparison hash in memory. `AO_DATA_DIR` changes this location.
 
 Do not delete the old or new data directories until you have inspected and preserved active worktrees.
 
@@ -82,17 +87,9 @@ Do not delete the old or new data directories until you have inspected and prese
 
 Installed desktop builds check for updates on launch and periodically while running. If an update is unavailable through the app, download the latest desktop artifact directly. Running a package-manager update cannot move the frozen npm package beyond `0.10.0`.
 
-## Historical Package Names
+<span id="next" />
 
-Some very old installations used `@composio/agent-orchestrator`. Removing that global package is safe once you have moved to the desktop app:
-
-```bash
-npm uninstall -g @composio/agent-orchestrator
-```
-
-Installing `@aoagents/ao` is only useful when you intentionally need the frozen legacy bridge.
-
-## Next
+## Next steps
 
 <Cards>
 	<Card title="Installation" href="/installation" description="Install the current desktop build." />

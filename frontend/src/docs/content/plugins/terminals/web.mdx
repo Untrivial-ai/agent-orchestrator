@@ -3,8 +3,10 @@ title: Desktop terminal
 description: Session terminals streamed through the daemon's mux to Electron.
 ---
 
-The session view renders an xterm terminal connected to the daemon's `/mux` WebSocket. The connection follows daemon port changes and can reconnect after the desktop restarts.
+Open the Terminal pane in a session to connect to its shell. AO reconnects the terminal if the daemon changes ports or the desktop restarts.
 
-Terminal UI sessions attach to the agent's live platform runtime. Chat sessions do not create an agent TUI runtime, but the session can still open worktree shells through the same mux infrastructure.
+For Terminal UI sessions, this pane shows the agent's terminal. Chat sessions do not start an agent terminal, but you can open a separate shell in the same worktree.
 
-This is built into the desktop app. There is no `terminal: web` setting, `ao open` command, or iTerm2/AppleScript terminal plugin in the current release.
+New macOS/Linux Terminal UI sessions use a detached native PTY host; existing tmux sessions and native-host startup fallback use tmux. Windows uses ConPTY. Closing the terminal view does not stop the agent or archive the session. Detached terminals may reconnect after an app or daemon restart; whether a Chat session can resume depends on its provider.
+
+The terminal is built into the desktop app. There is no `terminal: web` setting, `ao open` command, or iTerm2/AppleScript plugin in the current release.

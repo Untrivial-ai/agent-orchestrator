@@ -15,6 +15,6 @@ ao spawn --project my-app --name claude-task --agent claude-code --mode chat
 - **Terminal UI:** runs the native Claude Code CLI in the session worktree.
 - **Chat:** uses AO's ACP transport with `claude-agent-acp`, pointed at your Claude executable.
 
-Claude Code is one of the harnesses that can move between Chat and Terminal UI without changing the AO session or worktree. Idle sessions can switch directly; a busy Chat turn requires an explicit drain or interrupt policy in the desktop UI.
+Claude Code is one of the harnesses that can move between Chat and Terminal UI without changing the AO session or worktree. Idle sessions can switch directly; the desktop shows the supported finish/stop policy for a busy controller. Follow the switch dialog, including any draft or queued-message warning.
 
 AO installs its supported activity hook during workspace setup. Use `ao agent ls --refresh --json` for install/auth diagnostics rather than editing a plugin block.

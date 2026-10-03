@@ -1,6 +1,6 @@
 ---
 title: Connect Mobile
-description: Pair the native AO mobile app through the authenticated, opt-in LAN listener.
+description: Pair the native mobile app using authenticated local or available secure remote endpoints.
 ---
 
 AO's primary daemon listener is always bound to `127.0.0.1`. It is unauthenticated because it is loopback-only, and its host cannot be changed. Do not expose it with `HOST=0.0.0.0`, a public reverse proxy, or port forwarding.
@@ -9,35 +9,55 @@ For a phone, the desktop app creates a separate listener through **Connect Mobil
 
 ## Pair on the same network
 
-1. Install the AO mobile app and put the phone on the same trusted Wi-Fi as the desktop.
-2. Open desktop **Settings → Connect Mobile**.
-3. Enable mobile access.
-4. In the mobile app, scan the pairing code to fill the address, port, and connection password automatically.
-5. If entering details manually, copy all three values from the desktop.
+1. Install [AO Mobile from the App Store](https://apps.apple.com/app/ao-mobile/id6792552173) or [Google Play](https://play.google.com/store/apps/details?id=aoagents.dev). Open the desktop app and go to **Settings → Connect Mobile**.
+2. Put both devices on the same trusted network. In Connect Mobile, choose **Generate** to turn on the separate mobile connection. The app shows an address, password, and QR when a reachable endpoint is ready; a blurred or preparing QR cannot pair a phone.
+3. In the mobile app, tap **Pair Desktop** during onboarding. Newer mobile builds call this button **Pair a machine**. From an unpaired screen, tap **Scan pairing code**. The app opens the scanner. Scan the desktop QR. The current link includes host identity and available endpoints so the phone can find the same desktop across transports. The credential is carried in the link fragment; treat the entire QR/link as a password.
+4. If scanning fails or camera access is unavailable, tap **Enter details manually** on the pairing screen and enter the address, port, and password shown on the desktop. The listener normally starts at port `3011` but can choose another free port. Use the displayed address, not `127.0.0.1`, which means the phone itself when entered there. A failed scan offers **Try again**.
+5. Open the paired computer in the mobile app, choose a project and worker, then open its Chat or Terminal UI. An approval request needs your response in the session. Pull request and review screens show repository and reviewer state. If a control is absent, check the session interface and harness capability rather than assuming the phone created a second session.
 
-The listener normally uses port `3011` and can fall back to another available port. Always use the actually displayed port. Disabling Connect Mobile closes the listener; regenerating the password disconnects existing clients.
+Turning mobile access off closes the authenticated listener. Regenerating its password invalidates old pairing credentials. If the phone reports an incompatible pairing or identity contract, update both apps; current desktop pairing does not generate a legacy v1 fallback.
+
+Where available, AO can manage a remote-access connector using `cloudflared`. If Connect Mobile says remote access is unavailable, use its **Install cloudflared** control and wait for the connector status to become ready. A LAN code can be ready first; scan the refreshed QR after the remote endpoint appears. Test once with the phone off the home Wi-Fi. A successful home-network connection alone does not prove away-from-home access. The managed connector's address can change when it restarts, so use a refreshed offer if the old endpoint stops working.
 
 ## Tailscale
 
-For access away from the same Wi-Fi, install Tailscale on both devices and sign in to the same tailnet. Enable Connect Mobile, find the desktop's `100.x` address with `tailscale ip -4`, then enter that address, the displayed mobile port, and the connection password in the mobile app. Leave TLS disabled.
+Install Tailscale on both devices and sign in to the same tailnet. The current desktop panel has no connection-method selector or separate visible TLS control. Automatic TLS setup is incomplete, and the current v2 offer does not advertise Tailscale HTTPS endpoints. iPhone blocks cleartext requests to `100.64.0.0/10`, so a raw Tailscale endpoint is not an iPhone path. Use a managed HTTPS endpoint when you need remote access. Android behavior for a raw Tailscale endpoint was not exercised here.
 
-Do not use `tailscale serve` to expose the primary loopback daemon. The native app should connect to the authenticated mobile listener.
+If Connect Mobile shows a secure-pairing failure reason, follow that text. A direct plaintext LAN endpoint remains suitable only for a trusted network. The phone races only the endpoints in the offer, and uses TLS only when an endpoint is marked `secure: true`.
+
+Do not point `tailscale serve`, a public proxy, or port forwarding at the unauthenticated primary daemon. AO's secure endpoint setup targets the separate authenticated mobile listener.
 
 ## Security model
 
-- The mobile listener uses plaintext HTTP by design and is intended for a trusted home network or private tailnet.
-- Every REST and terminal connection requires the rotating password.
-- Repeated failed authentication is locked out per source.
-- `/shutdown`, telemetry controls, and mobile-control routes remain loopback-only.
-- Mobile settings are persisted in a mode-`0600` file under `~/.ao/mobile/config.json`. The rotating password is stored there so the desktop can redisplay it; authentication comparisons use its in-memory hash.
+- The primary API stays on `127.0.0.1`, with no network-facing bind or added authentication.
+- Connect Mobile's separate listener is password-protected. Direct HTTP transport is for trusted networks; a managed connector endpoint marked `secure: true` can wrap this authenticated path for remote access. Current Tailscale entries are advertised as plaintext.
+- Exactly `GET /api/v1/identity` is unauthenticated. It returns an opaque host identity and mobile contract version, which QR pairing checks before presenting a credential. It does not expose sessions. New manual connections can continue after ordinary identity-check errors, so enter only a host you trust.
+- Other mobile REST and terminal connections require the rotating bearer password. Repeated failed authentication is locked out per source.
+- Shutdown, telemetry, mobile-control, and browser-control routes remain loopback-only.
+- Mobile settings live at `AO_DATA_DIR/mobile/config.json` (normally `~/.ao/data/mobile/config.json`). The file stores the rotating password so the desktop can redisplay it and is written with mode `0600`; authentication comparisons use an in-memory hash. It is not a persisted password-hash-only store.
 
-Anyone who can observe traffic on an untrusted network may read the password and session traffic. Turn Connect Mobile off when it is not needed, and do not expose its port to the public internet.
+Do not share pairing screenshots or links. Use device mute/remove controls in Connect Mobile to manage push delivery and paired-device records. Removing a device record is not a substitute for rotating the shared connection password: regenerate that password if a phone or QR/link was lost or exposed, then pair trusted phones again. Keep direct plaintext traffic off untrusted networks. The historical LAN-only design describes the listener itself; current managed secure endpoints do not change the primary listener boundary.
 
 ## What mobile supports
 
 The Expo/React Native app is a native control surface over the same daemon resources as desktop. New mobile sessions prefer Chat when a compatible installed harness is available; Terminal UI remains an explicit compatibility choice.
 
-Mobile supports structured Chat, Terminal UI, session creation, the same capability-gated Chat/TUI handoff, approvals and structured input, changed files, model/provider controls, compaction and rollback, voice dictation, attachments, and a session-scoped worktree shell.
+Mobile supports structured Chat, Terminal UI, session creation, the same capability-gated Chat/TUI handoff, approvals and structured input, model and agent controls, compaction and rollback when the session advertises those capabilities, voice dictation, attachments, a workspace shell, and generated previews.
+
+Mobile also exposes pull request, workspace review, and reviewer-run views. Push notifications need mobile permission, an unmuted paired device, and a running daemon with network access to its push service. Pairing alone does not guarantee push delivery. Supported macOS hosts can enable keep-awake in Connect Mobile; the host must remain awake and reachable for interactive access.
+
+## If the phone cannot connect
+
+| Symptom | Check |
+| --- | --- |
+| QR stays in preparation | Wait for an advertised endpoint. If there is no LAN address, reconnect the desktop to a network and reopen Connect Mobile. |
+| Works on Wi-Fi but not elsewhere | Confirm a managed HTTPS endpoint is ready, rescan the refreshed QR, and test off Wi-Fi. A plain LAN or raw Tailscale address is not an iOS remote endpoint. |
+| Wrong computer or contract-version error | Check the computer name shown by the phone and update both apps. QR pairing checks the offered host identity before sending the password. |
+| Password rejected | Copy the current password from Connect Mobile or scan a new QR. Regeneration invalidates old credentials. Repeated wrong attempts can trigger a temporary lockout. |
+| Connection drops after sleep or app exit | Wake the desktop and reopen AO. On supported Macs, enable keep-awake if appropriate; the app and daemon still need to run. Reopen the session after the network returns. |
+| No push alerts | Allow phone notifications, check that the device is not muted, and confirm the daemon can reach its push service. Open the app directly for interactive work. |
+
+This walkthrough was checked against the desktop pairing UI, daemon mobile bridge, and the mobile app source at the v0.13.3 desktop baseline on 3 October 2026. Tailscale secure pairing, a physical iPhone or Android device, an authenticated production account, and a remote connector were not exercised. The final test for your network is a real phone pairing and an off-Wi-Fi reconnect; do not share a QR screenshot to troubleshoot it.
 
 <Callout type="info">
 	Chat and Terminal UI are two controllers for the same AO session. Switching does not create a new worktree, but a first switch from Terminal UI to Chat does not reconstruct old terminal screen output as structured messages.

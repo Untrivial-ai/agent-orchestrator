@@ -21,10 +21,10 @@ AO performs bounded installation and authentication probes before spawn. Use `--
 
 ## Accounts
 
-Open **Settings → Agents → Codex** to view the device’s current Codex account, add another account through Codex’s native login terminal, or switch the device to a verified account. AO derives each card label from the verified account, so there is no name prompt. Supported Codex builds can also provide plan, remaining-capacity, reset, and usage details.
+Open **Settings → Subscriptions** to view the current Codex account, add another account through Codex's login terminal, or switch to a verified account. AO uses the verified account name as the card label. Supported Codex builds also show plan and usage details.
 
-AO keeps inactive credentials in private account slots, but ordinary AO Codex launches use the normal device Codex home. Exactly one account is active device-wide. Switching updates and verifies that device-global credential atomically; new Codex launches briefly wait for activation and then use the selected account.
+Exactly one account is active for AO Codex launches on this device. Switching updates and verifies the device's Codex credential; new AO launches wait for the switch to finish.
 
-Running AO Codex sessions and reviewers are left untouched during account switching. Existing turns continue best-effort, while new controller launches use the selected account. Resume or restart an existing session manually when you want to relaunch its controller under the active account.
+Running AO Codex sessions and reviewers are not switched. Existing turns continue best-effort, while newly launched controllers use the selected account. Resume or restart a session to relaunch its controller under that account.
 
-Other Codex clients on the device—such as Terminal, IDE, and ChatGPT integrations—are not controlled by AO. AO never parses or exposes `auth.json` and does not scrape billing information. You can sign an account out; an inactive signed-out account can then be deleted. Per-task selection, assisted switching, automatic account selection, rename, reorder, and in-place replacement are not part of this release.
+AO does not control how other Codex clients on this device use authentication, or how switching an account affects them. AO never parses or exposes `auth.json`, and it does not scrape billing information. Sign out an account; you can delete it once it is inactive. Per-session account selection, rename, reorder, and in-place replacement are not available.

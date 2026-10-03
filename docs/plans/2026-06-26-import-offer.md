@@ -1,5 +1,11 @@
 # Dashboard-Surfaced Legacy Import Offer — Implementation Plan
 
+> **Historical status:** This records the PR #320 import-offer design at its
+> original repository and branch. Do not use its branch, repository, or API
+> shape as current guidance. Current import code also handles workspace
+> validation and Git preparation. See [the current import service](../../backend/internal/service/importer/importer.go)
+> and [current documentation](../README.md).
+
 > **For agentic workers:** implement task-by-task; each task ends with a green test + a commit. Steps use `- [ ]`.
 
 **Goal:** Replace the first-boot CLI import prompt with a daemon API (`GET`/`POST /api/v1/import`) and a dashboard banner. **Scope: projects + per-project settings only** (no orchestrator sessions, no transcript relocation), a faithful port of `aoagents/ReverbCode` PR #320.

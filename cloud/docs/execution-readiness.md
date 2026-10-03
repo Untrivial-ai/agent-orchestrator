@@ -15,7 +15,7 @@ alone is not sufficient.
 - [x] Session deletion retains durable session/event history and releases quota
   only after provider deletion is observed.
 - [x] Concurrent session creation cannot exceed the organization sandbox quota.
-- [x] Provider auto-pause is disabled. Heartbeats record liveness only.
+- [x] The control plane tracks user activity and can pause an idle session. Provider-native idle stops are accepted only with positive evidence and an eligible session; heartbeats alone do not keep a worker active. Local Docker workers do not auto-pause.
 - [x] Local Docker and hosted NodeOps use the same provider lifecycle contract.
 
 ## Worker and execution

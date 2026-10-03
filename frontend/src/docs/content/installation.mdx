@@ -3,22 +3,41 @@ title: Installation
 description: Download the AO desktop app and connect your coding tools.
 ---
 
+For the latest stable desktop build, start at the [official AO download page](https://orchestrator.inc/download/). It also lists nightly builds and the mobile apps. If you want a direct desktop package, choose one below:
+
 <InstallDownloads />
 
+On your phone, install [AO Mobile for iPhone or iPad](https://apps.apple.com/app/ao-mobile/id6792552173) or [AO Mobile for Android](https://play.google.com/store/apps/details?id=aoagents.dev). Then use [Connect Mobile](/configuration/remote-access) in the desktop app to pair it.
+
 The desktop app is the canonical install path. It owns the local daemon, requires no global `ao` command, and checks for updates after launch and while it is running.
+
+## Optional macOS install with Homebrew
+
+The desktop download above is the recommended install. On macOS, you can also install the existing Homebrew cask:
+
+```bash
+brew install --cask agentwrapper/tap/agent-orchestrator
+```
+
+The desktop app normally updates itself. To refresh a Homebrew-managed install, update Homebrew and then upgrade the cask:
+
+```bash
+brew update
+brew upgrade --cask agentwrapper/tap/agent-orchestrator
+```
 
 ## Prerequisites
 
 | Tool | When you need it | Why |
 | --- | --- | --- |
-| Git | Always | Creates and manages isolated worktrees and branches. |
+| Git | Repository projects | Creates and manages isolated worktrees and branches. |
 | GitHub CLI `gh` | GitHub projects | Uses your existing authentication for repository and pull-request operations. |
-| An agent harness | Always | The coding agent AO launches, such as Claude Code, Codex, Cursor, Aider, or OpenCode. |
-| tmux | Terminal UI on macOS/Linux | Keeps native TUI sessions attachable. Chat does not require an agent tmux pane. |
+| Coding agent (called a harness in AO) | Agent sessions | Install a supported tool such as Claude Code, Codex, Cursor, Aider, or OpenCode. See the [agent catalog](/plugins/agents) for the current list and interface support. |
+| tmux | macOS preflight and legacy/fallback terminal sessions | Desktop macOS/Linux packages include it. Source launches may need system tmux; see [Runtime](/plugins/runtimes). |
 
-AO uses the agent binaries and sign-ins already installed on your machine. It does not bundle Claude Code, Codex, or other provider CLIs.
+AO uses the coding agents and sign-ins already installed on your computer. **Settings → Harnesses** offers setup and readiness checks for supported agents; some need to be installed or signed in outside AO. Unreal Agent is a built-in Chat-only exception with its own platform and permission limits. See the [agent catalog](/plugins/agents).
 
-## Set Up AO
+## Set up AO
 
 <Steps>
 <Step>
@@ -41,6 +60,8 @@ gh auth status
 
 Use an account that can read the repository and perform the branch and pull-request actions you expect the agent to take.
 
+For GitLab, sign in with a GitLab token or `glab`. See [source-control setup](/plugins/scm).
+
 </Step>
 <Step>
 
@@ -48,17 +69,19 @@ Use an account that can read the repository and perform the branch and pull-requ
 
 Install at least one supported agent harness and run it once outside AO to complete its sign-in flow. AO detects available harnesses when you create a session.
 
-For structured Chat, start with Claude Code, Codex, OpenCode, or Droid. Other supported harnesses run through their native Terminal UI.
+Chat support depends on the harness and installed version; see the [agent capability catalog](/plugins/agents#chat-versus-terminal-ui).
 
 </Step>
 <Step>
 
 ### Add a project
 
-In the desktop app, choose **Add project** and select an existing local git repository. AO registers the project without moving your original checkout. New worker sessions receive their own isolated worktrees.
+In the desktop app, choose **Add project** and select an existing local Git repository. AO registers it without moving your original checkout. Each worker session gets its own isolated worktree.
 
 </Step>
 </Steps>
+
+You can also start a projectless standalone task for work that needs no repository. The optional CLI form is `ao spawn --standalone --agent codex --name notes --prompt "Draft release notes"`; standalone workers cannot claim a PR or take Git/project flags.
 
 ## Legacy npm CLI
 
@@ -85,11 +108,11 @@ New users should install the desktop app directly instead.
 </div>
 </details>
 
-## Where AO Stores Data
+## Where AO stores data
 
 All AO application state lives under `~/.ao` by default, including the daemon database, run file, managed worktrees, Electron browser data, and mobile pairing configuration. Advanced installations can override daemon paths with `AO_DATA_DIR` and `AO_RUN_FILE`.
 
-## Common Installation Problems
+## Common installation problems
 
 <Accordions>
 	<Accordion title="No agent is available">
@@ -99,7 +122,7 @@ All AO application state lives under `~/.ao` by default, including the daemon da
 		Run `gh auth status`. Confirm the active account can access the repository and its pull requests.
 	</Accordion>
 	<Accordion title="Terminal UI cannot start on macOS or Linux">
-		Install `tmux`, or choose Chat when the selected harness supports it.
+		Packaged builds include tmux. New sessions normally use native PTY hosts; macOS still checks tmux availability and older sessions may need it. See [runtime diagnostics](/plugins/runtimes/tmux) for source installs and fallback behavior.
 	</Accordion>
 	<Accordion title="The legacy `ao` command is not found">
 		The desktop app does not require it. Only troubleshoot the package manager's global bin path if you intentionally use the frozen legacy CLI.

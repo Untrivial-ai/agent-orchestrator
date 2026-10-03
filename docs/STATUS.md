@@ -36,14 +36,14 @@ surface (`npm run sqlc`, `npm run api`).
   rollback, cleanup, send, activity, PR claim/list. Orchestrator routes
   (list/spawn/get) are wired too.
 - One daemon-committed interface per session. TUI sessions retain the established
-  tmux/conpty agent runtime; Chat sessions use runtime-less native controllers,
+  native PTY/ConPTY agent runtime (tmux for legacy/fallback); Chat sessions use runtime-less native controllers,
   persist provider conversation identity, and dispatch lifecycle reactions
   through the same mode-aware session manager. A durable, capability-gated
   drain/interrupt handoff can move the same Claude Code or Codex native
   conversation between TUI and Chat without changing the AO session/worktree;
   rollback, restart recovery, controller-generation fencing, and a transition
   message outbox preserve the one-controller invariant.
-- Codex and all eight registered ACP Chat providers are
+- Codex and registered ACP Chat providers are
   owned by authenticated, detached
   per-session hosts. Desktop close, full quit, and updater daemon replacement
   detach and reconnect without relaunching the provider or interrupting an
@@ -56,7 +56,7 @@ surface (`npm run sqlc`, `npm run api`).
   load/resume remains the repair path after actual host failure; it is not needed
   for live adoption. Installation changes and launch-only credentials do not
   block adoption. Updater warnings use actual controller ownership rather than
-  a provider allowlist. Shared process tests cover all eight ACP identities;
+  a provider allowlist. Shared process tests cover the registered ACP identities;
   authenticated vendor and platform coverage is tracked separately in
   [the research/evidence note](research/persistent-acp-chat-hosts.md).
 - Durable Chat conversations with project-scoped orchestrator continuity,
@@ -64,7 +64,7 @@ surface (`npm run sqlc`, `npm run api`).
   archive/projection, controller-generation fencing, turns, messages,
   activities, approvals, structured input, usage, compaction, and rollback.
 - Chat drivers for the user's installed Codex (native app-server), Claude Code
-  (claude-agent-acp), Cursor, OpenCode, Droid, Kimchi, Kimi, Pi, OMP, Qwen, and
+  (claude-agent-acp), Cursor, OpenCode 1 and 2, Droid, Kimchi, Kimi, Pi, OMP, Qwen, DeepSeek Harness, and
   the built-in Unreal Agent library. Unreal Agent Chat runs on macOS and Linux
   behind AO's detached provider host, persists its native session plus an
   acknowledged AO event journal, and currently requires an explicit
@@ -80,8 +80,7 @@ surface (`npm run sqlc`, `npm run api`).
   per-session bypass-permissions fallback. The binding reuses the existing Pi config environment and auth
   probe and is never downloaded by AO. AO reuses each harness's existing
   binary/auth/environment resolution and does not bundle provider CLIs; Unreal
-  Agent is the library-backed exception. Cursor
-  is Chat-only until its ACP and TUI conversation ids are proven to share identity.
+  Agent is the library-backed exception. Cursor has both Chat and TUI adapters; cross-interface history handoff is a separate capability and must not be inferred from Chat registration.
 - MiMo Code 0.1.14+ is available as a TUI worker/orchestrator harness with
   model selection, native-session restore, workspace activity hooks, and
   truthful configured-credential readiness. Chat and reviewer support are not
@@ -91,14 +90,13 @@ surface (`npm run sqlc`, `npm run api`).
   `/prs/{id}/resolve-comments`.
 - Review routes registered: `GET /reviews`, `POST /reviews/execute`,
   `POST /reviews/{id}/send`.
-- Interactive reviewer panes for Aider, Agy, Amp, Auggie, Autohand,
-  Claude Code, Cline, Codex, Continue, GitHub Copilot, Crush, Cursor, Devin,
-  Droid, Goose, Grok, Kilo Code, Kimchi, Kiro, Kimi, OpenCode, Pi, Qwen, and Vibe. Pi uses an AO-data-owned extension with built-in/project
-  resources disabled, structured read-only inspection/reporting tools, and
-  Escape-based turn cancellation. Kiro also uses its native Escape
-  cancellation. Continue, Qwen, and Vibe also use Escape cancellation. Agy,
-  Continue, Devin, Droid, Goose, Kimchi, Kimi, Qwen, and Vibe are explicitly experimental and host-trusted. Grok, Crush, Auggie, Cline, and Autohand are experimental user-approved reviewers that retain their native approval prompts instead of receiving broad unattended flags:
-  native modes, autonomous settings, and prompts are not OS or network containment.
+- Interactive reviewer adapters: Aider, Agy, Amp, Auggie, Autohand,
+  Claude Code, Cline, Codex, GitHub Copilot, Crush, Cursor, Devin, Droid,
+  Grok, Kilo Code, Kimchi, Kiro, Kimi, Muse, OpenCode 1 and 2, and Pi.
+  Worker, Chat, and reviewer registries are separate. Experimental reviewer
+  selection must be explicit; native modes and prompts are not OS or network
+  isolation. See the [public catalog](../frontend/src/docs/content/plugins/agents/index.mdx)
+  and `internal/adapters/reviewer/registry.go` for the current set.
 - The provider-neutral interactive-reviewer capability gateway and neutral
   AO-owned working-directory contract are available. The experimental
   host-trusted adapters remain candidates for future contained execution once
@@ -107,23 +105,27 @@ surface (`npm run sqlc`, `npm run api`).
 - Durable dashboard notifications for `needs_input`, `ready_to_merge`,
   `pr_merged`, and `pr_closed_unmerged`: backend enrichment/persistence,
   cursor-paginated read/unread history, live notification stream, and read
-  acknowledgement API.
-- SCM observer (`internal/observe/scm`) wired into the daemon: GitHub provider,
+  acknowledgement API. The desktop presents one newest-first feed; opening it
+  acknowledges loaded unread items. It has clear-one/clear-all controls, not
+  separate Unread/All tabs or per-item mark-read buttons.
+- SCM observer (`internal/observe/scm`) wired into the daemon: GitHub and GitLab providers; the GitHub path has
   lazy/non-blocking auth, per-PR polling with ETag guards and semantic diffing,
   feeding PR facts into lifecycle, which sends agent nudges for CI failures,
   review feedback, and merge conflicts
-  ([#75](https://github.com/aoagents/agent-orchestrator/issues/75),
-  [#108](https://github.com/aoagents/agent-orchestrator/issues/108),
-  [#109](https://github.com/aoagents/agent-orchestrator/issues/109)).
+  ([#75](https://github.com/Untrivial-ai/agent-orchestrator/issues/75),
+  [#108](https://github.com/Untrivial-ai/agent-orchestrator/issues/108),
+  [#109](https://github.com/Untrivial-ai/agent-orchestrator/issues/109)).
 - User-opened standalone and session side shells reconnect across daemon and
   desktop restarts while their runtimes live. Explicit close, confirmed exit,
   and session/worktree teardown remain cleanup boundaries; new trusted command
   and authentication terminals remain scoped to their originating app launch.
 - Terminal mux over WebSocket (`/mux`): detached native PTY host for new macOS
-  sessions, per-client `tmux attach` for Linux and persisted legacy macOS
-  handles, and a ConPTY loopback host on Windows.
+  and Linux sessions, per-client `tmux attach` for persisted legacy handles
+  and native-host startup fallback, and a ConPTY loopback host on Windows.
+  macOS spawn still checks configured/bundled/system tmux; Linux native spawn
+  skips that check, while `doctor` continues to probe tmux on both platforms.
 - Lifecycle reducer plus reaper (`internal/observe/reaper`).
-- Agent adapter platform under `internal/adapters/agent/` (28 public harnesses) with a
+- Agent adapter platform under `internal/adapters/agent/` (see the public capability catalog for the current harness set) with a
   registry and `ao hooks` activity dispatch.
 - Experimental fx adapter: Terminal UI only (no Chat), with restore, agent
   switching, and Settings installation.
@@ -144,6 +146,15 @@ surface (`npm run sqlc`, `npm run api`).
 - OpenAPI spec generated from Go DTOs; frontend TS types generated from it and
   drift-checked in CI.
 
+- Recurring automation CRUD/run history and daemon scheduler, with IANA
+  timezone validation, restricted cron or RRULE input, and bounded catch-up.
+- Project Cues store reusable prompts or direct shell commands. The CLI exposes
+  create/list; desktop handles edit/delete/invoke. Direct commands require loopback.
+- Projectless standalone workers; controller exit/resume separate from session
+  kill/restore; worker reports with attention state and artifact/PR outputs.
+- Project `autoReview` defaults copied into sessions, with per-session controls
+  and idle/eligible-head gating. Workspace/PR/commit inspection is separate from merge.
+
 ### Frontend (Electron + React)
 
 - Electron + React 19 + TanStack Router/Query + Tailwind + shadcn primitives.
@@ -157,9 +168,10 @@ surface (`npm run sqlc`, `npm run api`).
   including load/disappearance/DOM-stability conditions, screenshots, console
   messages, page errors, and explicit temporary network-metadata capture while
   the Browser panel is hidden. Network capture is off by default, tab-scoped,
-  bounded, automatically expires, and omits bodies and sensitive values. Tabs
-  within one worker share an ephemeral Electron profile; different workers
-  have isolated cookies and web storage. The browser tab menu is only a tab
+  bounded, automatically expires, and omits bodies and sensitive values. Temporary profiles isolate workers by default. Named persistent profiles can
+  be selected and reused across sessions, deliberately sharing cookies/storage.
+  Supported browser imports copy data into AO storage without modifying the source.
+  Annotations can be delivered to Chat, and profiles/downloads have settings controls. The browser tab menu is only a tab
   navigation control: it does not render a global activity pill or a
   tab-specific agent marker. Annotation progress is separate and its
   successful-delivery confirmation clears automatically.
@@ -186,11 +198,10 @@ surface (`npm run sqlc`, `npm run api`).
 - SessionView renders from the session's persisted mode: the existing terminal
   surface for TUI, or the durable Chat timeline/composer for Chat. Chat retains
   access to session-scoped worktree shells without creating an agent tmux pane.
-- Compatible Claude Code and Codex sessions expose an in-session “Open Chat” /
-  “Open Terminal UI” action. Chat→TUI is the recovery path and always fences
-  queued work before interrupting the active turn; a busy TUI→Chat switch offers
-  the explicit finish-and-drain or stop-and-interrupt choice. Both directions
-  show durable progress/recovery state.
+- Compatible sessions expose "Switch to chat UI" / "Switch to terminal UI".
+  The available direction, finish/stop policy, and recovery action depend on
+  the harness and controller state. The dialog warns about drafts/queued turns;
+  native history replay is separate from raw terminal scrollback reconstruction.
 - Desktop status and SCM summary V1: session status comes from
   `GET /api/v1/sessions`; visible/active PR context comes from
   `GET /api/v1/sessions/{sessionId}/pr`; `GET /api/v1/events` is kept open as
@@ -203,10 +214,11 @@ surface (`npm run sqlc`, `npm run api`).
   connection and port-rebind on daemon restart.
 - Chat history uses bounded pages and targeted CDC/SSE invalidation rather than
   polling and transferring the full lifetime of a conversation.
-- In-app notification center with click access, Unread/All filters, paginated
-  REST catch-up, live notification stream updates, separate PR/session target
-  actions, persistent read history, mark-read controls, and Electron app toasts
-  while the app is running.
+- In-app notification center with click access, paginated REST catch-up, live
+  notification stream updates, separate PR/session target actions, persistent
+  read history, and Electron app toasts while the app is running. The desktop
+  presents a newest-first feed. Opening the feed acknowledges loaded unread
+  items, and clear-one and clear-all controls remove notifications.
 
 ### Mobile (Expo + React Native)
 
@@ -229,8 +241,17 @@ surface (`npm run sqlc`, `npm run api`).
   persisted drafts, and a session-scoped worktree shell through the existing
   terminal mux.
 
+- Pairing uses v2 endpoint offers and host identity verification, with optional
+  managed cloudflared remote access and Tailscale secure pairing. The primary
+  listener remains loopback-only. Direct LAN transport remains plaintext.
+- Paired-device push, mute/unpair controls, supported macOS keep-awake, and
+  mobile review/reviewer screens.
+
 ## In flight / not yet a runtime feature
 
+- **Cloud availability**: public client and desktop integration exist, but usage
+  is gated by build configuration, account entitlement, and a reachable control
+  plane. This is not unconditional availability in every desktop release.
 - **Browser automation acceptance**: the runtime implementation is complete.
   AO packages one
   checksum-pinned Vercel `agent-browser` Rust binary and routes a deliberately
@@ -252,15 +273,16 @@ surface (`npm run sqlc`, `npm run api`).
   can cancel it, but no common provider protocol serializes a currently executing
   tool call or detached background process for adoption by another controller.
 
-- **Tracker lane**: GitHub tracker adapter exists, but there is no daemon
-  observer loop or agent-lifecycle→issue mirroring yet, so the tracker does
-  nothing at runtime ([#112](https://github.com/aoagents/agent-orchestrator/issues/112)).
+- **Tracker mirroring**: GitHub/GitLab intake is wired and can spawn workers
+  when both `AO_TRACKER_INTAKE=on` and a project assignee rule enable it.
+  It remains read-only toward issues: lifecycle-to-issue comments/transitions
+  are not implemented.
 - **Full raw PR/tracker fact surfacing**: the SCM observer writes facts and the
   desktop consumes concise PR summaries, but exposing the full raw `pr_*` /
   `tracker_*` CDC events to live consumers
-  ([#110](https://github.com/aoagents/agent-orchestrator/issues/110)) and in
-  `ao session get` ([#111](https://github.com/aoagents/agent-orchestrator/issues/111))
+  ([#110](https://github.com/Untrivial-ai/agent-orchestrator/issues/110)) and in
+  `ao session get` ([#111](https://github.com/Untrivial-ai/agent-orchestrator/issues/111))
   is still open.
 
 Tracking milestone:
-[`rewrite`](https://github.com/aoagents/agent-orchestrator/milestone/1).
+[`rewrite`](https://github.com/Untrivial-ai/agent-orchestrator/milestone/1).

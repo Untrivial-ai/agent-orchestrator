@@ -1,4 +1,4 @@
-# Development Guide
+# Development guide
 
 How to set up, build, run, and test Agent Orchestrator locally.
 
@@ -7,17 +7,21 @@ How to set up, build, run, and test Agent Orchestrator locally.
 | Tool       | Minimum version | Notes                                                                  |
 | ---------- | --------------- | ---------------------------------------------------------------------- |
 | Go         | 1.27.1          | `go version` to check; install via [go.dev](https://go.dev/dl/)        |
-| Node.js    | 20.19.0         | `node --version`; install via [nodejs.org](https://nodejs.org/)        |
+| Node.js    | 24         | `node --version`; install via [nodejs.org](https://nodejs.org/)        |
 | npm        | 10              | Ships with Node.js                                                     |
 | Nix (opt.) | -               | `nix develop` drops you into a shell with all deps; see `../flake.nix` |
 
 Additional runtime dependencies for the daemon:
 
 - **git** (for worktree creation and agent integration)
-- **A running agent CLI** (Claude Code, Codex, Aider, etc.) - see
-  [the installation guide](https://docs.aoagents.dev/installation)
+- **A running agent CLI** (Claude Code, Codex, Aider, etc.). See [the installation
+  guide](https://docs.orchestrator.inc/installation).
 
-## Project Layout
+For source terminal runs on macOS, install/configure tmux; packaged builds
+bundle it. New macOS/Linux sessions use detached native PTY hosts, while old
+handles and host-start fallback use tmux. `ao doctor` still checks tmux on both.
+
+## Project layout
 
 ```text
 agent-orchestrator/
@@ -43,7 +47,7 @@ agent-orchestrator/
 ## Getting the code
 
 ```bash
-git clone https://github.com/AgentWrapper/agent-orchestrator.git
+git clone https://github.com/Untrivial-ai/agent-orchestrator.git
 cd agent-orchestrator
 npm ci
 ```
@@ -51,7 +55,7 @@ npm ci
 ### Branching
 
 ```bash
-git checkout -b my-feature-branch
+git checkout -b ao/my-feature-branch origin/main
 ```
 
 Keep your branch up to date by rebasing on main:
@@ -63,7 +67,8 @@ git rebase origin/main
 
 ### Committing
 
-Keep commits atomic - one logical change per commit. Stage related changes and commit with a conventional message:
+Keep commits atomic. Use one logical change per commit. Stage related changes and
+commit with a conventional message:
 
 ```bash
 git add <files>
@@ -106,7 +111,7 @@ go build ./...
 ```bash
 cd backend
 # Start the daemon (loopback HTTP server on 127.0.0.1)
-go run .
+go run ./cmd/ao daemon
 ```
 
 The CLI is built with Cobra. From `backend/`, run `go run ./cmd/ao --help` for
@@ -209,14 +214,14 @@ open issues/PRs for current mobile-specific setup notes.
 
 For CLI-only usage, open two terminals:
 
-**Terminal 1 -- start the daemon:**
+**Terminal 1: start the daemon.**
 
 ```bash
 cd backend
-go run .
+go run ./cmd/ao daemon
 ```
 
-**Terminal 2 -- interact while the daemon is running:**
+**Terminal 2: interact while the daemon is running.**
 
 ```bash
 cd backend
@@ -228,8 +233,8 @@ go run ./cmd/ao --help
 
 ### Backend
 
-- Backend tests use `httptest.Server` and injected fakes - no real daemon
-  required.
+- Backend tests use `httptest.Server` and injected fakes. They do not require a
+  real daemon.
 - Run the narrowest relevant test suite first (e.g. `go test ./internal/cli/`),
   then the full suite.
 
@@ -259,7 +264,7 @@ go run ./cmd/ao --help
 | ------------------------------------- | ----------------------- | ------------------------------------------------------------ |
 | `npm run typecheck` has type errors   | API types out of sync   | Run `npm run api` from repo root to regenerate               |
 | `npm run dev` fails on native modules | Missing build tools     | Install Python + C++ build tools for `node-gyp`              |
-| `npm install` or `npm ci` fails       | Node.js version too old | `node --version`; must be 20.19.0+ (see prerequisites above) |
+| `npm install` or `npm ci` fails       | Node.js version too old | `node --version`; must be 24+ (see prerequisites above) |
 | Blank window or crash on Linux        | Broken GPU driver stack | Start with `AO_DISABLE_GPU=1` to skip hardware acceleration  |
 
 ### Code generation drift
@@ -285,7 +290,7 @@ If CI fails on the `api-drift` check, the OpenAPI-generated files are out of syn
 npm run api
 ```
 
-If regeneration introduces unexpected diffs beyond your changes, check that your local tool versions match CI (Go 1.27.1+, Node 20.19.0+, npm 10+).
+If regeneration introduces unexpected diffs beyond your changes, check that your local tool versions match CI (Go 1.27.1+, Node 24, npm 10+).
 
 ## OpenAPI spec and generated types
 

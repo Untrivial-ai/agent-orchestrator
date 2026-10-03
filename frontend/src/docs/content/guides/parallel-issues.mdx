@@ -28,9 +28,13 @@ ao spawn --project api --name auth-fix --prompt "Fix token refresh" --harness co
 | Agent controller | One committed Chat or Terminal UI controller per session |
 | Chat history | Durable, session-scoped conversation projection |
 | Terminal | Session runtime or session-scoped worktree shell |
-| Browser preview | Dedicated selected-session browser target and ephemeral profile |
+| Browser preview | Dedicated target; temporary profile by default, or deliberately shared named profile |
 
-AO-managed worktrees live under `~/.ao/data/worktrees`, not `~/.worktrees`. External side effects such as pushes, pull requests, CI runs, and review comments are naturally shared with the repository host.
+AO-managed worktrees live under `~/.ao/data/worktrees`, not `~/.worktrees`. Changes outside a worktree, such as pushes, pull requests, CI runs, and review comments, are shared on the repository host.
+
+Standalone workers use a plain directory without a project. Start one with `--standalone --agent <agent>`; do not combine it with project or Git options.
+
+For issue association, choose `--tracker-provider github|gitlab` when needed. Automatic issue intake must be enabled in both daemon and project settings.
 
 ## Inspect and clean up
 
@@ -45,7 +49,7 @@ ao session cleanup
 
 Cleanup reclaims eligible workspaces for terminated sessions. Dirty registered worktrees are preserved and skipped.
 
-`ao status` reports daemon health; it is not the session list and does not have `--watch`.
+To check daemon health, use [`ao status`](/cli#ao-status). It does not list sessions.
 
 ## Follow the work
 

@@ -3,13 +3,13 @@ title: Quickstart
 description: Add a project, start one worker, and follow it from task to pull request.
 ---
 
-This guide follows the smallest useful AO loop in the desktop app: add one repository, start one worker, watch it work, and review the result.
+This guide walks through a first task in the desktop app: add a repository, start a worker, follow its work, and review the result.
 
 <Callout type="info" title="Before you start">
-	Install AO, authenticate `gh` for a GitHub project, and sign in to one supported agent harness. See [Installation](/installation).
+	Install AO, sign in to GitHub with `gh` if you use a GitHub project, and sign in to one supported coding agent. AO calls these tools harnesses. See [Installation](/installation).
 </Callout>
 
-## Pick A Safe First Task
+## Pick a safe first task
 
 Choose a repository where you can create a branch and pull request. Good first tasks have a clear finish line:
 
@@ -18,7 +18,7 @@ Choose a repository where you can create a branch and pull request. Good first t
 - Update a short documentation page.
 - Make a narrow refactor with explicit acceptance criteria.
 
-## Run The First Session
+## Run the first session
 
 <Steps>
 <Step>
@@ -32,7 +32,7 @@ Open Agent Orchestrator, choose **Add project**, and select the local repository
 
 ### Create a worker
 
-Create a new task from the project and enter a short name plus a specific prompt. Select an installed agent harness.
+Create a new task from the project and enter a short name plus a specific prompt. Select an installed coding agent. AO lists these under **Harnesses** in Settings.
 
 Choose the interface that fits the task:
 
@@ -46,9 +46,9 @@ AO creates an isolated git worktree and branch for the session before launching 
 
 ### Follow the session
 
-Select the session in the sidebar or board. The main pane shows either its Chat conversation or live terminal. The inspector keeps session details, pull-request state, reviews, changed files, and browser preview close at hand.
+Select the session in the sidebar or board. The main pane shows its Chat conversation or live terminal. The inspector shows session details, pull-request state, reviews, changed files, and browser preview.
 
-Activity such as active, idle, waiting for input, blocked, or exited is combined with pull-request facts to derive the status shown by AO.
+AO combines activity such as active, idle, waiting for input, blocked, or exited with pull-request facts to show the session's status.
 
 </Step>
 <Step>
@@ -75,7 +75,7 @@ AO never force-deletes a dirty worktree. Cleanup preserves user work when it can
 </Step>
 </Steps>
 
-## Try A Browser Preview
+## Try a browser preview
 
 For a web task, start the app inside the session and select its URL with the optional CLI:
 
@@ -85,9 +85,11 @@ ao preview http://127.0.0.1:5173
 
 If the repository includes `.ao/launch.json`, `ao preview start` can start a configured development server. The Browser tab then displays the selected target. AO does not guess a preview target merely because a worker exists.
 
-## Try Switching Interfaces
+## Try switching interfaces
 
-Compatible Claude Code and Codex sessions expose **Open Chat** or **Open Terminal UI**. An idle session can switch directly. If a turn is busy, AO asks whether to finish and drain it or stop and interrupt it before replacing the controller. The AO session and worktree remain the same.
+Supported sessions show **Switch to chat UI** or **Switch to terminal UI**. The option depends on the agent and whether it is working. AO keeps the same session and worktree while it replaces one controller at a time.
+
+If offered, **Finish work, then switch** waits for accepted work. **Stop now and switch** interrupts it. Some terminal sessions require **Terminate and then switch**. Read the dialog because drafts, attachments, or queued turns may need to be sent again. See [Dashboard: switch interfaces](/dashboard#switch-interfaces) for details about conversation history.
 
 ## Optional CLI
 
@@ -99,7 +101,11 @@ ao session ls
 ao send --session <session-id> --message "Run the focused tests before you finish."
 ```
 
-## Next
+Choose the default interface in **Settings → General**, or choose one for the new task. Project agent settings choose the coding agent, model, reasoning effort, and provider execution mode. They do not set the global Chat or Terminal UI default.
+
+<span id="next" />
+
+## Next steps
 
 <Cards>
 	<Card title="Dashboard" description="Learn the board, session view, inspector, Chat, and terminal." href="/dashboard" />

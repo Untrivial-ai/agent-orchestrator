@@ -3,17 +3,16 @@ title: CI recovery
 description: How AO observes failing GitHub checks and sends focused context to the owning session.
 ---
 
-When a claimed GitHub pull request has failing checks, AO's SCM observer records the new facts and routes a recovery message to the session that owns the PR.
+When a claimed GitHub pull request has a failing check, AO records it and sends a recovery message to the worker that owns the PR.
 
 ## The flow
 
-1. AO polls the claimed PR through its GitHub provider.
-2. The lifecycle reducer derives `ci_failed` from the stored PR facts.
-3. AO formats the failing check names and links into one focused message.
-4. The session manager delivers it through the active interface: a native Chat turn or the Terminal UI runtime.
-5. The desktop updates the PR summary and failing-check links from the same durable facts.
+1. AO checks the claimed PR on GitHub.
+2. AO records new failing checks and sends their names and links to the owning session.
+3. The session receives the message in Chat or Terminal UI.
+4. The desktop updates the PR summary with the same check information.
 
-AO fingerprints the failing-check set. An unchanged failure is not resent on every poll; a changed set can produce a new nudge.
+AO compares the check list with the previous one. It does not resend an unchanged failure on every poll. A changed list can trigger another message.
 
 ## Make sure the PR is linked
 
@@ -36,9 +35,13 @@ ao spawn --project my-project --name fix-pr-42 \
 
 Use `--no-takeover` if the operation should fail when another active session already owns the PR.
 
+Claiming records ownership, but does not check out the PR branch. Prepare the matching workspace before asking the worker to make a fix.
+
+`ao report` sends a worker update to an existing orchestrator. It does not claim PR ownership.
+
 ## What the agent receives
 
-The message includes the failing checks and available run URLs, plus the PR identity. Raw CI logs are not copied into AO's desktop API; the agent can follow the supplied links and use the repository host's CLI to inspect logs.
+The message includes the failing check names, available run URLs, and PR identity. AO does not copy raw CI logs into the desktop app. The agent can follow the links or use the repository host's CLI to read the logs.
 
 ## Follow progress
 
@@ -46,9 +49,8 @@ Open the session inspector to see the PR, CI state, and failing-check links. The
 
 ## Current limits
 
-- The shipped SCM observer is the GitHub path.
-- CI automation is built in and is not configured through a `reactions:` YAML block.
-- There is no `ao review-check` command or configurable CI retry/escalation budget.
-- Draft and required-check semantics come from the normalized PR facts rather than a user reaction rule.
+- This example covers GitHub checks. AO also observes GitLab, but check and review details depend on the provider.
+- CI messages are built in. You cannot configure them through a `reactions:` YAML block or set a retry budget. See [Automation reference](/configuration/lifecycle-automation) for current behavior.
+- AO uses the pull-request status reported by the repository host for draft and required-check status.
 
 If automatic delivery is unavailable, open the owning Chat or Terminal UI session and send a follow-up directly with the desktop composer or `ao send`.

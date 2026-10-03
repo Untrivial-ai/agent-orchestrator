@@ -12,7 +12,7 @@ Role and interface are separate choices. Either role can start in structured Cha
 
 ## Configure roles
 
-Open the project settings in the desktop app and choose the worker and orchestrator agents. The CLI can set the initial agents while registering a project:
+Open Project Settings in the desktop app and choose a coding agent for each role. The CLI can set these agents while registering a project:
 
 ```bash
 ao project add --path /absolute/path/to/repo \
@@ -40,7 +40,9 @@ For a full configuration replacement, the stored JSON shape is:
 }
 ```
 
-Pass the object itself with `ao project set-config <project-id> --config-json '<json-object>'`; the flag does not read a file. This replaces the project config, so preserve any existing setup, rules, reviewers, or intake fields.
+This example uses `bypass-permissions`, which lets provider tools act without their normal approval prompts. Use it only when intended; available permission modes depend on the provider.
+
+The `--config-json` flag takes a JSON string, not a file, and `set-config` replaces the whole project configuration. Preserve existing setup, rules, reviewers, and intake settings. See [Projects: update from the CLI](/configuration/projects#update-from-the-cli) for CLI limitations and safer alternatives.
 
 ## Start an orchestrator or worker
 
@@ -54,14 +56,18 @@ ao spawn --project my-project --kind worker \
   --name issue-42 --issue 42 --mode tui
 ```
 
-`--name` is required and limited to 100 characters. `--harness` overrides the role's configured agent for one spawn.
+`--name` is required and limited to 100 characters. Use `--harness` to choose a different agent for one spawn.
 
 ## Choose Chat or Terminal UI
 
-- Use **Chat** for structured messages, provider activity, approvals, plans, changed files, usage, compaction, and rollback. Current native drivers cover Codex, Claude Code, OpenCode, and Droid.
+- Use **Chat** for structured messages, provider activity, approvals, plans, changed files, usage, compaction, and rollback. Chat support depends on the harness and installed version; see the [agent capability catalog](/plugins/agents#chat-versus-terminal-ui).
 - Use **Terminal UI** when you want the agent's native interface or a harness without native Chat support.
 
-Compatible Claude Code and Codex sessions expose **Open Chat** or **Open Terminal UI**. Idle sessions switch directly. When work is active, AO asks whether to finish and drain it or stop and interrupt it before switching controllers.
+Compatible Claude Code and Codex sessions expose **Switch to chat UI** or **Switch to terminal UI**. Idle sessions switch directly. When work is active, AO asks whether to finish and drain it or stop and interrupt it before switching controllers.
+
+The default interface comes from **Settings → General**. Project `agentConfig.mode` does not set Chat or Terminal UI. A choice made for a task or with the CLI takes precedence.
+
+Model, reasoning effort, permissions, and provider execution modes depend on the selected agent. Chat support and the ability to switch interfaces are separate capabilities, so use the switch action offered for that session.
 
 ## Project rules
 

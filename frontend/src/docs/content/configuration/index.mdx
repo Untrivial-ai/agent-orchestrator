@@ -29,19 +29,18 @@ AO also supports workspace projects, which contain a root repository and direct 
 ao project add --path /absolute/path/to/workspace --as-workspace
 ```
 
-Fresh installations include a Scratch project for work that does not need Git. Scratch sessions use AO-managed directories and do not support branches or pull-request claims.
+Standalone workers support projectless work: `ao spawn --standalone --agent codex --name notes`. Existing Scratch projects also use AO-managed directories without branches or PR claims.
 
 ## Inspect and update configuration
 
 ```bash
 ao project ls
 ao project get <project-id>
-ao project set-config <project-id> --worker-agent codex
 ```
 
-`set-config` replaces the stored project configuration. Prefer project settings in the desktop app for interactive edits, or first inspect `ao project get <project-id> --json` before replacing configuration in a script. `--config-json` accepts a JSON object string, not a filename.
+Use Project Settings in the desktop app for interactive changes. The CLI's `set-config` command replaces the entire project config, even when you use focused flags. Before using it, read [the CLI update warning](/configuration/projects#update-from-the-cli). The CLI ignores unknown JSON keys and drops existing effort values; use Project Settings or the daemon API to view or change effort.
 
-Current project configuration is typed. It covers the base branch, session prefix, environment variables, symlinks, setup commands, worker and orchestrator agents, agent options, project rules, reviewer agents, tracker intake, and container cleanup. Unknown fields are rejected instead of being silently ignored.
+Project configuration has typed fields for the base branch, session prefix, environment variables, symlinks, setup commands, worker and orchestrator agents, agent options, project rules, reviewers, automatic review, trusted repository URLs, issue intake, and container cleanup. The daemon API rejects unknown fields. The CLI's `--config-json` decoder ignores unknown keys, so a typo can clear existing settings when the full config is replaced.
 
 See [Projects](/configuration/projects) for the current field reference.
 
@@ -68,10 +67,14 @@ Every session commits to one interface at a time:
 - **Chat** uses a structured, runtime-less provider controller with durable messages, activities, approvals, and usage.
 - **Terminal UI** runs the agent's native terminal interface through AO's terminal runtime.
 
-Choose the default for new sessions in project settings. You can also select it explicitly from the new-session flow or with `ao spawn --mode chat|tui`. Compatible Claude Code and Codex sessions can switch interfaces later without changing the AO session or worktree.
+Choose the default for new sessions in **Settings → General**. A choice made for a specific task takes precedence. If a requested interface is unavailable, AO uses Terminal UI as its compatibility fallback.
+
+Project `agentConfig.mode` selects a provider execution mode. It does not select Chat or Terminal UI. Choose the interface in the new-session flow or with `ao spawn --mode chat|tui`. Compatible Claude Code and Codex sessions can switch interfaces without changing the AO session or worktree.
+
+Manage recurring tasks in **Automations**, reusable project actions in **Cues**, installed provider readiness in **Settings → Harnesses**, and persistent profiles/imports in **Settings → Browser**. These features have their own settings/resources rather than legacy YAML keys.
 
 <Cards>
 	<Card title="Projects" href="/configuration/projects" description="Configure one project and its session roles." />
-	<Card title="Lifecycle automation" href="/configuration/lifecycle-automation" description="Understand built-in CI, review, and merge-conflict handling." />
+	<Card title="Automation reference" href="/configuration/lifecycle-automation" description="Understand built-in CI, review, and merge-conflict handling." />
 	<Card title="Remote access" href="/configuration/remote-access" description="Pair the native mobile app safely." />
 </Cards>

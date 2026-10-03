@@ -1,5 +1,10 @@
 # Session File Tabs Design
 
+> **Status:** Historical design. The file-tab behavior remains useful context,
+> but the branch indicator is superseded. Current session UI keeps branch
+> context out of the session top bar. See
+> [SessionView tests](../../../frontend/src/renderer/components/SessionView.test.tsx).
+
 ## Goal
 
 Turn the Files inspector into an editor-style navigator: selecting files in the right rail opens language-aware tabs in the center workspace while preserving the live terminal as a permanent destination. Add a compact, read-only branch indicator to the session chrome.

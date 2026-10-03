@@ -3,7 +3,7 @@ title: Multi-project
 description: Manage repositories, multi-repository workspaces, and Scratch sessions from one desktop.
 ---
 
-AO's daemon owns a durable project registry in SQLite. The desktop sidebar shows every registered project and its sessions; there is no single `agent-orchestrator.yaml` containing a `projects:` map.
+The desktop sidebar shows every registered project and its sessions. Add a repository as a separate project, or group a root and its child repositories in a workspace.
 
 ## Add projects
 
@@ -25,11 +25,11 @@ Register a parent directory containing direct child repositories as one workspac
 ao project add --path /absolute/path/to/product --as-workspace
 ```
 
-Fresh installations also have Scratch for tasks that do not require Git. Scratch sessions cannot use `--branch` or `--claim-pr`.
+Scratch projects use plain directories managed by AO. For work without a project, run `ao spawn --standalone --agent codex --name notes`. Standalone sessions need an explicit agent and cannot use project, branch, issue, PR, or orchestrator options. Scratch projects do not support Git branches or PRs either.
 
 ## Give each project its own roles
 
-Open each project's settings and choose its worker, orchestrator, model, rules, setup, reviewers, and default session interface. Project configuration is typed and independent; changing one project does not set global YAML defaults for the others.
+Open each project's settings and choose its worker, orchestrator, model, rules, setup, reviewers, and automatic review default. Select the global default session interface in **Settings → General**; override it per task. Project configuration is typed and independent; changing one project does not set global YAML defaults for the others.
 
 ## Spawn in the right project
 
@@ -38,7 +38,7 @@ ao spawn --project api --name api-issue --issue 42 --mode chat
 ao spawn --project web --name web-fix --prompt "Fix the header" --mode tui
 ```
 
-When `--project` is omitted, AO can resolve `AO_PROJECT_ID`, the current registered repository, or Scratch when it is the only project. Supplying the project explicitly is clearest in scripts.
+When `--project` is omitted, AO resolves `AO_PROJECT_ID`, the project of `AO_SESSION_ID`, then the closest registered project containing the current directory. It does not fall back to a sole Scratch project. Supplying the project explicitly is clearest in scripts.
 
 ## Inspect across projects
 
@@ -51,13 +51,15 @@ ao session ls --project api
 ao session ls --project api --json
 ```
 
-`ao status` reports daemon health rather than project sessions. It supports `--json`, not `--watch` or a project filter.
+To check daemon health, use [`ao status`](/cli#ao-status). It does not list sessions.
 
 ## Stop and clean up
 
 Kill one session with `ao session kill <session-id>`. Use `ao session cleanup --dry-run` before reclaiming eligible terminated-session workspaces. Dirty worktrees are preserved.
 
-`ao stop` stops the daemon and takes no project argument. Closing a desktop-owned app normally reaps its linked daemon; a headless daemon remains until explicitly stopped.
+`ao stop` stops the daemon and takes no project argument. Closing a view does not end a session. Use `exit-agent` and `resume-agent` to stop or restart its controller. Use `kill` and `restore` to end or relaunch the session.
+
+Some detached terminal and Chat processes can survive a daemon restart. Reconnecting depends on the provider. See [Dashboard](/dashboard) for session controls.
 
 ## Use mobile across projects
 

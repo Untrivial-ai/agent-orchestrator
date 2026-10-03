@@ -1,6 +1,6 @@
 # CloudAgent V1 Parity And Performance Checklist
 
-This document compares the private AO Cloud implementation with the
+This historical comparison checks the AO Cloud implementation against the
 `cloudagent-v1-auth` branch in the public checkout. "Confirmed in V1" means the
 mechanism exists in that branch's source. It does not mean AO Cloud should copy
 the old architecture wholesale: AO Cloud is multi-replica and Postgres-backed,

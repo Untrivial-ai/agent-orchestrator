@@ -3,23 +3,37 @@
 Date: 2026-07-07
 Status: Accepted
 
+Implementation note (2026-10-03): this ADR records the original LAN decision.
+Current Connect Mobile also advertises managed remote/Tailscale secure endpoints
+around the authenticated listener; the primary listener remains loopback-only.
+The implementation persists the rotating password in a mode-`0600` file and
+derives its comparison hash in memory, rather than persisting only a hash.
+See the [current access guide](../../frontend/src/docs/content/configuration/remote-access.mdx)
+and [identity-probe ADR](0003-unauthenticated-identity-probe.md). The historical
+decision below is retained for context.
+The current v2 Pairing QR carries the rotating bearer token, host identity, and all
+advertised endpoints in its URI fragment, so the QR or copied link is sensitive. The
+mobile app races those endpoints and supports multiple paired desktop records. The
+historical non-secret QR and out-of-band password wording below remains the original
+decision record.
+
 ## Context
 
 The daemon binds `127.0.0.1` only. AGENTS.md carries a hard rule: _"The daemon is
 a loopback-only sidecar. Do not make the bind host configurable or expose it beyond
-`127.0.0.1`."_ That rule keeps the Loopback Listener safe **without authentication**
-— the OS guarantees nothing off-box can reach it.
+`127.0.0.1`."_ That rule keeps the Loopback Listener safe **without
+authentication**. The OS guarantees that nothing off-box can reach it.
 
 We want a physical phone to use the app over the local network. The only prior
 mechanism was a standalone Node proxy (`ao-phone-proxy.js`) run by hand, with
 IP trust-on-first-connect and no password. The user rejected the proxy approach and
 asked for an in-app "Connect Mobile" feature.
 
-Two forces collide: exposing anything to the LAN removes the loopback safety
-guarantee, and the target mobile app is **Expo/React Native**, where trusting a
-self-signed TLS cert (fingerprint pinning) requires native modules across three
-transports (`fetch`, the `/mux` WebSocket, and the xterm WebView) — a large, risky
-effort at odds with the desired scope.
+Two forces collide. Exposing anything to the LAN removes the loopback safety
+guarantee. The target mobile app is **Expo/React Native**, where trusting a
+self-signed TLS certificate through fingerprint pinning requires native modules
+across three transports (`fetch`, the `/mux` WebSocket, and the xterm WebView).
+That is a large, risky effort for the desired scope.
 
 ## Decision
 
@@ -32,13 +46,14 @@ to the Loopback Listener.
 Security posture:
 
 - **On-demand.** The LAN Listener does not exist until Connect Mobile is enabled;
-  disabling closes the socket. Default off — zero standing LAN surface.
+  disabling closes the socket. It is off by default, so there is no standing LAN
+  surface.
 - **Single rotating Connection Password**, 8-char alphanumeric, stored only as a
   hash, compared constant-time. Sent as `Authorization: Bearer <password>` on both
   REST and the RN WebSocket (RN's WebSocket header option). Rotating drops the
   current phone.
-- **Per-source Lockout** after 5 failed attempts (not global — a hostile device
-  must not be able to lock out the real phone).
+- **Per-source Lockout** after 5 failed attempts. It is not global, so a hostile
+  device cannot lock out the real phone.
 - **App API only** on the LAN Listener; daemon-control routes keep their existing
   loopback-only guard (`localControlRequest`) with no change.
 - The authenticated app API includes `GET /api/v1/fs/dirs` for remote folder

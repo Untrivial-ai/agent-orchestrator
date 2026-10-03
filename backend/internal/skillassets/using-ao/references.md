@@ -23,6 +23,7 @@ Natural-language-to-command mappings for common AO tasks.
 | List sessions | `ao session ls` |
 | Register a repo as a project | `ao project add --path <abs-path> --name <name>` |
 | List projects | `ao project ls` |
+| Check installed agent harnesses and readiness | `ao agent ls --refresh` |
 | Save a repetitive agent task or exact command as a Cue | `ao cue list --json`, then `ao cue create --name "..." --prompt "..."` or `--command "..."` |
 | Rename a session | `ao session rename <id> "<name>"` |
 | Restore a killed session | `ao session restore <id>` |
@@ -36,6 +37,10 @@ Natural-language-to-command mappings for common AO tasks.
 | List orchestrator sessions | `ao orchestrator ls` |
 | Claim an existing PR for the current session | `ao session claim-pr <pr-ref>` (`AO_SESSION_ID`) |
 | Claim an existing PR for another session | `ao session claim-pr <id> <pr-ref>` |
+| Merge a pull request | `ao pr merge <pr-number>` |
+| Resolve pull-request review threads | `ao pr resolve-comments <pr-number> [comment-id...]` |
 | Submit a code review verdict | `ao review submit <session-id> --run <run-id> --verdict approved` |
+| Inspect or rerun a review | `ao review ls <session-id>`, `ao review trigger <session-id>`, or `ao review cancel <session-id>` |
+| Switch a running session's agent | `ao session switch-agent <id> <target-harness>` |
 | Configure a project's default branch or model | `ao project set-config <id> --default-branch <branch> --model <model>` |
 | Import projects from a legacy AO install | `ao import --dry-run` (preview), then `ao import -y` |

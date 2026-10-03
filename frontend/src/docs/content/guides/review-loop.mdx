@@ -5,6 +5,8 @@ description: Route GitHub feedback to workers and run dedicated AO reviewer agen
 
 AO supports two complementary review loops: observing feedback already posted on a claimed GitHub PR, and launching an AO reviewer agent against a worker's PR.
 
+Start with a worker session that has a linked PR and a current head. Open that worker, then use the inspector's **Reviews** section. The reviewer runs against the worker's PR; it is not the worker agent and does not own the worker's branch. Use the [Dashboard review controls](/dashboard#pull-requests-and-reviews) to find the PR summary, review status, and Files view.
+
 ## GitHub feedback
 
 The SCM observer records review state and unresolved comments. When changes are requested or unresolved feedback changes, lifecycle sends the focused unresolved comments to the owning worker. Resolved threads drop out of the next message.
@@ -16,9 +18,11 @@ Delivery follows the session interface:
 
 Feedback is signature-deduplicated. AO does not repeat an unchanged comment set on every poll.
 
+If feedback does not arrive, confirm the PR is claimed by this worker, the repository host is authenticated, and the comment remains unresolved on the current head. A claim records ownership but does not check out the PR branch. Read the linked review on GitHub or GitLab before asking the worker to act on an older comment.
+
 ## AO reviewer agents
 
-Configure reviewers in project settings. Claude Code, Codex, and OpenCode are supported reviewer harnesses. If the project has no reviewer configured, AO reuses a review-capable worker harness or falls back to Claude Code.
+Select reviewers independently in project settings; the [agent catalog](/plugins/agents) distinguishes reviewer support from worker and Chat support. Without an explicit reviewer, AO inherits Claude Code, Codex, OpenCode, Muse, or Kimchi from the worker; other workers fall back to Claude Code. Other reviewer harnesses must be selected explicitly.
 
 From the desktop, open the worker and use the Reviews section in the inspector. From the CLI:
 
@@ -30,6 +34,10 @@ ao review cancel <worker-session-id>
 
 Reviewer runs are separate from worker sessions. Their verdict and body are recorded against the worker and can be delivered back to it through the review API.
 
+In the inspector, choose the reviewer harness (and offered model/mode), start the run, then open its Chat or terminal surface. Read the result before sending findings to the worker. A reviewer harness can have different permissions from the worker; an experimental reviewer is not automatically sandboxed. If the trigger is unavailable, check the linked PR, reviewer readiness, and the reason shown by the UI. `ao review ls` shows the run state; `ao review cancel` stops a run that should not continue.
+
+Enable automatic review per session, or use the project `autoReview` default for future workers. It starts only for an eligible PR head while the worker is idle. In **Files**, inspect workspace or PR changes and available commits; local inspection does not automatically publish a review. The mobile review and reviewer views expose the corresponding session results.
+
 ## Best practices
 
 - Keep the PR claimed by the worker that should act on feedback.
@@ -38,6 +46,8 @@ Reviewer runs are separate from worker sessions. Their verdict and body are reco
 - Inspect the current PR head before replaying old feedback after a force-push.
 
 ## Approval and merge
+
+An AO reviewer result is not the same as a human or repository-host approval. Inspect remaining GitHub/GitLab threads and branch protection before requesting merge. Automatic review starts only on an eligible PR head while the worker is idle; it does not approve or merge by itself.
 
 Approval plus passing checks contributes to merge readiness. AO creates a durable merge-ready notification but does not automatically merge from a reaction rule. Merge explicitly in the desktop or with:
 
@@ -53,4 +63,4 @@ ao pr resolve-comments <pr-number> [comment-id...]
 
 ## Current limits
 
-There is no `ao review-check` command, configurable review polling throttle, `bugbot-comments` reaction, or YAML retry budget in the current rewrite. The GitHub observer and AO review-run system are the supported paths.
+There is no `ao review-check` command, configurable review polling throttle, `bugbot-comments` reaction, or YAML retry budget in the current rewrite. GitHub and GitLab have SCM observation; this page's thread-resolution examples describe GitHub. Provider review semantics differ, so inspect the repository host when an action is unavailable.

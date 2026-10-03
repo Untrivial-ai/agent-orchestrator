@@ -1,5 +1,11 @@
 # Plan: Save-on-Close / Restore-on-Open Session Lifecycle
 
+> **Historical status:** This plan is a historical design record. The current
+> workspace-aware lifecycle writes `session_worktrees` rows during workspace
+> saves, so the single-row shutdown marker described below is not current
+> guidance. See [the current session manager](../../backend/internal/session_manager/manager.go)
+> and [the architecture notes](../architecture.md).
+
 ## Goal
 
 Make the intended lifecycle real and lean: on app close, save every running

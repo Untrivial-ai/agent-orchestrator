@@ -23,7 +23,7 @@ invariants.
 | Backend language   | Go 1.27.1                                                                                       | Implemented            | Matches `backend/go.mod`; small daemon, strong stdlib, easy local distribution.                                                     |
 | Backend core       | Go stdlib                                                                                       | Implemented            | Domain, lifecycle, session, and adapter contracts should stay dependency-light.                                                     |
 | Frontend shell     | Electron + TypeScript                                                                           | Implemented            | Local desktop control plane paired with the daemon.                                                                                 |
-| Runtime adapter    | Native detached PTY host (new macOS sessions), `tmux` (Linux and legacy macOS handles), ConPTY host (Windows) | Implemented            | Versioned opaque handles keep existing macOS sessions on tmux while new sessions stream the PTY directly.                           |
+| Runtime adapter    | Native detached PTY host for new macOS/Linux sessions, `tmux` for legacy handles and startup fallback, ConPTY host on Windows | Implemented            | `runtimeselect` creates new macOS/Linux sessions on the native PTY host, routes persisted legacy handles to tmux, and falls back to tmux if the host cannot start. |
 | Terminal PTY       | `github.com/creack/pty`                                                                         | Implemented            | PTY-backed terminal sessions with resize/input/output control.                                                                      |
 | Terminal viewport  | `github.com/unixshells/vt-go`                                                                   | Implemented            | Gives detached PTY hosts a rendered current-screen model for safety checks; the ring remains historical attach replay only.          |
 | Git/worktrees      | `git` CLI via `os/exec`                                                                         | Implemented            | Uses real repo behavior, credentials, hooks, LFS, submodules, and user config.                                                      |
@@ -89,7 +89,8 @@ Go daemon
   github.com/coder/websocket
   github.com/creack/pty
   github.com/unixshells/vt-go (ConPTY rendered viewport)
-  tmux runtime adapter via os/exec (conpty on Windows), selected by runtimeselect
+  native detached PTY host on macOS/Linux, with tmux for legacy handles and startup fallback
+  ConPTY host on Windows, selected by runtimeselect
   git worktree adapter via git CLI
   SQLite via database/sql + modernc.org/sqlite
   github.com/sqlc-dev/sqlc generated queries

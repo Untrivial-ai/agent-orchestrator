@@ -1,11 +1,11 @@
 ---
 title: Issue tracking
-description: The current GitHub-only, opt-in issue intake capability.
+description: Opt-in, read-only GitHub and GitLab issue intake.
 ---
 
-AO currently ships one tracker adapter: [GitHub](/plugins/trackers/github). GitLab and Linear are not supported by the Go rewrite.
+AO has GitHub and GitLab issue adapters. The existing [GitHub intake guide](/plugins/trackers/github) explains the shared opt-in flow; choose `gitlab` for GitLab projects. Linear and external Node tracker plugins are unsupported.
 
-Tracker intake needs both a per-project opt-in and the daemon-wide `AO_TRACKER_INTAKE` flag, which defaults off. Once both are on it can discover matching GitHub issues and spawn workers, but v1 is read-only toward the tracker: AO does not comment on or transition issues as agent lifecycle changes.
+Tracker intake needs both a per-project opt-in and the daemon-wide `AO_TRACKER_INTAKE` flag, which defaults off. Once both are on it can discover matching GitHub or GitLab issues and spawn workers, but v1 is read-only toward the tracker: AO does not comment on or transition issues as agent lifecycle changes.
 
 <Callout type="warn">
 	The tracker lane is still limited. Do not treat issue association as a complete two-way synchronization workflow.

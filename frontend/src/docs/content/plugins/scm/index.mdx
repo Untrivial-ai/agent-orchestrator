@@ -1,9 +1,9 @@
 ---
 title: Source control and pull requests
-description: GitHub PR, CI, review, and mergeability support built into AO.
+description: GitHub and GitLab source-control observation, authentication, and actions.
 ---
 
-AO's current SCM provider is GitHub. It observes pull requests associated with active sessions and feeds concise facts into the lifecycle engine and desktop UI.
+AO watches GitHub pull requests and GitLab merge requests associated with active sessions. It shows their state, checks, mergeability, and reviews in lifecycle and desktop views. Some review and check details differ by provider.
 
 The provider tracks:
 
@@ -12,6 +12,23 @@ The provider tracks:
 - mergeability and merge-conflict reasons;
 - review decisions and unresolved human-review comment counts.
 
-GitLab merge requests are not supported by the Go rewrite.
+For GitHub, authenticate `gh`. For GitLab, the daemon resolves `AO_GITLAB_TOKEN`, then `GITLAB_TOKEN`, then authenticated `glab` credentials. Use an account with access to the repository and the actions you intend to perform.
+
+To connect a self-managed GitLab host:
+
+1. Add its hostname to the daemon's `AO_GITLAB_ALLOWED_HOSTS` setting. Include the port if the host uses one; omit `https://`. GitLab.com is already allowed.
+2. If the host needs a separate token, add a `host=token` entry to `AO_GITLAB_HOST_TOKENS`.
+3. Restart AO so its daemon reads the new settings. If the desktop app manages the daemon, quit and reopen AO.
+
+For example, in a shell that launches AO:
+
+```sh
+export AO_GITLAB_ALLOWED_HOSTS="gitlab.example.com"
+export AO_GITLAB_HOST_TOKENS="gitlab.example.com=YOUR_GITLAB_TOKEN"
+```
+
+Replace `YOUR_GITLAB_TOKEN` with the token for that host. These are daemon environment settings, not project settings. Do not put tokens in project JSON or docs. Without a host-specific token, AO uses `AO_GITLAB_TOKEN`, then `GITLAB_TOKEN`, then authenticated `glab` credentials.
+
+When a numeric PR/MR reference is ambiguous, include its full URL. If the Git remote points to a fork but claims should target the upstream, set the project's `canonicalRepoURL`. This trusts the upstream for claims without changing where AO checks out or pushes. A claim records ownership; it does not check out the PR/MR branch. AO sends merge actions to the owning provider. GitHub review actions may differ on GitLab.
 
 See [GitHub SCM](/plugins/scm/github) for authentication and the current action surface.

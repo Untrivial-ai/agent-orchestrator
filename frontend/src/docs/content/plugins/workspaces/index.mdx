@@ -10,6 +10,7 @@ Workspace behavior follows the registered project kind:
 | Git repository | A fresh [Git worktree](/plugins/workspaces/worktree) and branch. |
 | Multi-repository workspace | A root worktree with registered child repositories materialized for the session. |
 | Scratch | An AO-managed directory with no branch or PR operations. |
+| Standalone worker | A projectless AO-managed directory; no project, issue, branch, or PR options. |
 
 AO does not currently offer a full-clone workspace selector. Register a project with `ao project add`, then let the daemon route workspace operations from its project record.
 

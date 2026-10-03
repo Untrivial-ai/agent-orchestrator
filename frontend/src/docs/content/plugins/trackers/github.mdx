@@ -3,13 +3,15 @@ title: GitHub issue intake
 description: Opt-in, assignee-scoped worker creation from GitHub issues.
 ---
 
-GitHub is the only tracker provider supported by the current backend. The adapter reads issues using the user's existing GitHub authentication.
+This guide uses the GitHub tracker and your existing GitHub authentication. GitLab is also supported. Follow [GitLab authentication](/plugins/scm) and use the provider selection described below.
 
 ## Configure intake
 
-Tracker intake needs two separate opt-ins, and both default to off. The daemon must be started with `AO_TRACKER_INTAKE=on`, and the project must carry an assignee rule. The assignee rule keeps one project from draining its whole backlog. The daemon flag exists because intake starts one worker session per eligible issue with nothing bounding how many run at once, so the decision belongs to whoever runs the daemon rather than to each project.
+Intake needs two opt-ins, and both default to off: enable it on the daemon and configure a project with an assignee filter. Each matching issue can start a worker session, so use the filter to limit which issues AO handles.
 
-Configure the project:
+For the desktop app, add `AO_TRACKER_INTAKE=on` to the environment your login shell exports, such as `~/.zshrc`, then relaunch AO. The app passes that environment to its daemon. For a standalone daemon, set the variable in its launch environment and restart it.
+
+Then configure the project. `ao project set-config` replaces the full project config, so read the [full-config warning](/configuration/projects#update-from-the-cli) before using it.
 
 ```bash
 ao project set-config my-app \
@@ -18,12 +20,27 @@ ao project set-config my-app \
   --tracker-assignee alice
 ```
 
-The provider defaults to `github`. When the repository is omitted, AO can derive it from the project's Git remote. Use `ao project get my-app --json` to inspect the stored configuration.
+When `trackerIntake.provider` is omitted, AO infers the provider from the project's Git remote. GitHub hosts select `github`; other remote hosts select `gitlab`. An empty or unparseable remote falls back to `github`. When the repository is omitted, AO can also derive it from that remote.
 
-With `AO_TRACKER_INTAKE` unset, that configuration is still stored and validated, but no sessions are spawned. The daemon logs a warning at startup naming how many projects are in that state.
+For an explicit GitLab intake configuration, set `trackerIntake.provider` to `gitlab` in the full configuration object through the daemon API. The CLI has no `--tracker-provider` flag on `project set-config`; that flag belongs to `spawn`. If you use `--config-json`, preserve all other project settings and heed the effort-loss warning above. The intake portion of the object is:
 
-On the desktop app you do not start the daemon yourself, so set the variable where your login shell will export it, for example in `~/.zshrc`, then relaunch the app. AO probes the login shell and passes its environment through to the daemon it spawns. Note that the warning above is only written at daemon startup, so enabling intake on a project while the app is already running produces no notice until the next launch.
+```json
+{
+  "trackerIntake": {
+    "enabled": true,
+    "provider": "gitlab",
+    "repo": "group/project",
+    "assignee": "alice"
+  }
+}
+```
+
+This is a fragment to merge into the full configuration, not a replacement for it. Use `ao project get my-app --json` to inspect the stored configuration, keeping in mind that its output omits effort.
+
+If `AO_TRACKER_INTAKE` is unset, the project config is still stored and validated, but no sessions are spawned. The daemon logs a warning at startup naming how many projects have intake configured while the flag is off.
+
+For one GitLab issue without enabling intake, use `ao spawn --project my-app --name issue-42 --tracker-provider gitlab --issue 42`.
 
 ## Current boundary
 
-Matching issues may create sessions and provide issue context. The current intake path is read-only: it does not post comments, assign workflow states, or close issues after a session finishes. PR and CI observation belongs to AO's separate [GitHub SCM capability](/plugins/scm/github).
+Matching issues may create sessions and provide issue context. The current intake path is read-only: it does not post comments, assign workflow states, or close issues after a session finishes. PR and CI observation belongs to AO's separate [source-control capability](/plugins/scm).
