@@ -2100,7 +2100,8 @@ type LinkPreviewResponse struct {
 // regenerate endpoints. Password is populated only transiently, on enable and
 // regenerate responses (empty otherwise) — it is never persisted in plaintext.
 type MobileStatusResponse struct {
-	Enabled bool `json:"enabled"`
+	Enabled             bool `json:"enabled"`
+	BrowserRemoteAccess bool `json:"browserRemoteAccess"`
 	// LoopbackOnly means direct LAN/Tailscale addresses are not listening.
 	LoopbackOnly bool `json:"loopbackOnly"`
 	// Endpoints is every way the phone can reach this daemon, in the client's
@@ -2136,6 +2137,12 @@ type KeepAwakeStatus struct {
 
 // SetKeepAwakeRequest is the body of POST /api/v1/mobile/keep-awake.
 type SetKeepAwakeRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// SetBrowserRemoteAccessRequest is the body of
+// POST /api/v1/mobile/browser-control.
+type SetBrowserRemoteAccessRequest struct {
 	Enabled bool `json:"enabled"`
 }
 

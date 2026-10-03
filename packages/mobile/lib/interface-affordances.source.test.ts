@@ -60,29 +60,21 @@ describe("Interface affordances", () => {
 		});
 	});
 
-	describe("the preview overlay's controls", () => {
-		const screen = source("./session/TerminalSessionScreen.tsx");
+	describe("the unified preview controls", () => {
+		const preview = source("../app/preview/[id].tsx");
+		const browser = source("./preview/BrowserLivePane.tsx");
+		const terminal = source("./session/TerminalSessionScreen.tsx");
 
-		it("names both icon-only controls and gives them a real touch target", () => {
-			expect(screen).toContain('accessibilityLabel="Reload preview"');
-			expect(screen).toContain('accessibilityLabel="Close preview"');
-			// The glyph box alone is about 23x19pt, so the padding is asymmetric:
-			// 12pt outward, 4pt toward the neighbour, which is all the 8pt gap allows
-			// before the two targets would overlap.
-			expect(screen).toContain(
-				"const PREVIEW_RELOAD_SLOP = { top: 12, bottom: 12, left: 12, right: 4 } as const;",
-			);
-			expect(screen).toContain(
-				"const PREVIEW_CLOSE_SLOP = { top: 12, bottom: 12, left: 4, right: 12 } as const;",
-			);
-			expect(screen).not.toContain("hitSlop={8} onPress");
+		it("leaves browser chrome to the dedicated mobile-browser UI", () => {
+			expect(preview).toContain('accessibilityLabel="Reload app preview"');
+			expect(browser).not.toContain("TextInput");
+			expect(browser).not.toContain('placeholder="Enter a URL"');
 		});
 
-		it("lets Android's back gesture close the overlay instead of the session", () => {
-			expect(screen).toContain("BackHandler.addEventListener");
-			expect(screen).toMatch(
-				/if \(Platform\.OS !== "android" \|\| !browserOpen\) return;[\s\S]*?setBrowserOpen\(false\);\s*return true;/,
-			);
+		it("uses a navigation route instead of a second terminal overlay", () => {
+			expect(terminal).toContain('pathname: "/preview/[id]"');
+			expect(terminal).not.toContain("browserOpen");
+			expect(terminal).not.toContain("browserOverlay");
 		});
 	});
 

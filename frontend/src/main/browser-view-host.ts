@@ -42,6 +42,14 @@ import type { BrowserHistoryStore } from "./browser-history-store";
 import type { BrowserDownloadManager } from "./browser-download-manager";
 import type { BrowserDownloadActionInput } from "../shared/browser-downloads";
 import { matchInstruction } from "./browser-act-matcher";
+import { BrowserScreencast } from "./browser-screencast";
+import type {
+	BrowserLiveSink,
+	BrowserLiveState,
+	BrowserRemoteInput,
+	BrowserRemoteNavigation,
+	BrowserRemoteTabAction,
+} from "./browser-live-types";
 
 function isValidAnnotationContext(value: unknown): value is BrowserAnnotationContext {
 	if (typeof value !== "object" || value === null) return false;
@@ -248,6 +256,7 @@ type BrowserWebContents = Pick<
 	| "reload"
 	| "removeInsertedCSS"
 	| "send"
+	| "sendInputEvent"
 	| "setWindowOpenHandler"
 	| "stop"
 > & {
@@ -377,6 +386,11 @@ export type BrowserViewHost = {
 	// tick — a same-turn hide/show can coalesce into a no-op on macOS and leave
 	// the page blank for the whole overlay lifetime.
 	refreshLastFocusedPanelSurface: () => void;
+	startLiveStream: (sessionId: string, streamId: number, sink: BrowserLiveSink) => Promise<BrowserLiveState>;
+	stopLiveStream: (sessionId: string) => Promise<void>;
+	handleRemoteInput: (sessionId: string, input: BrowserRemoteInput) => Promise<void>;
+	handleRemoteNavigation: (sessionId: string, input: BrowserRemoteNavigation) => Promise<void>;
+	handleRemoteTab: (sessionId: string, input: BrowserRemoteTabAction) => Promise<void>;
 };
 
 type BrowserEntry = {
@@ -423,6 +437,13 @@ type BrowserSessionEntry = {
 	snapshotDeltaBaseline?: { tabId: string; interactive: boolean; revision: number };
 	nativeOperationQueue: Promise<void>;
 	devtoolsPlacement: BrowserDevToolsPlacement;
+	live?: {
+		streamId: number;
+		sink: BrowserLiveSink;
+		screencast?: BrowserScreencast;
+		tabId?: string;
+		lastStateKey?: string;
+	};
 	// Bounded browser diagnostics exposed only through an explicit errors query.
 	signals: {
 		entries: BrowserSignalEntry[];
@@ -691,6 +712,7 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		}
 		const view = new options.WebContentsView({
 			webPreferences: {
+				backgroundThrottling: false,
 				contextIsolation: true,
 				nodeIntegration: false,
 				partition: session.profilePartition,
@@ -1151,6 +1173,11 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		if (session.devtools && session.devtools.desiredTabId !== tabId) {
 			void retargetDevTools(session, tabId).catch(() => undefined);
 		}
+		if (session.live && session.live.tabId !== tabId) {
+			void retargetLiveStream(session).catch((error) =>
+				session.live?.sink.error("BROWSER_CAPTURE_UNAVAILABLE", error instanceof Error ? error.message : "Browser capture failed"),
+			);
+		}
 		return next;
 	}
 
@@ -1490,7 +1517,10 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 
 	function applySessionBounds(session: BrowserSessionEntry, entry: BrowserEntry): void {
 		if (!session.visible) {
-			applyBrowserViewBounds(entry.view, OFFSCREEN_BOUNDS, false);
+			// A remotely viewed tab must remain composited even though it is parked
+			// outside the desktop window. UI visibility and capture paintability are
+			// deliberately separate.
+			applyBrowserViewBounds(entry.view, OFFSCREEN_BOUNDS, Boolean(session.live));
 			return;
 		}
 		// Keep the initialized blank target available to automation, but let the
@@ -1658,6 +1688,9 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	const destroy = (viewId: string): void => {
 		const session = entries.get(viewId);
 		if (!session) return;
+		const live = session.live;
+		session.live = undefined;
+		if (live?.screencast) void live.screencast.stop();
 		const partitionToClear = session.profileId === null ? session.profilePartition : undefined;
 		session.signals.entries.length = 0;
 		unregisterBrowserSignalWatcher(session);
@@ -2323,6 +2356,189 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 	);
 	on("browser:annotation:discard", (event) => discardAnnotationFromPage(event));
 
+	function browserLiveState(session: BrowserSessionEntry): BrowserLiveState {
+		const current = activeEntry(session);
+		const nav = readNavState(current);
+		const bounds = session.visible ? session.bounds : OFFSCREEN_BOUNDS;
+		return {
+			url: nav.url,
+			title: nav.title,
+			loading: nav.isLoading,
+			canGoBack: nav.canGoBack,
+			canGoForward: nav.canGoForward,
+			activeTabId: session.activeTabId,
+			tabs: [...session.tabs.values()].map((tab) => {
+				const state = readNavState(tab);
+				return { id: tab.tabId, title: state.title, url: state.url, active: tab.tabId === session.activeTabId };
+			}),
+			width: Math.max(1, Math.round(bounds.width)),
+			height: Math.max(1, Math.round(bounds.height)),
+		};
+	}
+
+	function emitLiveState(session: BrowserSessionEntry): BrowserLiveState {
+		const state = browserLiveState(session);
+		const key = JSON.stringify(state);
+		if (session.live && session.live.lastStateKey !== key) {
+			session.live.lastStateKey = key;
+			session.live.sink.state(state);
+		}
+		return state;
+	}
+
+	async function stopLiveCapture(session: BrowserSessionEntry): Promise<void> {
+		const live = session.live;
+		if (!live) return;
+		const screencast = live.screencast;
+		live.screencast = undefined;
+		live.tabId = undefined;
+		if (screencast) await screencast.stop();
+		if (!session.visible) applySessionBounds(session, activeEntry(session));
+	}
+
+	async function retargetLiveStream(session: BrowserSessionEntry): Promise<void> {
+		const live = session.live;
+		if (!live) return;
+		if (live.screencast) await live.screencast.stop();
+		if (session.live !== live) return;
+		const entry = activeEntry(session);
+		await ensureDebugger(entry);
+		if (session.live !== live || activeEntry(session) !== entry) return;
+		applySessionBounds(session, entry);
+		const cast = new BrowserScreencast(
+			entry.view.webContents.debugger!,
+			(frame) => {
+				if (session.live !== live || live.screencast !== cast || live.tabId !== entry.tabId) return;
+				live.sink.frame(frame);
+				emitLiveState(session);
+			},
+			(code, message) => live.sink.error(code, message),
+		);
+		live.screencast = cast;
+		live.tabId = entry.tabId;
+		await cast.start();
+		emitLiveState(session);
+	}
+
+	async function startLiveStream(sessionId: string, streamId: number, sink: BrowserLiveSink): Promise<BrowserLiveState> {
+		if (!Number.isSafeInteger(streamId) || streamId <= 0) throw browserError("INVALID_ARGUMENT", "streamId is invalid");
+		const session = await ensureSessionReady(sessionId);
+		if (session.live) await stopLiveCapture(session);
+		session.live = { streamId, sink };
+		try {
+			await retargetLiveStream(session);
+			return emitLiveState(session);
+		} catch (error) {
+			session.live = undefined;
+			if (!session.visible) applySessionBounds(session, activeEntry(session));
+			throw error;
+		}
+	}
+
+	async function stopLiveStream(sessionId: string): Promise<void> {
+		const viewId = viewIdsBySessionId.get(sessionId);
+		const session = viewId ? entries.get(viewId) : undefined;
+		if (!session?.live) return;
+		await stopLiveCapture(session);
+		session.live = undefined;
+		if (!session.visible) applySessionBounds(session, activeEntry(session));
+	}
+
+	function assertRemoteWritable(session: BrowserSessionEntry): void {
+		if (!session.live) throw browserError("BROWSER_REMOTE_NOT_VIEWED", "Remote browser stream is not active");
+		if (session.agentBrowserCommands > 0 || session.profileSwitching) {
+			throw browserError("BROWSER_REMOTE_READ_ONLY", "Browser control is temporarily read-only while the agent is active");
+		}
+		if (session.visible && lastFocusedViewId === session.viewId) {
+			throw browserError("BROWSER_REMOTE_READ_ONLY", "Desktop browser control is active");
+		}
+	}
+
+	async function handleRemoteInput(sessionId: string, input: BrowserRemoteInput): Promise<void> {
+		const session = await ensureSessionReady(sessionId);
+		assertRemoteWritable(session);
+		await queueNativeOperation(session, async () => {
+			assertRemoteWritable(session);
+			const entry = activeEntry(session);
+			await entry.ready;
+			const bounds = session.visible ? session.bounds : OFFSCREEN_BOUNDS;
+			if (input.kind === "pointer") {
+				if (!Number.isFinite(input.x) || !Number.isFinite(input.y) || input.x < 0 || input.x > 1 || input.y < 0 || input.y > 1) {
+					throw browserError("INVALID_ARGUMENT", "Pointer coordinates are invalid");
+				}
+				entry.view.webContents.sendInputEvent({
+					type: input.phase === "move" ? "mouseMove" : input.phase === "down" ? "mouseDown" : "mouseUp",
+					x: Math.round(input.x * Math.max(1, bounds.width - 1)),
+					y: Math.round(input.y * Math.max(1, bounds.height - 1)),
+					button: input.button ?? "left",
+					clickCount: input.phase === "move" ? undefined : 1,
+				} as never);
+				return;
+			}
+			if (input.kind === "wheel") {
+				if (!Number.isFinite(input.deltaX) || !Number.isFinite(input.deltaY)) throw browserError("INVALID_ARGUMENT", "Wheel delta is invalid");
+				entry.view.webContents.sendInputEvent({
+					type: "mouseWheel",
+					x: Math.round(bounds.width / 2),
+					y: Math.round(bounds.height / 2),
+					deltaX: Math.max(-2_000, Math.min(2_000, input.deltaX)),
+					deltaY: Math.max(-2_000, Math.min(2_000, input.deltaY)),
+				} as never);
+				return;
+			}
+			if (input.kind === "text") {
+				if (typeof input.value !== "string" || Buffer.byteLength(input.value, "utf8") > 16 << 10) throw browserError("INVALID_ARGUMENT", "Text input is invalid");
+				await ensureDebugger(entry);
+				await entry.view.webContents.debugger!.sendCommand("Input.insertText", { text: input.value });
+				return;
+			}
+			if (input.key.length > 64 || input.code.length > 64) throw browserError("INVALID_ARGUMENT", "Key input is invalid");
+			const modifiers = (input.modifiers ?? []).filter((value) => ["shift", "control", "alt", "meta"].includes(value));
+			if (modifiers.length !== (input.modifiers ?? []).length || (modifiers.includes("meta") && ["q", "w"].includes(input.key.toLowerCase()))) {
+				throw browserError("INVALID_ARGUMENT", "Key combination is not allowed");
+			}
+			entry.view.webContents.sendInputEvent({
+				type: input.phase === "down" ? "keyDown" : "keyUp",
+				keyCode: input.key,
+				modifiers,
+			} as never);
+		});
+	}
+
+	async function handleRemoteNavigation(sessionId: string, input: BrowserRemoteNavigation): Promise<void> {
+		const session = await ensureSessionReady(sessionId);
+		assertRemoteWritable(session);
+		await withBrowserOperation(session, async () => {
+			const entry = activeEntry(session);
+			switch (input.action) {
+				case "open": {
+					const raw = input.url?.trim();
+					if (!raw) throw browserError("URL_REQUIRED", "url is required");
+					await navigateEntry(entry, normalizeAgentBrowserURL(raw));
+					break;
+				}
+				case "back": entry.view.webContents.goBack(); break;
+				case "forward": entry.view.webContents.goForward(); break;
+				case "reload": entry.view.webContents.reload(); break;
+				case "stop": entry.view.webContents.stop(); break;
+				default: throw browserError("INVALID_ARGUMENT", "Navigation action is unsupported");
+			}
+			emitLiveState(session);
+		});
+	}
+
+	async function handleRemoteTab(sessionId: string, input: BrowserRemoteTabAction): Promise<void> {
+		const session = await ensureSessionReady(sessionId);
+		assertRemoteWritable(session);
+		switch (input.action) {
+			case "new": await openUserTab(session, input.url); break;
+			case "select": activateTab(session, stringArg(input as unknown as Record<string, unknown>, "tabId", "TAB_ID_REQUIRED", "tabId is required")); break;
+			case "close": closeTab(session, input.tabId); break;
+			default: throw browserError("INVALID_ARGUMENT", "Tab action is unsupported");
+		}
+		emitLiveState(session);
+	}
+
 	return {
 		execute: async (sessionId, action, args = {}, signal) => {
 			throwIfAborted(signal);
@@ -2641,6 +2857,11 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 				destroy(viewId);
 			}
 		},
+		startLiveStream,
+		stopLiveStream,
+		handleRemoteInput,
+		handleRemoteNavigation,
+		handleRemoteTab,
 		getLastFocusedPanelContents: () => {
 			if (lastFocusedViewId === null) return null;
 			const session = entries.get(lastFocusedViewId);

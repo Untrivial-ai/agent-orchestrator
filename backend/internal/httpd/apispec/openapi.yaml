@@ -2050,6 +2050,43 @@ paths:
       summary: Fetch link-preview metadata (Open Graph) for an external URL
       tags:
       - link-preview
+  /api/v1/mobile/browser-control:
+    post:
+      operationId: setMobileBrowserRemoteAccess
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetBrowserRemoteAccessRequest'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MobileStatusResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Forbidden
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Internal Server Error
+      summary: Allow or deny paired-device access to the desktop browser
+      tags:
+      - mobile
   /api/v1/mobile/devices:
     get:
       operationId: listMobileDevices
@@ -12567,6 +12604,8 @@ components:
       type: object
     MobileStatusResponse:
       properties:
+        browserRemoteAccess:
+          type: boolean
         enabled:
           type: boolean
         endpoints:
@@ -12595,6 +12634,7 @@ components:
           type: string
       required:
       - enabled
+      - browserRemoteAccess
       - loopbackOnly
       - endpoints
       - hostId
@@ -13998,6 +14038,13 @@ components:
       - ok
       - sessionId
       - state
+      type: object
+    SetBrowserRemoteAccessRequest:
+      properties:
+        enabled:
+          type: boolean
+      required:
+      - enabled
       type: object
     SetConversationConfigOptionRequest:
       properties:

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Fragment, useEffect, useRef, useState } from "react";
-import { ArrowUpRight, Check, Coffee, Copy, Loader2, RotateCcw } from "lucide-react";
+import { ArrowUpRight, Check, Coffee, Copy, Loader2, MonitorSmartphone, RotateCcw } from "lucide-react";
 import { apiClient, apiErrorMessage } from "../../lib/api-client";
 import { aoBridge } from "../../lib/bridge";
 import { captureRendererEvent } from "../../lib/telemetry";
@@ -183,6 +183,7 @@ const STEP_LINK_CLASS =
 
 interface MobileStatus {
 	enabled: boolean;
+	browserRemoteAccess?: boolean;
 	/** This machine's stable identity, echoed into the pairing code so the phone
 	 * can verify the endpoints it races. Optional: a daemon predating the
 	 * endpoint race does not send it, and the QR falls back to the v1 payload. */
@@ -361,6 +362,24 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 		onSettled: invalidate,
 	});
 
+	const setBrowserRemoteAccess = useMutation({
+		mutationFn: async (browserRemoteAccess: boolean) => {
+			const { data, error } = await apiClient.POST("/api/v1/mobile/browser-control", { body: { enabled: browserRemoteAccess } });
+			if (error) throw new Error(apiErrorMessage(error));
+			return data;
+		},
+		onMutate: async (browserRemoteAccess) => {
+			await queryClient.cancelQueries({ queryKey: mobileStatusQueryKey });
+			const previous = queryClient.getQueryData<MobileStatus>(mobileStatusQueryKey);
+			if (previous) queryClient.setQueryData<MobileStatus>(mobileStatusQueryKey, { ...previous, browserRemoteAccess });
+			return { previous };
+		},
+		onError: (_error, _enabled, context) => {
+			if (context?.previous) queryClient.setQueryData(mobileStatusQueryKey, context.previous);
+		},
+		onSettled: invalidate,
+	});
+
 	// TLS turns itself on wherever Tailscale exists — it is not a switch, and it
 	// is deliberately not tied to the connection picker. iOS refuses cleartext
 	// to a 100.x address, so a Tailscale pairing without it works on Android and
@@ -407,7 +426,8 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 		regenerate.isPending ||
 		disable.isPending ||
 		setSecure.isPending ||
-		setKeepAwake.isPending;
+		setKeepAwake.isPending ||
+		setBrowserRemoteAccess.isPending;
 
 	const clearActionErrors = () => {
 		enable.reset();
@@ -416,6 +436,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 		disable.reset();
 		setSecure.reset();
 		setKeepAwake.reset();
+		setBrowserRemoteAccess.reset();
 	};
 
 	const copyPassword = async () => {
@@ -451,6 +472,7 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 		(disable.error instanceof Error && disable.error.message) ||
 		(setSecure.error instanceof Error && setSecure.error.message) ||
 		(setKeepAwake.error instanceof Error && setKeepAwake.error.message) ||
+		(setBrowserRemoteAccess.error instanceof Error && setBrowserRemoteAccess.error.message) ||
 		null;
 
 	if (query.isLoading) {
@@ -742,6 +764,24 @@ export function ConnectMobileContent({ active }: { active: boolean }) {
 					/>
 				</div>
 			)}
+			<div className="flex items-start gap-3" data-testid="mobile-browser-remote-access">
+				<MonitorSmartphone className="mt-0.5 size-4 shrink-0 text-settings-muted" aria-hidden="true" />
+				<div className="min-w-0 flex-1">
+					<div className="text-sm leading-5 text-settings-label">{t("mobile.browserRemote.label", "Allow live browser on mobile")}</div>
+					<p className="mt-0.5 text-pretty text-xs leading-4 text-settings-muted">
+						{t("mobile.browserRemote.help", "Streams browser content and allows touch control from paired phones. This is separate from the mobile connection and is off by default.")}
+					</p>
+				</div>
+				<Switch
+					className="mt-0.5"
+					aria-label={t("mobile.browserRemote.label", "Allow live browser on mobile")}
+					checked={status.browserRemoteAccess ?? false}
+					onCheckedChange={(next) => {
+						clearActionErrors();
+						setBrowserRemoteAccess.mutate(next);
+					}}
+				/>
+			</div>
 		</div>
 	);
 }

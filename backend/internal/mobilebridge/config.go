@@ -51,6 +51,10 @@ type State struct {
 	// the bridge is on. Kept separate from Enabled so turning the bridge off and
 	// on again does not forget it.
 	KeepAwake bool `json:"keepAwake"`
+	// BrowserRemoteAccess is an explicit, additional opt-in for streaming and
+	// controlling the desktop-owned browser from a paired phone. Existing
+	// installations deserialize the omitted field as false.
+	BrowserRemoteAccess bool `json:"browserRemoteAccess"`
 }
 
 // Path returns the Connect Mobile config file location under the data dir

@@ -77,6 +77,7 @@ export type RunFileInfo = {
 	/** Desktop launch that supplied this daemon's private browser token. */
 	appRunId?: string;
 	browserRuntimeAddress?: string;
+	browserStreamAddress?: string;
 };
 
 /** Parse running.json contents. Returns null for malformed JSON or an invalid port. */
@@ -88,13 +89,14 @@ export function parseRunFile(contents: string): RunFileInfo | null {
 		return null;
 	}
 	if (typeof raw !== "object" || raw === null) return null;
-	const { pid, port, startedAt, owner, appRunId, browserRuntimeAddress } = raw as {
+	const { pid, port, startedAt, owner, appRunId, browserRuntimeAddress, browserStreamAddress } = raw as {
 		pid?: unknown;
 		port?: unknown;
 		startedAt?: unknown;
 		owner?: unknown;
 		appRunId?: unknown;
 		browserRuntimeAddress?: unknown;
+		browserStreamAddress?: unknown;
 	};
 	if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) return null;
 	const startedAtMs = typeof startedAt === "string" ? Date.parse(startedAt) : NaN;
@@ -105,6 +107,7 @@ export function parseRunFile(contents: string): RunFileInfo | null {
 		owner: typeof owner === "string" ? owner : undefined,
 		appRunId: typeof appRunId === "string" ? appRunId : undefined,
 		browserRuntimeAddress: typeof browserRuntimeAddress === "string" ? browserRuntimeAddress : undefined,
+		browserStreamAddress: typeof browserStreamAddress === "string" ? browserStreamAddress : undefined,
 	};
 }
 

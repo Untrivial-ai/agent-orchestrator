@@ -19,11 +19,12 @@ describe("retained-stack host routes", () => {
 		expect(preview).toContain("previewForConfig(");
 	});
 
-	it("never loads a terminal preview URL with another endpoint's credential", () => {
+	it("routes terminal previews through the owning host without leaking another credential", () => {
 		const terminal = source("./session/TerminalSessionScreen.tsx");
-		expect(terminal).toContain("previewForConfig(loadedPreview, activeConfig, params.hostId)");
-		expect(terminal).toContain("setLoadedPreview({ config: activeConfig, id, value: p })");
-		expect(terminal).toContain("headers: preview.authenticated && activeConfig ? authHeaders(activeConfig) : undefined");
+		const preview = source("../app/preview/[id].tsx");
+		expect(terminal).toContain("hostId: params.hostId");
+		expect(preview).toContain("previewForConfig(loaded, config, routeHostId)");
+		expect(preview).toContain("headers: preview.authenticated && config ? authHeaders(config) : undefined");
 	});
 
 	it("requires the owning host for review detail, reviewer chat, and actions", () => {

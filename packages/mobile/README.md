@@ -387,7 +387,7 @@ app/                 expo-router routes
   (tabs)/            Kanban (index), PRs, Orchestrator, Settings
   session/[id].tsx   persisted-mode router (native Chat or Terminal UI)
   shell/[handleId]   session-scoped worktree shell over the existing mux
-  preview/[id]       authenticated session preview browser
+  preview/[id]       unified live browser and generated app preview
   spawn.tsx          spawn flow
   pair.tsx           pairing-QR scanner
 lib/
