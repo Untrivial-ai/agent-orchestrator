@@ -1,10 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { SearchablePicker } from "./SearchablePicker";
 
-it("filters a fixed repository list and selects the matching private repository", async () => {
+it("filters a long repository list and selects the matching private repository", async () => {
 	const user = userEvent.setup();
 	function Example() {
 		const [value, setValue] = useState("");
@@ -17,6 +17,7 @@ it("filters a fixed repository list and selects the matching private repository"
 			options={[
 				{ value: "one", label: "acme/public" },
 				{ value: "two", label: "acme/private", private: true },
+				...Array.from({ length: 10 }, (_, index) => ({ value: `filler-${index}`, label: `acme/filler-${index}` })),
 			]}
 		/>;
 	}
@@ -49,7 +50,7 @@ it("keeps a large result list scrollable below the search field without empty sp
 	expect(screen.getAllByRole("option")).toHaveLength(40);
 });
 
-it("gives repository selectors a fixed, visibly scrollable result area", async () => {
+it("gives repository selectors a visibly scrollable result area that fits short lists", async () => {
 	const user = userEvent.setup();
 	render(<SearchablePicker
 		ariaLabel="Repository"
@@ -62,7 +63,9 @@ it("gives repository selectors a fixed, visibly scrollable result area", async (
 	/>);
 	await user.click(screen.getByRole("combobox", { name: "Repository" }));
 	const list = screen.getByRole("listbox", { name: "Repository" });
-	expect(list).toHaveClass("h-72", "overflow-y-scroll", "repository-picker-scrollbar");
+	// Capped, not fixed: one repository renders as one row, not an 18rem box.
+	expect(list).toHaveClass("max-h-72", "overflow-y-auto", "repository-picker-scrollbar");
+	expect(list).not.toHaveClass("h-72");
 	expect(screen.getAllByRole("option")).toHaveLength(40);
 });
 
@@ -118,4 +121,28 @@ it("leaves a non-overflowing result list to scroll natively", async () => {
 	list.dispatchEvent(wheel);
 	expect(scrollTop).toBe(0);
 	expect(wheel.defaultPrevented).toBe(false);
+});
+
+it("offers search only when the list has more than ten options", async () => {
+	const user = userEvent.setup();
+	const options = (count: number) => Array.from({ length: count }, (_, index) => ({ value: String(index), label: `repo-${index}` }));
+	const { rerender } = render(<SearchablePicker ariaLabel="Repository" placeholder="Select a repository" searchPlaceholder="Search repositories" value="" onChange={() => undefined} options={options(10)} />);
+	await user.click(screen.getByRole("combobox", { name: "Repository" }));
+	expect(screen.queryByPlaceholderText("Search repositories")).not.toBeInTheDocument();
+	expect(screen.getAllByRole("option")).toHaveLength(10);
+
+	rerender(<SearchablePicker ariaLabel="Repository" placeholder="Select a repository" searchPlaceholder="Search repositories" value="" onChange={() => undefined} options={options(11)} />);
+	expect(screen.getByPlaceholderText("Search repositories")).toBeInTheDocument();
+});
+
+it("runs a pinned action below the options and closes the list", async () => {
+	const user = userEvent.setup();
+	const onSelect = vi.fn();
+	render(<SearchablePicker ariaLabel="Repository" placeholder="Select a repository" searchPlaceholder="Search repositories" value="" onChange={() => undefined}
+		options={[{ value: "one", label: "acme/one" }]}
+		action={{ label: "Connect more repositories", onSelect }} />);
+	await user.click(screen.getByRole("combobox", { name: "Repository" }));
+	await user.click(screen.getByRole("button", { name: "Connect more repositories" }));
+	expect(onSelect).toHaveBeenCalledTimes(1);
+	expect(screen.queryByRole("listbox", { name: "Repository" })).not.toBeInTheDocument();
 });

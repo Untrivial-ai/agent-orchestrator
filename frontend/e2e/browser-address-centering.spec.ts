@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openInspector } from "./support/open-inspector";
 
 async function expectAddressCentered(page: Page) {
 	await expect
@@ -45,6 +46,7 @@ async function expectAddressBelowInspectorTabs(page: Page) {
 
 test("@P0 browser address shifts clear of wide tabs and remains centered in the compact inspector", async ({ page }) => {
 	await page.goto("/#/projects/ao-demo/sessions/demo-working");
+	await openInspector(page);
 	await page.locator("#inspector").getByRole("tab", { name: "Browser" }).click();
 	await expect(page.getByTestId("browser-address-bar")).toBeVisible();
 

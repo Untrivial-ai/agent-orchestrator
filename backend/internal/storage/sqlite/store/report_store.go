@@ -74,6 +74,15 @@ func (s *Store) ListReportsBySession(ctx context.Context, id domain.SessionID) (
 	return s.reportsWithOutputs(ctx, rows)
 }
 
+// ListReportedPRURLs returns only a worker's structured created-PR outputs.
+func (s *Store) ListReportedPRURLs(ctx context.Context, id domain.SessionID) ([]string, error) {
+	urls, err := s.qr.ListReportedPRURLs(ctx, string(id))
+	if err != nil {
+		return nil, fmt.Errorf("list reported PR URLs for %s: %w", id, err)
+	}
+	return urls, nil
+}
+
 // ListReportsByProject is the read-only persisted report projection. Consumers
 // such as Project Summary do not participate in the delivery claim lifecycle.
 func (s *Store) ListReportsByProject(ctx context.Context, id domain.ProjectID) ([]domain.ReportRecord, error) {

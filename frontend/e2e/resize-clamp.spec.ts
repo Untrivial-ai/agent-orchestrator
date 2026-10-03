@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openInspector } from "./support/open-inspector";
 
 // Dragging a panel edge must clamp at the panel's minimum width — never
 // auto-collapse. Collapse belongs to the explicit controls only (⌘B / topbar
@@ -45,8 +46,7 @@ test("inspector drag stops at minSize instead of collapsing; buttons still toggl
 	// A worker session from the dev:web mock dataset (lib/mock-data.ts).
 	await page.goto("/#/projects/ao-demo/sessions/demo-working");
 
-	const inspector = page.locator("#inspector");
-	await expect(inspector).toBeVisible();
+	const inspector = await openInspector(page);
 
 	const handle = page.getByTestId("inspector-resize-handle");
 	const handleBox = await handle.boundingBox();

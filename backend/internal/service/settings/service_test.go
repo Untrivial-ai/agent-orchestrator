@@ -1,6 +1,19 @@
 package settings
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/aoagents/agent-orchestrator/backend/internal/config"
+)
+
+func TestOfferingFromConfigCarriesTrackerIntake(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		got := OfferingFromConfig(config.Config{TrackerIntake: on})
+		if got.TrackerIntakeEnabled != on {
+			t.Errorf("OfferingFromConfig(TrackerIntake=%v).TrackerIntakeEnabled = %v, want %v", on, got.TrackerIntakeEnabled, on)
+		}
+	}
+}
 
 // The cloud gate is the single most safety-critical expression in the offering:
 // a false positive would surface cloud UI (and let a local-only build reach a

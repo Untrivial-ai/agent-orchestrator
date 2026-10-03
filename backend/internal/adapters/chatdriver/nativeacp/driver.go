@@ -41,15 +41,17 @@ type VersionProbe func(ctx context.Context, bin string) error
 
 // Config describes the small provider-specific portion of a native ACP binding.
 type Config struct {
-	Harness                domain.AgentHarness
-	Capabilities           ports.ChatCapabilities
-	Configure              Configure
-	SessionMode            func(ports.PermissionMode) string
-	SessionOptions         func(ports.ChatTurnSettings) []acpdriver.SessionOption
-	PermissionPolicy       acpdriver.PermissionPolicy
-	ClientExtension        acpdriver.ClientExtensionHandler
-	ClientExtensionAliases map[string]string
-	ValidateTurnSettings   acpdriver.TurnSettingsValidator
+	Harness                      domain.AgentHarness
+	Capabilities                 ports.ChatCapabilities
+	Configure                    Configure
+	SessionMode                  func(ports.PermissionMode) string
+	SessionOptions               func(ports.ChatTurnSettings) []acpdriver.SessionOption
+	PermissionPolicy             acpdriver.PermissionPolicy
+	ClientExtension              acpdriver.ClientExtensionHandler
+	ClientExtensionAliases       map[string]string
+	ValidateTurnSettings         acpdriver.TurnSettingsValidator
+	EncodeProviderConversationID func(string) string
+	DecodeProviderConversationID func(string) (string, error)
 	// VersionProbe optionally gates admission on a minimum binary version.
 	VersionProbe VersionProbe
 }
@@ -134,11 +136,13 @@ func buildConfig(plugin Plugin, cfg Config, log *slog.Logger) acpdriver.Config {
 				Env:     env,
 			}, nil
 		},
-		SessionMode:            cfg.SessionMode,
-		SessionOptions:         cfg.SessionOptions,
-		PermissionPolicy:       cfg.PermissionPolicy,
-		ClientExtension:        cfg.ClientExtension,
-		ClientExtensionAliases: cfg.ClientExtensionAliases,
-		ValidateTurnSettings:   cfg.ValidateTurnSettings,
+		SessionMode:                  cfg.SessionMode,
+		SessionOptions:               cfg.SessionOptions,
+		PermissionPolicy:             cfg.PermissionPolicy,
+		ClientExtension:              cfg.ClientExtension,
+		ClientExtensionAliases:       cfg.ClientExtensionAliases,
+		ValidateTurnSettings:         cfg.ValidateTurnSettings,
+		EncodeProviderConversationID: cfg.EncodeProviderConversationID,
+		DecodeProviderConversationID: cfg.DecodeProviderConversationID,
 	}
 }

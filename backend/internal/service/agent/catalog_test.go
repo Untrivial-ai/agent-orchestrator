@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -1581,6 +1583,26 @@ func TestModelsPassesProjectEnvironmentToDiscovery(t *testing.T) {
 	}
 }
 
+func TestGlobalModelDiscoveryUsesAODirectoryWithoutProject(t *testing.T) {
+	discoveryDir := filepath.Join(t.TempDir(), "model-discovery")
+	svc := NewWithDeps(Deps{ModelDiscoveryDir: discoveryDir})
+
+	request, err := svc.modelDiscoveryRequest(context.Background(), "deepseek-harness", "", "/usr/local/bin/dsh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.WorkingDir != discoveryDir {
+		t.Fatalf("working directory = %q, want %q", request.WorkingDir, discoveryDir)
+	}
+	info, err := os.Stat(discoveryDir)
+	if err != nil {
+		t.Fatalf("stat model discovery directory: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("model discovery directory permissions = %o, want 700", got)
+	}
+}
+
 func TestModelsCachesProjectScopesIndependently(t *testing.T) {
 	projects := &fakeProjectLookup{records: map[string]domain.ProjectRecord{
 		"proj-a": {ID: "proj-a", Path: "/work/a", Config: domain.ProjectConfig{Env: map[string]string{"ANTHROPIC_MODEL": "model-a"}}},
@@ -2060,6 +2082,9 @@ func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 	}
 	record.CatalogJSON = string(data)
 	cache.records["opencode\x00"] = record
+	discoverer.mu.Lock()
+	discoverer.catalog.Models = []ports.AgentModelInfo{{ID: "model-two"}}
+	discoverer.mu.Unlock()
 
 	// A CLI-backed catalog can drift with no change to the binary or its config,
 	// so an aged cache hit is what replaces the manual "Refresh models" button.
@@ -2069,6 +2094,9 @@ func TestModelsAsksClientsToRevalidateAnAgedCatalog(t *testing.T) {
 	}
 	if !stale.RefreshRecommended {
 		t.Fatalf("catalog validated %s ago did not ask for revalidation", time.Since(aged.ValidatedAt))
+	}
+	if len(stale.Models) != 1 || stale.Models[0].ID != "model-one" {
+		t.Fatalf("models = %#v, want the cached catalog served immediately", stale.Models)
 	}
 	select {
 	case <-discoverer.started:

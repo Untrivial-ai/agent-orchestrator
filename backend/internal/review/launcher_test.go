@@ -394,20 +394,23 @@ func (f fakeAgentAuthResolver) AuthStatus(context.Context, domain.ReviewerHarnes
 }
 
 type fakeRuntime struct {
-	createCfg     ports.RuntimeConfig
-	sentMsg       string
-	sentMsgs      []string
-	sentInput     string
-	sentInputs    []string
-	sentTo        string
-	alive         bool
-	interrupt     string
-	interrupts    int
-	destroyed     string
-	destroyBefore bool
-	created       bool
-	output        string
-	outputReads   int
+	createCfg         ports.RuntimeConfig
+	sentMsg           string
+	sentMsgs          []string
+	sentInput         string
+	sentInputs        []string
+	sentTo            string
+	alive             bool
+	unsupervisedAlive bool
+	supervisedRecord  bool
+	interrupt         string
+	interrupts        int
+	destroyed         string
+	destroyBefore     bool
+	created           bool
+	output            string
+	outputReads       int
+	exactRef          ports.SupervisedProcessRef
 }
 
 func (f *fakeRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
@@ -424,6 +427,19 @@ func (f *fakeRuntime) Destroy(_ context.Context, handle ports.RuntimeHandle) err
 }
 func (f *fakeRuntime) IsAlive(_ context.Context, _ ports.RuntimeHandle) (bool, error) {
 	return f.alive, nil
+}
+func (f *fakeRuntime) IsChildAlive(_ context.Context, _ ports.RuntimeHandle) (bool, error) {
+	return f.alive, nil
+}
+func (f *fakeRuntime) IsUnsupervisedReviewerAlive(_ context.Context, _ ports.RuntimeHandle) (bool, error) {
+	return f.unsupervisedAlive, nil
+}
+func (f *fakeRuntime) IsExactSupervisedProcessAlive(_ context.Context, _ ports.RuntimeHandle, ref ports.SupervisedProcessRef) (bool, error) {
+	f.exactRef = ref
+	return f.alive, nil
+}
+func (f *fakeRuntime) HasSupervisedProcessRecord(_ context.Context, _ ports.RuntimeHandle) (bool, error) {
+	return f.supervisedRecord, nil
 }
 func (f *fakeRuntime) GetOutput(_ context.Context, _ ports.RuntimeHandle, _ int) (string, error) {
 	f.outputReads++
@@ -832,12 +848,60 @@ func TestLauncherNotifyKeepsEarlierTaskReferenceImmutable(t *testing.T) {
 }
 
 func TestLauncherAlive(t *testing.T) {
-	l := NewLauncher(fakeReviewerResolver{ok: true}, &fakeRuntime{alive: true}, t.TempDir())
-	if ok, _ := l.Alive(context.Background(), "review-mer-1"); !ok {
+	rt := &fakeRuntime{alive: true, supervisedRecord: true}
+	l := NewLauncher(fakeReviewerResolver{ok: true}, rt, t.TempDir())
+	if ok, _ := l.Alive(context.Background(), "review-mer-1", ""); !ok {
 		t.Fatal("want alive true")
 	}
-	if ok, _ := l.Alive(context.Background(), ""); ok {
+	if ok, _ := l.Alive(context.Background(), "review-mer-1", "launch-1"); !ok {
+		t.Fatal("want supervised reviewer alive")
+	}
+	if rt.exactRef.SessionID != "review-mer-1" || rt.exactRef.LaunchID != "launch-1" {
+		t.Fatalf("exact process ref = %+v", rt.exactRef)
+	}
+	if ok, _ := l.Alive(context.Background(), "", ""); ok {
 		t.Fatal("empty handle should not be alive")
+	}
+}
+
+func TestLauncherAliveFallsBackForLegacyReviewerLaunch(t *testing.T) {
+	rt := &fakeRuntime{alive: true, unsupervisedAlive: true}
+	l := NewLauncher(fakeReviewerResolver{ok: true}, rt, t.TempDir())
+	if alive, err := l.Alive(context.Background(), "review-mer-1", "launch-1"); err != nil || !alive {
+		t.Fatalf("Alive() = (%v, %v), want legacy child alive", alive, err)
+	}
+	if rt.exactRef.LaunchID != "" {
+		t.Fatalf("exact supervised probe used for legacy launch: %+v", rt.exactRef)
+	}
+}
+
+func TestLauncherAliveDoesNotTreatReviewerExitSinkAsAlive(t *testing.T) {
+	rt := &fakeRuntime{alive: true, supervisedRecord: false, unsupervisedAlive: false}
+	l := NewLauncher(fakeReviewerResolver{ok: true}, rt, t.TempDir())
+	if alive, err := l.Alive(context.Background(), "review-mer-1", "launch-1"); err != nil || alive {
+		t.Fatalf("Alive() = (%v, %v), want exited reviewer", alive, err)
+	}
+}
+
+func TestLauncherSupervisesReviewerLaunch(t *testing.T) {
+	rt := &fakeRuntime{}
+	l := NewLauncher(
+		fakeReviewerResolver{reviewer: &fakeReviewer{}, ok: true},
+		rt,
+		t.TempDir(),
+		WithExecutable(func() (string, error) { return "/usr/local/bin/ao", nil }),
+	)
+	spec := launchSpec()
+	spec.LaunchID = "launch-1"
+	if _, err := l.Spawn(context.Background(), spec); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	want := "/usr/local/bin/ao agent-process supervise --session review-mer-1 --activity-review review-1 --launch launch-1 -- greptile review"
+	if got := strings.Join(rt.createCfg.Argv, " "); got != want {
+		t.Fatalf("runtime argv = %q, want %q", got, want)
+	}
+	if rt.createCfg.Env[sessionmanager.EnvSupervisedProcess] != "1" || rt.createCfg.Env[sessionmanager.EnvRuntimeLaunchID] != "launch-1" {
+		t.Fatalf("supervisor env = %#v", rt.createCfg.Env)
 	}
 }
 
@@ -1024,8 +1088,8 @@ func TestLauncherPreflightAgentAuthUnauthorizedBlocksReviewer(t *testing.T) {
 		WithAgentAuth(fakeAgentAuthResolver{status: ports.AgentAuthStatusUnauthorized, ok: true}),
 	)
 
-	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); err == nil || !strings.Contains(err.Error(), "agent auth catalog") {
-		t.Fatalf("err = %v, want agent auth catalog failure", err)
+	if err := l.Preflight(context.Background(), domain.ReviewerClaudeCode, "/ws/mer-1"); !errors.Is(err, ports.ErrChatAuthRequired) {
+		t.Fatalf("err = %v, want ErrChatAuthRequired", err)
 	}
 }
 

@@ -17,12 +17,12 @@
 //    re-fits until the proposed grid stops changing (the last is the only
 //    trigger that recovers a clipped grid without the host box resizing). xterm
 //    itself only fires onResize when the grid actually changed, so repeated
-//    fits don't spam the PTY.
+//    fits don't spam the PTY. Measured resizes commit before paint and publish
+//    the new PTY size immediately, including during synchronized redraws.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ILink, type ILinkProvider } from "@xterm/xterm";
 import { useTranslation } from "react-i18next";
-import { CanvasAddon } from "@xterm/addon-canvas";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -37,6 +37,7 @@ import { aoBridge } from "../lib/bridge";
 import { isDialogOrMenuOpen } from "../lib/dom-selectors";
 import { TERMINAL_FONT_SIZE_DEFAULT } from "../lib/design-tokens";
 import { isWebLink, openLinkInSystemBrowser } from "../lib/external-link-policy";
+import { findSessionLinks } from "../lib/session-links";
 import { isMacPlatform } from "../lib/platform";
 import { applyDocumentTheme, applyDocumentThemeStyle } from "../lib/theme";
 import {
@@ -82,8 +83,12 @@ export type XtermTerminalProps = {
 	paneScrollsByKeyboard?: boolean;
 	/** Terminal construction failed; the owner decides how to surface it. */
 	onError?: (error: unknown) => void;
+	/** Called once the visible xterm viewport has painted nonblank content. */
+	onVisibleContent?: () => void;
 	/** Called after a terminal hyperlink is opened in the OS browser. */
 	onLinkOpen?: (uri: string) => void;
+	/** Navigate a canonical ao:// session link inside the current AO window. */
+	onSessionLinkOpen?: (uri: string) => void;
 	/** Publish the positive grid after a retained terminal becomes visible. */
 	onVisibleSize?: (cols: number, rows: number) => void;
 	/** Hidden retained terminals keep parsing output but expose no UI overlays. */
@@ -99,32 +104,19 @@ export type XtermTerminalProps = {
 	onReady?: (terminal: AttachableTerminal) => void;
 };
 
-// Prefer the WebGL renderer, fall back to 2D canvas. Both rasterize box-drawing
-// glyphs themselves onto a fixed cell grid; the DOM renderer does not, so TUI
-// borders would drift. Loaded after open().
+// WebGL keeps box-drawing glyphs on the cell grid. The canvas addon has no
+// xterm 6 build, so unavailable WebGL falls back to the DOM renderer.
 function loadRenderer(term: Terminal): void {
-	let fallbackLoaded = false;
-	const loadCanvasFallback = () => {
-		if (fallbackLoaded) return;
-		fallbackLoaded = true;
-		try {
-			term.loadAddon(new CanvasAddon());
-		} catch (error) {
-			console.warn("xterm: WebGL and canvas renderers unavailable; box-drawing may drift", error);
-		}
-	};
 	try {
 		const webgl = new WebglAddon();
 		webgl.onContextLoss(() => {
 			webgl.dispose();
-			loadCanvasFallback();
+			console.warn("xterm: WebGL context lost; box-drawing may drift");
 		});
 		term.loadAddon(webgl);
-		return;
-	} catch {
-		// WebGL context unavailable — fall through to the canvas renderer.
+	} catch (error) {
+		console.warn("xterm: WebGL renderer unavailable; box-drawing may drift", error);
 	}
-	loadCanvasFallback();
 }
 
 // xterm palette tracks the app theme (see lib/terminal-themes.ts + tokens.css).
@@ -313,9 +305,6 @@ function canAutoFocusTerminal(host: HTMLElement): boolean {
 type XtermInternal = Terminal & {
 	_core?: {
 		element?: HTMLElement;
-		viewport?: {
-			scrollBarWidth: number;
-		};
 		_selectionService?: {
 			enable: () => void;
 			shouldForceSelection: (event: MouseEvent) => boolean;
@@ -381,11 +370,6 @@ function forceSelectionMode(term: Terminal): void {
 	element.classList.remove("enable-mouse-events");
 }
 
-function configureScrollbarReservation(term: Terminal): void {
-	const viewport = (term as XtermInternal)._core?.viewport;
-	if (viewport) viewport.scrollBarWidth = isMacPlatform() ? MAC_TERMINAL_SCROLLBAR_WIDTH : 0;
-}
-
 // xterm deliberately keeps drag selection listening on document. When a drag
 // leaves the terminal horizontally, its coordinate conversion clamps the pointer
 // to the last terminal column. In split layouts that turns a drag into the
@@ -411,6 +395,72 @@ function confineDragSelectionToTerminalWidth(term: Terminal): void {
 			return;
 		}
 		originalMouseMoveListener(event);
+	};
+}
+
+function mapStringOffsetToBuffer(
+	term: Terminal,
+	lineIndex: number,
+	columnIndex: number,
+	stringOffset: number,
+): [number, number] | undefined {
+	const buffer = term.buffer.active;
+	const cell = buffer.getNullCell();
+	let startColumn = columnIndex;
+	while (stringOffset > 0) {
+		const line = buffer.getLine(lineIndex);
+		if (!line) return undefined;
+		for (let column = startColumn; column < line.length; column += 1) {
+			line.getCell(column, cell);
+			if (cell.getWidth() > 0) stringOffset -= cell.getChars().length || 1;
+			if (stringOffset < 0) return [lineIndex, column];
+		}
+		lineIndex += 1;
+		startColumn = 0;
+	}
+	return [lineIndex, startColumn];
+}
+
+export function sessionLinkProvider(
+	term: Terminal,
+	activate: (event: MouseEvent, uri: string) => void,
+): ILinkProvider {
+	return {
+		provideLinks(lineNumber, callback) {
+			const buffer = term.buffer.active;
+			let firstLine = lineNumber - 1;
+			while (firstLine > 0 && buffer.getLine(firstLine)?.isWrapped) firstLine -= 1;
+			const lines = [];
+			for (let line = firstLine; line < buffer.length; line += 1) {
+				if (line > firstLine && !buffer.getLine(line)?.isWrapped) break;
+				lines.push(buffer.getLine(line)?.translateToString(false) ?? "");
+			}
+			const text = lines.join("");
+			const links: ILink[] = findSessionLinks(text).flatMap((match) => {
+				const start = mapStringOffsetToBuffer(term, firstLine, 0, match.start);
+				if (!start) return [];
+				const end = mapStringOffsetToBuffer(term, start[0], start[1], match.text.length);
+				if (!end) return [];
+				const [startLine, startColumn] = start;
+				let [endLine, endColumn] = end;
+				if (endColumn === 0 && endLine > startLine) {
+					endLine -= 1;
+					endColumn = term.cols;
+				}
+				if (lineNumber - 1 < startLine || lineNumber - 1 > endLine) return [];
+				return [
+					{
+						text: match.text,
+						range: {
+							start: { x: startColumn + 1, y: startLine + 1 },
+							end: { x: endColumn, y: endLine + 1 },
+						},
+						activate: (event) => activate(event, match.text),
+					},
+				];
+			});
+			callback(links.length > 0 ? links : undefined);
+		},
 	};
 }
 
@@ -612,6 +662,12 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			callbacksRef.current.onChangeFontSize?.(delta);
 		});
 		const activateLink = (event: MouseEvent, uri: string) => {
+			if (uri.startsWith("ao:")) {
+				const modifierPressed = isMacPlatform() ? event.metaKey : event.ctrlKey;
+				if (term.modes.mouseTrackingMode !== "none" && !modifierPressed) return;
+				callbacksRef.current.onSessionLinkOpen?.(uri);
+				return;
+			}
 			// Left-click on a web link opens it inside the AO Browser panel (the
 			// parent decides how). Non-web schemes (mailto:, etc.) still go to the OS
 			// via the main process's window-open handler. Right-click to open a web
@@ -647,7 +703,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				cursorBlink: true,
 				// Resolve the Nerd Font stack from --font-mono (styles.css) at
 				// construction so terminal glyphs follow the app's font tokens. The
-				// box-drawing grid is rasterized by the WebGL/canvas renderer itself,
+				// box-drawing grid is rasterized by the WebGL renderer itself,
 				// but powerline separators and file-type icons are real PUA codepoints
 				// that must come from a system-installed Nerd Font.
 				fontFamily:
@@ -672,6 +728,13 @@ export function XtermTerminal(props: XtermTerminalProps) {
 				// slim draggable scrollbar; other platforms retain the existing hidden
 				// scrollbar behavior for now.
 				scrollback: 5000,
+				// xterm 6's FitAddon reads the public scrollbar options. Reserve
+				// only the app-owned macOS gutter, matching the live resize path.
+				scrollbar: { showScrollbar: isMacPlatform(), width: MAC_TERMINAL_SCROLLBAR_WIDTH },
+				// This component answers color-scheme queries itself so the reply
+				// follows the app theme, including theme style. xterm 6.1 also
+				// answers them from palette luminance; leave that off.
+				vtExtensions: { colorSchemeQuery: false },
 				theme: props.theme === "dark" ? dark : light,
 			});
 		} catch (error) {
@@ -693,31 +756,41 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// empty open is dropped and clicks silently no-op. Pass the matched URL to
 		// window.open directly so the main process routes it to shell.openExternal.
 		term.loadAddon(new WebLinksAddon(activateLink, { hover: trackHover, leave: clearHover }));
+		term.registerLinkProvider(sessionLinkProvider(term, activateLink));
 		const searchAddon = new SearchAddon();
 		searchAddonRef.current = searchAddon;
 		term.loadAddon(searchAddon);
 
 		term.open(host);
+		let visibleContentReported = false;
+		const reportVisibleContent = () => {
+			if (visibleContentReported || !callbacksRef.current.onVisibleContent) return;
+			const buffer = term.buffer.active;
+			for (let row = buffer.viewportY; row < buffer.viewportY + term.rows; row++) {
+				if (!buffer.getLine(row)?.translateToString(true).trim()) continue;
+				visibleContentReported = true;
+				callbacksRef.current.onVisibleContent();
+				break;
+			}
+		};
+		const visibleContentRender = term.onRender(reportVisibleContent);
+		reportVisibleContent();
 		// Browser integration tests need to wait on xterm's buffer state, not
 		// infer it from a hidden viewport element whose scrollTop can lag.
 		// Vite removes this development-only seam from packaged builds.
 		if (import.meta.env.DEV) {
 			(host as DevXtermHost).__aoXtermForTest = term;
 		}
-		// xterm 5 has no public scrollbar-width option. Keep its private FitAddon
-		// reservation aligned with our CSS: a stable 7px macOS gutter, and no
-		// reservation on platforms where the scrollbar remains hidden.
-		configureScrollbarReservation(term);
 		loadRenderer(term);
 		term.options.macOptionClickForcesSelection = true;
 		forceSelectionMode(term);
 		confineDragSelectionToTerminalWidth(term);
 
-		// xterm 5's native viewport scrollbar follows macOS's system auto-hide
-		// preference even when its WebKit pseudo-elements are styled. Keep the
-		// native viewport hidden and mirror its normal-buffer geometry into a small
-		// app-owned thumb. Like a native macOS overlay scrollbar, it appears while
-		// scrolling or dragging and fades after the interaction goes idle.
+		// xterm's viewport scrollbar follows macOS's system auto-hide preference
+		// even when its WebKit pseudo-elements are styled. Keep the native viewport
+		// hidden and mirror its normal-buffer geometry into a small app-owned thumb.
+		// Like a native macOS overlay scrollbar, it appears while scrolling or
+		// dragging and fades after the interaction goes idle.
 		const scrollbarTrack = scrollbarTrackRef.current;
 		const scrollbarThumb = scrollbarThumbRef.current;
 		let scrollbarFrame: number | null = null;
@@ -830,8 +903,9 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			});
 			return accepted;
 		};
-		// xterm 5 does not implement the modern terminal color-scheme protocol.
-		// OpenTUI clients use it to receive live light/dark changes after startup.
+		// OpenTUI clients use the color-scheme protocol to receive live light/dark
+		// changes after startup. The replies follow the app theme, so they stay
+		// here rather than using xterm's luminance-based replies.
 		let colorSchemeUpdatesEnabled = false;
 		let currentColorScheme = props.theme;
 		let currentThemeStyle = themeStyle;
@@ -1078,22 +1152,26 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		document.addEventListener("pointercancel", disarmPointerSelection);
 		window.addEventListener("blur", disarmPointerSelection);
 
+		let pendingReplayWrites = 0;
+		let usesSynchronizedOutput = false;
+		let resizeGeneration = 0;
+		let coveredResizeGeneration = 0;
+		let parsedResizeGeneration = -1;
+		let waitingForResizeOutput = false;
 		const fitTerminal = () => {
 			// Parked terminals keep their last measured box and continue parsing
 			// output, but must not refit or emit PTY resizes while hidden.
 			if (callbacksRef.current.isVisible === false) return;
 			try {
-				fit.fit();
+				const grid = fit.proposeDimensions();
+				if (grid) resizeGrid(grid.cols, grid.rows);
 			} catch {
 				// Container momentarily has no size (hidden/unmounting) — a later
 				// trigger retries.
 			}
 		};
-		// ResizeObserver fires for every intermediate box during native fullscreen,
-		// sidebar drags and other animated application layout. Fitting on every
-		// callback repeatedly reallocates xterm's WebGL surface, so those changes
-		// normally settle through the debounce below. A short, explicit live-resize
-		// marker lets controlled layout animations keep xterm visually in step.
+		// Retained activation waits for a stable box behind its cover. Visible
+		// pane resizes use observer geometry below and do not wait for this timer.
 		const FIT_QUIET_MS = 120;
 		const FIT_CAP_MS = 500;
 		let fitQuietTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1113,7 +1191,8 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			}
 			if (fitAllowsHidden || callbacksRef.current.isVisible !== false) {
 				try {
-					fit.fit();
+					const grid = fit.proposeDimensions();
+					if (grid) resizeGrid(grid.cols, grid.rows, fitAllowsHidden);
 				} catch {
 					// The next observer/window event retries if the host is transiently
 					// unmeasurable (for example while entering fullscreen).
@@ -1137,24 +1216,15 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// hidden behind the cover. A normally parked terminal still ignores them.
 		const scheduleVisibleFit = () => scheduleStableFit(fitAllowsHidden);
 		fitRef.current = scheduleVisibleFit;
-		// ResizeObserver delivers after layout and before paint. Calling fit() from
-		// that callback reads xterm geometry and can allocate its renderer while
-		// Chromium is still resolving the inspector/terminal split, turning one
-		// rail frame into a nested layout cycle. A controlled rail only needs xterm
-		// to follow on the next frame; the final quiet-window fit remains exact.
-		// Coalescing also handles multiple observer deliveries in one frame.
+		// Window/DPR changes and unmeasured startup cells still need FitAddon.
+		// Coalesce those recovery reads into one frame; measured pane resizes
+		// take the observer path below instead.
 		let liveFitFrame: number | null = null;
 		const scheduleLiveFit = () => {
-			if (liveFitFrame !== null) return;
+			if (disposed || callbacksRef.current.isVisible === false || liveFitFrame !== null) return;
 			liveFitFrame = requestAnimationFrame(() => {
 				liveFitFrame = null;
-				if (host.closest('[data-terminal-live-resize="true"]')) {
-					fitTerminal();
-					return;
-				}
-				// The marker may have cleared while this frame was queued. Keep the
-				// ordinary final-fit path rather than skipping the terminal's last size.
-				scheduleVisibleFit();
+				fitTerminal();
 			});
 		};
 
@@ -1170,12 +1240,135 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		if (document.fonts?.ready) {
 			void document.fonts.ready.then(() => scheduleStableFit());
 		}
-		const observer = new ResizeObserver(() => {
-			if (host.closest('[data-terminal-live-resize="true"]')) {
+		// Read static xterm padding once. Live fits use the observer's content box
+		// and xterm's public cell metrics, avoiding FitAddon's computed-style reads
+		// and the extra frame between panel layout and terminal resize.
+		const terminalStyle = term.element ? getComputedStyle(term.element) : undefined;
+		const paddingX = (parseFloat(terminalStyle?.paddingLeft ?? "0") || 0)
+			+ (parseFloat(terminalStyle?.paddingRight ?? "0") || 0);
+		const paddingY = (parseFloat(terminalStyle?.paddingTop ?? "0") || 0)
+			+ (parseFloat(terminalStyle?.paddingBottom ?? "0") || 0);
+		// Cover cleared/reflowed resize frames until the TUI's next output paints.
+		// Copy in onRender before WebGL discards its drawing buffer.
+		const resizeCover = document.createElement("canvas");
+		resizeCover.setAttribute("aria-hidden", "true");
+		Object.assign(resizeCover.style, {
+			position: "absolute", pointerEvents: "none", zIndex: "1",
+			backgroundColor: "var(--color-bg-terminal-opaque)",
+		});
+		let hasResizeFrame = false;
+		const cancelResizeCover = () => {
+			if (!waitingForResizeOutput) return;
+			waitingForResizeOutput = false;
+			resizeCover.remove();
+			term.refresh(0, term.rows - 1);
+		};
+		host.addEventListener("wheel", cancelResizeCover, { passive: true });
+		host.addEventListener("keydown", cancelResizeCover);
+		host.addEventListener("pointerdown", cancelResizeCover);
+		const paintedResizeFrame = term.onRender(() => {
+			if (disposed || term.modes.synchronizedOutputMode) return;
+			if (waitingForResizeOutput && parsedResizeGeneration < coveredResizeGeneration) return;
+			waitingForResizeOutput = false;
+			resizeCover.remove();
+			hasResizeFrame = false;
+			if (callbacksRef.current.isVisible === false || !usesSynchronizedOutput) {
+				resizeCover.width = 0;
+				resizeCover.height = 0;
+				return;
+			}
+			const screen = host.querySelector<HTMLElement>(".xterm-screen");
+			// The first canvas is the transparent link layer, not terminal text.
+			const source = screen?.querySelector<HTMLCanvasElement>(":scope > canvas:not(.xterm-link-layer)");
+			if (!screen || !source || source.width === 0 || source.height === 0) return;
+			const context = resizeCover.getContext("2d");
+			if (!context) return;
+			if (resizeCover.width !== source.width) resizeCover.width = source.width;
+			if (resizeCover.height !== source.height) resizeCover.height = source.height;
+			context.clearRect(0, 0, resizeCover.width, resizeCover.height);
+			context.drawImage(source, 0, 0);
+			resizeCover.style.width = source.style.width;
+			resizeCover.style.height = source.style.height;
+			resizeCover.style.left = `${screen.offsetLeft}px`;
+			resizeCover.style.top = `${screen.offsetTop}px`;
+			hasResizeFrame = true;
+		});
+		// Commit before paint; onResize immediately forwards the grid to the PTY.
+		const resizeGrid = (cols: number, rows: number, allowHidden = false) => {
+			if (disposed || (!allowHidden && callbacksRef.current.isVisible === false)) return;
+			if (cols !== term.cols || rows !== term.rows) {
+				const buffer = term.buffer.active;
+				const wasAtBottom = buffer.type === "normal" && buffer.viewportY === buffer.baseY;
+				resizeGeneration++;
+				if (hasResizeFrame && usesSynchronizedOutput && !waitingForResizeOutput) {
+					// Advancing this on each movement would starve redraws during a drag.
+					coveredResizeGeneration = resizeGeneration;
+					waitingForResizeOutput = true;
+					host.appendChild(resizeCover);
+				}
+				term.resize(cols, rows);
+				if (wasAtBottom) term.scrollToBottom();
+			}
+		};
+		const synchronizedFrames = term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
+			if (params.includes(2026)) usesSynchronizedOutput = true;
+			return false;
+		});
+		const didParseResizeOutput = (generation: number) => {
+			if (!waitingForResizeOutput || generation < coveredResizeGeneration) return;
+			parsedResizeGeneration = Math.max(parsedResizeGeneration, generation);
+			// Request a paint after parsing. xterm still honors synchronized output.
+			term.refresh(0, term.rows - 1);
+		};
+		// Never send capability replies for replayed queries to the live agent.
+		const synchronizedCapability = term.parser.registerCsiHandler(
+			{ prefix: "?", intermediates: "$", final: "p" },
+			(params) => {
+				if (params[0] !== 2026) return false;
+				if (pendingReplayWrites === 0) {
+					emitUserInput(`\x1b[?2026;${term.modes.synchronizedOutputMode ? 1 : 2}$y`, "protocol");
+				}
+				return true;
+			},
+		);
+		let wasDragging = document.body.classList.contains("is-resizing-x");
+		const dragStateObserver = new MutationObserver(() => {
+			const dragging = document.body.classList.contains("is-resizing-x");
+			if (wasDragging && !dragging && callbacksRef.current.isVisible !== false) {
+				// Pointerup can precede the final ResizeObserver delivery.
+				const grid = fit.proposeDimensions();
+				if (grid) resizeGrid(grid.cols, grid.rows);
+				term.refresh(0, term.rows - 1);
+			}
+			wasDragging = dragging;
+		});
+		dragStateObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+		const observer = new ResizeObserver((entries) => {
+			if (disposed) return;
+			if (callbacksRef.current.isVisible === false) {
+				waitingForResizeOutput = false;
+				hasResizeFrame = false;
+				resizeCover.remove();
+				// Activation preparation may fit behind its cover; parked panes stay
+				// inert. Preserve the quiet window and its completion listeners.
+				scheduleVisibleFit();
+				return;
+			}
+			const box = entries.find((entry) => entry.target === host)?.contentRect;
+			const cell = term.dimensions?.css.cell;
+			if (!box || !cell || !Number.isFinite(cell.width) || !Number.isFinite(cell.height)
+				|| cell.width <= 0 || cell.height <= 0) {
 				scheduleLiveFit();
 				return;
 			}
-			scheduleVisibleFit();
+			if (box.width <= 0 || box.height <= 0) {
+				return;
+			}
+			const gutter = term.options.scrollback === 0 || term.options.scrollbar?.showScrollbar === false
+				? 0 : (term.options.scrollbar?.width ?? MAC_TERMINAL_SCROLLBAR_WIDTH);
+			const cols = Math.max(2, Math.floor((Math.floor(box.width) - paddingX - gutter) / cell.width));
+			const rows = Math.max(1, Math.floor((Math.floor(box.height) - paddingY) / cell.height));
+			resizeGrid(cols, rows);
 		});
 		observer.observe(host);
 
@@ -1234,7 +1427,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// OS window resize and monitor/DPR changes also alter the true cell box
 		// without touching the host's height:100% box, so the ResizeObserver above
 		// misses them. Listen on window directly as a session-long recovery path.
-		window.addEventListener("resize", scheduleVisibleFit);
+		window.addEventListener("resize", scheduleLiveFit);
 
 		// Do not replace this with term.onData. xterm's raw data stream can include
 		// terminal-generated control responses during attach/repaint; forwarding
@@ -1242,7 +1435,8 @@ export function XtermTerminal(props: XtermTerminalProps) {
 		// corrupts the TUI. Keyboard is the only safe generic text path here; paste,
 		// composition, shortcuts, and wheel reports are emitted explicitly below.
 		// Forward validated OSC 4/10/11/12 color replies and cursor-position
-		// reports only. Interactive prompts such as `gh auth login` use DSR to ask
+		// reports here; mode 2026 queries are answered by the live parser hook above.
+		// Interactive prompts such as `gh auth login` use DSR to ask
 		// xterm for the cursor position and block until the corresponding CPR reaches
 		// the PTY. Other onData bytes must not reach the PTY or agent TUIs break.
 		// Retained terminals can change providers without remounting. Keep the
@@ -1462,12 +1656,22 @@ export function XtermTerminal(props: XtermTerminalProps) {
 						}
 					}
 				}
+				const outputResizeGeneration = resizeGeneration;
+				if (source === "replay") pendingReplayWrites++;
 				term.write(data, () => {
+					if (source === "replay") pendingReplayWrites--;
+					else didParseResizeOutput(outputResizeGeneration);
 					scheduleScrollbarUpdate();
 					done?.();
 				});
 			},
-			writeln: (line) => term.writeln(line, scheduleScrollbarUpdate),
+			writeln: (line) => {
+				const outputResizeGeneration = resizeGeneration;
+				term.writeln(line, () => {
+					didParseResizeOutput(outputResizeGeneration);
+					scheduleScrollbarUpdate();
+				});
+			},
 			showLatestOutput,
 			prepareForActivation,
 			notifyCursorColorScheme: () => {
@@ -1501,6 +1705,14 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			if (fitCapTimer !== null) clearTimeout(fitCapTimer);
 			fitSettledListeners.clear();
 			observer.disconnect();
+			dragStateObserver.disconnect();
+			synchronizedFrames.dispose();
+			synchronizedCapability.dispose();
+			paintedResizeFrame.dispose();
+			host.removeEventListener("wheel", cancelResizeCover);
+			host.removeEventListener("keydown", cancelResizeCover);
+			host.removeEventListener("pointerdown", cancelResizeCover);
+			resizeCover.remove();
 			stabilizer.dispose();
 			scrollPositionChange?.dispose();
 			scrollbarResize?.dispose();
@@ -1510,7 +1722,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			scrollbarTrack?.removeEventListener("pointermove", scrollbarPointerMove);
 			scrollbarTrack?.removeEventListener("pointerup", scrollbarPointerUp);
 			scrollbarTrack?.removeEventListener("pointercancel", scrollbarPointerUp);
-			window.removeEventListener("resize", scheduleVisibleFit);
+			window.removeEventListener("resize", scheduleLiveFit);
 			shell.removeEventListener("copy", copyInput);
 			window.removeEventListener("keydown", copyShortcut, true);
 			host.removeEventListener("pointerdown", pointerDown);
@@ -1523,6 +1735,7 @@ export function XtermTerminal(props: XtermTerminalProps) {
 			shell.removeEventListener("dragover", dragOverInput);
 			shell.removeEventListener("drop", dropInput);
 			contextMenuActionsRef.current = null;
+			visibleContentRender.dispose();
 			cancelActivationPreparation?.();
 			clearSuppressNativePaste();
 			if (colorSchemeReporterRef.current === reportColorScheme) colorSchemeReporterRef.current = null;
@@ -1654,6 +1867,9 @@ export function XtermTerminal(props: XtermTerminalProps) {
 					className={macPlatform ? "terminal-xterm-host terminal-xterm-host--mac" : "terminal-xterm-host"}
 					style={{
 						backgroundColor: "var(--color-bg-terminal-opaque)",
+						position: "relative",
+						contain: "paint",
+						minWidth: 0,
 						height: "100%",
 						overflow: "hidden",
 						width: "100%",

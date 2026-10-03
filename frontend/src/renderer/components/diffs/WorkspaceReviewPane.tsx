@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { useQueries } from "@tanstack/react-query";
 import { parsePatchFiles, type CodeViewItem, type FileDiffMetadata } from "@pierre/diffs";
 import { CodeView } from "@pierre/diffs/react";
-import { ChevronRight, ChevronsDownUp, ChevronsUpDown, FileCode2, GitCommitHorizontal, MessageSquarePlus, Pencil } from "lucide-react";
+import { ChevronRight, ChevronsDownUp, ChevronsUpDown, FileCode2, GitCommitHorizontal, MessageSquarePlus, MoreVertical, Pencil } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
 	fetchWorkspaceFileRevision,
@@ -21,6 +21,7 @@ import { VscodeGoToFileIcon } from "../icons/VscodeGoToFileIcon";
 import { WorkspaceEntryIcon } from "../WorkspaceEntryIcon";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../ui/dropdown-menu";
 import { MENU_TRIGGER_CHROME } from "../ui/option-menu";
 import { SettingsMenuTrigger } from "../settings/SettingsMenuTrigger";
 import { Popover, PopoverAnchor, PopoverContent } from "../ui/popover";
@@ -188,6 +189,10 @@ export function WorkspaceReviewPane({
 	const [activeBatchCount, setActiveBatchCount] = useState(4);
 	const reviewRef = useRef<HTMLDivElement>(null);
 	const gutterHover = usePersistentGutterUtility(reviewRef);
+	// Set when a file row's overflow menu hands off to another surface (an editor,
+	// a preview, the feedback composer) so closing the menu doesn't pull focus
+	// back to its trigger; dismissing it without a choice still restores focus.
+	const fileMenuHandoffRef = useRef(false);
 
 	const selectedCommit = useMemo(
 		() => data.commits.find((commit) => commit.sha === selectedCommitSha),
@@ -524,7 +529,7 @@ export function WorkspaceReviewPane({
 
 	return (
 		<div
-			className="flex h-full min-h-0 flex-col"
+			className="@container/review flex h-full min-h-0 flex-col"
 			onPointerLeave={gutterHover.onPointerLeave}
 			onPointerMove={gutterHover.onPointerMove}
 			ref={reviewRef}
@@ -650,24 +655,64 @@ export function WorkspaceReviewPane({
 														</span>
 													</span>
 												</div>
-												{/* Same 4px gap as the inspector tab buttons. */}
-												<div className="ml-auto flex shrink-0 items-center gap-1 pl-2" onClick={(event) => event.stopPropagation()}>
-													{file.editable && file.fileFingerprint ? (
-														<HeaderActionTooltip label={t("files.editFile")}>
-															<Button aria-label={t("files.editFile")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { editing: true, mode: "file", scope })} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button>
+												{/* Same 4px gap as the inspector tab buttons. In a narrow pane the
+												    secondary actions fold into one ⋮ menu (like the browser's
+												    controls) and the extra lead-in goes, so the file name keeps its
+												    room; the row's own gap still separates it from the stats. */}
+												<div className="ml-auto flex shrink-0 items-center gap-1 pl-2 @max-[25rem]/review:pl-0" onClick={(event) => event.stopPropagation()}>
+													<div className="flex items-center gap-1 @max-[25rem]/review:hidden">
+														{file.editable && file.fileFingerprint ? (
+															<HeaderActionTooltip label={t("files.editFile")}>
+																<Button aria-label={t("files.editFile")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { editing: true, mode: "file", scope })} size="icon-sm" type="button" variant="ghost"><Pencil aria-hidden="true" className="size-icon-sm" /></Button>
+															</HeaderActionTooltip>
+														) : null}
+														<HeaderActionTooltip label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}>
+															<Button aria-label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: renderedAvailable ? "rendered" : "file" })} size="icon-sm" type="button" variant="ghost"><FileCode2 aria-hidden="true" className="size-icon-sm" /></Button>
 														</HeaderActionTooltip>
-													) : null}
-													<HeaderActionTooltip label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}>
-														<Button aria-label={renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: renderedAvailable ? "rendered" : "file" })} size="icon-sm" type="button" variant="ghost"><FileCode2 aria-hidden="true" className="size-icon-sm" /></Button>
-													</HeaderActionTooltip>
-													{onOpenFile && canOpenInCenter ? (
-														<HeaderActionTooltip label={t("files.openDiffInCenter")}>
-															<Button aria-label={t("files.openDiffInCenter")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile(file.path, { ...fileOpenContext, mode: "diff" })} size="icon-sm" type="button" variant="ghost"><VscodeGoToFileIcon aria-hidden="true" className="size-icon-sm" /></Button>
+														{onOpenFile && canOpenInCenter ? (
+															<HeaderActionTooltip label={t("files.openDiffInCenter")}>
+																<Button aria-label={t("files.openDiffInCenter")} className="size-6 text-muted-foreground hover:text-foreground" onClick={() => onOpenFile(file.path, { ...fileOpenContext, mode: "diff" })} size="icon-sm" type="button" variant="ghost"><VscodeGoToFileIcon aria-hidden="true" className="size-icon-sm" /></Button>
+															</HeaderActionTooltip>
+														) : null}
+														<HeaderActionTooltip label={t("files.addFeedback")}>
+															<Button aria-label={t("files.addFeedback")} aria-pressed={fileAnnotationActive} className={cn("size-6 text-muted-foreground hover:text-foreground", fileAnnotationActive && "bg-interactive-active text-foreground")} onClick={() => annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint })} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
 														</HeaderActionTooltip>
-													) : null}
-													<HeaderActionTooltip label={t("files.addFeedback")}>
-														<Button aria-label={t("files.addFeedback")} aria-pressed={fileAnnotationActive} className={cn("size-6 text-muted-foreground hover:text-foreground", fileAnnotationActive && "bg-interactive-active text-foreground")} onClick={() => annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint })} size="icon-sm" type="button" variant="ghost"><MessageSquarePlus aria-hidden="true" className="size-icon-sm" /></Button>
-													</HeaderActionTooltip>
+													</div>
+													<DropdownMenu>
+														<HeaderActionTooltip label={t("files.moreFileActions")}>
+															<DropdownMenuTrigger asChild>
+																<Button aria-label={t("files.moreFileActions")} className="hidden size-6 text-muted-foreground hover:text-foreground data-[state=open]:bg-interactive-active data-[state=open]:text-foreground @max-[25rem]/review:inline-flex" size="icon-sm" type="button" variant="ghost"><MoreVertical aria-hidden="true" className="size-icon-sm" /></Button>
+															</DropdownMenuTrigger>
+														</HeaderActionTooltip>
+														<DropdownMenuContent
+															align="end"
+															onCloseAutoFocus={(event) => {
+																if (fileMenuHandoffRef.current) event.preventDefault();
+																fileMenuHandoffRef.current = false;
+															}}
+														>
+															{file.editable && file.fileFingerprint ? (
+																<DropdownMenuItem className="gap-2" onSelect={() => { fileMenuHandoffRef.current = true; onOpenFile?.(file.path, { editing: true, mode: "file", scope }); }}>
+																	<Pencil aria-hidden="true" className="size-icon-sm text-passive" />
+																	{t("files.editFile")}
+																</DropdownMenuItem>
+															) : null}
+															<DropdownMenuItem className="gap-2" onSelect={() => { fileMenuHandoffRef.current = true; onOpenFile?.(file.path, { ...fileOpenContext, mode: renderedAvailable ? "rendered" : "file" }); }}>
+																<FileCode2 aria-hidden="true" className="size-icon-sm text-passive" />
+																{renderedAvailable ? t("files.openRichPreview") : t("files.openFullFileGeneric")}
+															</DropdownMenuItem>
+															{onOpenFile && canOpenInCenter ? (
+																<DropdownMenuItem className="gap-2" onSelect={() => { fileMenuHandoffRef.current = true; onOpenFile(file.path, { ...fileOpenContext, mode: "diff" }); }}>
+																	<VscodeGoToFileIcon aria-hidden="true" className="size-icon-sm text-passive" />
+																	{t("files.openDiffInCenter")}
+																</DropdownMenuItem>
+															) : null}
+															<DropdownMenuItem className="gap-2" onSelect={() => { fileMenuHandoffRef.current = true; annotation.begin({ path: file.path, previousPath: file.previousPath, side: "file", scope, surface: "review", workspaceVersion: data.workspaceVersion, fileFingerprint: file.fileFingerprint }); }}>
+																<MessageSquarePlus aria-hidden="true" className="size-icon-sm text-passive" />
+																{t("files.addFeedback")}
+															</DropdownMenuItem>
+														</DropdownMenuContent>
+													</DropdownMenu>
 													<HeaderActionTooltip label={isViewed ? t("files.markUnviewed", { file: file.path }) : t("files.markViewed", { file: file.path })}>
 														{/* A 24px slot like the buttons beside it keeps the checkbox
 														    centred on the header's trailing action column. */}

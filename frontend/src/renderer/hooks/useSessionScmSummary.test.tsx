@@ -92,8 +92,8 @@ describe("useSessionScmSummary cloud source", () => {
 			{ wrapper },
 		);
 
-		await waitFor(() => expect(result.current.data?.[0]?.title).toBe("Cloud details"));
-		expect(result.current.data?.[0]).toMatchObject({
+		await waitFor(() => expect(result.current.data?.prs[0]?.title).toBe("Cloud details"));
+		expect(result.current.data?.prs[0]).toMatchObject({
 			repo: "acme/widgets",
 			mergeability: { prUrl: "https://github.com/acme/widgets/pull/7" },
 		});

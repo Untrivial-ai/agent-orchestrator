@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DashboardPR, DashboardSession } from "./api";
+import type { DashboardPR, DashboardSession, SessionPRSummary } from "./api";
 import {
 	collectPRs,
 	comparePRs,
@@ -9,6 +9,8 @@ import {
 	prLifecycle,
 	prStatusAtoms,
 	prSummaryLine,
+	prReviewPromptHeadline,
+	prReviewPromptStatuses,
 	prTitle,
 } from "./prView";
 
@@ -174,6 +176,66 @@ describe("prStatusAtoms", () => {
 	it("surfaces unresolved comments when there is no formal decision", () => {
 		const atoms = prStatusAtoms({ state: "open", review: { decision: "none", hasUnresolvedHumanComments: true } });
 		expect(atoms).toEqual([{ text: "Unresolved comments", tone: "warning" }]);
+	});
+});
+
+describe("PR composer prompt statuses", () => {
+	it("shows CI, mergeability, and review as separate status facts", () => {
+		const summary = {
+			state: "open",
+			url: "https://github.com/o/r/pull/184",
+			number: 184,
+			title: "Test pull request",
+			repo: "o/r",
+			author: "octocat",
+			sourceBranch: "feature",
+			targetBranch: "main",
+			additions: 0,
+			deletions: 0,
+			changedFiles: 0,
+			ci: { state: "passing", failingChecks: [] },
+			mergeability: { state: "mergeable", reasons: [] },
+			review: { decision: "approved", hasUnresolvedHumanComments: false, unresolvedBy: [] },
+	} as SessionPRSummary;
+
+		expect(prReviewPromptStatuses(pr(), summary).map(({ text }) => text)).toEqual([
+			"CI passing",
+			"Mergeable",
+			"Approved",
+		]);
+		expect(prReviewPromptHeadline(pr(), summary)).toEqual({ text: "Ready to merge", tone: "success" });
+	});
+
+	it("colors conflicts and failing checks as errors", () => {
+		const summary = {
+			state: "open",
+			url: "https://github.com/o/r/pull/184",
+			number: 184,
+			title: "Test pull request",
+			repo: "o/r",
+			author: "octocat",
+			sourceBranch: "feature",
+			targetBranch: "main",
+			additions: 0,
+			deletions: 0,
+			changedFiles: 0,
+			ci: { state: "failing", failingChecks: [] },
+			mergeability: { state: "conflicting", reasons: [] },
+			review: { decision: "review_required", hasUnresolvedHumanComments: false, unresolvedBy: [] },
+	} as SessionPRSummary;
+
+		expect(prReviewPromptStatuses(pr(), summary).map(({ tone }) => tone)).toEqual(["error", "error", "neutral"]);
+		expect(prReviewPromptHeadline(pr(), summary)).toEqual({ text: "Has conflicts", tone: "error" });
+	});
+
+	it("uses the available session facts while the rich PR summary is loading", () => {
+		const pullRequest = pr({ ciStatus: "passing", mergeability: { mergeable: true }, reviewDecision: "pending" });
+		expect(prReviewPromptStatuses(pullRequest).map(({ text }) => text)).toEqual([
+			"CI passing",
+			"Mergeable",
+			"Review pending",
+		]);
+		expect(prReviewPromptHeadline(pullRequest)).toEqual({ text: "Mergeable", tone: "success" });
 	});
 });
 

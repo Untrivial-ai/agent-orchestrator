@@ -1,12 +1,14 @@
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useReviewerConversation, useReviewerConversationCommands } from "../../hooks/useReviewerConversation";
+import { useSessionLinkNavigation } from "../../lib/use-session-link-navigation";
 import { ChatWorkspace } from "./ChatWorkspace";
 
 export function ReviewerChatSurface({ reviewId, hideHeader = false }: { reviewId: string; hideHeader?: boolean }) {
 	const { t } = useTranslation();
 	const { snapshot, isLoading, error, hasOlder, isLoadingOlder, loadOlder } = useReviewerConversation(reviewId);
 	const commands = useReviewerConversationCommands(reviewId);
+	const openSessionLink = useSessionLinkNavigation();
 	if (isLoading)
 		return (
 			<Centered>
@@ -24,6 +26,7 @@ export function ReviewerChatSurface({ reviewId, hideHeader = false }: { reviewId
 	return (
 		<ChatWorkspace
 			snapshot={snapshot}
+			onSessionLinkOpen={openSessionLink}
 			sessionTitle={t("terminal.reviewer")}
 			sessionRole="worker"
 			hideHeader={hideHeader}

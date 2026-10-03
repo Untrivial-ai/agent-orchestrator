@@ -20,6 +20,7 @@ const (
 	HarnessClaudeCode Harness = "claude-code"
 	HarnessCodex      Harness = "codex"
 	HarnessCursor     Harness = "cursor"
+	HarnessOpenCode   Harness = "opencode"
 )
 
 // PermissionPolicy is AO's provider-neutral approval policy.
@@ -102,6 +103,8 @@ func BuildLaunchCommand(cfg LaunchConfig) ([]string, error) {
 		return buildCodexLaunch(cfg), nil
 	case HarnessCursor:
 		return buildCursorLaunch(cfg), nil
+	case HarnessOpenCode:
+		return buildOpencodeLaunch(cfg), nil
 	default:
 		return nil, fmt.Errorf("agentruntime: unsupported harness %q", cfg.Harness)
 	}
@@ -125,6 +128,8 @@ func BuildRestoreCommand(cfg RestoreConfig) ([]string, bool, error) {
 		return buildCodexRestore(cfg, identity), true, nil
 	case HarnessCursor:
 		return buildCursorRestore(cfg, identity), true, nil
+	case HarnessOpenCode:
+		return buildOpencodeRestore(cfg, identity), true, nil
 	default:
 		return nil, false, fmt.Errorf("agentruntime: unsupported harness %q", cfg.Harness)
 	}
@@ -132,7 +137,9 @@ func BuildRestoreCommand(cfg RestoreConfig) ([]string, bool, error) {
 
 // RestoreIdentity resolves the native provider identity used by a restore.
 // Claude Code can deterministically recover pre-hook sessions from the AO
-// session id; Codex and Cursor require their hook-captured identity.
+// session id; Codex, Cursor, and opencode require their hook-captured identity
+// (opencode's is reported by its activity plugin and lands in metadata under
+// MetadataKeyAgentSessionID, so it resolves through the shared first branch).
 func RestoreIdentity(harness Harness, sessionID string, metadata map[string]string) (string, bool) {
 	if identity := strings.TrimSpace(metadata[MetadataKeyAgentSessionID]); identity != "" {
 		return identity, true
@@ -420,4 +427,56 @@ func buildCursorRestore(cfg RestoreConfig, identity string) []string {
 		cmd = append(cmd, "--model", model)
 	}
 	return append(cmd, "--resume", identity)
+}
+
+// OpenCodePermissionArgs maps AO policy onto opencode's own interactive flags.
+// opencode v2 (@opencode/cli) exposes only `--auto`, which approves whatever is
+// not explicitly denied — exactly AO's auto mode. Bypass's true full access
+// (which also overrides explicit denies) comes from a `permission: "allow"` rule
+// on the AO agent in the OPENCODE_CONFIG document written by the caller, so
+// bypass rides --auto here as a belt-and-suspenders backstop. v2 removed the
+// `--dangerously-skip-permissions` alias, so accept-edits and default carry no
+// flag; their behavior likewise rides the caller's config overlay.
+func OpenCodePermissionArgs(policy PermissionPolicy) []string {
+	switch NormalizePermissionPolicy(policy) {
+	case PermissionAuto, PermissionBypassPermissions:
+		return []string{"--auto"}
+	default:
+		return nil
+	}
+}
+
+// buildOpencodeLaunch builds argv for a fresh opencode v2 TUI session. Unlike
+// the other harnesses, opencode v2 has no CLI flag for a model, agent, or system
+// prompt (v1's --model/--agent/--dangerously-skip-permissions were removed): the
+// model, the standing-instructions agent, and the approval overlay all ride an
+// AO-owned OPENCODE_CONFIG document the caller writes and points the environment
+// at (mirroring how the claude builder consumes a caller-written system-prompt
+// file). agentruntime returns only argv, so exporting OPENCODE_CONFIG is the
+// caller's job. Shape: `opencode [--auto] [providerArgs...] [--prompt <prompt>]`.
+func buildOpencodeLaunch(cfg LaunchConfig) []string {
+	cmd := []string{cfg.Binary}
+	cmd = append(cmd, OpenCodePermissionArgs(cfg.Permission)...)
+	cmd = append(cmd, cfg.ProviderArgs...)
+	if cfg.Prompt != "" {
+		cmd = append(cmd, "--prompt", cfg.Prompt)
+	}
+	return cmd
+}
+
+// buildOpencodeRestore continues an existing opencode session by its native id.
+// opencode v2's resume contract is `--session <id>` (which continues that
+// session, or creates it if absent). The permission flag and the AO config are
+// re-applied the same way as launch, since resume otherwise reverts to opencode's
+// configured defaults. Shape:
+// `opencode [--auto] [providerArgs...] --session <id> [--prompt <prompt>]`.
+func buildOpencodeRestore(cfg RestoreConfig, identity string) []string {
+	cmd := []string{cfg.Binary}
+	cmd = append(cmd, OpenCodePermissionArgs(cfg.Permission)...)
+	cmd = append(cmd, cfg.ProviderArgs...)
+	cmd = append(cmd, "--session", identity)
+	if cfg.Prompt != "" {
+		cmd = append(cmd, "--prompt", cfg.Prompt)
+	}
+	return cmd
 }

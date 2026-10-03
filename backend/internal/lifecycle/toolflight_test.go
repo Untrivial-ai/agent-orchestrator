@@ -281,6 +281,17 @@ func TestToolPrecedence_NoCandidatesFailsSafe(t *testing.T) {
 	}
 }
 
+func TestToolPrecedence_DefinitivePermissionResolutionClearsBlocked(t *testing.T) {
+	m, st, _ := newManager()
+	seedSignaled(st, "mer-1", domain.ActivityActive)
+	mustApply(t, m, "mer-1", sig(domain.ActivityBlocked, "permission-blocked", "", ""))
+
+	mustApply(t, m, "mer-1", sig(domain.ActivityActive, "permission-resolved", "", ""))
+	if got := stateOf(st, "mer-1"); got != domain.ActivityActive {
+		t.Fatalf("state after definitive permission resolution = %q, want active", got)
+	}
+}
+
 func TestToolPrecedence_LegacySignalsKeepLastWriterWins(t *testing.T) {
 	// The compatibility pin: a signal WITHOUT an event (old CLIs, the 12
 	// adapters that don't tag their signals) keeps today's last-writer-wins

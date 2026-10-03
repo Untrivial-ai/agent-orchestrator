@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	buildClaudeAuthorizeUrl,
 	extractClaudeOAuthToken,
 	findCodexAuthFile,
 	firstExecutable,
@@ -69,6 +70,25 @@ describe("extractClaudeOAuthToken", () => {
 
 	it("returns null when no token is present", () => {
 		expect(extractClaudeOAuthToken("Opening browser to sign in...\nno token here")).toBeNull();
+	});
+});
+
+// AO runs Claude's own PKCE loopback flow (instead of scraping `claude
+// setup-token`, whose Ink TUI prints nothing on a non-TTY pipe). The authorize URL
+// must carry the exact parameters Claude Code's OAuth client expects, or the
+// browser round-trip / token exchange fails.
+describe("buildClaudeAuthorizeUrl", () => {
+	it("emits the loopback PKCE authorize URL Claude Code's client expects", () => {
+		const url = new URL(buildClaudeAuthorizeUrl("http://localhost:54321/callback", "CHALLENGE_abc", "STATE_xyz"));
+		expect(url.origin + url.pathname).toBe("https://claude.com/cai/oauth/authorize");
+		expect(url.searchParams.get("client_id")).toBe("9d1c250a-e61b-44d9-88ed-5944d1962f5e");
+		expect(url.searchParams.get("response_type")).toBe("code");
+		expect(url.searchParams.get("redirect_uri")).toBe("http://localhost:54321/callback");
+		expect(url.searchParams.get("scope")).toBe("user:inference");
+		expect(url.searchParams.get("code_challenge")).toBe("CHALLENGE_abc");
+		expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+		expect(url.searchParams.get("state")).toBe("STATE_xyz");
+		expect(url.searchParams.get("code")).toBe("true");
 	});
 });
 

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -26,9 +27,11 @@ func newAgentProcessCommand(ctx *commandContext) *cobra.Command {
 
 func newAgentProcessSuperviseCommand(ctx *commandContext) *cobra.Command {
 	var sessionID string
+	var reviewID string
+	var activityReviewID string
 	var launchID string
 	cmd := &cobra.Command{
-		Use:    "supervise --session <id> --launch <id> -- <command> [args...]",
+		Use:    "supervise (--session <id>|--review <id>) [--activity-review <id>] --launch <id> -- <command> [args...]",
 		Short:  "Supervise one managed agent process (internal)",
 		Hidden: true,
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -39,23 +42,43 @@ func newAgentProcessSuperviseCommand(ctx *commandContext) *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionID = strings.TrimSpace(sessionID)
+			reviewID = strings.TrimSpace(reviewID)
+			activityReviewID = strings.TrimSpace(activityReviewID)
 			launchID = strings.TrimSpace(launchID)
-			if !sessionIDPattern.MatchString(sessionID) {
-				return usageError{fmt.Errorf("invalid session id")}
+			if (sessionID == "") == (reviewID == "") {
+				return usageError{fmt.Errorf("exactly one of --session or --review is required")}
 			}
-			if !sessionIDPattern.MatchString(launchID) {
+			if activityReviewID != "" && sessionID == "" {
+				return usageError{fmt.Errorf("--activity-review requires --session")}
+			}
+			activityID := sessionID
+			if activityID == "" {
+				activityID = reviewID
+			}
+			if !sessionIDPattern.MatchString(activityID) {
+				return usageError{fmt.Errorf("invalid activity id")}
+			}
+			if activityReviewID != "" && !sessionIDPattern.MatchString(activityReviewID) {
+				return usageError{fmt.Errorf("invalid review activity id")}
+			}
+			if !sessionIDPattern.MatchString(strings.TrimSpace(launchID)) {
 				return usageError{fmt.Errorf("invalid launch id")}
 			}
-			ctx.runSupervisedProcess(cmd.Context(), sessionID, launchID, args)
+			if activityReviewID == "" {
+				activityReviewID = reviewID
+			}
+			ctx.runSupervisedProcess(cmd.Context(), sessionID, activityReviewID, launchID, args)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&sessionID, "session", "", "AO session id")
+	cmd.Flags().StringVar(&reviewID, "review", "", "AO review id")
+	cmd.Flags().StringVar(&activityReviewID, "activity-review", "", "AO review id to receive process activity")
 	cmd.Flags().StringVar(&launchID, "launch", "", "AO process launch id")
 	return cmd
 }
 
-func (c *commandContext) runSupervisedProcess(ctx context.Context, sessionID, launchID string, argv []string) {
+func (c *commandContext) runSupervisedProcess(ctx context.Context, sessionID, reviewID, launchID string, argv []string) {
 	child := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv is constructed by the selected agent adapter.
 	child.Stdin = c.deps.In
 	child.Stdout = c.deps.Out
@@ -63,7 +86,7 @@ func (c *commandContext) runSupervisedProcess(ctx context.Context, sessionID, la
 
 	if err := child.Start(); err != nil {
 		_, _ = fmt.Fprintf(c.deps.Err, "ao: start managed agent: %v\n", err)
-		c.reportSupervisedExit(sessionID, launchID)
+		c.reportSupervisedExit(sessionID, reviewID, launchID)
 		return
 	}
 
@@ -75,17 +98,23 @@ func (c *commandContext) runSupervisedProcess(ctx context.Context, sessionID, la
 	_ = child.Wait()
 	signal.Stop(interrupts)
 
-	c.reportSupervisedExit(sessionID, launchID)
+	c.reportSupervisedExit(sessionID, reviewID, launchID)
 }
 
-func (c *commandContext) reportSupervisedExit(sessionID, launchID string) {
+func (c *commandContext) reportSupervisedExit(sessionID, reviewID, launchID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), supervisedExitReportTimeout)
 	defer cancel()
-	path := "sessions/" + sessionID + "/activity"
-	req := setActivityAPIRequest{State: "exited", Event: "process-exited", LaunchID: launchID}
+	activityID := sessionID
+	path := "sessions/" + url.PathEscape(sessionID) + "/activity"
+	var req any = setActivityAPIRequest{State: "exited", Event: "process-exited", LaunchID: launchID}
+	if reviewID != "" {
+		activityID = reviewID
+		path = "reviews/" + url.PathEscape(reviewID) + "/activity"
+		req = setReviewActivityAPIRequest{State: "exited", Event: "process-exited", LaunchID: launchID}
+	}
 	if err := c.postJSON(ctx, path, req, nil); err != nil {
 		// Reconciliation will recover this event from process absence. Keep the
 		// delivery failure visible without preventing the terminal's shell.
-		c.reportHookFailure("agent-process", "process-exited", sessionID, err)
+		c.reportHookFailure("agent-process", "process-exited", activityID, err)
 	}
 }

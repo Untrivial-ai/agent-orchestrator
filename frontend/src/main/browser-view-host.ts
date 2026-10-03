@@ -259,6 +259,25 @@ type BrowserWebContents = Pick<
 
 type BrowserElectronSession = NonNullable<BrowserWebContents["session"]>;
 
+function canWriteBrowserClipboard(
+	webContents: Pick<WebContents, "getURL"> | null,
+	permission: string,
+	requestingUrl: string | undefined,
+	isMainFrame: boolean,
+): boolean {
+	if (permission !== "clipboard-sanitized-write" || !webContents || !requestingUrl || !isMainFrame) return false;
+	try {
+		const activeUrl = new URL(webContents.getURL());
+		const requestedUrl = new URL(requestingUrl);
+		return (
+			(requestedUrl.protocol === "http:" || requestedUrl.protocol === "https:")
+			&& requestedUrl.origin === activeUrl.origin
+		);
+	} catch {
+		return false;
+	}
+}
+
 const browserScrollbarCSS = (zoomFactor: number): string => {
 	const effectiveZoom = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1;
 	const thickness = Number((8 / effectiveZoom).toFixed(3));
@@ -685,8 +704,14 @@ export function createBrowserViewHost(options: BrowserViewHostOptions): BrowserV
 		applyBrowserViewBounds(view, OFFSCREEN_BOUNDS, false);
 		options.mainWindow.contentView.addChildView(view);
 		view.setBorderRadius?.(BROWSER_VIEW_BORDER_RADIUS);
-		view.webContents.session?.setPermissionCheckHandler?.(() => false);
-		view.webContents.session?.setPermissionRequestHandler?.((_contents, _permission, callback) => callback(false));
+		// Main-frame sites use this permission for actions such as "Copy link".
+		// Keep embedded frames, clipboard reads, and every other permission denied.
+		view.webContents.session?.setPermissionCheckHandler?.((contents, permission, _origin, details) =>
+			canWriteBrowserClipboard(contents, permission, details.requestingUrl, details.isMainFrame),
+		);
+		view.webContents.session?.setPermissionRequestHandler?.((contents, permission, callback, details) =>
+			callback(canWriteBrowserClipboard(contents, permission, details.requestingUrl, details.isMainFrame)),
+		);
 		options.browserDownloadManager?.attach(view.webContents.session);
 		let scrollbarStyleKey: string | undefined;
 		let scrollbarStyleUpdate = Promise.resolve();

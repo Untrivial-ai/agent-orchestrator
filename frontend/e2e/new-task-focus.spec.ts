@@ -202,6 +202,24 @@ test("renderer: opening another session focuses its chat composer @T0", async ({
 	await expect(composer).toHaveText("typed after switching");
 });
 
+test("renderer: hovering a Chat session fetches its conversation before opening it @T0", async ({ page }) => {
+	await setup(page);
+	let requests = 0;
+	await page.route(`http://127.0.0.1:8080/api/v1/sessions/${sessionB}/conversation*`, async (route) => {
+		requests++;
+		await route.fulfill({ json: conversation(sessionB) });
+	});
+	await page.goto(`/#/projects/${projectId}/sessions/${sessionA}`);
+	await expect(page.getByText(`Existing conversation in ${sessionA}`)).toBeVisible();
+
+	const row = page.getByRole("button", { name: /Open Session B/ }).first();
+	await row.hover();
+	await expect.poll(() => requests).toBe(1);
+	await row.click();
+	await expect(page.getByText(`Existing conversation in ${sessionB}`)).toBeVisible();
+	expect(requests).toBe(1);
+});
+
 async function setupSwitchAgentSession(page: Page) {
 	await page.emulateMedia({ reducedMotion: "reduce" });
 	await installFakeAgent(page, {

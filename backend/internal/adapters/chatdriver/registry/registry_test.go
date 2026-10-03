@@ -23,6 +23,7 @@ func TestShippedChatDrivers(t *testing.T) {
 		domain.HarnessCodex,
 		domain.HarnessClaudeCode,
 		domain.HarnessOpenCode,
+		domain.HarnessOpenCodeV2,
 		domain.HarnessDroid,
 		domain.HarnessKimi,
 		domain.HarnessKimchi,

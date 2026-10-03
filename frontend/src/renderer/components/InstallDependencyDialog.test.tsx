@@ -2,10 +2,10 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-const apiMocks = vi.hoisted(() => ({ post: vi.fn() }));
+const apiMocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 
 vi.mock("../lib/api-client", () => ({
-	apiClient: { POST: apiMocks.post },
+	apiClient: { GET: apiMocks.get, POST: apiMocks.post },
 	apiErrorMessage: vi.fn((_error: unknown, fallback: string) => fallback),
 }));
 
@@ -41,6 +41,35 @@ describe("checkRequirementsAgain", () => {
 });
 
 describe("InstallDependencyDialog", () => {
+	it("uses the OpenCode 2 installer preview notice and legacy install endpoint", async () => {
+		apiMocks.get.mockImplementation(async (path: string) => {
+			if (path === "/api/v1/system/install/{target}") {
+				return {
+					data: { target: "opencode-v2", status: "idle", notice: "The daemon says this replaces OpenCode 1." },
+					error: undefined,
+				};
+			}
+			return { data: undefined, error: undefined };
+		});
+		apiMocks.post.mockResolvedValue({ data: { target: "opencode-v2", status: "installing" }, error: undefined });
+
+		render(
+			<InstallDependencyDialog
+				requirements={[{ id: "harness", label: "Agent harness", required: true, satisfied: false }] as never}
+				onRefetchRequirements={vi.fn()}
+			/>,
+		);
+
+		await userEvent.click(screen.getByRole("radio", { name: /OpenCode 2/i }));
+
+		expect(await screen.findByText("The daemon says this replaces OpenCode 1.")).toHaveAttribute("role", "status");
+		await userEvent.click(screen.getByRole("button", { name: "Install selected" }));
+
+		expect(apiMocks.post).toHaveBeenCalledWith("/api/v1/system/install/{target}", {
+			params: { path: { target: "opencode-v2" } },
+		});
+	});
+
 	it("surfaces a failed Check again refresh", async () => {
 		apiMocks.post.mockResolvedValue({ data: undefined, error: { message: "daemon unavailable" } });
 		const refetch = vi.fn();

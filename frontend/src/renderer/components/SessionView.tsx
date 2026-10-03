@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Globe2, PanelRight, Plus } from "lucide-react";
+import { Globe2, Loader2, PanelRight, Plus } from "lucide-react";
 import { useBlocker } from "@tanstack/react-router";
 import { motion, useReducedMotion } from "motion/react";
 import {
@@ -25,6 +25,7 @@ import {
 	SessionChatSurface,
 	type ConversationWorkState,
 } from "./chat/SessionChatSurface";
+import { CloudSessionChatSurface } from "./chat/CloudSessionChatSurface";
 import { ReviewerChatSurface } from "./chat/ReviewerChatSurface";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { NotificationCenter } from "./NotificationCenter";
@@ -66,8 +67,16 @@ import {
 	useSessionInterfaceTransition,
 } from "../hooks/useSessionInterfaceTransition";
 import { useAgentSwitchRouteVisibility } from "../hooks/useAgentSwitchVisibility";
-import { useWorkspaceSession, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
+import {
+	toCloudWorkspaceSession,
+	useCloudSessionQuery,
+	useWorkspaceQuery,
+	useWorkspaceSession,
+	workspaceQueryKey,
+} from "../hooks/useWorkspaceQuery";
+import { useCloudGate } from "../hooks/useCloudGate";
 import { cloudLifecycleStage } from "../lib/cloud-lifecycle";
+import { subscribeSessionEventsBridged } from "../lib/cloud-cp/stream-bridge";
 import { useTerminalResetStore } from "../stores/terminal-reset-store";
 import { useCloudCp } from "../hooks/useCloudCp";
 import { useSessionHandoffMenu } from "../hooks/useSessionHandoffMenu";
@@ -104,7 +113,7 @@ import { cn } from "../lib/utils";
 import { isOrchestratorSession, sessionIsActive } from "../types/workspace";
 import { terminalTargetBelongsToSession, type TerminalTarget } from "../types/terminal";
 import { matchesRendererShortcut } from "../stores/keybindings-store";
-import { useResolvedTheme, useUiStore, type InspectorView } from "../stores/ui-store";
+import { inspectorIsOpen, useResolvedTheme, useUiStore, type InspectorView } from "../stores/ui-store";
 import {
 	INSPECTOR_SEPARATOR_RESERVE_PX,
 	inspectorMaxWidthCss,
@@ -150,14 +159,6 @@ const shellTopbarHiddenByPlatform = hidesShellTopbar();
 const isMac = isMacPlatform();
 const noDragStyle = isMac ? ({ WebkitAppRegion: "no-drag" } as CSSProperties) : undefined;
 const newTerminalShortcutLabel = shortcutBindingLabel(defaultShortcutBindings("new-shell-terminal", isMac)[0], isMac);
-const sessionHeaderActions = (
-	<div
-		className="session-topbar-session-chrome flex shrink-0 items-center"
-		data-compact-session-chrome="false"
-	>
-		<ShellTopbar embedded />
-	</div>
-);
 
 type ReviewsResponse = components["schemas"]["ListReviewsResponse"];
 type SessionInterfaceTransition = components["schemas"]["SessionInterfaceTransition"];
@@ -167,6 +168,8 @@ type InterfaceSwitchDialogScope = {
 	sessionId: string;
 	targetMode: "chat" | "tui";
 	historyPolicy?: "strict" | "provider_history";
+	sourceBusy?: boolean;
+	sourceWaitingForInput?: boolean;
 };
 
 type WorkspaceLayoutMode = "utility" | "browser" | "files";
@@ -276,8 +279,8 @@ function previewRevealKey(previewUrl?: string, previewRevision?: number): string
 
 function browserIsVisible(sessionId: string, browserPoppedOut: boolean): boolean {
 	if (browserPoppedOut) return true;
-	const current = useUiStore.getState().inspectorSessions[sessionId];
-	return (current?.isOpen ?? true) && (current?.view ?? "summary") === "browser";
+	const { inspectorSessions } = useUiStore.getState();
+	return inspectorIsOpen(inspectorSessions, sessionId) && (inspectorSessions[sessionId]?.view ?? "summary") === "browser";
 }
 
 function reviewerTerminalFromReviews(data?: ReviewsResponse): ReviewerTerminalTarget | undefined {
@@ -296,6 +299,8 @@ function reviewerChatFromReviews(data?: ReviewsResponse): ReviewerChatTarget | u
 
 type SessionViewProps = {
 	sessionId: string;
+	cloudOrgId?: string;
+	projectId?: string;
 };
 
 // Mirrors the left sidebar: a Motion gap takes layout width while a sibling
@@ -356,6 +361,10 @@ function SessionInspectorRail({
 		edge: "left",
 		onExpand,
 		restoreMin: restoreMinWidth,
+		// A tab switch re-runs the restore against the live max; in a narrow window
+		// that is the 300px floor. Re-apply the preferred width when the window (or
+		// zoom) widens again so the rail does not stay pinned there.
+		reclampOnWindowResize: true,
 	});
 
 	const transition = prefersReducedMotion ? { duration: 0 } : SHELL_PANEL_SPRING;
@@ -432,16 +441,118 @@ function SessionInspectorRail({
 // x-transform). Summary/Reviews/Files share a utility width, while Browser
 // automatically grows into a co-work canvas. Chat readability clamps either
 // profile before the conversation can become unusably narrow.
-function CloudSessionLifecycleLoader() {
+// Startup steps: 0 creating the workspace, 1 connecting to the worker,
+// 2 preparing the repository and agent, 3 connecting the terminal. The
+// workspace exists once the sandbox reaches "bootstrapping" (the provider
+// reports it running and AO is starting its worker inside); "requested" and
+// "provisioning" are still creating it.
+function cloudStartupStage(observedState: string | undefined, workerConnected: boolean, terminalOnly = false): number {
+	return terminalOnly ? 3
+		: workerConnected && (observedState === "bootstrapping" || observedState === "running") ? 2
+		: observedState === "bootstrapping" || observedState === "running" ? 1
+		: 0;
+}
+
+function CloudSessionLifecycleLoader({ sessionId, orgId, createdAt, observedState, workerConnected, terminalOnly, completed = false }: { sessionId: string; orgId: string; createdAt?: string; observedState?: string; workerConnected: boolean; terminalOnly: boolean; completed?: boolean }) {
 	const { t } = useTranslation();
+	const { baseUrl, client } = useCloudCp();
+	const factIndex = cloudStartupStage(observedState, workerConnected, terminalOnly);
+	const [factProgress, setFactProgress] = useState({ index: factIndex, since: createdAt ?? new Date().toISOString() });
+	const [remoteProgress, setRemoteProgress] = useState({ index: factIndex, since: createdAt ?? new Date().toISOString() });
+	const [progress, setProgress] = useState({ index: terminalOnly ? 3 : 0, since: createdAt ?? new Date().toISOString() });
+	const replayCutoff = useRef(Date.now() - 60 * 60 * 1_000);
+	useEffect(() => {
+		if (!baseUrl || !orgId || terminalOnly) return;
+		const controller = new AbortController();
+		void subscribeSessionEventsBridged({
+			baseUrl,
+			orgId,
+			sessionId,
+			after: 0,
+			signal: controller.signal,
+			onEvent: (event) => {
+				const occurredAt = Date.parse(event.createdAt);
+				if (event.sessionId !== sessionId || !Number.isFinite(occurredAt) || occurredAt < replayCutoff.current) return;
+				// sandbox.provisioning only marks the start of workspace creation;
+				// the workspace's completion comes from the observed state above.
+				const index = event.type === "worker.connected" || event.type === "worker.ready" ? 2
+					: event.type === "agent.ready" ? 3
+					: undefined;
+				if (index !== undefined) setProgress((current) => index > current.index ? { index, since: event.createdAt } : current);
+			},
+		});
+		return () => controller.abort();
+	}, [baseUrl, orgId, sessionId, terminalOnly]);
+	useEffect(() => {
+		setFactProgress((current) => current.index === factIndex ? current : { index: factIndex, since: new Date().toISOString() });
+	}, [factIndex]);
+	useEffect(() => {
+		if (!orgId || terminalOnly) return;
+		const controller = new AbortController();
+		let timer: number | undefined;
+		const poll = async () => {
+			try {
+				const { session } = await client.getSession(orgId, sessionId, { signal: controller.signal });
+				if (controller.signal.aborted) return;
+				const index = cloudStartupStage(session.observedState, session.runtimeConnected);
+				setRemoteProgress((current) => current.index === index ? current : { index, since: new Date().toISOString() });
+			} catch {
+				// Keep the last confirmed stage and retry while the loader is visible.
+			} finally {
+				if (!controller.signal.aborted) timer = window.setTimeout(() => void poll(), 2_000);
+			}
+		};
+		void poll();
+		return () => {
+			controller.abort();
+			if (timer !== undefined) window.clearTimeout(timer);
+		};
+	}, [client, orgId, sessionId, terminalOnly]);
+	useEffect(() => {
+		if (!orgId || terminalOnly) return;
+		const controller = new AbortController();
+		let after = 0;
+		let timer: number | undefined;
+		const poll = async () => {
+			try {
+				let latest: { index: number; since: string } | undefined;
+				for (;;) {
+					const page = await client.listChatEvents(orgId, sessionId, { after, limit: 500 }, { signal: controller.signal });
+					if (controller.signal.aborted) return;
+					for (const event of page.events) {
+						// Complete the replay before painting a stage. Old epochs can
+						// contain agent.ready long before this workspace restart.
+						const occurredAt = Date.parse(event.createdAt);
+						if (!Number.isFinite(occurredAt) || occurredAt < replayCutoff.current) continue;
+						const index = event.type === "worker.connected" || event.type === "worker.ready" ? 2
+							: event.type === "agent.ready" ? 3
+							: undefined;
+						if (index !== undefined) latest = { index, since: event.createdAt };
+					}
+					after = page.nextAfter;
+					if (!page.hasMore) break;
+				}
+				if (latest) setProgress((current) => latest.index > current.index ? latest : current);
+			} catch {
+				// Keep the current stage and retry while the session is loading.
+			} finally {
+				if (!controller.signal.aborted) timer = window.setTimeout(() => void poll(), 2_000);
+			}
+		};
+		void poll();
+		return () => {
+			controller.abort();
+			if (timer !== undefined) window.clearTimeout(timer);
+		};
+	}, [client, orgId, sessionId, terminalOnly]);
 	const steps = useMemo(() => [
-		t("terminal.sessionLoader.orchestrating"),
-		t("terminal.sessionLoader.coordinating"),
-		t("terminal.sessionLoader.arranging"),
-		t("terminal.sessionLoader.synchronizing"),
-		t("terminal.sessionLoader.preparing"),
-		t("terminal.sessionLoader.finishing"),
+		t("terminal.sessionLoader.workspace"),
+		t("terminal.sessionLoader.worker"),
+		t("terminal.sessionLoader.repositoryAgent"),
+		t("terminal.sessionLoader.terminal"),
 	], [t]);
+	const confirmedFacts = remoteProgress.index > factProgress.index ? remoteProgress : factProgress;
+	const target = confirmedFacts.index > progress.index ? confirmedFacts : progress;
 	return (
 		<div
 			// Sits at the session-pane chrome level: it must cover the loading
@@ -451,14 +562,27 @@ function CloudSessionLifecycleLoader() {
 			// New Task dialog, the project three-dots menu — leaving it invisible
 			// behind the loader while Radix still applied `body{pointer-events:none}`,
 			// which froze the whole UI (sidebar included). Keep this <= z-overlay.
-			className="absolute inset-0 z-chrome grid place-items-center bg-background"
+			className={cn("absolute inset-0 z-chrome grid place-items-center bg-background", completed && "cloud-session-loader--complete pointer-events-none")}
 			data-testid="cloud-session-loader-screen"
 		>
 			<MultiStepLoader
 				ariaLabel={t("terminal.sessionLoader.label")}
-				className="-translate-x-8"
+				activeIndex={completed ? 3 : target.index}
+				complete={completed}
 				steps={steps}
 			/>
+		</div>
+	);
+}
+
+function CloudInterfaceSwitchLoader({ target }: { target: "chat" | "tui" }) {
+	const label = `Switching to ${target === "chat" ? "Chat UI" : "Terminal UI"}`;
+	return (
+		<div className="absolute inset-0 z-chrome grid place-items-center bg-background" data-testid="cloud-interface-switch-loader-screen">
+			<div role="status" aria-live="polite" aria-label={label} className="flex flex-col items-center gap-3 text-muted-foreground">
+				<Loader2 aria-hidden="true" className="size-6 animate-spin" />
+				<span className="text-sm">{label}</span>
+			</div>
 		</div>
 	);
 }
@@ -487,7 +611,12 @@ function CloudPausedStatus() {
 	);
 }
 
-export function SessionView({ sessionId }: SessionViewProps) {
+export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewProps) {
+	const currentSessionIdRef = useRef<string | null>(sessionId);
+	useEffect(() => {
+		currentSessionIdRef.current = sessionId;
+		return () => { currentSessionIdRef.current = null; };
+	}, [sessionId]);
 	const { t } = useTranslation();
 	const [confirmedDraftDiscard, setConfirmedDraftDiscard] = useState<{
 		sessionId: string;
@@ -572,15 +701,32 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		[sessionId],
 	);
 	const queryClient = useQueryClient();
+	const { cloudEnabled } = useCloudGate();
 	const refreshWorkspaces = useCallback(
 		() => queryClient.invalidateQueries({ queryKey: workspaceQueryKey }),
 		[queryClient],
 	);
-	const workspaceQuery = useWorkspaceSession(sessionId);
+	const workspaceQuery = useWorkspaceQuery();
+	const workspaces = workspaceQuery.data ?? [];
+	const routedWorkspace = projectId ? workspaces.find((workspace) => workspace.id === projectId) : undefined;
+	const isCloudRoute = routedWorkspace?.kind === "cloud";
+	const listedSession = workspaces.flatMap((workspace) => workspace.sessions).find((s) => s.id === sessionId);
+	// Project-scoped navigation identifies Cloud routes immediately. The legacy
+	// cross-project route has no project id, so fall back to a direct CP lookup
+	// when the session is absent from the merged list. This keeps a fresh Cloud
+	// tab from ever being resolved through the local daemon during list-cache
+	// races or after restoring an old route.
+	const cloudRouteSession = useCloudSessionQuery(
+		cloudOrgId,
+		sessionId,
+		Boolean(cloudOrgId && (isCloudRoute || !listedSession)),
+	);
+	const localLookupEnabled = !cloudOrgId || Boolean(listedSession && !listedSession.cloud) || Boolean(!isCloudRoute && cloudRouteSession.isError);
+	const workspaceSessionQuery = useWorkspaceSession(sessionId, localLookupEnabled);
 	const { client: cloudCpClient } = useCloudCp();
 	const theme = useResolvedTheme();
-	const browserOnly = Boolean(workspaceQuery.data && isOrchestratorSession(workspaceQuery.data));
-	const isInspectorOpen = useUiStore((state) => state.inspectorSessions[sessionId]?.isOpen ?? !browserOnly);
+	const browserOnly = Boolean(workspaceSessionQuery.data && isOrchestratorSession(workspaceSessionQuery.data));
+	const isInspectorOpen = useUiStore((state) => inspectorIsOpen(state.inspectorSessions, sessionId));
 	const inspectorView = useUiStore((state) => browserOnly ? "browser" : state.inspectorSessions[sessionId]?.view ?? "summary");
 	const browserUnseen = useUiStore((state) => Boolean(state.inspectorSessions[sessionId]?.browserUnseen));
 	const setInspectorOpenForSession = useUiStore((state) => state.setInspectorOpen);
@@ -735,9 +881,42 @@ export function SessionView({ sessionId }: SessionViewProps) {
 
 	useEffect(() => stopTerminalLiveResize, [stopTerminalLiveResize]);
 
-	const session = workspaceQuery.data;
+	// A newly-created Cloud session can be routed before the paginated session
+	// list refresh completes. Resolve that exact row from Cloud so terminal and
+	// interface operations retain {orgId, sessionId} instead of falling back to
+	// the local daemon and surfacing SESSION_NOT_FOUND.
+	const directCloudWorkspace = cloudRouteSession.data
+		? workspaces.find(
+				(workspace) =>
+					workspace.kind === "cloud" && workspace.id === cloudRouteSession.data?.projectId,
+			)
+		: undefined;
+	const cloudSessionWorkspace = directCloudWorkspace ?? routedWorkspace;
+	const session =
+		listedSession ??
+		workspaceSessionQuery.data ??
+		(cloudOrgId && cloudRouteSession.data
+			? toCloudWorkspaceSession(
+					cloudRouteSession.data,
+					{
+						// A session lookup remains authoritative even if the projects list
+						// is refetching. Do not turn a real Cloud row into "Session not
+						// found" merely because its parent list is temporarily absent.
+						id: cloudSessionWorkspace?.id ?? cloudRouteSession.data.projectId,
+						displayName: cloudSessionWorkspace?.name ?? "Cloud project",
+					},
+					cloudOrgId,
+				)
+			: undefined);
 	const cloudStage = cloudLifecycleStage(session);
 	const cloudReconnecting = useTerminalResetStore((state) => Boolean(state.reconnecting[sessionId]));
+	const [terminalAttachment, setTerminalAttachment] = useState({ sessionId: "", attached: false });
+	const terminalAttached = terminalAttachment.sessionId === sessionId && terminalAttachment.attached;
+	const onSessionTerminalAttached = useCallback((attached: boolean) => {
+		setTerminalAttachment((current) => current.sessionId === sessionId && current.attached === attached
+			? current
+			: { sessionId, attached });
+	}, [sessionId]);
 	// Latch the session that has reached "connected" at least once (keyed on
 	// sessionId so it resets cleanly when the view switches sessions). After the
 	// first successful connect, a transient runtime-connection drop while the
@@ -746,16 +925,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// full-screen lifecycle loader over the terminal for the rest of the turn.
 	// Only a genuine workspace (re)start — VM stopped/resuming/provisioning/
 	// bootstrapping — should block after the session has connected once.
-	// "Connected enough to show the terminal": either the lifecycle stage is
-	// fully connected, OR the agent terminal is already live -- a worker epoch has
-	// been minted (terminalGeneration set) and the relay is connected -- even
-	// while the sandbox still reports "bootstrapping". On a fresh spawn the agent
-	// runs its first turn DURING bootstrapping (observed flips to "running" only
-	// afterwards), so gating on the live terminal instead of observed keeps the
-	// streaming terminal visible instead of a full-screen loader over it.
-	const agentTerminalLive = Boolean(session?.runtimeConnected) && Boolean(session?.terminalGeneration);
+	// Checkout and agent startup continue after the worker connects. Wait for
+	// the actual terminal attachment before dismissing the startup view.
+	const expectsTerminal = session?.mode !== "chat" && !browserOnly;
+	const sessionReady = expectsTerminal ? terminalAttached : cloudStage === "connected";
 	const connectedSessionRef = useRef("");
-	if (cloudStage === "connected" || agentTerminalLive) connectedSessionRef.current = sessionId;
+	if (sessionReady) connectedSessionRef.current = sessionId;
 	const hasConnectedOnce = connectedSessionRef.current === sessionId;
 	const workspaceRestarting = cloudStage === "resuming_workspace"
 		|| cloudStage === "waiting_for_coder_agent"
@@ -766,7 +941,22 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// flash) and a genuine workspace restart still raise the loader.
 	const showLifecycleLoader = hasConnectedOnce
 		? (cloudReconnecting || workspaceRestarting)
-		: (cloudReconnecting || (cloudStage != null && cloudStage !== "paused_by_coder" && cloudStage !== "connected"));
+		: (cloudReconnecting || (cloudStage != null && cloudStage !== "paused_by_coder" && !sessionReady));
+	const loaderVisibleLongEnoughRef = useRef("");
+	const [completionDismissed, setCompletionDismissed] = useState(false);
+	useEffect(() => {
+		if (!showLifecycleLoader) return;
+		loaderVisibleLongEnoughRef.current = "";
+		setCompletionDismissed(false);
+		const timer = window.setTimeout(() => { loaderVisibleLongEnoughRef.current = sessionId; }, 200);
+		return () => window.clearTimeout(timer);
+	}, [sessionId, showLifecycleLoader]);
+	const showCompletedLoader = !showLifecycleLoader && sessionReady && loaderVisibleLongEnoughRef.current === sessionId && !completionDismissed;
+	useEffect(() => {
+		if (!showCompletedLoader) return;
+		const timer = window.setTimeout(() => setCompletionDismissed(true), 360);
+		return () => window.clearTimeout(timer);
+	}, [showCompletedLoader]);
 	const cloudResumeRef = useRef("");
 	const requestCloudResume = useCallback(async () => {
 		if (!session?.cloud) return;
@@ -788,7 +978,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			? "active"
 			: "history";
 	useAgentSwitchRouteVisibility(`session/${sessionId}`, routeVisibilityOperation);
-	const interfaceSwitch = useSessionInterfaceTransition(session?.id);
+	const interfaceContext = session
+		? (session.cloud ?? null)
+		: cloudOrgId
+			? { orgId: cloudOrgId }
+		: undefined;
+	const interfaceSwitch = useSessionInterfaceTransition(sessionId, interfaceContext);
 	useEffect(() => {
 		setConfirmedDraftDiscard(undefined);
 	}, [sessionId]);
@@ -897,7 +1092,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	const reviewerQuery = useQuery({
 		queryKey: ["session-reviews", sessionId],
 		enabled: Boolean(
-			window.ao && session && sessionIsActive(session) && !isOrchestratorSession(session) && session.prs.length > 0,
+			window.ao && session && !session.cloud && sessionIsActive(session) && !isOrchestratorSession(session) && session.prs.length > 0,
 		),
 		refetchInterval: (query) => {
 			const data = query.state.data as ReviewsResponse | undefined;
@@ -1215,21 +1410,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		if (!activeShellTerminalHandleId) return;
 		const shell = shellTerminals.find((s) => s.handleId === activeShellTerminalHandleId);
 		if (!shell) return;
-		setTerminalTarget((current) =>
-			current.kind === "shell" &&
-			current.handleId === shell.handleId &&
-			current.generation === shell.createdAt &&
-			current.title === shell.title
-				? current
-				: {
-						generation: shell.createdAt,
-						kind: "shell",
-						handleId: shell.handleId,
-						sessionId,
-						title: shell.title,
-					},
-		);
-	}, [activeShellTerminalHandleId, sessionId, shellTerminals]);
+		if (terminalTarget.kind === "shell" && terminalTarget.handleId === shell.handleId &&
+			terminalTarget.generation === shell.createdAt && terminalTarget.title === shell.title &&
+			!fileTabs.activePath && !reviewerChatId) return;
+		selectShellTerminal(shell.handleId);
+	}, [activeShellTerminalHandleId, fileTabs.activePath, reviewerChatId, selectShellTerminal, shellTerminals, terminalTarget]);
 
 	// If the pane is pointed at a shell that is not in THIS session's strip — e.g.
 	// after navigating to a different session whose globally-active shell belongs
@@ -1316,7 +1501,21 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	);
 
 	const activeInterfaceTransition = interfaceTransitionIsActive(interfaceSwitch.transition);
-	const hasInterfaceNotice = interfaceTransitionHasUnacknowledgedNotice(interfaceSwitch.transition);
+	const cloudDrainWaiting = Boolean(
+		interfaceContext &&
+			((interfaceSwitch.starting && interfaceSwitch.startingPolicy === "drain") ||
+				(interfaceSwitch.transition?.policy === "drain" &&
+					["requested", "preflighting", "draining"].includes(interfaceSwitch.transition.phase))),
+	);
+	const showInterfaceSwitchLoader = Boolean(
+		interfaceContext && !cloudDrainWaiting && (interfaceSwitch.starting || activeInterfaceTransition || interfaceSwitch.settling ||
+			(interfaceSwitch.transition?.phase === "completed" &&
+				session?.mode !== interfaceSwitch.transition.targetMode)),
+	);
+	const hasInterfaceNotice = interfaceTransitionHasUnacknowledgedNotice(interfaceSwitch.transition) &&
+		!(interfaceContext && session?.mode === "tui" &&
+			interfaceSwitch.transition?.errorCode === "SOURCE_DRAIN_FAILED" &&
+			interfaceSwitch.transition.targetMode === "chat");
 	const historyRecoveryNotice = hasInterfaceNotice && interfaceTransitionOffersHistoryRecovery(interfaceSwitch.transition);
 	const restartRequiredNotice = interfaceTransitionNeedsRestart(interfaceSwitch.transition);
 	const chatLeaveLocked = Boolean(
@@ -1324,10 +1523,10 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	);
 	const chatControllerTransitioning = Boolean(
 		session?.mode === "chat" &&
-			(chatLeaveLocked ||
-				interfaceSwitch.starting ||
+			((chatLeaveLocked && !cloudDrainWaiting) ||
+				(interfaceSwitch.starting && !cloudDrainWaiting) ||
 				(interfaceSwitch.transition?.targetMode === "tui" &&
-					(activeInterfaceTransition || interfaceSwitch.transition.phase === "completed")) ||
+					((activeInterfaceTransition && !cloudDrainWaiting) || interfaceSwitch.transition.phase === "completed")) ||
 				(interfaceSwitch.transition?.targetMode === "chat" &&
 					(activeInterfaceTransition || interfaceSwitch.settling))),
 	);
@@ -1375,6 +1574,9 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			session.activity?.state === "blocked"),
 	);
 	const chatToTerminal = session?.mode === "chat" && interfaceTarget === "tui";
+	const cloudTerminalToChat = Boolean(
+		interfaceContext && session?.mode === "tui" && interfaceTarget === "chat",
+	);
 	const beginInterfaceSwitch = useCallback(
 		async (
 			policy: "drain" | "interrupt",
@@ -1443,13 +1645,34 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	);
 	const requestInterfaceSwitch = useCallback(() => {
 		interfaceSwitch.resetStartError();
+		if (cloudTerminalToChat && !interfaceBusy && session?.cloud) {
+			// The Cloud session list polls, while terminal input is delivered on a
+			// separate stream. Check the current row before an implicit stop so a
+			// newly submitted TUI prompt cannot bypass the policy dialog.
+			void cloudCpClient.getSession(session.cloud.orgId, session.id).then(({ session: latest }) => {
+				if (currentSessionIdRef.current !== session.id) return;
+				if (["active", "waiting_input", "blocked"].includes(latest.activityState) ||
+					latest.status === "working" || latest.status === "needs_input") {
+					setInterfaceSwitchDialogScope({
+						sessionId: session.id, targetMode: interfaceTarget, sourceBusy: true,
+						sourceWaitingForInput: latest.activityState === "waiting_input" || latest.activityState === "blocked" || latest.status === "needs_input",
+					});
+					return;
+				}
+				void beginInterfaceSwitch("interrupt", interfaceTarget);
+			}).catch(() => {
+				if (currentSessionIdRef.current !== session.id) return;
+				setInterfaceSwitchDialogScope({ sessionId: session.id, targetMode: interfaceTarget });
+			});
+			return;
+		}
 		if (!interfaceBusy) {
-			void beginInterfaceSwitch("drain", interfaceTarget);
+			void beginInterfaceSwitch(cloudTerminalToChat ? "interrupt" : "drain", interfaceTarget);
 			return;
 		}
 		if (!session) return;
 		setInterfaceSwitchDialogScope({ sessionId: session.id, targetMode: interfaceTarget });
-	}, [beginInterfaceSwitch, interfaceBusy, interfaceSwitch, interfaceTarget, session]);
+	}, [beginInterfaceSwitch, cloudCpClient, cloudTerminalToChat, interfaceBusy, interfaceSwitch, interfaceTarget, session]);
 	const chooseInterfaceSwitchPolicy = useCallback(
 		(policy: "drain" | "interrupt") => {
 			if (
@@ -1475,16 +1698,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			const failed = interfaceSwitch.transition;
 			if (!session || !failed || failed.sessionId !== session.id || failed.targetMode !== interfaceTarget) return;
 			interfaceSwitch.resetStartError();
-			// A failed attempt's interrupt policy is stale consent. Re-evaluate the
-			// current Terminal state and either choose the safe drain default or ask
-			// again before cancelling newly started work.
 			if (!interfaceBusy) {
-				void beginInterfaceSwitch("drain", failed.targetMode, undefined, historyPolicy);
+				void beginInterfaceSwitch(cloudTerminalToChat ? "interrupt" : "drain", failed.targetMode, undefined, historyPolicy);
 				return;
 			}
 			setInterfaceSwitchDialogScope({ sessionId: session.id, targetMode: failed.targetMode, historyPolicy });
 		},
-		[beginInterfaceSwitch, interfaceBusy, interfaceSwitch, interfaceTarget, session],
+		[beginInterfaceSwitch, cloudTerminalToChat, interfaceBusy, interfaceSwitch, interfaceTarget, session],
 	);
 	// Adapters without a Chat driver cannot offer a switch into Chat UI; hide
 	// the switch entirely rather than showing a permanently disabled control.
@@ -1494,9 +1714,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	// entirely) proves nothing, so the status decides then.
 	const { settings } = useSettings();
 	const chatHarnesses = settings?.chatHarnesses ?? [];
+	const isCloudSession = Boolean(interfaceContext);
 	const interfaceSwitchUnsupported =
 		interfaceSwitch.status?.reasonCode === "CHAT_UNSUPPORTED" ||
-		(interfaceTarget === "chat" &&
+		(!isCloudSession &&
+			interfaceTarget === "chat" &&
 			session !== undefined &&
 			chatHarnesses.length > 0 &&
 			!chatHarnesses.includes(session.provider));
@@ -1510,7 +1732,11 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				})
 			: undefined;
 	const showInterfaceSwitchAction = Boolean(
-		!interfaceSwitchUnsupported && (interfaceSwitch.status || interfaceSwitch.isLoading || interfaceSwitch.statusError),
+		!interfaceSwitchUnsupported && (
+			isCloudSession
+				? cloudEnabled && sessionId
+				: interfaceSwitch.status || interfaceSwitch.isLoading || interfaceSwitch.statusError
+		),
 	);
 	const newTerminalError = openShellTerminal.error ? apiErrorMessage(openShellTerminal.error) : undefined;
 	const newShellTerminalAction = useMemo(() =>
@@ -1531,7 +1757,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 				</TooltipContent>
 			</Tooltip>
 		) : null,
-		[addShellTerminal, isOrchestrator, newTerminalError, session, t],
+		[addShellTerminal, isOrchestrator, newTerminalError, newTerminalShortcutLabel, session, t],
 	);
 	const sendCloudFileAnnotation = useCallback(async (message: string) => {
 		const orgId = session?.cloud?.orgId;
@@ -1647,11 +1873,12 @@ export function SessionView({ sessionId }: SessionViewProps) {
 	useEffect(() => {
 		if (handoffSwitchError) setHandoffDialogOpen(true);
 	}, [handoffSwitchError]);
+	// Keep the source interface visible while Cloud waits for work to finish.
 	const interfaceSwitchInlineStatus = useMemo(() =>
-		session && showInterfaceSwitchAction && activeInterfaceTransition ? (
+		showInterfaceSwitchAction && session && (cloudDrainWaiting || (!isCloudSession && activeInterfaceTransition)) ? (
 			<SessionInterfaceSwitchButton
 				target={interfaceTarget}
-				supported={Boolean(interfaceSwitch.status?.supported) && !activeInterfaceTransition}
+				supported
 				disabledReason={
 					interfaceSwitch.isLoading
 						? "Checking whether this agent can switch interfaces…"
@@ -1669,6 +1896,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		) : null,
 		[
 			activeInterfaceTransition,
+			cloudDrainWaiting,
 			interfaceSwitch.cancelError,
 			interfaceSwitch.cancelling,
 			interfaceSwitch.isLoading,
@@ -1678,6 +1906,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			interfaceSwitch.transition,
 			interfaceSwitchBlockedReason,
 			interfaceTarget,
+			isCloudSession,
 			requestInterfaceSwitch,
 			session,
 			showInterfaceSwitchAction,
@@ -1687,7 +1916,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 		session && showInterfaceSwitchAction && !activeInterfaceTransition ? (
 			<SessionInterfaceSwitchMenuItem
 				target={interfaceTarget}
-				supported={Boolean(interfaceSwitch.status?.supported) && !chatLeaveLocked}
+				supported={(isCloudSession ? Boolean(interfaceSwitch.status?.supported) : Boolean(interfaceSwitch.status?.supported) && !chatLeaveLocked)}
 				disabledReason={
 					interfaceSwitch.isLoading
 						? "Checking whether this agent can switch interfaces…"
@@ -1705,12 +1934,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			interfaceSwitch.statusError,
 			interfaceSwitchBlockedReason,
 			interfaceTarget,
+			isCloudSession,
 			requestInterfaceSwitch,
 			session,
 			showInterfaceSwitchAction,
 		],
 	);
-	const handoffMenuItem = useMemo(() => session ? (
+	const handoffMenuItem = useMemo(() => session && !session.cloud ? (
 		<TerminalSwitchAgentButton
 			key={session.id}
 			variant="menu-item"
@@ -1722,15 +1952,24 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			switchError={handoffSwitchError}
 		/>
 	) : null, [handoffAgentSwitch, handoffControlPresentation, handoffDialogOpen, handoffSwitchError, handleHandoffDialogOpenChange, session]);
-	// The ⋮ only holds the Chat/Terminal switch and Switch agent, and agent
-	// switching is limited to Claude Code and Codex, which both have Chat. A
-	// harness without Chat therefore gets no ⋮ instead of an empty menu.
+	// Cloud sessions expose only the interface switch here; agent handoff is a
+	// local daemon feature. Hide the empty actions menu for harnesses without
+	// Chat, including when local settings identify one before transition status
+	// becomes available.
 	const sessionTabActions = useMemo(() => interfaceSwitchUnsupported ? null : (
 		<SessionActionsMenu inlineStatus={interfaceSwitchInlineStatus}>
 			{interfaceSwitchMenuItem}
 			{handoffMenuItem}
 		</SessionActionsMenu>
 	), [handoffMenuItem, interfaceSwitchInlineStatus, interfaceSwitchMenuItem, interfaceSwitchUnsupported]);
+	const sessionHeaderActions = (
+		<div
+			className="session-topbar-session-chrome flex shrink-0 items-center"
+			data-compact-session-chrome="false"
+		>
+			<ShellTopbar embedded />
+		</div>
+	);
 	// Spinner replaces the ⋮ at the same size, so the tab title does not need a
 	// wider action slot while switching.
 	const sessionTabActionWide = false;
@@ -2003,7 +2242,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 			inspectorMotionReadyRef.current = false;
 		};
 	}, [hasInspector]);
-	if (!session && !workspaceQuery.isLoading) {
+	// A Cloud tab may arrive before the paginated workspace cache contains its
+	// row. Keep the session surface (and its switch control) mounted while the
+	// direct control-plane lookup is in flight; only show "not found" after
+	// both sources have settled.
+	const cloudSessionResolving = Boolean(
+		cloudOrgId &&
+		(isCloudRoute || !listedSession) &&
+		cloudRouteSession.isLoading,
+	);
+	if (!session && !workspaceQuery.isLoading && !cloudSessionResolving) {
 		return (
 			<div className="grid h-full place-items-center p-6 text-center font-mono text-xs text-passive">
 				{t("session.notFound")}
@@ -2042,7 +2290,7 @@ export function SessionView({ sessionId }: SessionViewProps) {
 						/>
 						<div className="relative min-h-0 flex-1" ref={bindHandoffDialogContainer}>
 							{cloudStage === "paused_by_coder" ? <CloudPausedStatus /> : null}
-							{session && handoffDialogContainer ? (
+							{session && !session.cloud && handoffDialogContainer ? (
 								<SwitchAgentDialog
 									agentSwitch={handoffAgentSwitch}
 									container={handoffDialogContainer}
@@ -2057,7 +2305,16 @@ export function SessionView({ sessionId }: SessionViewProps) {
 								className={cn("h-full min-h-0", fileTabs.activePath && "invisible pointer-events-none")}
 								inert={fileTabs.activePath ? true : undefined}
 							>
-							{showChatSurface ? (
+							{showChatSurface && session?.cloud ? (
+								<CloudSessionChatSurface
+									controllerTransitioning={chatControllerTransitioning}
+									headerActions={sessionHeaderActions}
+									newWorkDisabled={chatNewWorkDisabled}
+									onConversationWorkChange={handleConversationWorkChange}
+									session={session}
+									sessionTabAction={sessionTabActions}
+								/>
+							) : showChatSurface ? (
 								<>
 								<SessionChatSurface
 									key={session.id}
@@ -2112,12 +2369,13 @@ export function SessionView({ sessionId }: SessionViewProps) {
 							) : (
 								<CenterPane
 									agentInputDisabled={
-										(interfaceSwitch.starting || activeInterfaceTransition) && session?.mode === "tui"
+										(interfaceSwitch.starting || activeInterfaceTransition) && !cloudDrainWaiting && session?.mode === "tui"
 									}
 									daemonReady={daemonStatus.state === "ready"}
 									onCloseShellTerminal={closeShellTerminalByHandle}
 									onRenameShellTerminal={renameShellTerminalByHandle}
 									onSelectSessionTerminal={selectSessionTerminal}
+									onSessionTerminalAttached={onSessionTerminalAttached}
 									onSelectReviewerTerminal={selectReviewerTerminal}
 									onSelectReviewerChat={(target) => selectReviewerChat(target.reviewId)}
 									onSelectShellTerminal={selectShellTerminal}
@@ -2303,13 +2561,25 @@ export function SessionView({ sessionId }: SessionViewProps) {
 					<NotificationCenter style={noDragStyle} />
 				</div>
 			) : null}
-			{showLifecycleLoader
-				? <CloudSessionLifecycleLoader />
-				: null}
+			{showInterfaceSwitchLoader
+				? <CloudInterfaceSwitchLoader target={interfaceSwitch.transition?.targetMode ?? interfaceTarget} />
+				: showLifecycleLoader || showCompletedLoader
+					? <CloudSessionLifecycleLoader
+						key={`${sessionId}:${cloudReconnecting && !workspaceRestarting ? "terminal" : "startup"}`}
+						sessionId={sessionId}
+						orgId={session?.cloud?.orgId ?? ""}
+						createdAt={session?.cloud?.observedState === "requested" ? session.createdAt : undefined}
+						observedState={session?.cloud?.observedState}
+						workerConnected={Boolean(session?.runtimeConnected)}
+						terminalOnly={cloudReconnecting && !workspaceRestarting}
+						completed={showCompletedLoader}
+					/>
+					: null}
 			<SessionInterfaceSwitchDialog
 				open={interfaceSwitchDialogOpen}
 				target={interfaceSwitchDialogScope?.targetMode ?? interfaceTarget}
-				waitingForInput={interfaceWaitingForInput}
+				requireExplicitTerminalStop={cloudTerminalToChat && !(interfaceBusy || interfaceSwitchDialogScope?.sourceBusy)}
+				waitingForInput={interfaceWaitingForInput || interfaceSwitchDialogScope?.sourceWaitingForInput}
 				busy={interfaceSwitch.starting}
 				error={interfaceSwitch.startError}
 				onOpenChange={(open) => {

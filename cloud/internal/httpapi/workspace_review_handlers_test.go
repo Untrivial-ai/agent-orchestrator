@@ -68,6 +68,7 @@ func TestWorkspaceReviewHandlersDispatchForEveryProvider(t *testing.T) {
 		{"diffs", http.MethodPost, "/workspace/review/diffs", worker.WorkspaceReviewDiffsRequest{Scope: worker.WorkspaceReviewStaged, Paths: []string{"README.md"}, ContextLines: 3}, (*Server).postWorkspaceReviewDiffs, "workspace.review.diffs"},
 		{"revision", http.MethodGet, "/workspace/review/revision?path=README.md&scope=combined&side=after&workspaceVersion=v1", nil, (*Server).getWorkspaceReviewRevision, "workspace.review.revision"},
 		{"write", http.MethodPut, "/workspace/review/file", worker.WorkspaceReviewWriteRequest{Path: "README.md", Content: "new\n", ExpectedFileFingerprint: "fp"}, (*Server).putWorkspaceReviewFile, "workspace.review.write"},
+		{"chat models", http.MethodGet, "/chat-models", nil, (*Server).getChatModels, "chat.models"},
 	}
 	for _, provider := range []string{sandbox.ProviderDocker, sandbox.ProviderNodeOps, sandbox.ProviderCoder} {
 		for _, operation := range operations {

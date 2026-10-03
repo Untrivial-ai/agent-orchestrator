@@ -31,6 +31,10 @@ const (
 	// It is TypeScript (opencode runs on Bun); the file's only import is a
 	// type-only import, which Bun erases at runtime.
 	opencodePluginFileName = "ao-activity.ts"
+	// OpenCode 1 and 2 discover the same plugin directory. The v1 installer
+	// removes this v2 file only when its v2 ownership sentinel is present.
+	opencodeV2PluginFileName = "ao-activity-v2.ts"
+	opencodeV2PluginSentinel = "agent-orchestrator: managed opencode-v2 activity plugin"
 
 	// opencodePluginSentinel marks the file as AO-managed. AreHooksInstalled and
 	// UninstallHooks key off it so AO never deletes a user file that happens to
@@ -107,6 +111,9 @@ func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfi
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("opencode.GetAgentHooks: stat plugin: %w", err)
 	}
+	if err := removeManagedPlugin(filepath.Join(filepath.Dir(pluginPath), opencodeV2PluginFileName), opencodeV2PluginSentinel); err != nil {
+		return fmt.Errorf("opencode.GetAgentHooks: remove managed OpenCode 2 plugin: %w", err)
+	}
 
 	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o750); err != nil {
 		return fmt.Errorf("opencode.GetAgentHooks: create plugin dir: %w", err)
@@ -117,7 +124,7 @@ func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfi
 	if err := hookutil.EnsureWorkspaceGitignore(filepath.Dir(pluginPath), opencodePluginFileName); err != nil {
 		return fmt.Errorf("opencode.GetAgentHooks: gitignore: %w", err)
 	}
-	if err := installUsingAOSkill(cfg.WorkspacePath); err != nil {
+	if err := InstallUsingAOSkill(cfg.WorkspacePath); err != nil {
 		return fmt.Errorf("opencode.GetAgentHooks: %w", err)
 	}
 	return nil
@@ -146,7 +153,7 @@ func (p *Plugin) UninstallHooks(ctx context.Context, workspacePath string) error
 			return fmt.Errorf("opencode.UninstallHooks: remove plugin: %w", err)
 		}
 	}
-	if err := uninstallUsingAOSkill(workspacePath); err != nil {
+	if err := UninstallUsingAOSkill(workspacePath); err != nil {
 		return fmt.Errorf("opencode.UninstallHooks: %w", err)
 	}
 	return nil
@@ -185,10 +192,10 @@ func opencodeSkillMarkerPath(workspacePath string) string {
 	return filepath.Join(opencodeSkillsDir(workspacePath), opencodeSkillMarkerFile)
 }
 
-// installUsingAOSkill materializes the embedded using-ao skill into
-// .opencode/skills/using-ao/ so opencode's skill tool can discover it. It
-// refuses to overwrite a same-named directory that is not AO-managed.
-func installUsingAOSkill(workspacePath string) error {
+// InstallUsingAOSkill materializes the embedded shared using-ao skill into
+// .opencode/skills/using-ao/. It refuses to overwrite a same-named directory
+// that is not AO-managed.
+func InstallUsingAOSkill(workspacePath string) error {
 	skillDir := opencodeSkillDir(workspacePath)
 	if info, err := os.Stat(skillDir); err == nil {
 		if !info.IsDir() {
@@ -253,9 +260,9 @@ func ensureSkillTreeGitignored(skillRoot string) error {
 	return nil
 }
 
-// uninstallUsingAOSkill removes the AO-managed using-ao skill directory. A
-// missing directory, or a same-named directory without the AO marker, is a no-op.
-func uninstallUsingAOSkill(workspacePath string) error {
+// UninstallUsingAOSkill removes the shared skill only when its AO marker owns
+// it. A missing directory or marker is a no-op.
+func UninstallUsingAOSkill(workspacePath string) error {
 	managed, err := isAOManagedSkill(workspacePath)
 	if err != nil {
 		return err
@@ -284,6 +291,23 @@ func isAOManagedPlugin(path string) (bool, error) {
 		return false, fmt.Errorf("read %s: %w", path, err)
 	}
 	return strings.Contains(string(data), opencodePluginSentinel), nil
+}
+
+func removeManagedPlugin(path, sentinel string) error {
+	data, err := os.ReadFile(path) //nolint:gosec // path is rooted in the caller-owned workspace
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(string(data), sentinel) {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // isAOManagedSkill reports whether the AO ownership marker beside the skill

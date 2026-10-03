@@ -44,6 +44,16 @@ func TestSpawnHelpListsFXHarness(t *testing.T) {
 	}
 }
 
+func TestSpawnHelpListsOpenCodeV2Harness(t *testing.T) {
+	out, _, err := executeCLI(t, Deps{}, "spawn", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "opencode, opencode-v2") {
+		t.Fatalf("spawn help does not list OpenCode 1 and 2 distinctly:\n%s", out)
+	}
+}
+
 // TestSpawnCommand_MissingProjectContext asserts `ao spawn` gives a project
 // setup hint when neither --project, AO_PROJECT_ID, nor cwd can resolve one.
 func TestSpawnCommand_MissingProjectContext(t *testing.T) {
@@ -904,6 +914,35 @@ func TestSpawnSkipAgentCheckBypassesOnlyPreflight(t *testing.T) {
 	}
 	if req.ProjectID != "demo" || req.Harness != "unsupported" {
 		t.Fatalf("spawn request = %#v", req)
+	}
+	want := []string{"GET /api/v1/projects/demo", "POST /api/v1/sessions"}
+	if !reflect.DeepEqual(requests, want) {
+		t.Fatalf("requests=%#v want %#v", requests, want)
+	}
+}
+
+func TestSpawnInvalidHarnessPreservesDaemonErrorEnvelope(t *testing.T) {
+	cfg := setConfigEnv(t)
+	var requests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		appendPrimaryRequest(&requests, r)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/projects/demo":
+			_, _ = io.WriteString(w, `{"status":"ok","project":{"id":"demo","name":"Demo","path":"/repo/demo"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"bad_request","message":"Unknown agent harness","code":"UNKNOWN_HARNESS","requestId":"req-harness"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "spawn", "--project", "demo", "--agent", "unknown", "--skip-agent-check", "--name", "worker")
+	if err == nil || ExitCode(err) != 1 || !strings.Contains(err.Error(), "Unknown agent harness (UNKNOWN_HARNESS) [request req-harness]") {
+		t.Fatalf("err=%v exit=%d, want preserved daemon error envelope", err, ExitCode(err))
 	}
 	want := []string{"GET /api/v1/projects/demo", "POST /api/v1/sessions"}
 	if !reflect.DeepEqual(requests, want) {

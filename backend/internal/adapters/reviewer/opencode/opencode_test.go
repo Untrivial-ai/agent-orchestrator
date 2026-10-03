@@ -170,10 +170,10 @@ func TestBuildReviewerConfigLeavesOtherExternalPathsDenied(t *testing.T) {
 func TestReviewCommandBuildsBothOpenCodeConfigSources(t *testing.T) {
 	binDir := t.TempDir()
 	binaryName := "opencode"
-	binaryBody := "#!/bin/sh\n"
+	binaryBody := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 1.18.33; fi\n"
 	if runtime.GOOS == "windows" {
 		binaryName = "opencode.cmd"
-		binaryBody = "@echo off\r\n"
+		binaryBody = "@echo off\r\nif \"%1\"==\"--version\" echo 1.18.33\r\n"
 	}
 	if err := os.WriteFile(filepath.Join(binDir, binaryName), []byte(binaryBody), 0o755); err != nil {
 		t.Fatalf("write fake opencode: %v", err)

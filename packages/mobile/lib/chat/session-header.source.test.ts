@@ -18,10 +18,13 @@ describe("session header controls", () => {
 		expect(session).toContain('icon="more" label="Conversation actions"');
 	});
 
-	it("leaves no raw control in the actions slot", () => {
+	it("uses the PR restore control beside the shared actions button", () => {
 		const start = session.indexOf('glassHeaderControl("right", (');
 		expect(start).toBeGreaterThan(-1);
-		expect(session.slice(start, start + 400)).not.toContain("Pressable");
+		const actions = session.slice(start, start + 900);
+		expect(actions).toContain('testID="header-pullRequest"');
+		expect(actions).toContain('accessibilityLabel="Show PR card"');
+		expect(actions).toContain('<NativeHeaderButton icon="more" label="Conversation actions"');
 	});
 
 	it("gives every platform an icon for the more control", () => {

@@ -119,8 +119,12 @@ type Options struct {
 // Reconciler defaults, tuned for a decentralized provider whose provisioning
 // latency is variable by design.
 const (
-	DefaultInterval               = 2 * time.Second
-	DefaultStartupTimeout         = 180 * time.Second
+	DefaultInterval = 2 * time.Second
+	// Cold coder/Azure VMs routinely need >3 min to check in (VM boot + snap/lxd,
+	// a fresh durable-disk mkfs, and harness warming), which tripped the 180s
+	// window and triggered a needless worker reinstall mid-startup. 6 min covers
+	// a normal cold boot so only a genuinely stuck worker is reinstalled.
+	DefaultStartupTimeout         = 360 * time.Second
 	DefaultTerminalStartupTimeout = 10 * time.Minute
 	// maxStartupRepairs bounds how many times a never-checked-in worker is
 	// reinstalled, each with a fresh startup window. Past it the sandbox is
@@ -1195,6 +1199,7 @@ func (r *Reconciler) workerSpec(ctx context.Context, record domain.Sandbox) (san
 			"worker:turn:poll",
 			"worker:turn:complete",
 			"worker:credential:read",
+			"worker:session:read",
 			"worker:git",
 			"worker:orchestrate",
 			"worker:report",

@@ -60,4 +60,11 @@ describe("active turn controls", () => {
 		expect(screenSource).toContain('startFailure={failedStart}');
 		expect(screenSource).toContain('disabled={interfaceTransitionActive || Boolean(failedStart)}');
 	});
+
+	it("offers a live PR review shortcut while leaving the chat composer in place", () => {
+		expect(screenSource).toContain("sessionPRReadyForReview(session)");
+		expect(screenSource).toContain("reviewPR={reviewPromptPR}");
+		expect(screenSource).toContain("reviewRouteForPR(session.id, reviewPromptPR)");
+		expect(screenSource).toContain("<ChatComposer");
+	});
 });

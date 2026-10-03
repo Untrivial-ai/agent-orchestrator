@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/opencode"
 	agentregistry "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/registry"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
@@ -486,6 +488,59 @@ func TestReadinessCoordinatorClassifiesTimeouts(t *testing.T) {
 	}
 	if got := agent.authCalls.Load(); got != 0 {
 		t.Fatalf("authentication checks = %d, want none after installation timeout", got)
+	}
+}
+
+func TestReadinessCoordinatorClassifiesIncompatibleOpenCodeVersionsAsNotInstalled(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		id                  string
+		label               string
+		expected, found     int
+		version, binaryPath string
+	}{
+		{"opencode", "OpenCode", 1, 2, "2.0.0", "/usr/local/bin/opencode"},
+		{"opencode-v2", "OpenCode 2", 2, 1, "1.18.33", "/opt/homebrew/bin/opencode"},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			t.Parallel()
+			testAgent := &readinessTestAgent{
+				resolve: func(context.Context) (string, error) {
+					return "", &opencode.IncompatibleVersionError{
+						ExpectedMajor: tc.expected,
+						FoundMajor:    tc.found,
+						FoundVersion:  tc.version,
+						Path:          tc.binaryPath,
+					}
+				},
+			}
+			coordinator := newReadinessCoordinator(readinessCoordinatorConfig{
+				Agents: []agentregistry.HarnessAgent{readinessHarness(tc.id, tc.label, testAgent)},
+			})
+
+			items, err := coordinator.Ensure(context.Background(), []string{tc.id}, domain.AgentReadinessPurposeDisplay)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observation := items[0].Installation
+			if observation.State != domain.AgentInstallationNotInstalled || observation.Freshness != domain.AgentReadinessFresh {
+				t.Fatalf("installation = %#v, want fresh not_installed", observation)
+			}
+			if observation.ReasonCode != domain.AgentReadinessReasonInstallIncompatibleVersion {
+				t.Fatalf("installation reason code = %q, want install_incompatible_version", observation.ReasonCode)
+			}
+			for _, detail := range []string{tc.binaryPath, tc.version, fmt.Sprintf("OpenCode %d", tc.expected), fmt.Sprintf("OpenCode %d", tc.found)} {
+				if !strings.Contains(observation.Reason, detail) {
+					t.Fatalf("installation reason = %q, want detail %q", observation.Reason, detail)
+				}
+			}
+			if items[0].EffectiveReadiness != domain.AgentReadinessNotReady {
+				t.Fatalf("effective readiness = %q, want not_ready", items[0].EffectiveReadiness)
+			}
+			if got := testAgent.authCalls.Load(); got != 0 {
+				t.Fatalf("authentication checks = %d, want none", got)
+			}
+		})
 	}
 }
 

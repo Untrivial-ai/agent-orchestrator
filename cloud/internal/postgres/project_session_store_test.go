@@ -3,7 +3,9 @@ package postgres
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/google/uuid"
 )
@@ -43,5 +45,44 @@ func TestCreateSessionReturnsCompleteSession(t *testing.T) {
 	}
 	if session.SandboxProvider != "docker" {
 		t.Fatalf("sandbox provider = %q, want docker", session.SandboxProvider)
+	}
+}
+
+func TestQueuedTurnDoesNotOverrideIdleWorkerActivity(t *testing.T) {
+	store, admin, fixture := openNotificationTestStore(t)
+	ctx := context.Background()
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO ao_events (org_id, session_id, sequence, type)
+		VALUES ($1, $2, 1, 'chat.user_message')`,
+		fixture.orgID, fixture.sessionID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx,
+		`INSERT INTO ao_turns (org_id, session_id, user_message_sequence)
+		VALUES ($1, $2, 1)`,
+		fixture.orgID, fixture.sessionID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, turnState := range []string{"queued", "running"} {
+		t.Run(turnState, func(t *testing.T) {
+			if _, err := admin.Exec(ctx,
+				`UPDATE ao_turns SET state = $1 WHERE org_id = $2 AND session_id = $3`,
+				turnState, fixture.orgID, fixture.sessionID,
+			); err != nil {
+				t.Fatal(err)
+			}
+			session, err := store.GetSession(ctx,
+				domain.Principal{UserID: fixture.userID, Provider: "local"},
+				fixture.orgID, fixture.sessionID,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := session.Status(time.Now(), nil); got != contract.StatusIdle {
+				t.Fatalf("status = %q, want idle despite %s turn", got, turnState)
+			}
+		})
 	}
 }

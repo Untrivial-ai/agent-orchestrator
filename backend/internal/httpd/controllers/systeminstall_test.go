@@ -172,6 +172,24 @@ func TestPostSystemInstall(t *testing.T) {
 	}
 }
 
+func TestPostSystemInstallAcceptsOpenCodeV2WithReplacementNotice(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	installer := &fakeInstaller{startJob: systeminstall.Job{
+		Target: systeminstall.TargetOpencodeV2, Status: systeminstall.StatusInstalling,
+		Notice: "Installing OpenCode 2 at the default location replaces the default OpenCode 1 `opencode` executable.",
+	}}
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{Installer: installer}, httpd.ControlDeps{}))
+	defer srv.Close()
+
+	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/system/install/opencode-v2", "")
+	if status != http.StatusAccepted || installer.lastTarget != systeminstall.TargetOpencodeV2 {
+		t.Fatalf("POST /system/install/opencode-v2 = %d target=%q body=%s", status, installer.lastTarget, body)
+	}
+	if !strings.Contains(string(body), `"notice":"Installing OpenCode 2`) {
+		t.Fatalf("body missing replacement notice: %s", body)
+	}
+}
+
 func TestPostSystemInstallMapsActiveAgentConflict(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	installer := &fakeInstaller{startErr: systeminstall.ErrInstallActive}

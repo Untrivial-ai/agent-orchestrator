@@ -452,6 +452,9 @@ func (s *Store) ListMemberships(
 func normalizeConstraintError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
+		if pgErr.Code == "23505" && pgErr.ConstraintName == "ao_interface_transitions_one_active" {
+			return ErrTransitionInProgress
+		}
 		switch pgErr.Code {
 		case "23503":
 			return ErrNotFound

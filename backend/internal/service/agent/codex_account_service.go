@@ -435,6 +435,26 @@ func (s *Service) WaitCodexAccountStoreReady(ctx context.Context) error {
 	})
 }
 
+// reconcileCodexDeviceCredentialForRecheck matches the device Codex credential
+// before an explicit authentication recheck, e.g. after a login in the Harness
+// settings terminal, which runs `codex login` outside AO's account login flow.
+// Codex readiness answers from the last device reconciliation, and nothing else
+// re-runs it after such a login, so without this the recheck kept reporting the
+// pre-login state (no device credential, or a previous credential's "sign in
+// again" evidence) until something else reconciled or the app restarted. A
+// changed credential is matched to its account; an unchanged one keeps its
+// evidence. Best-effort: account management is optional for ordinary Codex use,
+// so failures leave the recheck unchanged.
+func (s *Service) reconcileCodexDeviceCredentialForRecheck(ctx context.Context) {
+	if s.codexAccounts == nil {
+		return
+	}
+	if err := s.WaitCodexAccountStoreReady(ctx); err != nil {
+		return
+	}
+	_ = s.codexAccounts.reconcileGlobalWithPolicy(ctx, true)
+}
+
 // EnsureCodexDeviceAccountReconciled conclusively identifies the canonical
 // device account before an operation is allowed to mutate it.
 func (s *Service) EnsureCodexDeviceAccountReconciled(ctx context.Context) error {

@@ -171,7 +171,7 @@ function DesktopSessionCard({
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const summaries = sessionPRDisplaySummaries(
 		session,
-		useSessionScmSummary(session.id, true, session.cloud?.orgId, session.autoInjectCI === true).data,
+		useSessionScmSummary(session.id, true, session.cloud?.orgId, session.autoInjectCI === true).data?.prs,
 	);
 	const termination = useTerminateSessionState(session.id);
 	const showTerminate = interactive && session.isTerminated !== true && onTerminate;

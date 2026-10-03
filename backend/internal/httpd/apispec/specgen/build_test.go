@@ -134,6 +134,76 @@ func TestBuild_DelegateAgentEnumIncludesPrimeAgent(t *testing.T) {
 	}
 }
 
+func TestBuild_OpenCodeV2HarnessContracts(t *testing.T) {
+	doc := buildSchemas(t)
+	for schema, field := range map[string]string{
+		"SpawnSessionRequest": "harness",
+		"DelegateTaskRequest": "agent",
+	} {
+		values := doc.Components.Schemas[schema].Properties[field].Enum
+		if !slices.Contains(values, "opencode-v2") {
+			t.Errorf("%s.%s enum = %v, missing opencode-v2", schema, field, values)
+		}
+		if !slices.Contains(values, "opencode") {
+			t.Errorf("%s.%s enum = %v, missing existing opencode", schema, field, values)
+		}
+	}
+	for schema, field := range map[string]string{
+		"ControllersSessionView":    "reviewerHarness",
+		"SetSessionReviewerRequest": "harness",
+		"TriggerReviewRequest":      "harness",
+	} {
+		values := doc.Components.Schemas[schema].Properties[field].Enum
+		if !slices.Contains(values, "opencode-v2") {
+			t.Errorf("%s.%s enum = %v, missing opencode-v2", schema, field, values)
+		}
+		if !slices.Contains(values, "opencode") {
+			t.Errorf("%s.%s enum = %v, missing existing opencode reviewer", schema, field, values)
+		}
+	}
+}
+
+func TestBuild_OpenCodeV2InstallContracts(t *testing.T) {
+	got, err := specgen.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	var doc struct {
+		Paths map[string]struct {
+			Post struct {
+				Parameters []struct {
+					Name   string            `yaml:"name"`
+					Schema openAPISchemaNode `yaml:"schema"`
+				} `yaml:"parameters"`
+			} `yaml:"post"`
+		} `yaml:"paths"`
+		Components struct {
+			Schemas map[string]openAPISchemaNode `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(got, &doc); err != nil {
+		t.Fatalf("parse generated OpenAPI: %v", err)
+	}
+	var targets []string
+	for _, parameter := range doc.Paths["/api/v1/system/install/{target}"].Post.Parameters {
+		if parameter.Name == "target" {
+			targets = parameter.Schema.Enum
+		}
+	}
+	if !slices.Contains(targets, "opencode-v2") {
+		t.Fatalf("InstallTargetParam target enum = %v, missing opencode-v2", targets)
+	}
+	for schema := range map[string]bool{
+		"AgentInstallPlan":   true,
+		"AgentInstallMethod": true,
+		"InstallJob":         true,
+	} {
+		if _, ok := doc.Components.Schemas[schema].Properties["notice"]; !ok {
+			t.Errorf("%s is missing the install replacement notice", schema)
+		}
+	}
+}
+
 func TestBuild_UsageEstimatedCostIsNamedReusableAndNullable(t *testing.T) {
 	got, err := specgen.Build()
 	if err != nil {

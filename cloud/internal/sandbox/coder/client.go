@@ -27,9 +27,16 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/cloud/internal/domain"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/sandbox"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/secrets"
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 )
+
+// OrgConnectionLabel is the single bring-your-own Coder connection label an
+// organization stores its credential under. The HTTP edge that seals the token
+// and every service that later unseals it MUST pass the identical label so the
+// AES-GCM associated data lines up.
+const OrgConnectionLabel = "default"
 
 const (
 	defaultTimeout      = 2 * time.Minute
@@ -128,9 +135,39 @@ func New(config Config) (*Client, error) {
 	}, nil
 }
 
-// ForSandbox binds the deployment-scoped connection credential to the
-// non-secret Coder contract stored on one session. The returned client is safe
-// to use only for that session's deterministic workspace identity.
+// NewForOrg decrypts an organization's stored bring-your-own Coder connection
+// token and builds a client bound to the supplied non-secret contract. It is the
+// single place that turns an encrypted per-organization connection into a live
+// client, so the AES-GCM associated-data construction and the token zeroing live
+// in exactly one spot — shared by the sandbox resolver (which provisions a
+// session's workspace) and the HTTP template-list edge (which reads the org's
+// templates). The decrypted token is zeroed before return; New has already copied
+// it into the returned client, so the client remains usable afterwards.
+func NewForOrg(cipher *secrets.Cipher, orgID string, encrypted, nonce []byte, config Config) (*Client, error) {
+	if cipher == nil {
+		return nil, errors.New("coder: secrets cipher is required for a per-organization connection")
+	}
+	token, err := cipher.Decrypt(
+		encrypted, nonce,
+		secrets.ProviderConnectionAssociatedData(orgID, sandbox.ProviderCoder, OrgConnectionLabel),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("coder: decrypt per-organization token: %w", err)
+	}
+	defer clear(token)
+	config.Token = string(token)
+	return New(config)
+}
+
+// ForSandbox binds a connection credential to the non-secret Coder contract
+// stored on one session. The returned client is safe to use only for that
+// session's deterministic workspace identity. It serves both the shared,
+// env-configured deployment client and a fresh per-organization client the
+// resolver builds for a bring-your-own-Coder session — the latter is constructed
+// with the session profile's own BaseURL, so it clears the equality guard below
+// by construction. The guard is retained because it still protects the shared
+// deployment client: its token must never be sent to a deployment other than the
+// one it was configured for.
 func (c *Client) ForSandbox(record domain.Sandbox) (sandbox.Provider, error) {
 	if strings.TrimSpace(record.SessionID) == "" {
 		return nil, errors.New("coder: durable session ID is required")

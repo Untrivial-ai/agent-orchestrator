@@ -89,6 +89,21 @@ type CoderSessionOptions struct {
 	StartupScript string
 }
 
+// CoderDeploymentOverride redirects a session's Coder provisioning to a specific
+// (per-organization, bring-your-own) Coder deployment in place of the
+// deployment-default config (ProvisioningDefaults.Coder). Every field replaces
+// its deployment-default counterpart; the worker-token TTL is deployment policy
+// and is not overridable here. A nil override keeps the deployment default, so
+// existing deployment-level Coder sessions are unchanged.
+type CoderDeploymentOverride struct {
+	BaseURL     string
+	Owner       string
+	TemplateID  string
+	AgentName   string
+	Parameters  map[string]string
+	DurableRoot string
+}
+
 // CoderWorkspaceLayout is the provider-specific filesystem contract between AO
 // and a Coder template. DurableRoot must be the template's persistent volume
 // mount point; every path AO must retain across stop/start is derived beneath it.
@@ -295,14 +310,16 @@ func (d ProvisioningDefaults) SessionPlan(harness string) (Plan, error) {
 // The caller is responsible for confirming the provider is one the control
 // plane offers before calling; this method only builds the plan.
 func (d ProvisioningDefaults) SessionPlanForProvider(harness, providerOverride string) (Plan, error) {
-	return d.SessionPlanForProviderWithCoder(harness, providerOverride, nil)
+	return d.SessionPlanForProviderWithCoder(harness, providerOverride, nil, nil)
 }
 
 // SessionPlanForProviderWithCoder is SessionPlanForProvider with optional
-// per-session Coder options (chosen template + its size/startup form). A nil
-// coder argument, or an empty TemplateID, yields exactly the default-template
-// plan, so existing callers and the "Default" picker choice are unchanged.
-func (d ProvisioningDefaults) SessionPlanForProviderWithCoder(harness, providerOverride string, coder *CoderSessionOptions) (Plan, error) {
+// per-session Coder options (chosen template + its size/startup form) and an
+// optional per-organization Coder deployment override. A nil coder argument, or
+// an empty TemplateID, yields exactly the default-template plan; a nil override
+// keeps the deployment-default Coder connection — so existing callers, the
+// "Default" picker choice, and deployment-level Coder are all unchanged.
+func (d ProvisioningDefaults) SessionPlanForProviderWithCoder(harness, providerOverride string, coder *CoderSessionOptions, override *CoderDeploymentOverride) (Plan, error) {
 	provider := normalizeProvider(providerOverride)
 	if provider == "" {
 		provider = normalizeProvider(d.Provider)
@@ -361,10 +378,27 @@ func (d ProvisioningDefaults) SessionPlanForProviderWithCoder(harness, providerO
 			"namespace":   strings.TrimSpace(d.Docker.Namespace),
 		}
 	} else if provider == ProviderCoder {
-		if err := d.Coder.Validate(); err != nil {
+		// A per-organization override replaces the deployment-default connection's
+		// non-secret fields (URL/owner/template/agent/params/durable root). The
+		// worker-token TTL stays deployment policy; a bring-your-own-only
+		// deployment may leave the deployment default unset, so borrow a sane TTL
+		// when the override supplies one and the default did not.
+		coderCfg := d.Coder
+		if override != nil {
+			coderCfg.BaseURL = override.BaseURL
+			coderCfg.Owner = override.Owner
+			coderCfg.TemplateID = override.TemplateID
+			coderCfg.AgentName = override.AgentName
+			coderCfg.Parameters = override.Parameters
+			coderCfg.DurableRoot = override.DurableRoot
+			if coderCfg.WorkerTokenTTL <= 0 {
+				coderCfg.WorkerTokenTTL = DefaultWorkerTokenTTL
+			}
+		}
+		if err := coderCfg.Validate(); err != nil {
 			return Plan{}, err
 		}
-		parameters, err := normalizedCoderParameters(d.Coder.Parameters)
+		parameters, err := normalizedCoderParameters(coderCfg.Parameters)
 		if err != nil {
 			return Plan{}, err
 		}
@@ -372,7 +406,7 @@ func (d ProvisioningDefaults) SessionPlanForProviderWithCoder(harness, providerO
 		// non-default template. Only then do we override the template and layer on
 		// its size/startup form values — the default template does not declare
 		// those rich parameters, so sending them would make Coder reject the build.
-		templateID := strings.TrimSpace(d.Coder.TemplateID)
+		templateID := strings.TrimSpace(coderCfg.TemplateID)
 		if coder != nil && strings.TrimSpace(coder.TemplateID) != "" {
 			templateID = strings.TrimSpace(coder.TemplateID)
 			if size := strings.TrimSpace(coder.Size); size != "" {
@@ -383,19 +417,19 @@ func (d ProvisioningDefaults) SessionPlanForProviderWithCoder(harness, providerO
 			}
 		}
 		resourceProfile["coder"] = map[string]any{
-			"baseUrl":               strings.TrimRight(strings.TrimSpace(d.Coder.BaseURL), "/"),
-			"owner":                 strings.TrimSpace(d.Coder.Owner),
+			"baseUrl":               strings.TrimRight(strings.TrimSpace(coderCfg.BaseURL), "/"),
+			"owner":                 strings.TrimSpace(coderCfg.Owner),
 			"templateId":            templateID,
-			"agentName":             strings.TrimSpace(d.Coder.AgentName),
+			"agentName":             strings.TrimSpace(coderCfg.AgentName),
 			"parameters":            parameters,
-			"durableRoot":           strings.TrimSpace(d.Coder.DurableRoot),
-			"workerTokenTtlSeconds": int64(d.Coder.WorkerTokenTTL / time.Second),
+			"durableRoot":           strings.TrimSpace(coderCfg.DurableRoot),
+			"workerTokenTtlSeconds": int64(coderCfg.WorkerTokenTTL / time.Second),
 		}
 		bootstrapContext["coder"] = map[string]any{
-			"owner":       strings.TrimSpace(d.Coder.Owner),
+			"owner":       strings.TrimSpace(coderCfg.Owner),
 			"templateId":  templateID,
-			"agentName":   strings.TrimSpace(d.Coder.AgentName),
-			"durableRoot": strings.TrimSpace(d.Coder.DurableRoot),
+			"agentName":   strings.TrimSpace(coderCfg.AgentName),
+			"durableRoot": strings.TrimSpace(coderCfg.DurableRoot),
 		}
 	}
 	resourceJSON, err := json.Marshal(resourceProfile)

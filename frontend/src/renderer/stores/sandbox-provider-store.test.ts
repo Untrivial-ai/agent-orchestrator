@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { readSelectedSandboxProvider, useSandboxProviderStore } from "./sandbox-provider-store";
+import { readSelectedSandboxProvider, resolveSandboxProviderPreference, useSandboxProviderStore } from "./sandbox-provider-store";
 
 const storageKey = "ao.cloud.sandboxProvider";
 
@@ -33,5 +33,11 @@ describe("sandbox-provider-store", () => {
 	it("reads a previously persisted value", () => {
 		window.localStorage.setItem(storageKey, "docker");
 		expect(readSelectedSandboxProvider()).toBe("docker");
+	});
+
+	it("omits a saved provider that the active control plane does not offer", () => {
+		expect(resolveSandboxProviderPreference("coder", ["docker"])).toBeNull();
+		expect(resolveSandboxProviderPreference("coder", [])).toBeNull();
+		expect(resolveSandboxProviderPreference("coder", ["docker", "coder"])).toBe("coder");
 	});
 });

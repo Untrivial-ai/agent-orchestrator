@@ -1238,6 +1238,18 @@ func TestIsSupervisedProcessAliveFindsExactDescendant(t *testing.T) {
 	}
 }
 
+func TestIsExactSupervisedProcessAliveTreatsMissingSessionAsDead(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{[]byte("can't find session: sess-1")}
+	fr.err = &exec.ExitError{}
+	alive, err := r.IsExactSupervisedProcessAlive(context.Background(), ports.RuntimeHandle{ID: "sess-1"}, ports.SupervisedProcessRef{
+		SessionID: "sess-1", LaunchID: "launch-1",
+	})
+	if err != nil || alive {
+		t.Fatalf("IsExactSupervisedProcessAlive = (%v, %v), want missing/dead", alive, err)
+	}
+}
+
 func TestIsSupervisedProcessAliveRejectsStaleAndUnrelatedProcesses(t *testing.T) {
 	entries, err := parseProcessTable("100 1 /bin/sh\n101 100 /opt/ao agent-process supervise --session sess-1 --launch launch-old -- codex\n102 101 codex\n200 1 /opt/ao agent-process supervise --session sess-1 --launch launch-new -- codex\n201 200 codex\n")
 	if err != nil {
@@ -1251,6 +1263,70 @@ func TestIsSupervisedProcessAliveRejectsStaleAndUnrelatedProcesses(t *testing.T)
 	}
 	if !containsExactSupervisedWorkload(entries, 100, "sess-1", "launch-old") {
 		t.Fatal("exact supervised descendant was not found")
+	}
+}
+
+func TestExactSupervisedWorkloadFindsReviewerSupervisorWithHandleIdentity(t *testing.T) {
+	entries, err := parseProcessTable("100 1 /bin/zsh -i\n101 100 /opt/ao agent-process supervise --session review-worker-7 --activity-review review-7 --launch launch-3 -- codex\n102 101 codex\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsExactSupervisedWorkload(entries, 100, "review-worker-7", "launch-3") {
+		t.Fatal("exact supervised reviewer descendant was not found")
+	}
+	if containsExactSupervisedWorkload(entries, 100, "review-worker-8", "launch-3") {
+		t.Fatal("reviewer supervisor with a different handle was accepted")
+	}
+	if containsExactSupervisedWorkload(entries, 100, "review-worker-7", "launch-old") {
+		t.Fatal("reviewer supervisor with a different launch was accepted")
+	}
+}
+
+func TestContainsUnsupervisedReviewerWorkloadDistinguishesExitedProcesses(t *testing.T) {
+	tests := []struct {
+		name  string
+		table string
+		want  bool
+	}{
+		{
+			name:  "live legacy reviewer",
+			table: "100 1 /bin/zsh -c reviewer\n101 100 codex review --pr 7\n",
+			want:  true,
+		},
+		{
+			name:  "preserved interactive shell",
+			table: "100 1 /bin/zsh -i\n",
+			want:  false,
+		},
+		{
+			name:  "supervised exit sink",
+			table: "100 1 /bin/zsh -c launch\n101 100 cat\n",
+			want:  false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entries, err := parseProcessTable(tt.table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := containsUnsupervisedReviewerWorkload(entries, 100); got != tt.want {
+				t.Fatalf("containsUnsupervisedReviewerWorkload = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsUnsupervisedReviewerAliveRejectsSupervisedExitSink(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -c launch\n101 100 cat\n"),
+	}
+	alive, err := r.IsUnsupervisedReviewerAlive(context.Background(), ports.RuntimeHandle{ID: "review-worker-7"})
+	if err != nil || alive {
+		t.Fatalf("IsUnsupervisedReviewerAlive = (%v, %v), want (false, nil)", alive, err)
 	}
 }
 
@@ -1280,6 +1356,7 @@ func TestIsSupervisedProcessAliveFindsManualRelaunchFromPreservedShell(t *testin
 func TestIsExactSupervisedProcessAliveRejectsManualRelaunchFromPreservedShell(t *testing.T) {
 	r, fr := newTestRuntime(0)
 	fr.outputs = [][]byte{
+		nil,
 		[]byte("100\n"),
 		[]byte("100 1 /bin/zsh -i\n101 100 codex resume native-1\n102 101 codex worker\n"),
 	}
@@ -1289,6 +1366,45 @@ func TestIsExactSupervisedProcessAliveRejectsManualRelaunchFromPreservedShell(t 
 	})
 	if err != nil || alive {
 		t.Fatalf("IsExactSupervisedProcessAlive = (%v, %v), want (false, nil)", alive, err)
+	}
+}
+
+func TestHasSupervisedProcessRecordDistinguishesLegacyPane(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100 codex resume native-1\n"),
+	}
+	tracked, err := r.HasSupervisedProcessRecord(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if err != nil || tracked {
+		t.Fatalf("HasSupervisedProcessRecord = (%v, %v), want legacy/untracked", tracked, err)
+	}
+}
+
+func TestHasSupervisedProcessRecordFindsAOReviewerSupervisor(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{
+		nil,
+		[]byte("100\n"),
+		[]byte("100 1 /bin/zsh -i\n101 100 /opt/ao agent-process supervise --review review-1 --launch launch-2 -- codex\n102 101 codex\n"),
+	}
+	tracked, err := r.HasSupervisedProcessRecord(context.Background(), ports.RuntimeHandle{ID: "review-pane"})
+	if err != nil || !tracked {
+		t.Fatalf("HasSupervisedProcessRecord = (%v, %v), want supervised", tracked, err)
+	}
+}
+
+func TestHasSupervisedProcessRecordTreatsMissingSessionAsUntracked(t *testing.T) {
+	r, fr := newTestRuntime(0)
+	fr.outputs = [][]byte{[]byte("can't find session: sess-1")}
+	fr.err = &exec.ExitError{}
+	tracked, err := r.HasSupervisedProcessRecord(context.Background(), ports.RuntimeHandle{ID: "sess-1"})
+	if err != nil || tracked {
+		t.Fatalf("HasSupervisedProcessRecord = (%v, %v), want missing/untracked", tracked, err)
+	}
+	if len(fr.calls) != 1 || fr.calls[0].args[0] != "has-session" {
+		t.Fatalf("calls = %#v, want missing-session probe only", fr.calls)
 	}
 }
 

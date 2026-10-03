@@ -179,6 +179,7 @@ func TestPlanFor(t *testing.T) {
 		found           []string
 		wantUnsupported bool
 		wantReasonHas   string
+		wantNoticeHas   string
 		wantCommand     []string
 	}{
 		{
@@ -287,6 +288,10 @@ func TestPlanFor(t *testing.T) {
 			name: "opencode with sh remains manual", target: TargetOpencode, goos: "linux", found: []string{"curl", "sh"},
 			wantUnsupported: true, wantReasonHas: "does not automatically execute",
 		},
+		{
+			name: "opencode v2 legacy route uses official installer", target: TargetOpencodeV2, goos: "linux", found: []string{"bash"},
+			wantNoticeHas: "replaces the default OpenCode 1",
+		},
 	}
 
 	for _, tt := range tests {
@@ -302,6 +307,9 @@ func TestPlanFor(t *testing.T) {
 			if tt.wantReasonHas != "" && !strings.Contains(plan.Reason, tt.wantReasonHas) {
 				t.Fatalf("Reason = %q, want substring %q", plan.Reason, tt.wantReasonHas)
 			}
+			if tt.wantNoticeHas != "" && !strings.Contains(plan.Notice, tt.wantNoticeHas) {
+				t.Fatalf("Notice = %q, want substring %q", plan.Notice, tt.wantNoticeHas)
+			}
 			if tt.wantCommand != nil {
 				if strings.Join(plan.Command, " ") != strings.Join(tt.wantCommand, " ") {
 					t.Fatalf("Command = %v, want %v", plan.Command, tt.wantCommand)
@@ -312,7 +320,7 @@ func TestPlanFor(t *testing.T) {
 }
 
 func TestValid(t *testing.T) {
-	for _, target := range []Target{TargetTmux, TargetGH, TargetClaude, TargetCodex, TargetOpencode, TargetCopilot} {
+	for _, target := range []Target{TargetTmux, TargetGH, TargetClaude, TargetCodex, TargetOpencode, TargetOpencodeV2, TargetCopilot} {
 		if !Valid(target) {
 			t.Errorf("Valid(%q) = false, want true", target)
 		}

@@ -64,3 +64,21 @@ type OpenCommandTerminalInput struct {
 	InitialInput            string
 	InitialInputReadyStates []InitialInputReadyState
 }
+
+// RunCueCommandInput is the trusted, project-scoped command request
+// used by the Cue service. Each invocation opens a new normal shell.
+type RunCueCommandInput struct {
+	ProjectID domain.ProjectID
+	SessionID domain.SessionID
+	Shell     string
+	Command   string
+}
+
+// CueCommandSessionTarget contains the session facts needed to prove that a
+// Cue command can safely use its exact worktree.
+type CueCommandSessionTarget struct {
+	ProjectID     domain.ProjectID
+	WorkspacePath string
+	Activity      domain.ActivityState
+	IsTerminated  bool
+}

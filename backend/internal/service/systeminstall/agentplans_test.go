@@ -101,8 +101,8 @@ func TestAgentPlansCoverEveryHarnessOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plans) != 31 {
-		t.Fatalf("got %d plans, want 31", len(plans))
+	if len(plans) != 33 {
+		t.Fatalf("got %d plans, want 33", len(plans))
 	}
 	seen := make(map[string]bool, len(plans))
 	for _, plan := range plans {
@@ -116,6 +116,64 @@ func TestAgentPlansCoverEveryHarnessOnce(t *testing.T) {
 		if plan.Available && (!plan.Automatic || plan.Command == "" || plan.Method == "") {
 			t.Fatalf("available plan %q is incomplete: %+v", plan.AgentID, plan)
 		}
+	}
+}
+
+func TestOpenCodeV2UsesOfficialRecipesAndWarnsAboutReplacingV1(t *testing.T) {
+	const replacement = "replaces the default OpenCode 1"
+	for _, tc := range []struct {
+		goos string
+		want map[string]string
+	}{
+		{goos: "darwin", want: map[string]string{
+			"homebrew":           "brew install anomalyco/tap/opencode-v2",
+			"npm":                "npm install -g @opencode/cli",
+			"official-installer": "https://opencode.ai/v2/install",
+		}},
+		{goos: "linux", want: map[string]string{
+			"npm":                "npm install -g @opencode/cli",
+			"official-installer": "https://opencode.ai/v2/install",
+		}},
+		{goos: "windows", want: map[string]string{
+			"npm": "npm install -g @opencode/cli",
+		}},
+	} {
+		t.Run(tc.goos, func(t *testing.T) {
+			s := newTestService(tc.goos, "brew", "npm", "bash")
+			s.installCapabilities = installCapabilitiesStub{prefix: "/Users/test/.npm", writable: true}
+			plans, err := s.AgentPlans(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got AgentPlan
+			for _, plan := range plans {
+				if plan.AgentID == "opencode-v2" {
+					got = plan
+					break
+				}
+			}
+			if got.AgentID == "" {
+				t.Fatal("OpenCode 2 install plan is missing")
+			}
+			if !strings.Contains(got.Notice, replacement) || got.DocumentationURL != "https://opencode.ai/v2/docs" {
+				t.Fatalf("OpenCode 2 plan metadata = %+v", got)
+			}
+			if len(got.Methods) != len(tc.want) {
+				t.Fatalf("OpenCode 2 methods = %+v, want %d official choices", got.Methods, len(tc.want))
+			}
+			for _, method := range got.Methods {
+				want, ok := tc.want[method.ID]
+				if !ok {
+					t.Fatalf("unexpected OpenCode 2 method %+v", method)
+				}
+				if !strings.Contains(method.Command, want) {
+					t.Errorf("%s command = %q, want %q", method.ID, method.Command, want)
+				}
+				if !strings.Contains(method.Notice, replacement) {
+					t.Errorf("%s notice = %q, want replacement warning", method.ID, method.Notice)
+				}
+			}
+		})
 	}
 }
 

@@ -110,7 +110,7 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 // at it, and selects the generated agent with --agent. The initial task prompt
 // is delivered via --prompt (its argument, so a leading "-" is not read as a flag).
 func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (cmd []string, err error) {
-	binary, err := p.opencodeBinary(ctx)
+	binary, err := ResolveBinaryForMajor(ctx, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +150,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		return nil, false, nil
 	}
 
-	binary, err := p.opencodeBinary(ctx)
+	binary, err := ResolveBinaryForMajor(ctx, 1)
 	if err != nil {
 		return nil, false, err
 	}

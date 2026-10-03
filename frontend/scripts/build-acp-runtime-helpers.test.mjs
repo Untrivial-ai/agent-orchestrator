@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	archiveExtraction,
 	createWorkDirectory,
 	npmInvocation,
 	patchClaudeContextUsage,
@@ -218,3 +219,34 @@ function temporaryDirectory() {
 	temporaryDirectories.push(directory);
 	return directory;
 }
+
+describe("archiveExtraction", () => {
+	// Extraction must not go through PowerShell's Expand-Archive: it is bound by
+	// MAX_PATH, and with LongPathsEnabled=0 a deep checkout pushes Node's bundled
+	// npm tree past 260 characters, where it fails while still exiting zero.
+	it("uses bsdtar for the Windows zip", () => {
+		expect(archiveExtraction("C:\\w\\node.zip", "C:\\w", {
+			platform: "win32",
+			systemRoot: "C:\\Windows",
+		})).toEqual({
+			command: "C:\\Windows\\System32\\tar.exe",
+			args: ["-xf", "C:\\w\\node.zip", "-C", "C:\\w"],
+		});
+	});
+
+	it("keeps gzip handling on the other platforms", () => {
+		for (const platform of ["darwin", "linux"]) {
+			expect(archiveExtraction("/w/node.tar.gz", "/w", { platform })).toEqual({
+				command: "tar",
+				args: ["-xzf", "/w/node.tar.gz", "-C", "/w"],
+			});
+		}
+	});
+
+	it("never shells out to a command interpreter", () => {
+		for (const platform of ["win32", "darwin", "linux"]) {
+			const { command } = archiveExtraction("/w/a", "/w", { platform, systemRoot: "C:\\Windows" });
+			expect(command).not.toMatch(/powershell|cmd\.exe|\bsh\b/i);
+		}
+	});
+});

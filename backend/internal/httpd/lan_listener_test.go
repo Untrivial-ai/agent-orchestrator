@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -13,10 +14,24 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/controllers"
+	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/requestscope"
 	"github.com/aoagents/agent-orchestrator/backend/internal/mobilebridge"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	agentsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/agent"
 )
+
+func TestLANControlBlockMarksRequestContext(t *testing.T) {
+	seenLAN := false
+	handler := lanControlBlock(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenLAN = requestscope.IsLAN(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/cues/cue-a/invoke", nil))
+	if recorder.Code != http.StatusNoContent || !seenLAN {
+		t.Fatalf("status=%d seenLAN=%v", recorder.Code, seenLAN)
+	}
+}
 
 func TestLANManagerAuthGatesSharedHandler(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

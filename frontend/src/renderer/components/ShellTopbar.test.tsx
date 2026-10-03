@@ -62,6 +62,8 @@ vi.mock("../lib/api-client", () => ({
 	apiClient: {
 		POST: postMock,
 	},
+	getApiBaseUrl: () => "http://127.0.0.1:3001",
+	subscribeApiBaseUrl: () => () => undefined,
 	hasTrustedApiBaseUrl: () => false,
 	apiErrorMessage: (error: unknown, fallback = "Request failed") => {
 		if (error instanceof Error) return error.message;
@@ -149,7 +151,7 @@ function renderTopbarSessions(
 	sessionId: string,
 	embedded = false,
 	sessionAction?: ReactNode,
-	projectKind?: WorkspaceSummary["kind"],
+	projectKind: WorkspaceSummary["kind"] = "single_repo",
 ) {
 	const data: WorkspaceSummary[] = [
 		{
@@ -205,7 +207,7 @@ function renderKill(session: WorkspaceSession = worker, orchestratorId?: string)
 }
 
 async function clickKillDialogConfirm() {
-	const dialog = await screen.findByRole("dialog", { name: "Are you sure you want to archive do the thing?" });
+	const dialog = await screen.findByRole("dialog", { name: "Are you sure you want to archive this session?" });
 	await userEvent.click(within(dialog).getByRole("button", { name: "Confirm, archive session" }));
 }
 
@@ -384,11 +386,44 @@ describe("ShellTopbar status pill", () => {
 });
 
 describe("ShellTopbar orchestrator actions", () => {
+	it.each([CLOUD_PROJECT_KIND, STANDALONE_PROJECT_KIND, "unknown"] as const)(
+		"hides the session cue runner for %s projects", (kind) => {
+			renderTopbarSessions([sessionWith()], "sess-1", false, undefined, kind as WorkspaceSummary["kind"]);
+			expect(screen.queryByRole("button", { name: "Run a cue" })).not.toBeInTheDocument();
+		},
+	);
+
+	it.each([CLOUD_PROJECT_KIND, STANDALONE_PROJECT_KIND, "unknown"] as const)(
+		"hides the board cue runner for %s projects", (kind) => {
+			renderTopbarSessions([orchestrator], "", false, undefined, kind as WorkspaceSummary["kind"]);
+			expect(screen.queryByRole("button", { name: "Run a cue" })).not.toBeInTheDocument();
+		},
+	);
+
+	it("shows the play-icon cue runner for a worker session", () => {
+		renderTopbar(sessionWith());
+
+		const runner = screen.getByRole("button", { name: "Run a cue" });
+		expect(runner.querySelector(".lucide-play")).not.toBeNull();
+		expect(screen.getByTestId("workspace-topbar-actions")).toContainElement(runner);
+	});
+
+	it.each(["exited", "blocked"] as const)("disables the cue runner for %s workers", (state) => {
+		renderTopbar(sessionWith({ activity: { state, lastActivityAt: "2026-09-25T00:00:00Z" } }));
+		expect(screen.getByRole("button", { name: "Run a cue" })).toBeDisabled();
+	});
+
+	it("disables the cue runner for terminated workers", () => {
+		renderTopbar(sessionWith({ isTerminated: true }));
+		expect(screen.getByRole("button", { name: "Run a cue" })).toBeDisabled();
+	});
+
 	it("owns the responsive action container on the full board topbar", () => {
 		renderTopbarSessions([orchestrator], "");
 
 		const actions = screen.getByTestId("workspace-topbar-actions");
 		expect(actions.closest("header")).toHaveClass("workspace-topbar-container");
+		expect(screen.getByRole("button", { name: "Run a cue" }).querySelector(".lucide-play")).not.toBeNull();
 	});
 
 	it.each([
@@ -573,6 +608,7 @@ describe("ShellTopbar inspector state", () => {
 	});
 
 	it("keeps the expanded worker controls out of the center topbar", () => {
+		useUiStore.setState({ inspectorSessions: { "sess-1": { isOpen: true, view: "summary" } } });
 		renderTopbarSessions([worker], "sess-1");
 
 		expect(screen.getByTestId("session-pinned-actions-reserve")).toHaveAttribute("data-state", "collapsed");
@@ -641,9 +677,9 @@ describe("TopbarArchiveButton", () => {
 		expect(archiveButton.querySelector("svg")).toHaveClass("lucide-archive");
 		await userEvent.click(archiveButton);
 		expect(postMock).not.toHaveBeenCalled();
-		const confirmation = screen.getByRole("dialog", { name: "Are you sure you want to archive do the thing?" });
+		const confirmation = screen.getByRole("dialog", { name: "Are you sure you want to archive this session?" });
 		expect(confirmation).toHaveClass("left-[50%]", "top-[50%]", "bg-popover", "p-0");
-		expect(confirmation).toHaveTextContent("You can always restore do the thing from the Archive section later.");
+		expect(confirmation).toHaveTextContent("You can always restore it from the Archive section later.");
 		expect(within(confirmation).getByRole("button", { name: "No" })).toBeInTheDocument();
 		expect(within(confirmation).getByRole("button", { name: "Confirm, archive session" })).toHaveTextContent("Confirm");
 

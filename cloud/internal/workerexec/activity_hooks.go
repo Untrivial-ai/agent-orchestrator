@@ -51,6 +51,7 @@ var codexActivityHooks = []activityHook{
 	{"UserPromptSubmit", "user-prompt-submit", ""},
 	{"PermissionRequest", "permission-request", ""},
 	{"Stop", "stop", ""},
+	{"Interrupt", "interrupt", ""},
 }
 
 var cursorActivityHooks = []activityHook{

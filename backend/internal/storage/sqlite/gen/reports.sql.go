@@ -595,6 +595,36 @@ func (q *Queries) ListReportOutputs(ctx context.Context, reportID string) ([]Rep
 	return items, nil
 }
 
+const listReportedPRURLs = `-- name: ListReportedPRURLs :many
+SELECT o.reference FROM report_outputs o
+JOIN reports r ON r.id = o.report_id
+WHERE r.session_id = ? AND o.kind = 'pr_created'
+ORDER BY r.created_at, r.id, o.position
+`
+
+func (q *Queries) ListReportedPRURLs(ctx context.Context, sessionID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listReportedPRURLs, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var reference string
+		if err := rows.Scan(&reference); err != nil {
+			return nil, err
+		}
+		items = append(items, reference)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listReportsByProject = `-- name: ListReportsByProject :many
 SELECT id, session_id, project_id, state, note, message, created_at, delivery_state, available_at, settlement_deadline, repeat_count, claim_token, claimed_at, delivery_attempts, acknowledged_at, last_error, delivery_batch_id FROM reports WHERE project_id = ? ORDER BY created_at, id
 `

@@ -21,7 +21,11 @@ import {
 } from "./ui/dialog";
 
 type InstallJob = components["schemas"]["InstallJob"];
-type InstallTarget = "tmux" | "gh" | "claude" | "codex" | "opencode" | "copilot";
+// `notice` is emitted by the daemon's OpenCode 2 install plan. Keep this
+// narrow compatibility extension while older generated clients are in use;
+// it becomes part of InstallJob when the accompanying API schema regenerates.
+type InstallJobWithNotice = InstallJob & { notice?: string };
+type InstallTarget = "tmux" | "gh" | "claude" | "codex" | "opencode" | "opencode-v2" | "copilot";
 type AgentInstallTarget = Exclude<InstallTarget, "tmux" | "gh">;
 
 // Labels are the CLIs' own product names — not translated, same treatment as
@@ -31,6 +35,7 @@ const AGENT_INSTALL_OPTIONS: Array<{ target: AgentInstallTarget; label: string }
 	{ target: "claude", label: "Claude Code" },
 	{ target: "codex", label: "Codex" },
 	{ target: "opencode", label: "opencode" },
+	{ target: "opencode-v2", label: "OpenCode 2" },
 	{ target: "copilot", label: "Copilot CLI" },
 ];
 
@@ -38,6 +43,7 @@ const AGENT_INSTALL_DESCRIPTION_KEYS: Record<AgentInstallTarget, MessageKey> = {
 	claude: "startup.agentDescClaude",
 	codex: "startup.agentDescCodex",
 	opencode: "startup.agentDescOpencode",
+	"opencode-v2": "startup.agentDescOpencode",
 	copilot: "startup.agentDescCopilot",
 };
 
@@ -62,8 +68,8 @@ export async function checkRequirementsAgain(onRefetchRequirements: () => Promis
  *  which command is running. */
 function useInstallRunner(onSucceeded: () => void) {
 	const [target, setTarget] = useState<InstallTarget | null>(null);
-	const [job, setJob] = useState<InstallJob | undefined>(undefined);
-	const [previews, setPreviews] = useState<Partial<Record<InstallTarget, InstallJob>>>({});
+	const [job, setJob] = useState<InstallJobWithNotice | undefined>(undefined);
+	const [previews, setPreviews] = useState<Partial<Record<InstallTarget, InstallJobWithNotice>>>({});
 	const [inspectedTargets, setInspectedTargets] = useState<Partial<Record<InstallTarget, boolean>>>({});
 	const [isStarting, setIsStarting] = useState(false);
 	const [startError, setStartError] = useState<string | undefined>(undefined);
@@ -88,7 +94,7 @@ function useInstallRunner(onSucceeded: () => void) {
 					params: { path: { target: polledTarget } },
 				});
 				if (error || !data) return; // transient — try again next tick
-				setJob(data);
+				setJob(data as InstallJobWithNotice);
 				if (isActiveInstallJob(data)) return;
 				stopPolling();
 				if (data.status === "succeeded") onSucceededRef.current();
@@ -107,7 +113,7 @@ function useInstallRunner(onSucceeded: () => void) {
 				params: { path: { target: nextTarget } },
 			});
 			if (error || !data) return;
-			setPreviews((current) => ({ ...current, [nextTarget]: data }));
+			setPreviews((current) => ({ ...current, [nextTarget]: data as InstallJobWithNotice }));
 		} catch {
 			// The requirements gate remains usable if plan inspection fails. The
 			// POST action will still surface its own concrete error when selected.
@@ -127,7 +133,7 @@ function useInstallRunner(onSucceeded: () => void) {
 				params: { path: { target: nextTarget } },
 			});
 			if (error || !data) throw new Error(apiErrorMessage(error, "Could not start the install."));
-			setJob(data);
+			setJob(data as InstallJobWithNotice);
 			if (isActiveInstallJob(data)) poll(nextTarget);
 			else if (data.status === "succeeded") onSucceededRef.current();
 		} catch (err) {
@@ -194,6 +200,9 @@ export function InstallDependencyDialog({
 	};
 
 	const title = harnessBlocking ? t("startup.blockedTitleAgent") : t("startup.blockedTitleDependency");
+	const opencodeV2Notice = selectedAgent === "opencode-v2"
+		? install.jobFor("opencode-v2")?.notice ?? t("startup.installOpencodeV2ReplacementWarning")
+		: undefined;
 
 	return (
 		<Dialog open onOpenChange={() => {}}>
@@ -261,6 +270,9 @@ export function InstallDependencyDialog({
 									</RadioGroup.Item>
 								))}
 							</RadioGroup.Root>
+							{opencodeV2Notice ? (
+								<p className="mt-2 text-caption text-warning" role="status">{opencodeV2Notice}</p>
+							) : null}
 							<div className="mt-2">
 								<InstallAction
 									primaryLabel={t("startup.installSelected")}

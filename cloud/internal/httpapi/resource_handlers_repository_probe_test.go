@@ -18,6 +18,7 @@ import (
 type repositoryProbeFakeStore struct {
 	Store
 	created   int
+	createErr error
 	encrypted []byte
 	nonce     []byte
 }
@@ -26,6 +27,9 @@ func (s *repositoryProbeFakeStore) CreateProject(
 	context.Context, domain.Principal, string, string, domain.CreateProject,
 ) (domain.Project, error) {
 	s.created++
+	if s.createErr != nil {
+		return domain.Project{}, s.createErr
+	}
 	return domain.Project{ID: "proj-1", DisplayName: "widgets"}, nil
 }
 

@@ -23,6 +23,7 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 		{"codex", "Log in to Codex", "codex", "Choose ChatGPT, device code, API key, or access token", "https://github.com/openai/codex", "", ActionLogin, []string{"codex", "login"}},
 		{"cursor", "Log in to Cursor", "cursor-agent", "Native browser flow", "https://docs.cursor.com/en/cli/installation", "", ActionLogin, []string{"cursor-agent", "login"}},
 		{"opencode", "Log in to OpenCode", "opencode", "Native provider chooser", "https://github.com/anomalyco/opencode", "", ActionLogin, []string{"opencode", "auth", "login"}},
+		{"opencode-v2", "Log in to OpenCode 2", "opencode", "Native provider chooser", "https://opencode.ai/v2/docs", "", ActionLogin, []string{"opencode", "auth", "login"}},
 		{"mimo-code", "Log in to MiMo Code", "mimo", "Native provider chooser", "https://mimo.mi.com/docs/en-US/tokenplan/integration/mimo-code", "", ActionLogin, []string{"mimo", "auth", "login"}},
 		{"aider", "Set up Aider", "", "Configure provider credentials using Aider's documented environment or configuration-file options", "https://aider.chat/docs/config/api-keys.html", "", ActionSetup, nil},
 		{"copilot", "Log in to GitHub Copilot", "copilot", "Native GitHub device/browser flow", "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli", "", ActionLogin, []string{"copilot", "login"}},
@@ -49,6 +50,7 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 		{"prime-agent", "Log in to Prime Agent", "prime-agent", "Select Open login after Prime Agent finishes starting", "https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/quickstart.md", "/login\r", ActionLogin, []string{"prime-agent"}},
 		{"omp", "Log in to OMP", "omp", "Select Open login after OMP finishes starting", "https://github.com/can1357/oh-my-pi", "/login\r", ActionLogin, []string{"omp"}},
 		{"fx", "Log in to fx", "fx", "Select Vercel, Codex, or Grok in fx's native login flow", "https://fx.sh/docs", "", ActionLogin, []string{"fx", "login"}},
+		{"deepseek-harness", "Set up DeepSeek", "dsh", "Opens DeepSeek's Models page to store an API key and pick a model route; leave it running until the key is saved", "https://github.com/deepseek-ai/deepseek-harness", "", ActionSetup, []string{"dsh", "--profile", "web"}},
 	}
 
 	svc := New(foundExecutables(cases), nil)
@@ -60,7 +62,12 @@ func TestPlansMatchAuthenticationMatrix(t *testing.T) {
 	for i, want := range cases {
 		got := plans[i]
 		wantLaunchMode := LaunchTerminal
-		if want.id == "aider" {
+		switch want.id {
+		// Aider is the one harness AO can only document: it configures providers
+		// through files and environment, with no command to drive. DeepSeek
+		// Harness has no login subcommand either, but its web profile serves the
+		// Models page that writes the credential, so its setup is a terminal plan.
+		case "aider":
 			wantLaunchMode = LaunchDocumentation
 		}
 		if seen[got.AgentID] {

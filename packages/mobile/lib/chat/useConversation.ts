@@ -7,25 +7,30 @@ import {
 	getConversationConfigOptions,
 	getConversationModels,
 	getConversationPage,
+	getReviewerConversationPage,
 	getConversationSkills,
 	mergeConversationPages,
 	reloadMcpServers,
 	resolveApproval,
+	resolveReviewerApproval,
 	resolveInput,
+	resolveReviewerInput,
 	rollbackConversation,
 	sendConversationMessage,
+	sendReviewerConversationMessage,
 	setConversationConfigOption,
 	setConversationSettings,
 	setConversationTitle,
 	stageConversationAttachments,
 	steerConversation,
 	interruptConversation,
+	interruptReviewerConversation,
 	promoteQueuedConversationTurn,
 	type ConversationPage,
 } from "./api";
 import type { ChatConfigOption, ChatImage, ChatModel, ChatResource, ChatSkill, ConversationSnapshot, TurnSettings } from "./types";
 import { cachedConversationState, createMobileConversationPageCache, discardHistoricalPages } from "./snapshot";
-import { conversationActionError, conversationErrorCode } from "./conversationErrors";
+import { conversationActionError, conversationErrorCode, conversationErrorIsPermanent } from "./conversationErrors";
 import { subscribeConversationEvents } from "./conversationEvents";
 import { conversationPollIntervalFor } from "./conversationPoll";
 import { createAsyncValueCache } from "./asyncValueCache";
@@ -100,8 +105,9 @@ export type MobileConversation = {
 export function useMobileConversation(
 	cfg: ServerConfig | null,
 	sessionId: string,
+	options?: { reviewId?: string; eventSessionId?: string },
 ): MobileConversation {
-	const cacheKey = cfg ? conversationPageCacheKey(cfg, sessionId) : "";
+	const cacheKey = cfg ? conversationPageCacheKey(cfg, options?.reviewId ? `review:${options.reviewId}` : sessionId) : "";
 	const [initialState] = useState(() => cacheKey
 		? cachedConversationState(conversationPageCache, cacheKey)
 		: { pages: [] as ConversationPage[], loading: true });
@@ -132,7 +138,9 @@ export function useMobileConversation(
 		const request = refreshGate.begin();
 		setRefreshing(true);
 		try {
-			const live = await getConversationPage(cfg, sessionId);
+			const live = options?.reviewId
+				? await getReviewerConversationPage(cfg, options.reviewId)
+				: await getConversationPage(cfg, sessionId);
 			if (!mounted.current || !refreshGate.isCurrent(request)) return;
 			setPages((old) => {
 				const next = old[0]?.conversationId && old[0].conversationId !== live.conversationId
@@ -145,7 +153,7 @@ export function useMobileConversation(
 			setError(undefined);
 		} catch (cause) {
 			if (!mounted.current || !refreshGate.isCurrent(request)) return;
-			const classified = classifyConversationError(cause);
+			const classified = classifyConversationError(cause, Boolean(options?.reviewId));
 			if (classified.permanent) setUnavailable({ code: classified.code, message: classified.message });
 			else setError(classified.message);
 		} finally {
@@ -154,7 +162,7 @@ export function useMobileConversation(
 				setRefreshing(false);
 			}
 		}
-	}, [cacheKey, cfg, refreshGate, sessionId]);
+	}, [cacheKey, cfg, options?.reviewId, refreshGate, sessionId]);
 
 	const scheduleRefresh = useCallback(() => {
 		if (refreshTimer.current) clearTimeout(refreshTimer.current);
@@ -165,14 +173,16 @@ export function useMobileConversation(
 		if (!cfg || !snapshot?.hasMoreBefore || loadingOlder) return;
 		setLoadingOlder(true);
 		try {
-			const older = await getConversationPage(cfg, sessionId, snapshot.oldestSequence);
+			const older = options?.reviewId
+				? await getReviewerConversationPage(cfg, options.reviewId, snapshot.oldestSequence)
+				: await getConversationPage(cfg, sessionId, snapshot.oldestSequence);
 			if (mounted.current) setPages((old) => [...old, older]);
 		} catch (cause) {
 			if (mounted.current) setActionError(conversationActionError(cause));
 		} finally {
 			if (mounted.current) setLoadingOlder(false);
 		}
-	}, [cfg, sessionId, snapshot?.hasMoreBefore, snapshot?.oldestSequence, loadingOlder]);
+	}, [cfg, options?.reviewId, sessionId, snapshot?.hasMoreBefore, snapshot?.oldestSequence, loadingOlder]);
 
 	useEffect(() => {
 		mounted.current = true;
@@ -219,11 +229,12 @@ export function useMobileConversation(
 	}, [cacheKey, cfg, hasConversation, sessionId, skills, unavailable]);
 
 	useEffect(() => {
-		if (!cfg || unavailable) return;
-		return subscribeConversationEvents(sessionId, (event) => {
+		const eventSessionId = options?.eventSessionId ?? sessionId;
+		if (!cfg || unavailable || !eventSessionId) return;
+		return subscribeConversationEvents(eventSessionId, (event) => {
 			if (event.payload?.conversationId) scheduleRefresh();
 		});
-	}, [cfg, sessionId, scheduleRefresh, unavailable]);
+	}, [cfg, options?.eventSessionId, sessionId, scheduleRefresh, unavailable]);
 
 	// Poll the conversation on paths where the event stream cannot deliver.
 	// Over a Cloudflare quick tunnel the subscription above never fires — the
@@ -273,7 +284,8 @@ export function useMobileConversation(
 			if (!cfg) throw new Error(NOT_PAIRED_ACTION_COPY);
 			setPendingSends((old) => upsertPending(old, { ...pending, state: "sending", error: undefined }));
 			try {
-				await sendConversationMessage(cfg, sessionId, {
+				const sendMessage = options?.reviewId ? sendReviewerConversationMessage : sendConversationMessage;
+				await sendMessage(cfg, options?.reviewId ?? sessionId, {
 					text: pending.text,
 					clientMessageId: pending.id,
 					attachments: pending.attachments,
@@ -287,7 +299,7 @@ export function useMobileConversation(
 				throw new Error(message);
 			}
 		},
-		[cfg, sessionId, refresh],
+		[cfg, options?.reviewId, sessionId, refresh],
 	);
 
 	const send = useCallback(
@@ -296,6 +308,7 @@ export function useMobileConversation(
 			let message = text;
 			let nativeAttachments = attachments;
 			if (attachments?.length) {
+				if (options?.reviewId && !sessionId.trim()) throw new Error("Attachments are unavailable until the worker session is linked.");
 				const paths = await requireConfig(cfg, (c) => stageConversationAttachments(c, sessionId, attachments));
 				message = withAttachmentReferences(message, paths);
 				if (!snapshot?.capabilities?.includes("images")) nativeAttachments = undefined;
@@ -329,18 +342,24 @@ export function useMobileConversation(
 		[cfg, runAction, sessionId],
 	);
 	const interrupt = useCallback(
-		() => runAction("interrupt", () => requireConfig(cfg, (c) => interruptConversation(c, sessionId))),
-		[cfg, runAction, sessionId],
+		() => runAction("interrupt", () => requireConfig(cfg, (c) => options?.reviewId
+			? interruptReviewerConversation(c, options.reviewId)
+			: interruptConversation(c, sessionId))),
+		[cfg, options?.reviewId, runAction, sessionId],
 	);
 	const resolveApprovalAction = useCallback(
 		(requestId: string, decisionId: string) =>
-			runAction("approval", () => requireConfig(cfg, (c) => resolveApproval(c, sessionId, requestId, decisionId))),
-		[cfg, runAction, sessionId],
+			runAction("approval", () => requireConfig(cfg, (c) => options?.reviewId
+				? resolveReviewerApproval(c, options.reviewId, requestId, decisionId)
+				: resolveApproval(c, sessionId, requestId, decisionId))),
+		[cfg, options?.reviewId, runAction, sessionId],
 	);
 	const resolveInputAction = useCallback(
 		(requestId: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>) =>
-			runAction("input", () => requireConfig(cfg, (c) => resolveInput(c, sessionId, requestId, action, content))),
-		[cfg, runAction, sessionId],
+			runAction("input", () => requireConfig(cfg, (c) => options?.reviewId
+				? resolveReviewerInput(c, options.reviewId, requestId, action, content)
+				: resolveInput(c, sessionId, requestId, action, content))),
+		[cfg, options?.reviewId, runAction, sessionId],
 	);
 	const compact = useCallback(
 		() => runAction("compact", () => requireConfig(cfg, (c) => compactConversation(c, sessionId))),
@@ -429,20 +448,10 @@ function upsertPending(items: PendingSend[], next: PendingSend): PendingSend[] {
 	return items.map((item, at) => (at === index ? next : item));
 }
 
-function classifyConversationError(error: unknown): { permanent: boolean; code?: string; message: string } {
+function classifyConversationError(error: unknown, reviewer = false): { permanent: boolean; code?: string; message: string } {
 	const code = typeof error === "object" && error !== null && "code" in error ? String(error.code ?? "") : undefined;
-	const permanentCodes = new Set([
-		"SESSION_MODE_MISMATCH",
-		"SESSION_NOT_FOUND",
-		"SESSION_MODE_UNSUPPORTED",
-		"CHAT_DRIVER_UNAVAILABLE",
-		"CHAT_DRIVER_INCOMPATIBLE",
-		"CHAT_AUTH_REQUIRED",
-		"CHAT_RESUME_FAILED",
-		"CHAT_CONTROLLER_NOT_READY",
-	]);
 	return {
-		permanent: Boolean(code && permanentCodes.has(code)),
+		permanent: conversationErrorIsPermanent(code, reviewer),
 		code,
 		message: conversationActionError(error),
 	};

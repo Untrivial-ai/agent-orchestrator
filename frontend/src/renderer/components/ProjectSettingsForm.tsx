@@ -16,10 +16,11 @@ import { agentModelsQueryKey, agentModelsQueryOptions, refreshAgentModels, reval
 import { useAgentReadinessQuery, useEnsureAgentReadiness } from "../hooks/useAgentReadinessQuery";
 import { useWorkspaceQuery, workspaceQueryKey } from "../hooks/useWorkspaceQuery";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
-import { isConcreteModelID, modelChoiceLabel } from "../lib/agent-model-choices";
+import { agentModelDisplayLabel, isConcreteModelID, modelChoiceLabel } from "../lib/agent-model-choices";
 import { WORKER_DEFAULT_REVIEWERS } from "../lib/reviewer-harnesses";
 import { captureOrchestratorReplacementFailure } from "../lib/orchestrator-replacement-telemetry";
 import { OrchestratorSpawnError, spawnOrchestrator } from "../lib/spawn-orchestrator";
+import { useSettings } from "../hooks/useSettings";
 import { captureRendererEvent } from "../lib/telemetry";
 import { type OrchestratorReplacementFailure, useUiStore } from "../stores/ui-store";
 import { newestActiveOrchestrator } from "../types/workspace";
@@ -125,6 +126,8 @@ function SettingsBody({
 	const workspaceQuery = useWorkspaceQuery();
 	const config = project.config ?? {};
 	const isScratchProject = project.kind === "scratch";
+	const { settings } = useSettings();
+	const intakeVisible = !isScratchProject && !!settings?.trackerIntakeEnabled;
 	const workspace = workspaceQuery.data?.find((item) => item.id === projectId);
 	const activeOrchestrator = newestActiveOrchestrator(workspace?.sessions ?? []);
 	const intake: TrackerIntakeConfig = config.trackerIntake ?? {};
@@ -187,7 +190,7 @@ function SettingsBody({
 			intakeAssignee: patch.assignee ?? f.intakeAssignee,
 		}));
 	const effectiveIntakeRepo = form.intakeRepo.trim() || deriveRepoPath(project.repo);
-	const intakeSetupIncomplete = !isScratchProject && intakeNeedsRule(intakeForm);
+	const intakeSetupIncomplete = intakeVisible && intakeNeedsRule(intakeForm);
 	const reviewerWarning = reviewerTrustWarning(form.reviewerHarness);
 	const defaultReviewerHarness = WORKER_DEFAULT_REVIEWERS[form.workerAgent] ?? "claude-code";
 	const mutation = useMutation({
@@ -357,7 +360,7 @@ function SettingsBody({
 		if (key === lastSavedRef.current || key === failedKeyRef.current || mutation.isPending) return;
 		const timeout = window.setTimeout(() => {
 			const validation = validateProjectSettings(form, {
-				validateIntake: !isScratchProject,
+				validateIntake: intakeVisible,
 				originalDisplayName: project.name,
 			});
 			if (validation === "intake_assignee_required") {
@@ -434,7 +437,7 @@ function SettingsBody({
 				setSavedAt(null);
 				setReplacementError(null);
 				const validation = validateProjectSettings(form, {
-					validateIntake: !isScratchProject,
+					validateIntake: intakeVisible,
 					originalDisplayName: project.name,
 				});
 				if (validation === "intake_assignee_required") {
@@ -519,17 +522,19 @@ function SettingsBody({
 									}),
 								}}
 							/>
-							<ProjectSettingsSection title={t("settings.project.issues")} grouped>
-								<IntakeFields
-									variant="settings"
-									form={intakeForm}
-									onChange={patchIntake}
-									repoPreview={{
-										value: effectiveIntakeRepo,
-										host: deriveRepoHost(project.repo),
-									}}
-								/>
-							</ProjectSettingsSection>
+							{intakeVisible && (
+								<ProjectSettingsSection title={t("settings.project.issues")} grouped>
+									<IntakeFields
+										variant="settings"
+										form={intakeForm}
+										onChange={patchIntake}
+										repoPreview={{
+											value: effectiveIntakeRepo,
+											host: deriveRepoHost(project.repo),
+										}}
+									/>
+								</ProjectSettingsSection>
+							)}
 							<ProjectSettingsSection title={t("settings.project.pullRequests")} grouped>
 								<div className="settings-row-bar">
 									<div className="flex shrink-0 items-center gap-1.5">
@@ -797,7 +802,7 @@ function AgentModelField({
 		const selectedMode = isConcreteModelID(mode) ? mode : "";
 		const options = (catalog.models ?? []).filter((item) => isConcreteModelID(item.id)).map((item) => ({
 			value: item.id,
-			label: modelChoiceLabel(item),
+			label: agentModelDisplayLabel(agentId, modelChoiceLabel(item)),
 		}));
 		return (
 			<>
@@ -836,6 +841,10 @@ function AgentModelField({
 		onModelChange(value);
 		onModeChange("");
 	};
+	const displayModels = (catalog?.models ?? []).map((item) => ({
+		...item,
+		label: agentModelDisplayLabel(agentId, item.label),
+	}));
 	return (
 		<>
 			<div className="min-w-0">
@@ -843,7 +852,7 @@ function AgentModelField({
 					<AgentModelCombobox
 						aria-label={label}
 						value={model}
-						models={catalog?.models ?? []}
+						models={displayModels}
 						allowCustom={catalog?.allowCustom}
 						customModelEntry={customModelEntry}
 						agentLabel={agentId}

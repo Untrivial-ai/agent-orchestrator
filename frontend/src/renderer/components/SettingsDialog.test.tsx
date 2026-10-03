@@ -63,10 +63,20 @@ vi.mock("./GlobalSettingsForm", () => ({
 	),
 }));
 
+vi.mock("./CuesDialog", () => ({
+	CuesSettings: ({ projectId }: { projectId: string }) => <div data-testid="project-cues-settings">{projectId}</div>,
+}));
+
 // The dialog reads the cloud gate to decide whether the Cloud nav page exists;
 // mocked so these tests need no QueryClientProvider (same pattern as Sidebar).
 vi.mock("../hooks/useCloudGate", () => ({
 	useCloudGate: () => ({ cloudEnabled: false, localEnabled: true }),
+}));
+
+// The dialog reads the cloud session email to gate the 11x-only Coder page.
+// Signed out here, so that page is never visible.
+vi.mock("../lib/cloud-session", () => ({
+	useCloudSession: () => ({ status: "unauthenticated", session: null }),
 }));
 
 describe("SettingsDialog", () => {
@@ -103,6 +113,27 @@ describe("SettingsDialog", () => {
 
 		await userEvent.click(await screen.findByRole("button", { name: "Trigger failed save" }));
 		expect(await screen.findByRole("alert")).toHaveTextContent("Display name must be 100 characters or fewer");
+	});
+
+	it("keeps cue management in project settings without the project save action", async () => {
+		useUiStore.getState().openProjectSettings("proj-1");
+		renderSettingsDialog();
+
+		const cuesSection = await screen.findByRole("button", { name: "Cues" });
+		expect(cuesSection.querySelector(".lucide-play")).not.toBeNull();
+		await userEvent.click(cuesSection);
+
+		expect(screen.getByTestId("project-cues-settings")).toHaveTextContent("proj-1");
+		expect(cuesSection).toHaveAttribute("aria-current", "page");
+		expect(screen.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument();
+	});
+
+	it("opens project settings on the cues page when the caller asks for it", async () => {
+		useUiStore.getState().openProjectSettings("proj-1", { section: "cues" });
+		renderSettingsDialog();
+
+		expect(await screen.findByTestId("project-cues-settings")).toHaveTextContent("proj-1");
+		expect(screen.getByRole("button", { name: "Cues" })).toHaveAttribute("aria-current", "page");
 	});
 
 	it("opens the requested global settings page", async () => {
@@ -189,12 +220,12 @@ describe("SettingsDialog", () => {
 		expect(screen.queryByRole("button", { name: "Downloads" })).not.toBeInTheDocument();
 	});
 
-	it("falls back to General when Cloud is unavailable", async () => {
-		useUiStore.getState().openGlobalSettings("cloud");
+	it("falls back to General when the Coder page is unavailable", async () => {
+		useUiStore.getState().openGlobalSettings("coder11x");
 		renderSettingsDialog();
 
 		expect(await screen.findByTestId("global-settings-section")).toHaveTextContent("general");
-		expect(screen.queryByRole("button", { name: "Cloud" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Coder" })).not.toBeInTheDocument();
 	});
 
 	it("closes Settings without cancelling daemon-owned account login work", async () => {
@@ -239,6 +270,23 @@ describe("SettingsDialog", () => {
 		fireEvent.keyDown(nestedItem, { key: "Escape" });
 		expect(useUiStore.getState().settingsModal).not.toBeNull();
 		nestedMenu.remove();
+
+		fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+		await vi.waitFor(() => expect(useUiStore.getState().settingsModal).toBeNull());
+	});
+
+	it("stays open when Escape cancels an inline edit inside it", async () => {
+		useUiStore.getState().openGlobalSettings("browserProfiles");
+		renderSettingsDialog();
+
+		const dialog = await screen.findByRole("dialog");
+		const inlineEdit = document.createElement("input");
+		inlineEdit.setAttribute("data-settings-inline-edit", "");
+		dialog.append(inlineEdit);
+		inlineEdit.focus();
+		fireEvent.keyDown(inlineEdit, { key: "Escape" });
+		expect(useUiStore.getState().settingsModal).not.toBeNull();
+		inlineEdit.remove();
 
 		fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
 		await vi.waitFor(() => expect(useUiStore.getState().settingsModal).toBeNull());

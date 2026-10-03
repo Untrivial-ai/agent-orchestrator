@@ -106,6 +106,18 @@ func modelConfigPaths(agentID, workingDir string, env map[string]string) []strin
 		} else if home != "" {
 			paths = append(paths, filepath.Join(home, ".config", "goose", "config.yaml"))
 		}
+	case "deepseek-harness":
+		// DeepSeek Harness's catalog comes from a live `dsh --profile acp`
+		// session, and the profile decides the model route, so the profile's own
+		// files are the configuration discovery consults. Without them the
+		// fingerprint would be the dsh binary alone, and a route changed in the
+		// web setup flow would leave the day's cached choices in place —
+		// including choices the new session rejects.
+		if root := deepseekProfileDir(home, env); root != "" {
+			for _, name := range [...]string{"cordis.yml", "cordis.patch.yml", "package.json"} {
+				paths = append(paths, filepath.Join(root, name))
+			}
+		}
 	case "vibe":
 		if root := strings.TrimSpace(env["VIBE_HOME"]); root != "" {
 			paths = append(paths, filepath.Join(root, "config.toml"))
@@ -147,6 +159,19 @@ func qwenConfigHome(home string, env map[string]string) string {
 	return root
 }
 
+// deepseekProfileDir resolves the ACP profile directory, honouring DSH_HOME the
+// way DeepSeek Harness itself does (its home-paths package falls back to ~/.dsh).
+func deepseekProfileDir(home string, env map[string]string) string {
+	root := strings.TrimSpace(env["DSH_HOME"])
+	if root == "" {
+		if home == "" {
+			return ""
+		}
+		root = filepath.Join(home, ".dsh")
+	}
+	return filepath.Join(root, "profiles", "acp")
+}
+
 func readModelConfig(path string) ([]byte, error) {
 	file, err := os.Open(path) //nolint:gosec // paths are fixed agent configuration locations
 	if err != nil {
@@ -167,8 +192,16 @@ func configDiscoveryFingerprint(agentID, workingDir string, env map[string]strin
 	if !hasConfigDiscoverySource(agentID) {
 		return ""
 	}
+	return fingerprintConfigPaths(modelConfigPaths(agentID, workingDir, env))
+}
+
+// fingerprintConfigPaths hashes the contents of the configuration a discovery
+// consults, so an edit to any of it invalidates the cached catalog. A path that
+// does not exist contributes nothing, keeping the fingerprint stable until one
+// appears.
+func fingerprintConfigPaths(paths []string) string {
 	hash := sha256.New()
-	for _, path := range modelConfigPaths(agentID, workingDir, env) {
+	for _, path := range paths {
 		raw, err := readModelConfig(path)
 		if err != nil {
 			continue

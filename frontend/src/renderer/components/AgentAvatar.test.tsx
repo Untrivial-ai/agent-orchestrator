@@ -31,6 +31,14 @@ describe("AgentAvatar", () => {
 		expect(img).toHaveAttribute("src", expect.stringContaining("Gemini"));
 	});
 
+	it("renders the DeepSeek Harness brand asset", () => {
+		render(<AgentAvatar provider="deepseek-harness" />);
+
+		const img = screen.getByRole("img", { name: "deepseek-harness" });
+		expect(img).toHaveAttribute("src", expect.stringContaining("data:image/svg+xml"));
+		expect(img).toHaveAttribute("src", expect.stringContaining("DeepSeek"));
+	});
+
 	it("renders the Unreal Agent brand asset", () => {
 		render(<AgentAvatar provider="unreal-agent" />);
 
@@ -46,6 +54,20 @@ describe("AgentAvatar", () => {
 		expect(screen.getByRole("img", { name: "mimo-code" })).toHaveAttribute(
 			"src",
 			expect.stringContaining("data:image/svg+xml"),
+		);
+	});
+
+	it("reuses the OpenCode brand asset for OpenCode 2", () => {
+		render(
+			<>
+				<AgentAvatar provider="opencode" />
+				<AgentAvatar provider="opencode-v2" />
+			</>,
+		);
+
+		expect(screen.getByRole("img", { name: "opencode-v2" })).toHaveAttribute(
+			"src",
+			screen.getByRole("img", { name: "opencode" }).getAttribute("src"),
 		);
 	});
 });

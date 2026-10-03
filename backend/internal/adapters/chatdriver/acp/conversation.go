@@ -90,6 +90,7 @@ type conversation struct {
 
 	mu                 sync.Mutex
 	sessionID          string
+	reportedSessionID  string
 	capabilities       ports.ChatCapabilities
 	prepared           *preparedTurn
 	activeTurn         string
@@ -278,6 +279,7 @@ func (c *conversation) start(
 ) {
 	c.mu.Lock()
 	c.sessionID = sessionID
+	c.reportedSessionID = sessionID
 	c.capabilities = capabilities
 	// Preserve config options received via session/update during session/new.
 	// An agent may send config_option_update before start() runs; only overwrite
@@ -308,7 +310,13 @@ func (c *conversation) start(
 func (c *conversation) ProviderConversationID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.sessionID
+	return c.reportedSessionID
+}
+
+func (c *conversation) setReportedProviderConversationID(sessionID string) {
+	c.mu.Lock()
+	c.reportedSessionID = sessionID
+	c.mu.Unlock()
 }
 
 func (c *conversation) Capabilities() ports.ChatCapabilities {

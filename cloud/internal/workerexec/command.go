@@ -141,15 +141,7 @@ func (b HarnessBuilder) BuildInteractive(
 	)
 	var argv []string
 	identity := b.interactiveRestoreIdentity(launch)
-	if launch.Harness == "opencode" {
-		// opencode's launch logic lives in the cloud module (self-contained), so
-		// the worker builds its argv directly rather than through agentruntime.
-		if identity != "" {
-			argv = openCodeRestoreArgs(binary, launch.SessionID, launch.Model, providerArgs, permission, launch.Prompt, identity)
-		} else {
-			argv = openCodeLaunchArgs(binary, launch.SessionID, launch.Model, providerArgs, permission, launch.Prompt)
-		}
-	} else if identity != "" {
+	if identity != "" {
 		var ok bool
 		argv, ok, err = agentruntime.BuildRestoreCommand(agentruntime.RestoreConfig{
 			Harness:          harness,
@@ -187,7 +179,7 @@ func (b HarnessBuilder) BuildInteractive(
 		Path: argv[0],
 		Args: argv[1:],
 		Dir:  workspace,
-		Env:  map[string]string{},
+		Env:  map[string]string{"AO_CLOUD_SOURCE_INTERFACE": "tui"},
 	}
 	if err := b.configureCredential(&command, launch.Harness, credential); err != nil {
 		if command.Cleanup != nil {
@@ -212,9 +204,11 @@ func (b HarnessBuilder) BuildInteractive(
 		}
 	}
 	if launch.Harness == "opencode" {
-		// opencode has no system-prompt flag; the argv (built above) selects the AO
-		// agent name, and the matching OPENCODE_CONFIG document carries the prompt.
-		// Write it beside the prompt file and export the env var.
+		// opencode v2 has no CLI flag for a system prompt, model, or agent; the argv
+		// (built by agentruntime above) is just the approval flag plus the prompt.
+		// The standing instructions, model override, and approval overlay ride an
+		// AO-owned OPENCODE_CONFIG document that selects the AO agent via
+		// `default_agent`. Write it beside the prompt file and export the env var.
 		configPath, err := writeOpenCodeConfig(systemPromptFile, permission, launch.SessionID, launch.Model)
 		if err != nil {
 			if command.Cleanup != nil {
@@ -224,6 +218,16 @@ func (b HarnessBuilder) BuildInteractive(
 		}
 		if configPath != "" {
 			command.Env["OPENCODE_CONFIG"] = configPath
+		}
+		// opencode has no native command-hook config; its only lifecycle surface is
+		// a workspace plugin. Install AO's activity plugin so opencode reports
+		// session-start/prompt/active/stop/permission events through
+		// `ao hooks opencode <event>`, the same bridge the other harnesses use.
+		if err := installOpenCodeActivityPlugin(workspace); err != nil {
+			if command.Cleanup != nil {
+				command.Cleanup()
+			}
+			return Command{}, err
 		}
 		// Warm opencode's models.dev cache from the baked catalog so the TUI is not
 		// blocked on a ~5MB startup download on a fresh sandbox.
@@ -238,14 +242,11 @@ func (b HarnessBuilder) interactiveRestoreIdentity(
 	if launch.Harness != "claude-code" {
 		return strings.TrimSpace(launch.AgentSessionID)
 	}
-	if identity := strings.TrimSpace(launch.AgentSessionID); b.claudeConversationAvailable(identity) {
-		return identity
+	identity := strings.TrimSpace(launch.AgentSessionID)
+	if identity == "" || !b.claudeConversationAvailable(identity) {
+		return ""
 	}
-	identity := agentruntime.ClaudeSessionID(launch.SessionID)
-	if b.claudeConversationAvailable(identity) {
-		return identity
-	}
-	return ""
+	return identity
 }
 
 func (b HarnessBuilder) claudeConfigDir() (string, error) {
@@ -287,6 +288,9 @@ func (b HarnessBuilder) Build(
 	if turn.Mode != "read-only" && turn.Mode != "standard" && turn.Mode != "trusted" {
 		return Command{}, fmt.Errorf("%w: unknown session mode %q", ErrUnsupportedPolicy, turn.Mode)
 	}
+	if err := validateApprovalMode(turn); err != nil {
+		return Command{}, err
+	}
 	command := Command{
 		Path: b.binary(turn.Harness),
 		Dir:  workspace,
@@ -300,6 +304,7 @@ func (b HarnessBuilder) Build(
 			return Command{}, configErr
 		}
 		command.Env["CLAUDE_CONFIG_DIR"] = configDir
+		setClaudeNonEssentialTrafficDisabled(&command)
 		if !b.claudeConversationAvailable(turn.AgentSessionID) {
 			turn.AgentSessionID = ""
 		}
@@ -347,12 +352,27 @@ func (b HarnessBuilder) binary(harness string) string {
 	return harness
 }
 
+// setClaudeNonEssentialTrafficDisabled stops Claude Code from making its
+// non-essential network calls (Statsig feature-flags, telemetry, error
+// reporting, auto-update check) on launch. On a locked-down coder/Azure VM those
+// hosts are blackholed, so each connect hangs ~30s before timing out — ~50s of
+// dead time before the first frame on a fresh VM (codex makes no such calls,
+// which is why only claude sessions felt slow). The essential model API
+// (api.anthropic.com) is a separate host and is unaffected.
+func setClaudeNonEssentialTrafficDisabled(command *Command) {
+	if command.Env == nil {
+		command.Env = map[string]string{}
+	}
+	command.Env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+}
+
 func (b HarnessBuilder) prepareClaudeCloudExperience(command *Command, workspace string) error {
 	configDir, err := b.claudeConfigDir()
 	if err != nil {
 		return err
 	}
 	command.Env["CLAUDE_CONFIG_DIR"] = configDir
+	setClaudeNonEssentialTrafficDisabled(command)
 	if err := updateJSONFile(filepath.Join(configDir, ".claude.json"), func(root map[string]any) {
 		root["hasCompletedOnboarding"] = true
 		root["theme"] = "dark"
@@ -438,7 +458,7 @@ func updateJSONFile(path string, update func(map[string]any)) error {
 }
 
 func claudeArgs(turn worker.Turn) ([]string, error) {
-	args := []string{"--print", "--output-format", "stream-json"}
+	args := []string{"--print", "--output-format", "stream-json", "--verbose"}
 	switch turn.Mode {
 	case "read-only":
 		args = append(args, "--permission-mode", "plan")
@@ -446,6 +466,10 @@ func claudeArgs(turn worker.Turn) ([]string, error) {
 		args = append(args, "--permission-mode", "acceptEdits")
 	case "trusted":
 		args = append(args, "--dangerously-skip-permissions")
+	}
+	if turn.Mode != "read-only" && turn.ApprovalMode != "" {
+		permission := map[string]string{"default": "default", "accept-edits": "acceptEdits", "auto": "auto", "bypass-permissions": "bypassPermissions"}[turn.ApprovalMode]
+		args = []string{"--print", "--output-format", "stream-json", "--verbose", "--permission-mode", permission}
 	}
 	if len(turn.DeniedCommands) > 0 {
 		deny := make([]string, 0, len(turn.DeniedCommands))
@@ -474,19 +498,36 @@ func codexArgs(turn worker.Turn) ([]string, error) {
 	if len(turn.DeniedCommands) > 0 {
 		return nil, fmt.Errorf("%w: Codex has no exact denied-command primitive", ErrUnsupportedPolicy)
 	}
-	args := []string{"exec", "--json", "--skip-git-repo-check"}
-	switch turn.Mode {
-	case "read-only":
-		args = append(args, "--sandbox", "read-only")
-	case "standard":
-		args = append(args, "--sandbox", "workspace-write")
-	case "trusted":
-		args = append(args, "--sandbox", "danger-full-access")
+	args := []string{"exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-hook-trust"}
+	if turn.ApprovalMode == "" {
+		switch turn.Mode {
+		case "read-only":
+			args = append(args, "--sandbox", "read-only", "--ask-for-approval", "on-request")
+		case "standard":
+			args = append(args, "--sandbox", "workspace-write", "--ask-for-approval", "on-request", "-c", `approvals_reviewer="auto_review"`)
+		case "trusted":
+			args = append(args, "--dangerously-bypass-approvals-and-sandbox")
+		}
+	} else {
+		switch turn.ApprovalMode {
+		case "default", "bypass-permissions":
+			args = append(args, "--dangerously-bypass-approvals-and-sandbox")
+		case "accept-edits":
+			args = append(args, "--sandbox", "workspace-write", "--ask-for-approval", "on-request")
+		case "auto":
+			args = append(args, "--sandbox", "workspace-write", "--ask-for-approval", "on-request", "-c", `approvals_reviewer="auto_review"`)
+		}
+	}
+	if turn.Model != "" {
+		args = append(args, "-m", turn.Model)
+	}
+	if turn.ReasoningEffort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+turn.ReasoningEffort)
 	}
 	if turn.AgentSessionID != "" {
 		args = append(args, "resume", turn.AgentSessionID)
 	}
-	return append(args, turn.Prompt), nil
+	return append(args, "--", turn.Prompt), nil
 }
 
 func cursorArgs(turn worker.Turn) ([]string, error) {
@@ -497,13 +538,35 @@ func cursorArgs(turn worker.Turn) ([]string, error) {
 		return nil, fmt.Errorf("%w: Cursor has no verified read-only mode", ErrUnsupportedPolicy)
 	}
 	args := []string{"agent", "--print", "--output-format", "stream-json"}
-	if turn.Mode == "trusted" {
+	if turn.ApprovalMode == "bypass-permissions" || (turn.ApprovalMode == "" && turn.Mode == "trusted") {
 		args = append(args, "--force")
+	} else if turn.ApprovalMode == "auto" {
+		args = append(args, "--auto-review")
 	}
 	if turn.AgentSessionID != "" {
 		args = append(args, "--resume", turn.AgentSessionID)
 	}
 	return append(args, turn.Prompt), nil
+}
+
+func validateApprovalMode(turn worker.Turn) error {
+	switch turn.ApprovalMode {
+	case "":
+		return nil // older queued turns retain their launch-time policy
+	case "default", "accept-edits", "auto", "bypass-permissions":
+	default:
+		return fmt.Errorf("%w: unknown approval mode %q", ErrUnsupportedPolicy, turn.ApprovalMode)
+	}
+	if turn.Mode == "read-only" {
+		return fmt.Errorf("%w: approval policy cannot widen read-only mode", ErrUnsupportedPolicy)
+	}
+	if turn.Mode == "standard" && turn.ApprovalMode == "bypass-permissions" {
+		return fmt.Errorf("%w: bypass exceeds session permission cap", ErrUnsupportedPolicy)
+	}
+	if turn.Mode == "standard" && turn.Harness == "codex" && turn.ApprovalMode == "default" {
+		return fmt.Errorf("%w: Codex full access exceeds session permission cap", ErrUnsupportedPolicy)
+	}
+	return nil
 }
 
 func (b HarnessBuilder) configureCodexCredential(

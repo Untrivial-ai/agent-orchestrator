@@ -7,7 +7,7 @@ AO compiles agent adapters into the daemon. It uses your locally installed agent
 
 ## Shipped terminal harnesses
 
-The daemon registry currently advertises 28 worker harnesses:
+The daemon registry currently advertises these worker harnesses:
 
 | | | | |
 | --- | --- | --- | --- |
@@ -18,6 +18,7 @@ The daemon registry currently advertises 28 worker harnesses:
 | `continue` | `devin` | `cline` | `kiro` |
 | `kilocode` | `vibe` | `pi` | `kimchi` |
 | `prime-agent` | `autohand` | `omp` | `fx` (experimental) |
+| `deepseek-harness` | | | |
 
 Run the catalog instead of relying on a static page when scripting:
 
@@ -40,7 +41,7 @@ ao spawn --name fx-task --agent fx --mode tui
 
 ## Chat versus Terminal UI
 
-All advertised harnesses can run through their native terminal interface. Four also have structured Chat drivers:
+All advertised harnesses can run through their native terminal interface. These also have structured Chat drivers:
 
 | Harness | Chat transport |
 | --- | --- |
@@ -48,6 +49,14 @@ All advertised harnesses can run through their native terminal interface. Four a
 | `claude-code` | `claude-agent-acp` using the user's Claude executable |
 | `opencode` | Native ACP |
 | `droid` | Native ACP |
+| `kimi` | Native ACP |
+| `kimchi` | Native ACP |
+| `pi` | Native ACP |
+| `cursor` | Native ACP |
+| `omp` | Native ACP |
+| `qwen` | Native ACP |
+| `unreal-agent` | Built into AO |
+| `deepseek-harness` | Native ACP (`dsh --profile acp`) |
 
 Every other harness is Terminal UI-only. Choose the initial interface with `ao spawn --mode chat|tui`. Compatible Claude Code and Codex sessions can hand off between Chat and Terminal UI while retaining the AO session and worktree.
 
