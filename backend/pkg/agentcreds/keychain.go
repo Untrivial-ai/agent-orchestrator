@@ -26,8 +26,8 @@ const (
 	keychainServiceManagedKey = "Claude Code"
 )
 
-// readKeychain reads the Claude Code subscription token from the macOS
-// keychain via the `security` helper.
+// readKeychain reads Claude Code's credential from the macOS keychain via the
+// `security` helper.
 //
 // Every failure mode resolves the same way — no credential, caller reports
 // Unknown — so the distinctions below are for diagnosis, not control flow.
@@ -42,8 +42,25 @@ func readKeychain(ctx context.Context, opts ResolveOptions) (string, Kind, bool)
 	probeCtx, cancel := context.WithTimeout(ctx, keychainTimeout)
 	defer cancel()
 
-	// Try the older "Claude Code-credentials" service first. It stores a JSON
-	// document with an OAuth access token, or occasionally a bare token.
+	// Current Claude Code logins write the managed-key service. Prefer it so
+	// an older OAuth item left behind by a previous login cannot shadow the
+	// credential Claude now uses.
+	apiKeyOut, apiKeyErr := runner(probeCtx, "security",
+		"find-generic-password", "-s", keychainServiceManagedKey, "-w")
+	if probeCtx.Err() != nil {
+		return "", "", false
+	}
+	if apiKeyErr == nil {
+		if raw := strings.TrimSpace(string(apiKeyOut)); raw != "" && !strings.HasPrefix(raw, "{") {
+			return raw, kindForToken(raw), true
+		}
+		if token, ok := oauthTokenFromCredentialsJSON(apiKeyOut); ok {
+			return token, KindOAuthToken, true
+		}
+	}
+
+	// Older Claude versions use "Claude Code-credentials" for an OAuth JSON
+	// document or a bare token. Keep it as a fallback for existing logins.
 	out, err := runner(probeCtx, "security",
 		"find-generic-password", "-s", keychainServiceCredentials, "-w")
 	if probeCtx.Err() != nil {
@@ -53,29 +70,9 @@ func readKeychain(ctx context.Context, opts ResolveOptions) (string, Kind, bool)
 		if token, ok := oauthTokenFromCredentialsJSON(out); ok {
 			return token, KindOAuthToken, true
 		}
-		// Older entries store the bare token rather than a JSON document.
 		if raw := strings.TrimSpace(string(out)); raw != "" && !strings.HasPrefix(raw, "{") {
 			return raw, KindOAuthToken, true
 		}
-	}
-
-	// Fall through to "Claude Code", the service Claude Code v2.1.268+ uses
-	// for the /login managed key. The value is a raw sk-ant-api* key, though
-	// a setup token (sk-ant-oat*) could also land here, so the Kind is
-	// chosen by prefix rather than assumed.
-	apiKeyOut, apiKeyErr := runner(probeCtx, "security",
-		"find-generic-password", "-s", keychainServiceManagedKey, "-w")
-	if probeCtx.Err() != nil {
-		return "", "", false
-	}
-	if apiKeyErr != nil {
-		return "", "", false
-	}
-	if raw := strings.TrimSpace(string(apiKeyOut)); raw != "" && !strings.HasPrefix(raw, "{") {
-		return raw, kindForToken(raw), true
-	}
-	if token, ok := oauthTokenFromCredentialsJSON(apiKeyOut); ok {
-		return token, KindOAuthToken, true
 	}
 	return "", "", false
 }

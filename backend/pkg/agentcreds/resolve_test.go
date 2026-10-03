@@ -3,6 +3,8 @@ package agentcreds
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -188,6 +190,58 @@ func TestKeychainManagedKeyResolvesAsAPIKey(t *testing.T) {
 	}
 	if cred.Secret != "sk-ant-api03-managed-key" {
 		t.Fatalf("secret = %q, want the managed key", cred.Secret)
+	}
+}
+
+// A newer Claude login can leave the old OAuth item behind. If AO chooses that
+// stale item, its provider probe reports signed out even though the managed
+// key from the current login works.
+func TestKeychainManagedKeyWinsOverStaleLegacyCredential(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("x-api-key") {
+		case "sk-ant-api03-current":
+			_, _ = w.Write([]byte(`{"data":[{"id":"claude-sonnet-test"}]}`))
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer server.Close()
+
+	credential, found := ResolveLocal(context.Background(), ProviderFirstParty, ResolveOptions{
+		Env: envFrom(nil), ConfigDir: t.TempDir(), GOOS: "darwin", AllowKeychain: true,
+		Runner: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			switch {
+			case len(args) >= 3 && args[2] == keychainServiceCredentials:
+				return []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-oat01-stale"}}`), nil
+			case len(args) >= 3 && args[2] == keychainServiceManagedKey:
+				return []byte("sk-ant-api03-current"), nil
+			default:
+				return nil, errors.New("security: item not found")
+			}
+		},
+	})
+	if !found {
+		t.Fatal("expected a Keychain credential")
+	}
+	credential.BaseURL = server.URL
+	result := New(server.Client()).Validate(context.Background(), credential)
+	if result.State != StateValid {
+		t.Fatalf("auth state = %q, want current managed key accepted: %s", result.State, result.Detail)
+	}
+}
+
+func TestLegacyKeychainCredentialStillResolvesWithoutManagedKey(t *testing.T) {
+	cred, ok := ResolveLocal(context.Background(), ProviderFirstParty, ResolveOptions{
+		Env: envFrom(nil), ConfigDir: t.TempDir(), GOOS: "darwin", AllowKeychain: true,
+		Runner: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			if len(args) >= 3 && args[2] == keychainServiceCredentials {
+				return []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-oat01-legacy"}}`), nil
+			}
+			return nil, errors.New("security: item not found")
+		},
+	})
+	if !ok || cred.Kind != KindOAuthToken || cred.Secret != "sk-ant-oat01-legacy" {
+		t.Fatalf("legacy credential = %#v, found = %v", cred, ok)
 	}
 }
 
