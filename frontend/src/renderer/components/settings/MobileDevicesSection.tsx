@@ -152,7 +152,7 @@ export function MobileDevicesSection() {
 									key={device.installId}
 									className="flex min-h-12 items-center gap-3 py-2.5"
 								>
-									<Smartphone className="size-4 shrink-0 self-start pt-1 text-settings-muted" aria-hidden="true" />
+									<Smartphone className="size-4 shrink-0 text-settings-muted" aria-hidden="true" />
 									<div className="min-w-0 flex-1">
 										<div className="truncate text-sm">{name}</div>
 										{!device.notificationsEnabled && (
