@@ -15,6 +15,7 @@ const openExternalMock = vi.hoisted(() => vi.fn());
 const writeTextMock = vi.hoisted(() => vi.fn());
 const restoreMock = vi.hoisted(() => vi.fn());
 const workspaceSubscriptionMock = vi.hoisted(() => vi.fn());
+const cloudSearchMock = vi.hoisted(() => vi.fn());
 const createProjectFlowMock = vi.hoisted(() => ({
 	props: null as null | {
 		existingProjectPaths?: readonly string[];
@@ -92,7 +93,7 @@ const ctx = vi.hoisted(() => {
 		},
 	];
 	return {
-		params: {} as { projectId?: string; sessionId?: string },
+		params: {} as { hostId?: string; projectId?: string; sessionId?: string },
 		enabled: true,
 		workspaces,
 	};
@@ -106,6 +107,15 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("../hooks/useCommandPaletteEnabled", () => ({
 	useCommandPaletteEnabled: () => ctx.enabled,
 	useAppVersion: () => "0.0.0-test",
+}));
+
+vi.mock("../hooks/useCloudCp", () => ({
+	useCloudCp: () => ({
+		client: { searchWorkspaceReview: cloudSearchMock },
+		ready: true,
+		baseUrl: "https://cloud.example.test",
+		userId: "user-1",
+	}),
 }));
 
 vi.mock("../hooks/useWorkspaceQuery", () => ({
@@ -134,6 +144,10 @@ vi.mock("../lib/api-client", () => ({
 		}
 		return fallback;
 	},
+}));
+
+vi.mock("../lib/host-clients", () => ({
+	clientForSessionHost: () => ({ GET: getMock, POST: postMock }),
 }));
 
 
@@ -241,7 +255,15 @@ beforeEach(() => {
 	ctx.params = {};
 	ctx.enabled = true;
 	ctx.workspaces[0].orchestratorAgent = "codex";
+	delete ctx.workspaces[0].hostId;
+	delete ctx.workspaces[0].kind;
 	ctx.workspaces[1].orchestratorAgent = "codex";
+	delete ctx.workspaces[1].hostId;
+	delete ctx.workspaces[1].kind;
+	for (const session of ctx.workspaces.flatMap((workspace) => workspace.sessions)) {
+		delete session.cloud;
+		delete session.hostId;
+	}
 	ctx.workspaces[0].sessions[0].prs = [];
 	navigateMock.mockReset();
 	spawnMock.mockReset();
@@ -252,6 +274,7 @@ beforeEach(() => {
 	writeTextMock.mockReset();
 	restoreMock.mockReset();
 	workspaceSubscriptionMock.mockReset();
+	cloudSearchMock.mockReset();
 	createProjectFlowMock.props = null;
 	createProjectFlowMock.lastOpenSignal = 0;
 	restoreMock.mockResolvedValue({ status: "success" });
@@ -262,6 +285,7 @@ beforeEach(() => {
 			resolvedTheme: "dark",
 			restartingProjectIds: new Set(),
 			settingsModal: null,
+			workspaceFileOpenRequest: null,
 		});
 	});
 });
@@ -297,6 +321,109 @@ describe("CommandPalette gating", () => {
 		pressKey({ key: "k", metaKey: true });
 		expect(paletteInput()).toBeNull();
 		expect(useUiStore.getState().isCommandPaletteOpen).toBe(false);
+	});
+});
+
+describe("CommandPalette workspace file search", () => {
+	it("searches the current session and requests the selected file without navigating", async () => {
+		ctx.params = { projectId: "proj-1", sessionId: "w-fix" };
+		getMock.mockImplementation(async (path: string) => path.includes("/workspace/search")
+			? { data: { query: "App", results: [{ path: "src/components/App.tsx", status: "modified", size: 42, binary: false, fileFingerprint: "v1" }], truncated: false } }
+			: { data: {} });
+		renderPalette();
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		const input = await screen.findByPlaceholderText(/search projects/i);
+		fireEvent.change(input, { target: { value: "App" } });
+
+		const file = await screen.findByText("App.tsx", {}, { timeout: 2_000 });
+		fireEvent.click(file);
+
+		expect(useUiStore.getState().workspaceFileOpenRequest).toMatchObject({
+			sessionId: "w-fix",
+			path: "src/components/App.tsx",
+		});
+		expect(navigateMock).not.toHaveBeenCalled();
+	});
+
+	it("asks for a worktree on a project page before searching", async () => {
+		ctx.params = { projectId: "proj-1" };
+		renderPalette();
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		await screen.findByPlaceholderText(/search projects/i);
+
+		fireEvent.click(screen.getByText("Search files…"));
+		expect(await screen.findByPlaceholderText("Choose a session")).toBeInTheDocument();
+		expect(screen.getByText("ship banner")).toBeInTheDocument();
+		expect(screen.getByText("fix flake")).toBeInTheDocument();
+		expect(screen.queryByText("orchestrate")).not.toBeInTheDocument();
+		expect(getMock).not.toHaveBeenCalledWith(expect.stringContaining("/workspace/search"), expect.anything());
+
+		fireEvent.click(screen.getByText("fix flake"));
+		expect(await screen.findByPlaceholderText("Search files in fix flake…")).toBeInTheDocument();
+	});
+
+	it("does not call workspace search until two characters settle", async () => {
+		ctx.params = { projectId: "proj-1", sessionId: "w-fix" };
+		getMock.mockResolvedValue({ data: { query: "", results: [], truncated: false } });
+		renderPalette();
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		const input = await screen.findByPlaceholderText(/search projects/i);
+		fireEvent.change(input, { target: { value: "A" } });
+		await new Promise((resolve) => window.setTimeout(resolve, 250));
+		expect(getMock).not.toHaveBeenCalledWith(expect.stringContaining("/workspace/search"), expect.anything());
+
+		fireEvent.change(input, { target: { value: "Ap" } });
+		await waitFor(() => expect(getMock).toHaveBeenCalledWith(
+			expect.stringContaining("/workspace/search"),
+			expect.objectContaining({ params: expect.objectContaining({ query: { query: "Ap", limit: 20 } }) }),
+		));
+	});
+
+	it("uses Cloud workspace search for a Cloud session", async () => {
+		ctx.params = { projectId: "proj-1", sessionId: "w-fix" };
+		ctx.workspaces[0].kind = "cloud";
+		ctx.workspaces[0].sessions[1]!.cloud = { orgId: "org-1" };
+		cloudSearchMock.mockResolvedValue({
+			query: "cloud",
+			results: [{ path: "src/cloud.ts", status: "added", size: 10, binary: false, fileFingerprint: "v1" }],
+			truncated: false,
+		});
+		renderPalette();
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		const input = await screen.findByPlaceholderText(/search projects/i);
+		fireEvent.change(input, { target: { value: "cloud" } });
+
+		expect(await screen.findByText("cloud.ts", {}, { timeout: 2_000 })).toBeInTheDocument();
+		expect(cloudSearchMock).toHaveBeenCalledWith(
+			"org-1",
+			"w-fix",
+			{ query: "cloud", limit: 20 },
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		);
+		expect(getMock).not.toHaveBeenCalledWith(expect.stringContaining("/workspace/search"), expect.anything());
+	});
+
+	it("navigates to the selected connected-host worktree before opening its file", async () => {
+		ctx.params = { hostId: "host-a", projectId: "proj-1" };
+		ctx.workspaces[0].hostId = "host-a";
+		for (const session of ctx.workspaces[0].sessions) session.hostId = "host-a";
+		getMock.mockResolvedValue({
+			data: { query: "app", results: [{ path: "src/app.ts", status: "modified", size: 5, binary: false, fileFingerprint: "v1" }], truncated: false },
+		});
+		renderPalette();
+		act(() => useUiStore.getState().setCommandPaletteOpen(true));
+		await screen.findByPlaceholderText(/search projects/i);
+		fireEvent.click(screen.getByText("Search files…"));
+		fireEvent.click(await screen.findByText("fix flake"));
+		const input = await screen.findByPlaceholderText("Search files in fix flake…");
+		fireEvent.change(input, { target: { value: "app" } });
+		fireEvent.click(await screen.findByText("app.ts", {}, { timeout: 2_000 }));
+
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/host/$hostId/project/$projectId/session/$sessionId",
+			params: { hostId: "host-a", projectId: "proj-1", sessionId: "w-fix" },
+		});
+		expect(useUiStore.getState().workspaceFileOpenRequest).toMatchObject({ hostId: "host-a", sessionId: "w-fix", path: "src/app.ts" });
 	});
 });
 

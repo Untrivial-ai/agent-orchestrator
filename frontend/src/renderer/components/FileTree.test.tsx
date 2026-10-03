@@ -142,9 +142,13 @@ describe("FileTree", () => {
 
 		expect(await screen.findByText("target.ts")).toBeInTheDocument();
 		expect(getMock).toHaveBeenCalledTimes(1);
-		expect(getMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/workspace/search", {
-			params: { path: { sessionId: "sess-1" }, query: { query: "target", limit: 100 } },
-		});
+		expect(getMock).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/workspace/search",
+			expect.objectContaining({
+				params: { path: { sessionId: "sess-1" }, query: { query: "target", limit: 100 } },
+				signal: expect.any(AbortSignal),
+			}),
+		);
 	});
 
 	it("renders the precomputed changed-only tree without calling the tree endpoint", async () => {

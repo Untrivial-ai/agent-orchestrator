@@ -168,3 +168,30 @@ describe("file display modes", () => {
 		expect(useUiStore.getState().inspectorSessions["sess-1"]?.filesChangedOnly).toBe(false);
 	});
 });
+
+describe("workspace file open requests", () => {
+	beforeEach(() => {
+		useUiStore.setState({ workspaceFileOpenRequest: null });
+	});
+
+	it("increments its nonce even when the same file is requested twice", () => {
+		useUiStore.getState().requestWorkspaceFileOpen("session-1", "src/App.tsx", "host-a");
+		const first = useUiStore.getState().workspaceFileOpenRequest;
+		useUiStore.getState().requestWorkspaceFileOpen("session-1", "src/App.tsx", "host-a");
+		const second = useUiStore.getState().workspaceFileOpenRequest;
+
+		expect(first).toMatchObject({ sessionId: "session-1", hostId: "host-a", path: "src/App.tsx" });
+		expect(second?.nonce).toBe((first?.nonce ?? 0) + 1);
+	});
+
+	it("clears only the matching request generation", () => {
+		useUiStore.getState().requestWorkspaceFileOpen("session-1", "old.ts");
+		const oldNonce = useUiStore.getState().workspaceFileOpenRequest!.nonce;
+		useUiStore.getState().requestWorkspaceFileOpen("session-1", "new.ts");
+		useUiStore.getState().clearWorkspaceFileOpenRequest(oldNonce);
+		expect(useUiStore.getState().workspaceFileOpenRequest?.path).toBe("new.ts");
+
+		useUiStore.getState().clearWorkspaceFileOpenRequest(oldNonce + 1);
+		expect(useUiStore.getState().workspaceFileOpenRequest).toBeNull();
+	});
+});

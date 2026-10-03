@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	sessionWorkspaceFileQueryOptions,
 	sessionWorkspaceFilesQueryOptions,
+	sessionWorkspaceSearchQueryOptions,
 	sessionSourceFileQueryOptions,
 	sessionSourceFileRevisionQueryOptions,
 	sessionSourceFilesQueryOptions,
@@ -60,6 +61,21 @@ describe("pull request file query keys", () => {
 });
 
 describe("workspace files on selected hosts", () => {
+	it("keys path searches by host and limit and forwards cancellation", async () => {
+		localGet.mockResolvedValue({ data: { results: [], truncated: false } });
+		const controller = new AbortController();
+		const search = sessionWorkspaceSearchQueryOptions("same-id", "app", "failed", undefined, 20);
+		expect(search.queryKey).toEqual(["session-workspace-search", "same-id", "app", 20]);
+		await search.queryFn({ signal: controller.signal });
+		expect(localGet).toHaveBeenCalledWith(
+			"/api/v1/sessions/{sessionId}/workspace/search",
+			expect.objectContaining({
+				params: { path: { sessionId: "same-id" }, query: { query: "app", limit: 20 } },
+				signal: controller.signal,
+			}),
+		);
+	});
+
 	it("separates local, A, and B with the same session ID and reads from the selected host", async () => {
 		const local = sessionWorkspaceFileQueryOptions("same-id", "src/app.ts");
 		const a = sessionWorkspaceFileQueryOptions("same-id", "src/app.ts", "read failed", "combined", undefined, "host-a");

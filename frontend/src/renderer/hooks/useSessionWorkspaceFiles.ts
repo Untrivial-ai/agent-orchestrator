@@ -279,12 +279,19 @@ export async function updateSessionWorkspaceFile({
 	return data as WorkspaceFileDetail;
 }
 
-export function sessionWorkspaceSearchQueryOptions(sessionId: string, query: string, errorMessage = "Unable to search workspace files", hostId?: string) {
+export function sessionWorkspaceSearchQueryOptions(
+	sessionId: string,
+	query: string,
+	errorMessage = "Unable to search workspace files",
+	hostId?: string,
+	limit = 100,
+) {
 	return {
-		queryKey: hostId ? ["session-workspace-search", hostId, sessionId, query] as const : ["session-workspace-search", sessionId, query] as const,
-		queryFn: async (): Promise<WorkspaceFileSearchResponse> => {
+		queryKey: hostId ? ["session-workspace-search", hostId, sessionId, query, limit] as const : ["session-workspace-search", sessionId, query, limit] as const,
+		queryFn: async ({ signal }: { signal?: AbortSignal } = {}): Promise<WorkspaceFileSearchResponse> => {
 			const { data, error } = await clientForSessionHost(hostId).GET("/api/v1/sessions/{sessionId}/workspace/search", {
-				params: { path: { sessionId }, query: { query, limit: 100 } },
+				params: { path: { sessionId }, query: { query, limit } },
+				signal,
 			});
 			if (error) throw new Error(apiErrorMessage(error, errorMessage));
 			if (!data) throw new Error(errorMessage);
