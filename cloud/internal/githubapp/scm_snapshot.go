@@ -13,16 +13,20 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
 )
 
-const pullRequestSnapshotQuery = `query($owner:String!,$repo:String!,$number:Int!){
+const pullRequestSnapshotQueryPrefix = `query($owner:String!,$repo:String!,$number:Int!){
  repository(owner:$owner,name:$repo){ pullRequest(number:$number){
   number id url state isDraft merged closed title additions deletions changedFiles
   mergeable mergeStateStatus reviewDecision headRefName headRefOid baseRefName baseRefOid
   createdAt updatedAt mergedAt closedAt author{login avatarUrl} mergeCommit{oid}
-  commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:100){nodes{
+`
+
+const pullRequestStatusRollupFields = `  commits(last:1){nodes{commit{statusCheckRollup{state contexts(first:100){nodes{
    __typename ... on CheckRun{name status conclusion detailsUrl databaseId}
    ... on StatusContext{context state targetUrl}
   } pageInfo{hasNextPage}}}}}}
-  reviews(last:100,states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){nodes{
+`
+
+const pullRequestSnapshotQuerySuffix = `  reviews(last:100,states:[APPROVED,CHANGES_REQUESTED,COMMENTED,DISMISSED]){nodes{
    id databaseId state url body submittedAt commit{oid} author{login __typename}
   } pageInfo{hasNextPage}}
   reviewThreads(last:100){nodes{id isResolved isOutdated path line comments(first:100){nodes{
@@ -30,6 +34,9 @@ const pullRequestSnapshotQuery = `query($owner:String!,$repo:String!,$number:Int
   }}} pageInfo{hasNextPage}}
  }}
 }`
+
+const pullRequestSnapshotQuery = pullRequestSnapshotQueryPrefix + pullRequestStatusRollupFields + pullRequestSnapshotQuerySuffix
+const pullRequestSnapshotQueryWithoutRollup = pullRequestSnapshotQueryPrefix + pullRequestSnapshotQuerySuffix
 
 type githubActor struct {
 	Login string `json:"login"`
@@ -134,12 +141,53 @@ func (c *Client) FetchPullRequestSnapshotWithToken(ctx context.Context, token, o
 		map[string]any{"owner": owner, "repo": repo, "number": number}, &response); err != nil {
 		return domain.PullRequestSnapshot{}, err
 	}
+	withoutRollup := false
 	if len(response.Errors) > 0 {
-		return domain.PullRequestSnapshot{}, errors.New("GitHub GraphQL pull request snapshot failed")
+		if !strings.Contains(response.Errors[0].Message, "Resource not accessible by integration") {
+			return domain.PullRequestSnapshot{}, errors.New("GitHub GraphQL pull request snapshot failed: " + response.Errors[0].Message)
+		}
+		// Some installations can read PRs and checks but lack commit status
+		// permission. The combined statusCheckRollup field then rejects the whole
+		// private-repository query. Keep the PR/review snapshot and read check
+		// runs through the Checks REST API instead.
+		response = githubPullRequestSnapshotResponse{}
+		if err := c.graphQL(ctx, token, pullRequestSnapshotQueryWithoutRollup,
+			map[string]any{"owner": owner, "repo": repo, "number": number}, &response); err != nil {
+			return domain.PullRequestSnapshot{}, err
+		}
+		if len(response.Errors) > 0 {
+			return domain.PullRequestSnapshot{}, errors.New("GitHub GraphQL pull request snapshot failed: " + response.Errors[0].Message)
+		}
+		withoutRollup = true
 	}
 	snapshot, err := normalizePullRequestSnapshot(response)
 	if err != nil {
 		return domain.PullRequestSnapshot{}, err
+	}
+	if withoutRollup {
+		snapshot.Observation.CIState = contract.CIUnknown
+		if runs, checksErr := c.ListCheckRuns(ctx, token, owner, repo, snapshot.Observation.HeadSHA); checksErr == nil {
+			for _, run := range runs {
+				snapshot.Checks = append(snapshot.Checks, domain.PullRequestCheck{
+					ProviderID: strconv.FormatInt(run.ID, 10), HeadSHA: snapshot.Observation.HeadSHA,
+					Name: run.Name, Status: strings.ToLower(run.Status),
+					Conclusion: strings.ToLower(run.Conclusion), URL: run.HTMLURL,
+				})
+			}
+			if len(snapshot.Checks) > 0 {
+				rollup := "SUCCESS"
+				for _, check := range snapshot.Checks {
+					if check.Status != "completed" || check.Conclusion == "" {
+						rollup = "PENDING"
+						break
+					}
+				}
+				snapshot.Observation.CIState = mapRollupCIState(rollup, snapshot.Checks)
+			}
+			if encoded, marshalErr := json.Marshal(snapshot.Checks); marshalErr == nil {
+				snapshot.Observation.Checks = encoded
+			}
+		}
 	}
 	// GitHub computes mergeability asynchronously and GraphQL reports UNKNOWN until it
 	// settles — and, unlike the REST pulls endpoint, querying GraphQL does not trigger

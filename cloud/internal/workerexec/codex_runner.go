@@ -236,6 +236,9 @@ func (s *Supervisor) runCodex(ctx context.Context, turn worker.Turn, command Com
 	threadParams := map[string]any{
 		"cwd": command.Dir, "approvalPolicy": policy, "approvalsReviewer": reviewer, "sandbox": sandbox,
 	}
+	if command.SystemPrompt != "" {
+		threadParams["developerInstructions"] = command.SystemPrompt
+	}
 	if turn.Model != "" {
 		threadParams["model"] = turn.Model
 	}
@@ -282,17 +285,14 @@ func (s *Supervisor) runCodex(ctx context.Context, turn worker.Turn, command Com
 				session.providerTurnID = event.Turn.ID
 				session.mu.Unlock()
 			}
-		case "item/agentMessage/delta":
-			var event struct {
-				ThreadID string `json:"threadId"`
-				Delta    string `json:"delta"`
-			}
-			if json.Unmarshal(frame.Params, &event) == nil && event.Delta != "" && (event.ThreadID == "" || event.ThreadID == threadID) {
-				if err := publish(Output{Stream: "stdout", Text: event.Delta}); err != nil {
+		case "item/agentMessage/delta", "item/started", "item/completed", "item/commandExecution/outputDelta", "item/reasoning/summaryTextDelta", "item/reasoning/summaryPartAdded", "turn/diff/updated":
+			for _, output := range projectCodexNotification(frame, threadID) {
+				if err := publish(output); err != nil {
 					select {
 					case completed <- err:
 					default:
 					}
+					break
 				}
 			}
 		case "turn/completed":

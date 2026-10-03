@@ -16,12 +16,15 @@ const (
 )
 
 type interfacePayload struct {
-	SourceInterface      string `json:"sourceInterface"`
-	TargetInterface      string `json:"targetInterface"`
-	Policy               string `json:"policy"`
-	Rollback             bool   `json:"rollback"`
-	NativeConversationID string `json:"nativeConversationId"`
-	SessionID            string `json:"sessionId"`
+	SourceInterface      string    `json:"sourceInterface"`
+	TargetInterface      string    `json:"targetInterface"`
+	Policy               string    `json:"policy"`
+	Rollback             bool      `json:"rollback"`
+	NativeConversationID string    `json:"nativeConversationId"`
+	Model                string    `json:"model,omitempty"`
+	ReasoningEffort      string    `json:"reasoningEffort,omitempty"`
+	SelectionAt          time.Time `json:"selectionAt,omitempty"`
+	SessionID            string    `json:"sessionId"`
 }
 
 type interfaceInspectResult struct {
@@ -203,8 +206,8 @@ func (s *Supervisor) startInterface(ctx context.Context, input interfacePayload)
 	s.mu.Lock()
 	needsFreshCommand := s.AgentCommand.Path == ""
 	s.mu.Unlock()
-	if nativeConversationID != "" || needsFreshCommand {
-		if err := s.refreshAgentCommand(ctx, nativeConversationID); err != nil {
+	if nativeConversationID != "" || needsFreshCommand || input.Model != "" || input.ReasoningEffort != "" {
+		if err := s.refreshAgentCommand(ctx, nativeConversationID, input.Model, input.ReasoningEffort); err != nil {
 			return err
 		}
 	}
@@ -233,6 +236,11 @@ func (s *Supervisor) startInterface(ctx context.Context, input interfacePayload)
 	}
 	s.mu.Lock()
 	s.agentStarted = true
+	if input.Model != "" {
+		s.SelectedModel = input.Model
+		s.SelectedEffort = input.ReasoningEffort
+		s.SelectionAt = input.SelectionAt
+	}
 	s.mu.Unlock()
 	s.flushReadyAgentTerminal()
 	return nil
@@ -250,11 +258,11 @@ func (s *Supervisor) setAgentTerminalID(id string) {
 	s.mu.Unlock()
 }
 
-func (s *Supervisor) refreshAgentCommand(ctx context.Context, nativeConversationID string) error {
+func (s *Supervisor) refreshAgentCommand(ctx context.Context, nativeConversationID, model, effort string) error {
 	if s.AgentCommandFactory == nil {
 		return nil
 	}
-	command, err := s.AgentCommandFactory(ctx, nativeConversationID)
+	command, err := s.AgentCommandFactory(ctx, nativeConversationID, model, effort)
 	if err != nil {
 		return err
 	}

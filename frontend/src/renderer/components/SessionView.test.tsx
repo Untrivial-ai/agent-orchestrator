@@ -369,9 +369,13 @@ vi.mock("./chat/SessionChatSurface", async () => {
 	};
 });
 
-vi.mock("./chat/CloudSessionChatSurface", () => ({
-	CloudSessionChatSurface: ({ sessionTabAction, controllerTransitioning, newWorkDisabled }: { sessionTabAction?: ReactNode; controllerTransitioning?: boolean; newWorkDisabled?: boolean }) => (
-		<div data-testid="cloud-chat-surface" data-transitioning={controllerTransitioning ? "true" : "false"} data-new-work-disabled={newWorkDisabled ? "true" : "false"}>{sessionTabAction}</div>
+vi.mock("./chat/CloudSessionChatSurface", async (importOriginal) => ({
+	...await importOriginal<typeof import("./chat/CloudSessionChatSurface")>(),
+	CloudSessionChatSurface: ({ sessionTabAction, controllerTransitioning, newWorkDisabled, onConversationWorkChange }: { sessionTabAction?: ReactNode; controllerTransitioning?: boolean; newWorkDisabled?: boolean; onConversationWorkChange?: (state: typeof chatSurfaceWorkState) => void }) => (
+		<div data-testid="cloud-chat-surface" data-transitioning={controllerTransitioning ? "true" : "false"} data-new-work-disabled={newWorkDisabled ? "true" : "false"}>
+			{sessionTabAction}
+			<button type="button" onClick={() => onConversationWorkChange?.({ ...chatSurfaceWorkState })}>report cloud chat work</button>
+		</div>
 	),
 }));
 vi.mock("./chat/ReviewerChatSurface", () => ({
@@ -1641,6 +1645,24 @@ describe("SessionView", () => {
 		expect(screen.queryByRole("button", { name: action })).not.toBeInTheDocument();
 		await userEvent.click(screen.getByRole("button", { name: "Session actions" }));
 		expect(screen.getByRole("menuitem", { name: action })).toBeInTheDocument();
+	});
+
+	it("passes a pending Cloud Codex model and effort into Chat-to-terminal handoff", async () => {
+		interfaceTransitionState.status = { supported: true, targetMode: "tui" };
+		const session = workerSession("sess-1");
+		session.cloud = { orgId: "org-1" };
+		session.provider = "codex";
+		session.mode = "chat";
+		session.status = "idle";
+		session.activity = { state: "idle", lastActivityAt: "2026-08-06T00:00:00Z" };
+		localStorage.setItem(`cloud-chat-settings:org-1:${session.id}:${session.provider}`, JSON.stringify({ model: "selected-in-chat", reasoningEffort: "xhigh" }));
+		render(<SessionView sessionId="sess-1" />);
+		fireEvent.click(screen.getByRole("button", { name: "report cloud chat work" }));
+		await chooseSessionAction("Switch to terminal UI");
+		await waitFor(() => expect(interfaceTransitionMock.start).toHaveBeenCalledWith({
+			targetMode: "tui", policy: "drain", historyPolicy: "strict",
+			model: "selected-in-chat", reasoningEffort: "xhigh",
+		}));
 	});
 
 	it("keeps the Cloud terminal's worker epoch after Chat to Terminal completes", () => {

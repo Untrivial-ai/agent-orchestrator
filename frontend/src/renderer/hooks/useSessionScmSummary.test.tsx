@@ -26,7 +26,7 @@ vi.mock("../lib/api-client", () => ({
 }));
 
 describe("useSessionScmSummary cloud source", () => {
-	it.each(["pull_request.created", "pull_request.claimed"])(
+	it.each(["scm.updated", "pull_request.created", "pull_request.claimed"])(
 		"refreshes the inspector after %s",
 		async (type) => {
 			listSessionPullRequestsMock.mockReset().mockResolvedValue({ sessionId: "session-1", pullRequests: [] });
@@ -39,11 +39,33 @@ describe("useSessionScmSummary cloud source", () => {
 			await waitFor(() => expect(listSessionPullRequestsMock).toHaveBeenCalledTimes(1));
 			await waitFor(() => expect(subscribeSessionEventsMock).toHaveBeenCalledTimes(1));
 			const onEvent = subscribeSessionEventsMock.mock.calls[0][0].onEvent;
-			act(() => onEvent({ type }));
+			act(() => onEvent({ type, sequence: 1 }));
 			await waitFor(() => expect(listSessionPullRequestsMock).toHaveBeenCalledTimes(2));
 			unmount();
 		},
 	);
+
+	it("resumes SCM events after the stream closes", async () => {
+		listSessionPullRequestsMock.mockReset().mockResolvedValue({ sessionId: "session-1", pullRequests: [] });
+		let closeStream: (() => void) | undefined;
+		subscribeSessionEventsMock.mockReset()
+			.mockImplementationOnce(() => new Promise<void>((resolve) => { closeStream = resolve; }))
+			.mockImplementation(() => new Promise<void>(() => undefined));
+		const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		const wrapper = ({ children }: { children: ReactNode }) => (
+			<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+		);
+		const { unmount } = renderHook(() => useSessionScmSummary("session-1", true, "org-1"), { wrapper });
+		await waitFor(() => expect(subscribeSessionEventsMock).toHaveBeenCalledTimes(1));
+		act(() => subscribeSessionEventsMock.mock.calls[0][0].onEvent({ type: "scm.updated", sequence: 12 }));
+		await waitFor(() => expect(listSessionPullRequestsMock).toHaveBeenCalledTimes(2));
+		act(() => closeStream?.());
+		await waitFor(() => expect(subscribeSessionEventsMock).toHaveBeenCalledTimes(2), { timeout: 2000 });
+		expect(subscribeSessionEventsMock.mock.calls[1][0].after).toBe(12);
+		act(() => subscribeSessionEventsMock.mock.calls[1][0].onEvent({ type: "scm.updated", sequence: 13 }));
+		await waitFor(() => expect(listSessionPullRequestsMock).toHaveBeenCalledTimes(3));
+		unmount();
+	});
 
 	it("maps Cloud PR details into the exact local inspector model", async () => {
 		listSessionPullRequestsMock.mockResolvedValue({

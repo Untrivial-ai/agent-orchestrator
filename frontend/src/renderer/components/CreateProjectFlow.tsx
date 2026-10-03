@@ -1399,11 +1399,12 @@ function CloudProjectCard({
 		refetchOnMount: "always",
 		refetchInterval: (query) => {
 			const installations = query.state.data ?? [];
-			return installations.some(
+			const syncing = installations.some(
 				(installation) => installation.status === "active" && installation.syncStatus !== "ready",
-			)
-				? 2500
-				: false;
+			);
+			if (syncing) return 2500;
+			// GitHub may have removed an installation while this step stays open.
+			return installations.some((installation) => installation.status === "active") ? 15_000 : false;
 		},
 		queryFn: async () => {
 			if (!org) return [];
@@ -1668,6 +1669,16 @@ function CloudProjectCard({
 							}}
 						/>
 					)}
+					{appConnected && (githubAppRepos.data?.length ?? 0) > 0 ? (
+						<button
+							type="button"
+							className="ml-auto block text-[12px] font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+							disabled={isCreating || githubOAuthBusy}
+							onClick={() => void connectGitHub()}
+						>
+							{t("createProject.reconnectGitHub", { defaultValue: "Reconnect GitHub" })}
+						</button>
+					) : null}
 
 					{/* While GitHub is open in the browser: what to do there, and a way out. */}
 					{githubOAuthBusy ? (

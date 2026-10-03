@@ -40,7 +40,7 @@ func (s *webhookFanoutStore) GitHubInstallationRoutes(
 }
 
 func (s *webhookFanoutStore) ApplyGitHubInstallationEvent(
-	_ context.Context, orgID, installationID, action string,
+	_ context.Context, orgID, installationID, action, _ string,
 ) error {
 	s.applied = append(s.applied, appliedInstallationEvent{orgID, installationID, action})
 	return nil

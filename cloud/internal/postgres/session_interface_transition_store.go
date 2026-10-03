@@ -39,6 +39,7 @@ const renewCoordinatedInterfaceClaimSQL = `UPDATE ao_interface_transitions
 const commitCoordinatedSessionInterfaceSQL = `UPDATE ao_sessions AS session
 			SET interface = $1,
 				activity_state = 'idle',
+				activity_source_request_id = NULL,
 				activity_blocked_tool_name = '',
 				activity_blocked_tool_use_id = '',
 				updated_at = now()
@@ -61,6 +62,7 @@ func (s *Store) StartSessionInterfaceTransition(
 	source, target domain.SessionInterface,
 	policy domain.SessionInterfaceTransitionPolicy,
 	nativeConversationID string,
+	settings ...domain.ChatTurnSettings,
 ) (domain.SessionInterfaceTransition, error) {
 	if !source.Valid() || !target.Valid() || source == target {
 		return domain.SessionInterfaceTransition{}, fmt.Errorf("%w: source %q, target %q", ErrInvalidTransition, source, target)
@@ -101,8 +103,12 @@ func (s *Store) StartSessionInterfaceTransition(
 			return ErrTransitionInProgress
 		}
 		var err error
+		var selected domain.ChatTurnSettings
+		if len(settings) > 0 {
+			selected = settings[0]
+		}
 		transition, err = insertInterfaceTransition(
-			ctx, tx, orgID, sessionID, source, target, policy, nativeConversationID,
+			ctx, tx, orgID, sessionID, source, target, policy, nativeConversationID, selected.Model, selected.ReasoningEffort,
 		)
 		if err != nil {
 			return err
@@ -506,6 +512,7 @@ func (s *Store) ClaimCoordinatedInterfaceTransitions(
 			WHERE t.id = candidate.id
 			RETURNING t.id, t.org_id, t.session_id, t.source_interface,
 				t.target_interface, t.policy, t.phase, t.native_conversation_id,
+				t.selected_model, t.selected_effort,
 				t.error_code, t.error_detail, t.notice_acknowledged_at,
 				t.created_at, t.updated_at, t.completed_at, candidate.harness`,
 			owner,
@@ -528,6 +535,8 @@ func (s *Store) ClaimCoordinatedInterfaceTransitions(
 				&transition.Policy,
 				&transition.Phase,
 				&transition.NativeConversationID,
+				&transition.SelectedModel,
+				&transition.SelectedEffort,
 				&transition.ErrorCode,
 				&transition.ErrorDetail,
 				&transition.NoticeAcknowledgedAt,
@@ -704,15 +713,15 @@ func insertInterfaceTransition(
 	orgID, sessionID string,
 	source, target domain.SessionInterface,
 	policy domain.SessionInterfaceTransitionPolicy,
-	nativeConversationID string,
+	nativeConversationID, selectedModel, selectedEffort string,
 ) (domain.SessionInterfaceTransition, error) {
 	var transition domain.SessionInterfaceTransition
 	err := tx.QueryRow(
 		ctx,
 		`INSERT INTO ao_interface_transitions (
 			org_id, session_id, source_interface, target_interface, policy,
-			phase, native_conversation_id
-		) VALUES ($1, $2, $3, $4, $5, 'requested', $6)
+			phase, native_conversation_id, selected_model, selected_effort
+		) VALUES ($1, $2, $3, $4, $5, 'requested', $6, $7, $8)
 		RETURNING id, org_id, session_id, source_interface, target_interface,
 			policy, phase, native_conversation_id, error_code, error_detail,
 			notice_acknowledged_at, created_at, updated_at, completed_at`,
@@ -721,7 +730,7 @@ func insertInterfaceTransition(
 		source,
 		target,
 		policy,
-		nativeConversationID,
+		nativeConversationID, selectedModel, selectedEffort,
 	).Scan(
 		&transition.ID,
 		&transition.OrgID,
@@ -741,6 +750,8 @@ func insertInterfaceTransition(
 	if err != nil {
 		return domain.SessionInterfaceTransition{}, normalizeConstraintError(err)
 	}
+	transition.SelectedModel = selectedModel
+	transition.SelectedEffort = selectedEffort
 	return transition, nil
 }
 

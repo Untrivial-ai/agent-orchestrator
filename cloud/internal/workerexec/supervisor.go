@@ -39,6 +39,8 @@ type Supervisor struct {
 	CancelInterval      time.Duration
 	CompletionRetry     time.Duration
 	Logger              *slog.Logger
+	PullRequestClaimer  func(context.Context, string) error
+	GitRefReporter      func(context.Context) error
 
 	// busy covers both a claim in flight and its turn until completion. A
 	// handoff must not cancel Run between a durable claim and turn completion.
@@ -48,12 +50,25 @@ type Supervisor struct {
 	stopping atomic.Bool
 	// drainFences stop new claims without interrupting a turn already in flight.
 	// A timed-out handoff releases its own fence so the source can keep running.
-	drainFences atomic.Int32
+	drainFences           atomic.Int32
+	workspaceStartupError atomic.Pointer[string]
 
 	activeMu    sync.Mutex
 	active      *activeExecution
 	activeACP   *acpSession
 	activeCodex *codexSession
+	prObserver  *pullRequestObserver
+}
+
+// SetWorkspaceStartupError keeps Chat from running a prompt in an empty
+// checkout. The controller still claims queued turns so each receives a
+// durable failure instead of waiting forever for a workspace that cannot load.
+func (s *Supervisor) SetWorkspaceStartupError(message string) {
+	if message == "" {
+		s.workspaceStartupError.Store(nil)
+		return
+	}
+	s.workspaceStartupError.Store(&message)
 }
 
 type activeExecution struct {
@@ -137,6 +152,9 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	if err := os.MkdirAll(s.Workspace, 0o700); err != nil {
 		return err
 	}
+	if s.PullRequestClaimer != nil {
+		s.prObserver = &pullRequestObserver{claim: s.PullRequestClaimer}
+	}
 
 	for {
 		if s.stopping.Load() || s.drainFences.Load() > 0 {
@@ -193,6 +211,9 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	if turn.CancelRequested || s.stopping.Load() {
 		return s.retryComplete(ctx, turn.ID, turn.Attempt, true)
 	}
+	if failure := s.workspaceStartupError.Load(); failure != nil {
+		return s.retryFailure(ctx, turn.ID, turn.Attempt, *failure)
+	}
 	executionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	active := &activeExecution{cancel: cancel}
@@ -243,6 +264,9 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	projector := newChatOutputProjector(turn.Harness)
 	publish := func(output Output) error {
 		for _, projected := range projector.Project(output) {
+			if s.prObserver != nil {
+				s.prObserver.observe(projected)
+			}
 			if err := s.Control.PublishOutput(executionCtx, worker.OutputEvent{
 				TurnID:  turn.ID,
 				Attempt: turn.Attempt,
@@ -286,8 +310,11 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	var runErr error
 	if acpTurn {
 		runErr = s.runACP(executionCtx, turn, command, func(output Output) error {
+			if s.prObserver != nil {
+				s.prObserver.observe(output)
+			}
 			return s.Control.PublishOutput(executionCtx, worker.OutputEvent{
-				TurnID: turn.ID, Attempt: turn.Attempt, Stream: output.Stream, Text: output.Text,
+				TurnID: turn.ID, Attempt: turn.Attempt, Stream: output.Stream, Text: output.Text, ItemID: output.ItemID, Activity: output.Activity,
 			})
 		}, func(identity string) error {
 			if publisher, ok := s.Control.(conversationIdentityPublisher); ok {
@@ -299,8 +326,11 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 		})
 	} else if codexTurn {
 		runErr = s.runCodex(executionCtx, turn, command, func(output Output) error {
+			if s.prObserver != nil {
+				s.prObserver.observe(output)
+			}
 			return s.Control.PublishOutput(executionCtx, worker.OutputEvent{
-				TurnID: turn.ID, Attempt: turn.Attempt, Stream: output.Stream, Text: output.Text,
+				TurnID: turn.ID, Attempt: turn.Attempt, Stream: output.Stream, Text: output.Text, ItemID: output.ItemID, Activity: output.Activity,
 			})
 		}, func(identity string) error {
 			if publisher, ok := s.Control.(conversationIdentityPublisher); ok {
@@ -351,6 +381,20 @@ func (s *Supervisor) execute(ctx context.Context, turn worker.Turn) error {
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if s.prObserver != nil {
+		claimCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		if err := s.prObserver.claimObserved(claimCtx, s.Workspace); err != nil {
+			s.Logger.Warn("automatic pull request claim failed", "error", err)
+		}
+		cancel()
+	}
+	if s.GitRefReporter != nil {
+		reportCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		if err := s.GitRefReporter(reportCtx); err != nil {
+			s.Logger.Warn("report worker branch heads", "error", err)
+		}
+		cancel()
 	}
 	if runErr != nil {
 		return s.retryFailure(ctx, turn.ID, turn.Attempt, boundedError(runErr.Error()))

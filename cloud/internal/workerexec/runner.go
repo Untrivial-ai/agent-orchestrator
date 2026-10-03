@@ -7,13 +7,16 @@ import (
 	"sync"
 
 	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
+	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
 )
 
 const outputChunkSize = 8 << 10
 
 type Output struct {
-	Stream string
-	Text   string
+	Stream   string
+	Text     string
+	ItemID   string
+	Activity *worker.ChatActivity
 }
 
 type Runner interface {

@@ -19,6 +19,23 @@ const (
 	maxWorkspaceFile = 1 << 20
 )
 
+// requestWorkspaceCheckout is an explicit session-open intent. The worker
+// acknowledges the request immediately and retries only if startup checkout
+// has not already completed.
+func (s *Server) requestWorkspaceCheckout(w http.ResponseWriter, r *http.Request) {
+	orgID, sessionID, ok := workspaceRoute(w, r)
+	if !ok {
+		return
+	}
+	result, ok := s.runWorkspaceRequest(w, r, orgID, sessionID, "workspace.checkout", json.RawMessage(`{}`))
+	if !ok {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(result)
+}
+
 func (s *Server) listWorkspaceFiles(w http.ResponseWriter, r *http.Request) {
 	orgID, sessionID, ok := workspaceRoute(w, r)
 	if !ok {

@@ -63,6 +63,9 @@ type Supervisor struct {
 	Workspace           string
 	DataDir             string
 	Harness             string
+	SelectedModel       string
+	SelectedEffort      string
+	SelectionAt         time.Time
 	CompareBase         string
 	Shell               string
 	AgentCommand        workerexec.Command
@@ -82,6 +85,9 @@ type Supervisor struct {
 	// ChatWorkspaceReady gates a committed Chat controller until checkout and
 	// restore complete. Nil means no additional gate.
 	ChatWorkspaceReady <-chan struct{}
+	// RequestCheckout wakes workspace preparation after a failed checkout when
+	// the user opens the session. A ready workspace treats it as a no-op.
+	RequestCheckout func() error
 	// InitialInterface is the committed launch interface ("tui" or "chat").
 	InitialInterface string
 	// AgentSessionID is the provider-native conversation identity shared by the
@@ -112,7 +118,7 @@ type ChatRunner interface {
 // AgentCommandFactory rebuilds the native interactive command when a TUI is
 // reopened. The provider conversation ID is learned after worker bootstrap, so
 // reusing the bootstrap command would start a fresh TUI after ChatUI work.
-type AgentCommandFactory func(context.Context, string) (workerexec.Command, error)
+type AgentCommandFactory func(context.Context, string, string, string) (workerexec.Command, error)
 
 // chatActivity is implemented by the durable headless controller. Keeping it
 // optional preserves the runner boundary for alternate worker implementations
@@ -367,10 +373,7 @@ func (s *Supervisor) forwardTurn(ctx context.Context) (bool, error) {
 	if turn.CancelRequested {
 		return true, s.Control.CompleteTurn(ctx, turn.ID, turn.Attempt, true)
 	}
-	if err := s.writeTerminal(worker.TerminalCommand{
-		TerminalID: agentTerminalID,
-		Data:       []byte(turn.Prompt + "\r"),
-	}); err != nil {
+	if err := s.writeAgentPrompt(agentTerminalID, worker.EncodeTerminalInput(turn.Prompt)); err != nil {
 		if failErr := s.Control.FailTurn(
 			ctx, turn.ID, turn.Attempt, err.Error(),
 		); failErr != nil {
@@ -411,6 +414,13 @@ func (s *Supervisor) handle(
 	var response any
 	var err error
 	switch request.Kind {
+	case "workspace.checkout":
+		if s.RequestCheckout == nil {
+			err = errors.New("workspace checkout is unavailable")
+		} else {
+			err = s.RequestCheckout()
+			response = map[string]bool{"requested": err == nil}
+		}
 	case "workspace.list":
 		var input worker.WorkspaceListRequest
 		err = decodePayload(request.Payload, &input)
@@ -496,7 +506,18 @@ func (s *Supervisor) handle(
 			var models []worker.ChatModel
 			models, err = workerexec.DiscoverCodexModels(ctx, "codex", s.Workspace)
 			if err == nil {
-				response = worker.ChatModelsResponse{Models: models}
+				s.mu.Lock()
+				selectedModel, selectedEffort, selectionAt := s.SelectedModel, s.SelectedEffort, s.SelectionAt
+				s.mu.Unlock()
+				model, effort, settingsErr := workerexec.CodexConversationSettingsAfter(s.DataDir, s.nativeConversationID(ctx, interfacePayload{}), selectionAt)
+				if settingsErr != nil {
+					err = settingsErr
+				} else {
+					if model == "" {
+						model, effort = selectedModel, selectedEffort
+					}
+					response = worker.ChatModelsResponse{Models: models, Model: model, ReasoningEffort: effort}
+				}
 			}
 		}
 	case "chat.steer":

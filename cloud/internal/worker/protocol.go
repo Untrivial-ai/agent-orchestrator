@@ -29,10 +29,12 @@ type LaunchContext struct {
 	Mode            string `json:"mode"`
 	// Model is the coding-agent model the worker launches the harness with;
 	// empty uses the harness default.
-	Model          string   `json:"model,omitempty"`
-	DeniedCommands []string `json:"deniedCommands"`
-	RepositoryURL  string   `json:"repositoryUrl"`
-	DefaultBranch  string   `json:"defaultBranch"`
+	Model           string    `json:"model,omitempty"`
+	ReasoningEffort string    `json:"reasoningEffort,omitempty"`
+	SelectionAt     time.Time `json:"selectionAt,omitempty"`
+	DeniedCommands  []string  `json:"deniedCommands"`
+	RepositoryURL   string    `json:"repositoryUrl"`
+	DefaultBranch   string    `json:"defaultBranch"`
 	// ExtraRepos are additional repositories the worker clones alongside the
 	// primary repo (multi-repo dev kit). Empty for a single-repo session.
 	ExtraRepos []RepoRef `json:"extraRepos,omitempty"`
@@ -114,6 +116,17 @@ type ClaimPullRequestRequest struct {
 	Reference string `json:"reference"`
 }
 
+type GitRef struct {
+	Branch string `json:"branch"`
+	SHA    string `json:"sha"`
+}
+
+// ReportGitRefsRequest lets verified PR webhooks associate a custom branch
+// with the worker session that actually holds its head commit.
+type ReportGitRefsRequest struct {
+	Refs []GitRef `json:"refs"`
+}
+
 // ClaimPullRequestResponse describes the tracked pull request.
 type ClaimPullRequestResponse struct {
 	ID      string `json:"id"`
@@ -180,7 +193,9 @@ type ChatModel struct {
 }
 
 type ChatModelsResponse struct {
-	Models []ChatModel `json:"models"`
+	Models          []ChatModel `json:"models"`
+	Model           string      `json:"model,omitempty"`
+	ReasoningEffort string      `json:"reasoningEffort,omitempty"`
 }
 
 type ChatApproval struct {
@@ -229,11 +244,21 @@ type ReadyEvent struct {
 	Capabilities []string `json:"capabilities"`
 }
 
+type ChatActivity struct {
+	ID      string         `json:"id"`
+	Kind    string         `json:"kind"`
+	Status  string         `json:"status"`
+	Summary string         `json:"summary"`
+	Detail  map[string]any `json:"detail,omitempty"`
+}
+
 type OutputEvent struct {
-	TurnID  string `json:"turnId"`
-	Attempt int    `json:"attempt"`
-	Stream  string `json:"stream"`
-	Text    string `json:"text"`
+	TurnID   string        `json:"turnId"`
+	Attempt  int           `json:"attempt"`
+	Stream   string        `json:"stream,omitempty"`
+	Text     string        `json:"text,omitempty"`
+	ItemID   string        `json:"itemId,omitempty"`
+	Activity *ChatActivity `json:"activity,omitempty"`
 }
 
 // TransportRequest is a fenced, durably routed workspace or terminal command.

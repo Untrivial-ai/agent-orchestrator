@@ -179,3 +179,10 @@ type GitHubWebhookDelivery struct {
 	Payload              []byte
 	AttemptCount         int
 }
+
+// WorkerGitRef is a branch head observed in one worker's checked-out repo.
+// Verified PR webhooks use it to associate custom branches with that session.
+type WorkerGitRef struct {
+	Branch string `json:"branch"`
+	SHA    string `json:"sha"`
+}

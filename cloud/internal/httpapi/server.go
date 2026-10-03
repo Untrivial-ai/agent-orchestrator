@@ -84,7 +84,8 @@ type Store interface {
 	WorkerChatApprovalDecision(context.Context, string, string, string, int64, string, int, string) (string, error)
 	DecideChatApproval(context.Context, domain.Principal, string, string, string, string) error
 	WorkerTurnCancellationRequested(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int) (bool, error)
-	AppendWorkerTurnOutput(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int, stream, text string) error
+	AppendWorkerTurnOutput(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int, stream, text, itemID string) error
+	AppendWorkerTurnActivity(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int, activity worker.ChatActivity) error
 	AppendWorkerTurnCapabilities(context.Context, string, string, string, string, int64, int, bool) error
 	FinishWorkerTurn(ctx context.Context, orgID, sessionID, workerID, turnID string, epoch int64, attempt int, outcome, errorMessage string) (bool, error)
 	WorkerAgentCredential(ctx context.Context, orgID, sessionID, workerID string, epoch int64) (domain.WorkerCredential, error)
@@ -113,6 +114,7 @@ type Store interface {
 	EnsureWorkerAgentTerminal(context.Context, string, string, string, int64, time.Duration) (domain.TerminalSession, error)
 	ListTerminalOutput(context.Context, domain.TerminalSession, int64, int) ([]domain.TerminalOutput, string, error)
 	ListPullRequestsBySession(context.Context, domain.Principal, string, string) ([]domain.PullRequest, error)
+	GitHubInstallationForRepository(context.Context, string, string) (int64, int64, error)
 	PullRequestForMerge(context.Context, domain.Principal, string, string, int, string) (domain.PullRequest, error)
 	PullRequestSnapshot(context.Context, string, string) (domain.PullRequestSnapshot, error)
 	ListReviewRunsBySession(context.Context, domain.Principal, string, string) ([]domain.ReviewRunPullRequest, error)
@@ -127,7 +129,7 @@ type Store interface {
 	RedeemProjectShareLink(context.Context, domain.Principal, string, string) (domain.SharedProject, error)
 	ListSharedProjects(context.Context, domain.Principal) ([]domain.SharedProject, error)
 	ListSharedProjectSessions(context.Context, domain.Principal, string, string) ([]domain.Session, error)
-	StartSessionInterfaceTransition(context.Context, domain.Principal, string, string, domain.SessionInterface, domain.SessionInterface, domain.SessionInterfaceTransitionPolicy, string) (domain.SessionInterfaceTransition, error)
+	StartSessionInterfaceTransition(context.Context, domain.Principal, string, string, domain.SessionInterface, domain.SessionInterface, domain.SessionInterfaceTransitionPolicy, string, ...domain.ChatTurnSettings) (domain.SessionInterfaceTransition, error)
 	GetActiveSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, bool, error)
 	GetLatestRelevantSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, bool, error)
 	AdvanceSessionInterfaceTransition(context.Context, domain.Principal, string, string, domain.SessionInterfaceTransitionPhase, domain.SessionInterfaceTransitionPhase, string, string, string) error
@@ -421,6 +423,7 @@ func New(options Options) *Server {
 			router.Post("/worker/github-token", server.workerGitHubToken)
 			router.Post("/worker/pull-requests", server.workerRaisePullRequest)
 			router.Post("/worker/pull-requests/claim", server.workerClaimPullRequest)
+			router.Post("/worker/pull-requests/refs", server.workerReportGitRefs)
 			router.Post("/worker/reviews/{reviewRunId}/submit", server.workerSubmitReview)
 			router.Get("/worker/children", server.listWorkerChildren)
 			router.Post("/worker/children", server.createWorkerChild)
@@ -501,6 +504,7 @@ func New(options Options) *Server {
 				router.MethodFunc(method, "/sessions/{sessionId}/browser/{origin}/*", server.proxyBrowser)
 			}
 			router.Get("/sessions/{sessionId}/workspace/files", server.listWorkspaceFiles)
+			router.Post("/sessions/{sessionId}/workspace/checkout", server.requestWorkspaceCheckout)
 			router.Get("/sessions/{sessionId}/workspace/file", server.readWorkspaceFile)
 			router.Get("/sessions/{sessionId}/workspace/file/diff", server.readWorkspaceDiffFile)
 			router.Put("/sessions/{sessionId}/workspace/file", server.writeWorkspaceFile)

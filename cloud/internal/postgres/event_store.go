@@ -23,6 +23,7 @@ var clientEventTypes = []string{
 	"scm.updated",
 	"chat.user_message",
 	"chat.assistant_delta",
+	"chat.activity",
 	"chat.turn_started",
 	"chat.turn_completed",
 	"chat.turn_interrupted",
@@ -411,12 +412,14 @@ func appendUserMessage(
 		if marshalErr != nil {
 			return domain.ClientEvent{}, marshalErr
 		}
-		if _, err := tx.Exec(ctx,
+		var inputRequestID string
+		if err := tx.QueryRow(ctx,
 			`INSERT INTO ao_worker_requests (
 				org_id, session_id, worker_epoch, kind, payload, expires_at
-			) VALUES ($1, $2, $3, 'terminal.input', $4, now() + interval '60 seconds')`,
+			) VALUES ($1, $2, $3, 'terminal.input', $4, now() + interval '60 seconds')
+			RETURNING id`,
 			orgID, sessionID, workerEpoch, payload,
-		); err != nil {
+		).Scan(&inputRequestID); err != nil {
 			return domain.ClientEvent{}, err
 		}
 		// A live agent terminal does not create an ao_turn. Mark the session
@@ -424,9 +427,10 @@ func appendUserMessage(
 		// is idle while the worker still has ordered terminal input pending.
 		if _, err := tx.Exec(ctx,
 			`UPDATE ao_sessions
-			SET activity_state = 'active', updated_at = now()
+			SET activity_state = 'active', activity_source_request_id = $3,
+				updated_at = now()
 			WHERE org_id = $1 AND id = $2 AND is_terminated = false`,
-			orgID, sessionID,
+			orgID, sessionID, inputRequestID,
 		); err != nil {
 			return domain.ClientEvent{}, err
 		}

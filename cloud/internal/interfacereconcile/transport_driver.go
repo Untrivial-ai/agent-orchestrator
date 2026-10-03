@@ -125,6 +125,9 @@ func (d *TransportDriver) StartTarget(
 	payload, _ := json.Marshal(map[string]any{
 		"targetInterface":      transition.TargetInterface,
 		"nativeConversationId": nativeConversationID,
+		"model":                transition.SelectedModel,
+		"selectionAt":          transition.CreatedAt,
+		"reasoningEffort":      transition.SelectedEffort,
 	})
 	return d.dispatch(ctx, transition, "interface.start", payload, nil)
 }

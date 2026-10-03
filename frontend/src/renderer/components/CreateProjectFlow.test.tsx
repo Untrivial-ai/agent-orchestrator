@@ -1721,6 +1721,28 @@ describe("CreateProjectFlow project import validation", () => {
 		await waitFor(() => expect(openProject).toHaveBeenCalledWith("cp-app-1"));
 	});
 
+	it("offers GitHub reconnection after repositories are connected", async () => {
+		cloudMocks.cloudEnabled = true;
+		cloudMocks.sessionStatus = "authenticated";
+		cloudMocks.listGitHubInstallations.mockResolvedValue({ installations: [{
+			id: "inst-1", githubInstallationId: "100", accountLogin: "acme", accountType: "Organization",
+			status: "active", repositorySelection: "all", syncStatus: "ready", createdAt: "", updatedAt: "",
+		}] });
+		cloudMocks.listGitHubRepositories.mockResolvedValue({
+			items: [{ githubRepositoryId: "repo-1", name: "app", fullName: "acme/app", htmlUrl: "https://github.com/acme/app",
+				defaultBranch: "main", visibility: "private", isPrivate: true, isArchived: false, isDisabled: false }],
+			page: { hasMore: false },
+		});
+		cloudMocks.startGitHubInstallation.mockResolvedValue({ installationUrl: "https://github.com/apps/ao/installations/new", expiresAt: "" });
+		const user = userEvent.setup();
+		render(<CreateProjectFlow embedded mode="choose" {...noop} />, { wrapper: CloudTestProviders });
+		await user.click(screen.getByRole("button", { name: "New cloud project" }));
+		const reconnect = await screen.findByRole("button", { name: "Reconnect GitHub" });
+		await user.click(reconnect);
+		await waitFor(() => expect(cloudMocks.startGitHubInstallation).toHaveBeenCalledWith("org-1", expect.anything()));
+		await waitFor(() => expect(bridgeMocks.openExternal).toHaveBeenCalledWith("https://github.com/apps/ao/installations/new"));
+	});
+
 	it("shows repositories from every GitHub App page in the picker", async () => {
 		cloudMocks.cloudEnabled = true;
 		cloudMocks.sessionStatus = "authenticated";

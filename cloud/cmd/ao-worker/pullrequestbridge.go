@@ -30,6 +30,7 @@ func runPullRequestBridge(
 	socketPath string,
 	apiClient *client,
 	workspace string,
+	defaultBranch string,
 	logger *slog.Logger,
 ) error {
 	_ = os.Remove(socketPath)
@@ -43,7 +44,7 @@ func runPullRequestBridge(
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /pull-request", func(w http.ResponseWriter, r *http.Request) {
-		handlePullRequestBridgeRequest(w, r, apiClient, workspace, logger)
+		handlePullRequestBridgeRequest(w, r, apiClient, workspace, defaultBranch, logger)
 	})
 	server := &http.Server{Handler: mux}
 	errCh := make(chan error, 1)
@@ -68,6 +69,7 @@ func handlePullRequestBridgeRequest(
 	r *http.Request,
 	apiClient *client,
 	workspace string,
+	defaultBranch string,
 	logger *slog.Logger,
 ) {
 	var input pullRequestBridgeRequest
@@ -77,6 +79,10 @@ func handlePullRequestBridgeRequest(
 	}
 	input.Branch = strings.TrimSpace(input.Branch)
 	input.Title = strings.TrimSpace(input.Title)
+	input.Base = strings.TrimSpace(input.Base)
+	if input.Base == "" {
+		input.Base = strings.TrimSpace(defaultBranch)
+	}
 	if input.Branch == "" || input.Title == "" {
 		writeBridgeError(w, http.StatusBadRequest, "branch and title are required")
 		return

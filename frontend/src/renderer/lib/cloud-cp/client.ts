@@ -228,6 +228,7 @@ export interface CloudCpClient {
 		sessionId: string,
 		options?: CloudCpRequestOptions,
 	): Promise<CloudCpResumeSessionResponse>;
+	requestWorkspaceCheckout(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<{ requested: boolean }>;
 	/** Docker-only changed-file summary for a cloud session. */
 	getWorkspaceDiff(orgId: string, sessionId: string, options?: CloudCpRequestOptions): Promise<CloudCpWorkspaceDiff>;
 	/** Docker-only selected-file review details for a cloud session. */
@@ -609,6 +610,10 @@ export function createCloudCpClient(options: CloudCpClientOptions): CloudCpClien
 			requestJson("DELETE", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}`, { signal: o?.signal }),
 		resumeSession: (orgId, sessionId, o) =>
 			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/resume`, {
+				signal: o?.signal,
+			}),
+		requestWorkspaceCheckout: (orgId, sessionId, o) =>
+			requestJson("POST", `/orgs/${seg(orgId)}/sessions/${seg(sessionId)}/workspace/checkout`, {
 				signal: o?.signal,
 			}),
 		getWorkspaceDiff: (orgId, sessionId, o) =>

@@ -24,6 +24,8 @@ type StartInterfaceTransitionInput = {
 	targetMode: SessionInterfaceMode;
 	policy: SessionInterfaceTransitionPolicy;
 	historyPolicy?: SessionInterfaceTransitionHistoryPolicy;
+	model?: string;
+	reasoningEffort?: string;
 };
 
 type StartInterfaceTransitionMutationInput = StartInterfaceTransitionInput & {
@@ -279,7 +281,11 @@ export function useSessionInterfaceTransition(
 				const response = await cloudCp.client.startInterfaceTransition(
 					cloud.orgId,
 					targetSessionId,
-					{ targetMode: input.targetMode, policy: input.policy },
+					{
+						targetMode: input.targetMode, policy: input.policy,
+						...(input.model ? { model: input.model } : {}),
+						...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+					},
 				);
 				return {
 					transition: toSessionInterfaceTransition(response.transition),

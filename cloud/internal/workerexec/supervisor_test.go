@@ -91,6 +91,22 @@ func testSupervisor(control *controlStub, builder builderStub, runner Runner) *S
 	}
 }
 
+func TestExecuteFailsQueuedChatTurnWhenWorkspaceCheckoutFailed(t *testing.T) {
+	control := &controlStub{}
+	supervisor := testSupervisor(control, builderStub{}, nil)
+	supervisor.SetWorkspaceStartupError("Repository checkout failed. Reconnect GitHub.")
+	if err := supervisor.execute(context.Background(), worker.Turn{ID: "turn-1", Attempt: 1}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if control.failed != "Repository checkout failed. Reconnect GitHub." || control.completed {
+		t.Fatalf("failed=%q completed=%v, want a durable checkout failure", control.failed, control.completed)
+	}
+	supervisor.SetWorkspaceStartupError("")
+	if supervisor.workspaceStartupError.Load() != nil {
+		t.Fatal("checkout recovery must clear the startup failure before new turns")
+	}
+}
+
 // Every supported harness's headless Chat turn must project exactly one
 // assistant reply and publish the provider-native conversation identity so the
 // same thread can be resumed by the interactive TUI after a handoff.

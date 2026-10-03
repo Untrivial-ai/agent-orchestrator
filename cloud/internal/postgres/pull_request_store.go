@@ -137,6 +137,69 @@ func (s *Store) ClaimPullRequestRecord(
 	return record, nil
 }
 
+// SessionForGitHubPullRequestHead resolves only an unambiguous live worker
+// session whose configured branch belongs to the repository in the webhook.
+func (s *Store) SessionForGitHubPullRequestHead(ctx context.Context, orgID string, repositoryID int64, branch, headSHA string) (string, error) {
+	var sessions []string
+	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT session.id::text
+			FROM ao_sessions session
+			JOIN ao_projects project ON project.org_id = session.org_id AND project.id = session.project_id
+			JOIN ao_github_repositories repository ON repository.github_repository_id = $2
+			WHERE session.org_id = $1 AND session.kind = 'worker'
+			  AND session.is_terminated = false
+			  AND (session.branch = $3 OR EXISTS (
+			      SELECT 1 FROM ao_worker_git_refs ref
+			      WHERE ref.org_id = session.org_id AND ref.session_id = session.id
+			        AND ref.github_repository_id = $2 AND ref.branch = $3 AND ref.head_sha = $4
+			  ))
+			  AND (project.github_repository_id = repository.github_repository_id
+			       OR lower(trim(trailing '/' from project.repository_url)) = lower(repository.html_url)
+			       OR lower(project.repository_url) = lower(repository.clone_url))
+			LIMIT 2`, orgID, repositoryID, branch, headSHA)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			sessions = append(sessions, id)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(sessions) == 0 {
+		return "", ErrNotFound
+	}
+	if len(sessions) > 1 {
+		return "", ErrConflict
+	}
+	return sessions[0], nil
+}
+
+// ReplaceWorkerGitRefs records one worker's local branch heads atomically.
+// A removed or moved branch must stop matching future PR webhooks.
+func (s *Store) ReplaceWorkerGitRefs(ctx context.Context, orgID, sessionID string, repositoryID int64, refs []domain.WorkerGitRef) error {
+	return s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM ao_worker_git_refs WHERE org_id = $1 AND session_id = $2`, orgID, sessionID); err != nil {
+			return err
+		}
+		for _, ref := range refs {
+			if _, err := tx.Exec(ctx, `INSERT INTO ao_worker_git_refs
+				(org_id, session_id, github_repository_id, branch, head_sha)
+				VALUES ($1, $2, $3, $4, $5)`, orgID, sessionID, repositoryID, ref.Branch, ref.SHA); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // GetPullRequest returns one pull request by its durable ID.
 func (s *Store) GetPullRequest(
 	ctx context.Context,

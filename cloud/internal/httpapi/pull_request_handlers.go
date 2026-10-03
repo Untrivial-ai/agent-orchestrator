@@ -156,23 +156,6 @@ func (s *Server) mergeSessionPullRequest(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, http.StatusBadGateway, "github_unavailable", "GitHub could not merge this pull request.")
 		return
 	}
-	// Reflect the merge immediately so the client flips to the merged card without
-	// waiting for GitHub's webhook round-trip (the webhook stays the backstop and the
-	// authority for terminate-on-merge). Best effort via the App, which can read the
-	// just-merged PR when it is installed on the repository; if the merge went through
-	// a PAT because the App is absent, this fetch simply fails and the webhook/fallback
-	// still converges. The refresh source is Webhook, not Fallback: this handler holds
-	// no fallback lease, and the Fallback branch's lease-scoped update would roll back
-	// the whole snapshot apply (dropping the merged flip + notification) whenever the
-	// scanner happens to hold the row's lease. Webhook's unconditional upsert is both
-	// correct and race-free here.
-	if s.github != nil {
-		if _, refreshErr := s.github.RefreshPullRequestStatus(r.Context(), domain.PullRequestRef{
-			ID: pr.ID, OrgID: orgID, Provider: pr.Provider, Repository: pr.Repository, Number: number,
-		}, domain.PullRequestRefreshContext{Source: domain.PullRequestRefreshWebhook}); refreshErr != nil {
-			s.logger.Warn("refresh after merge", "error", refreshErr, "request_id", requestID(r))
-		}
-	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "merge_accepted"})
 }
 
@@ -430,7 +413,20 @@ func (s *Server) listSessionPullRequests(w http.ResponseWriter, r *http.Request)
 			s.writeStoreError(w, r, err)
 			return
 		}
-		items = append(items, toPullRequestSummaryResponse(pr, snapshot))
+		item := toPullRequestSummaryResponse(pr, snapshot)
+		if s.github != nil && pr.Provider == "github" && (pr.State == contract.PRStateOpen || pr.State == contract.PRStateDraft) {
+			_, _, err := s.store.GitHubInstallationForRepository(r.Context(), orgID, pr.Repository)
+			if errors.Is(err, postgres.ErrNotFound) {
+				// An uninstalled App leaves the last observed PR facts in storage.
+				// Surface the revoked grant at read time so stale facts cannot look merge-ready.
+				item.Mergeability.State = string(contract.MergeUnknown)
+				item.Mergeability.Reasons = []string{"github_access_lost"}
+			} else if err != nil {
+				s.writeStoreError(w, r, err)
+				return
+			}
+		}
+		items = append(items, item)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessionId": sessionID, "pullRequests": items})
 }

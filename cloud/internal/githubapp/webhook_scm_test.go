@@ -3,6 +3,7 @@ package githubapp
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -25,6 +26,37 @@ type scmRefreshStore struct {
 	routeErr                   error
 	scheduled                  []scheduledPullRequestRefresh
 	requireLiveScheduleContext bool
+	matchingSessionID          string
+	claimed                    *domain.PullRequest
+	openedNotifications        int
+	recentOpen                 []domain.GitHubWebhookDelivery
+}
+
+func (s *scmRefreshStore) RecentOpenedPullRequestWebhooks(context.Context, int64, time.Time, int) ([]domain.GitHubWebhookDelivery, error) {
+	return s.recentOpen, nil
+}
+
+func (s *scmRefreshStore) SessionForGitHubPullRequestHead(context.Context, string, int64, string, string) (string, error) {
+	if s.matchingSessionID == "" {
+		return "", postgres.ErrNotFound
+	}
+	return s.matchingSessionID, nil
+}
+
+func (s *scmRefreshStore) ClaimPullRequestRecord(_ context.Context, orgID, sessionID string, input domain.PullRequest) (domain.PullRequest, error) {
+	input.ID, input.OrgID, input.SessionID = "claimed-pr", orgID, sessionID
+	s.claimed = &input
+	s.byNumber[input.Number] = input
+	return input, nil
+}
+
+func (s *scmRefreshStore) RecordPullRequestOpened(context.Context, string, domain.PullRequest, string) error {
+	s.openedNotifications++
+	return nil
+}
+
+func (s *scmRefreshStore) CreateReviewRun(context.Context, string, string, string, string) (domain.ReviewRun, bool, error) {
+	return domain.ReviewRun{}, false, postgres.ErrNotFound
 }
 
 func (s *scmRefreshStore) PullRequestByGitHubReference(_ context.Context, _ string, _ int64, number int) (domain.PullRequest, error) {
@@ -64,6 +96,39 @@ func (s *scmRefreshStore) GitHubInstallationRoutes(context.Context, int64) ([]do
 
 var errWebhookPRNotFound = postgres.ErrNotFound
 
+func TestOpenedPRWebhookClaimsSessionBranchAndCreatesCard(t *testing.T) {
+	store := &scmRefreshStore{byNumber: map[int]domain.PullRequest{}, matchingSessionID: "session-1"}
+	service := &Service{store: store, logger: slog.Default(), refreshPullRequestStatus: func(_ context.Context, ref domain.PullRequestRef, _ domain.PullRequestRefreshContext) (domain.PullRequest, error) {
+		return store.byNumber[ref.Number], nil
+	}}
+	delivery := domain.GitHubWebhookDelivery{DeliveryID: "opened-7", Event: "pull_request", Action: "opened", GitHubRepositoryID: 99,
+		Payload: []byte(`{"action":"opened","pull_request":{"number":7,"html_url":"https://github.com/acme/widgets/pull/7","title":"Add docs","state":"open","head":{"ref":"ao/session-1","sha":"abc123"},"base":{"ref":"main"},"user":{"login":"octocat"}},"repository":{"full_name":"acme/widgets"}}`)}
+	if err := service.processSCMWebhook(context.Background(), "org-1", delivery); err != nil {
+		t.Fatal(err)
+	}
+	if store.claimed == nil || store.claimed.SessionID != "session-1" || store.claimed.Number != 7 {
+		t.Fatalf("claimed = %+v, want PR #7 in session-1", store.claimed)
+	}
+	if store.openedNotifications != 1 {
+		t.Fatalf("opened notifications = %d, want 1", store.openedNotifications)
+	}
+}
+
+func TestWorkerRefReportReplaysEarlierOpenedWebhook(t *testing.T) {
+	delivery := domain.GitHubWebhookDelivery{DeliveryID: "earlier-opened", Event: "pull_request", Action: "opened", GitHubRepositoryID: 99,
+		Payload: []byte(`{"pull_request":{"number":8,"html_url":"https://github.com/acme/widgets/pull/8","title":"Add docs","state":"open","head":{"ref":"docs/custom","sha":"abc123"},"base":{"ref":"main"}},"repository":{"full_name":"acme/widgets"}}`)}
+	store := &scmRefreshStore{byNumber: map[int]domain.PullRequest{}, matchingSessionID: "session-1", recentOpen: []domain.GitHubWebhookDelivery{delivery}}
+	service := &Service{store: store, logger: slog.Default(), refreshPullRequestStatus: func(_ context.Context, ref domain.PullRequestRef, _ domain.PullRequestRefreshContext) (domain.PullRequest, error) {
+		return store.byNumber[ref.Number], nil
+	}}
+	if err := service.ReconcileWorkerGitRefs(context.Background(), "org-1", 99, []domain.WorkerGitRef{{Branch: "docs/custom", SHA: "abc123"}}); err != nil {
+		t.Fatal(err)
+	}
+	if store.claimed == nil || store.claimed.SessionID != "session-1" || store.openedNotifications != 1 {
+		t.Fatalf("claim = %+v, notifications = %d", store.claimed, store.openedNotifications)
+	}
+}
+
 func webhookTestPullRequest(id string, number int) domain.PullRequest {
 	return domain.PullRequest{ID: id, OrgID: "org-1", Provider: "github", Repository: "acme/widgets", Number: number}
 }
@@ -92,7 +157,7 @@ func TestSCMWebhookSuccessUsesWebhookSourceWithoutSchedulingFallback(t *testing.
 	}
 }
 
-func TestSCMWebhookRefreshFailureSchedulesOnlyResolvedPullRequest(t *testing.T) {
+func TestSCMWebhookRefreshFailureReturnsErrorForDeliveryRetry(t *testing.T) {
 	pr := webhookTestPullRequest("pr-1", 7)
 	store := &scmRefreshStore{byNumber: map[int]domain.PullRequest{7: pr}}
 	refreshErr := errors.New("snapshot unavailable")
@@ -103,22 +168,16 @@ func TestSCMWebhookRefreshFailureSchedulesOnlyResolvedPullRequest(t *testing.T) 
 		},
 	}
 	delivery := domain.GitHubWebhookDelivery{DeliveryID: "delivery-fail", Event: "pull_request", GitHubRepositoryID: 99, Payload: []byte(`{"pull_request":{"number":7}}`)}
-	before := time.Now().UTC()
 	err := service.processSCMWebhook(context.Background(), "org-1", delivery)
-	after := time.Now().UTC()
 	if !errors.Is(err, refreshErr) {
 		t.Fatalf("error = %v, want original refresh error", err)
 	}
-	if len(store.scheduled) != 1 {
-		t.Fatalf("scheduled = %+v", store.scheduled)
-	}
-	got := store.scheduled[0]
-	if got.orgID != pr.OrgID || got.pullRequestID != pr.ID || got.reason != domain.PullRequestRefreshWebhookFailed || got.message != refreshErr.Error() || got.dueAt.Before(before) || got.dueAt.After(after) {
-		t.Fatalf("scheduled fallback = %+v", got)
+	if len(store.scheduled) != 0 {
+		t.Fatalf("scheduled fallback = %+v, want none", store.scheduled)
 	}
 }
 
-func TestSCMWebhookTimeoutSchedulesFallbackWithFreshBoundedContext(t *testing.T) {
+func TestSCMWebhookTimeoutReturnsErrorForDeliveryRetry(t *testing.T) {
 	pr := webhookTestPullRequest("pr-timeout", 9)
 	store := &scmRefreshStore{
 		byNumber:                   map[int]domain.PullRequest{9: pr},
@@ -137,8 +196,8 @@ func TestSCMWebhookTimeoutSchedulesFallbackWithFreshBoundedContext(t *testing.T)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want original deadline error", err)
 	}
-	if len(store.scheduled) != 1 || store.scheduled[0].pullRequestID != pr.ID {
-		t.Fatalf("scheduled = %+v, want timeout fallback for %s", store.scheduled, pr.ID)
+	if len(store.scheduled) != 0 {
+		t.Fatalf("scheduled fallback = %+v, want none", store.scheduled)
 	}
 }
 
@@ -185,7 +244,7 @@ func TestSCMWebhookUnresolvedOrMalformedEventSchedulesNothing(t *testing.T) {
 	}
 }
 
-func TestSCMRepositoryWideWebhookSchedulesOnlyFailedPullRequest(t *testing.T) {
+func TestSCMRepositoryWideWebhookReturnsFailureForDeliveryRetry(t *testing.T) {
 	first := webhookTestPullRequest("pr-1", 7)
 	second := webhookTestPullRequest("pr-2", 8)
 	store := &scmRefreshStore{byRepo: []domain.PullRequest{first, second}}
@@ -206,8 +265,8 @@ func TestSCMRepositoryWideWebhookSchedulesOnlyFailedPullRequest(t *testing.T) {
 	if err := service.processSCMWebhook(context.Background(), "org-1", delivery); !errors.Is(err, refreshErr) {
 		t.Fatalf("error = %v, want refresh error", err)
 	}
-	if len(store.scheduled) != 1 || store.scheduled[0].pullRequestID != second.ID {
-		t.Fatalf("scheduled = %+v, want only %s", store.scheduled, second.ID)
+	if len(store.scheduled) != 0 {
+		t.Fatalf("scheduled fallback = %+v, want none", store.scheduled)
 	}
 }
 
@@ -234,8 +293,8 @@ func TestSCMRepositoryWideWebhookContinuesAfterOneRefreshFailure(t *testing.T) {
 	if len(refreshed) != 2 || refreshed[0] != first.ID || refreshed[1] != second.ID {
 		t.Fatalf("refreshed = %v, want both pull requests", refreshed)
 	}
-	if len(store.scheduled) != 1 || store.scheduled[0].pullRequestID != first.ID {
-		t.Fatalf("scheduled = %+v, want only %s", store.scheduled, first.ID)
+	if len(store.scheduled) != 0 {
+		t.Fatalf("scheduled fallback = %+v, want none", store.scheduled)
 	}
 }
 
@@ -260,7 +319,7 @@ func (s *scmNotificationStore) RecordPullRequestOpened(
 	return nil
 }
 
-func TestOpenedPullRequestWebhookDoesNotCreateBellNotification(t *testing.T) {
+func TestOpenedPullRequestWebhookCreatesBellNotification(t *testing.T) {
 	t.Parallel()
 	store := &scmNotificationStore{}
 	service := &Service{
@@ -276,8 +335,8 @@ func TestOpenedPullRequestWebhookDoesNotCreateBellNotification(t *testing.T) {
 
 	_ = service.processSCMWebhook(context.Background(), "org-1", delivery)
 
-	if store.notifications != 0 {
-		t.Fatalf("opened PR notifications = %d, want 0 for local parity", store.notifications)
+	if store.notifications != 1 {
+		t.Fatalf("opened PR notifications = %d, want 1", store.notifications)
 	}
 }
 

@@ -642,6 +642,28 @@ func (s *Store) ReconcileGitHubRepositories(
 			); err != nil {
 				return err
 			}
+			// A reconnect can create a new grant row after the old installation's
+			// grant was revoked. Existing projects must follow the newly verified
+			// grant so their running sessions can obtain checkout credentials again.
+			if _, err := tx.Exec(
+				ctx,
+				`UPDATE ao_projects project
+				SET github_repository_grant_id = grant_row.id,
+				    updated_at = now()
+				FROM ao_github_repository_grants grant_row
+				WHERE project.org_id = $1
+				  AND project.github_repository_id = $2
+				  AND project.repository_url = $3
+				  AND grant_row.org_id = project.org_id
+				  AND grant_row.github_repository_id = project.github_repository_id
+				  AND grant_row.revoked_at IS NULL
+				  AND project.github_repository_grant_id IS DISTINCT FROM grant_row.id`,
+				orgID,
+				repository.GitHubRepositoryID,
+				repository.HTMLURL,
+			); err != nil {
+				return err
+			}
 		}
 		if len(active) == 0 {
 			if _, err := tx.Exec(
@@ -1074,6 +1096,34 @@ func (s *Store) InsertGitHubWebhook(
 	return false, nil
 }
 
+// RecentOpenedPullRequestWebhooks replays verified GitHub facts when a worker
+// reports a custom branch after its opened webhook was already processed.
+func (s *Store) RecentOpenedPullRequestWebhooks(ctx context.Context, repositoryID int64, since time.Time, limit int) ([]domain.GitHubWebhookDelivery, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	rows, err := s.pool.Query(ctx, `SELECT github_delivery_id, event, action,
+		COALESCE(github_installation_id, 0), COALESCE(github_repository_id, 0), payload
+		FROM ao_github_webhook_deliveries
+		WHERE github_repository_id = $1 AND event = 'pull_request' AND action = 'opened'
+		  AND received_at >= $2
+		ORDER BY received_at DESC LIMIT $3`, repositoryID, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var deliveries []domain.GitHubWebhookDelivery
+	for rows.Next() {
+		var delivery domain.GitHubWebhookDelivery
+		if err := rows.Scan(&delivery.DeliveryID, &delivery.Event, &delivery.Action,
+			&delivery.GitHubInstallationID, &delivery.GitHubRepositoryID, &delivery.Payload); err != nil {
+			return nil, err
+		}
+		deliveries = append(deliveries, delivery)
+	}
+	return deliveries, rows.Err()
+}
+
 func (s *Store) ClaimGitHubWebhook(
 	ctx context.Context,
 	owner string,
@@ -1102,10 +1152,15 @@ func (s *Store) ClaimGitHubWebhook(
 				candidate_row.lease_until IS NULL
 				OR candidate_row.lease_until < now()
 			  )
+			  -- SCM webhooks refresh current GitHub state, so a retrying PR must
+			  -- not hold every later event for the same installation. Installation
+			  -- changes still run in receipt order because they mutate routing.
 			  AND NOT EXISTS (
 				SELECT 1
 				FROM ao_github_webhook_deliveries earlier
-				WHERE candidate_row.github_installation_id IS NOT NULL
+				WHERE candidate_row.event IN ('installation', 'installation_repositories')
+				  AND earlier.event IN ('installation', 'installation_repositories')
+				  AND candidate_row.github_installation_id IS NOT NULL
 				  AND earlier.github_installation_id = candidate_row.github_installation_id
 				  AND earlier.status IN ('pending', 'retry', 'processing')
 				  AND (earlier.received_at, earlier.github_delivery_id) <
@@ -1256,8 +1311,11 @@ func (s *Store) GitHubInstallationByRoute(
 
 func (s *Store) ApplyGitHubInstallationEvent(
 	ctx context.Context,
-	orgID, installationID, action string,
+	orgID, installationID, action, source string,
 ) error {
+	if source != "webhook" && source != "reconcile" {
+		return ErrInvalid
+	}
 	return s.withGitHubOrg(ctx, orgID, "", func(tx pgx.Tx) error {
 		status := "active"
 		switch action {
@@ -1301,11 +1359,12 @@ func (s *Store) ApplyGitHubInstallationEvent(
 				) VALUES (
 					$1, 'github.installation.' || $3,
 					'github_installation', $2,
-					jsonb_build_object('source', 'webhook')
+					jsonb_build_object('source', $4::text)
 				)`,
 				orgID,
 				installationID,
 				action,
+				source,
 			)
 			return err
 		}
@@ -1332,11 +1391,12 @@ func (s *Store) ApplyGitHubInstallationEvent(
 			) VALUES (
 				$1, 'github.installation.' || $3,
 				'github_installation', $2,
-				jsonb_build_object('source', 'webhook')
+				jsonb_build_object('source', $4::text)
 			)`,
 			orgID,
 			installationID,
 			action,
+			source,
 		)
 		return err
 	})

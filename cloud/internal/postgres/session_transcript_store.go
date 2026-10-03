@@ -97,6 +97,7 @@ func (s *Store) TerminateSession(
 			`UPDATE ao_sessions
 			SET is_terminated = true,
 				activity_state = 'exited',
+				activity_source_request_id = NULL,
 				updated_at = now()
 			WHERE id = $1 AND org_id = $2`,
 			sessionID, orgID,
@@ -149,6 +150,7 @@ func (s *Store) RestoreSession(
 			`UPDATE ao_sessions
 			SET is_terminated = false,
 				activity_state = 'idle',
+				activity_source_request_id = NULL,
 				updated_at = now()
 			WHERE id = $1 AND org_id = $2 AND is_terminated = true`,
 			sessionID, orgID,

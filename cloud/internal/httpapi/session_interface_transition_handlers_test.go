@@ -15,14 +15,15 @@ import (
 
 type interfaceTransitionHTTPStore struct {
 	Store
-	session      domain.Session
-	transition   domain.SessionInterfaceTransition
-	found        bool
-	startCalls   int
-	advanceCalls int
-	ackCalls     int
-	err          error
-	startErr     error
+	session       domain.Session
+	transition    domain.SessionInterfaceTransition
+	found         bool
+	startCalls    int
+	startSettings domain.ChatTurnSettings
+	advanceCalls  int
+	ackCalls      int
+	err           error
+	startErr      error
 }
 
 func (f *interfaceTransitionHTTPStore) GetSession(
@@ -38,11 +39,24 @@ func (f *interfaceTransitionHTTPStore) GetLatestRelevantSessionInterfaceTransiti
 }
 
 func (f *interfaceTransitionHTTPStore) StartSessionInterfaceTransition(
-	context.Context, domain.Principal, string, string, domain.SessionInterface,
-	domain.SessionInterface, domain.SessionInterfaceTransitionPolicy, string,
+	_ context.Context, _ domain.Principal, _, _ string, _ domain.SessionInterface,
+	_ domain.SessionInterface, _ domain.SessionInterfaceTransitionPolicy, _ string, settings ...domain.ChatTurnSettings,
 ) (domain.SessionInterfaceTransition, error) {
 	f.startCalls++
+	if len(settings) > 0 {
+		f.startSettings = settings[0]
+	}
 	return f.transition, f.startErr
+}
+
+func TestStartSessionInterfaceTransitionPreservesPendingCodexSelection(t *testing.T) {
+	store := &interfaceTransitionHTTPStore{session: domain.Session{Harness: "codex", Interface: domain.SessionInterfaceChat}}
+	server := &Server{store: store}
+	recorder := httptest.NewRecorder()
+	server.startSessionInterfaceTransition(recorder, transitionRequest(http.MethodPost, "/", `{"targetMode":"tui","policy":"drain","model":"gpt-selected","reasoningEffort":"high"}`))
+	if recorder.Code != http.StatusAccepted || store.startSettings.Model != "gpt-selected" || store.startSettings.ReasoningEffort != "high" {
+		t.Fatalf("pending Chat selection lost: code=%d settings=%+v", recorder.Code, store.startSettings)
+	}
 }
 
 func (f *interfaceTransitionHTTPStore) GetActiveSessionInterfaceTransition(context.Context, domain.Principal, string, string) (domain.SessionInterfaceTransition, bool, error) {

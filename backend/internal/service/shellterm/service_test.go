@@ -50,6 +50,8 @@ type fakeShellRuntime struct {
 	childProbeCh  chan struct{}
 	cueReady      bool
 	cueReadyGate  <-chan struct{}
+
+	childProbeWaitForCancellation bool
 }
 
 type sentInput struct {
@@ -143,6 +145,10 @@ func (f *fakeShellRuntime) IsChildAlive(ctx context.Context, handle ports.Runtim
 		case f.childProbeCh <- struct{}{}:
 		default:
 		}
+	}
+	if f.childProbeWaitForCancellation {
+		<-ctx.Done()
+		return false, ctx.Err()
 	}
 	if f.childProbeErr != nil {
 		return false, f.childProbeErr

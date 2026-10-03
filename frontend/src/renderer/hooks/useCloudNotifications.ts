@@ -45,11 +45,28 @@ export function useCloudNotifications(
 		// remain the recovery source after a reconnect.
 		const refresh = () => { void queryClient.invalidateQueries({ queryKey: notificationsKey }); };
 		const stopHints = subscribeCloudNotificationHints(refresh);
-		void subscribeNotificationEventsBridged({ baseUrl: base, orgId, signal: controller.signal, onEvent: () => {
-			refresh();
-			void queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
-			void queryClient.invalidateQueries({ queryKey: orchestratorChildrenQueryKey });
-		}, onError: refresh });
+		let after: number | undefined;
+		const reconnect = async () => {
+			while (!controller.signal.aborted) {
+				await subscribeNotificationEventsBridged({ baseUrl: base, orgId, after, signal: controller.signal, onEvent: (event) => {
+					after = Math.max(after ?? 0, event.sequence);
+					refresh();
+					void queryClient.invalidateQueries({ queryKey: cloudSessionsQueryKey });
+					void queryClient.invalidateQueries({ queryKey: orchestratorChildrenQueryKey });
+				}, onError: refresh });
+				if (controller.signal.aborted) return;
+				refresh();
+				await new Promise<void>((resolve) => {
+					const onAbort = () => { clearTimeout(timer); resolve(); };
+					const timer = setTimeout(() => {
+						controller.signal.removeEventListener("abort", onAbort);
+						resolve();
+					}, 1000);
+					controller.signal.addEventListener("abort", onAbort, { once: true });
+				});
+			}
+		};
+		void reconnect();
 		return () => { stopHints(); controller.abort(); };
 	}, [base, live, orgId, queryClient, ready, status]);
 

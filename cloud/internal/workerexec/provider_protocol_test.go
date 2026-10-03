@@ -365,3 +365,41 @@ func TestACPSettingsUseAdvertisedChoices(t *testing.T) {
 		t.Fatal("advertised ACP approval mode was hidden")
 	}
 }
+
+func TestCodexNotificationsProjectStructuredActivities(t *testing.T) {
+	frames := []struct {
+		method string
+		params string
+		kind   string
+		status string
+	}{
+		{"item/started", `{"threadId":"thread-1","item":{"id":"cmd-1","type":"commandExecution","command":"go test ./..."}}`, "command", "running"},
+		{"item/completed", `{"threadId":"thread-1","item":{"id":"cmd-1","type":"commandExecution","command":"go test ./...","aggregatedOutput":"ok","exitCode":0}}`, "command", "completed"},
+		{"item/completed", `{"threadId":"thread-1","item":{"id":"edit-1","type":"fileChange","changes":[{"path":"main.go","kind":{"type":"update"}}]}}`, "file_change", "completed"},
+	}
+	for _, test := range frames {
+		outputs := projectCodexNotification(codexFrame{Method: test.method, Params: json.RawMessage(test.params)}, "thread-1")
+		if len(outputs) != 1 || outputs[0].Activity == nil || outputs[0].Activity.Kind != test.kind || outputs[0].Activity.Status != test.status {
+			t.Fatalf("%s: %#v", test.method, outputs)
+		}
+	}
+}
+
+func TestCodexProjectsToolCallsAndFilePatches(t *testing.T) {
+	tool := projectCodexNotification(codexFrame{Method: "item/completed", Params: json.RawMessage(`{"threadId":"thread-1","item":{"id":"mcp-1","type":"mcpToolCall","server":"github","tool":"search","arguments":{"query":"bug"},"result":{"count":1},"success":true}}`)}, "thread-1")
+	if len(tool) != 1 || tool[0].Activity == nil || tool[0].Activity.Kind != "mcp_tool" || tool[0].Activity.Detail["server"] != "github" || tool[0].Activity.Detail["toolName"] != "search" {
+		t.Fatalf("MCP tool projection = %#v", tool)
+	}
+	search := projectCodexNotification(codexFrame{Method: "item/started", Params: json.RawMessage(`{"threadId":"thread-1","item":{"id":"web-1","type":"webSearch","query":"release notes"}}`)}, "thread-1")
+	if len(search) != 1 || search[0].Activity.Kind != "command" || search[0].Activity.Summary != "Searched the web for release notes" {
+		t.Fatalf("web search projection = %#v", search)
+	}
+	edit := projectCodexNotification(codexFrame{Method: "item/completed", Params: json.RawMessage(`{"threadId":"thread-1","item":{"id":"edit-1","type":"fileChange","changes":[{"path":"old.go","kind":{"type":"update","move_path":"new.go"},"diff":"@@ -1 +1 @@\n-old\n+new\n"}]}}`)}, "thread-1")
+	if len(edit) != 1 || edit[0].Activity == nil || edit[0].Activity.Kind != "file_change" {
+		t.Fatalf("file change projection = %#v", edit)
+	}
+	files, ok := edit[0].Activity.Detail["files"].([]map[string]any)
+	if !ok || len(files) != 1 || files[0]["status"] != "renamed" || files[0]["oldPath"] != "old.go" || files[0]["path"] != "new.go" || files[0]["additions"] != 1 || files[0]["deletions"] != 1 || files[0]["patch"] == "" {
+		t.Fatalf("file patch = %#v", edit[0].Activity.Detail["files"])
+	}
+}

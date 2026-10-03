@@ -20,16 +20,17 @@ func (s *Store) WorkerGitHubCheckoutContext(
 ) (domain.GitHubCheckoutContext, error) {
 	authorization := domain.GitHubCheckoutContext{OrgID: orgID, SessionID: sessionID}
 	err := s.withOrg(ctx, orgID, func(tx pgx.Tx) error {
+		var projectGrantID, activeGrantID string
 		err := tx.QueryRow(ctx,
-			`SELECT project.id, installation.github_installation_id,
+			`SELECT project.id, project.github_repository_grant_id, grant_row.id,
+				installation.github_installation_id,
 				repository.github_repository_id, repository.full_name,
-				repository.clone_url, repository.default_branch
+				repository.clone_url, project.default_branch
 			FROM ao_sessions session
 			JOIN ao_projects project
 			  ON project.org_id = session.org_id AND project.id = session.project_id
 			JOIN ao_github_repository_grants grant_row
 			  ON grant_row.org_id = project.org_id
-			 AND grant_row.id = project.github_repository_grant_id
 			 AND grant_row.github_repository_id = project.github_repository_id
 			JOIN ao_github_installations installation
 			  ON installation.org_id = grant_row.org_id
@@ -48,10 +49,14 @@ func (s *Store) WorkerGitHubCheckoutContext(
 			  AND installation.deleted_at IS NULL
 			  AND repository.is_archived = false
 			  AND repository.is_disabled = false
-			  AND btrim(repository.clone_url) <> ''`,
+			  AND btrim(repository.clone_url) <> ''
+			ORDER BY grant_row.granted_at DESC
+			LIMIT 1`,
 			orgID, sessionID,
 		).Scan(
 			&authorization.ProjectID,
+			&projectGrantID,
+			&activeGrantID,
 			&authorization.GitHubInstallationID,
 			&authorization.GitHubRepositoryID,
 			&authorization.FullName,
@@ -63,6 +68,14 @@ func (s *Store) WorkerGitHubCheckoutContext(
 		}
 		if err != nil {
 			return fmt.Errorf("resolve worker GitHub checkout context: %w", err)
+		}
+		if projectGrantID != activeGrantID {
+			if _, err := tx.Exec(ctx, `UPDATE ao_projects
+				SET github_repository_grant_id = $3
+				WHERE org_id = $1 AND id = $2 AND github_repository_grant_id = $4`,
+				orgID, authorization.ProjectID, activeGrantID, projectGrantID); err != nil {
+				return fmt.Errorf("rebind project GitHub grant: %w", err)
+			}
 		}
 		return nil
 	})

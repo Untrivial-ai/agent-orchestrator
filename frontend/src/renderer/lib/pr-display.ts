@@ -227,6 +227,13 @@ export function prCardPresentation(pr: SessionPRSummary): PRCardPresentation {
 		}
 		statusRows.push(cardStatus("review", "pr.card.reviewStatus", reviewTone(pr.review.decision, pr.review.hasUnresolvedHumanComments), reviewStatusDetail(pr)));
 		const mergeable = prCanMerge(pr);
+		if (hasLostGitHubAccess(pr)) {
+			return { primary, supporting, statusRows, readiness: {
+				label: appI18n.t("pr.merge.accessLost"),
+				detail: appI18n.t("pr.merge.accessLostDetail"),
+				tone: "warning",
+			} };
+		}
 		const checkingReadiness = pr.ci.state === "pending" || pr.ci.state === "unknown" || pr.mergeability.state === "unknown";
 		return { primary, supporting, statusRows, readiness: {
 			label: appI18n.t(checkingReadiness ? "pr.merge.checkingReadiness" : mergeable ? "pr.merge.mergeable" : "pr.merge.notMergeableYet"),
@@ -317,13 +324,13 @@ export function prSummaryParts(pr: SessionPRSummary): PRSummaryPart[] {
 		{
 			key: "merge",
 			label: appI18n.t("pr.section.merge"),
-			status: mergeabilityLabel(pr.mergeability.state),
-			summary: mergeSummary(pr),
+			status: hasLostGitHubAccess(pr) ? appI18n.t("pr.merge.accessLost") : mergeabilityLabel(pr.mergeability.state),
+			summary: hasLostGitHubAccess(pr) ? appI18n.t("pr.merge.accessLostDetail") : mergeSummary(pr),
 			links: mergeLinks(pr),
 			linkTotal: mergeLinkTotal(pr),
 			overflowLabel: mergeOverflowLabel(pr),
 			overflowNoun: mergeOverflowNoun(pr),
-			tone: mergeabilityTone(pr.mergeability.state),
+			tone: hasLostGitHubAccess(pr) ? "warning" : mergeabilityTone(pr.mergeability.state),
 		},
 		{
 			key: "review",
@@ -560,6 +567,10 @@ function mergeabilityLabel(state: SessionPRSummary["mergeability"]["state"]): st
 		case "unknown":
 			return appI18n.t("pr.merge.checking");
 	}
+}
+
+function hasLostGitHubAccess(pr: SessionPRSummary): boolean {
+	return pr.mergeability.reasons.includes("github_access_lost");
 }
 
 function mergeabilityTone(state: SessionPRSummary["mergeability"]["state"]): PRDisplayTone {

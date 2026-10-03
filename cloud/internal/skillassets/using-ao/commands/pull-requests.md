@@ -16,8 +16,8 @@ curl --unix-socket $AO_PULL_REQUEST_SOCKET -X POST http://localhost/pull-request
   -d '{"branch":"<pushed branch name>","title":"<PR title>","body":"<PR body>"}'
 ```
 
-The control plane pushes the branch and opens the PR against the repository's
-default branch, and the PR is attributed to this session automatically (it
+The control plane pushes the branch and opens the PR against the project's
+configured default branch, and the PR is attributed to this session automatically (it
 shows up in `ao list` for your orchestrator).
 
 ## ao claim-pr — attach an existing PR

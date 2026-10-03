@@ -241,17 +241,29 @@ func (s *Store) ClaimWorkerRequest(
 			orgID, sessionID, epoch, intervalString(lease),
 		), &request)
 		if errors.Is(err, pgx.ErrNoRows) {
-			_, cleanupErr := tx.Exec(ctx,
-				`UPDATE ao_worker_requests
-				SET status = 'failed', error_code = 'TRANSPORT_TIMEOUT',
-					error_message = 'The worker request expired before completion.',
-					completed_at = now(), updated_at = now()
-				WHERE org_id = $1 AND session_id = $2 AND worker_epoch = $3
-				  AND status IN ('pending', 'claimed')
-				  AND (expires_at <= now() OR attempt_count >= 3)`,
+			var failedInputID string
+			cleanupErr := tx.QueryRow(ctx,
+				`WITH expired AS (
+					UPDATE ao_worker_requests
+					SET status = 'failed', error_code = 'TRANSPORT_TIMEOUT',
+						error_message = 'The worker request expired before completion.',
+						completed_at = now(), updated_at = now()
+					WHERE org_id = $1 AND session_id = $2 AND worker_epoch = $3
+					  AND status IN ('pending', 'claimed')
+					  AND (expires_at <= now() OR attempt_count >= 3)
+					RETURNING id, kind, created_at
+				)
+				SELECT id FROM expired WHERE kind = 'terminal.input'
+				ORDER BY created_at DESC, id DESC LIMIT 1`,
 				orgID, sessionID, epoch,
-			)
-			return cleanupErr
+			).Scan(&failedInputID)
+			if errors.Is(cleanupErr, pgx.ErrNoRows) {
+				return nil
+			}
+			if cleanupErr != nil {
+				return cleanupErr
+			}
+			return settleFailedTerminalInput(ctx, tx, orgID, sessionID, epoch, failedInputID)
 		}
 		if err != nil {
 			return err
@@ -372,8 +384,32 @@ func (s *Store) finishWorkerRequest(
 				"error": message,
 			})
 		}
+		if kind == "terminal.input" && status == "failed" {
+			return settleFailedTerminalInput(ctx, tx, orgID, sessionID, epoch, requestID)
+		}
 		return err
 	})
+}
+
+// An admitted TUI keystroke marks the session active before the worker handles
+// it. If delivery fails, release that optimistic activity only while this
+// request still owns it. An agent hook or a newer prompt replaces that owner.
+func settleFailedTerminalInput(ctx context.Context, tx pgx.Tx, orgID, sessionID string, epoch int64, requestID string) error {
+	_, err := tx.Exec(ctx, `UPDATE ao_sessions session
+		SET activity_state = 'idle',
+			activity_source_request_id = NULL,
+			activity_blocked_tool_name = '',
+			activity_blocked_tool_use_id = '',
+			updated_at = now()
+		FROM ao_worker_requests failed
+		WHERE failed.org_id = $1 AND failed.session_id = $2
+		  AND failed.id = $3 AND failed.worker_epoch = $4
+		  AND failed.kind = 'terminal.input' AND failed.status = 'failed'
+		  AND session.org_id = failed.org_id AND session.id = failed.session_id
+		  AND session.interface = 'tui' AND session.activity_state = 'active'
+		  AND session.is_terminated = false
+		  AND session.activity_source_request_id = failed.id`, orgID, sessionID, requestID, epoch)
+	return err
 }
 
 // A closed TUI is expected while either direction of an interface handoff is
@@ -1019,9 +1055,10 @@ func (s *Store) queueTerminalRequest(
 				return nil
 			}
 		}
-		if _, err := createWorkerRequest(
+		request, err := createWorkerRequest(
 			ctx, tx, terminal.OrgID, terminal.SessionID, kind, payload, 15*time.Second, "",
-		); err != nil {
+		)
+		if err != nil {
 			return err
 		}
 		if agentTerminalInputMarksSessionActive(terminal, kind) {
@@ -1029,9 +1066,10 @@ func (s *Store) queueTerminalRequest(
 			// activity in the same transaction as input admission so a prompt
 			// submitted in TUI cannot appear idle to the switch policy UI.
 			if _, err := tx.Exec(ctx, `UPDATE ao_sessions
-				SET activity_state = 'active', updated_at = now()
+				SET activity_state = 'active', activity_source_request_id = $3,
+					updated_at = now()
 				WHERE org_id = $1 AND id = $2 AND interface = 'tui'
-				  AND is_terminated = false`, terminal.OrgID, terminal.SessionID); err != nil {
+				  AND is_terminated = false`, terminal.OrgID, terminal.SessionID, request.ID); err != nil {
 				return err
 			}
 		}
@@ -1281,6 +1319,7 @@ func (s *Store) MarkTerminalExited(
 		_, err = tx.Exec(ctx,
 			`UPDATE ao_sessions session
 			SET activity_state = 'exited',
+				activity_source_request_id = NULL,
 				activity_blocked_tool_name = '',
 				activity_blocked_tool_use_id = '',
 				updated_at = now()

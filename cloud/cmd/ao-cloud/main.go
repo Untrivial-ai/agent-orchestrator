@@ -21,7 +21,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/interfacereconcile"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/notification"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/postgres"
-	"github.com/aoagents/agent-orchestrator/cloud/internal/prstatus"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/reconcile"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/sandbox"
 	coderprovider "github.com/aoagents/agent-orchestrator/cloud/internal/sandbox/coder"
@@ -30,7 +29,6 @@ import (
 	"github.com/aoagents/agent-orchestrator/cloud/internal/sandboxresolve"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/secrets"
 	"github.com/aoagents/agent-orchestrator/cloud/internal/worker"
-	"github.com/google/uuid"
 )
 
 // readSSHPubKeys loads the operator SSH keys authorized on every sandbox. They
@@ -358,17 +356,6 @@ func run(logger *slog.Logger) error {
 			Logger:        logger,
 		})
 	}
-	// The scanner only has anything to refresh where GitHub is configured to
-	// resolve an installation for.
-	var prStatusScanner *prstatus.Scanner
-	if githubService != nil {
-		prStatusScanner = prstatus.New(store, githubService, prstatus.Options{
-			Interval:     cfg.PRStatusPollInterval,
-			WorkerID:     "pr-fallback-" + uuid.NewString(),
-			SilenceGrace: cfg.PRWebhookSilenceGrace,
-			Logger:       logger,
-		})
-	}
 	// Worker tokens are only issued where sandboxes are provisioned. Leaving
 	// this nil elsewhere is what makes the worker routes 404 instead of
 	// accepting credentials no sandbox could have been given.
@@ -512,18 +499,6 @@ func run(logger *slog.Logger) error {
 			logger.Error("interface-transition coordinator stopped", "error", err)
 		}
 	}()
-
-	if prStatusScanner != nil {
-		go func() {
-			logger.Info("pull request fallback scanner started",
-				"interval", cfg.PRStatusPollInterval,
-				"silence_grace", cfg.PRWebhookSilenceGrace,
-			)
-			if err := prStatusScanner.Run(ctx); err != nil {
-				logger.Error("pull request fallback scanner stopped", "error", err)
-			}
-		}()
-	}
 
 	select {
 	case <-ctx.Done():

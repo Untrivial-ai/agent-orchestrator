@@ -137,6 +137,8 @@ type WorkerLaunch struct {
 	ParentSessionID string
 	Mode            string
 	Model           string
+	ReasoningEffort string
+	SelectionAt     time.Time
 	DeniedCommands  []string
 	RepositoryURL   string
 	DefaultBranch   string

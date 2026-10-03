@@ -2116,6 +2116,8 @@
 	"chat.edit.send": "Envoyer le message modifié",
 	"chat.edit.sendShortcut": "Envoyer le message modifié (⌘/Ctrl+Entrée)",
 	"pr.card.reviewStatus": "Review status",
+	"pr.merge.accessLost": "Status unavailable",
+	"pr.merge.accessLostDetail": "GitHub access to this repository is unavailable, so merge readiness cannot be checked.",
 	"pr.merge.checkingDetail": "Waiting for the latest checks and review state.",
 	"pr.merge.checkingReadiness": "Checking merge readiness",
 	"pr.merge.notMergeableYet": "Not mergeable yet",

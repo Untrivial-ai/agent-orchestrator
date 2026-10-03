@@ -84,3 +84,53 @@ func TestPullRequestByGitHubReferenceSupportsProjectCreatedBeforeAppInstall(t *t
 		t.Fatalf("resolved PR id = %q, want %q", got.ID, pullRequest.ID)
 	}
 }
+
+func TestSessionForGitHubPullRequestHeadMatchesOnlyOwningBranch(t *testing.T) {
+	store, admin, fixture := openNotificationTestStore(t)
+	ctx := context.Background()
+	repositoryID := time.Now().UnixNano()
+	fullName := fmt.Sprintf("octo/branch-%d", repositoryID)
+	url := "https://github.com/" + fullName
+	if _, err := admin.Exec(ctx, `INSERT INTO ao_github_repositories
+		(github_repository_id, github_owner_account_id, name, full_name, html_url, clone_url, visibility)
+		VALUES ($1, 1, 'branch', $2, $3, $4, 'private')`, repositoryID, fullName, url, url+".git"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = admin.Exec(context.Background(), `DELETE FROM ao_github_repositories WHERE github_repository_id = $1`, repositoryID)
+	})
+	tx, err := admin.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT set_config('ao.org_id', $1, true)`, fixture.orgID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE ao_projects SET repository_url = $1 WHERE id = $2`, url, fixture.projectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE ao_sessions SET branch = 'ao/session-1' WHERE id = $1`, fixture.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.SessionForGitHubPullRequestHead(ctx, fixture.orgID, repositoryID, "ao/session-1", "abc123")
+	if err != nil || got != fixture.sessionID {
+		t.Fatalf("matched session %q, error %v; want %q", got, err, fixture.sessionID)
+	}
+	if _, err := store.SessionForGitHubPullRequestHead(ctx, fixture.orgID, repositoryID, "someone-else", "abc123"); err != ErrNotFound {
+		t.Fatalf("foreign branch error = %v, want not found", err)
+	}
+	if err := store.ReplaceWorkerGitRefs(ctx, fixture.orgID, fixture.sessionID, repositoryID, []domain.WorkerGitRef{{Branch: "docs/new", SHA: "def456"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.SessionForGitHubPullRequestHead(ctx, fixture.orgID, repositoryID, "docs/new", "def456")
+	if err != nil || got != fixture.sessionID {
+		t.Fatalf("custom branch match = %q, %v", got, err)
+	}
+	if _, err := store.SessionForGitHubPullRequestHead(ctx, fixture.orgID, repositoryID, "docs/new", "other-sha"); err != ErrNotFound {
+		t.Fatalf("wrong commit error = %v, want not found", err)
+	}
+}

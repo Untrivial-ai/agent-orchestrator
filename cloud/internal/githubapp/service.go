@@ -45,9 +45,10 @@ type Store interface {
 	ClaimGitHubWebhook(context.Context, string, time.Time) (domain.GitHubWebhookDelivery, error)
 	CompleteGitHubWebhook(context.Context, string, string) error
 	RetryGitHubWebhook(context.Context, string, string, string, time.Time, bool) error
+	RecentOpenedPullRequestWebhooks(context.Context, int64, time.Time, int) ([]domain.GitHubWebhookDelivery, error)
 	GitHubInstallationRoutes(context.Context, int64) ([]domain.GitHubInstallationRoute, error)
 	GitHubInstallationByRoute(context.Context, string, string) (domain.GitHubInstallation, error)
-	ApplyGitHubInstallationEvent(context.Context, string, string, string) error
+	ApplyGitHubInstallationEvent(context.Context, string, string, string, string) error
 	WorkerGitHubCheckoutContext(context.Context, string, string) (domain.GitHubCheckoutContext, error)
 	WorkerRemoteGitHubCheckoutContext(context.Context, string, string) (domain.RemoteGitHubCheckoutContext, error)
 	WorkerSessionExtraRepos(context.Context, string, string) ([]domain.RepoRef, error)
@@ -63,10 +64,10 @@ type Store interface {
 	GitHubInstallationForRepository(ctx context.Context, orgID, repository string) (installationID, repositoryID int64, err error)
 	PullRequestByGitHubReference(ctx context.Context, orgID string, repositoryID int64, number int) (domain.PullRequest, error)
 	PullRequestByGitHubHead(ctx context.Context, orgID string, repositoryID int64, headSHA string) (domain.PullRequest, error)
+	SessionForGitHubPullRequestHead(context.Context, string, int64, string, string) (string, error)
 	PullRequestsByGitHubRepository(ctx context.Context, orgID string, repositoryID int64) ([]domain.PullRequest, error)
 	RecordPullRequestOpened(ctx context.Context, orgID string, pr domain.PullRequest, deliveryID string) error
 	ApplyPullRequestSnapshot(ctx context.Context, orgID, pullRequestID string, snapshot domain.PullRequestSnapshot, refresh domain.PullRequestRefreshContext) (domain.PullRequestTransition, error)
-	SchedulePullRequestRefresh(ctx context.Context, orgID, pullRequestID string, reason domain.PullRequestRefreshReason, dueAt time.Time, message string) error
 	CreateReviewRun(ctx context.Context, orgID, pullRequestID, reviewSessionID, targetSHA string) (domain.ReviewRun, bool, error)
 	OpenReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID, prompt string) error
 	CloseReviewTerminal(ctx context.Context, orgID, sessionID, reviewRunID string) error
@@ -361,7 +362,35 @@ func (s *Service) ListInstallations(
 	principal domain.Principal,
 	orgID string,
 ) ([]domain.GitHubInstallation, error) {
-	return s.store.ListGitHubInstallations(ctx, principal, orgID)
+	installations, err := s.store.ListGitHubInstallations(ctx, principal, orgID)
+	if err != nil {
+		return nil, err
+	}
+	deleted := false
+	for _, installation := range installations {
+		if installation.Status != "active" {
+			continue
+		}
+		_, err := s.client.GetInstallation(ctx, installation.GitHubInstallationID)
+		if err == nil {
+			continue
+		}
+		var httpError *HTTPError
+		if !errors.As(err, &httpError) || httpError.StatusCode != http.StatusNotFound {
+			// A transient GitHub error is not proof that an installation was
+			// removed. Keep the stored state and let the next read retry.
+			s.logger.Warn("verify GitHub installation", "error", err, "installation_id", installation.GitHubInstallationID)
+			continue
+		}
+		if err := s.store.ApplyGitHubInstallationEvent(ctx, orgID, installation.ID, "deleted", "reconcile"); err != nil {
+			return nil, err
+		}
+		deleted = true
+	}
+	if deleted {
+		return s.store.ListGitHubInstallations(ctx, principal, orgID)
+	}
+	return installations, nil
 }
 
 func (s *Service) SyncInstallation(
@@ -966,6 +995,11 @@ func (s *Service) processNext(ctx context.Context) error {
 	}
 	terminal := delivery.AttemptCount >= 10 ||
 		errors.Is(err, postgres.ErrInvalid)
+	if terminal && s.logger != nil {
+		s.logger.Error("GitHub webhook delivery failed permanently",
+			"delivery_id", delivery.DeliveryID, "event", delivery.Event,
+			"installation_id", delivery.GitHubInstallationID, "error", err)
+	}
 	backoff := time.Second * time.Duration(1<<min(delivery.AttemptCount, 9))
 	return s.store.RetryGitHubWebhook(
 		ctx,
@@ -1029,6 +1063,7 @@ func (s *Service) processWebhook(
 				route.OrgID,
 				route.InstallationID,
 				action,
+				"webhook",
 			); err != nil {
 				processErr = errors.Join(processErr, err)
 				continue

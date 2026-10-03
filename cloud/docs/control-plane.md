@@ -158,10 +158,14 @@ https://<cloud-public-host>/api/cloud/v1/github/webhooks
 
 Use the same secret as `AO_CLOUD_GITHUB_WEBHOOK_SECRET` and subscribe to
 `Pull requests`, `Check suites`, `Check runs`, and `Pull request reviews`.
-GitHub deliveries are signature-verified, deduplicated, persisted, and then
-processed in installation order. They update durable pull-request facts and
-Cloud notifications. Failing CI is sent to the session worker only when that
-session has automatic CI feedback enabled.
+GitHub deliveries are signature-verified, deduplicated, and persisted. Installation
+routing changes retain receipt order; SCM deliveries process independently so a
+retrying PR cannot block later updates. Verified PR-opened events match the
+session branch or a branch head reported by its worker. A worker report also
+replays an earlier verified PR-opened delivery when the webhook arrived first.
+They update durable pull-request facts and Cloud notifications. Failing CI is
+sent to the session worker only when that session has automatic CI feedback
+enabled.
 
 For local testing, expose the control plane through a temporary public HTTPS
 tunnel and use the tunnel URL above. The tunnel is test-only; production uses
@@ -169,9 +173,8 @@ tunnel and use the tunnel URL above. The tunnel is test-only; production uses
 control plane runs with `AO_CLOUD_ENVIRONMENT=production`, including a local
 end-to-end webhook test.
 
-`AO_CLOUD_PR_STATUS_POLL_INTERVAL` controls only how often the control plane
-looks in PostgreSQL for targeted recovery work. Each tick leases at most one PR
-whose received webhook failed or whose authoritative observation is older than
-`AO_CLOUD_PR_WEBHOOK_SILENCE_GRACE` (two minutes by default). Healthy PRs
-updated by webhooks make no GitHub polling request; the scanner never lists and
-refreshes every open PR.
+PR status changes are refreshed from GitHub webhook deliveries. Failed delivery
+processing is retried from the durable webhook queue; the control plane does
+not periodically refresh open PRs from GitHub. GitHub may initially report
+mergeability as unknown while it computes the result. Without another relevant
+webhook, that value stays unknown until the next PR action triggers an update.

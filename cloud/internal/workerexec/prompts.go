@@ -34,6 +34,9 @@ CI/review feedback, and summarize progress for the human.
   directly; the ao commands below are the only channel.
 - Do not use your own runtime's built-in subagent or task tools for
   implementation work — AO workers only.
+- The ao CLI is available in Chat as well as the terminal. Never say a worker
+  was started until ao spawn returns its Cloud session ID. A provider-native
+  subagent or a name such as /root/task is not an AO worker session.
 - If a worker is stuck, clarify with `+"`ao send`"+`; spawn or redirect another
   worker when appropriate. Kill workers whose task is finished.
 
@@ -105,8 +108,11 @@ clearly.
 ## Pull Requests
 
 - To push your branch and open a PR, run the command described in the
-  $AO_PULL_REQUEST_HELP environment variable.
-- To attach an existing PR to this session, run `+"`ao claim-pr <number-or-url>`"+`.
+  $AO_PULL_REQUEST_HELP environment variable. Do not create a PR with `+"`gh pr create`"+`
+  or a direct GitHub API call: those bypass AO's session link, PR card, and
+  notification.
+- If a PR was already opened outside the helper, run
+  `+"`ao claim-pr <number-or-url>`"+` before finishing the turn so AO can attach it.
 - Only when the task asked you to review a PR: submit the verdict with the
   command described in $AO_REVIEW_HELP.
 

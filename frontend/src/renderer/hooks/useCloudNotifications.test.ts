@@ -6,13 +6,16 @@ import type { CloudCpNotification } from "../lib/cloud-cp/types";
 import { CloudCpError } from "../lib/cloud-cp/errors";
 import { isCleared, useCloudNotifications } from "./useCloudNotifications";
 
-const { cloudCpMock } = vi.hoisted(() => ({ cloudCpMock: vi.fn() }));
+const { cloudCpMock, subscribeNotificationsMock } = vi.hoisted(() => ({
+	cloudCpMock: vi.fn(),
+	subscribeNotificationsMock: vi.fn(async (_options?: { onEvent: (event: { sequence: number }) => void; after?: number }): Promise<void> => undefined),
+}));
 
 vi.mock("./useCloudCp", () => ({ useCloudCp: () => cloudCpMock() }));
 vi.mock("./useCloudOrg", () => ({ useCloudOrg: () => ({ org: { id: "org-1" } }) }));
 vi.mock("./useWorkspaceQuery", () => ({ cloudSessionsQueryKey: ["cloud-sessions"] }));
 vi.mock("./useOrchestratorChildren", () => ({ orchestratorChildrenQueryKey: ["orchestrator-children"] }));
-vi.mock("../lib/cloud-cp/stream-bridge", () => ({ subscribeNotificationEventsBridged: vi.fn(async () => undefined) }));
+vi.mock("../lib/cloud-cp/stream-bridge", () => ({ subscribeNotificationEventsBridged: subscribeNotificationsMock }));
 vi.mock("../lib/cloud-notification-hints", () => ({ subscribeCloudNotificationHints: () => () => undefined }));
 
 const at = (value: string) => Date.parse(value);
@@ -168,4 +171,18 @@ describe("useCloudNotifications clearing", () => {
 		await waitFor(() => expect(result.current.items[0]?.status).toBe("read"));
 		expect(result.current.items).toHaveLength(1);
 	});
+});
+
+it("reconnects the notification stream after it closes and resumes after the last event", async () => {
+	const listNotifications = vi.fn(async () => ({ items: [], unreadCount: 0, page: { hasMore: false }, latestSequence: 0 }));
+	cloudCpMock.mockReturnValue({ client: { listNotifications }, ready: true, baseUrl: "https://cloud.test", userId: "user-1" });
+	subscribeNotificationsMock.mockReset().mockImplementation(async (options?: { onEvent: (event: { sequence: number }) => void }) => {
+		if (subscribeNotificationsMock.mock.calls.length === 1) options?.onEvent({ sequence: 42 });
+	});
+	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+	const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: queryClient }, children);
+	const hook = renderHook(() => useCloudNotifications("all"), { wrapper });
+	await waitFor(() => expect(subscribeNotificationsMock).toHaveBeenCalledTimes(2), { timeout: 2500 });
+	expect(subscribeNotificationsMock.mock.calls[1]?.[0]).toMatchObject({ after: 42 });
+	hook.unmount();
 });

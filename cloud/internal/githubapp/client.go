@@ -53,9 +53,13 @@ type Client struct {
 
 type HTTPError struct {
 	StatusCode int
+	Message    string
 }
 
 func (e *HTTPError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("GitHub request returned status %d: %s", e.StatusCode, e.Message)
+	}
 	return fmt.Sprintf("GitHub request returned status %d", e.StatusCode)
 }
 
@@ -966,9 +970,9 @@ func (c *Client) repositoryWriteTokenForRepos(
 }
 
 // statusReadToken mints a short-lived installation token scoped to one
-// repository with read access to pull requests and checks — the permissions
-// GitHub's fine-grained token model requires to fetch PR/review/check-run
-// detail, distinct from repositoryToken's contents:read (used for checkout).
+// repository with read access to contents, pull requests and checks. The
+// snapshot GraphQL query traverses commit and branch fields in private repos,
+// so PR/check permissions alone cannot read the whole response.
 func (c *Client) statusReadToken(
 	ctx context.Context,
 	installationID, repositoryID int64,
@@ -979,6 +983,7 @@ func (c *Client) statusReadToken(
 	response, err := c.createInstallationToken(ctx, installationID, map[string]any{
 		"repository_ids": []int64{repositoryID},
 		"permissions": map[string]string{
+			"contents":      "read",
 			"pull_requests": "read",
 			"checks":        "read",
 		},
@@ -1036,6 +1041,7 @@ func (c *Client) GetPullRequest(
 
 // CheckRun is one GitHub Checks API run against a commit.
 type CheckRun struct {
+	ID         int64  `json:"id"`
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
@@ -1210,7 +1216,11 @@ func (c *Client) jsonRequest(
 		return errors.New("GitHub response exceeded size limit")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return &HTTPError{StatusCode: response.StatusCode}
+		var failure struct {
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(raw, &failure)
+		return &HTTPError{StatusCode: response.StatusCode, Message: failure.Message}
 	}
 	if destination == nil {
 		return nil

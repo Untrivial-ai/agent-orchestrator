@@ -79,6 +79,8 @@ const (
 // row explains an in-progress gap where the old controller has stopped and the
 // new one is not ready yet.
 type SessionInterfaceTransition struct {
+	SelectedModel        string
+	SelectedEffort       string
 	ID                   string
 	OrgID                string
 	SessionID            string

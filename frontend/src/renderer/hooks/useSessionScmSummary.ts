@@ -67,21 +67,41 @@ export function useSessionScmSummary(
 	useEffect(() => {
 		if (!enabled || !cloudOrgId || !sessionId || baseUrl === "") return;
 		const controller = new AbortController();
-		void subscribeSessionEventsBridged({
-			baseUrl,
-			orgId: cloudOrgId,
-			sessionId,
-			signal: controller.signal,
-			onEvent: (event) => {
-				if (
-					event.type === "scm.updated" ||
-					event.type === "pull_request.created" ||
-					event.type === "pull_request.claimed"
-				) {
-					void queryClient.invalidateQueries({ queryKey });
-				}
-			},
-		});
+		let after: number | undefined;
+		const reconnect = async () => {
+			while (!controller.signal.aborted) {
+				await subscribeSessionEventsBridged({
+					baseUrl,
+					orgId: cloudOrgId,
+					sessionId,
+					after,
+					signal: controller.signal,
+					onEvent: (event) => {
+						after = Math.max(after ?? 0, event.sequence);
+						if (
+							event.type === "scm.updated" ||
+							event.type === "pull_request.created" ||
+							event.type === "pull_request.claimed"
+						) {
+							void queryClient.invalidateQueries({ queryKey });
+						}
+					},
+				});
+				if (controller.signal.aborted) return;
+				await new Promise<void>((resolve) => {
+					const onAbort = () => {
+						clearTimeout(timer);
+						resolve();
+					};
+					const timer = setTimeout(() => {
+						controller.signal.removeEventListener("abort", onAbort);
+						resolve();
+					}, 1000);
+					controller.signal.addEventListener("abort", onAbort, { once: true });
+				});
+			}
+		};
+		void reconnect();
 		return () => controller.abort();
 	}, [baseUrl, cloudOrgId, enabled, queryClient, queryKey, sessionId]);
 	return useQuery({

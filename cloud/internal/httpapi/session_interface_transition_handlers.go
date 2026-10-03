@@ -35,8 +35,10 @@ type interfaceTransitionStatusResponse struct {
 }
 
 type startInterfaceTransitionRequest struct {
-	TargetMode string `json:"targetMode"`
-	Policy     string `json:"policy"`
+	TargetMode      string `json:"targetMode"`
+	Policy          string `json:"policy"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 }
 
 func (s *Server) interfaceTransitionSupported(harness string) bool {
@@ -132,9 +134,14 @@ func (s *Server) startSessionInterfaceTransition(w http.ResponseWriter, r *http.
 			"The session is already in "+string(target)+" mode.")
 		return
 	}
+	if (input.Model != "" || input.ReasoningEffort != "") &&
+		(target != domain.SessionInterfaceTUI || session.Harness != "codex" || len(input.Model) > 128 || len(input.ReasoningEffort) > 32) {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation_error", "model and reasoningEffort are supported for Codex Chat to terminal handoff only.")
+		return
+	}
 	transition, err := s.store.StartSessionInterfaceTransition(
 		r.Context(), principalFrom(r), orgID, sessionID,
-		session.Interface, target, policy, "",
+		session.Interface, target, policy, "", domain.ChatTurnSettings{Model: input.Model, ReasoningEffort: input.ReasoningEffort},
 	)
 	if errors.Is(err, postgres.ErrTransitionInProgress) {
 		writeError(w, r, http.StatusConflict, "INTERFACE_TRANSITION_IN_PROGRESS",
