@@ -70,11 +70,11 @@ func List(dir string) ([]domain.SessionArtifactFile, error) {
 		}
 		info, err := d.Info()
 		if err != nil || !info.Mode().IsRegular() {
-			return nil
+			return nil //nolint:nilerr // an entry that cannot be stat'd is skipped, not fatal
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // an entry outside root is skipped, not fatal
 		}
 		rel = filepath.ToSlash(rel)
 		files = append(files, domain.SessionArtifactFile{

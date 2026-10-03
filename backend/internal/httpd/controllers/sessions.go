@@ -2323,8 +2323,8 @@ func sessionArtifactFiles(r *http.Request, s domain.Session) []SessionArtifactVi
 // artifact preview origin, with ?raw=true so a markdown artifact returns its
 // source text rather than server-rendered HTML (matching the ?raw=true
 // behavior serveOpenedPreviewFile already applies on every preview route).
-func artifactRawURL(r *http.Request, id domain.SessionID, path string) (string, bool) {
-	raw, err := previewutil.ArtifactFileURL("http://"+r.Host, id, path)
+func artifactRawURL(r *http.Request, id domain.SessionID, filePath string) (string, bool) {
+	raw, err := previewutil.ArtifactFileURL("http://"+r.Host, id, filePath)
 	if err != nil {
 		return "", false
 	}
