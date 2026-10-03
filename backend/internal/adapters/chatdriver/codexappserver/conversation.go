@@ -354,9 +354,13 @@ func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings, r
 		params["sandboxPolicy"] = turnSandboxPolicy(sandbox)
 	}
 	if readOnly {
+		// A reviewer must not write the workspace, but it does need the network:
+		// it reads the PR through gh and reports its verdict to the local daemon
+		// with `ao review submit`. With approvals off it cannot ask for that access
+		// mid-turn, so the read-only policy grants it up front.
 		params["approvalPolicy"] = "never"
 		params["approvalsReviewer"] = "user"
-		params["sandboxPolicy"] = turnSandboxPolicy("read-only")
+		params["sandboxPolicy"] = map[string]any{"type": "readOnly", "networkAccess": true}
 	}
 }
 

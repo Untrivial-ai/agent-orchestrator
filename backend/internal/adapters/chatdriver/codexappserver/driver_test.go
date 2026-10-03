@@ -1095,7 +1095,7 @@ func TestReadOnlyTurnCannotOverrideSandbox(t *testing.T) {
 	params := map[string]any{}
 	applyTurnSettings(params, ports.ChatTurnSettings{Approval: ports.PermissionModeAuto}, true)
 	if params["approvalPolicy"] != "never" || params["approvalsReviewer"] != "user" ||
-		!reflect.DeepEqual(params["sandboxPolicy"], map[string]any{"type": "readOnly"}) {
+		!reflect.DeepEqual(params["sandboxPolicy"], map[string]any{"type": "readOnly", "networkAccess": true}) {
 		t.Fatalf("read-only turn settings = %#v", params)
 	}
 }
