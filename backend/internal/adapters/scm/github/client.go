@@ -56,6 +56,26 @@ func (e *RateLimitError) Error() string {
 // Is lets errors.Is match a *RateLimitError against ErrRateLimited.
 func (e *RateLimitError) Is(target error) bool { return target == ErrRateLimited }
 
+// GetRetryAfter exposes the Retry-After hint for the provider-neutral observer's
+// rateLimitCooldown helper. Without this getter (and GetResetAt below) the
+// observer's errors.As match fails for GitHub, so a GitHub rate-limit never puts
+// the provider into cooldown and the daemon keeps polling every tick. Mirrors
+// the GitLab RateLimitError getters.
+func (e *RateLimitError) GetRetryAfter() time.Duration {
+	if e == nil {
+		return 0
+	}
+	return e.RetryAfter
+}
+
+// GetResetAt exposes the RateLimit-Reset hint for the observer's cooldown helper.
+func (e *RateLimitError) GetResetAt() time.Time {
+	if e == nil {
+		return time.Time{}
+	}
+	return e.ResetAt
+}
+
 // ClientOptions configures a Client. Production code sets Token alone;
 // tests inject HTTPClient and the URL fields to point at an httptest fake.
 type ClientOptions struct {
