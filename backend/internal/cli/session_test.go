@@ -219,6 +219,10 @@ func TestSessionList_JSONOutputDecodes(t *testing.T) {
 	if got.Data[0].ID != "demo-1" || got.Data[0].ProjectID != "demo" || got.Data[0].Role != "worker" {
 		t.Fatalf("unexpected JSON entry: %#v", got.Data[0])
 	}
+	// `session get --json` already carries the display name; `ls --json` must too so scripts can tell sessions apart.
+	if got.Data[0].DisplayName != "Current Name" {
+		t.Fatalf("displayName = %q, want %q", got.Data[0].DisplayName, "Current Name")
+	}
 }
 
 func TestSessionList_EnrichesPRColumnsAndKeepsFallbackFacts(t *testing.T) {

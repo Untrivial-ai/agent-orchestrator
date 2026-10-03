@@ -159,6 +159,7 @@ type sessionListEntry struct {
 	ID             string          `json:"id"`
 	ProjectID      string          `json:"projectId"`
 	Role           string          `json:"role"`
+	DisplayName    string          `json:"displayName,omitempty"`
 	Status         string          `json:"status,omitempty"`
 	Activity       string          `json:"activity,omitempty"`
 	IssueID        string          `json:"issueId,omitempty"`
@@ -845,6 +846,7 @@ func sessionListEntries(sessions []sessionDTO, summaries map[string][]sessionPRS
 			ID:             sess.ID,
 			ProjectID:      sess.ProjectID,
 			Role:           sessionRole(sess),
+			DisplayName:    sess.DisplayName,
 			Status:         sess.Status,
 			Activity:       sess.Activity.State,
 			IssueID:        sess.IssueID,
