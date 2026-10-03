@@ -184,6 +184,17 @@ describe("portable inspector presentations", () => {
     expect(Boolean(context.compareDocumentPosition(pullRequest) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
   });
 
+  it("omits the PR/artifacts section entirely when no title is given", () => {
+    render(
+      <SessionInspectorSummaryView
+        activity={<div>activity</div>}
+        activityTitle="Activity"
+      />,
+    );
+
+    expect(screen.queryAllByTestId("inspector-section")).toHaveLength(1);
+  });
+
   it("renders PR facts and host-owned actions from a neutral view model", () => {
     render(
       <InspectorPullRequestCardView

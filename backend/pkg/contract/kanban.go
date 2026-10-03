@@ -36,9 +36,10 @@ const (
 // has to report.
 type KanbanSessionFacts struct {
 	SessionFacts
-	AutoReview       bool
-	AutoInjectReview bool
-	AutoInjectCI     bool
+	HasArtifactOutput bool
+	AutoReview        bool
+	AutoInjectReview  bool
+	AutoInjectCI      bool
 }
 
 // KanbanReviewRunFacts summarize AO's own review passes against one PR's
@@ -241,6 +242,12 @@ func DeriveKanbanPresentation(
 	if session.IsTerminated {
 		return KanbanPresentation{Column: KanbanArchive, DisplayStatus: DisplayTerminated}
 	}
+	if len(prs) == 0 && session.HasArtifactOutput {
+		return KanbanPresentation{
+			Column:        KanbanValidating,
+			DisplayStatus: artifactDisplayStatus(session, now, noSignalGrace),
+		}
+	}
 	if len(prs) == 0 {
 		return KanbanPresentation{
 			Column:        KanbanBuilding,
@@ -336,6 +343,21 @@ func validatingDisplayStatus(session KanbanSessionFacts, pr KanbanPRFacts, now t
 		return DisplayReviewPending
 	case pr.Draft:
 		return DisplayDraft
+	default:
+		return DisplayNeedsReview
+	}
+}
+
+func artifactDisplayStatus(session KanbanSessionFacts, now time.Time, noSignalGrace time.Duration) DisplayStatus {
+	switch {
+	case session.Activity == ActivityActive:
+		return DisplayWorking
+	case session.Activity == ActivityBlocked || session.Activity == ActivityWaitingInput:
+		return DisplayBlocked
+	case session.Activity == ActivityExited:
+		return DisplayExited
+	case silentPastGrace(session.SessionFacts, now, noSignalGrace):
+		return DisplayNoSignal
 	default:
 		return DisplayNeedsReview
 	}

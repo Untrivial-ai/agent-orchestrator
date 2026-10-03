@@ -92,7 +92,7 @@ export function FileContentPane({
 	// an active native text selection.
 	const [selectionOrMenuActive, setSelectionOrMenuActive] = useState(false);
 	const query = useQuery({
-		...sessionSourceFileQueryOptions(sessionId, source, path ?? "", t("files.error.loadWorkspaceFile"), scope, commitSha, previousPath),
+		...sessionSourceFileQueryOptions(sessionId, source, path ?? "", t(source.kind === "artifact" ? "files.error.loadArtifact" : "files.error.loadWorkspaceFile"), scope, commitSha, previousPath),
 		enabled: Boolean(path) && !selectionOrMenuActive,
 	});
 	const hasUnsavedChanges = Boolean(editing && query.data && draft !== query.data.content);
@@ -380,7 +380,7 @@ function CompleteFileView({ annotation, commitSha, detail, editing, onEditChange
 	const { t } = useTranslation();
 	const revision = useQuery({
 		...sessionSourceFileRevisionQueryOptions({ commitSha, path: detail.path, scope, sessionId, side: detail.deleted ? "before" : "after", source, workspaceVersion: detail.workspaceVersion }),
-		enabled: detail.deleted || detail.contentTruncated,
+		enabled: source.kind !== "artifact" && (detail.deleted || detail.contentTruncated),
 	});
 	if (revision.isPending && revision.isFetching) return <PanelMessage>{t("files.loading")}</PanelMessage>;
 	if (revision.error) return <PanelMessage>{revision.error.message}</PanelMessage>;

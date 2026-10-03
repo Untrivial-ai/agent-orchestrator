@@ -753,7 +753,7 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 	const [filesPopoutTopbarHost, setFilesPopoutTopbarHost] = useState<HTMLDivElement | null>(null);
 	const [filesSplit, setFilesSplit] = useState(() => window.localStorage.getItem("ao.files.diffStyle") === "split");
 	const [filePreviewRequestsBySession, setFilePreviewRequestsBySession] = useState<
-		Record<string, { path: string; key: number }>
+		Record<string, { feedback?: boolean; path: string; key: number; source?: "artifact" }>
 	>({});
 	const [fileTabsBySession, setFileTabsBySession] = useState<Record<string, SessionFileTabState>>({});
 	const fileTabs = fileTabsBySession[sessionId] ?? EMPTY_SESSION_FILE_TABS;
@@ -2039,6 +2039,28 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 		[prepareFilesInspector, revealResolvedWorkspaceFile],
 	);
 
+	const handleOpenArtifact = useCallback(
+		(target: { feedback?: boolean; path: string }) => {
+			if (browserOnly) return;
+			prepareFilesInspector();
+			setFilePreviewRequestsBySession((current) => ({
+				...current,
+				[sessionId]: { feedback: target.feedback, path: target.path, key: (current[sessionId]?.key ?? 0) + 1, source: "artifact" },
+			}));
+		},
+		[browserOnly, prepareFilesInspector, sessionId],
+	);
+	const handleFilePreviewRequestConsumed = useCallback((key: number) => {
+		setFilePreviewRequestsBySession((current) => {
+			const request = current[sessionId];
+			if (!request || request.key !== key || !request.feedback) return current;
+			return {
+				...current,
+				[sessionId]: { ...request, feedback: undefined },
+			};
+		});
+	}, [sessionId]);
+
 	const handleToggleFilesPopOut = useCallback(
 		(next: boolean) => {
 			if (next) setBrowserPopOutState({ sessionId, phase: "docked" });
@@ -2470,22 +2492,25 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 										<CloudWorkspaceDiff annotation={fileAnnotation} onOpenFile={openCenterFile} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
 									) : (
 										<SessionFileExplorer
-										onOpenFile={openCenterFile}
-										onSplitChange={setFilesSplit}
-										onToggleMaximized={handleToggleFilesPopOut}
-										revealRequest={filePreviewRequestsBySession[sessionId] ?? null}
-										sessionId={session.id}
-										split={filesSplit}
+											artifacts={session.artifactFiles ?? []}
+											onOpenFile={openCenterFile}
+											onRevealRequestConsumed={handleFilePreviewRequestConsumed}
+											onSplitChange={setFilesSplit}
+											onToggleMaximized={handleToggleFilesPopOut}
+											revealRequest={filePreviewRequestsBySession[sessionId] ?? null}
+											sessionId={session.id}
+											split={filesSplit}
 										/>
 									)
 								) : null
 							}
 							isInspectorVisible={inspectorPanelVisible}
+							onOpenArtifact={browserOnly ? undefined : handleOpenArtifact}
 							onOpenFiles={browserOnly ? undefined : handleOpenFiles}
 							onOpenReviewFile={handleOpenReviewFile}
-								onOpenReviewerTerminal={selectReviewerTerminal}
-								onOpenReviewerChat={selectReviewerChat}
-								onWorkerMessageSent={showChatSurface || reviewerChatId ? selectSessionTerminal : undefined}
+							onOpenReviewerTerminal={selectReviewerTerminal}
+							onOpenReviewerChat={selectReviewerChat}
+							onWorkerMessageSent={showChatSurface || reviewerChatId ? selectSessionTerminal : undefined}
 							onToggleBrowserPopOut={handleToggleBrowserPopOut}
 							onViewChange={transitionInspectorView}
 							view={inspectorView}
@@ -2605,9 +2630,11 @@ export function SessionView({ sessionId, cloudOrgId, projectId }: SessionViewPro
 											<CloudWorkspaceDiff annotation={fileAnnotation} isMaximized onOpenFile={openCenterFile} onSplitChange={setFilesSplit} onToggleMaximized={handleToggleFilesPopOut} session={session} split={filesSplit} />
 										) : (
 											<SessionFileExplorer
+												artifacts={session.artifactFiles ?? []}
 												isMaximized
 												onSplitChange={setFilesSplit}
 												onToggleMaximized={handleToggleFilesPopOut}
+												revealRequest={filePreviewRequestsBySession[sessionId] ?? null}
 												sessionId={session.id}
 												split={filesSplit}
 											/>

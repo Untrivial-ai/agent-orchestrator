@@ -131,6 +131,16 @@ func (s *Service) ClaimPR(ctx context.Context, id domain.SessionID, ref string, 
 	if err != nil {
 		return ClaimPRResult{}, err
 	}
+	// Reconcile immediately rather than waiting for the artifact-output
+	// poller's next tick: a session that already produced artifacts must move
+	// to pr OutputType (and out of the artifact Kanban placement) with the
+	// same latency claiming a PR always had. A reconcile failure must not
+	// fail an otherwise-successful claim.
+	if s.outputTypeReconciler != nil {
+		if err := s.outputTypeReconciler.ReconcileSessionOutputType(ctx, id); err != nil && s.logger != nil {
+			s.logger.Warn("claim: reconcile output type failed", "session", id, "err", err)
+		}
+	}
 	prs, err := s.listPRFacts(ctx, id)
 	if err != nil {
 		return ClaimPRResult{}, err
