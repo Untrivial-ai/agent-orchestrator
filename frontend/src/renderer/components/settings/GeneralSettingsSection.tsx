@@ -171,6 +171,7 @@ export function GeneralSettingsSection({
 		{ value: "fr", label: t("settings.language.fr") },
 		{ value: "de", label: t("settings.language.de") },
 		{ value: "pt-BR", label: t("settings.language.ptBR") },
+		{ value: "tr", label: t("settings.language.tr") },
 	] satisfies SettingsOption<AppLocale>[];
 
 	return (

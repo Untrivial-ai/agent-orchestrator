@@ -9,6 +9,7 @@ import {
 	jaMessages,
 	koMessages,
 	ptBRMessages,
+	trMessages,
 	zhCNMessages,
 } from "./messages";
 
@@ -23,6 +24,7 @@ export const appCatalogs: TranslationCatalogs = {
 	fr: frMessages,
 	de: deMessages,
 	"pt-BR": ptBRMessages,
+	tr: trMessages,
 };
 
 /** Create an isolated, synchronously initialized instance for app startup and unit tests. */

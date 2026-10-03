@@ -146,7 +146,7 @@ it("presents every normal credential phase as the same switch progress", () => {
 });
 
 it("maps every account reason to complete native locale copy with a safe unknown fallback", () => {
-	const locales: AppLocale[] = ["en", "de", "es", "fr", "ja", "ko", "pt-BR", "zh-CN"];
+	const locales: AppLocale[] = ["en", "de", "es", "fr", "ja", "ko", "pt-BR", "tr", "zh-CN"];
 	const switchKeys = ["requested", "completed", "failed", "unknown"].map((phase) => `settings.codexAccounts.switch.${phase}`);
 	const keys = [
 		...codexAccountReasonCodes.map(codexAccountReasonKey),

@@ -9,6 +9,7 @@ import {
 	jaMessages,
 	koMessages,
 	ptBRMessages,
+	trMessages,
 	zhCNMessages,
 } from "./messages";
 
@@ -21,6 +22,7 @@ const allCatalogs = {
 	fr: frMessages,
 	de: deMessages,
 	"pt-BR": ptBRMessages,
+	tr: trMessages,
 } as const;
 
 function emptyCatalogs(): TranslationCatalogs {
@@ -37,6 +39,7 @@ describe("coerceLocale", () => {
 		expect(coerceLocale("fr")).toBe("fr");
 		expect(coerceLocale("de")).toBe("de");
 		expect(coerceLocale("pt-BR")).toBe("pt-BR");
+		expect(coerceLocale("tr")).toBe("tr");
 	});
 
 	it("defaults unknown values to en", () => {
@@ -73,6 +76,7 @@ describe("app i18next instance", () => {
 			fr: "settings.language.fr",
 			de: "settings.language.de",
 			"pt-BR": "settings.language.ptBR",
+			tr: "settings.language.tr",
 		} as const;
 		const expected = {
 			en: "English",
@@ -83,6 +87,7 @@ describe("app i18next instance", () => {
 			fr: "Français",
 			de: "Deutsch",
 			"pt-BR": "Português (Brasil)",
+			tr: "Türkçe",
 		} as const;
 		for (const locale of APP_LOCALES) {
 			expect(createAppI18n(locale).t(labels[locale])).toBe(expected[locale]);
