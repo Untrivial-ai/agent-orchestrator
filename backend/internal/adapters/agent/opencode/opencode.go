@@ -564,21 +564,70 @@ func opencodeAOAgentName(sessionID string) string {
 	return "ao-" + name
 }
 
-// ResolveOpenCodeBinary returns the path to the opencode binary on this machine,
+// ResolveOpenCodeBinary returns the first opencode binary on this machine,
 // searching PATH then a handful of well-known install locations (the install
 // script's ~/.opencode/bin, Homebrew, npm global).
 func ResolveOpenCodeBinary(ctx context.Context) (string, error) {
-	if err := ctx.Err(); err != nil {
+	candidates, err := BinaryCandidates(ctx)
+	if err != nil {
 		return "", err
 	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("opencode: %w", ports.ErrAgentBinaryNotFound)
+	}
+	return candidates[0], nil
+}
 
+// BinaryCandidates returns every distinct opencode executable in
+// resolution order: the LookPath winner, other PATH entries, then well-known
+// install locations. OpenCode 1 and 2 share an executable name, so a machine can
+// carry both and a harness must be able to pick the one matching its major.
+func BinaryCandidates(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var found []string
+	seen := map[string]bool{}
+	add := func(path string) {
+		if path == "" {
+			return
+		}
+		key := filepath.Clean(path)
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(key)
+		}
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		found = append(found, path)
+	}
+
+	names := []string{"opencode"}
 	if runtime.GOOS == "windows" {
-		for _, name := range []string{"opencode.cmd", "opencode.exe", "opencode"} {
-			if path, err := exec.LookPath(name); err == nil && path != "" {
-				return path, nil
+		names = []string{"opencode.cmd", "opencode.exe", "opencode"}
+	}
+	for _, name := range names {
+		if path, err := exec.LookPath(name); err == nil {
+			add(path)
+			break
+		}
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			continue
+		}
+		for _, name := range names {
+			candidate := filepath.Join(dir, name)
+			if hookutil.IsExecutableFile(candidate) {
+				add(candidate)
+				break
 			}
 		}
-		candidates := []string{}
+	}
+
+	var candidates []string
+	if runtime.GOOS == "windows" {
 		if appData := os.Getenv("APPDATA"); appData != "" {
 			candidates = append(candidates,
 				filepath.Join(appData, "npm", "opencode.cmd"),
@@ -589,44 +638,39 @@ func ResolveOpenCodeBinary(ctx context.Context) (string, error) {
 		if home, err := os.UserHomeDir(); err == nil {
 			candidates = append(candidates, filepath.Join(home, ".opencode", "bin", "opencode.exe"))
 		}
-		for _, candidate := range candidates {
-			if hookutil.IsExecutableFile(candidate) {
-				return candidate, nil
+	} else {
+		candidates = append(candidates, opencodeUnixPaths...)
+		if home, err := os.UserHomeDir(); err == nil {
+			candidates = append(candidates,
+				filepath.Join(home, ".npm-global", "bin", "opencode"),
+				filepath.Join(home, ".npm", "bin", "opencode"),
+				filepath.Join(home, ".local", "bin", "opencode"),
+				filepath.Join(home, ".opencode", "bin", "opencode"),
+			)
+			candidates = append(candidates, binaryutil.UnixPackageManagerBinCandidates(home, "opencode")...)
+			nodeManagerCandidates, err := binaryutil.UnixNodeManagerBinCandidates(ctx, home, "opencode")
+			if err != nil {
+				return nil, err
 			}
+			candidates = append(candidates, nodeManagerCandidates...)
 		}
-		return "", fmt.Errorf("opencode: %w", ports.ErrAgentBinaryNotFound)
 	}
-
-	if path, err := exec.LookPath("opencode"); err == nil && path != "" {
-		return path, nil
-	}
-
-	candidates := append([]string(nil), opencodeUnixPaths...)
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(home, ".npm-global", "bin", "opencode"),
-			filepath.Join(home, ".npm", "bin", "opencode"),
-			filepath.Join(home, ".local", "bin", "opencode"),
-			filepath.Join(home, ".opencode", "bin", "opencode"),
-		)
-		candidates = append(candidates, binaryutil.UnixPackageManagerBinCandidates(home, "opencode")...)
-		nodeManagerCandidates, err := binaryutil.UnixNodeManagerBinCandidates(ctx, home, "opencode")
-		if err != nil {
-			return "", err
+	if dir, ok := V2NPMBinDir(); ok {
+		if runtime.GOOS == "windows" {
+			candidates = append(candidates, filepath.Join(dir, "opencode.cmd"), filepath.Join(dir, "opencode.exe"))
+		} else {
+			candidates = append(candidates, filepath.Join(dir, "opencode"))
 		}
-		candidates = append(candidates, nodeManagerCandidates...)
 	}
-
 	for _, candidate := range candidates {
 		if hookutil.IsExecutableFile(candidate) {
-			return candidate, nil
+			add(candidate)
 		}
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
-
-	return "", fmt.Errorf("opencode: %w", ports.ErrAgentBinaryNotFound)
+	return found, nil
 }
 
 func (p *Plugin) opencodeBinary(ctx context.Context) (string, error) {

@@ -96,9 +96,16 @@ func command(ctx context.Context, binary string, cfg ports.LaunchConfig, nativeI
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	var cmd []string
+	var envArgs []string
+	if dataHome, ok := DataHome(); ok {
+		envArgs = append(envArgs, "XDG_DATA_HOME="+dataHome)
+	}
 	if content != "" {
-		cmd = []string{"env", "OPENCODE_CONFIG_CONTENT=" + content}
+		envArgs = append(envArgs, "OPENCODE_CONFIG_CONTENT="+content)
+	}
+	var cmd []string
+	if len(envArgs) > 0 {
+		cmd = append([]string{"env"}, envArgs...)
 	}
 	cmd = append(cmd, binary, "--standalone")
 	switch ports.NormalizePermissionMode(cfg.Permissions) {
@@ -273,6 +280,9 @@ func (p *Plugin) AuthStatus(ctx context.Context) (ports.AgentAuthStatus, error) 
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	cmd := aoprocess.CommandContext(probeCtx, binary, "auth", "list", "--standalone", "--format", "json")
+	if dataHome, ok := DataHome(); ok {
+		cmd.Env = append(os.Environ(), "XDG_DATA_HOME="+dataHome)
+	}
 	cmd.WaitDelay = 100 * time.Millisecond
 	out, err := cmd.Output()
 	if ctx.Err() != nil {

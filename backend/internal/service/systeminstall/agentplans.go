@@ -241,7 +241,9 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 	}
 	for index := range plans {
 		plans[index].DocsURL = agentDocumentationURLs[target]
-		plans[index].Notice = installNotice(target)
+		if target != TargetOpencodeV2 || plans[index].Method != "npm" {
+			plans[index].Notice = installNotice(target)
+		}
 		plans[index] = s.planForOperation(plans[index], operation)
 	}
 	return plans

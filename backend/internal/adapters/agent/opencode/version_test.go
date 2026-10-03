@@ -25,6 +25,8 @@ func versionBinary(t *testing.T, script string) string {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	return path
 }
 
@@ -94,10 +96,28 @@ func TestResolveBinaryForMajorBoundedAndCanceled(t *testing.T) {
 			if !errors.Is(err, want) {
 				t.Fatalf("error = %v, want %v", err, want)
 			}
-			if time.Since(started) > 5*time.Second {
+			if time.Since(started) > 12*time.Second {
 				t.Fatal("version probe was not bounded")
 			}
 		})
+	}
+}
+
+func TestResolveBinaryForMajorAcceptsSlowShim(t *testing.T) {
+	dir := t.TempDir()
+	name, body := "opencode", "#!/bin/sh\nsleep 4\nprintf '2.0.0\\n'\n"
+	if runtime.GOOS == "windows" {
+		name = "opencode.cmd"
+		body = "@echo off\r\npowershell -NoProfile -Command \"Start-Sleep -Seconds 4\"\r\necho 2.0.0\r\n"
+	}
+	binary := filepath.Join(dir, name)
+	if err := os.WriteFile(binary, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	got, err := ResolveBinaryForMajor(context.Background(), 2)
+	if err != nil || got != binary {
+		t.Fatalf("resolve slow shim = (%q, %v), want %q", got, err, binary)
 	}
 }
 
@@ -135,5 +155,28 @@ func TestV1RejectsWrongMajorBeforeOverlay(t *testing.T) {
 		if _, err := os.Stat(dir); !os.IsNotExist(err) {
 			t.Fatalf("restore=%v: wrote config before rejecting version", restore)
 		}
+	}
+}
+
+func TestResolveBinaryForMajorPicksMatchingBinaryFromSeveralOnPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable fixture")
+	}
+	first, second := t.TempDir(), t.TempDir()
+	for dir, version := range map[string]string{first: "2.0.20", second: "1.18.30"} {
+		script := "#!/bin/sh\nprintf '%s\n' '" + version + "'\n"
+		if err := os.WriteFile(filepath.Join(dir, "opencode"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", first+string(os.PathListSeparator)+second)
+	for major, want := range map[int]string{2: filepath.Join(first, "opencode"), 1: filepath.Join(second, "opencode")} {
+		got, err := ResolveBinaryForMajor(context.Background(), major)
+		if err != nil || got != want {
+			t.Fatalf("major %d resolved (%q, %v), want %q", major, got, err, want)
+		}
+	}
+	if _, err := ResolveBinaryForMajor(context.Background(), 3); err == nil || !strings.Contains(err.Error(), "requires OpenCode 3") {
+		t.Fatalf("major 3 err = %v, want first-candidate mismatch", err)
 	}
 }

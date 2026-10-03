@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/opencode"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
@@ -1286,6 +1287,11 @@ func (p requestPlanner) planNPM(target Target, pkg string) Plan {
 		}
 	}
 	plan := Plan{Target: target, Command: []string{"npm", "install", "-g", pkg}, Method: "npm"}
+	if target == TargetOpencodeV2 {
+		if prefix, ok := opencode.V2NPMPrefix(); ok {
+			plan.Command = []string{"npm", "install", "-g", "--prefix", prefix, pkg}
+		}
+	}
 	if IsAgentTarget(target) {
 		if p.capabilities == nil || p.capabilities.NPM.Err != nil {
 			plan.Unsupported = true

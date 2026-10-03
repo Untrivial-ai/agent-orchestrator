@@ -127,15 +127,15 @@ func TestOpenCodeV2UsesOfficialRecipesAndWarnsAboutReplacingV1(t *testing.T) {
 	}{
 		{goos: "darwin", want: map[string]string{
 			"homebrew":           "brew install anomalyco/tap/opencode-v2",
-			"npm":                "npm install -g @opencode/cli",
+			"npm":                "npm install -g --prefix",
 			"official-installer": "https://opencode.ai/v2/install",
 		}},
 		{goos: "linux", want: map[string]string{
-			"npm":                "npm install -g @opencode/cli",
+			"npm":                "npm install -g --prefix",
 			"official-installer": "https://opencode.ai/v2/install",
 		}},
 		{goos: "windows", want: map[string]string{
-			"npm": "npm install -g @opencode/cli",
+			"npm": "npm install -g --prefix",
 		}},
 	} {
 		t.Run(tc.goos, func(t *testing.T) {
@@ -155,7 +155,7 @@ func TestOpenCodeV2UsesOfficialRecipesAndWarnsAboutReplacingV1(t *testing.T) {
 			if got.AgentID == "" {
 				t.Fatal("OpenCode 2 install plan is missing")
 			}
-			if !strings.Contains(got.Notice, replacement) || got.DocumentationURL != "https://opencode.ai/v2/docs" {
+			if got.DocumentationURL != "https://opencode.ai/v2/docs" {
 				t.Fatalf("OpenCode 2 plan metadata = %+v", got)
 			}
 			if len(got.Methods) != len(tc.want) {
@@ -169,7 +169,11 @@ func TestOpenCodeV2UsesOfficialRecipesAndWarnsAboutReplacingV1(t *testing.T) {
 				if !strings.Contains(method.Command, want) {
 					t.Errorf("%s command = %q, want %q", method.ID, method.Command, want)
 				}
-				if !strings.Contains(method.Notice, replacement) {
+				if method.ID == "npm" {
+					if method.Notice != "" || !strings.Contains(method.Command, "opencode-v2-home") {
+						t.Errorf("npm method must install into the private prefix without a replacement warning: %+v", method)
+					}
+				} else if !strings.Contains(method.Notice, replacement) {
 					t.Errorf("%s notice = %q, want replacement warning", method.ID, method.Notice)
 				}
 			}

@@ -16,11 +16,12 @@ import (
 )
 
 const (
-	defaultDisplayReadinessTTL = 5 * time.Minute
-	defaultLaunchReadinessTTL  = 30 * time.Second
-	defaultInstallCheckTimeout = 2 * time.Second
-	defaultAuthCheckTimeout    = 10 * time.Second
-	defaultReadinessWorkers    = 4
+	defaultDisplayReadinessTTL  = 5 * time.Minute
+	defaultLaunchReadinessTTL   = 30 * time.Second
+	defaultInstallCheckTimeout  = 2 * time.Second
+	opencodeInstallCheckTimeout = 12 * time.Second
+	defaultAuthCheckTimeout     = 10 * time.Second
+	defaultReadinessWorkers     = 4
 )
 
 var defaultReadinessRetryDelays = []time.Duration{15 * time.Second, time.Minute, 5 * time.Minute}
@@ -516,7 +517,11 @@ func (c *readinessCoordinator) runCheck(id string, purpose domain.AgentReadiness
 
 func (c *readinessCoordinator) checkInstallation(item agentregistry.HarnessAgent, presenceOnly bool) (domain.AgentInstallationObservation, bool) {
 	attempted := c.now()
-	ctx, cancel := context.WithTimeout(c.ctx, c.installTimeout)
+	timeout := c.installTimeout
+	if timeout == defaultInstallCheckTimeout && (item.Harness == domain.HarnessOpenCode || item.Harness == domain.HarnessOpenCodeV2) {
+		timeout = opencodeInstallCheckTimeout
+	}
+	ctx, cancel := context.WithTimeout(c.ctx, timeout)
 	defer cancel()
 	var path string
 	var err error

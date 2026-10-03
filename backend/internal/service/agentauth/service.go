@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/opencodev2"
 	"github.com/aoagents/agent-orchestrator/backend/internal/httpd/apierr"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 )
@@ -175,6 +176,11 @@ func (s *Service) Start(ctx context.Context, agentID string) (StartResult, error
 		Title:                   plan.title,
 		InitialInput:            plan.initialInput,
 		InitialInputReadyStates: plan.initialInputReadyStates,
+	}
+	if plan.AgentID == "opencode-v2" {
+		if dataHome, ok := opencodev2.DataHome(); ok {
+			input.Env = map[string]string{"XDG_DATA_HOME": dataHome}
+		}
 	}
 	if plan.prepareWorkspace != nil {
 		workingDir, err := s.prepareAuthWorkspace(ctx, plan)

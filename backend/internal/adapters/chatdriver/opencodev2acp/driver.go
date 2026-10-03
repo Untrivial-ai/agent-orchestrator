@@ -44,7 +44,11 @@ func configure(_ context.Context, cfg acpdriver.LaunchConfig) ([]string, map[str
 	if err != nil {
 		return nil, nil, err
 	}
-	return []string{"acp"}, map[string]string{"OPENCODE_CONFIG_CONTENT": content}, nil
+	env := map[string]string{"OPENCODE_CONFIG_CONTENT": content}
+	if dataHome, ok := opencodev2.DataHome(); ok {
+		env["XDG_DATA_HOME"] = dataHome
+	}
+	return []string{"acp"}, env, nil
 }
 
 // OpenCode 2's ACP bridge advertises the built-in modes before custom agents

@@ -51,7 +51,7 @@ func TestReviewCommandAppliesFinalReadOnlyAgentPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReviewCommand: %v", err)
 	}
-	if len(spec.Argv) < 4 || spec.Argv[0] != "env" || spec.Argv[2] != binary {
+	if argv := dropDataHome(spec.Argv); len(argv) < 4 || argv[0] != "env" || argv[2] != binary {
 		t.Fatalf("argv = %#v", spec.Argv)
 	}
 	if slicesContain(spec.Argv, "--auto") || slicesContain(spec.Argv, "--dangerously-skip-permissions") {
@@ -256,4 +256,14 @@ func globMatches(pattern, value string) bool {
 		remaining = remaining[index+len(part):]
 	}
 	return true
+}
+
+func dropDataHome(argv []string) []string {
+	out := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		if !strings.HasPrefix(arg, "XDG_DATA_HOME=") {
+			out = append(out, arg)
+		}
+	}
+	return out
 }

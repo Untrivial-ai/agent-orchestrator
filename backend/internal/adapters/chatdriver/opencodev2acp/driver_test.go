@@ -166,6 +166,8 @@ func TestWrongOpenCodeMajorIsRejectedBeforeACPProcessLaunch(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, calls := writeOpenCodeACPExecutable(t, test.version)
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
 			_, err := test.driver().Start(context.Background(), ports.ChatStartConfig{
 				SessionID: "wrong-major", DataDir: t.TempDir(), WorkspacePath: t.TempDir(),
 			})
