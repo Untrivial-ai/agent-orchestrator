@@ -33,6 +33,7 @@ var (
 type Store interface {
 	UpsertReview(ctx stdctx.Context, r domain.Review) error
 	SetReviewInterfaceMode(ctx stdctx.Context, id string, mode domain.ReviewerInterfaceMode, updatedAt time.Time) (bool, error)
+	RestoreReviewLaunchState(ctx stdctx.Context, review domain.Review) (bool, error)
 	SetSessionReviewerConfig(ctx stdctx.Context, id domain.SessionID, harness domain.ReviewerHarness, config domain.AgentConfig, updatedAt time.Time) (bool, error)
 	GetReviewBySession(ctx stdctx.Context, id domain.SessionID) (domain.Review, bool, error)
 	ClearReviewerHandle(ctx stdctx.Context, id domain.SessionID) error
@@ -206,6 +207,11 @@ func (e *Engine) Trigger(ctx stdctx.Context, workerID domain.SessionID, override
 
 // TriggerWithSource starts a review and records who initiated the pass.
 func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID, override domain.ReviewerHarness, overrideConfig domain.AgentConfig, source domain.ReviewTriggerSource) (TriggerResult, error) {
+	return e.TriggerWithSourceAndMode(ctx, workerID, override, overrideConfig, source, "")
+}
+
+// TriggerWithSourceAndMode lets a manual review choose its actual reviewer surface.
+func (e *Engine) TriggerWithSourceAndMode(ctx stdctx.Context, workerID domain.SessionID, override domain.ReviewerHarness, overrideConfig domain.AgentConfig, source domain.ReviewTriggerSource, mode domain.ReviewerInterfaceMode) (TriggerResult, error) {
 	if workerID == "" {
 		return TriggerResult{}, fmt.Errorf("%w: worker session id is required", ErrInvalid)
 	}
@@ -214,6 +220,12 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	}
 	if source != domain.ReviewTriggerManual && source != domain.ReviewTriggerAuto {
 		return TriggerResult{}, fmt.Errorf("%w: unknown review trigger source %q", ErrInvalid, source)
+	}
+	if mode != "" && mode != domain.ReviewerInterfaceChat && mode != domain.ReviewerInterfaceTUI {
+		return TriggerResult{}, fmt.Errorf("%w: unknown reviewer interface mode %q", ErrInvalid, mode)
+	}
+	if source == domain.ReviewTriggerAuto && mode != "" {
+		return TriggerResult{}, fmt.Errorf("%w: automatic review cannot override interface mode", ErrInvalid)
 	}
 
 	// Serialise concurrent triggers for this worker so the idempotency check
@@ -284,12 +296,31 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	if err != nil {
 		return TriggerResult{}, err
 	}
-	if err := e.destroyOtherReviewerHandles(ctx, workerID, harness, reviewRows); err != nil {
-		return TriggerResult{}, err
-	}
 	reviewRow, hasReview, err := e.store.GetReviewBySessionAndHarness(ctx, workerID, harness)
 	if err != nil {
 		return TriggerResult{}, err
+	}
+	previousReview := reviewRow
+	selectedMode := mode
+	if selectedMode == "" && hasReview {
+		selectedMode = reviewRow.InterfaceMode
+	}
+	if selectedMode == "" {
+		selectedMode = e.launcher.InterfaceMode(harness)
+	}
+	if selectedMode == domain.ReviewerInterfaceChat && e.launcher.InterfaceMode(harness) != domain.ReviewerInterfaceChat {
+		if mode != "" {
+			return TriggerResult{}, fmt.Errorf("%w: reviewer %q does not support Chat", ErrInvalid, harness)
+		}
+		selectedMode = domain.ReviewerInterfaceTUI
+	}
+	if err := e.destroyOtherReviewerHandles(ctx, workerID, harness, reviewRows); err != nil {
+		return TriggerResult{}, err
+	}
+	modeChanging := hasReview && reviewRow.InterfaceMode != "" && reviewRow.InterfaceMode != selectedMode
+	secondOpinionOverride := hasConfigOverride || (modeChanging && mode != "")
+	if modeChanging {
+		hasConfigOverride = true
 	}
 	if stale, err := e.cancelStaleRunningRuns(ctx, workerID, reviewRow, hasReview, runs); err != nil {
 		return TriggerResult{}, err
@@ -343,7 +374,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 		if source == domain.ReviewTriggerAuto && autoReviewHeadBlocked(runs, reviewState.PRURL, reviewState.TargetSHA, harness) {
 			eligible = false
 		}
-		if !eligible && !secondOpinionWanted(reviewState, hasHarnessOverride, hasConfigOverride, harness) {
+		if !eligible && !secondOpinionWanted(reviewState, hasHarnessOverride, secondOpinionOverride, harness) {
 			continue
 		}
 		if hasConfigOverride {
@@ -389,6 +420,22 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 		reviews = replaceReviewLatestRun(reviews, reviewState.PRURL, reviewState.TargetSHA, run)
 	}
 	if len(created) == 0 && len(restarted) == 0 {
+		if modeChanging && mode == "" {
+			if err := e.setReviewerInterfaceMode(ctx, reviewRow.ID, selectedMode, now); err != nil {
+				return TriggerResult{}, err
+			}
+			if err := e.store.ClearReviewerHandleByHarness(ctx, workerID, harness); err != nil {
+				return TriggerResult{}, err
+			}
+			if _, err := e.store.UpdateReviewAgentSessionID(ctx, reviewRow.ID, ""); err != nil {
+				return TriggerResult{}, err
+			}
+			reviewRow.InterfaceMode = selectedMode
+			reviewRow.ReviewerHandleID = ""
+			reviewRow.AgentSessionID = ""
+			reviewRow.ProviderConversationID = ""
+			reviewRow.ControllerGeneration = ""
+		}
 		return TriggerResult{Run: firstReusableRun(reviews), ReviewerHandleID: legacyReviewerHandle(reviewRow), Created: false, Reviews: reviews, Runs: runs, ReviewerSurface: reviewerSurface(reviewRow)}, nil
 	}
 
@@ -408,7 +455,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	previousHandleID := reviewRow.ReviewerHandleID
 	previousAgentSessionID := reviewRow.AgentSessionID
 	launchAgentSessionID := reviewRow.AgentSessionID
-	if hasConfigOverride {
+	if hasConfigOverride || selectedMode == domain.ReviewerInterfaceChat {
 		launchAgentSessionID = ""
 	}
 	persistedAgentSessionID := launchAgentSessionID
@@ -425,7 +472,7 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	if handleID == "" {
 		// Each pass gets a fresh reviewer process on the same stable terminal
 		// handle when there is no resumable live agent session to notify.
-		if err := e.launcher.Preflight(ctx, harness, worker.Metadata.WorkspacePath); err != nil {
+		if err := e.launcher.Preflight(ctx, harness, worker.Metadata.WorkspacePath, selectedMode); err != nil {
 			return TriggerResult{}, failRuns(0, fmt.Errorf("reviewer preflight: %w", err))
 		}
 		launchID := e.newID()
@@ -433,12 +480,29 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 		if err != nil {
 			return TriggerResult{}, failRuns(0, err)
 		}
-		if err := e.persistReviewerInterfaceMode(ctx, reviewRow.ID, harness, now); err != nil {
-			return TriggerResult{}, failRuns(0, err)
+		rollbackSurface := func(cause error) error {
+			if hasReview {
+				rollbackCtx, cancel := stdctx.WithTimeout(stdctx.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				if ok, rollbackErr := e.store.RestoreReviewLaunchState(rollbackCtx, previousReview); rollbackErr != nil {
+					cause = errors.Join(cause, fmt.Errorf("restore previous reviewer surface: %w", rollbackErr))
+				} else if !ok {
+					cause = errors.Join(cause, fmt.Errorf("%w: reviewer %q", ErrNotFound, previousReview.ID))
+				}
+			}
+			return failRuns(0, cause)
 		}
-		launch, err := e.launcher.Spawn(ctx, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, launchAgentSessionID, launchID))
+		if err := e.setReviewerInterfaceMode(ctx, reviewRow.ID, selectedMode, now); err != nil {
+			return TriggerResult{}, rollbackSurface(err)
+		}
+		launchSpec := reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, launchAgentSessionID, launchID)
+		launchSpec.InterfaceMode = selectedMode
+		if selectedMode == domain.ReviewerInterfaceChat {
+			launchSpec.ProviderConversationID = reviewRow.ProviderConversationID
+		}
+		launch, err := e.launcher.Spawn(ctx, launchSpec)
 		if err != nil {
-			return TriggerResult{}, failRuns(0, fmt.Errorf("launch reviewer: %w", err))
+			return TriggerResult{}, rollbackSurface(fmt.Errorf("launch reviewer: %w", err))
 		}
 		handleID = launch.HandleID
 		if launch.LaunchID != "" {
@@ -448,7 +512,9 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 			persistedAgentSessionID = launch.AgentSessionID
 		}
 	} else {
-		if err := e.launcher.Notify(ctx, handleID, reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, reviewRow.AgentSessionID, reviewRow.ReviewerLaunchID)); err != nil {
+		launchSpec := reviewLaunchSpec(worker, harness, config, launchRun, queue, 0, reviewRow.AgentSessionID, reviewRow.ReviewerLaunchID)
+		launchSpec.InterfaceMode = selectedMode
+		if err := e.launcher.Notify(ctx, handleID, launchSpec); err != nil {
 			return TriggerResult{}, failRuns(0, fmt.Errorf("notify reviewer: %w", err))
 		}
 	}
@@ -477,6 +543,21 @@ func (e *Engine) TriggerWithSource(ctx stdctx.Context, workerID domain.SessionID
 	}
 	if hasConfigOverride && previousHandleID != "" && previousHandleID != handleID {
 		if err := e.launcher.Destroy(ctx, previousHandleID); err != nil {
+			if modeChanging {
+				if handleID != "" {
+					if cleanupErr := e.launcher.Destroy(ctx, handleID); cleanupErr != nil {
+						return TriggerResult{}, failRuns(0, errors.Join(fmt.Errorf("destroy previous reviewer: %w", err), fmt.Errorf("cleanup replacement reviewer: %w", cleanupErr)))
+					}
+				}
+				rollbackCtx, cancel := stdctx.WithTimeout(stdctx.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				if ok, rollbackErr := e.store.RestoreReviewLaunchState(rollbackCtx, previousReview); rollbackErr != nil {
+					return TriggerResult{}, failRuns(0, errors.Join(fmt.Errorf("destroy previous reviewer: %w", err), fmt.Errorf("restore previous reviewer surface: %w", rollbackErr)))
+				} else if !ok {
+					return TriggerResult{}, failRuns(0, fmt.Errorf("destroy previous reviewer: %w; previous reviewer row is missing", err))
+				}
+				return TriggerResult{}, failRuns(0, fmt.Errorf("destroy previous reviewer: %w", err))
+			}
 			if _, rollbackErr := e.upsertReview(ctx, worker, harness, previousHandleID, previousAgentSessionID, "", "", now); rollbackErr != nil {
 				return TriggerResult{}, failRuns(0, fmt.Errorf("destroy previous reviewer: %w; rollback review row: %w", err, rollbackErr))
 			}
@@ -705,11 +786,19 @@ func (e *Engine) restorePersistedChatReviewerLocked(ctx stdctx.Context, worker d
 			return RestoreReviewerResult{ReviewerHandleID: review.ReviewerHandleID}, nil
 		}
 	}
-	launchID := e.newID()
-	if err := e.persistReviewerInterfaceMode(ctx, review.ID, review.Harness, e.clock()); err != nil {
-		return RestoreReviewerResult{}, err
+	if review.InterfaceMode == domain.ReviewerInterfaceChat && e.launcher.InterfaceMode(review.Harness) != domain.ReviewerInterfaceChat {
+		if err := e.setReviewerInterfaceMode(ctx, review.ID, domain.ReviewerInterfaceTUI, e.clock()); err != nil {
+			return RestoreReviewerResult{}, err
+		}
+		if _, err := e.store.UpdateReviewAgentSessionID(ctx, review.ID, ""); err != nil {
+			return RestoreReviewerResult{}, err
+		}
+		review.InterfaceMode = domain.ReviewerInterfaceTUI
+		review.AgentSessionID = ""
+		review.ProviderConversationID = ""
 	}
-	launch, err := e.launcher.RestoreTerminal(ctx, LaunchSpec{ReviewSessionID: review.ID, LaunchID: launchID, WorkerID: worker.ID, ProjectID: worker.ProjectID, Harness: review.Harness, WorkspacePath: worker.Metadata.WorkspacePath, AgentSessionID: review.AgentSessionID, ProviderConversationID: review.ProviderConversationID, PreviousRuns: previousRuns})
+	launchID := e.newID()
+	launch, err := e.launcher.RestoreTerminal(ctx, LaunchSpec{ReviewSessionID: review.ID, LaunchID: launchID, WorkerID: worker.ID, ProjectID: worker.ProjectID, Harness: review.Harness, WorkspacePath: worker.Metadata.WorkspacePath, AgentSessionID: review.AgentSessionID, ProviderConversationID: review.ProviderConversationID, PreviousRuns: previousRuns, InterfaceMode: review.InterfaceMode})
 	if err != nil {
 		return RestoreReviewerResult{}, fmt.Errorf("restore reviewer: %w", err)
 	}
@@ -782,8 +871,21 @@ func (e *Engine) restoreReviewerLocked(
 	if err != nil {
 		return RestoreReviewerResult{}, err
 	}
-	if err := e.persistReviewerInterfaceMode(ctx, reviewRow.ID, harness, e.clock()); err != nil {
-		return RestoreReviewerResult{}, err
+	if !hasReview {
+		reviewRow.InterfaceMode = e.launcher.InterfaceMode(harness)
+		if err := e.setReviewerInterfaceMode(ctx, reviewRow.ID, reviewRow.InterfaceMode, e.clock()); err != nil {
+			return RestoreReviewerResult{}, err
+		}
+	} else if reviewRow.InterfaceMode == domain.ReviewerInterfaceChat && e.launcher.InterfaceMode(harness) != domain.ReviewerInterfaceChat {
+		if err := e.setReviewerInterfaceMode(ctx, reviewRow.ID, domain.ReviewerInterfaceTUI, e.clock()); err != nil {
+			return RestoreReviewerResult{}, err
+		}
+		if _, err := e.store.UpdateReviewAgentSessionID(ctx, reviewRow.ID, ""); err != nil {
+			return RestoreReviewerResult{}, err
+		}
+		reviewRow.InterfaceMode = domain.ReviewerInterfaceTUI
+		reviewRow.AgentSessionID = ""
+		agentSessionID = ""
 	}
 	launch, err := e.launcher.RestoreTerminal(ctx, LaunchSpec{
 		ReviewSessionID:      reviewRow.ID,
@@ -796,6 +898,7 @@ func (e *Engine) restoreReviewerLocked(
 		AgentSessionID:       agentSessionID,
 		RequireNativeHistory: harness == domain.ReviewerCodex,
 		PreviousRuns:         previousRuns,
+		InterfaceMode:        reviewRow.InterfaceMode,
 	})
 	if err != nil {
 		restoreErr := fmt.Errorf("restore reviewer: %w", err)
@@ -1429,8 +1532,7 @@ func (e *Engine) upsertReview(ctx stdctx.Context, worker domain.SessionRecord, h
 	return review, nil
 }
 
-func (e *Engine) persistReviewerInterfaceMode(ctx stdctx.Context, reviewID string, harness domain.ReviewerHarness, now time.Time) error {
-	mode := e.launcher.InterfaceMode(harness)
+func (e *Engine) setReviewerInterfaceMode(ctx stdctx.Context, reviewID string, mode domain.ReviewerInterfaceMode, now time.Time) error {
 	ok, err := e.store.SetReviewInterfaceMode(ctx, reviewID, mode, now)
 	if err != nil {
 		return err

@@ -601,6 +601,32 @@ func (q *Queries) FailOrphanedConversationActivities(ctx context.Context, arg Fa
 	return err
 }
 
+const failOrphanedReviewActivities = `-- name: FailOrphanedReviewActivities :exec
+UPDATE conversation_activities
+SET status = 'failed', revision = revision + 1, updated_at = ?1
+WHERE conversation_activities.conversation_id = ?2
+  AND status = 'running'
+  AND conversation_activities.turn_id IN (
+      SELECT conversation_turns.id FROM conversation_turns
+      WHERE conversation_turns.conversation_id = ?2
+        AND conversation_turns.handled_by_review_id = ?3
+        AND conversation_turns.state IN ('queued', 'running')
+  )
+`
+
+type FailOrphanedReviewActivitiesParams struct {
+	UpdatedAt      time.Time
+	ConversationID string
+	ReviewID       sql.NullString
+}
+
+// Reviewer Chat has its own controller generation on review, separate from
+// the worker session. Settle only turns owned by that review conversation.
+func (q *Queries) FailOrphanedReviewActivities(ctx context.Context, arg FailOrphanedReviewActivitiesParams) error {
+	_, err := q.db.ExecContext(ctx, failOrphanedReviewActivities, arg.UpdatedAt, arg.ConversationID, arg.ReviewID)
+	return err
+}
+
 const failPendingConversationApprovals = `-- name: FailPendingConversationApprovals :exec
 UPDATE conversation_activities
 SET status = 'failed', revision = revision + 1, updated_at = ?
@@ -663,6 +689,30 @@ type FailPendingConversationRequestsForSessionParams struct {
 // session; conversation-wide cleanup would also fail the replacement's requests.
 func (q *Queries) FailPendingConversationRequestsForSession(ctx context.Context, arg FailPendingConversationRequestsForSessionParams) error {
 	_, err := q.db.ExecContext(ctx, failPendingConversationRequestsForSession, arg.UpdatedAt, arg.TargetConversationID, arg.HandledBySessionID)
+	return err
+}
+
+const failPendingReviewRequests = `-- name: FailPendingReviewRequests :exec
+UPDATE conversation_activities
+SET status = 'failed', revision = revision + 1, updated_at = ?1
+WHERE conversation_activities.conversation_id = ?2
+  AND kind IN ('approval', 'user_input')
+  AND status = 'pending'
+  AND conversation_activities.turn_id IN (
+    SELECT conversation_turns.id FROM conversation_turns
+    WHERE conversation_turns.conversation_id = ?2
+      AND conversation_turns.handled_by_review_id = ?3
+  )
+`
+
+type FailPendingReviewRequestsParams struct {
+	UpdatedAt      time.Time
+	ConversationID string
+	ReviewID       sql.NullString
+}
+
+func (q *Queries) FailPendingReviewRequests(ctx context.Context, arg FailPendingReviewRequestsParams) error {
+	_, err := q.db.ExecContext(ctx, failPendingReviewRequests, arg.UpdatedAt, arg.ConversationID, arg.ReviewID)
 	return err
 }
 
@@ -3524,6 +3574,27 @@ type SettleOrphanedConversationTurnsParams struct {
 // completed.
 func (q *Queries) SettleOrphanedConversationTurns(ctx context.Context, arg SettleOrphanedConversationTurnsParams) error {
 	_, err := q.db.ExecContext(ctx, settleOrphanedConversationTurns, arg.CompletedAt, arg.HandledBySessionID)
+	return err
+}
+
+const settleOrphanedReviewTurns = `-- name: SettleOrphanedReviewTurns :exec
+UPDATE conversation_turns
+SET state = 'failed',
+    error_message = 'controller ended before the turn completed',
+    completed_at = ?1
+WHERE conversation_turns.conversation_id = ?2
+  AND conversation_turns.handled_by_review_id = ?3
+  AND conversation_turns.state IN ('queued', 'running')
+`
+
+type SettleOrphanedReviewTurnsParams struct {
+	CompletedAt    sql.NullTime
+	ConversationID string
+	ReviewID       sql.NullString
+}
+
+func (q *Queries) SettleOrphanedReviewTurns(ctx context.Context, arg SettleOrphanedReviewTurnsParams) error {
+	_, err := q.db.ExecContext(ctx, settleOrphanedReviewTurns, arg.CompletedAt, arg.ConversationID, arg.ReviewID)
 	return err
 }
 

@@ -704,6 +704,21 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 			return nil, fmt.Errorf("%w: load live conversation before reconnect: %w", ports.ErrChatRecoveryInconclusive, err)
 		}
 	}
+	if owner.Kind == domain.ConversationOwnerReview && !liveReconnect {
+		if reviewStore, ok := s.store.(reviewerConversationStore); ok {
+			review, found, readErr := reviewStore.GetReviewByID(ctx, owner.ID)
+			if readErr != nil {
+				_ = cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
+				return nil, fmt.Errorf("read reviewer Chat owner before start: %w", readErr)
+			}
+			if found {
+				if _, cleanupErr := s.store.CleanupOwnedReviewControllerWork(ctx, owner.ID, conversation.ID, review.ControllerGeneration, s.now()); cleanupErr != nil {
+					_ = cleanupUnpublishedConversation(conv, cfg.ProviderConversationID == "")
+					return nil, fmt.Errorf("settle previous reviewer Chat work: %w", cleanupErr)
+				}
+			}
+		}
+	}
 
 	// Claim the durable fence before the controller starts consuming events. A
 	// pending provider boundary claims it in ControllerReady's atomic ownership
@@ -889,9 +904,13 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 				_ = cleanupUnpublishedConversation(conv, false)
 				return nil, errors.New("commit native history: atomic provider-boundary lifecycle is unavailable")
 			}
-			if err := s.store.CreateAndActivateConversationBranch(
-				ctx, cfg.SessionID, *providerBoundary, generation, s.now(),
-			); err != nil {
+			var err error
+			if owner.Kind == domain.ConversationOwnerReview {
+				err = s.store.CreateAndActivateReviewConversationBranch(ctx, owner.ID, *providerBoundary, generation, s.now())
+			} else {
+				err = s.store.CreateAndActivateConversationBranch(ctx, cfg.SessionID, *providerBoundary, generation, s.now())
+			}
+			if err != nil {
 				_ = cleanupUnpublishedConversation(conv, false)
 				return nil, fmt.Errorf("commit fresh provider boundary: %w", err)
 			}

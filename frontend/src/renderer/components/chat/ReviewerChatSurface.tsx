@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useReviewerConversation, useReviewerConversationCommands } from "../../hooks/useReviewerConversation";
@@ -9,6 +10,7 @@ export function ReviewerChatSurface({ reviewId, hideHeader = false }: { reviewId
 	const { snapshot, isLoading, error, hasOlder, isLoadingOlder, loadOlder } = useReviewerConversation(reviewId);
 	const commands = useReviewerConversationCommands(reviewId);
 	const openSessionLink = useSessionLinkNavigation();
+	const draftOwner = useMemo(() => ({ sessionId: `review:${reviewId}`, incarnation: reviewId }), [reviewId]);
 	if (isLoading)
 		return (
 			<Centered>
@@ -26,6 +28,7 @@ export function ReviewerChatSurface({ reviewId, hideHeader = false }: { reviewId
 	return (
 		<ChatWorkspace
 			snapshot={snapshot}
+			draftOwner={draftOwner}
 			onSessionLinkOpen={openSessionLink}
 			sessionTitle={t("terminal.reviewer")}
 			sessionRole="worker"

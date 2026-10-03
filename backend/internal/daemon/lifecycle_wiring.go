@@ -587,7 +587,7 @@ func (c chatLauncher) RestoreReviewChat(ctx context.Context, cfg reviewcore.Revi
 
 func (c chatLauncher) startReviewChat(ctx context.Context, cfg reviewcore.ReviewerChatStart, sendPrompt bool) (string, error) {
 	owner := domain.ReviewConversationOwner(cfg.ReviewID)
-	started, err := c.svc.StartChat(ctx, chatsvc.StartConfig{Owner: owner, SessionID: cfg.WorkerID, ProjectID: cfg.ProjectID, Kind: domain.KindWorker, Harness: cfg.Harness, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env, Permissions: ports.PermissionModeAuto, SystemPrompt: cfg.SystemPrompt, ProviderConversationID: cfg.ProviderConversationID})
+	started, err := c.svc.StartChat(ctx, chatsvc.StartConfig{Owner: owner, SessionID: cfg.WorkerID, ProjectID: cfg.ProjectID, Kind: domain.KindWorker, Harness: cfg.Harness, DataDir: cfg.DataDir, WorkspacePath: cfg.WorkspacePath, Env: cfg.Env, Model: cfg.Model, Effort: cfg.Effort, Permissions: ports.PermissionModeAuto, SystemPrompt: cfg.SystemPrompt, ProviderConversationID: cfg.ProviderConversationID})
 	if err != nil {
 		return "", err
 	}

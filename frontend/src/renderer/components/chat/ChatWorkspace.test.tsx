@@ -420,7 +420,10 @@ describe("ChatWorkspace timeline", () => {
 		expect(screen.getAllByText("Already durable")).toHaveLength(1);
 	});
 
-	it("resolves a relative image in agent prose against this session workspace", () => {
+	it.each([
+		{ surface: "worker", draftOwner: undefined },
+		{ surface: "reviewer", draftOwner: { sessionId: "review:review-1", incarnation: "review-1" } },
+	])("resolves a relative image in $surface prose against the worker workspace", ({ draftOwner }) => {
 		const snapshot = idleSnapshot(chatFixtureEmpty);
 		snapshot.items.push({
 			kind: "message",
@@ -435,7 +438,7 @@ describe("ChatWorkspace timeline", () => {
 			createdAt: "2026-09-09T00:00:00Z",
 		});
 
-		render(<ChatWorkspace snapshot={snapshot} />);
+		render(<ChatWorkspace snapshot={snapshot} draftOwner={draftOwner} />);
 
 		const src = screen.getByRole("img", { name: "screenshot" }).getAttribute("src") ?? "";
 		const url = new URL(src, "http://127.0.0.1");
@@ -2193,6 +2196,19 @@ describe("ChatWorkspace message actions", () => {
 
 		render(<ChatWorkspace snapshot={sessionB} onSend={vi.fn()} />);
 		expect(screen.getByLabelText("Message the agent")).toHaveTextContent("session B draft");
+	});
+
+	it("saves a reviewer draft separately from its worker conversation", async () => {
+		const snapshot = idleSnapshot();
+		const draftOwner = { sessionId: "review:review-1", incarnation: "review-1" };
+		const view = render(<ChatWorkspace snapshot={snapshot} draftOwner={draftOwner} onSend={vi.fn()} />);
+		await typeInLexicalEditor(screen.getByLabelText("Message the agent"), "reviewer reply");
+		await waitFor(() => expect(readChatSessionDraft(draftOwner).composer.text).toBe("reviewer reply"));
+		expect(readChatSessionDraft({ sessionId: snapshot.sessionId, incarnation: snapshot.sessionId }).composer.text).toBe("");
+		view.unmount();
+		render(<ChatWorkspace snapshot={snapshot} draftOwner={draftOwner} onSend={vi.fn()} />);
+		expect(screen.getByLabelText("Message the agent")).toHaveTextContent("reviewer reply");
+		expect(screen.queryByText("Draft couldn’t be saved.")).not.toBeInTheDocument();
 	});
 
 	it("lets only the newest daemon session incarnation own restored drafts", async () => {

@@ -36,6 +36,11 @@ UPDATE review SET interface_mode = ?, reviewer_handle_id = CASE WHEN ? = 'chat' 
     controller_generation = CASE WHEN ? = 'tui' THEN '' ELSE controller_generation END,
     controller_error = '', updated_at = ? WHERE id = ?;
 
+-- name: RestoreReviewLaunchState :execrows
+UPDATE review SET pr_url = ?, interface_mode = ?, reviewer_handle_id = ?, agent_session_id = ?,
+    reviewer_activity_state = ?, reviewer_launch_id = ?, provider_conversation_id = ?,
+    controller_generation = ?, controller_error = ?, updated_at = ? WHERE id = ?;
+
 -- name: ClaimReviewChatController :execrows
 UPDATE review SET provider_conversation_id = ?, controller_generation = ?, controller_error = '', updated_at = ?
 WHERE id = ? AND interface_mode = 'chat';

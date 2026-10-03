@@ -98,6 +98,15 @@ func (f *fakeStore) SetReviewInterfaceMode(_ context.Context, id string, mode do
 	}
 	return updated, nil
 }
+func (f *fakeStore) RestoreReviewLaunchState(_ context.Context, review domain.Review) (bool, error) {
+	if f.review == nil || f.review.ID != review.ID {
+		return false, nil
+	}
+	cp := review
+	f.review = &cp
+	f.reviews[review.Harness] = cp
+	return true, nil
+}
 func (f *fakeStore) mutateReview(harness domain.ReviewerHarness, fn func(*domain.Review)) {
 	if review, ok := f.reviews[harness]; ok {
 		fn(&review)
@@ -349,13 +358,19 @@ func (r singleReviewerResolver) Reviewer(domain.ReviewerHarness) (ports.Reviewer
 	return r.reviewer, true
 }
 
-type sqliteReviewChatController struct{ store *sqlite.Store }
+type sqliteReviewChatController struct {
+	store   *sqlite.Store
+	started *ReviewerChatStart
+}
 
 func (c sqliteReviewChatController) SupportsReviewChat(domain.AgentHarness) bool { return true }
 func (c sqliteReviewChatController) PreflightReviewChat(context.Context, domain.AgentHarness) error {
 	return nil
 }
 func (c sqliteReviewChatController) StartReviewChat(ctx context.Context, cfg ReviewerChatStart) (string, error) {
+	if c.started != nil {
+		*c.started = cfg
+	}
 	_, err := c.store.CreateReviewConversation(ctx, "review-conversation", cfg.ReviewID, cfg.ProjectID, cfg.WorkerID, time.Now().UTC())
 	return "provider-conversation", err
 }
@@ -490,7 +505,7 @@ func (f *fakeLauncher) Destroy(_ context.Context, handleID string) error {
 	}
 	return nil
 }
-func (f *fakeLauncher) Preflight(_ context.Context, _ domain.ReviewerHarness, _ string) error {
+func (f *fakeLauncher) Preflight(_ context.Context, _ domain.ReviewerHarness, _ string, _ ...domain.ReviewerInterfaceMode) error {
 	f.preflighted = true
 	return f.preflightErr
 }
@@ -587,12 +602,16 @@ func TestTriggerPersistsChatModeBeforeCreatingReviewerConversation(t *testing.T)
 	store := newSQLiteReviewStore(t)
 	worker := liveWorker()
 	seedReviewWorker(t, store, worker)
-	chat := sqliteReviewChatController{store: store}
+	var started ReviewerChatStart
+	chat := sqliteReviewChatController{store: store, started: &started}
 	launcher := NewLauncher(singleReviewerResolver{reviewer: chatReviewAdapter{}}, &fakeRuntime{}, t.TempDir(), WithReviewerChat(chat))
 	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
 
-	if _, err := eng.Trigger(ctx, worker.ID, domain.ReviewerCodex, domain.AgentConfig{}); err != nil {
+	if _, err := eng.Trigger(ctx, worker.ID, domain.ReviewerCodex, domain.AgentConfig{Model: "gpt-6-sol", Effort: "high"}); err != nil {
 		t.Fatalf("Trigger: %v", err)
+	}
+	if started.Model != "gpt-6-sol" || started.Effort != "high" {
+		t.Fatalf("reviewer Chat config: model=%q effort=%q", started.Model, started.Effort)
 	}
 	review, ok, err := store.GetReviewBySessionAndHarness(ctx, worker.ID, domain.ReviewerCodex)
 	if err != nil || !ok {
@@ -603,6 +622,172 @@ func TestTriggerPersistsChatModeBeforeCreatingReviewerConversation(t *testing.T)
 	}
 	if _, err := store.ConversationForReview(ctx, review.ID); err != nil {
 		t.Fatalf("ConversationForReview: %v", err)
+	}
+}
+
+func TestTriggerCanChooseTerminalForChatCapableReviewer(t *testing.T) {
+	store := &fakeStore{}
+	launcher := &fakeLauncher{interfaceMode: domain.ReviewerInterfaceChat, handle: "review-mer-1"}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+
+	res, err := eng.TriggerWithSourceAndMode(context.Background(), "mer-1", domain.ReviewerCodex, domain.AgentConfig{}, domain.ReviewTriggerManual, domain.ReviewerInterfaceTUI)
+	if err != nil {
+		t.Fatalf("TriggerWithSourceAndMode: %v", err)
+	}
+	if !res.Created || launcher.gotSpec.InterfaceMode != domain.ReviewerInterfaceTUI || store.review.InterfaceMode != domain.ReviewerInterfaceTUI {
+		t.Fatalf("terminal mode was not launched and persisted: result=%+v spec=%+v review=%+v", res, launcher.gotSpec, store.review)
+	}
+}
+
+func TestTriggerRejectsChatForTerminalOnlyReviewer(t *testing.T) {
+	eng := newEngineForTest(&fakeStore{}, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, &fakeLauncher{})
+	if _, err := eng.TriggerWithSourceAndMode(context.Background(), "mer-1", "", domain.AgentConfig{}, domain.ReviewTriggerManual, domain.ReviewerInterfaceChat); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("TriggerWithSourceAndMode error = %v, want invalid", err)
+	}
+}
+
+func TestTriggerRejectsUnsupportedChatWithoutDestroyingOtherReviewer(t *testing.T) {
+	old := domain.Review{ID: "rev-codex", SessionID: "mer-1", Harness: domain.ReviewerCodex, ReviewerHandleID: "codex-pane", InterfaceMode: domain.ReviewerInterfaceChat}
+	store := &fakeStore{review: &old, reviews: map[domain.ReviewerHarness]domain.Review{domain.ReviewerCodex: old}, runs: []domain.ReviewRun{{ID: "run-1", SessionID: "mer-1", Harness: domain.ReviewerCodex, Status: domain.ReviewRunRunning}}}
+	launcher := &fakeLauncher{alive: true}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	_, err := eng.TriggerWithSourceAndMode(context.Background(), "mer-1", domain.ReviewerClaudeCode, domain.AgentConfig{}, domain.ReviewTriggerManual, domain.ReviewerInterfaceChat)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("error = %v, want invalid", err)
+	}
+	if launcher.destroyed || store.runs[0].Status != domain.ReviewRunRunning || store.reviews[domain.ReviewerCodex].ReviewerHandleID != old.ReviewerHandleID {
+		t.Fatalf("invalid request changed active reviewer: launcher=%+v review=%+v runs=%+v", launcher, store.reviews[domain.ReviewerCodex], store.runs)
+	}
+}
+
+func TestTriggerFailedModeSwitchRestoresPreviousConversationAndPane(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		old  domain.Review
+		next domain.ReviewerInterfaceMode
+	}{
+		{name: "chat to terminal", old: domain.Review{ReviewerHandleID: "review-chat:rev-1", AgentSessionID: "conv-1", InterfaceMode: domain.ReviewerInterfaceChat, ProviderConversationID: "conv-1", ControllerGeneration: "generation-1"}, next: domain.ReviewerInterfaceTUI},
+		{name: "terminal to chat", old: domain.Review{ReviewerHandleID: "terminal-pane", AgentSessionID: "native-1", InterfaceMode: domain.ReviewerInterfaceTUI}, next: domain.ReviewerInterfaceChat},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			old := tt.old
+			old.ID, old.SessionID, old.Harness = "rev-1", "mer-1", domain.ReviewerCodex
+			store := &fakeStore{review: &old, reviews: map[domain.ReviewerHarness]domain.Review{domain.ReviewerCodex: old}, runs: []domain.ReviewRun{{ID: "run-1", ReviewID: old.ID, SessionID: "mer-1", Harness: domain.ReviewerCodex, PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunRunning}}}
+			launcher := &fakeLauncher{interfaceMode: domain.ReviewerInterfaceChat, alive: true, spawnErr: errors.New("launch failed")}
+			eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+			if _, err := eng.TriggerWithSourceAndMode(context.Background(), "mer-1", domain.ReviewerCodex, domain.AgentConfig{}, domain.ReviewTriggerManual, tt.next); err == nil {
+				t.Fatal("expected launch failure")
+			}
+			if launcher.destroyed || store.runs[0].Status != domain.ReviewRunRunning {
+				t.Fatalf("failed switch stopped prior run: launcher=%+v runs=%+v", launcher, store.runs)
+			}
+			got := store.reviews[domain.ReviewerCodex]
+			if got.InterfaceMode != old.InterfaceMode || got.ReviewerHandleID != old.ReviewerHandleID || got.AgentSessionID != old.AgentSessionID || got.ProviderConversationID != old.ProviderConversationID || got.ControllerGeneration != old.ControllerGeneration || got.ReviewerLaunchID != old.ReviewerLaunchID {
+				t.Fatalf("previous launch was not restored: got=%+v want=%+v", got, old)
+			}
+		})
+	}
+}
+
+func TestTriggerFailedPreviousPaneTeardownRestoresOldSurface(t *testing.T) {
+	old := domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex,
+		ReviewerHandleID: "terminal-pane", AgentSessionID: "native-1", InterfaceMode: domain.ReviewerInterfaceTUI}
+	store := &fakeStore{review: &old, reviews: map[domain.ReviewerHarness]domain.Review{domain.ReviewerCodex: old},
+		runs: []domain.ReviewRun{{ID: "run-1", ReviewID: old.ID, SessionID: "mer-1", Harness: domain.ReviewerCodex,
+			PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunRunning}}}
+	launcher := &fakeLauncher{interfaceMode: domain.ReviewerInterfaceChat, alive: true,
+		handle: "review-chat:rev-1", destroyErr: errors.New("old pane still alive"), destroyErrCall: 1}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	if _, err := eng.TriggerWithSourceAndMode(context.Background(), "mer-1", domain.ReviewerCodex, domain.AgentConfig{}, domain.ReviewTriggerManual, domain.ReviewerInterfaceChat); err == nil {
+		t.Fatal("expected previous pane teardown failure")
+	}
+	got := store.reviews[domain.ReviewerCodex]
+	if got.InterfaceMode != old.InterfaceMode || got.ReviewerHandleID != old.ReviewerHandleID || got.AgentSessionID != old.AgentSessionID || launcher.destroyCalls != 2 {
+		t.Fatalf("failed teardown lost previous reviewer or replacement cleanup: review=%+v launcher=%+v", got, launcher)
+	}
+}
+
+func TestTriggerFallsBackWhenPersistedChatIsUnavailable(t *testing.T) {
+	old := domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex, InterfaceMode: domain.ReviewerInterfaceChat, ProviderConversationID: "conv-1", AgentSessionID: "conv-1"}
+	store := &fakeStore{review: &old, reviews: map[domain.ReviewerHarness]domain.Review{domain.ReviewerCodex: old}}
+	launcher := &fakeLauncher{handle: "terminal-pane"}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	res, err := eng.TriggerWithSourceAndMode(context.Background(), "mer-1", domain.ReviewerCodex, domain.AgentConfig{}, domain.ReviewTriggerManual, "")
+	if err != nil {
+		t.Fatalf("TriggerWithSourceAndMode: %v", err)
+	}
+	if !res.Created || launcher.gotSpec.InterfaceMode != domain.ReviewerInterfaceTUI || launcher.gotSpec.AgentSessionID != "" || store.review.InterfaceMode != domain.ReviewerInterfaceTUI {
+		t.Fatalf("persisted Chat was not downgraded: result=%+v spec=%+v review=%+v", res, launcher.gotSpec, store.review)
+	}
+}
+
+func TestAutoTriggerHealsUnavailableChatWithoutRereviewingApprovedCommit(t *testing.T) {
+	old := domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex,
+		ReviewerHandleID: "review-chat:rev-1", InterfaceMode: domain.ReviewerInterfaceChat,
+		ProviderConversationID: "conv-1", AgentSessionID: "conv-1"}
+	store := &fakeStore{review: &old, reviews: map[domain.ReviewerHarness]domain.Review{domain.ReviewerCodex: old},
+		runs: []domain.ReviewRun{{ID: "run-1", ReviewID: old.ID, SessionID: "mer-1", Harness: domain.ReviewerCodex,
+			PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved}}}
+	launcher := &fakeLauncher{}
+	worker := liveWorker()
+	worker.ReviewerHarness = domain.ReviewerCodex
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	res, err := eng.TriggerWithSourceAndMode(context.Background(), worker.ID, "", domain.AgentConfig{}, domain.ReviewTriggerAuto, "")
+	if err != nil {
+		t.Fatalf("automatic trigger: %v", err)
+	}
+	if res.Created || launcher.spawned || store.review.InterfaceMode != domain.ReviewerInterfaceTUI || store.review.ReviewerHandleID != "" || store.review.AgentSessionID != "" || store.review.ProviderConversationID != "" {
+		t.Fatalf("automatic fallback should only heal the stored surface: result=%+v review=%+v launcher=%+v", res, store.review, launcher)
+	}
+}
+
+func TestTriggerKeepsOldReviewerUntilReplacementStarts(t *testing.T) {
+	old := domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex, ReviewerHandleID: "review-chat:rev-1", InterfaceMode: domain.ReviewerInterfaceChat}
+	store := &fakeStore{
+		review:  &old,
+		reviews: map[domain.ReviewerHarness]domain.Review{domain.ReviewerCodex: old},
+		runs:    []domain.ReviewRun{{ID: "run-1", ReviewID: old.ID, SessionID: "mer-1", Harness: domain.ReviewerCodex, PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunRunning}},
+	}
+	launcher := &fakeLauncher{interfaceMode: domain.ReviewerInterfaceChat, alive: true, handle: "review-mer-1"}
+	launcher.onSpawn = func(LaunchSpec) {
+		if launcher.destroyed {
+			t.Fatal("old reviewer was destroyed before replacement launched")
+		}
+	}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	res, err := eng.TriggerWithSourceAndMode(context.Background(), "mer-1", domain.ReviewerCodex, domain.AgentConfig{}, domain.ReviewTriggerManual, domain.ReviewerInterfaceTUI)
+	if err != nil {
+		t.Fatalf("TriggerWithSourceAndMode: %v", err)
+	}
+	if !res.Created || launcher.gotSpec.InterfaceMode != domain.ReviewerInterfaceTUI || store.review.InterfaceMode != domain.ReviewerInterfaceTUI {
+		t.Fatalf("terminal replacement not durable: result=%+v spec=%+v review=%+v", res, launcher.gotSpec, store.review)
+	}
+	if !launcher.destroyed || launcher.destroyedHandle != old.ReviewerHandleID {
+		t.Fatalf("old reviewer was not destroyed after replacement launch: %+v", launcher)
+	}
+}
+
+func TestTriggerChatDoesNotResumeTerminalNativeSession(t *testing.T) {
+	old := domain.Review{
+		ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex,
+		ReviewerHandleID: "review-mer-1", AgentSessionID: "tui-native-id",
+		InterfaceMode: domain.ReviewerInterfaceTUI,
+	}
+	store := &fakeStore{
+		review:  &old,
+		reviews: map[domain.ReviewerHarness]domain.Review{domain.ReviewerCodex: old},
+		runs:    []domain.ReviewRun{{ID: "run-1", ReviewID: old.ID, SessionID: "mer-1", Harness: domain.ReviewerCodex, PRURL: "https://github.com/o/r/pull/1", TargetSHA: "sha1", Status: domain.ReviewRunRunning}},
+	}
+	launcher := &fakeLauncher{interfaceMode: domain.ReviewerInterfaceChat, alive: true, handle: "review-chat:rev-1"}
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	if _, err := eng.TriggerWithSourceAndMode(context.Background(), "mer-1", domain.ReviewerCodex, domain.AgentConfig{}, domain.ReviewTriggerManual, domain.ReviewerInterfaceChat); err != nil {
+		t.Fatalf("switch to Chat: %v", err)
+	}
+	if launcher.gotSpec.AgentSessionID != "" || launcher.gotSpec.ProviderConversationID != "" {
+		t.Fatalf("Chat inherited Terminal identity: %+v", launcher.gotSpec)
+	}
+	if len(store.agentSessionUpdates) == 0 || store.agentSessionUpdates[0].agentSessionID != "" {
+		t.Fatalf("Terminal identity was not cleared before Chat launch: %+v", store.agentSessionUpdates)
 	}
 }
 
@@ -737,6 +922,22 @@ func TestRestoreReviewerRestoresDeadReviewerFromHistory(t *testing.T) {
 	}
 	if store.review.ReviewerHandleID != "review-mer-1" {
 		t.Fatalf("stored reviewer handle = %q", store.review.ReviewerHandleID)
+	}
+}
+
+func TestRestoreReviewerFallsBackFromUnavailableChat(t *testing.T) {
+	old := domain.Review{ID: "rev-1", SessionID: "mer-1", Harness: domain.ReviewerCodex,
+		InterfaceMode: domain.ReviewerInterfaceChat, ProviderConversationID: "conv-1", AgentSessionID: "conv-1"}
+	store := &fakeStore{review: &old, reviews: map[domain.ReviewerHarness]domain.Review{domain.ReviewerCodex: old}}
+	launcher := &fakeLauncher{handle: "terminal-pane"}
+	worker := liveWorker()
+	worker.ReviewerHarness = domain.ReviewerCodex
+	eng := newEngineForTest(store, fakeSessions{rec: worker, ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	if _, err := eng.RestoreReviewer(context.Background(), worker.ID); err != nil {
+		t.Fatalf("RestoreReviewer: %v", err)
+	}
+	if !launcher.restored || launcher.gotSpec.InterfaceMode != domain.ReviewerInterfaceTUI || launcher.gotSpec.AgentSessionID != "" || store.review.InterfaceMode != domain.ReviewerInterfaceTUI {
+		t.Fatalf("unavailable Chat was not restored as Terminal: spec=%+v review=%+v", launcher.gotSpec, store.review)
 	}
 }
 

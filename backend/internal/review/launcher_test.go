@@ -21,6 +21,33 @@ type fakeReviewer struct {
 	env              map[string]string
 }
 
+type recordingReviewChatStop struct {
+	ReviewerChatController
+	stopped     string
+	interrupted bool
+}
+
+func (c *recordingReviewChatStop) StopReviewChat(_ context.Context, reviewID string) error {
+	c.stopped = reviewID
+	return nil
+}
+
+func (c *recordingReviewChatStop) InterruptReviewChat(context.Context, string) error {
+	c.interrupted = true
+	return nil
+}
+
+func TestCancelReviewerChatStopsItsController(t *testing.T) {
+	chat := &recordingReviewChatStop{}
+	launcher := NewLauncher(fakeReviewerResolver{}, &fakeRuntime{}, t.TempDir(), WithReviewerChat(chat))
+	if err := launcher.Cancel(context.Background(), "review-chat:review-1", domain.ReviewerCodex); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if chat.stopped != "review-1" || chat.interrupted {
+		t.Fatalf("reviewer Chat cancel: stopped=%q interrupted=%v", chat.stopped, chat.interrupted)
+	}
+}
+
 func (f *fakeReviewer) ReviewCommand(_ context.Context, inv ports.ReviewInvocation) (ports.ReviewCommandSpec, error) {
 	f.gotInv = inv
 	return ports.ReviewCommandSpec{Argv: []string{"greptile", "review"}, Env: f.env, WorkingDirectory: f.workingDirectory}, nil

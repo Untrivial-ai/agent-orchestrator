@@ -62,6 +62,21 @@ func (s *Store) SetReviewInterfaceMode(ctx context.Context, id string, mode doma
 	return n > 0, err
 }
 
+// RestoreReviewLaunchState puts the previous reviewer back after a replacement
+// launch fails, including the identifiers cleared while changing surfaces.
+func (s *Store) RestoreReviewLaunchState(ctx context.Context, review domain.Review) (bool, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	n, err := s.qw.RestoreReviewLaunchState(ctx, gen.RestoreReviewLaunchStateParams{
+		PRURL: review.PRURL, InterfaceMode: string(review.InterfaceMode), ReviewerHandleID: review.ReviewerHandleID,
+		AgentSessionID: review.AgentSessionID, ReviewerActivityState: string(review.ReviewerActivityState),
+		ReviewerLaunchID: review.ReviewerLaunchID, ProviderConversationID: review.ProviderConversationID,
+		ControllerGeneration: review.ControllerGeneration, ControllerError: review.ControllerError,
+		UpdatedAt: review.UpdatedAt, ID: review.ID,
+	})
+	return n > 0, err
+}
+
 // GetReviewBySession returns the latest review row for a worker session,
 // ok=false if none.
 func (s *Store) GetReviewBySession(ctx context.Context, id domain.SessionID) (domain.Review, bool, error) {

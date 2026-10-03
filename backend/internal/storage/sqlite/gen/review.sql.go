@@ -829,6 +829,46 @@ func (q *Queries) RecordReviewChatControllerError(ctx context.Context, arg Recor
 	return result.RowsAffected()
 }
 
+const restoreReviewLaunchState = `-- name: RestoreReviewLaunchState :execrows
+UPDATE review SET pr_url = ?, interface_mode = ?, reviewer_handle_id = ?, agent_session_id = ?,
+    reviewer_activity_state = ?, reviewer_launch_id = ?, provider_conversation_id = ?,
+    controller_generation = ?, controller_error = ?, updated_at = ? WHERE id = ?
+`
+
+type RestoreReviewLaunchStateParams struct {
+	PRURL                  string
+	InterfaceMode          string
+	ReviewerHandleID       string
+	AgentSessionID         string
+	ReviewerActivityState  string
+	ReviewerLaunchID       string
+	ProviderConversationID string
+	ControllerGeneration   string
+	ControllerError        string
+	UpdatedAt              time.Time
+	ID                     string
+}
+
+func (q *Queries) RestoreReviewLaunchState(ctx context.Context, arg RestoreReviewLaunchStateParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, restoreReviewLaunchState,
+		arg.PRURL,
+		arg.InterfaceMode,
+		arg.ReviewerHandleID,
+		arg.AgentSessionID,
+		arg.ReviewerActivityState,
+		arg.ReviewerLaunchID,
+		arg.ProviderConversationID,
+		arg.ControllerGeneration,
+		arg.ControllerError,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setReviewInterfaceMode = `-- name: SetReviewInterfaceMode :execrows
 UPDATE review SET interface_mode = ?, reviewer_handle_id = CASE WHEN ? = 'chat' THEN '' ELSE reviewer_handle_id END,
     provider_conversation_id = CASE WHEN ? = 'tui' THEN '' ELSE provider_conversation_id END,

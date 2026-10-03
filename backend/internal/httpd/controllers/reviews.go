@@ -190,7 +190,13 @@ func (c *ReviewsController) trigger(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
 		return
 	}
-	res, err := c.Svc.Trigger(r.Context(), sessionID(r), in.Harness, in.AgentConfig)
+	var res reviewcore.TriggerResult
+	var err error
+	if in.InterfaceMode != "" {
+		res, err = c.Svc.TriggerWithMode(r.Context(), sessionID(r), in.Harness, in.AgentConfig, in.InterfaceMode)
+	} else {
+		res, err = c.Svc.Trigger(r.Context(), sessionID(r), in.Harness, in.AgentConfig)
+	}
 	if err != nil {
 		writeReviewError(w, r, err)
 		return

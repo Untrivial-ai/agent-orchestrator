@@ -22,6 +22,7 @@ type fakeReviewService struct {
 	// triggeredHarness/config record the override the controller forwarded.
 	triggeredHarness  domain.ReviewerHarness
 	triggeredConfig   domain.AgentConfig
+	triggeredMode     domain.ReviewerInterfaceMode
 	triggerErr        error
 	cancelErr         error
 	trigger           reviewcore.TriggerResult
@@ -62,6 +63,11 @@ func (f *fakeReviewService) Trigger(
 		return f.trigger, nil
 	}
 	return reviewcore.TriggerResult{Run: domain.ReviewRun{ID: "run-1"}, Created: true}, nil
+}
+
+func (f *fakeReviewService) TriggerWithMode(ctx context.Context, workerID domain.SessionID, harness domain.ReviewerHarness, config domain.AgentConfig, mode domain.ReviewerInterfaceMode) (reviewcore.TriggerResult, error) {
+	f.triggeredMode = mode
+	return f.Trigger(ctx, workerID, harness, config)
 }
 
 func (f *fakeReviewService) RequestRereview(_ context.Context, workerID domain.SessionID, prURL, reviewer string) error {
@@ -280,6 +286,18 @@ func TestReviewsTriggerIncludesBatchFields(t *testing.T) {
 		if strings.Contains(string(body), unwanted) {
 			t.Fatalf("body contains deprecated field %s: %s", unwanted, body)
 		}
+	}
+}
+
+func TestReviewsTriggerForwardsRequestedInterfaceMode(t *testing.T) {
+	svc := &fakeReviewService{}
+	srv := newReviewTestServer(t, svc)
+	body, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/trigger", `{"harness":"codex","interfaceMode":"tui"}`)
+	if status != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", status, body)
+	}
+	if svc.triggeredHarness != domain.ReviewerCodex || svc.triggeredMode != domain.ReviewerInterfaceTUI {
+		t.Fatalf("triggered harness=%q mode=%q", svc.triggeredHarness, svc.triggeredMode)
 	}
 }
 
