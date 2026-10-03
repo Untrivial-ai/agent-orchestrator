@@ -35,6 +35,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	previewutil "github.com/aoagents/agent-orchestrator/backend/internal/preview"
 	"github.com/aoagents/agent-orchestrator/backend/internal/previewserver"
+	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 	"github.com/aoagents/agent-orchestrator/backend/internal/workspacewatch"
@@ -150,7 +151,7 @@ type ActivityRecorder interface {
 // ManagedPreviewServer is the deterministic server lifecycle attached to a
 // worker. It is separate from static file rendering and browser automation.
 type ManagedPreviewServer interface {
-	Start(ctx context.Context, sessionID domain.SessionID, workspacePath, configurationName string) (previewserver.Status, error)
+	Start(ctx context.Context, sessionID domain.SessionID, workspacePath, configurationName string, projectEnv map[string]string) (previewserver.Status, error)
 	Stop(ctx context.Context, sessionID domain.SessionID) (previewserver.Status, error)
 	Status(sessionID domain.SessionID) previewserver.Status
 }
@@ -176,7 +177,10 @@ type UsageHookRecorder interface {
 // SessionsController owns the session routes. Nil keeps routes registered but
 // returns OpenAPI-backed 501s.
 type SessionsController struct {
-	Svc                      SessionService
+	Svc      SessionService
+	Projects interface {
+		Get(context.Context, domain.ProjectID) (projectsvc.GetResult, error)
+	}
 	Activity                 ActivityRecorder
 	Usage                    UsageHookRecorder
 	Attachments              *attachmentstore.Store
@@ -1144,12 +1148,24 @@ func (c *SessionsController) startPreviewServer(w http.ResponseWriter, r *http.R
 		envelope.WriteError(w, r, err)
 		return
 	}
+	var projectEnv map[string]string
+	if sess.ProjectID != "" && c.Projects != nil {
+		project, err := c.Projects.Get(r.Context(), sess.ProjectID)
+		if err != nil {
+			envelope.WriteError(w, r, err)
+			return
+		}
+		if project.Project != nil && project.Project.Config != nil {
+			projectEnv = project.Project.Config.Env
+		}
+	}
 	previous := c.PreviewServer.Status(sessionID(r))
 	status, err := c.PreviewServer.Start(
 		r.Context(),
 		sessionID(r),
 		sess.Metadata.WorkspacePath,
 		strings.TrimSpace(in.Configuration),
+		projectEnv,
 	)
 	if err != nil {
 		currentStatus := c.PreviewServer.Status(sessionID(r))

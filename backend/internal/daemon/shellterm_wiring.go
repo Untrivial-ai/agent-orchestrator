@@ -71,6 +71,20 @@ func (l *projectRootLocator) ProjectRoot(ctx context.Context, id domain.ProjectI
 	}
 }
 
+func (l *projectRootLocator) ProjectEnv(ctx context.Context, id domain.ProjectID) (map[string]string, error) {
+	if l.projects == nil {
+		return nil, nil
+	}
+	res, err := l.projects.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if res.Project == nil || res.Project.Config == nil {
+		return nil, nil
+	}
+	return res.Project.Config.Env, nil
+}
+
 // sessionGetter is the narrow slice of the session service the workspace
 // locator needs. *sessionsvc.Service satisfies it; tests substitute a fake so
 // this adapter's validation logic doesn't need a real session stack.

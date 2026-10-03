@@ -1262,7 +1262,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 		status, authErr := validator.ValidateLaunchAuth(ctx, ws.Path, env)
 		if authErr != nil {
 			m.logger.Debug("spawn: launch authentication probe inconclusive; continuing",
-				"sessionID", id, "harness", cfg.Harness, "error", authErr)
+				"sessionID", id, "harness", cfg.Harness, "error", agentlaunch.RedactValues(authErr.Error(), project.Config.Env))
 		} else if status == ports.AgentAuthStatusUnauthorized {
 			m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true, false)
 			return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn %s: %w", id, ports.ErrAgentAuthRequired)
@@ -1336,7 +1336,7 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	})
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true, false)
-		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrRuntimeCreate, err)
+		return domain.SessionRecord{}, 0, 0, wrapSpawnStage(id, ErrRuntimeCreate, agentlaunch.RedactError(err, project.Config.Env))
 	}
 
 	metadata := domain.SessionMetadata{
@@ -2987,7 +2987,7 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	}
 	if err != nil {
 		m.cleanupSystemPromptDir(rec.ID)
-		return RestoreResult{}, fmt.Errorf("%s %s: runtime: %w", operation, rec.ID, err)
+		return RestoreResult{}, fmt.Errorf("%s %s: runtime: %w", operation, rec.ID, agentlaunch.RedactError(err, project.Config.Env))
 	}
 	metadata := domain.SessionMetadata{
 		Permissions:               rec.Metadata.Permissions,
@@ -5142,10 +5142,7 @@ func spawnEnv(id domain.SessionID, project domain.ProjectID, issue domain.IssueI
 }
 
 func spawnEnvForOS(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, dataDir string, projectEnv map[string]string, caseInsensitive bool) map[string]string {
-	env := make(map[string]string, len(projectEnv)+4)
-	for k, v := range projectEnv {
-		env[k] = v
-	}
+	env := agentlaunch.MergeEnv(projectEnv, nil)
 	setProtected := func(key, value string) {
 		if caseInsensitive {
 			for existing := range env {
@@ -5358,7 +5355,7 @@ func (m *Manager) provisionWorkspace(ctx context.Context, project domain.Project
 	if err := applySymlinks(project.Path, workspacePath, project.Config.Symlinks); err != nil {
 		return err
 	}
-	return runPostCreate(ctx, workspacePath, project.Config.PostCreate)
+	return runPostCreate(ctx, workspacePath, project.Config.PostCreate, project.Config.Env)
 }
 
 // applySymlinks links each repo-relative path into the workspace. A source that
@@ -5416,7 +5413,7 @@ func safeRelPath(rel string) (string, error) {
 // runPostCreate runs each post-create command in the workspace via the platform
 // shell, so OS-agnostic commands like "pnpm install" work. A non-zero exit
 // aborts the spawn with the command output.
-func runPostCreate(ctx context.Context, workspacePath string, commands []string) error {
+func runPostCreate(ctx context.Context, workspacePath string, commands []string, projectEnv map[string]string) error {
 	for _, command := range commands {
 		command = strings.TrimSpace(command)
 		if command == "" {
@@ -5429,8 +5426,12 @@ func runPostCreate(ctx context.Context, workspacePath string, commands []string)
 			cmd = aoprocess.CommandContext(ctx, "sh", "-c", command)
 		}
 		cmd.Dir = workspacePath
+		cmd.Env = os.Environ()
+		for key, value := range agentlaunch.MergeEnv(projectEnv, nil) {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("postCreate %q: %w: %s", command, err, strings.TrimSpace(string(out)))
+			return fmt.Errorf("postCreate %q: %w: %s", agentlaunch.RedactValues(command, projectEnv), err, agentlaunch.RedactValues(strings.TrimSpace(string(out)), projectEnv))
 		}
 	}
 	return nil

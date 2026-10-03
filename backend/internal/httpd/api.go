@@ -166,6 +166,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		},
 		sessions: &controllers.SessionsController{
 			Svc:                      deps.Sessions,
+			Projects:                 deps.Projects,
 			Activity:                 deps.Activity,
 			Usage:                    deps.UsageHooks,
 			Attachments:              attachmentstore.New(cfg.DataDir),

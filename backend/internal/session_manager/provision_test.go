@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -493,15 +494,27 @@ func TestApplySymlinksRejectsParentTraversal(t *testing.T) {
 
 func TestRunPostCreate(t *testing.T) {
 	workspace := t.TempDir()
-	if err := runPostCreate(context.Background(), workspace, []string{"echo hi > out.txt"}); err != nil {
+	if err := runPostCreate(context.Background(), workspace, []string{"echo hi > out.txt"}, nil); err != nil {
 		t.Fatalf("runPostCreate: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(workspace, "out.txt")); err != nil {
 		t.Fatalf("post-create command did not run in workspace: %v", err)
 	}
 	// A failing command surfaces an error.
-	if err := runPostCreate(context.Background(), workspace, []string{"exit 3"}); err == nil {
+	if err := runPostCreate(context.Background(), workspace, []string{"exit 3"}, nil); err == nil {
 		t.Fatal("expected error from failing post-create command")
+	}
+}
+
+func TestRunPostCreateReceivesAndRedactsProjectEnv(t *testing.T) {
+	command := `echo "$PROJECT_TOKEN" && exit 3`
+	if runtime.GOOS == "windows" {
+		command = `echo %PROJECT_TOKEN% && exit /b 3`
+	}
+	secret := "project-secret-123"
+	err := runPostCreate(context.Background(), t.TempDir(), []string{command}, map[string]string{"PROJECT_TOKEN": secret})
+	if err == nil || !strings.Contains(err.Error(), "[REDACTED]") || strings.Contains(err.Error(), secret) {
+		t.Fatalf("postCreate error did not redact project value: %v", err)
 	}
 }
 

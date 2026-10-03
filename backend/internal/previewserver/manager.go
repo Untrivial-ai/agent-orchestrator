@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 )
 
@@ -110,8 +111,9 @@ type Configuration struct {
 }
 
 type serverRun struct {
-	status Status
-	cmd    *exec.Cmd
+	status     Status
+	projectEnv map[string]string
+	cmd        *exec.Cmd
 	// startTime pins cmd's PID to the process AO launched (kernel start time,
 	// captured right after Start). Every group/tree kill re-verifies against
 	// it: once the child is reaped the bare PID may already belong to an
@@ -220,6 +222,7 @@ func (m *Manager) Start(
 	sessionID domain.SessionID,
 	workspacePath string,
 	configurationName string,
+	projectEnv map[string]string,
 ) (Status, error) {
 	releaseOperation := m.acquireOperation(sessionID)
 	operationLocked := true
@@ -276,12 +279,13 @@ func (m *Manager) Start(
 
 	cmd := previewCommand(executable, args...)
 	cmd.Dir = workingDir
-	cmd.Env = previewEnvironment(os.Environ(), cfg.Env, sessionID, port)
+	cmd.Env = previewEnvironment(os.Environ(), projectEnv, cfg.Env, sessionID, port)
 	logs := newLineBuffer(maxBufferedLogLines)
 	cmd.Stdout = logs
 	cmd.Stderr = logs
 
 	run := &serverRun{
+		projectEnv: agentlaunch.MergeEnv(projectEnv, nil),
 		status: Status{
 			SessionID:     sessionID,
 			State:         StateStarting,
@@ -306,7 +310,7 @@ func (m *Manager) Start(
 	if err := cmd.Start(); err != nil {
 		run.cmd = nil
 		run.status.State = StateFailed
-		run.status.Error = fmt.Sprintf("start preview server: %v", err)
+		run.status.Error = agentlaunch.RedactValues(fmt.Sprintf("start preview server: %v", err), projectEnv)
 		return m.statusFor(run), serviceError("PREVIEW_START_FAILED", run.status.Error)
 	}
 	run.startTime = previewProcessStartTime(cmd.Process.Pid)
@@ -575,7 +579,7 @@ func (m *Manager) failAndStop(
 	m.mu.Lock()
 	if m.runs[sessionID] == run {
 		run.status.State = StateFailed
-		run.status.Error = message
+		run.status.Error = agentlaunch.RedactValues(message, run.projectEnv)
 		run.stopping = true
 	}
 	cmd := run.cmd
@@ -590,7 +594,7 @@ func (m *Manager) failAndStop(
 			_ = forceKillPreviewProcess(cmd, startTime)
 		}
 	}
-	return m.statusFor(run), serviceError(code, message)
+	return m.statusFor(run), serviceError(code, agentlaunch.RedactValues(message, run.projectEnv))
 }
 
 func (m *Manager) probe(ctx context.Context, target string) error {
@@ -621,6 +625,10 @@ func (m *Manager) statusFor(run *serverRun) Status {
 func (m *Manager) statusForLocked(run *serverRun) Status {
 	status := run.status
 	status.Logs = run.logs.Last(statusLogLines)
+	status.Error = agentlaunch.RedactValues(status.Error, run.projectEnv)
+	for i := range status.Logs {
+		status.Logs[i] = agentlaunch.RedactValues(status.Logs[i], run.projectEnv)
+	}
 	if status.Logs == nil {
 		status.Logs = []string{}
 	}
@@ -823,6 +831,7 @@ func reservePort(preferred int, auto bool) (int, net.Listener, error) {
 
 func previewEnvironment(
 	base []string,
+	projectEnv map[string]string,
 	configured map[string]string,
 	sessionID domain.SessionID,
 	port int,
@@ -832,15 +841,19 @@ func previewEnvironment(
 		"PATHEXT": {}, "TEMP": {}, "TMP": {}, "TMPDIR": {}, "SHELL": {}, "LANG": {},
 		"LC_ALL": {}, "APPDATA": {}, "LOCALAPPDATA": {},
 	}
-	env := make([]string, 0, len(allowed)+len(configured)+3)
+	env := make([]string, 0, len(allowed)+len(projectEnv)+len(configured)+3)
 	for _, item := range base {
 		key, _, ok := strings.Cut(item, "=")
 		if _, keep := allowed[strings.ToUpper(key)]; ok && keep {
 			env = append(env, item)
 		}
 	}
+	interpolated := make(map[string]string, len(configured))
 	for key, value := range configured {
-		env = append(env, key+"="+interpolatePort(value, port))
+		interpolated[key] = interpolatePort(value, port)
+	}
+	for key, value := range agentlaunch.MergeEnv(projectEnv, interpolated) {
+		env = append(env, key+"="+value)
 	}
 	env = append(env,
 		"PORT="+strconv.Itoa(port),

@@ -136,6 +136,14 @@ describe("SettingsDialog", () => {
 		expect(screen.getByRole("button", { name: "Cues" })).toHaveAttribute("aria-current", "page");
 	});
 
+	it("does not offer local environment settings for a remote project", async () => {
+		useUiStore.getState().openProjectSettings("proj-1", "box-a");
+		renderSettingsDialog();
+
+		expect(await screen.findByRole("button", { name: "Agents" })).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Environment" })).not.toBeInTheDocument();
+	});
+
 	it("opens the requested global settings page", async () => {
 		useUiStore.getState().openGlobalSettings("mobile");
 		renderSettingsDialog();

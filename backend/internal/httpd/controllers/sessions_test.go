@@ -33,6 +33,7 @@ import (
 	previewutil "github.com/aoagents/agent-orchestrator/backend/internal/preview"
 	"github.com/aoagents/agent-orchestrator/backend/internal/previewserver"
 	browsersvc "github.com/aoagents/agent-orchestrator/backend/internal/service/browser"
+	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
 	"github.com/aoagents/agent-orchestrator/backend/pkg/contract"
 )
@@ -146,6 +147,7 @@ func (f *fakeInterfaceTransitionSessionService) AcknowledgeInterfaceTransitionNo
 
 type fakeManagedPreviewServer struct {
 	status         previewserver.Status
+	startEnv       map[string]string
 	startErr       error
 	startName      string
 	startWorkspace string
@@ -175,14 +177,25 @@ func (f *fakeManagedPreviewServer) Start(
 	sessionID domain.SessionID,
 	workspacePath string,
 	configurationName string,
+	projectEnv map[string]string,
 ) (previewserver.Status, error) {
 	f.startName = configurationName
 	f.startWorkspace = workspacePath
+	f.startEnv = projectEnv
 	if f.startErr != nil {
 		return previewserver.Status{}, f.startErr
 	}
 	f.status.SessionID = sessionID
 	return f.status, nil
+}
+
+type previewProjectManager struct {
+	projectsvc.Manager
+	env map[string]string
+}
+
+func (m previewProjectManager) Get(_ context.Context, id domain.ProjectID) (projectsvc.GetResult, error) {
+	return projectsvc.GetResult{Status: "ok", Project: &projectsvc.Project{ID: id, Config: &domain.ProjectConfig{Env: m.env}}}, nil
 }
 
 func (f *fakeManagedPreviewServer) Stop(
@@ -2542,6 +2555,21 @@ func TestSessionsAPI_ManagedPreviewStartsExactApplicationAndPersistsTarget(t *te
 	}
 	if got := svc.sessions["ao-1"].Metadata.PreviewURL; got != managed.status.URL {
 		t.Fatalf("persisted preview URL = %q, want %q", got, managed.status.URL)
+	}
+}
+
+func TestSessionsAPI_ManagedPreviewReceivesProjectEnv(t *testing.T) {
+	svc := newFakeSessionService()
+	managed := &fakeManagedPreviewServer{status: previewserver.Status{State: previewserver.StateReady, TargetKind: previewserver.TargetAPI}}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{
+		Sessions: svc, Projects: previewProjectManager{env: map[string]string{"PROJECT_TOKEN": "preview-value"}},
+		PreviewServer: managed, SessionCapabilities: allowSessionCapability{},
+	}, httpd.ControlDeps{}))
+	t.Cleanup(srv.Close)
+	_, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/preview/server", `{}`)
+	if status != http.StatusOK || managed.startEnv["PROJECT_TOKEN"] != "preview-value" {
+		t.Fatalf("preview project env missing, status=%d", status)
 	}
 }
 

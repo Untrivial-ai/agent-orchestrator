@@ -559,7 +559,7 @@ func TestRecoverChatReviewersRequiresStoreRecoveryQuery(t *testing.T) {
 func TestTriggerSpawnsNewReviewerAndRecordsRunAfterLaunch(t *testing.T) {
 	store := &fakeStore{}
 	launcher := &fakeLauncher{handle: "review-mer-1"}
-	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{}, launcher)
+	eng := newEngineForTest(store, fakeSessions{rec: liveWorker(), ok: true}, prAt("sha1"), fakeProjects{cfg: domain.ProjectConfig{Env: map[string]string{"PROJECT_TOKEN": "review-value"}}}, launcher)
 
 	res, err := eng.Trigger(context.Background(), "mer-1", "", domain.AgentConfig{})
 	if err != nil {
@@ -576,6 +576,9 @@ func TestTriggerSpawnsNewReviewerAndRecordsRunAfterLaunch(t *testing.T) {
 	}
 	if launcher.gotSpec.RunID != res.Run.ID || launcher.gotSpec.BatchID != res.Run.BatchID {
 		t.Fatalf("launch spec ids = batch %q run %q, want batch %q run %q", launcher.gotSpec.BatchID, launcher.gotSpec.RunID, res.Run.BatchID, res.Run.ID)
+	}
+	if launcher.gotSpec.ProjectEnv["PROJECT_TOKEN"] != "review-value" {
+		t.Fatal("review launch did not receive current project environment")
 	}
 	if len(store.runs) != 1 || store.review == nil || store.review.ReviewerHandleID != "review-mer-1" {
 		t.Fatalf("persisted review=%+v runs=%+v", store.review, store.runs)

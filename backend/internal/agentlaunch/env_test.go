@@ -2,6 +2,7 @@ package agentlaunch
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,39 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestProjectEnvMergeAndRedaction(t *testing.T) {
+	project := map[string]string{"PROJECT_TOKEN": "long-secret", "SHARED": "project", "SHORT": "long"}
+	merged := MergeEnv(project, map[string]string{"SHARED": "child"})
+	if merged["PROJECT_TOKEN"] != "long-secret" || merged["SHARED"] != "child" {
+		t.Fatalf("merged project and child environment = %#v", merged)
+	}
+	merged["PROJECT_TOKEN"] = "changed"
+	if project["PROJECT_TOKEN"] != "long-secret" {
+		t.Fatal("launch mutated saved project environment")
+	}
+	if got := RedactValues("long-secret", project); got != "[REDACTED]" {
+		t.Fatalf("redacted overlapping values = %q", got)
+	}
+	cause := errors.New("failed with long-secret")
+	redacted := RedactError(cause, project)
+	if redacted.Error() != "failed with [REDACTED]" || errors.Is(redacted, cause) {
+		t.Fatalf("redacted error = %v, want hidden value without the original cause", redacted)
+	}
+}
+
+func TestMergeEnvReservesAONamespace(t *testing.T) {
+	merged := MergeEnv(
+		map[string]string{"AO_SESSION_ID": "spoof", "ao_worktree_path": "spoof", "PROJECT_TOKEN": "safe"},
+		map[string]string{"AO_SESSION_ID": "session-1"},
+	)
+	if merged["AO_SESSION_ID"] != "session-1" || merged["ao_worktree_path"] != "" {
+		t.Fatalf("project AO markers survived merge: %#v", merged)
+	}
+	if merged["PROJECT_TOKEN"] != "safe" {
+		t.Fatalf("project variable = %q, want safe", merged["PROJECT_TOKEN"])
+	}
+}
 
 func TestSharedInstallKeepsAgentNodeAndCanonicalAO(t *testing.T) {
 	if runtime.GOOS == "windows" {

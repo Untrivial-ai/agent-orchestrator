@@ -28,7 +28,7 @@ type ProjectConfig struct {
 	SessionPrefix string `json:"sessionPrefix,omitempty"`
 
 	// Env are extra environment variables forwarded into worker session
-	// runtimes. AO-internal vars (AO_SESSION, AO_PROJECT_ID, …) always win.
+	// runtimes. The AO_ namespace is reserved for AO-owned variables.
 	Env map[string]string `json:"env,omitempty"`
 	// Symlinks are repo-relative paths symlinked into each session workspace.
 	Symlinks []string `json:"symlinks,omitempty"`
@@ -184,6 +184,20 @@ func (c ProjectConfig) Validate() error {
 	if err := validateNameComponent("sessionPrefix", c.SessionPrefix); err != nil {
 		return err
 	}
+	seenEnv := make(map[string]bool, len(c.Env))
+	for key, value := range c.Env {
+		if !validEnvName(key) || strings.ContainsRune(value, '\x00') {
+			return fmt.Errorf("env %q: invalid variable name or value", key)
+		}
+		folded := strings.ToUpper(key)
+		if strings.HasPrefix(folded, "AO_") {
+			return fmt.Errorf("env %q: AO_ prefix is reserved", key)
+		}
+		if seenEnv[folded] {
+			return fmt.Errorf("env %q: duplicate variable name", key)
+		}
+		seenEnv[folded] = true
+	}
 	for role, ro := range map[string]RoleOverride{"worker": c.Worker, "orchestrator": c.Orchestrator} {
 		if ro.Harness != "" && !ro.Harness.IsKnown() {
 			return fmt.Errorf("%s.agent: unknown harness %q", role, ro.Harness)
@@ -212,6 +226,19 @@ func (c ProjectConfig) Validate() error {
 		return err
 	}
 	return nil
+}
+
+func validEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		if r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || i > 0 && r >= '0' && r <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validateNoWhitespaceField(name, value string) error {

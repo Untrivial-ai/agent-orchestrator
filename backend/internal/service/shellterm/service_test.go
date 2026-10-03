@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -251,6 +252,7 @@ func (f *fakeShellTerminalStore) DeleteShellTerminalsFromPreviousAppRuns(_ conte
 
 type fakeProjectRootLocator struct {
 	roots map[domain.ProjectID]string
+	envs  map[domain.ProjectID]map[string]string
 	err   error
 }
 
@@ -259,6 +261,13 @@ func (f *fakeProjectRootLocator) ProjectRoot(_ context.Context, id domain.Projec
 		return "", f.err
 	}
 	return f.roots[id], nil
+}
+
+func (f *fakeProjectRootLocator) ProjectEnv(_ context.Context, id domain.ProjectID) (map[string]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.envs[id], nil
 }
 
 // fakeSessionWorkspace is one entry in fakeSessionWorkspaceLocator: a session's
@@ -652,7 +661,7 @@ func TestOpenCommandTerminalRejectsInvalidInput(t *testing.T) {
 func TestOpenShellTerminalStillStartsResolvedLoginShellInProjectRoot(t *testing.T) {
 	rt := newFakeShellRuntime()
 	st := &fakeShellTerminalStore{}
-	projects := &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"portfolio": "/repos/portfolio"}}
+	projects := &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"portfolio": "/repos/portfolio"}, envs: map[domain.ProjectID]map[string]string{"portfolio": {"PROJECT_TOKEN": "shell-value"}}}
 	svc := newTestService(rt, st, projects)
 
 	term, err := svc.OpenShellTerminal(context.Background(), OpenShellTerminalInput{ProjectID: "portfolio"})
@@ -669,6 +678,9 @@ func TestOpenShellTerminalStillStartsResolvedLoginShellInProjectRoot(t *testing.
 	if len(rt.created[0].Argv) == 0 {
 		t.Error("argv is empty; a shell terminal must launch a resolved shell")
 	}
+	if got := rt.created[0].Env["PROJECT_TOKEN"]; got != "shell-value" {
+		t.Fatalf("project shell env = %q, want shell-value", got)
+	}
 	if term.WorkingDir != "/repos/portfolio" {
 		t.Errorf("working dir = %q, want the project root", term.WorkingDir)
 	}
@@ -677,6 +689,37 @@ func TestOpenShellTerminalStillStartsResolvedLoginShellInProjectRoot(t *testing.
 	}
 	if len(st.records) != 1 || st.records[0].AppRunID != testAppRunID {
 		t.Fatalf("record not persisted against the current app run: %+v", st.records)
+	}
+}
+
+func TestOpenShellTerminalRedactsProjectEnvFromRuntimeError(t *testing.T) {
+	rt := newFakeShellRuntime()
+	rt.createErr = errors.New("could not start with shell-secret")
+	projects := &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"portfolio": "/repos/portfolio"}, envs: map[domain.ProjectID]map[string]string{"portfolio": {"PROJECT_TOKEN": "shell-secret"}}}
+	svc := newTestService(rt, &fakeShellTerminalStore{}, projects)
+
+	_, err := svc.OpenShellTerminal(context.Background(), OpenShellTerminalInput{ProjectID: "portfolio"})
+	if err == nil || strings.Contains(err.Error(), "shell-secret") || !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("OpenShellTerminal error = %v, want redacted project env", err)
+	}
+}
+
+func TestOpenShellTerminalDoesNotTrustProjectAOMarkers(t *testing.T) {
+	rt := newFakeShellRuntime()
+	projects := &fakeProjectRootLocator{roots: map[domain.ProjectID]string{"portfolio": "/repos/portfolio"}, envs: map[domain.ProjectID]map[string]string{
+		"portfolio": {"AO_SESSION_ID": "spoof", "AO_WORKTREE_PATH": "spoof", "PROJECT_TOKEN": "safe"},
+	}}
+	svc := newTestService(rt, &fakeShellTerminalStore{}, projects)
+
+	if _, err := svc.OpenShellTerminal(context.Background(), OpenShellTerminalInput{ProjectID: "portfolio"}); err != nil {
+		t.Fatalf("OpenShellTerminal: %v", err)
+	}
+	got := rt.created[0].Env
+	if got["AO_SESSION_ID"] == "spoof" || got["AO_WORKTREE_PATH"] == "spoof" {
+		t.Fatalf("shell received spoofed AO markers: %#v", got)
+	}
+	if got["PROJECT_TOKEN"] != "safe" {
+		t.Fatalf("project variable = %q, want safe", got["PROJECT_TOKEN"])
 	}
 }
 

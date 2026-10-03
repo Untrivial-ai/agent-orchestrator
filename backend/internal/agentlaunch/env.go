@@ -2,17 +2,71 @@ package agentlaunch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 )
 
 const aoBinaryName = "ao"
+
+// MergeEnv overlays child-specific values on project values. The AO_ namespace
+// belongs to AO, including when a child has no value for a particular key.
+// A new process receives its own map so a launch cannot mutate saved config.
+func MergeEnv(project, child map[string]string) map[string]string {
+	env := make(map[string]string, len(project)+len(child))
+	for i, source := range []map[string]string{project, child} {
+		for key, value := range source {
+			if i == 0 && strings.HasPrefix(strings.ToUpper(key), "AO_") {
+				continue
+			}
+			if runtime.GOOS == "windows" {
+				for existing := range env {
+					if strings.EqualFold(existing, key) {
+						delete(env, existing)
+					}
+				}
+			}
+			env[key] = value
+		}
+	}
+	return env
+}
+
+// RedactValues removes configured values before command output reaches a
+// user-visible error or log. Longer values go first to cover shared prefixes.
+func RedactValues(output string, configured map[string]string) string {
+	values := make([]string, 0, len(configured))
+	for _, value := range configured {
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	slices.SortFunc(values, func(a, b string) int { return len(b) - len(a) })
+	for _, value := range values {
+		output = strings.ReplaceAll(output, value, "[REDACTED]")
+	}
+	return output
+}
+
+// RedactError drops the original error when it contains a sensitive value so
+// unwrapping and telemetry cannot expose that value.
+func RedactError(err error, configured map[string]string) error {
+	if err == nil {
+		return nil
+	}
+	message := RedactValues(err.Error(), configured)
+	if message == err.Error() {
+		return err
+	}
+	return errors.New(message)
+}
 
 // PinnedPATH prepends an AO-only directory to the supplied
 // PATH. It rejects executables not named ao because their directory cannot

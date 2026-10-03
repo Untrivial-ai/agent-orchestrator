@@ -38,18 +38,24 @@ func TestLauncherSpawnEnvCannotOverrideWorkerContext(t *testing.T) {
 		"AO_REVIEW_SESSION_ID":      "hacked-review",
 		EnvRunFile:                  "hacked-run-file",
 		"REVIEW_ONLY":               "1",
+		"SHARED":                    "adapter",
 	}}
 	rt := &fakeRuntime{}
 	dataDir := t.TempDir()
 	runFile := filepath.Join(t.TempDir(), "running.json")
 	l := NewLauncher(fakeReviewerResolver{reviewer: reviewer, ok: true}, rt, dataDir, WithRunFilePath(runFile))
 
-	if _, err := l.Spawn(context.Background(), launchSpec()); err != nil {
+	spec := launchSpec()
+	spec.ProjectEnv = map[string]string{"PROJECT_TOKEN": "review-value", "SHARED": "project"}
+	if _, err := l.Spawn(context.Background(), spec); err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
 	if rt.createCfg.Env["REVIEW_ONLY"] != "1" {
 		t.Fatalf("reviewer env dropped adapter value: %v", rt.createCfg.Env)
+	}
+	if rt.createCfg.Env["PROJECT_TOKEN"] != "review-value" || rt.createCfg.Env["SHARED"] != "adapter" {
+		t.Fatalf("reviewer env did not preserve project values and adapter precedence: %#v", rt.createCfg.Env)
 	}
 	if _, ok := rt.createCfg.Env[sessionmanager.EnvSessionID]; ok {
 		t.Fatalf("reviewer env must not set worker %s: %v", sessionmanager.EnvSessionID, rt.createCfg.Env)
@@ -395,6 +401,7 @@ func (f fakeAgentAuthResolver) AuthStatus(context.Context, domain.ReviewerHarnes
 
 type fakeRuntime struct {
 	createCfg         ports.RuntimeConfig
+	createErr         error
 	sentMsg           string
 	sentMsgs          []string
 	sentInput         string
@@ -416,7 +423,21 @@ type fakeRuntime struct {
 func (f *fakeRuntime) Create(_ context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
 	f.createCfg = cfg
 	f.created = true
+	if f.createErr != nil {
+		return ports.RuntimeHandle{}, f.createErr
+	}
 	return ports.RuntimeHandle{ID: string(cfg.SessionID)}, nil
+}
+
+func TestLauncherRedactsProjectEnvFromRuntimeError(t *testing.T) {
+	rt := &fakeRuntime{createErr: errors.New("failed with project-secret")}
+	l := newTestLauncher(t, &fakeReviewer{}, rt)
+	spec := launchSpec()
+	spec.ProjectEnv = map[string]string{"PROJECT_TOKEN": "project-secret"}
+	_, err := l.Spawn(context.Background(), spec)
+	if err == nil || strings.Contains(err.Error(), "project-secret") {
+		t.Fatalf("reviewer exposed project env value: %v", err)
+	}
 }
 func (f *fakeRuntime) Destroy(_ context.Context, handle ports.RuntimeHandle) error {
 	f.destroyed = handle.ID
