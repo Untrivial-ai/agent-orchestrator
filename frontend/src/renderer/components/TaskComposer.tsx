@@ -438,19 +438,35 @@ export function TaskComposer({
 				? modelCatalogQuery.error.message
 				: t("settings.models.loadFailed")
 			: undefined);
+	const reportedModels = modelCatalogQuery.data?.models ?? [];
+	// An unmarked first row is not evidence of what the provider will run.
+	const catalogModels = reportedModels.filter((item) => isConcreteModelID(item.id));
+	const projectModelMissingFromCatalog = Boolean(
+		selectedAgent === "codex" &&
+			isConcreteModelID(projectModelForSelectedAgent) &&
+			!catalogModels.some((item) => item.id === projectModelForSelectedAgent),
+	);
+	const pickerModels = projectModelMissingFromCatalog
+		? [
+				{
+					id: projectModelForSelectedAgent,
+					label: projectModelForSelectedAgent,
+					isDefault: true,
+				},
+				...reportedModels,
+			]
+		: reportedModels;
 	const modelCatalog: TaskComposerModelCatalog | undefined = modelCatalogQuery.data
 		? {
 				allowCustom: modelCatalogQuery.data.allowCustom,
 				customModelEntry: modelCatalogQuery.data.customModelEntry,
-				models: modelCatalogQuery.data.models,
+				models: pickerModels,
 				refreshError: modelCatalogQuery.data.refreshError,
 				refreshState: modelCatalogQuery.data.refreshState,
 				retryAt: modelCatalogQuery.data.retryAt,
 				selectionMode: modelCatalogQuery.data.selectionMode,
 			}
 		: undefined;
-	// An unmarked first row is not evidence of what the provider will run.
-	const catalogModels = modelCatalogQuery.data?.models?.filter((item) => isConcreteModelID(item.id)) ?? [];
 	const catalogDefaultOption =
 		catalogModels.find((item) => item.isDefault)?.id ?? "";
 	const catalogUsesModes = modelCatalogQuery.data?.selectionMode === "mode";
@@ -489,8 +505,14 @@ export function TaskComposer({
 		: selectedAgent === configuredProjectAgent
 			? defaultWorkerEffort
 			: "";
+	const tuningModels =
+		selectedAgent === "codex" &&
+		isConcreteModelID(selectedModel) &&
+		!catalogModels.some((item) => item.id === selectedModel)
+			? undefined
+			: catalogModels;
 	const { selected: effortModel } = useModelTuning({
-		models: catalogModels,
+		models: tuningModels,
 		model: selectedModel,
 		effort,
 		onEffortChange: setEffort,

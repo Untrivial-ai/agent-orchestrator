@@ -1611,17 +1611,14 @@ describe("TaskComposer", () => {
 		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("model");
 	});
 
-	it("inherits the project worker model without saving it as a task override", async () => {
+	it("keeps an off-catalog project worker model in the picker without saving a task override", async () => {
 		h.get.mockImplementation(async (path: string) => {
 			if (path.includes("/models")) {
 				return {
 					data: {
 						agent: "codex",
 						selectionMode: "catalog",
-						models: [
-							{ id: "gpt-5", label: "GPT-5" },
-							{ id: "gpt-5-codex", label: "GPT-5 Codex", isDefault: true },
-						],
+						models: [{ id: "gpt-5-codex", label: "GPT-5 Codex", isDefault: true }],
 						allowCustom: true,
 						refreshRecommended: false,
 					},
@@ -1632,7 +1629,7 @@ describe("TaskComposer", () => {
 					status: "ok",
 					project: {
 						agent: "codex",
-						config: { worker: { agent: "codex", agentConfig: { model: "gpt-5" } } },
+						config: { worker: { agent: "codex", agentConfig: { model: "gpt-5", effort: "high" } } },
 					},
 				},
 			};
@@ -1645,13 +1642,19 @@ describe("TaskComposer", () => {
 			</Wrap>,
 		);
 
-		expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("GPT-5");
+		const picker = await screen.findByRole("button", { name: "Model" });
+		expect(picker).toHaveTextContent("gpt-5");
+		await userEvent.click(picker);
+		expect(await screen.findByRole("menuitem", { name: "gpt-5" })).toBeInTheDocument();
+		expect(screen.getByRole("menuitem", { name: "GPT-5 Codex" })).toBeInTheDocument();
+		await userEvent.keyboard("{Escape}");
 		fireEvent.change(task(), { target: { value: "Use project default model" } });
 		fireEvent.click(screen.getByText("Start task"));
 
 		await waitFor(() => expect(h.post).toHaveBeenCalledOnce());
 		expect(h.post.mock.calls[0][1].body).toEqual(expect.objectContaining({ agent: "codex" }));
 		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("model");
+		expect(h.post.mock.calls[0][1].body).not.toHaveProperty("effort");
 		expect(JSON.parse(window.localStorage.getItem("ao.taskComposer.preferences.v1") ?? "{}")["proj-1"].agents.codex.model).toBe("");
 	});
 
