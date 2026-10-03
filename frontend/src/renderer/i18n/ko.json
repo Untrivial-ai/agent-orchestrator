@@ -672,6 +672,7 @@
 	"mobile.devices.removeAria": "{{name}} 제거",
 	"mobile.devices.title": "연결된 기기",
 	"mobile.devices.unnamed": "이름 없는 기기",
+	"mobile.devices.enableInAppHint": "Turn on Agent notifications in the AO phone app to receive alerts on this device.",
 	"mobile.generate": "생성",
 	"mobile.preparingQr": "보안 링크를 준비하는 중입니다 — 보통 30~60초 정도 걸립니다",
 	"mobile.getApp": "앱 받기",

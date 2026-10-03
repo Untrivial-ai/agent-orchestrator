@@ -675,6 +675,7 @@
 	"mobile.devices.removeAria": "Remover {{name}}",
 	"mobile.devices.title": "Dispositivos conectados",
 	"mobile.devices.unnamed": "Dispositivo sem nome",
+	"mobile.devices.enableInAppHint": "Turn on Agent notifications in the AO phone app to receive alerts on this device.",
 	"mobile.generate": "Gerar",
 	"mobile.preparingQr": "Preparando seu link seguro — normalmente leva de 30 a 60 segundos",
 	"mobile.getApp": "Obter o app",

@@ -181,7 +181,7 @@ describe("MobileDevicesSection", () => {
 		expect(names).toEqual(["iPhone", "M31s"]);
 	});
 
-	it("keeps a device without a push token manageable without extra status copy", async () => {
+	it("keeps a device without a push token mutable and explains why it gets nothing", async () => {
 		const noToken = {
 			data: {
 				devices: [
@@ -194,15 +194,28 @@ describe("MobileDevicesSection", () => {
 			},
 		};
 		vi.spyOn(apiClient, "GET").mockResolvedValue(noToken as never);
+		const patch = vi.spyOn(apiClient, "PATCH").mockResolvedValue({ data: { muted: true } } as never);
 		const del = vi.spyOn(apiClient, "DELETE").mockResolvedValue({ data: undefined } as never);
 		renderSection();
 
 		expect(await screen.findByText("Pixel Announce")).toBeInTheDocument();
 		expect(screen.queryByText("Live")).not.toBeInTheDocument();
-		expect(screen.queryByText(/Notifications not enabled on this device/i)).not.toBeInTheDocument();
+		// The hint explains the daemon state (no push token) without locking the switch.
+		expect(await screen.findByText(/Turn on Agent notifications in the AO phone app/i)).toBeInTheDocument();
 
 		const toggle = screen.getByRole("switch", { name: /notifications for Pixel Announce/i });
-		expect(toggle).toBeDisabled();
+		expect(toggle).toBeEnabled();
+		// Unmuted device with no token still renders as on: the switch reflects
+		// the mute preference, not token presence.
+		expect(toggle).toHaveAttribute("data-state", "checked");
+
+		// Muting still saves — the preference sticks for when a token registers.
+		fireEvent.click(toggle);
+		await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+		expect(patch.mock.calls[0][1]).toMatchObject({
+			params: { path: { installId: "i3" } },
+			body: { muted: true },
+		});
 
 		// Still removable.
 		fireEvent.click(screen.getByRole("button", { name: /remove Pixel Announce/i }));
@@ -210,4 +223,79 @@ describe("MobileDevicesSection", () => {
 		await waitFor(() => expect(del).toHaveBeenCalledTimes(1));
 	});
 
+	it("flips the switch immediately on mute and rolls back on failure", async () => {
+		vi.spyOn(apiClient, "GET").mockResolvedValue(twoDevices as never);
+		let rejectPatch!: (err: unknown) => void;
+		vi.spyOn(apiClient, "PATCH").mockImplementation(
+			() => new Promise((_resolve, reject) => void (rejectPatch = reject)),
+		);
+		renderSection();
+
+		const toggle = await screen.findByRole("switch", { name: /notifications for iPhone/i });
+		// iPhone starts unmuted → on.
+		expect(toggle).toHaveAttribute("data-state", "checked");
+		fireEvent.click(toggle);
+
+		// Optimistic flip while the request is still in flight.
+		await waitFor(() => expect(toggle).toHaveAttribute("data-state", "unchecked"));
+
+		// Server failure rolls back to the previous state with an error.
+		rejectPatch(new Error("Device not found"));
+		expect(await screen.findByText(/Device not found/i)).toBeInTheDocument();
+		await waitFor(() => expect(toggle).toHaveAttribute("data-state", "checked"));
+	});
+
+	it("tracks each row's in-flight mute separately so concurrent toggles don't unlock each other", async () => {
+		vi.spyOn(apiClient, "GET").mockResolvedValue(twoDevices as never);
+		const resolvers: Array<(value: unknown) => void> = [];
+		vi.spyOn(apiClient, "PATCH").mockImplementation(
+			() => new Promise((resolve) => void resolvers.push(resolve)),
+		);
+		renderSection();
+
+		const iPhone = await screen.findByRole("switch", { name: /notifications for iPhone/i });
+		const m31s = await screen.findByRole("switch", { name: /notifications for M31s/i });
+
+		fireEvent.click(iPhone);
+		await waitFor(() => expect(iPhone).toBeDisabled());
+		// The other row is unaffected by the first row's in-flight request.
+		expect(m31s).toBeEnabled();
+
+		fireEvent.click(m31s);
+		await waitFor(() => expect(m31s).toBeDisabled());
+		expect(iPhone).toBeDisabled();
+
+		// Both settle: each row unlocks and shows its saved state.
+		resolvers.forEach((resolve) => resolve({ data: { muted: true } }));
+		await waitFor(() => expect(iPhone).toBeEnabled());
+		await waitFor(() => expect(m31s).toBeEnabled());
+	});
+
+	it("surfaces a failed mute even while another row's toggle is still in flight", async () => {
+		vi.spyOn(apiClient, "GET").mockResolvedValue(twoDevices as never);
+		const pending: Array<{ resolve: (value: unknown) => void; reject: (err: unknown) => void }> = [];
+		vi.spyOn(apiClient, "PATCH").mockImplementation(
+			() => new Promise((resolve, reject) => void pending.push({ resolve, reject })),
+		);
+		renderSection();
+
+		const iPhone = await screen.findByRole("switch", { name: /notifications for iPhone/i });
+		const m31s = await screen.findByRole("switch", { name: /notifications for M31s/i });
+
+		fireEvent.click(iPhone);
+		await waitFor(() => expect(iPhone).toHaveAttribute("data-state", "unchecked"));
+		fireEvent.click(m31s);
+		await waitFor(() => expect(m31s).toBeDisabled());
+
+		// The first PATCH fails while the second is still pending.
+		pending[0].reject(new Error("Device not found"));
+		expect(await screen.findByText(/Device not found/i)).toBeInTheDocument();
+		await waitFor(() => expect(iPhone).toHaveAttribute("data-state", "checked"));
+		await waitFor(() => expect(iPhone).toBeEnabled());
+
+		// The other row settling successfully doesn't clear the first row's error.
+		pending[1].resolve({ data: { muted: false } });
+		await waitFor(() => expect(m31s).toBeEnabled());
+		expect(screen.getByText(/Device not found/i)).toBeInTheDocument();
+	});
 });
